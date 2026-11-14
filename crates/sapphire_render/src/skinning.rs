@@ -19,7 +19,21 @@
 //!   start in their bind pose with every weight 0. An instance that holds still (hitstop,
 //!   pause) keeps its outputs and costs nothing.
 //! - Only the LOD prefix being drawn is skinned (`MeshRecord::lod_vertices`): LOD0 until LOD
-//!   selection lands with culling, which then passes the instance's LOD.
+//!   selection lands (m5-plan D4), which then passes the instance's LOD.
+//!
+//! # Only what some view draws (M5 D3)
+//!
+//! A record skins only the instances some view draws that frame: the main view or the prepasses,
+//! an inset, a shadow cascade or a character map drawn that frame (`view_cull`'s verdicts and the
+//! shadow plan, [`Skinning::begin_record`]'s `drawn`). An instance no view draws takes its pose as
+//! if it were skinned, without a job: its published bounds move on as they would (so lights, hull
+//! cutoffs and shadows plan as before), and the pose is kept ([`Held`]). The frame it is drawn
+//! again skins that kept pose too, positions alone, into the half the last drawn pose would be in,
+//! and the new pose (if one came) into the other: its previous positions are exactly what they
+//! would have been had no view ever left it out, so its velocity, and temporal AA's history, are
+//! the same bit for bit (a re-entry writing zero motion instead would ghost under TAA, the
+//! survey's risk). Without a new pose it skins the kept one alone and draws still, as it would
+//! have. The kept pose is two copies, so a frame that never runs gives the older back.
 //!
 //! # Velocity
 //!
@@ -64,9 +78,9 @@
 //!   normal, so the hull can open there by the bend's angle × the outline's width. Character
 //!   morphs (faces) move smooth surfaces, whose split vertices (UV seams) share a normal; if
 //!   hard-edged morphs need it, the cooker can bake outline-normal deltas per target.
-//! - Culling: skin only visible instances, and select their LOD prefix. Bounds of the posed
-//!   instance (from its joints) then replace the bind-pose mesh bounds, which per-object light
-//!   lists use today.
+//! - Levels of detail: skin the drawn level's prefix (m5-plan D4).
+//! - A culled instance's pose still rides the frame's upload when every pose fits (the palettes are
+//!   uploaded whole); trimming them to the skinned ones is a follow-up if upload bandwidth shows.
 //! - GPU-driven draws: the surface stream lives with the mesh and positions with the instance,
 //!   so multi-draw-indirect needs vertex pulling or a per-instance surface copy for these.
 
@@ -102,6 +116,9 @@ pub(crate) mod flags {
     pub const SKIN: u32 = 2;
     pub const WIDE_INFLUENCES: u32 = 4;
     pub const MORPHS: u32 = 8;
+    /// Positions alone (M5 D3): the kept pose an instance drawn again was last given, into the
+    /// half its previous positions are read from, while its new pose writes the shading.
+    pub const POSITIONS_ONLY: u32 = 16;
 }
 
 /// One palette matrix as the shader reads it: the rows of a 3×4 affine matrix. 48 bytes.
@@ -234,14 +251,37 @@ enum Pending {
     Pose { palette: u32, weights: u32, morphs: bool },
 }
 
-/// What a recorded frame took from an instance it skins, to give back if it never runs.
+/// What a recorded frame took from an instance it skins, or from one no view drew (M5 D3), to give
+/// back if it never runs.
 #[derive(Clone, Copy, Debug)]
 struct Taken {
     slot: u32,
-    pending: Pending,
+    /// The pending skin it took, if any: none for a kept pose skinned alone.
+    pending: Option<Pending>,
     /// [`Deformed::drawn`] before.
     drawn: bool,
     bounds: Option<crate::bounds::Sphere>,
+    /// No view drew it: its pose went into its [`Held`] copy, with no job.
+    kept: bool,
+    /// [`Held::active`] before.
+    held: bool,
+}
+
+/// The pose a deformed instance no view drew last took (M5 D3; see the module docs): two copies,
+/// so a frame that never runs gives the older back.
+#[derive(Debug, Default)]
+struct Held {
+    /// Per copy: its palette rows and dense weights.
+    rows: [Vec<PaletteRows>; 2],
+    weights: [Vec<f32>; 2],
+    /// Per copy: whether it is the bind pose, and whether any weight is non-zero.
+    rest: [bool; 2],
+    morphs: [bool; 2],
+    /// The copy holding the latest.
+    current: usize,
+    /// The latest copy is a pose the instance's outputs don't hold yet: the frame it is drawn
+    /// again skins it.
+    active: bool,
 }
 
 /// The deformed instances, their output buffer and the skinning pass.
@@ -253,6 +293,12 @@ pub(crate) struct Skinning {
     instances: Vec<Option<Deformed>>,
     /// Slots with a deformed instance.
     live: Vec<u32>,
+    /// Per instance slot: the pose it took while no view drew it (M5 D3).
+    held: Vec<Held>,
+    /// The recorded frame's kept poses being skinned again: their palettes and weights, uploaded
+    /// after the frame's own.
+    held_rows: Vec<PaletteRows>,
+    held_weights: Vec<f32>,
     /// Slots that took a pending skin since the last record; may repeat or be stale. Those a
     /// record left waiting come first.
     queued: Vec<u32>,
@@ -316,6 +362,9 @@ impl Skinning {
             recorded: false,
             jobs: Vec::new(),
             taken: Vec::new(),
+            held: Vec::new(),
+            held_rows: Vec::new(),
+            held_weights: Vec::new(),
             workgroups: 0,
             // Written by the pass, drawn as vertex data, and bound whole as storage. Empty until
             // the first deformed instance.
@@ -537,6 +586,9 @@ impl Skinning {
     fn remove(&mut self, slot: u32) {
         self.unplaced.retain(|&unplaced| unplaced != slot);
         let Some(state) = self.instances.get_mut(slot as usize).and_then(Option::take) else { return };
+        if let Some(held) = self.held.get_mut(slot as usize) {
+            held.active = false;
+        }
         self.ranges.free(state.first, state.vertex_count);
         let index = self.live.iter().position(|&live| live == slot).expect("deformed slots are live");
         self.live.swap_remove(index);
@@ -611,21 +663,47 @@ impl Skinning {
         true
     }
 
-    /// Takes the pending skins into this frame's jobs and settles which half each instance
-    /// draws from. Call once per recorded frame, before [`Self::frame`] and [`Self::outputs`].
-    pub(crate) fn begin_record(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, meshes: &MeshPool) {
+    /// Takes the pending skins of the instances `drawn` says some view draws into this frame's
+    /// jobs and settles which half each instance draws from; the others keep their poses for the
+    /// frame they're drawn again (M5 D3, the module docs). Call once per recorded frame, before
+    /// [`Self::frame`] and [`Self::outputs`].
+    pub(crate) fn begin_record(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        meshes: &MeshPool,
+        drawn: impl Fn(u32) -> bool,
+    ) {
         profiling::scope!("Skinning::begin_record");
         self.recorded = true;
         self.jobs.clear();
         self.taken.clear();
+        self.held_rows.clear();
+        self.held_weights.clear();
         self.workgroups = 0;
         for &slot in &self.live {
             if let Some(state) = self.instances[slot as usize].as_mut() {
                 state.moved = false;
             }
         }
+        if self.held.len() < self.instances.len() {
+            self.held.resize_with(self.instances.len(), Held::default);
+        }
         let records = meshes.records();
-        self.admit(records);
+        self.keep_undrawn(records, &drawn);
+        // The kept poses drawn again take their room first: a job each, with their palettes and
+        // weights.
+        let mut returning = (0, 0, 0);
+        for &slot in &self.live {
+            let held = &self.held[slot as usize];
+            if held.active && drawn(slot) {
+                returning.0 += 1;
+                returning.1 += held.rows[held.current].len();
+                returning.2 += held.weights[held.current].len();
+            }
+        }
+        self.admit(records, returning);
+        let (mut skinned, mut vertices, mut joints) = (0, 0, 0);
         for &slot in &self.queued {
             let Some(state) = self.instances.get_mut(slot as usize).and_then(Option::as_mut) else {
                 continue;
@@ -633,7 +711,33 @@ impl Skinning {
             let Some(pending) = state.pending.take() else { continue };
             let Some(source) = state.source(records) else { continue };
             let vertex_count = records[state.mesh.index()].lod_vertices[DRAWN_LOD];
-            self.taken.push(Taken { slot, pending, drawn: state.drawn, bounds: state.pending_bounds });
+            let held = &mut self.held[slot as usize];
+            let kept = std::mem::replace(&mut held.active, false);
+            self.taken.push(Taken {
+                slot,
+                pending: Some(pending),
+                drawn: state.drawn,
+                bounds: state.pending_bounds,
+                kept: false,
+                held: kept,
+            });
+            // Drawn again with a new pose: the kept one, positions alone, into the half its
+            // previous positions are read from.
+            if kept {
+                let previous = state.outputs();
+                let job = held_job(
+                    held,
+                    source,
+                    vertex_count,
+                    self.workgroups,
+                    previous,
+                    (&mut self.held_rows, &mut self.held_weights),
+                    self.uploaded,
+                );
+                self.jobs.push(job);
+                self.workgroups += vertex_count.div_ceil(WORKGROUP_SIZE);
+                vertices += vertex_count;
+            }
             // Write the half the last drawn pose isn't in.
             state.current ^= 1;
             state.moved = state.drawn;
@@ -641,22 +745,74 @@ impl Skinning {
             let outputs = state.outputs();
             self.jobs.push(job(source, pending, vertex_count, self.workgroups, outputs));
             self.workgroups += vertex_count.div_ceil(WORKGROUP_SIZE);
+            skinned += 1;
+            vertices += vertex_count;
+            if let Pending::Pose { .. } = pending {
+                joints += source.palette_len();
+            }
         }
+        // Drawn again without a new pose: the kept one alone, drawn still, as it would have been.
+        for &slot in &self.live {
+            let held = &mut self.held[slot as usize];
+            if !held.active || !drawn(slot) {
+                continue;
+            }
+            let Some(state) = self.instances.get_mut(slot as usize).and_then(Option::as_mut) else {
+                continue;
+            };
+            let Some(source) = state.source(records) else { continue };
+            let vertex_count = records[state.mesh.index()].lod_vertices[DRAWN_LOD];
+            held.active = false;
+            let bounds = state.drawn_bounds;
+            self.taken.push(Taken {
+                slot,
+                pending: None,
+                drawn: state.drawn,
+                bounds,
+                kept: false,
+                held: true,
+            });
+            state.current ^= 1;
+            state.moved = false;
+            state.drawn = true;
+            let mut job = held_job(
+                held,
+                source,
+                vertex_count,
+                self.workgroups,
+                state.outputs(),
+                (&mut self.held_rows, &mut self.held_weights),
+                self.uploaded,
+            );
+            job.flags &= !flags::POSITIONS_ONLY;
+            self.jobs.push(job);
+            self.workgroups += vertex_count.div_ceil(WORKGROUP_SIZE);
+            skinned += 1;
+            vertices += vertex_count;
+            if !held.rest[held.current] {
+                joints += source.palette_len();
+            }
+        }
+        self.stats.skinned = skinned;
+        self.stats.vertices = vertices;
+        self.stats.joints = joints;
+        self.stats.palette_bytes = joints * size_of::<PaletteRows>() as u32;
         // The poses left waiting go first in the next record.
         self.queued.clear();
         std::mem::swap(&mut self.queued, &mut self.waiting);
         if self.jobs.is_empty() {
             return;
         }
-        // The palettes follow the header and jobs, and the weights the palettes, so the jobs'
-        // offsets become absolute in the frame buffer.
+        // The palettes follow the header and jobs, the kept poses' after the frame's, and the
+        // weights the palettes, so the jobs' offsets become absolute in the frame buffer.
         let palette_row = 1 + JOB_ROWS * self.jobs.len() as u32;
-        let weight_word = 4 * (palette_row + 3 * self.uploaded.0 as u32);
+        let palettes = self.uploaded.0 + self.held_rows.len();
+        let weight_word = 4 * (palette_row + 3 * palettes as u32);
         for job in &mut self.jobs {
             job.palette += palette_row;
             job.weights += weight_word;
         }
-        let bytes = frame_bytes(self.jobs.len(), self.uploaded.0, self.uploaded.1);
+        let bytes = frame_bytes(self.jobs.len(), palettes, self.uploaded.1 + self.held_weights.len());
         debug_assert!(self.frame.fits(bytes), "admitted within the limit");
         // Rewritten whole every frame, so nothing needs keeping.
         self.stale |= self.frame.reserve(device, queue, bytes, 0);
@@ -678,19 +834,69 @@ impl Skinning {
     }
 
     /// The frame [`Self::begin_record`] took its skins for never ran, so what it took is back as
-    /// it was: the half each instance draws from, and the skins, first in line before the poses
-    /// the frame left waiting. Their palettes and weights are where those skins say: only a frame
-    /// that ran lets the next `prepare` drain them.
+    /// it was: the half each instance draws from, the skins, first in line before the poses the
+    /// frame left waiting, and the kept poses (M5 D3). Their palettes and weights are where those
+    /// skins say: only a frame that ran lets the next `prepare` drain them.
     pub(crate) fn frame_lost(&mut self) {
         self.recorded = false;
-        let Self { taken, instances, queued, .. } = self;
+        let Self { taken, instances, queued, held, .. } = self;
         for taken in taken.iter() {
             let state = instances[taken.slot as usize].as_mut().expect("only `prepare` removes instances");
-            state.current ^= 1;
+            let held = &mut held[taken.slot as usize];
+            if taken.kept {
+                // The pose went into the other copy, with no job: the older copy is the latest again.
+                held.current ^= 1;
+            } else {
+                state.current ^= 1;
+            }
+            held.active = taken.held;
             state.drawn = taken.drawn;
-            state.pending = Some(taken.pending);
+            if taken.pending.is_some() {
+                state.pending = taken.pending;
+            }
         }
-        queued.splice(0..0, taken.drain(..).map(|taken| taken.slot));
+        queued.splice(0..0, taken.drain(..).filter(|taken| taken.pending.is_some()).map(|taken| taken.slot));
+    }
+
+    /// Takes the pending poses of the instances `drawn` says no view draws this frame into their
+    /// kept copies, with no job (M5 D3; the module docs): their outputs keep the last pose drawn,
+    /// and the pose waits for the frame they're drawn again. Their bounds move on as a skin's do.
+    fn keep_undrawn(&mut self, records: &[MeshRecord], drawn: &impl Fn(u32) -> bool) {
+        let Self { queued, instances, held, palettes, weights, taken, .. } = self;
+        for &slot in queued.iter() {
+            let Some(state) = instances.get_mut(slot as usize).and_then(Option::as_mut) else { continue };
+            if state.pending.is_none() || drawn(slot) {
+                continue;
+            }
+            let Some(pending) = state.pending else { continue };
+            let Some(source) = state.source(records) else { continue };
+            let held = &mut held[slot as usize];
+            let copy = held.current ^ 1;
+            held.rows[copy].clear();
+            held.weights[copy].clear();
+            match pending {
+                Pending::Rest => (held.rest[copy], held.morphs[copy]) = (true, false),
+                Pending::Pose { palette, weights: first, morphs } => {
+                    let (len, targets) = (source.palette_len() as usize, source.morph_targets() as usize);
+                    held.rows[copy].extend_from_slice(&palettes[palette as usize..][..len]);
+                    held.weights[copy].extend_from_slice(&weights[first as usize..][..targets]);
+                    (held.rest[copy], held.morphs[copy]) = (false, morphs);
+                }
+            }
+            taken.push(Taken {
+                slot,
+                pending: Some(pending),
+                drawn: state.drawn,
+                bounds: state.pending_bounds,
+                kept: true,
+                held: held.active,
+            });
+            held.current = copy;
+            held.active = true;
+            state.pending = None;
+            // As if skinned: a later skin is a move from this pose.
+            state.drawn = true;
+        }
     }
 
     /// Decides which pending skins the recorded frame takes (review RA-004), leaving them in
@@ -699,8 +905,9 @@ impl Skinning {
     /// is taken with every palette and weight since the last record, as before. Otherwise skins
     /// are taken in the order they were queued while they fit, and the others keep their poses
     /// for the next record: the palettes and weights are put in order, the frame's first (the
-    /// `uploaded` ones), then the waiting poses'.
-    fn admit(&mut self, records: &[MeshRecord]) {
+    /// `uploaded` ones), then the waiting poses'. `returning` is the room the kept poses drawn
+    /// again take (M5 D3): their jobs, palette rows and weights, always taken.
+    fn admit(&mut self, records: &[MeshRecord], returning: (usize, usize, usize)) {
         let Self { queued, waiting, instances, palettes, weights, frame, .. } = self;
         waiting.clear();
         let pending = |slot: &u32| {
@@ -710,7 +917,8 @@ impl Skinning {
         };
         // Repeated slots count twice here, which only errs toward taking the path below.
         let jobs = queued.iter().filter(|slot| pending(slot)).count();
-        if frame.fits(frame_bytes(jobs, palettes.len(), weights.len())) {
+        let (held_jobs, held_rows, held_words) = returning;
+        if frame.fits(frame_bytes(jobs + held_jobs, palettes.len() + held_rows, weights.len() + held_words)) {
             self.uploaded = (palettes.len(), weights.len());
             self.deferred = 0;
             return;
@@ -720,7 +928,7 @@ impl Skinning {
         queued.retain(|&slot| seen.get_mut(slot as usize).is_some_and(|seen| !std::mem::replace(seen, true)));
         let (mut taken_palettes, mut taken_weights) = (Vec::new(), Vec::new());
         let (mut waiting_palettes, mut waiting_weights) = (Vec::new(), Vec::new());
-        let (mut jobs, mut rows, mut words) = (0, 0, 0);
+        let (mut jobs, mut rows, mut words) = returning;
         queued.retain(|&slot| {
             let Some(state) = instances[slot as usize].as_mut() else { return false };
             let Some(pending) = state.pending else { return false };
@@ -785,8 +993,8 @@ impl Skinning {
             buffer: self.frame.buffer(),
             header: [self.jobs.len() as u32, self.workgroups, 0, 0],
             jobs: &self.jobs,
-            palettes: &self.palettes[..self.uploaded.0],
-            weights: &self.weights[..self.uploaded.1],
+            palettes: [&self.palettes[..self.uploaded.0], &self.held_rows],
+            weights: [&self.weights[..self.uploaded.1], &self.held_weights],
             workgroups: self.workgroups,
         })
     }
@@ -835,8 +1043,9 @@ pub(crate) struct SkinningFrame<'a> {
     buffer: &'a wgpu::Buffer,
     header: [u32; 4],
     jobs: &'a [Job],
-    palettes: &'a [PaletteRows],
-    weights: &'a [f32],
+    /// The frame's poses' palettes, then the kept poses' (M5 D3).
+    palettes: [&'a [PaletteRows]; 2],
+    weights: [&'a [f32]; 2],
     workgroups: u32,
 }
 
@@ -846,10 +1055,15 @@ impl SkinningFrame<'_> {
         let header = bytemuck::bytes_of(&self.header);
         buffer::stage(belt, encoder, self.buffer, 0, header);
         buffer::stage(belt, encoder, self.buffer, header.len() as u64, bytemuck::cast_slice(self.jobs));
-        let palettes = (1 + u64::from(JOB_ROWS) * self.jobs.len() as u64) * 16;
-        buffer::stage(belt, encoder, self.buffer, palettes, bytemuck::cast_slice(self.palettes));
-        let weights = palettes + size_of_val(self.palettes) as u64;
-        buffer::stage(belt, encoder, self.buffer, weights, bytemuck::cast_slice(self.weights));
+        let mut at = (1 + u64::from(JOB_ROWS) * self.jobs.len() as u64) * 16;
+        for part in self.palettes.into_iter().filter(|part| !part.is_empty()) {
+            buffer::stage(belt, encoder, self.buffer, at, bytemuck::cast_slice(part));
+            at += size_of_val(part) as u64;
+        }
+        for part in self.weights.into_iter().filter(|part| !part.is_empty()) {
+            buffer::stage(belt, encoder, self.buffer, at, bytemuck::cast_slice(part));
+            at += size_of_val(part) as u64;
+        }
     }
 
     /// Skins every job's instance. `timestamp_writes` times the pass for the frame graph's GPU
@@ -952,6 +1166,35 @@ fn job(
         position_offset: [x, y, z, 0.0],
         position_scale: [sx, sy, sz, 0.0],
     }
+}
+
+/// The job that skins `held`'s latest pose into `outputs`' positions alone
+/// ([`flags::POSITIONS_ONLY`]), starting at workgroup `first_workgroup`, its palette and weights
+/// appended to `rows` and `weights` (uploaded after the frame's own, which their offsets count
+/// from).
+fn held_job(
+    held: &Held,
+    source: &DeformSource,
+    vertex_count: u32,
+    first_workgroup: u32,
+    outputs: InstanceOutputs,
+    (rows, weights): (&mut Vec<PaletteRows>, &mut Vec<f32>),
+    (first_row, first_weight): (usize, usize),
+) -> Job {
+    let copy = held.current;
+    let pending = if held.rest[copy] {
+        Pending::Rest
+    } else {
+        // The kept poses' palettes and weights follow the frame's own `first_row` and
+        // `first_weight`.
+        let at = ((first_row + rows.len()) as u32, (first_weight + weights.len()) as u32);
+        rows.extend_from_slice(&held.rows[copy]);
+        weights.extend_from_slice(&held.weights[copy]);
+        Pending::Pose { palette: at.0, weights: at.1, morphs: held.morphs[copy] }
+    };
+    let mut job = job(source, pending, vertex_count, first_workgroup, outputs);
+    job.flags |= flags::POSITIONS_ONLY;
+    job
 }
 
 /// `matrix` as the shader reads it: its three rows.

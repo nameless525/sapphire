@@ -14,8 +14,8 @@
 //! instances that cast into the map they draw, or are characters (`*_where`). Fog cards draw in
 //! an order of the frame's own, back to front ([`MeshDraws::draw_ordered`]).
 //!
-//! The main view's passes skip the static draws of instances its frustum culled (review RA-O01,
-//! [`MeshDraws::view`]); the shadow passes and the character prepass draw from a copy without it.
+//! Every view's passes skip the draws of instances its culling left out (review RA-O01, M5 D3,
+//! [`MeshDraws::view`]); the shadow passes draw from a copy without it, as their plan culls theirs.
 //! Every pass draws one view's instances alone (M3 U6, [`MeshDraws::stand`]): the world's, or an
 //! inset's, whose instances draw nowhere else.
 //!
@@ -54,7 +54,9 @@ use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::mesh_pool::MeshPool;
 use crate::pipelines::{MeshPass, SurfaceVariant, format_index, slot};
 use crate::scene::{DeformedDraw, DrawCommand, DrawList};
+use crate::shadows::plan::SlotCaster;
 use crate::skinning::SkinnedOutputs;
+use crate::view_cull::{Culled, Verdict};
 
 const SHADING_STRIDE: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_STRIDE: u64 = size_of::<VertexSurface>() as u64;
@@ -81,10 +83,13 @@ pub(crate) struct MeshDraws<'a> {
     /// the debug view's line indices, two per triangle index at twice its position
     /// (`debug_view`, the wireframe's replay), bound in its place. Off for every other pass.
     pub lines: bool,
-    /// Per instance slot, whether the main view draws its static draws (review RA-O01, the
-    /// `view_cull` module): for the main pass, the scene prepass and the debug views. `None`
-    /// draws every one, as the other views do.
-    pub view: Option<&'a [bool]>,
+    /// Per instance slot, whether the view it stands in draws it, or by what test not (review
+    /// RA-O01, M5 D3, the `view_cull` module): for the main pass, both prepasses, the debug views
+    /// and each inset's passes. `None` draws every one, as the shadow views do.
+    pub view: Option<Culled<'a>>,
+    /// A shadow cascade's casters and its index, on the filtered walk: what its pick left out by
+    /// distance or size counts as such (M5 D3).
+    pub casters: Option<(&'a [SlotCaster], usize)>,
     /// Per instance slot, the view it stands in (M3 U6, `inset`): 0 for the world's, `n` for the
     /// frame's inset `n - 1`. Slots past its end stand in the world.
     pub stands: &'a [u16],
@@ -170,13 +175,7 @@ impl MeshDraws<'_> {
 
     /// Whether a draw of the instance in `slot`, standing here, that its set holds as `pick`
     /// draws, counting it in `counts` as looked at and, if not drawn, by the test that left it out.
-    fn passes(
-        counts: &mut PassCounts,
-        pick: Pick,
-        slot: u32,
-        instance: impl Fn(u32) -> bool,
-        in_view: impl Fn(u32) -> bool,
-    ) -> bool {
+    fn passes(&self, counts: &mut PassCounts, pick: Pick, slot: u32, instance: impl Fn(u32) -> bool) -> bool {
         match pick {
             Pick::Out => return false,
             Pick::Cutoff => {
@@ -187,14 +186,27 @@ impl MeshDraws<'_> {
             Pick::In => counts.considered += 1,
         }
         if !instance(slot) {
-            counts.culled_by_pass += 1;
-            false
-        } else if !in_view(slot) {
-            counts.culled_by_frustum += 1;
-            false
-        } else {
-            true
+            // A cascade's pick: by its volume, or by distance or size (M5 D3).
+            let left_out =
+                self.casters.and_then(|(casters, cascade)| casters.get(slot as usize)?.left_out(cascade));
+            match left_out {
+                Some(verdict @ (Verdict::Distance | Verdict::Size)) => counts.count_culled(verdict),
+                _ => counts.culled_by_pass += 1,
+            }
+            return false;
         }
+        match self.verdict(slot) {
+            Verdict::Drawn => true,
+            verdict => {
+                counts.count_culled(verdict);
+                false
+            }
+        }
+    }
+
+    /// The verdict of the view the instance in `slot` stands in: drawn without culling.
+    fn verdict(&self, slot: u32) -> Verdict {
+        self.view.map_or(Verdict::Drawn, |view| view.verdict(slot))
     }
 }
 
@@ -304,16 +316,12 @@ impl MeshDraws<'_> {
                 }
             }
         } else {
-            // Only static draws are culled: the view's culling doesn't read skinned and morphed
-            // instances' posed bounds yet.
-            let in_view =
-                |slot: u32| self.view.is_none_or(|view| view.get(slot as usize).is_none_or(|&drawn| drawn));
             for command in commands {
                 if !self.stands_here(command.slot) {
                     continue;
                 }
                 let pick = self.includes(set, command.draw_id, command.material, command.outline);
-                if Self::passes(&mut counts, pick, command.slot, &instance, in_view) {
+                if self.passes(&mut counts, pick, command.slot, &instance) {
                     draw(command, &mut bound, &mut counts);
                 }
             }
@@ -431,7 +439,7 @@ impl MeshDraws<'_> {
                     continue;
                 }
                 let pick = self.includes(set, command.draw_id, command.material, command.outline);
-                if Self::passes(&mut counts, pick, command.slot, &instance, |_| true) {
+                if self.passes(&mut counts, pick, command.slot, &instance) {
                     draw(command, &mut bound, &mut counts);
                 }
             }
@@ -475,7 +483,8 @@ impl MeshDraws<'_> {
 
     /// Draws `draws` of `variant`'s surfaces in their order, with the streams `kind` reads, each
     /// through `pipeline` of its position format (f32 for skinned and morphed instances), set
-    /// only when the format changes. The index buffer must be bound.
+    /// only when the format changes, but those its view's culling left out (fog cards, M5 D3),
+    /// which it counts by their test. The index buffer must be bound.
     pub(crate) fn draw_ordered<'p>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -488,10 +497,23 @@ impl MeshDraws<'_> {
         let mut counts = PassCounts::default();
         let mut bound_format = None;
         for &draw in draws {
-            let format = match draw {
-                DrawRef::Static { format, .. } => format,
-                DrawRef::Deformed { .. } => PositionFormat::Float32,
+            let (format, slot) = match draw {
+                DrawRef::Static { format, index } => {
+                    let commands = &self.list.commands[format_index(format)][variant.index()];
+                    (format, commands.get(index as usize).map(|command| command.slot))
+                }
+                DrawRef::Deformed { index } => {
+                    let deformed = &self.list.deformed[variant.index()];
+                    (PositionFormat::Float32, deformed.get(index as usize).map(|draw| draw.slot))
+                }
             };
+            let Some(slot) = slot.filter(|&slot| self.stands_here(slot)) else { continue };
+            let verdict = self.verdict(slot);
+            if verdict != Verdict::Drawn {
+                counts.considered += 1;
+                counts.count_culled(verdict);
+                continue;
+            }
             if bound_format != Some(format) {
                 pass.set_pipeline(pipeline(format));
                 bound.changes.pipelines += 1;

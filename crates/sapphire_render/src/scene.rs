@@ -697,8 +697,8 @@ pub(crate) struct DrawList {
     pub faded: u32,
     /// Draws left out because they would pass the draw records' limit ([`DrawLimits`]).
     pub over_limit: u32,
-    /// The static instances whose draws are all environment or foliage surfaces, in slot order:
-    /// the main view culls them by their bounds (review RA-O01, the `view_cull` module).
+    /// Every instance with draws, in slot order: what each view culls by its bounds (review
+    /// RA-O01, M5 D3, the `view_cull` module).
     pub cullable: Vec<CullCandidate>,
     /// The sorted groups' orders (M5 D1), which each view's list is compacted in: built with the
     /// list, so a frame that only moves instances sorts nothing.
@@ -777,11 +777,9 @@ impl DrawList {
                 .deform()
                 .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
             let mut foliage = false;
+            let mut fog_card = false;
             let faded = slots.cut(slot);
-            // A static instance of world surfaces alone is the main view's to cull (review
-            // RA-O01, the `view_cull` module).
             let first_draw = self.draws.len();
-            let mut world = matches!(record.streams, MeshStreams::Slab { .. });
             for submesh in &record.lods[0] {
                 let handle = submesh.material.handle;
                 let (family, flags) = material_kind(handle);
@@ -789,7 +787,7 @@ impl DrawList {
                 debug_assert!(drawn.is_some(), "uploads refuse {family} materials on meshes");
                 let Some((mut variant, outline)) = drawn else { continue };
                 foliage |= variant.shading == Shading::Foliage;
-                world &= matches!(variant.shading, Shading::Environment | Shading::Foliage);
+                fog_card |= variant.shading == Shading::FogCard;
                 if faded && matches!(variant.shading, Shading::Character(_)) {
                     if variant.coverage == Coverage::Opaque {
                         variant = variant.with_coverage(Coverage::AlphaTest);
@@ -834,8 +832,10 @@ impl DrawList {
             }
             self.foliage_instances += u32::from(foliage);
             let draws = to_u32(self.draws.len() - first_draw);
-            if world && draws > 0 {
-                self.cullable.push(CullCandidate { slot, mesh, draws });
+            // Every instance with draws is its view's to cull (review RA-O01, M5 D3, the
+            // `view_cull` module).
+            if draws > 0 {
+                self.cullable.push(CullCandidate { slot, mesh, draws, foliage, fog_card });
             }
         }
         // An eye's shadow, iris and highlight layers each blend over the ones before them,

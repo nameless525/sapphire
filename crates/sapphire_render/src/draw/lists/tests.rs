@@ -8,6 +8,7 @@ use crate::gpu_types::Dequantize;
 use crate::mesh_pool::{DeformSource, MeshRecord, MeshStreams, Placement, SubmeshDraw, SubmeshMaterial};
 use crate::pipelines::{Coverage, Part};
 use crate::scene::{DrawLimits, InstanceSlots};
+use crate::view_cull::SlotCull;
 use crate::{InstanceDeltas, InstanceId, MeshHandle, MeshInstance};
 
 const UNORM16: PositionFormat = PositionFormat::Unorm16;
@@ -97,9 +98,15 @@ fn drawn(
 fn world<'a>(
     stands: &'a [u16],
     hulls: &'a [bool],
-    view: Option<&'a [bool]>,
+    view: Option<Culled<'a>>,
 ) -> ViewTests<'a, fn(u32) -> bool> {
     ViewTests { stands, stand: 0, hulls, materials: &[], view, instance: |_| true }
+}
+
+/// A caster drawn into the cascades of `cascades` and the character map `map`, held by those
+/// cascades alone.
+fn caster(cascades: u8, map: Option<u8>) -> SlotCaster {
+    SlotCaster { cascades, map, held: cascades, far: false }
 }
 
 /// Three meshes of environment draws, instanced in an order that alternates them.
@@ -155,7 +162,7 @@ fn each_kind_of_view_holds_its_order() {
         assert_eq!(meshes, [1, 0, 1], "{walk:?}: the record's order");
     }
 
-    let plan = |slot: u32| (1, Some((slot % 2) as u8));
+    let plan = |slot: u32| caster(1, Some((slot % 2) as u8));
     let casters = CasterTests { stands: &stands, cascades: [true, false, false, false], maps: 2, plan };
     lists.compact_casters(&list, &casters);
     let cascade = lists.list(Walk::Cascade(0)).expect("listed");
@@ -261,11 +268,11 @@ fn a_view_counts_what_it_leaves_out() {
     let slots = slots(&[0, 1, 0, 1]);
     let list = built(&meshes, &slots);
     let stands = [0, 0, 0, 1];
-    let view = [true, true, false, true];
+    let view = SlotCull::of(&[Verdict::Drawn, Verdict::Drawn, Verdict::Frustum, Verdict::Drawn]);
     // The character's hull (record 1) is past its cutoff.
     let hulls = [false; 4];
     let mut lists = ViewLists::default();
-    lists.compact_view(Walk::Main, &list, &world(&stands, &hulls, Some(&view)));
+    lists.compact_view(Walk::Main, &list, &world(&stands, &hulls, Some(Culled::new(&view))));
     let main = lists.list(Walk::Main).expect("listed");
     assert_eq!(main.len(), 2, "slot 0's surface and slot 1's");
     let left_out = lists.left_out(Walk::Main);
@@ -287,10 +294,10 @@ fn a_view_counts_what_it_leaves_out() {
 
     // Shadows: cascade 0 takes slots 0 and 1, cascade 1 slot 2; slot 1 draws into map 0 of two.
     let plan = |slot: u32| match slot {
-        0 => (0b01, None),
-        1 => (0b01, Some(0)),
-        2 => (0b10, None),
-        _ => (0b11, Some(1)),
+        0 => caster(0b01, None),
+        1 => caster(0b01, Some(0)),
+        2 => caster(0b10, None),
+        _ => caster(0b11, Some(1)),
     };
     let tests = CasterTests { stands: &stands, cascades: [true, true, false, false], maps: 2, plan };
     lists.compact_casters(&list, &tests);
@@ -316,8 +323,12 @@ fn a_list_rebuilt_after_the_pool_compacts_draws_the_same() {
     meshes[2].streams = slab(5);
     let moved = built(&meshes, &slots);
     let mut lists = ViewLists::default();
-    let casters =
-        CasterTests { stands: &[], cascades: [true, false, false, false], maps: 0, plan: |_| (1, None) };
+    let casters = CasterTests {
+        stands: &[],
+        cascades: [true, false, false, false],
+        maps: 0,
+        plan: |_| caster(1, None),
+    };
     let compact = |lists: &mut ViewLists, list: &DrawList| {
         lists.compact_view(Walk::Main, list, &world(&[], &[], None));
         lists.compact_casters(list, &casters);
@@ -355,7 +366,7 @@ fn compacting_a_warm_frame_allocates_nothing() {
             stands: &[],
             cascades: [true; 4],
             maps: 8,
-            plan: |slot| (0b1011, Some((slot % 8) as u8)),
+            plan: |slot| caster(0b1011, Some((slot % 8) as u8)),
         };
         lists.compact_casters(&list, &casters);
     };
@@ -363,4 +374,93 @@ fn compacting_a_warm_frame_allocates_nothing() {
     let ((), allocated) = sapphire_core::alloc::count_in_scope(|| compact(&mut lists));
     assert_eq!(allocated.allocations, 0, "{allocated:?}");
     assert_eq!(lists.list(Walk::Main).expect("listed").len(), 8);
+}
+
+/// A district's worth of draws: `instances` instances of three meshes of four, one and two
+/// submeshes, a third culled by the frustum, a tenth by distance and a tenth by size, every
+/// cascade and eight character maps drawn.
+fn district(instances: u32) -> (DrawList, Vec<SlotCull>, Vec<SlotCaster>) {
+    let meshes = vec![
+        mesh(slab(0), vec![submesh(0, 10), submesh(3, 11), submesh(6, 12), submesh(9, 13)]),
+        mesh(slab(4), vec![submesh(12, 14)]),
+        mesh(slab(8), vec![submesh(15, 20), submesh(18, 15)]),
+    ];
+    let order: Vec<u32> = (0..instances).map(|slot| (slot * 7 + slot / 5) % 3).collect();
+    let list = built(&meshes, &slots(&order));
+    let verdict = |slot: u32| match slot % 30 {
+        0..10 => Verdict::Frustum,
+        10..13 => Verdict::Distance,
+        13..16 => Verdict::Size,
+        _ => Verdict::Drawn,
+    };
+    let culled = SlotCull::of(&(0..instances).map(verdict).collect::<Vec<_>>());
+    let casters = (0..instances)
+        .map(|slot| SlotCaster {
+            cascades: (slot % 16) as u8,
+            map: (slot % 5 == 0).then_some((slot % 8) as u8),
+            held: 0b1111,
+            far: verdict(slot) == Verdict::Distance,
+        })
+        .collect();
+    (list, culled, casters)
+}
+
+/// The world's views compact in parallel to the very lists, and counts, they compact to one after
+/// another: neither the thread count nor which finishes first shows (M5 D3).
+#[test]
+fn the_world_compacts_alike_in_parallel_and_in_turn() {
+    let (list, culled, casters) = district(6000);
+    assert!(list.draws.len() >= PARALLEL_DRAWS, "{} draws", list.draws.len());
+    let world = world(&[], &[], Some(Culled::new(&culled)));
+    let characters = world.with_instance(|slot: u32| slot % 3 == 2);
+    let plan = |slot: u32| casters[slot as usize];
+    let tests = CasterTests { stands: &[], cascades: [true; 4], maps: 8, plan };
+    let walks = [
+        Walk::Main,
+        Walk::ScenePrepass,
+        Walk::CharacterPrepass,
+        Walk::Cascade(0),
+        Walk::Cascade(1),
+        Walk::Cascade(2),
+        Walk::Cascade(3),
+        Walk::CharacterMap(0),
+        Walk::CharacterMap(7),
+        Walk::CharacterMaps,
+    ];
+    let lists = [false, true].map(|parallel| {
+        let mut lists = ViewLists::default();
+        lists.compact_world_as(&list, &world, &characters, &tests, parallel);
+        lists
+    });
+    for walk in walks {
+        let [serial, parallel] = &lists;
+        assert_eq!(serial.list(walk), parallel.list(walk), "{walk:?}");
+        assert_eq!(serial.left_out(walk), parallel.left_out(walk), "{walk:?}");
+    }
+    let main = lists[0].left_out(Walk::Main);
+    assert!(main.culled_by_frustum > 0 && main.culled_by_distance > 0 && main.culled_by_size > 0, "{main:?}");
+}
+
+/// The cull's cost at a district's scale, serial and in parallel: run alone, in release, with
+/// `cargo test --release -p sapphire_render --lib cull_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "a timing report"]
+#[expect(clippy::disallowed_methods, reason = "a timing report, not engine code")]
+fn cull_cost_at_a_districts_scale() {
+    let (list, culled, casters) = district(6000);
+    let world = world(&[], &[], Some(Culled::new(&culled)));
+    let characters = world.with_instance(|slot: u32| slot % 3 == 2);
+    let plan = |slot: u32| casters[slot as usize];
+    let tests = CasterTests { stands: &[], cascades: [true; 4], maps: 8, plan };
+    let mut lists = ViewLists::default();
+    for parallel in [false, true, false, true] {
+        lists.compact_world_as(&list, &world, &characters, &tests, parallel);
+        let start = std::time::Instant::now();
+        let rounds = 200;
+        for _ in 0..rounds {
+            lists.compact_world_as(&list, &world, &characters, &tests, parallel);
+        }
+        let micros = start.elapsed().as_secs_f64() * 1e6 / f64::from(rounds);
+        eprintln!("{} draws, parallel {parallel}: {micros:.1} us a frame", list.draws.len());
+    }
 }

@@ -214,7 +214,7 @@
 //!   does.
 
 pub(crate) mod fit;
-mod plan;
+pub(crate) mod plan;
 
 use std::num::NonZeroU64;
 
@@ -227,7 +227,7 @@ use serde::{Deserialize, Serialize};
 use crate::buffer;
 use crate::characters::{CharacterTable, GpuCharacter, GpuReceived};
 use crate::counts::{Counted, PassCounters};
-use crate::draw::{CasterTests, DrawSet, MeshDraws, ViewLists, Walk};
+use crate::draw::{CasterTests, DrawSet, MeshDraws, Walk};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::FrameGraph;
 use crate::mesh_pool::MeshRecord;
@@ -240,6 +240,7 @@ use crate::renderer::pass_weight;
 use crate::scene::{DrawList, InstanceSlots};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
+use crate::shadows::plan::SlotCaster;
 use crate::{FramePacket, RenderError};
 use plan::{ShadowPlan, WindMargin};
 
@@ -833,7 +834,9 @@ impl Shadows {
     /// Plans the frame's shadows from `packet` (CPU only; see [`ShadowPlan::update`]): `slots`
     /// has the packet's instance deltas applied, `meshes` are the pool's records, `wind_margin`
     /// how far the frame's wind carries each one's vertices past its bounds, `list` the draw list,
-    /// `characters` the frame's characters as the character buffer resolved them.
+    /// `characters` the frame's characters as the character buffer resolved them, `cull` what view
+    /// culling leaves out of every cascade (M5 D3).
+    #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
     pub(crate) fn prepare(
         &mut self,
         packet: &FramePacket,
@@ -842,6 +845,7 @@ impl Shadows {
         wind_margin: &WindMargin<'_>,
         list: &DrawList,
         characters: CharacterTable<'_>,
+        cull: plan::CasterCull<'_>,
     ) {
         let Some(settings) = self.settings else { return };
         self.entries = characters.count;
@@ -857,6 +861,7 @@ impl Shadows {
             list,
             characters,
             self.textures.atlas_size,
+            cull,
         );
     }
 
@@ -909,27 +914,41 @@ impl Shadows {
         }
     }
 
-    /// Compacts every shadow view's draw list (M5 D1) from `list`: each cascade the frame draws
+    /// What every shadow view's draw list (M5 D1) is compacted by: each cascade the frame draws
     /// lists the world's casters its test keeps, each character map its character's. `stands` says
     /// which view each instance slot stands in.
-    pub(crate) fn compact_casters(&self, lists: &mut ViewLists, list: &DrawList, stands: &[u16]) {
+    pub(crate) fn caster_tests<'a>(
+        &'a self,
+        stands: &'a [u16],
+    ) -> CasterTests<'a, impl Fn(u32) -> SlotCaster + Sync + 'a> {
         let active = self.pipelines.is_some() && self.plan.active;
         let maps = match self.settings {
             Some(_) if active => self.plan.maps.len(),
             _ => 0,
         };
         let plan = &self.plan.casters;
-        let tests = CasterTests {
+        CasterTests {
             stands,
             cascades: std::array::from_fn(|index| {
                 active && self.plan.drawn.get(index).is_some_and(Option::is_some)
             }),
             maps,
-            plan: |slot: u32| {
-                plan.get(slot as usize).map_or((0, None), |caster| (caster.cascades, caster.map))
-            },
-        };
-        lists.compact_casters(list, &tests);
+            plan: |slot: u32| plan.get(slot as usize).copied().unwrap_or_default(),
+        }
+    }
+
+    /// Whether the instance in `slot` casts into a cascade or a character map this frame draws:
+    /// what skinning poses besides what the views draw (M5 D3).
+    pub(crate) fn casts(&self, slot: u32) -> bool {
+        if self.pipelines.is_none() || !self.plan.active {
+            return false;
+        }
+        let maps = self.settings.is_some() && !self.plan.maps.is_empty();
+        self.plan.casters.get(slot as usize).is_some_and(|caster| {
+            let cascades = (0..MAX_CASCADES)
+                .any(|index| caster.cascades & (1 << index) != 0 && self.plan.drawn[index].is_some());
+            cascades || (maps && caster.map.is_some())
+        })
     }
 
     /// The view of cascade `index` (below [`MAX_CASCADES`]), or of character map `index −
@@ -970,7 +989,8 @@ impl Shadows {
             let layer = &self.textures.layers[index];
             let bit = 1u8 << index;
             let counter = counts.get(Counted::Cascade(index));
-            let draws = MeshDraws { counter, walk: Walk::Cascade(index), ..draws };
+            let picks = Some((plan.as_slice(), index));
+            let draws = MeshDraws { counter, walk: Walk::Cascade(index), casters: picks, ..draws };
             graph.add_pass(CASCADE_PASSES[index]).side_effect().weight(pass_weight::MAP).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let mut pass =

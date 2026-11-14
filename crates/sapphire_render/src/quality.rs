@@ -124,10 +124,10 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AmbientOcclusion, DepthOfFieldSettings, DistortionResolution, EnvironmentSettings, FoliageSettings,
-    GtaoSettings, InsetSettings, LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa,
-    PostEffectSettings, PostVariants, ReflectionSettings, RenderSettings, ShadowSettings, SkySettings,
-    scaled_size,
+    AmbientOcclusion, CullingMode, CullingThresholds, DepthOfFieldSettings, DistortionResolution,
+    EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings, LOG_TARGET, LightPath,
+    MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, PostVariants,
+    ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, Pressure, ResolutionBudget, ResolutionSignal,
@@ -292,6 +292,10 @@ pub struct QualityTier {
     /// How large its bends' offsets are (M5 L6, [`RenderSettings::distortion`]). A table without it gets none.
     #[serde(default)]
     pub distortion: DistortionResolution,
+    /// Distance and size culling (M5 D3, [`RenderSettings::culling`]). A table without it culls by
+    /// neither.
+    #[serde(default)]
+    pub culling: CullingThresholds,
     /// The thermal ladder's rungs, from the top (M4 T2, [`ladder`]). A tier without them answers
     /// neither heat nor dynamic resolution's pressure.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -474,7 +478,8 @@ impl QualityTier {
             inset: self.inset,
             depth_of_field: self.depth_of_field,
             distortion: self.distortion,
-            view_culling: true,
+            view_culling: CullingMode::On,
+            culling: self.culling,
         }
     }
 
@@ -558,6 +563,9 @@ impl QualityTier {
             return invalid(field, problem);
         }
         if let Err((field, problem)) = self.inset.validate() {
+            return invalid(field, problem);
+        }
+        if let Err((field, problem)) = self.culling.validate() {
             return invalid(field, problem);
         }
         if let Err(problem) = ladder::validate(self) {
@@ -1538,6 +1546,7 @@ mod tests {
                 inset: tier.inset,
                 depth_of_field: DepthOfFieldSettings { view: true, insets: true },
                 distortion: DistortionResolution::Half,
+                culling: tier.culling,
                 ..RenderSettings::default()
             };
             assert_eq!(tier.render_settings(), expected, "{id}");

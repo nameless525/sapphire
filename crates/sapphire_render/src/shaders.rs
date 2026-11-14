@@ -1677,6 +1677,7 @@ mod tests {
         assert_eq!(wgsl_u32(&skinning, "FLAG_SKIN"), flags::SKIN);
         assert_eq!(wgsl_u32(&skinning, "FLAG_WIDE_INFLUENCES"), flags::WIDE_INFLUENCES);
         assert_eq!(wgsl_u32(&skinning, "FLAG_MORPHS"), flags::MORPHS);
+        assert_eq!(wgsl_u32(&skinning, "FLAG_POSITIONS_ONLY"), flags::POSITIONS_ONLY);
     }
 
     #[test]

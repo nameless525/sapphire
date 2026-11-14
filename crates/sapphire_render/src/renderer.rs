@@ -68,6 +68,7 @@ use crate::shader_builds::{
     scope_error,
 };
 use crate::shaders::{BuildOn, ProbeRead, Program, ShaderError, ShaderSources};
+use crate::shadows::plan::CasterCull;
 use crate::shadows::{CasterBindings, ShadowSettings, ShadowStats, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
@@ -76,12 +77,14 @@ use crate::texture::{GpuTexture, TextureError};
 use crate::ui::{Ui, UiPicture, UiStats};
 use crate::vfx::distortion::{self, DistortionResolution};
 use crate::vfx::{self, AfterResolveTargets, Vfx, VfxParts, VfxRenderStats};
-use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
+use crate::view_cull::{
+    self, CullInputs, CullView, CullingMode, CullingThresholds, DrawnBy, ViewCull, ViewCullingStats,
+};
 use crate::warm_up::{
     Done as WarmUpDone, Job as WarmUpJob, WarmUpProgress, WarmUpRequest, WarmUpStats, WarmUps,
     Warmed as WarmedParts,
 };
-use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle, Wind};
+use crate::{CameraData, FramePacket, InstanceId, LOG_TARGET, MeshHandle, Wind};
 
 /// The first shadow view in the view buffer: after the main view and the sky cube's faces.
 const FIRST_SHADOW_VIEW: u32 = 1 + sky::CUBE_FACES;
@@ -182,11 +185,14 @@ pub struct RenderSettings {
     /// desktop tiers, a quarter on Mobile-High. Off by default, and on Mobile-Low: no pipeline, target or pass,
     /// whatever a frame's effects ask.
     pub distortion: DistortionResolution,
-    /// Main-view culling of static environment and foliage instances (review RA-O01): the main
-    /// pass, the scene prepass and the debug views skip those wholly outside the main view's
-    /// frustum, which changes no pixel. On by default; off draws everything, for comparisons and
-    /// triage. [`RenderStats::view_culling`] counts what it culled.
-    pub view_culling: bool,
+    /// What view culling does (review RA-O01, M5 D3, the `view_cull` module): every view culls the
+    /// instances it draws by their bounds, which changes no pixel, and by the tier's distance and
+    /// size ([`Self::culling`]). On by default; only tests and the bench set
+    /// [`CullingMode::FrustumOnly`] or [`CullingMode::Off`], for comparisons and triage.
+    /// [`RenderStats::view_culling`] counts what it culled.
+    pub view_culling: CullingMode,
+    /// The tier's distance and size culling (M5 D3): none by default, as the goldens draw.
+    pub culling: CullingThresholds,
 }
 
 impl RenderSettings {
@@ -228,7 +234,8 @@ impl Default for RenderSettings {
             inset: InsetSettings::default(),
             depth_of_field: DepthOfFieldSettings::OFF,
             distortion: DistortionResolution::Off,
-            view_culling: true,
+            view_culling: CullingMode::On,
+            culling: CullingThresholds::NONE,
         }
     }
 }
@@ -238,6 +245,7 @@ impl RenderSettings {
     /// too, so this is what reaches a renderer made with no table.
     fn validate(&self) -> Result<(), (&'static str, &'static str)> {
         self.sky.validate()?;
+        self.culling.validate()?;
         if let Some(shadows) = &self.shadows {
             shadows.validate()?;
         }
@@ -1511,6 +1519,58 @@ impl Renderer {
     /// retired, and what no unfinished frame can read goes back to the free lists. Then the mesh pool
     /// takes its part of a compaction asked for ([`Self::compact_meshes`]), before anything this frame
     /// reads a mesh's record. Only a frame with something retired pays for asking the queue.
+    /// Works out which instances each view draws this frame (M5 D3, the `view_cull` module): the
+    /// main view of `camera`, drawn at `size` onto `output` with temporal AA's `jitter`, and each
+    /// inset the frame shows; then which views drew each instance, its shadows' included, for
+    /// skinning and [`Self::drawn_by`].
+    fn cull_views(
+        &mut self,
+        camera: &CameraData,
+        size: (u32, u32),
+        output: (u32, u32),
+        jitter: [f32; 2],
+        wind: &Wind,
+    ) {
+        let pad = view_cull::PAD_PIXELS + jitter[0].abs().max(jitter[1].abs());
+        let hull = self.outlines.widest();
+        let mut views = [None; view_cull::CULL_VIEWS];
+        views[0] = Some(CullView::new(camera, size, output.1, pad, hull));
+        let mut drawn = [false; view_cull::CULL_VIEWS];
+        drawn[0] = true;
+        for (index, inset) in self.insets.cull_views().into_iter().enumerate() {
+            if let Some(inset) = inset {
+                views[index + 1] = Some(CullView::new(&inset.camera, inset.scene, inset.scene.1, pad, hull));
+                drawn[index + 1] = inset.draws;
+            }
+        }
+        let materials = &self.materials;
+        let stands = self.insets.stands().stands;
+        let inputs = CullInputs {
+            list: self.scene.draw_list(),
+            slots: self.scene.slots(),
+            meshes: self.meshes.records(),
+            margin: |record: &MeshRecord| wind_margin(materials, record, wind),
+            reach: self.outlines.reach(),
+            stands,
+            views,
+        };
+        self.view_cull.record(&inputs);
+        let shadows = &self.shadows;
+        self.view_cull.publish(stands, &drawn, |slot| shadows.casts(slot));
+        self.stats.view_culling = self.view_cull.stats();
+    }
+
+    /// Which views drew the instance `id` in the last recorded frame (M5 D3): the main view, a
+    /// shadow (a cascade or a character map), its inset. What animates instances reads it in the
+    /// next frame, to spend less on what nothing drew; a character's parts are instances each,
+    /// drawn if any is. It is a frame late: it holds no margin for the camera's turn or a
+    /// character's move since, so a reader that holds poses by it must add its own (and cut over
+    /// at a camera cut). `None` for an instance the renderer doesn't hold.
+    pub fn drawn_by(&self, id: InstanceId) -> Option<DrawnBy> {
+        let slot = self.scene.slots().slot(id)?;
+        Some(self.view_cull.drawn_by(slot))
+    }
+
     fn settle_freed(&mut self) {
         let finished = self.fence.finished();
         self.mip_streaming.release_finished(finished);
@@ -2475,8 +2535,24 @@ impl Renderer {
             self.rebuild_frame_bind_groups();
         }
         self.ambient.prepare(packet, self.characters.table());
+        // What no view draws for being past the tier's distance, and what is never culled by
+        // distance or size (M5 D3): the shadow plan leaves the far out of its cascades too.
+        let slots = self.scene.slots();
+        let fresh = slots.freed().iter().chain(slots.meshed()).copied();
+        self.view_cull.prepare(
+            self.settings.view_culling,
+            self.settings.culling,
+            packet.main_view().map(|view| &view.camera),
+            self.scene.draw_list(),
+            slots,
+            self.meshes.records(),
+            self.characters.table(),
+            fresh,
+        );
         let materials = &self.materials;
         let margin = |record: &MeshRecord| wind_margin(materials, record, &packet.wind);
+        let least_texels =
+            if self.settings.view_culling.thresholds() { self.settings.culling.least_texels } else { 0.0 };
         self.shadows.prepare(
             packet,
             self.scene.slots(),
@@ -2484,6 +2560,7 @@ impl Renderer {
             &margin,
             self.scene.draw_list(),
             self.characters.table(),
+            CasterCull { culled: self.view_cull.casters(), least_texels },
         );
         // The other characters' shadows each character receives go into its entry (M5 L12).
         if packet.main_view().is_some() {
@@ -2790,7 +2867,6 @@ impl Renderer {
         // upsamples) writes the target's size.
         let size = scaled_size(output, self.render_scale);
         self.stats.scene_size = size;
-        self.skinning.begin_record(&self.device, &self.queue, &self.meshes);
         // The character prepass's targets follow the scene's size, and GTAO's (new textures for a
         // new size): group 0 binds both.
         let prepass_resized = self.character_prepass.resize(&self.device, size);
@@ -2819,18 +2895,14 @@ impl Renderer {
         // The wind, and the last drawn frame's for velocity, which a cut holds still as it does
         // the camera.
         let wind_uniforms = self.wind.record(cut);
-        // Which static world instances the main view draws (review RA-O01): its unjittered
+        // Which instances each view draws (review RA-O01, M5 D3): the main view's unjittered
         // frustum, padded by the jitter too, so the jittered views and the debug views' unjittered
-        // one cull alike.
-        let frustum = self.settings.view_culling.then(|| {
-            let pad = view_cull::PAD_PIXELS + jitter[0].abs().max(jitter[1].abs());
-            Frustum::new(clip_from_world, size, pad)
-        });
-        let materials = &self.materials;
-        let margin = |record: &MeshRecord| wind_margin(materials, record, &wind);
-        let (list, slots, meshes) = (self.scene.draw_list(), self.scene.slots(), self.meshes.records());
-        self.view_cull.update(frustum.as_ref(), list, slots, meshes, margin, self.stats.draws);
-        self.stats.view_culling = self.view_cull.stats();
+        // one cull alike, and each inset's camera for its own instances.
+        self.cull_views(&camera, size, output, jitter, &wind);
+        // Skinning poses only what some view draws this frame (M5 D3).
+        let view_cull = &self.view_cull;
+        self.skinning.begin_record(&self.device, &self.queue, &self.meshes, |slot| view_cull.drawn(slot));
+        self.stats.skinning = self.skinning.stats();
 
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
@@ -2960,22 +3032,22 @@ impl Renderer {
             profiling::scope!("view lists");
             let lists = &mut **view_lists;
             let listed = |slot| character_slots.listed(slot);
+            // Every view reads its instances' verdicts (M5 D3): the character prepass and the insets
+            // too, each by the camera its instances stand in.
             let world = ViewTests {
                 stands: inset_frame.stands,
                 stand: 0,
                 hulls: outlines.visible(),
                 materials: material_records,
-                view: view_cull.mask(),
+                view: view_cull.culled(),
                 instance: |_| true,
             };
-            lists.compact_view(Walk::Main, draw_list, &world);
-            lists.compact_view(Walk::ScenePrepass, draw_list, &world);
-            let characters = ViewTests { view: None, ..world.with_instance(listed) };
-            lists.compact_view(Walk::CharacterPrepass, draw_list, &characters);
-            shadows.compact_casters(lists, draw_list, inset_frame.stands);
+            let characters = world.with_instance(listed);
+            // The world's views compact in parallel, each its own list.
+            lists.compact_world(draw_list, &world, &characters, &shadows.caster_tests(inset_frame.stands));
             for (index, draw) in inset_frame.draws.iter().enumerate() {
                 let Some(draw) = draw else { continue };
-                let inset = ViewTests { stand: draw.stand, view: None, ..world };
+                let inset = ViewTests { stand: draw.stand, ..world };
                 lists.compact_view(Walk::InsetMain(index), draw_list, &inset);
                 lists.compact_view(Walk::InsetCharacters(index), draw_list, &inset.with_instance(listed));
             }
@@ -2989,7 +3061,9 @@ impl Renderer {
             materials: material_records,
             hulls: outlines.visible(),
             lines: false,
-            view: None,
+            // Every view's passes read the verdicts; the shadows' take a copy without them.
+            view: view_cull.culled(),
+            casters: None,
             stands: inset_frame.stands,
             stand: 0,
             counter: counts.get(Counted::CharacterPrepass),
@@ -3106,16 +3180,13 @@ impl Renderer {
             mesh: pipelines,
         };
         let (first, stride) = (FIRST_SHADOW_VIEW, view_stride);
-        shadows.record(graph, mesh_draws, counts, view_bind_group, casters, first, stride, labels);
-        // The main view's passes skip what its frustum culled (review RA-O01): the scene prepass,
-        // the main pass and the debug views' replays of it, so all agree. The shadows above and
-        // the character prepass below draw every instance they pick.
-        let view_draws = MeshDraws {
-            view: view_cull.mask(),
-            counter: counts.get(Counted::Main),
-            walk: Walk::Main,
-            ..mesh_draws
-        };
+        // The shadows cull by their plan, toward the light, not by the views' verdicts.
+        let shadow_draws = MeshDraws { view: None, ..mesh_draws };
+        shadows.record(graph, shadow_draws, counts, view_bind_group, casters, first, stride, labels);
+        // Every view's passes skip what its culling left out (review RA-O01, M5 D3): the scene
+        // prepass, the main pass, the debug views' replays of it, the character prepass and each
+        // inset's passes, so all agree.
+        let view_draws = MeshDraws { counter: counts.get(Counted::Main), walk: Walk::Main, ..mesh_draws };
         let scene_draws =
             MeshDraws { counter: counts.get(Counted::ScenePrepass), walk: Walk::ScenePrepass, ..view_draws };
         // The main view and the mesh pool's indices. The main pass binds each family's frame and

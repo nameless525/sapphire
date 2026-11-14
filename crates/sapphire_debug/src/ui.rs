@@ -453,12 +453,15 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ui,
             "Culled",
             format!(
-                "{} of {} mesh draws looked at: {} by the view, {} by a pass's pick, {} past outline cutoffs",
+                "{} of {} mesh draws looked at: {} by the view, {} by a pass's pick, {} past outline cutoffs, \
+                 {} by distance, {} by size",
                 total.culled(),
                 total.considered,
                 total.culled_by_frustum,
                 total.culled_by_pass,
-                total.culled_by_cutoff
+                total.culled_by_cutoff,
+                total.culled_by_distance,
+                total.culled_by_size
             ),
         );
         let [lod0, lod1, lod2, lod3] = total.levels;

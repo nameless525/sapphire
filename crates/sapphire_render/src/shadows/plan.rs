@@ -15,6 +15,7 @@ use crate::characters::{CharacterTable, GpuReceived, RECEIVED_CAPSULE};
 use crate::mesh_pool::{MeshRecord, MeshStreams};
 use crate::pipelines::SurfaceVariant;
 use crate::scene::{DrawList, InstanceSlots};
+use crate::view_cull::{Culled, SIZE_RETURN, Verdict};
 use crate::{CameraData, CharacterBody, FramePacket, ShadowRole};
 
 /// How far a capsule's shadow reaches from it along the light, in meters (`CAPSULE_REACH` in
@@ -43,6 +44,43 @@ pub(crate) struct SlotCaster {
     pub cascades: u8,
     /// The character map it is drawn into, if any.
     pub map: Option<u8>,
+    /// Bit `i`: cascade `i` is drawn and its volume holds the instance (M5 D3): those of these not
+    /// in [`Self::cascades`] left it out by distance or by size.
+    pub held: u8,
+    /// Past the tier's distance (`view_cull`): no cascade draws it.
+    pub far: bool,
+}
+
+impl SlotCaster {
+    /// Why cascade `cascade` doesn't draw the instance, by the first test that left it out: its
+    /// volume ([`Verdict::Frustum`], the cascade's own pick), the tier's distance, then its size in
+    /// the cascade's texels; `None` if it draws it.
+    pub(crate) fn left_out(&self, cascade: usize) -> Option<Verdict> {
+        let bit = 1 << cascade;
+        if self.cascades & bit != 0 {
+            None
+        } else if self.held & bit == 0 {
+            Some(Verdict::Frustum)
+        } else if self.far {
+            Some(Verdict::Distance)
+        } else {
+            Some(Verdict::Size)
+        }
+    }
+}
+
+/// What the shadow plan culls casters by beyond each cascade's volume (M5 D3, `view_cull`): the
+/// frame's far and kept instances, and the least size in a cascade's texels (0 for none).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CasterCull<'a> {
+    pub culled: Culled<'a>,
+    pub least_texels: f32,
+}
+
+impl CasterCull<'_> {
+    /// No culling beyond the cascades' volumes.
+    #[cfg(test)]
+    pub(crate) const NONE: CasterCull<'static> = CasterCull { culled: Culled::NONE, least_texels: 0.0 };
 }
 
 /// Whether an instance slot is a character this frame (it has an entry in the character
@@ -94,6 +132,9 @@ pub(crate) struct ShadowPlan {
     pub maps: Vec<CascadeFit>,
     /// Per instance slot: what it casts into.
     pub casters: Vec<SlotCaster>,
+    /// Per instance slot, bit `i`: below the least size in cascade `i`'s texels when last tested
+    /// (with hysteresis).
+    small: Vec<u8>,
     /// Per instance slot: a character or not.
     characters: Vec<SlotCharacter>,
     groups: Vec<CharacterGroup>,
@@ -116,7 +157,8 @@ impl ShadowPlan {
     /// `meshes` are the pool's records, `wind_margin` how far the frame's wind can carry each
     /// mesh's vertices past its bounds (foliage's; 0 for the rest), `list` the frame's draw list
     /// (for the stats' counts), `characters` the frame's characters as the character buffer
-    /// resolved them, and `atlas` the character atlas's size in texels.
+    /// resolved them, `atlas` the character atlas's size in texels, and `cull` what view culling
+    /// leaves out of every cascade (M5 D3).
     #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
     pub(crate) fn update(
         &mut self,
@@ -128,6 +170,7 @@ impl ShadowPlan {
         list: &DrawList,
         characters: CharacterTable<'_>,
         atlas: (u32, u32),
+        cull: CasterCull<'_>,
     ) {
         profiling::scope!("ShadowPlan::update");
         self.drawn = [None; MAX_CASCADES];
@@ -152,7 +195,7 @@ impl ShadowPlan {
             self.toward = Some(toward);
         }
         self.plan_cascades(settings, camera, light);
-        self.classify(characters, slots, (meshes, wind_margin), settings, camera, light);
+        self.classify(characters, slots, (meshes, wind_margin), settings, camera, light, cull);
         self.receive(settings, light);
         self.skip_empty(list);
         self.uniforms = self.pack(settings, camera, light, characters.count, atlas);
@@ -208,7 +251,8 @@ impl ShadowPlan {
 
     /// Classifies every instance as character or environment by `characters`, groups characters
     /// by body, gives the nearest groups maps (desktop) and the next capsules, and culls
-    /// environment casters per cascade drawn.
+    /// environment casters per cascade drawn, by its volume and by `cull`'s distance and size.
+    #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
     fn classify(
         &mut self,
         characters: CharacterTable<'_>,
@@ -217,9 +261,11 @@ impl ShadowPlan {
         settings: &ShadowSettings,
         camera: &CameraData,
         light: LightSpace,
+        cull: CasterCull<'_>,
     ) {
         self.casters.clear();
         self.casters.resize(slots.len(), SlotCaster::default());
+        self.small.resize(slots.len(), 0);
         self.characters.clear();
         self.characters.resize(slots.len(), SlotCharacter::Environment);
         // Characters: the instances with an entry in the character buffer, grouped by the body
@@ -274,9 +320,14 @@ impl ShadowPlan {
             uncast += u32::from(group.cast == Cast::Nothing);
         }
         // Characters into their maps; environment casters into the cascades drawn that they can
-        // cast into.
+        // cast into, unless they're past the tier's distance or too small in its texels.
+        let least = cull.least_texels;
         for (slot, mesh, transform) in slots.live_transforms() {
             let caster = &mut self.casters[slot as usize];
+            let small = &mut self.small[slot as usize];
+            if cull.culled.fresh(slot) {
+                *small = 0;
+            }
             match self.characters[slot as usize] {
                 SlotCharacter::Character(group) => {
                     caster.map = group.and_then(|group| match self.groups[group as usize].cast {
@@ -293,15 +344,31 @@ impl ShadowPlan {
                             sphere.radius += wind_margin(record);
                             Some(sphere)
                         }
-                        // A skinned or morphed instance that isn't a character: every cascade, as
-                        // its posed bounds aren't read here and nothing has needed more.
-                        _ => None,
+                        // A skinned or morphed instance that isn't a character: its posed bounds
+                        // (M5 D3), which hold its pending pose and its last drawn one.
+                        Some(_) => slots.world_bounds(slot, meshes),
+                        None => None,
                     };
+                    caster.far = cull.culled.far(slot);
+                    let sized = least > 0.0 && !cull.culled.kept(slot);
                     for (index, fit) in self.drawn.iter().enumerate() {
-                        if let Some(fit) = fit
-                            && sphere.is_none_or(|sphere| fit.holds(&sphere))
-                        {
-                            caster.cascades |= 1 << index;
+                        let Some(fit) = fit else { continue };
+                        if !sphere.is_none_or(|sphere| fit.holds(&sphere)) {
+                            continue;
+                        }
+                        let bit = 1 << index;
+                        caster.held |= bit;
+                        // Its size in the cascade's texels, which are 2 × radius / resolution
+                        // across; one culled by size comes back at SIZE_RETURN times the least.
+                        let below = sized
+                            && sphere.is_some_and(|sphere| {
+                                let texels = sphere.radius * fit.resolution as f32 / fit.radius.max(1e-6);
+                                let limit = if *small & bit != 0 { least * SIZE_RETURN } else { least };
+                                texels < limit
+                            });
+                        *small = if below { *small | bit } else { *small & !bit };
+                        if !caster.far && !below {
+                            caster.cascades |= bit;
                         }
                     }
                 }
@@ -663,7 +730,17 @@ mod tests {
                 foliage: 0,
             });
         }
-        plan.update(settings, packet, slots, &meshes, &|_| 0.0, &list_of_draws, list.table(), (4096, 2048));
+        plan.update(
+            settings,
+            packet,
+            slots,
+            &meshes,
+            &|_| 0.0,
+            &list_of_draws,
+            list.table(),
+            (4096, 2048),
+            CasterCull::NONE,
+        );
     }
 
     #[test]
@@ -689,12 +766,42 @@ mod tests {
             foliage: 0,
         });
         let mut plan = ShadowPlan::default();
-        plan.update(&SETTINGS, &packet, &slots, &meshes, &|_| 0.0, &list, characters.table(), (4096, 2048));
+        plan.update(
+            &SETTINGS,
+            &packet,
+            &slots,
+            &meshes,
+            &|_| 0.0,
+            &list,
+            characters.table(),
+            (4096, 2048),
+            CasterCull::NONE,
+        );
         assert_eq!(plan.drawn_mask(), 0b1111, "new maps must be cleared");
-        plan.update(&SETTINGS, &packet, &slots, &meshes, &|_| 0.0, &list, characters.table(), (4096, 2048));
+        plan.update(
+            &SETTINGS,
+            &packet,
+            &slots,
+            &meshes,
+            &|_| 0.0,
+            &list,
+            characters.table(),
+            (4096, 2048),
+            CasterCull::NONE,
+        );
         assert_eq!(plan.drawn_mask(), 0, "transparent geometry writes no shadow depth");
         list.commands[0][transparent.index()].clear();
-        plan.update(&SETTINGS, &packet, &slots, &meshes, &|_| 0.0, &list, characters.table(), (4096, 2048));
+        plan.update(
+            &SETTINGS,
+            &packet,
+            &slots,
+            &meshes,
+            &|_| 0.0,
+            &list,
+            characters.table(),
+            (4096, 2048),
+            CasterCull::NONE,
+        );
         assert_eq!(plan.drawn_mask(), 0, "a disowned slot also writes no depth");
     }
 
@@ -713,11 +820,8 @@ mod tests {
         assert_eq!(plan.maps.len(), 1, "one character, one map");
         for slot in [0, 1] {
             assert!(plan.is_character(slot));
-            assert_eq!(
-                plan.casters[slot as usize],
-                SlotCaster { cascades: 0, map: Some(0) },
-                "never a cascade"
-            );
+            let caster = plan.casters[slot as usize];
+            assert_eq!((caster.cascades, caster.map), (0, Some(0)), "never a cascade");
         }
         assert!(!plan.is_character(2));
         assert_eq!(plan.casters[2].map, None);
@@ -795,8 +899,12 @@ mod tests {
     }
 
     /// A posed instance by the camera: it casts into every cascade.
+    /// A deformable instance posed to reach into every cascade: it casts by its posed bounds
+    /// (M5 D3).
     fn everywhere() -> InstanceSlots {
-        slots(&[instance(1, 1, Vec3::ZERO)])
+        let mut slots = slots(&[instance(1, 1, Vec3::ZERO)]);
+        slots.set_posed(0, Some(Sphere { center: Vec3::ZERO, radius: 500.0 }));
+        slots
     }
 
     #[test]
@@ -870,7 +978,7 @@ mod tests {
         assert_eq!(plan.casters[0].cascades & 1, 1);
         assert_eq!(plan.casters[1].cascades & 1, 0, "past the first cascade");
         assert_ne!(plan.casters[1].cascades & 0b1000, 0, "in the last");
-        assert_eq!(plan.casters[2].cascades, 0b1111, "deformable and no character: every cascade");
+        assert_eq!(plan.casters[2].cascades, 0, "deformable and no character: by its posed bounds, too far");
     }
 
     #[test]
@@ -889,6 +997,7 @@ mod tests {
                 &DrawList::default(),
                 CharacterList::default().table(),
                 (4096, 2048),
+                CasterCull::NONE,
             );
             plan.casters[0].cascades & 1 == 1
         };

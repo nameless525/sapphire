@@ -10,7 +10,8 @@
 //! replays. Each frame
 //! compares the target, the scene prepass's depth, normals and outline mask, and the character
 //! prepass's depth and IDs; and every pass's counts but the debug views'. m5-plan D2 deletes the
-//! filtered walk, and this test with it. Run alone with
+//! filtered walk, and this test with it; `render::culling` draws the same scene through each
+//! culling mode (M5 D3), and keeps [`Side`] and [`scene_meshes`]. Run alone with
 //! `cargo test -p sapphire_render --test gpu render::lists:: -- --ignored`.
 
 use sapphire_assets::material::AlignedVec;
@@ -152,7 +153,7 @@ const COVERING: u64 = 3000;
 const TIED: u64 = 3001;
 
 /// A renderer and the targets it reads back.
-struct Side {
+pub(super) struct Side {
     frames: Frames,
     handles: Vec<MeshHandle>,
     /// The character prepass's depth and IDs, the scene prepass's depth, normals and outlines.
@@ -160,7 +161,12 @@ struct Side {
 }
 
 impl Side {
-    fn new(gpu: &GpuContext, settings: RenderSettings, filtered: bool, meshes: &[AlignedVec]) -> Self {
+    pub(super) fn new(
+        gpu: &GpuContext,
+        settings: RenderSettings,
+        filtered: bool,
+        meshes: &[AlignedVec],
+    ) -> Self {
         let mut frames = Frames::with_settings(gpu, FORMAT, settings).expect("renderer");
         frames.renderer.walk_filtered(filtered);
         frames.renderer.keep_scene_prepass();
@@ -184,7 +190,7 @@ impl Side {
 
     /// Draws frame `frame` of the scene into `view`, returning its target, its prepass targets
     /// and its stats.
-    fn frame(
+    pub(super) fn frame(
         &mut self,
         gpu: &GpuContext,
         (texture, view): (&wgpu::Texture, &wgpu::TextureView),
@@ -279,12 +285,18 @@ impl Side {
     }
 }
 
-#[test]
-#[ignore = "needs a GPU"]
-fn view_lists_draw_what_the_filtered_walk_drew_on_every_tier() {
+/// The scene's meshes, cooked: the sequences', the eyes, and the tied and covering objects.
+pub(super) fn scene_meshes() -> Vec<AlignedVec> {
     let mut meshes = sequence_meshes();
     meshes.push(eyes().to_cooked().expect("cook"));
     meshes.extend(ties().map(|mesh| mesh.to_cooked().expect("cook")));
+    meshes
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn view_lists_draw_what_the_filtered_walk_drew_on_every_tier() {
+    let meshes = scene_meshes();
     let names = ["target", "character depth", "character IDs", "depth", "normals", "outline mask"];
     for tier in TierTable::shipped().tiers() {
         let gpu = gpu();

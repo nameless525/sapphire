@@ -1,34 +1,79 @@
-//! Main-view culling of static world geometry (spec §5.12 "Scene and draws", review RA-O01).
+//! Culling for every view (spec §5.12 "Scene and draws": review RA-O01, then M5 D3).
 //!
-//! Every recorded frame tests each static instance whose draws are all environment or foliage
-//! surfaces (the draw list's [`CullCandidate`]s) against the main camera's frustum, by its
-//! mesh's bounding sphere under its transform ([`Sphere::transformed`], which holds the mesh
-//! under any affine transform, shear included). The main pass, the scene prepass and the debug
-//! views' replays of the main pass skip the draws of those wholly outside, so every view of the
-//! main pass agrees, and the frame's pixels are the same bit for bit: what is culled reaches no
-//! sample. The test is conservative:
+//! Each recorded frame decides, once per instance, whether the view it stands in draws it (its
+//! [`Verdict`]): the main view for the world's instances, an inset's camera for an inset's (M3 U6).
+//! The main pass, both prepasses, the debug views' replays of the main pass and each inset's
+//! passes read the one verdict, so every view of a camera agrees and the prepass culls exactly as
+//! the main pass does. The shadow views cull their casters against their own volumes in the
+//! shadow plan (`shadows::plan`), toward the light too, by the same bounds.
 //!
+//! # The frustum test is exact
+//!
+//! What it leaves out reaches no sample, so the frame's pixels are the same bit for bit with it on
+//! or off ([`CullingMode::FrustumOnly`] against [`CullingMode::Off`]). It is conservative:
+//!
+//! - **Bounds:** an instance's mesh's sphere under its transform ([`Sphere::transformed`], which
+//!   holds the mesh under any affine transform, shear included), or a skinned or morphed
+//!   instance's posed bounds (`InstanceSlots::world_bounds`, the `bounds` module's, which hold the
+//!   pending pose and the last drawn one).
 //! - **Padding:** the frustum's sides move out by [`PAD_PIXELS`] and by the frame's temporal AA
 //!   jitter, and the spheres grow by a share of their size for rounding (the cooked positions'
 //!   quantization, the GPU's transforms), so a triangle that could cover a sample at the edge, or
 //!   a line of the wireframe view, is never left out.
 //! - **Foliage** grows by the frame's wind margin (`foliage::wind_margin`), as shadow casters do.
-//! - **Not tested:** anime character surfaces (an instance with any: their outline hulls reach
-//!   past the bounds), fog cards (camera-facing ones turn about their bounds), skinned and morphed
-//!   instances (they have posed bounds, the `bounds` module's, which this test doesn't read yet),
-//!   instances with a projective transform, and bounds that aren't finite.
+//! - **Fog cards** that face the camera turn about their instance's origin keeping their scale
+//!   (`fog_card.wgsl`): their sphere is the origin's, of the mesh's farthest reach from it.
+//! - **Outline hulls** reach past their surface by a width in screen pixels, or close up in
+//!   meters (`outline.wgsl`, the `outlines` module's [`CharacterReach`]): an instance whose hull the
+//!   frame draws grows by the meters and is tested against sides moved out by the pixels, without
+//!   the near plane (a hull's Z offset moves it along the view ray). An eye's highlight drifts by
+//!   its material's meters too. So an outline never pops at the frame's edge.
+//! - **Not tested:** instances with a projective transform, and bounds that aren't finite.
 //!
-//! What else draws instances keeps its whole list: the shadow cascades and character maps (their
-//! own culling, per view), the sky cube, the ambient probes and the character prepass. No LOD is
-//! chosen here: that comes with LOD selection (crate docs, "Later milestones").
-//! [`RenderSettings::view_culling`](crate::RenderSettings::view_culling) turns it off, for
-//! comparisons and triage.
+//! # Distance and size, by tier (M5 D3)
+//!
+//! Past the tier's distance, or smaller than its least size in output pixels, an instance is left
+//! out ([`CullingThresholds`], resolved from the tier before the renderer, rule R4). These change
+//! pixels, so their thresholds are chosen from the district walk by what they save and what they
+//! cost in a FLIP comparison (m5-plan D3's as-built note). Each holds with hysteresis: an instance
+//! culled by distance comes back within [`DISTANCE_RETURN`] of it, one culled by size at
+//! [`SIZE_RETURN`] times it, so a camera held on a threshold doesn't flicker. Size is in output
+//! pixels, not the render scale's, so dynamic resolution never changes what draws. Never culled by
+//! either:
+//!
+//! - the named characters (the party, the encounter's enemies, anyone a timeline casts: every
+//!   character whose body casts as [`ShadowRole::Named`]), and characters without a body;
+//! - whatever overlaps a named character's bounds (what it holds: a weapon, a prop in hand);
+//! - everything in an inset, which frames it;
+//! - fog cards, whose size is the atmosphere's, not an object's;
+//! - the sky, decals, effects and the interface, which aren't instances.
+//!
+//! A crowd's ambient characters ([`ShadowRole::Ambient`]) cull by distance and size as one, by the
+//! sphere around every part of the character, so a character's parts never part.
+//!
+//! # Parallel, and allocation-free
+//!
+//! The verdicts are worked out over chunks of instance slots on the job system
+//! ([`sapphire_jobs::par_for_each_chunk_mut`]): each chunk writes its own slots' verdicts and adds
+//! its counts once, so the result doesn't depend on the threads or the order chunks run in. A frame
+//! of one chunk runs inline. The verdicts' vectors keep their capacity, so a warm frame allocates
+//! nothing here; the job system allocates a few times per parallel call (its crate docs).
+//!
+//! [`CullingMode`] turns the tests off for comparisons: `FrustumOnly` keeps the exact test, `Off`
+//! draws everything.
 
-use glam::{Mat4, Vec4, Vec4Swizzles};
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::bounds::Sphere;
+use bevy_reflect::Reflect;
+use glam::{Mat4, Vec3, Vec4, Vec4Swizzles};
+use serde::{Deserialize, Serialize};
+
+use crate::bounds::{Sphere, max_stretch};
+use crate::characters::CharacterTable;
+use crate::inset::MAX_INSETS;
 use crate::mesh_pool::MeshRecord;
 use crate::scene::{DrawList, InstanceSlots};
+use crate::{CameraData, ShadowRole};
 
 /// Pixels the frustum's sides move out by, beyond temporal AA's jitter: whole pixels of margin
 /// for the samples a triangle at the edge could cover under MSAA, and for the debug views' lines.
@@ -42,32 +87,176 @@ const RADIUS_SLACK: f32 = 1e-4;
 /// The share of a plane distance's terms it may be off by in f32 and still be rounding.
 const DISTANCE_SLACK: f32 = 1e-5;
 
-/// Main-view culling counters from the last recorded frame (rule R9).
+/// An instance culled by distance comes back within this share of the distance.
+pub(crate) const DISTANCE_RETURN: f32 = 0.9;
+
+/// An instance culled by size comes back at this many times the least size.
+pub(crate) const SIZE_RETURN: f32 = 1.25;
+
+/// Instance slots per chunk of the parallel verdicts: a district's few thousand instances make a
+/// few chunks, a test scene's one.
+const CHUNK: usize = 2048;
+
+/// Views a frame culls for: the main view, then each inset's.
+pub(crate) const CULL_VIEWS: usize = 1 + MAX_INSETS;
+
+/// What view culling does: [`RenderSettings::view_culling`](crate::RenderSettings::view_culling).
+/// Only tests and the bench set anything but `On`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum CullingMode {
+    /// Every test: each view's frustum, and the tier's distance and size.
+    #[default]
+    On,
+    /// The frustum tests alone, which change no pixel.
+    FrustumOnly,
+    /// Nothing culled: every instance drawn by every view it stands in.
+    Off,
+}
+
+impl CullingMode {
+    /// Whether the views' frusta cull.
+    pub fn frustum(self) -> bool {
+        self != Self::Off
+    }
+
+    /// Whether the tier's distance and size cull.
+    pub fn thresholds(self) -> bool {
+        self == Self::On
+    }
+}
+
+/// A tier's distance and size culling (M5 D3; `tiers.ron`,
+/// [`RenderSettings::culling`](crate::RenderSettings::culling)): resolved before the renderer,
+/// which reads only these numbers.
+/// Zero turns a test off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default, deny_unknown_fields)]
+pub struct CullingThresholds {
+    /// Meters from the camera to an instance's nearest point past which it isn't drawn, by any
+    /// view: 0 for none.
+    pub distance: f32,
+    /// The least size an instance's sphere shows across, in output pixels, below which the main
+    /// view doesn't draw it: 0 for none.
+    pub least_pixels: f32,
+    /// The least size a caster's sphere covers in a cascade's own texels, below which that cascade
+    /// doesn't draw it: 0 for none.
+    pub least_texels: f32,
+}
+
+impl CullingThresholds {
+    /// No distance or size culling: [`RenderSettings`](crate::RenderSettings)'s default, which the
+    /// goldens and most GPU tests draw with.
+    pub const NONE: Self = Self { distance: 0.0, least_pixels: 0.0, least_texels: 0.0 };
+
+    /// Checks each threshold is finite and not negative, returning the field and what is wrong.
+    pub fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        for (field, value) in [
+            ("culling.distance", self.distance),
+            ("culling.least_pixels", self.least_pixels),
+            ("culling.least_texels", self.least_texels),
+        ] {
+            if !(value.is_finite() && value >= 0.0) {
+                return Err((field, "must be finite and at least 0"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for CullingThresholds {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// Settings compare whole (`RenderSettings` is `Eq`): the thresholds are finite where they're used
+/// ([`CullingThresholds::validate`]), where `==` is an equivalence.
+impl Eq for CullingThresholds {}
+
+/// Why a view doesn't draw an instance, or that it does: the first test that left it out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum Verdict {
+    #[default]
+    Drawn,
+    Frustum,
+    Distance,
+    Size,
+}
+
+/// View culling counters from the last recorded frame (rule R9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ViewCullingStats {
-    /// Instances the main view tested: static ones whose draws are all environment or foliage
-    /// surfaces, with a transform that isn't projective. 0 with culling off.
+    /// Instances tested, every view's: those with draws and a transform that isn't projective. 0
+    /// with culling off.
     pub tested: u32,
-    /// Of those, the ones wholly outside the main view's frustum, whose draws the main pass, the
-    /// scene prepass and the debug views skipped.
+    /// Of those, the ones wholly outside their view's frustum, whose draws its passes skipped.
     pub culled: u32,
-    /// Surface draws the main pass drew:
-    /// [`RenderStats::draws`](crate::RenderStats::draws) less the culled instances'.
+    /// Of those, the ones past the tier's distance ([`CullingThresholds::distance`]).
+    pub culled_by_distance: u32,
+    /// Of those, the ones below the tier's least size ([`CullingThresholds::least_pixels`]).
+    pub culled_by_size: u32,
+    /// Surface draws the views drew: [`RenderStats::draws`](crate::RenderStats::draws) less the
+    /// culled instances'.
     pub drawn: u32,
 }
 
-/// A static instance whose draws are all environment or foliage surfaces: one the main view can
-/// cull by its bounds.
+/// Which views drew an instance in the last recorded frame (M5 D3), for what animates it to read
+/// in the next: [`Renderer::drawn_by`](crate::Renderer::drawn_by).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawnBy {
+    /// The main view: the main pass and the prepasses.
+    pub view: bool,
+    /// A shadow cascade or a character map drawn that frame.
+    pub shadow: bool,
+    /// The inset it stands in.
+    pub inset: bool,
+}
+
+impl DrawnBy {
+    /// Whether any view drew it.
+    pub fn any(&self) -> bool {
+        self.view || self.shadow || self.inset
+    }
+
+    /// Whether it was drawn only as a shadow.
+    pub fn only_shadow(&self) -> bool {
+        self.shadow && !self.view && !self.inset
+    }
+}
+
+/// How far an instance's outline hulls and drifting eye highlights reach past its bounds this
+/// frame (the `outlines` module's, from its materials): what the frustum test grows it by.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct CharacterReach {
+    /// The frame draws a hull of it: test without the near plane.
+    pub hulled: bool,
+    /// A hull's widest line, in pixels of a 1080-row target.
+    pub pixels: f32,
+    /// A hull's widest line close up, where it holds its width in the world, in meters.
+    pub meters: f32,
+    /// An eye highlight's widest drift, in object-space meters.
+    pub drift: f32,
+}
+
+/// A static or deformed instance with draws: what the views test, in slot order (the draw list's,
+/// built with it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CullCandidate {
     pub slot: u32,
     pub mesh: crate::MeshHandle,
     /// Its surface draws.
     pub draws: u32,
+    /// Some of its draws are foliage's: it grows by the wind's margin.
+    pub foliage: bool,
+    /// Some of its draws are fog cards': camera-facing ones turn about its origin.
+    pub fog_card: bool,
 }
 
-/// The main view's frustum, as planes facing in: left, right, bottom, top and near. The far
-/// plane is at infinity (`CameraData::proj`).
+/// One view's frustum, as planes facing in: left, right, bottom, top and near. The far plane is at
+/// infinity (`CameraData::proj`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Frustum {
     /// xyz the unit normal, w the distance along it from the origin, negated: a point is inside
@@ -93,9 +282,20 @@ impl Frustum {
 
     /// Whether `sphere` lies wholly outside: never when it isn't finite.
     pub(crate) fn excludes(&self, sphere: &Sphere) -> bool {
+        Self::outside(&self.planes, sphere)
+    }
+
+    /// Whether `sphere` lies wholly outside the four sides, whatever its depth: what a hull, which
+    /// its Z offset moves along the view ray, is tested by. The sides alone exclude what is behind
+    /// the camera.
+    pub(crate) fn excludes_beside(&self, sphere: &Sphere) -> bool {
+        Self::outside(&self.planes[..4], sphere)
+    }
+
+    fn outside(planes: &[Vec4], sphere: &Sphere) -> bool {
         let (center, radius) = (sphere.center, sphere.radius);
         let reach = radius * (1.0 + RADIUS_SLACK);
-        self.planes.iter().any(|plane| {
+        planes.iter().any(|plane| {
             let along = plane.xyz().dot(center);
             let slack = DISTANCE_SLACK * (along.abs() + plane.w.abs());
             // False for NaN: a sphere that isn't finite stays.
@@ -104,62 +304,382 @@ impl Frustum {
     }
 }
 
-/// Which instance slots the main view draws, from each recorded frame's test.
+/// A view a frame culls for: its frustum, padded, and what its size test measures by.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CullView {
+    frustum: Frustum,
+    /// The frustum padded for the frame's widest hull too.
+    hulled: Frustum,
+    position: Vec3,
+    /// Output pixels a sphere one meter across shows at one meter: the projection's vertical focal
+    /// length × half the output's height.
+    pixels_per_meter: f32,
+    near: f32,
+}
+
+impl CullView {
+    /// The view of `camera` drawn at `size` (the scene's pixels, which pad and lines are in) onto
+    /// `output_height` rows, its sides moved out by `pad` pixels, and by `hull_pixels` (of a
+    /// 1080-row target) more for hulled instances.
+    pub(crate) fn new(
+        camera: &CameraData,
+        size: (u32, u32),
+        output_height: u32,
+        pad: f32,
+        hull_pixels: f32,
+    ) -> Self {
+        let clip_from_world = camera.proj * camera.view;
+        // A hull's line is `pixels × rows / 1080` of the scene's pixels wide, and at least the
+        // narrowest line its samples draw (`whole_line`, under a pixel), within the padding.
+        let hull = hull_pixels * size.1 as f32 / 1080.0;
+        let focal = camera.proj.y_axis.y.abs();
+        Self {
+            frustum: Frustum::new(clip_from_world, size, pad),
+            hulled: Frustum::new(clip_from_world, size, pad + hull),
+            position: camera.position,
+            pixels_per_meter: focal * output_height as f32 * 0.5,
+            near: camera.proj.w_axis.z.abs().max(1e-4),
+        }
+    }
+
+    /// The pixels `sphere` shows across at most, as far as it is.
+    fn pixels(&self, sphere: &Sphere) -> f32 {
+        let distance = (sphere.center.distance(self.position) - sphere.radius).max(self.near);
+        2.0 * sphere.radius * self.pixels_per_meter / distance
+    }
+}
+
+/// One instance slot's culling this frame, and what carries to the next.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SlotCull {
+    /// Whether the view it stands in draws it.
+    pub verdict: Verdict,
+    /// Past the tier's distance (with hysteresis): no view draws it.
+    pub far: bool,
+    /// Below the least size in the main view (with hysteresis).
+    small: bool,
+    /// Never culled by distance or size.
+    pub kept: bool,
+    /// Its instance is new in this frame's slot: no hysteresis carries.
+    pub fresh: bool,
+    /// Its ambient character's group, if it is one's part ([`NO_GROUP`] if not).
+    group: u32,
+    /// The views that drew it ([`DrawnBy`] as bits).
+    drawn_by: u8,
+}
+
+#[cfg(test)]
+impl SlotCull {
+    /// Slots of these verdicts, not far, not kept.
+    pub(crate) fn of(verdicts: &[Verdict]) -> Vec<SlotCull> {
+        let cull = |&verdict| SlotCull {
+            verdict,
+            far: verdict == Verdict::Distance,
+            group: NO_GROUP,
+            ..SlotCull::default()
+        };
+        verdicts.iter().map(cull).collect()
+    }
+}
+
+/// No group: [`SlotCull::group`] of an instance that isn't an ambient character's part.
+const NO_GROUP: u32 = u32::MAX;
+
+const BY_VIEW: u8 = 1;
+const BY_SHADOW: u8 = 2;
+const BY_INSET: u8 = 4;
+
+/// An ambient character, culled by distance and size as one.
+#[derive(Clone, Copy, Debug)]
+struct Group {
+    sphere: Option<Sphere>,
+    far: bool,
+    small: bool,
+    /// Its state came from a part it had last frame.
+    known: bool,
+}
+
+/// Per instance slot, the frame's culling, for the passes that read it: copied into each, as the
+/// mesh draws are.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Culled<'a> {
+    slots: &'a [SlotCull],
+}
+
+impl Culled<'_> {
+    /// No culling: every slot drawn and kept.
+    #[cfg(test)]
+    pub(crate) const NONE: Culled<'static> = Culled { slots: &[] };
+
+    /// The culling of `slots`, for tests that set verdicts by hand ([`SlotCull::of`]).
+    #[cfg(test)]
+    pub(crate) fn new(slots: &[SlotCull]) -> Culled<'_> {
+        Culled { slots }
+    }
+
+    /// The verdict of the view `slot` stands in: drawn past the slots it has.
+    pub(crate) fn verdict(&self, slot: u32) -> Verdict {
+        self.slots.get(slot as usize).map_or(Verdict::Drawn, |cull| cull.verdict)
+    }
+
+    /// Whether `slot` is past the tier's distance, so no view draws it.
+    pub(crate) fn far(&self, slot: u32) -> bool {
+        self.slots.get(slot as usize).is_some_and(|cull| cull.far)
+    }
+
+    /// Whether `slot` is never culled by distance or size.
+    pub(crate) fn kept(&self, slot: u32) -> bool {
+        self.slots.get(slot as usize).is_none_or(|cull| cull.kept)
+    }
+
+    /// Whether `slot`'s instance is new this frame: no hysteresis carries to it.
+    pub(crate) fn fresh(&self, slot: u32) -> bool {
+        self.slots.get(slot as usize).is_none_or(|cull| cull.fresh)
+    }
+}
+
+/// What a frame's verdicts are worked out from.
+pub(crate) struct CullInputs<'a, M> {
+    pub list: &'a DrawList,
+    pub slots: &'a InstanceSlots,
+    pub meshes: &'a [MeshRecord],
+    /// How far the wind carries a foliage mesh's vertices past its bounds.
+    pub margin: M,
+    /// Per instance slot, its hulls' and eyes' reach ([`CharacterReach`]).
+    pub reach: &'a [CharacterReach],
+    /// Per instance slot, the view it stands in: 0 the main view's, `n` inset `n − 1`'s.
+    pub stands: &'a [u16],
+    /// The main view, then each inset by index; `None` for one the frame doesn't show.
+    pub views: [Option<CullView>; CULL_VIEWS],
+}
+
+/// Every instance's culling, kept across frames (see the module docs).
 #[derive(Debug, Default)]
 pub(crate) struct ViewCull {
-    /// Per instance slot, while culling is on: whether the main view draws its static draws.
-    visible: Vec<bool>,
-    on: bool,
+    slots: Vec<SlotCull>,
+    groups: Vec<Group>,
+    /// The named characters' bounds: what overlaps them is kept.
+    named: Vec<Sphere>,
+    /// Per group, below the least size this frame.
+    small_groups: Vec<bool>,
+    mode: CullingMode,
+    thresholds: CullingThresholds,
     stats: ViewCullingStats,
 }
 
 impl ViewCull {
-    /// Tests `list`'s candidates against `frustum` (`None`: culling is off) with `slots`'
-    /// transforms and `meshes`' bounds, foliage grown by `margin`. `draws` is the frame's surface
-    /// draws, for the stats.
-    pub(crate) fn update(
+    /// Starts the frame: follows the instances `fresh` names (new in their slots), finds what is
+    /// never culled by distance or size and the ambient characters' groups, and decides which
+    /// instances are past the tier's distance from `camera` (the main view's, if the frame has
+    /// one), which the shadow plan reads too. `characters` is the frame's.
+    #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
+    pub(crate) fn prepare(
         &mut self,
-        frustum: Option<&Frustum>,
+        mode: CullingMode,
+        thresholds: CullingThresholds,
+        camera: Option<&CameraData>,
         list: &DrawList,
         slots: &InstanceSlots,
         meshes: &[MeshRecord],
-        margin: impl Fn(&MeshRecord) -> f32,
-        draws: u32,
+        characters: CharacterTable<'_>,
+        fresh: impl Iterator<Item = u32>,
     ) {
-        profiling::scope!("ViewCull::update");
-        self.visible.clear();
-        self.on = frustum.is_some();
-        let Some(frustum) = frustum else {
-            self.stats = ViewCullingStats { drawn: draws, ..ViewCullingStats::default() };
-            return;
-        };
-        self.visible.resize(slots.len(), true);
-        let (mut tested, mut culled, mut culled_draws) = (0, 0, 0);
-        for candidate in &list.cullable {
-            let Some(transform) = slots.transform(candidate.slot) else { continue };
-            let Some(record) = meshes.get(candidate.mesh.index()) else { continue };
-            // The vertex stages transform by the whole matrix: a projective one would move what
-            // the sphere holds.
-            if transform.row(3) != Vec4::W {
-                continue;
-            }
-            tested += 1;
-            let mut sphere = record.bounds.transformed(transform);
-            if record.foliage.is_some() {
-                sphere.radius += margin(record);
-            }
-            if frustum.excludes(&sphere) {
-                self.visible[candidate.slot as usize] = false;
-                culled += 1;
-                culled_draws += candidate.draws;
+        profiling::scope!("ViewCull::prepare");
+        self.mode = mode;
+        self.thresholds = thresholds;
+        let blank = SlotCull { fresh: true, group: NO_GROUP, ..SlotCull::default() };
+        self.slots.resize(slots.len(), blank);
+        for cull in &mut self.slots {
+            cull.fresh = false;
+        }
+        for slot in fresh {
+            if let Some(cull) = self.slots.get_mut(slot as usize) {
+                *cull = blank;
             }
         }
-        self.stats = ViewCullingStats { tested, culled, drawn: draws.saturating_sub(culled_draws) };
+        // What is kept: fog cards, named characters and characters without a body. Ambient
+        // characters join their group. An inset's instances are kept by the record, which knows
+        // this frame's insets.
+        for cull in &mut self.slots {
+            (cull.kept, cull.group) = (false, NO_GROUP);
+        }
+        for candidate in &list.cullable {
+            if candidate.fog_card {
+                self.slots[candidate.slot as usize].kept = true;
+            }
+        }
+        self.named.clear();
+        self.groups.clear();
+        self.groups.extend(characters.bodies.iter().map(|_| Group {
+            sphere: None,
+            far: false,
+            small: false,
+            known: false,
+        }));
+        for &slot in characters.listed {
+            let Some(cull) = self.slots.get_mut(slot as usize) else { continue };
+            let sphere = slots.world_bounds(slot, meshes);
+            let body = characters.body(slot);
+            match body.map(|group| (group, characters.bodies[group as usize].role)) {
+                Some((group, ShadowRole::Ambient)) => {
+                    cull.group = group;
+                    let known = !cull.fresh;
+                    let entry = &mut self.groups[group as usize];
+                    if known && !entry.known {
+                        (entry.far, entry.small, entry.known) = (cull.far, cull.small, true);
+                    }
+                    entry.sphere = match (entry.sphere, sphere) {
+                        (Some(group), Some(part)) => Some(group.union(part)),
+                        (group, part) => group.or(part),
+                    };
+                }
+                _ => {
+                    cull.kept = true;
+                    self.named.extend(sphere);
+                }
+            }
+        }
+        // Distance: the main view's camera, every instance with draws.
+        let distance = thresholds.distance;
+        let Some(camera) = camera.filter(|_| mode.thresholds() && distance > 0.0) else {
+            for cull in &mut self.slots {
+                cull.far = false;
+            }
+            return;
+        };
+        let past = |sphere: &Sphere, far: bool| {
+            let gap = sphere.center.distance(camera.position) - sphere.radius;
+            if far { gap > distance * DISTANCE_RETURN } else { gap > distance }
+        };
+        for group in &mut self.groups {
+            group.far = group.sphere.is_some_and(|sphere| past(&sphere, group.known && group.far));
+        }
+        let Self { slots: culls, groups, named, .. } = self;
+        for candidate in &list.cullable {
+            let cull = &mut culls[candidate.slot as usize];
+            if cull.kept {
+                cull.far = false;
+                continue;
+            }
+            if let Some(group) = groups.get(cull.group as usize) {
+                cull.far = group.far;
+                continue;
+            }
+            let Some(sphere) = slots.world_bounds(candidate.slot, meshes) else {
+                cull.far = false;
+                continue;
+            };
+            cull.far = past(&sphere, cull.far && !cull.fresh);
+            if cull.far && overlaps(named, &sphere) {
+                (cull.far, cull.kept) = (false, true);
+            }
+        }
     }
 
-    /// Per instance slot, whether the main view draws it, or `None` with culling off.
-    pub(crate) fn mask(&self) -> Option<&[bool]> {
-        self.on.then_some(self.visible.as_slice())
+    /// Works out each instance's verdict for the view it stands in (see the module docs), from
+    /// `inputs`, in parallel over chunks of slots.
+    pub(crate) fn record<M: Fn(&MeshRecord) -> f32 + Sync>(&mut self, inputs: &CullInputs<'_, M>) {
+        profiling::scope!("ViewCull::record");
+        let (mode, thresholds) = (self.mode, self.thresholds);
+        let tested = AtomicU32::new(0);
+        let culled = [const { AtomicU32::new(0) }; 3];
+        let culled_draws = AtomicU32::new(0);
+        let candidates = &inputs.list.cullable;
+        let least = thresholds.least_pixels;
+        let sizing = Sizing { on: mode.thresholds() && least > 0.0, least };
+        // The groups' size, once: every part takes its group's.
+        let main = inputs.views[0];
+        self.small_groups.clear();
+        self.small_groups.extend(self.groups.iter().map(|group| {
+            sizing.on
+                && main.zip(group.sphere).is_some_and(|(view, sphere)| {
+                    view.pixels(&sphere) < sizing.limit(group.known && group.small)
+                })
+        }));
+        for (group, &small) in self.groups.iter_mut().zip(&self.small_groups) {
+            group.small = small;
+        }
+        let Self { slots, named, small_groups, .. } = self;
+        let (named, small_groups) = (&named[..], &small_groups[..]);
+        let tests = (mode.frustum(), sizing);
+        sapphire_jobs::par_for_each_chunk_mut(slots, CHUNK, |start, chunk| {
+            let first = candidates.partition_point(|candidate| (candidate.slot as usize) < start);
+            let end = start + chunk.len();
+            let (mut counts, mut counted_draws, mut seen) = ([0u32; 3], 0, 0);
+            for cull in chunk.iter_mut() {
+                cull.verdict = Verdict::Drawn;
+            }
+            let within = candidates[first..].iter().take_while(|candidate| (candidate.slot as usize) < end);
+            for candidate in within {
+                let cull = &mut chunk[candidate.slot as usize - start];
+                let Some(verdict) = verdict(inputs, tests, candidate, cull, named, small_groups) else {
+                    continue;
+                };
+                seen += 1;
+                cull.verdict = verdict;
+                if let Some(index) = (verdict as usize).checked_sub(1) {
+                    counts[index] += 1;
+                    counted_draws += candidate.draws;
+                }
+            }
+            tested.fetch_add(seen, Ordering::Relaxed);
+            for (total, count) in culled.iter().zip(counts) {
+                total.fetch_add(count, Ordering::Relaxed);
+            }
+            culled_draws.fetch_add(counted_draws, Ordering::Relaxed);
+        });
+        let [frustum, distance, size] = culled.map(AtomicU32::into_inner);
+        self.stats = ViewCullingStats {
+            tested: if mode.frustum() { tested.into_inner() } else { 0 },
+            culled: frustum,
+            culled_by_distance: distance,
+            culled_by_size: size,
+            drawn: (inputs.list.draws.len() as u32).saturating_sub(culled_draws.into_inner()),
+        };
+    }
+
+    /// Records which views drew each instance this frame: the one it stands in, if its verdict
+    /// draws it and that view drew, and the shadows, by `shadow(slot)`.
+    pub(crate) fn publish(
+        &mut self,
+        stands: &[u16],
+        views: &[bool; CULL_VIEWS],
+        shadow: impl Fn(u32) -> bool,
+    ) {
+        for (slot, cull) in (0..).zip(&mut self.slots) {
+            let stand = stands.get(slot as usize).copied().unwrap_or(0);
+            let drawn =
+                cull.verdict == Verdict::Drawn && views.get(usize::from(stand)).copied().unwrap_or(false);
+            let mut bits = 0;
+            if drawn {
+                bits |= if stand == 0 { BY_VIEW } else { BY_INSET };
+            }
+            if shadow(slot) {
+                bits |= BY_SHADOW;
+            }
+            cull.drawn_by = bits;
+        }
+    }
+
+    /// Which views drew the instance in `slot` in the last recorded frame.
+    pub(crate) fn drawn_by(&self, slot: u32) -> DrawnBy {
+        let bits = self.slots.get(slot as usize).map_or(0, |cull| cull.drawn_by);
+        DrawnBy { view: bits & BY_VIEW != 0, shadow: bits & BY_SHADOW != 0, inset: bits & BY_INSET != 0 }
+    }
+
+    /// Whether some view drew the instance in `slot` this frame: what skinning poses.
+    pub(crate) fn drawn(&self, slot: u32) -> bool {
+        self.slots.get(slot as usize).is_some_and(|cull| cull.drawn_by != 0)
+    }
+
+    /// The frame's verdicts, for the passes; `None` with culling off.
+    pub(crate) fn culled(&self) -> Option<Culled<'_>> {
+        self.mode.frustum().then_some(Culled { slots: &self.slots })
+    }
+
+    /// The frame's culling for the shadow plan, whatever the mode: its far instances and the kept.
+    pub(crate) fn casters(&self) -> Culled<'_> {
+        Culled { slots: &self.slots }
     }
 
     pub(crate) fn stats(&self) -> ViewCullingStats {
@@ -167,10 +687,91 @@ impl ViewCull {
     }
 }
 
+/// Whether `sphere` overlaps any of `named`.
+fn overlaps(named: &[Sphere], sphere: &Sphere) -> bool {
+    named.iter().any(|named| named.center.distance(sphere.center) <= named.radius + sphere.radius)
+}
+
+/// The main view's size test this frame: on, and its least size in output pixels.
+#[derive(Clone, Copy, Debug)]
+struct Sizing {
+    on: bool,
+    least: f32,
+}
+
+impl Sizing {
+    /// The least size for an instance culled by size last frame (`small`) or not.
+    fn limit(&self, small: bool) -> f32 {
+        if small { self.least * SIZE_RETURN } else { self.least }
+    }
+}
+
+/// `candidate`'s verdict in the view it stands in, updating its size's hysteresis in `cull`; `None`
+/// where it isn't tested (no view, a projective transform, no bounds).
+fn verdict<M: Fn(&MeshRecord) -> f32>(
+    inputs: &CullInputs<'_, M>,
+    (frustum, sizing): (bool, Sizing),
+    candidate: &CullCandidate,
+    cull: &mut SlotCull,
+    named: &[Sphere],
+    small_groups: &[bool],
+) -> Option<Verdict> {
+    let slot = candidate.slot;
+    let stand = usize::from(inputs.stands.get(slot as usize).copied().unwrap_or(0));
+    let view = inputs.views.get(stand).copied().flatten()?;
+    let transform = inputs.slots.transform(slot)?;
+    // The vertex stages transform by the whole matrix: a projective one would move what the sphere
+    // holds.
+    if transform.row(3) != Vec4::W {
+        return None;
+    }
+    let record = inputs.meshes.get(candidate.mesh.index())?;
+    let mut sphere = inputs.slots.world_bounds(slot, inputs.meshes)?;
+    if candidate.foliage && record.foliage.is_some() {
+        sphere.radius += (inputs.margin)(record);
+    }
+    if candidate.fog_card {
+        // A facing card's vertices turn about the origin, each as far from it as its scaled
+        // position: within the largest stretch × the mesh's farthest reach from its origin.
+        let reach = record.bounds.center.length() + record.bounds.radius;
+        let facing = Sphere { center: transform.w_axis.truncate(), radius: max_stretch(transform) * reach };
+        sphere = sphere.union(facing);
+    }
+    let reach = inputs.reach.get(slot as usize).copied().unwrap_or_default();
+    sphere.radius += reach.meters + reach.drift * max_stretch(transform);
+    // Size carries its hysteresis whatever the frustum says, so a turn of the camera doesn't reset
+    // it; only the main view measures it, and a group's part takes its group's.
+    cull.small = if cull.kept || stand != 0 || !sizing.on {
+        false
+    } else if let Some(&small) = small_groups.get(cull.group as usize) {
+        small
+    } else {
+        let small = view.pixels(&sphere) < sizing.limit(cull.small && !cull.fresh);
+        // What a named character holds stays, however small.
+        if small && overlaps(named, &sphere) {
+            cull.kept = true;
+            false
+        } else {
+            small
+        }
+    };
+    let outside = frustum
+        && if reach.hulled { view.hulled.excludes_beside(&sphere) } else { view.frustum.excludes(&sphere) };
+    Some(if outside {
+        Verdict::Frustum
+    } else if cull.far && stand == 0 {
+        Verdict::Distance
+    } else if cull.small {
+        Verdict::Size
+    } else {
+        Verdict::Drawn
+    })
+}
+
 /// Whether `point` lands on a `size` image or within `pixels` of its edge, in front of the
 /// camera, as `clip_from_world` projects it: the tests' reference.
 #[cfg(test)]
-fn on_screen(clip_from_world: Mat4, size: (u32, u32), pixels: f32, point: glam::Vec3) -> bool {
+fn on_screen(clip_from_world: Mat4, size: (u32, u32), pixels: f32, point: Vec3) -> bool {
     let clip = clip_from_world * point.extend(1.0);
     let ndc = clip.xy() / clip.w;
     let limit = glam::Vec2::new(1.0 + 2.0 * pixels / size.0 as f32, 1.0 + 2.0 * pixels / size.1 as f32);
@@ -178,195 +779,4 @@ fn on_screen(clip_from_world: Mat4, size: (u32, u32), pixels: f32, point: glam::
 }
 
 #[cfg(test)]
-mod tests {
-    use glam::{Affine3A, Vec3};
-    use sapphire_assets::material::{MaterialFamily, MaterialFlags};
-    use sapphire_assets::mesh::PositionFormat;
-
-    use super::*;
-    use crate::gpu_types::Dequantize;
-    use crate::materials::MaterialHandle;
-    use crate::mesh_pool::{DeformSource, MeshStreams, Placement, SubmeshDraw, SubmeshMaterial};
-    use crate::scene::DrawLimits;
-    use crate::{CameraData, InstanceDeltas, InstanceId, MeshHandle, MeshInstance};
-
-    const SIZE: (u32, u32) = (640, 360);
-    const NEAR: f32 = 0.05;
-
-    /// A camera at the origin looking down −z, 60° high.
-    fn camera() -> CameraData {
-        CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 60f32.to_radians(), 640.0 / 360.0, NEAR)
-    }
-
-    fn frustum(pad: f32) -> Frustum {
-        let camera = camera();
-        Frustum::new(camera.proj * camera.view, SIZE, pad)
-    }
-
-    /// The world point `depth` meters ahead that lands at normalized device coordinates `ndc`:
-    /// reverse-Z with an infinite far plane puts it at depth `NEAR / depth`.
-    fn at(ndc: [f32; 2], depth: f32) -> Vec3 {
-        let camera = camera();
-        (camera.proj * camera.view).inverse().project_point3(Vec3::new(ndc[0], ndc[1], NEAR / depth))
-    }
-
-    #[test]
-    fn spheres_inside_straddling_and_outside() {
-        let frustum = frustum(0.0);
-        let sphere = |center, radius| Sphere { center, radius };
-        assert!(!frustum.excludes(&sphere(Vec3::new(0.0, 0.0, -10.0), 1.0)), "ahead");
-        assert!(!frustum.excludes(&sphere(at([1.0, 0.0], 10.0), 0.01)), "on the right edge");
-        assert!(!frustum.excludes(&sphere(at([1.2, 0.0], 10.0), 5.0)), "past it, but reaching in");
-        assert!(frustum.excludes(&sphere(at([1.2, 0.0], 10.0), 0.5)), "past it");
-        assert!(frustum.excludes(&sphere(at([-1.2, 0.3], 10.0), 0.5)), "past the left edge");
-        assert!(frustum.excludes(&sphere(at([0.2, 1.3], 10.0), 0.5)), "above");
-        assert!(frustum.excludes(&sphere(at([0.2, -1.3], 10.0), 0.5)), "below");
-        assert!(frustum.excludes(&sphere(Vec3::new(0.0, 0.0, 10.0), 1.0)), "behind");
-        assert!(!frustum.excludes(&sphere(Vec3::new(0.0, 0.0, 0.5), 1.0)), "around the camera");
-        // The near plane, 5 cm ahead.
-        assert!(frustum.excludes(&sphere(Vec3::new(0.0, 0.0, -0.02), 0.02)), "short of the near plane");
-        assert!(!frustum.excludes(&sphere(Vec3::new(0.0, 0.0, -0.02), 0.04)), "reaching past it");
-        // Far away, as the mountains are.
-        assert!(!frustum.excludes(&sphere(Vec3::new(0.0, 100.0, -3000.0), 200.0)));
-        assert!(frustum.excludes(&sphere(Vec3::new(3000.0, 0.0, 0.0), 200.0)), "beside, far");
-        // Not finite: kept.
-        for center in [Vec3::NAN, Vec3::new(f32::INFINITY, 0.0, -1.0)] {
-            assert!(!frustum.excludes(&sphere(center, 1.0)), "{center}");
-        }
-        assert!(!frustum.excludes(&sphere(Vec3::new(0.0, 0.0, 10.0), f32::NAN)));
-    }
-
-    #[test]
-    fn padding_keeps_spheres_within_its_pixels_of_the_edge() {
-        let padded = frustum(PAD_PIXELS);
-        let unpadded = frustum(0.0);
-        // A pixel is 2 / 640 of x, 2 / 360 of y. Tiny spheres a pixel and three pixels past each
-        // side.
-        let tiny = |ndc: [f32; 2]| Sphere { center: at(ndc, 20.0), radius: 1e-4 };
-        let (px, py) = (2.0 / 640.0, 2.0 / 360.0);
-        for (x, y) in [(1.0, 0.0), (-1.0, 0.3), (0.5, 1.0), (-0.5, -1.0)] {
-            let step = [x * px, y * py];
-            let one = tiny([x + step[0], y + step[1]]);
-            let three = tiny([x + 3.0 * step[0], y + 3.0 * step[1]]);
-            assert!(!padded.excludes(&one) && unpadded.excludes(&one), "a pixel past ({x}, {y})");
-            assert!(padded.excludes(&three), "three pixels past ({x}, {y})");
-        }
-    }
-
-    #[test]
-    fn excludes_matches_a_projection_of_the_center_for_points() {
-        // Seeded points: excluded exactly when their projection lands outside the padded image
-        // or behind the near plane, up to the slack.
-        let camera = camera();
-        let clip_from_world = camera.proj * camera.view;
-        let frustum = frustum(PAD_PIXELS);
-        let mut state = 0x2545_f491_4f6c_dd1du64;
-        let mut next = |low: f32, high: f32| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            low + (high - low) * ((state >> 40) as f32 / (1u64 << 24) as f32)
-        };
-        let mut culled = 0;
-        for _ in 0..20_000 {
-            let center = Vec3::new(next(-40.0, 40.0), next(-25.0, 25.0), next(-60.0, 5.0));
-            let excluded = frustum.excludes(&Sphere { center, radius: 0.0 });
-            let shown = on_screen(clip_from_world, SIZE, PAD_PIXELS, center) && -center.z >= NEAR;
-            // Within a hair of an edge either answer is right; elsewhere they agree.
-            let near_edge = on_screen(clip_from_world, SIZE, PAD_PIXELS + 0.01, center)
-                != on_screen(clip_from_world, SIZE, PAD_PIXELS - 0.01, center);
-            if !near_edge {
-                assert_eq!(excluded, !shown, "{center}");
-            }
-            culled += u32::from(excluded);
-        }
-        assert!(culled > 5_000 && culled < 19_000, "{culled}");
-    }
-
-    /// A static mesh record of one environment draw, bounded by a unit sphere, with foliage data
-    /// where `foliage`.
-    fn record(foliage: bool, deformed: bool) -> MeshRecord {
-        let streams = if deformed {
-            MeshStreams::Deformable(DeformSource::default())
-        } else {
-            MeshStreams::Slab { format: PositionFormat::Unorm16, first_vertex: 0 }
-        };
-        MeshRecord {
-            streams,
-            dequantize: Dequantize { position_scale: [1.0; 3], ..Dequantize::default() },
-            lods: vec![vec![SubmeshDraw {
-                first_index: 0,
-                index_count: 3,
-                material: SubmeshMaterial { handle: MaterialHandle::from_raw(0), slot: 0 },
-            }]],
-            lod_vertices: vec![3],
-            placement: Placement::default(),
-            slots: Vec::new(),
-            bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
-            palette_reach: Vec::new(),
-            morph_reach: Vec::new(),
-            foliage: foliage.then_some(0),
-        }
-    }
-
-    #[test]
-    fn candidates_are_tested_and_culled_by_their_transforms() {
-        // Meshes 0 to 3: environment, foliage, deformed environment and an anime character's, by
-        // their materials' handles.
-        let mut meshes =
-            [record(false, false), record(true, false), record(false, true), record(false, false)];
-        meshes[1].lods[0][0].material.handle = MaterialHandle::from_raw(1);
-        meshes[3].lods[0][0].material.handle = MaterialHandle::from_raw(2);
-        let kind = |handle: MaterialHandle| match handle.index() {
-            0 => (MaterialFamily::Environment, MaterialFlags::empty()),
-            1 => (MaterialFamily::Foliage, MaterialFlags::empty()),
-            _ => (MaterialFamily::AnimeCharacter, MaterialFlags::OUTLINE),
-        };
-        let place = |id: u64, mesh: u32, transform: Mat4| MeshInstance {
-            id: InstanceId(id),
-            mesh: MeshHandle::from_raw(mesh),
-            transform,
-        };
-        let (ahead, behind) =
-            (Mat4::from_translation(Vec3::NEG_Z * 10.0), Mat4::from_translation(Vec3::Z * 10.0));
-        // 2.6 m right of the right edge, 10 m ahead: a unit sphere 0.8 m past the padded plane.
-        let right = Mat4::from_translation(at([1.0, 0.0], 10.0) + Vec3::X * 2.6);
-        let projective =
-            Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::new(0.0, 0.0, 1.0, 0.5), Vec4::new(0.0, 0.0, 10.0, 1.0));
-        let instances = [
-            place(0, 0, ahead),
-            place(1, 0, behind),
-            place(2, 1, behind),
-            place(3, 1, right),
-            place(4, 2, behind),
-            place(5, 3, behind),
-            place(6, 0, projective),
-            // Three times the size, where the foliage is: it reaches into the view.
-            place(7, 0, right * Mat4::from(Affine3A::from_scale(Vec3::splat(3.0)))),
-        ];
-        let mut slots = InstanceSlots::default();
-        slots.apply(&InstanceDeltas { changed: instances.to_vec(), removed: Vec::new() });
-        let mut list = DrawList::default();
-        list.build(&meshes, kind, |_| 0, &slots, DrawLimits::NONE);
-        // The static environment and foliage instances are candidates; the deformed one and the
-        // anime character aren't.
-        let candidates: Vec<u32> = list.cullable.iter().map(|candidate| candidate.slot).collect();
-        assert_eq!(candidates, [0, 1, 2, 3, 6, 7]);
-
-        let mut cull = ViewCull::default();
-        let frustum = frustum(PAD_PIXELS);
-        // Calm, the foliage beside the view is culled; with wind that carries it 2 m, it isn't.
-        // The projective transform isn't tested.
-        for (margin, culled) in [(0.0, vec![1, 2, 3]), (2.0, vec![1, 2])] {
-            cull.update(Some(&frustum), &list, &slots, &meshes, |_| margin, 8);
-            let mask = cull.mask().expect("on");
-            let found: Vec<u32> = (0..8).filter(|&slot| !mask[slot as usize]).collect();
-            assert_eq!(found, culled, "wind margin {margin}");
-            let count = culled.len() as u32;
-            assert_eq!(cull.stats(), ViewCullingStats { tested: 5, culled: count, drawn: 8 - count });
-        }
-        // Off: no mask, every draw drawn.
-        cull.update(None, &list, &slots, &meshes, |_| 0.0, 8);
-        assert_eq!((cull.mask(), cull.stats()), (None, ViewCullingStats { tested: 0, culled: 0, drawn: 8 }));
-    }
-}
+mod tests;

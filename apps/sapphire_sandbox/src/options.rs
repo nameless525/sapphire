@@ -9,8 +9,8 @@ use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
 use sapphire_render::{
-    ColorVision, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants,
-    RenderSettings, ShadowSettings, Wind,
+    ColorVision, CullingMode, CullingThresholds, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE,
+    MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -358,9 +358,14 @@ pub(crate) struct Options {
     /// `--plain-post`: post as it was before its compositing layers (M1 P2), with no diffusion
     /// glow, character bloom, gradient layers, lens flare, vignette tint or sharpening.
     pub plain_post: bool,
-    /// `--view-culling off`: draw every static world instance in the main view, culling none
-    /// (review RA-O01), for comparisons. `--view-culling on` is the default.
-    pub view_culling_off: bool,
+    /// `--view-culling on|frustum|off`: how the views cull (review RA-O01, M5 D3), for
+    /// comparisons. `frustum` keeps the frustum and drops the tier's distance and size tests;
+    /// `off` culls nothing. Unset, the tier's (`on`).
+    pub view_culling: Option<CullingMode>,
+    /// `--cull-thresholds <distance>,<pixels>,<texels>`: the distance and size culling's
+    /// thresholds instead of the tier's (M5 D3), for the walks that choose them: meters (0 for
+    /// none), output pixels across and a cascade's texels across.
+    pub culling: Option<CullingThresholds>,
     /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
     /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
     /// the default.
@@ -740,7 +745,8 @@ impl Options {
             temporal,
             light_path: self.light_path.unwrap_or(tier.light_path),
             post_variants: if self.plain_post { PostVariants::NONE } else { tier.post_variants },
-            view_culling: tier.view_culling && !self.view_culling_off,
+            view_culling: self.view_culling.unwrap_or(tier.view_culling),
+            culling: self.culling.unwrap_or(tier.culling),
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
                 ..shadows
@@ -1291,11 +1297,29 @@ impl Options {
                     };
                 }
                 "--view-culling" => {
-                    options.view_culling_off = match value("--view-culling")?.as_str() {
-                        "on" => false,
-                        "off" => true,
-                        other => return Err(format!("--view-culling expects on or off, got {other:?}")),
+                    options.view_culling = Some(match value("--view-culling")?.as_str() {
+                        "on" => CullingMode::On,
+                        "frustum" => CullingMode::FrustumOnly,
+                        "off" => CullingMode::Off,
+                        other => {
+                            return Err(format!("--view-culling expects on, frustum or off, got {other:?}"));
+                        }
+                    });
+                }
+                "--cull-thresholds" => {
+                    let raw = value("--cull-thresholds")?;
+                    let [distance, least_pixels, least_texels] =
+                        number_list::<f32>(&raw, "--cull-thresholds")?[..]
+                    else {
+                        return Err(format!(
+                            "--cull-thresholds expects <distance>,<pixels>,<texels>, got {raw:?}"
+                        ));
                     };
+                    let thresholds = CullingThresholds { distance, least_pixels, least_texels };
+                    thresholds
+                        .validate()
+                        .map_err(|(field, problem)| format!("--cull-thresholds: {field} {problem}"))?;
+                    options.culling = Some(thresholds);
                 }
                 "--sharpening" => {
                     let amount: f32 = number(&value("--sharpening")?, "--sharpening")?;
@@ -2791,11 +2815,19 @@ mod tests {
     #[test]
     fn view_culling_turns_off_for_comparisons() {
         let tier = RenderSettings::default();
-        assert!(Options::default().render_settings(tier).view_culling, "on by default");
+        assert_eq!(Options::default().render_settings(tier).view_culling, CullingMode::On, "on by default");
         let culling = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).view_culling;
-        assert!(!culling(&["--view-culling", "off"]));
-        assert!(culling(&["--view-culling=on"]));
+        assert_eq!(culling(&["--view-culling", "off"]), CullingMode::Off);
+        assert_eq!(culling(&["--view-culling", "frustum"]), CullingMode::FrustumOnly);
+        assert_eq!(culling(&["--view-culling=on"]), CullingMode::On);
         assert!(parse(&["--view-culling", "some"]).is_err());
+        // The thresholds a walk tries instead of the tier's.
+        let thresholds = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).culling;
+        assert_eq!(thresholds(&[]), tier.culling);
+        let tried = CullingThresholds { distance: 500.0, least_pixels: 1.5, least_texels: 2.0 };
+        assert_eq!(thresholds(&["--cull-thresholds", "500,1.5,2"]), tried);
+        assert!(parse(&["--cull-thresholds", "500,1.5"]).is_err());
+        assert!(parse(&["--cull-thresholds", "-1,0,0"]).is_err());
     }
 
     #[test]

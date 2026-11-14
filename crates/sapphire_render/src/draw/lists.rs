@@ -15,11 +15,12 @@
 //!   keep it everywhere: transparent surfaces and eyes' layers blend in it, eyes through hair and
 //!   outline hulls draw at depths that tie, and skinned or morphed instances bind by instance.
 //! - **A view's list is compacted each frame** ([`ViewList`]): walking its groups in key order, it
-//!   keeps the draws that stand in the view and pass its tests (the main view's frustum, an outline
-//!   hull's cutoff, a cascade's casters, a character map's character, the listed characters) and
-//!   counts the rest by the test that left them out, as the passes counted them before. The lists
+//!   keeps the draws that stand in the view and pass its tests (its instance's culling verdict, M5
+//!   D3's `view_cull`; an outline hull's cutoff, a cascade's casters, a character map's character,
+//!   the listed characters) and counts the rest by the test that left them out, as the passes
+//!   counted them before. The lists
 //!   keep their capacity, so a warm frame allocates nothing; the shadow views are compacted in one
-//!   walk ([`ViewLists::compact_casters`]).
+//!   walk, beside the world's other views ([`ViewLists::compact_world`]).
 //! - **An entry is a position in its group** of the draw list (`DrawList::commands` or
 //!   `DrawList::deformed`), whose command carries what later work reads: its instance's slot (whose
 //!   bounds `InstanceSlots::world_bounds` gives), its mesh, its material and its record. Every draw
@@ -39,7 +40,9 @@ use crate::inset::MAX_INSETS;
 use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::pipelines::{SurfaceVariant, format_index};
 use crate::scene::{DeformedDraw, DrawCommand, DrawList};
+use crate::shadows::plan::SlotCaster;
 use crate::shadows::{MAX_CASCADES, MAX_CHARACTER_MAPS};
+use crate::view_cull::{Culled, Verdict};
 
 /// The variants whose static surfaces can sort: the depth-writing ones, which come first in
 /// [`SurfaceVariant::ALL`].
@@ -233,8 +236,6 @@ impl ViewKind {
 
 /// A draw the list compacts: a static mesh's command or a deformed instance's.
 trait Listed {
-    /// Static: the main view culls it by its bounds.
-    const STATIC: bool;
     fn slot(&self) -> u32;
     fn draw_id(&self) -> u32;
     fn material(&self) -> MaterialHandle;
@@ -242,7 +243,6 @@ trait Listed {
 }
 
 impl Listed for DrawCommand {
-    const STATIC: bool = true;
     fn slot(&self) -> u32 {
         self.slot
     }
@@ -258,7 +258,6 @@ impl Listed for DrawCommand {
 }
 
 impl Listed for DeformedDraw {
-    const STATIC: bool = false;
     fn slot(&self) -> u32 {
         self.slot
     }
@@ -284,9 +283,9 @@ pub(crate) struct ViewTests<'a, I> {
     pub hulls: &'a [bool],
     /// Every uploaded material, by handle: which draw eyes through hair.
     pub materials: &'a [MaterialRecord],
-    /// Per instance slot, whether the main view draws its static draws (`view_cull`); `None`
-    /// draws every one.
-    pub view: Option<&'a [bool]>,
+    /// Per instance slot, whether the view it stands in draws it, or by what test not
+    /// (`view_cull`, M5 D3); `None` draws every one.
+    pub view: Option<Culled<'a>>,
     /// The pass's own test of an instance slot (the listed characters).
     pub instance: I,
 }
@@ -328,13 +327,13 @@ impl<'a, I> ViewTests<'a, I> {
         }
     }
 
-    fn in_view(&self, slot: u32) -> bool {
-        self.view.is_none_or(|view| view.get(slot as usize).is_none_or(|&drawn| drawn))
+    fn verdict(&self, slot: u32) -> Verdict {
+        self.view.map_or(Verdict::Drawn, |view| view.verdict(slot))
     }
 }
 
 /// One view's draws this frame, group by group, each in its key's order.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct ViewList {
     /// Positions in their groups of the draw list, group after group.
     draws: Vec<u32>,
@@ -441,11 +440,14 @@ impl ViewList {
             if !(tests.instance)(draw.slot()) {
                 left_out.considered += 1;
                 left_out.culled_by_pass += 1;
-            } else if D::STATIC && !tests.in_view(draw.slot()) {
-                left_out.considered += 1;
-                left_out.culled_by_frustum += 1;
-            } else {
-                listed.push(index);
+                return;
+            }
+            match tests.verdict(draw.slot()) {
+                Verdict::Drawn => listed.push(index),
+                verdict => {
+                    left_out.considered += 1;
+                    left_out.count_culled(verdict);
+                }
             }
         };
         // A list built by hand (a unit test's) has no orders: its own order, then.
@@ -481,8 +483,8 @@ pub(crate) struct CasterTests<'a, P> {
     pub cascades: [bool; MAX_CASCADES],
     /// The character maps drawn this frame.
     pub maps: usize,
-    /// Per instance slot: the cascades it casts into, as bits, and the character map it draws
-    /// into, if any (`shadows::plan::SlotCaster`).
+    /// Per instance slot: the cascades it casts into, the character map it draws into, and what
+    /// left it out of the others ([`SlotCaster`]).
     pub plan: P,
 }
 
@@ -563,85 +565,164 @@ impl ViewLists {
         target.compact(kind, &self.groups[kind_index(kind)], list, tests);
     }
 
+    /// Compacts the world's views' lists from `list` (M5 D3): the main view's and the scene
+    /// prepass's by `world`, the character prepass's by `characters`, and every shadow view's by
+    /// `casters`, each its own list, in parallel on the job system when the draw list is long
+    /// enough to pay for it ([`PARALLEL_DRAWS`]). The lists are the same whichever runs first.
+    pub(crate) fn compact_world<I, J, P>(
+        &mut self,
+        list: &DrawList,
+        world: &ViewTests<'_, I>,
+        characters: &ViewTests<'_, J>,
+        casters: &CasterTests<'_, P>,
+    ) where
+        I: Fn(u32) -> bool + Sync,
+        J: Fn(u32) -> bool + Sync,
+        P: Fn(u32) -> SlotCaster + Sync,
+    {
+        self.compact_world_as(list, world, characters, casters, list.draws.len() >= PARALLEL_DRAWS);
+    }
+
+    /// [`Self::compact_world`], in parallel or not as `parallel` says: the lists are the same
+    /// either way.
+    pub(crate) fn compact_world_as<I, J, P>(
+        &mut self,
+        list: &DrawList,
+        world: &ViewTests<'_, I>,
+        characters: &ViewTests<'_, J>,
+        casters: &CasterTests<'_, P>,
+        parallel: bool,
+    ) where
+        I: Fn(u32) -> bool + Sync,
+        J: Fn(u32) -> bool + Sync,
+        P: Fn(u32) -> SlotCaster + Sync,
+    {
+        let Self { groups, main, scene, characters: listed, cascades, maps, maps_left_out, .. } = self;
+        let groups = &*groups;
+        let main_groups = &groups[kind_index(ViewKind::Main)];
+        let scene_groups = &groups[kind_index(ViewKind::ScenePrepass)];
+        let character_groups = &groups[kind_index(ViewKind::CharacterPrepass)];
+        let caster_groups = &groups[kind_index(ViewKind::Casters)];
+        if !parallel {
+            main.compact(ViewKind::Main, main_groups, list, world);
+            scene.compact(ViewKind::ScenePrepass, scene_groups, list, world);
+            listed.compact(ViewKind::CharacterPrepass, character_groups, list, characters);
+            compact_casters(caster_groups, cascades, maps, maps_left_out, list, casters);
+            return;
+        }
+        sapphire_jobs::scope(|scope| {
+            scope.spawn(|| main.compact(ViewKind::Main, main_groups, list, world));
+            scope.spawn(|| scene.compact(ViewKind::ScenePrepass, scene_groups, list, world));
+            scope.spawn(|| listed.compact(ViewKind::CharacterPrepass, character_groups, list, characters));
+            scope.spawn(|| compact_casters(caster_groups, cascades, maps, maps_left_out, list, casters));
+        });
+    }
+
     /// Compacts every shadow view's list from `list` in one walk of the casters: each cascade
     /// drawn lists the casters its test keeps, each character map drawn its character's.
-    pub(crate) fn compact_casters<P: Fn(u32) -> (u8, Option<u8>)>(
+    #[cfg(test)]
+    pub(crate) fn compact_casters<P: Fn(u32) -> SlotCaster>(
         &mut self,
         list: &DrawList,
         tests: &CasterTests<'_, P>,
     ) {
         let Self { groups, cascades, maps, maps_left_out, .. } = self;
-        let drawn_maps = tests.maps.min(MAX_CHARACTER_MAPS);
-        let maps = &mut maps[..drawn_maps];
-        for (cascade, &drawn) in cascades.iter_mut().zip(&tests.cascades) {
-            if drawn {
-                cascade.clear();
+        compact_casters(&groups[kind_index(ViewKind::Casters)], cascades, maps, maps_left_out, list, tests);
+    }
+}
+
+/// Draw lists at least this long compact the world's views in parallel ([`ViewLists::compact_world`]);
+/// shorter ones on the calling thread, which allocates nothing.
+pub(crate) const PARALLEL_DRAWS: usize = 4096;
+
+/// Compacts every shadow view's list (`cascades`, `maps`, what the maps' pass leaves out) from
+/// `list`'s caster `groups` in one walk of the casters, by `tests`.
+fn compact_casters<P: Fn(u32) -> SlotCaster>(
+    groups: &[u16],
+    cascades: &mut [ViewList; MAX_CASCADES],
+    maps: &mut [ViewList; MAX_CHARACTER_MAPS],
+    maps_left_out: &mut PassCounts,
+    list: &DrawList,
+    tests: &CasterTests<'_, P>,
+) {
+    let drawn_maps = tests.maps.min(MAX_CHARACTER_MAPS);
+    let maps = &mut maps[..drawn_maps];
+    for (cascade, &drawn) in cascades.iter_mut().zip(&tests.cascades) {
+        if drawn {
+            cascade.clear();
+        }
+    }
+    maps.iter_mut().for_each(ViewList::clear);
+    *maps_left_out = PassCounts::default();
+    if !tests.cascades.contains(&true) && maps.is_empty() {
+        return;
+    }
+    let others = to_u32(drawn_maps.saturating_sub(1));
+    for &index in groups {
+        let index = usize::from(index);
+        let (source, variant, _) = group_of(index);
+        let starts = cascades.each_ref().map(ViewList::end);
+        let map_starts: [u32; MAX_CHARACTER_MAPS] =
+            std::array::from_fn(|map| maps.get(map).map_or(0, ViewList::end));
+        let mut take = |slot: u32, index: u32| {
+            if tests.stands.get(slot as usize).copied().unwrap_or(0) != 0 {
+                return;
             }
-        }
-        maps.iter_mut().for_each(ViewList::clear);
-        *maps_left_out = PassCounts::default();
-        if !tests.cascades.contains(&true) && maps.is_empty() {
-            return;
-        }
-        let others = to_u32(drawn_maps.saturating_sub(1));
-        for &index in &groups[kind_index(ViewKind::Casters)] {
-            let index = usize::from(index);
-            let (source, variant, _) = group_of(index);
-            let starts = cascades.each_ref().map(ViewList::end);
-            let map_starts: [u32; MAX_CHARACTER_MAPS] =
-                std::array::from_fn(|map| maps.get(map).map_or(0, ViewList::end));
-            let mut take = |slot: u32, index: u32| {
-                if tests.stands.get(slot as usize).copied().unwrap_or(0) != 0 {
-                    return;
+            let caster = (tests.plan)(slot);
+            let map = caster.map;
+            for (cascade, list) in cascades.iter_mut().enumerate() {
+                if !tests.cascades[cascade] {
+                    continue;
                 }
-                let (bits, map) = (tests.plan)(slot);
-                for (cascade, list) in cascades.iter_mut().enumerate() {
-                    if !tests.cascades[cascade] {
-                        continue;
-                    }
-                    if bits & (1 << cascade) != 0 {
-                        list.draws.push(index);
-                    } else {
+                match caster.left_out(cascade) {
+                    None => list.draws.push(index),
+                    // Its volume is the cascade's own pick (B4's meaning); distance and size
+                    // count as such.
+                    Some(Verdict::Drawn | Verdict::Frustum) => {
                         list.left_out.considered += 1;
                         list.left_out.culled_by_pass += 1;
                     }
-                }
-                if drawn_maps == 0 {
-                    return;
-                }
-                // Each map looks at every caster and draws its own character's.
-                let skipped = match map.map(usize::from).and_then(|map| maps.get_mut(map)) {
-                    Some(list) => {
-                        list.draws.push(index);
-                        others
+                    Some(verdict) => {
+                        list.left_out.considered += 1;
+                        list.left_out.count_culled(verdict);
                     }
-                    None => to_u32(drawn_maps),
-                };
-                maps_left_out.considered += skipped;
-                maps_left_out.culled_by_pass += skipped;
+                }
+            }
+            if drawn_maps == 0 {
+                return;
+            }
+            // Each map looks at every caster and draws its own character's.
+            let skipped = match map.map(usize::from).and_then(|map| maps.get_mut(map)) {
+                Some(list) => {
+                    list.draws.push(index);
+                    others
+                }
+                None => to_u32(drawn_maps),
             };
-            match source {
-                Source::Static(format) => {
-                    let commands = &list.commands[format_index(format)][variant.index()];
-                    let sorted = list.orders.sorted(ViewKind::Casters, format, variant);
-                    match sorted.filter(|sorted| sorted.len() == commands.len()) {
-                        Some(sorted) => sorted.iter().for_each(|&at| take(commands[at as usize].slot, at)),
-                        None => commands.iter().zip(0..).for_each(|(command, at)| take(command.slot, at)),
-                    }
-                }
-                Source::Deformed => {
-                    let draws = &list.deformed[variant.index()];
-                    draws.iter().zip(0..).for_each(|(draw, at)| take(draw.slot, at));
+            maps_left_out.considered += skipped;
+            maps_left_out.culled_by_pass += skipped;
+        };
+        match source {
+            Source::Static(format) => {
+                let commands = &list.commands[format_index(format)][variant.index()];
+                let sorted = list.orders.sorted(ViewKind::Casters, format, variant);
+                match sorted.filter(|sorted| sorted.len() == commands.len()) {
+                    Some(sorted) => sorted.iter().for_each(|&at| take(commands[at as usize].slot, at)),
+                    None => commands.iter().zip(0..).for_each(|(command, at)| take(command.slot, at)),
                 }
             }
-            for ((cascade, start), &drawn) in cascades.iter_mut().zip(starts).zip(&tests.cascades) {
-                if drawn {
-                    cascade.ranges[index] = [start, cascade.end()];
-                }
+            Source::Deformed => {
+                let draws = &list.deformed[variant.index()];
+                draws.iter().zip(0..).for_each(|(draw, at)| take(draw.slot, at));
             }
-            for (map, start) in maps.iter_mut().zip(map_starts) {
-                map.ranges[index] = [start, map.end()];
+        }
+        for ((cascade, start), &drawn) in cascades.iter_mut().zip(starts).zip(&tests.cascades) {
+            if drawn {
+                cascade.ranges[index] = [start, cascade.end()];
             }
+        }
+        for (map, start) in maps.iter_mut().zip(map_starts) {
+            map.ranges[index] = [start, map.end()];
         }
     }
 }

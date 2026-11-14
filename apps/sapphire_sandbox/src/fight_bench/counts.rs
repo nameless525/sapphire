@@ -122,7 +122,7 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
 /// What's logged, the frame's whole first, then pass by pass, the ambient pass's dispatches, then what
 /// culled, the levels drawn, the state the mesh passes changed, skinning, lights, the asset server's, and
 /// animation's.
-pub(super) const COUNT_ROWS: [CountRow; 50] = [
+pub(super) const COUNT_ROWS: [CountRow; 52] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -152,6 +152,8 @@ pub(super) const COUNT_ROWS: [CountRow; 50] = [
     row("culled by view", |c| u64::from(c.passes.total().culled_by_frustum)),
     row("culled by a pass", |c| u64::from(c.passes.total().culled_by_pass)),
     row("culled past outline cutoff", |c| u64::from(c.passes.total().culled_by_cutoff)),
+    row("culled by distance", |c| u64::from(c.passes.total().culled_by_distance)),
+    row("culled by size", |c| u64::from(c.passes.total().culled_by_size)),
     row("lod0 draws", |c| u64::from(c.passes.total().levels[0])),
     row("lod1+ draws", |c| c.passes.total().levels[1..].iter().map(|&level| u64::from(level)).sum()),
     row("pipelines set", |c| u64::from(c.state_changes.pipelines)),
@@ -246,7 +248,7 @@ pub(super) fn report(trace: &[Traced], phase: Phase, column: usize) {
 
 /// `--bench-trace`'s columns from `walked`.
 pub(super) const TRACE_COLUMNS: &str = "walked,core,draw_calls,triangles,draw_instances,considered,culled_view,\
-culled_pass,culled_cutoff,lod0,lod1_up,main_draws,prepass_draws,shadow_draws,post_draws,ui_draws,skinned,joints,\
+culled_pass,culled_cutoff,culled_distance,culled_size,lod0,lod1_up,main_draws,prepass_draws,shadow_draws,post_draws,ui_draws,skinned,joints,\
 skinned_vertices,lights,admitted,decoded_waiting,reads_held,texture_pool,mesh_pool,over_budget,uploaded,raised,\
 given_back,mesh_pool_capacity,mesh_pool_floor,ambient_dispatches,probe_dispatches,animated,posed,held,thinned,\
 off_screen,animation_jobs";
@@ -270,7 +272,7 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
     let passes = &c.passes;
     let _ = write!(
         line,
-        ",{core},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        ",{core},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         total.draws,
         total.triangles,
         total.instances,
@@ -278,6 +280,8 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
         total.culled_by_frustum,
         total.culled_by_pass,
         total.culled_by_cutoff,
+        total.culled_by_distance,
+        total.culled_by_size,
         total.levels[0],
         total.levels[1..].iter().sum::<u32>(),
         passes.main.draws,

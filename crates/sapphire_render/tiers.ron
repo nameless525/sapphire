@@ -46,6 +46,15 @@
 //   width and height on the desktop tiers, a quarter on Mobile-High, none on Mobile-Low, which ignores a
 //   bend and builds nothing for it. Its pipelines build only once an inventory declares bends or a frame
 //   draws one.
+// - `culling` (M5 D3, `sapphire_render::view_cull`): what the views leave out beyond what they
+//   can't see. `distance`, meters from the camera to an instance's nearest point, is a cap past the
+//   zones' farthest backdrops (the look-dev town's far range ends 3.2 km out), since the renderer
+//   can't tell a backdrop from a prop; `least_pixels`, the least output pixels an instance's bounds
+//   span in the main view, and `least_texels`, the least a caster's span in a cascade's texels, drop
+//   what is under a pixel or a texel. Named characters, what they hold, fog cards and inset
+//   instances never cull this way; an ambient character's parts cull together. On the `budget`
+//   district's walk none of them removes a draw: its instances are merged blocks, which span 20
+//   pixels and 50 texels at the least (M5 D3's hand-back), so the calls left over are D2's and D4's.
 // - `ladder` (M4 T2, spec §6.3): the rungs the tier gives up when the device runs hot or dynamic
 //   resolution can't hold its budget at its floor, each holding the ones above it, and taken back
 //   after a hold (`sapphire_render::quality::ladder`). They spend what the look can spare first (M4
@@ -136,6 +145,7 @@
                 inset: (max_side: 960, supersample: 2),
                 depth_of_field: (view: true, insets: true),
                 distortion: Half,
+                culling: (distance: 6000, least_pixels: 1.0, least_texels: 1.0),
                 ladder: [
                     Scale(0.85),
                     Shed([SkyFaceRate, Gtao, BloomLevel]),
@@ -180,6 +190,7 @@
                 inset: (max_side: 720, supersample: 2),
                 depth_of_field: (view: true, insets: true),
                 distortion: Half,
+                culling: (distance: 5000, least_pixels: 1.0, least_texels: 1.0),
                 ladder: [
                     Scale(0.85),
                     Shed([SkyFaceRate, Gtao, BloomLevel]),
@@ -224,6 +235,7 @@
                 inset: (max_side: 720, supersample: 1),
                 depth_of_field: (insets: true),
                 distortion: Quarter,
+                culling: (distance: 5000, least_pixels: 1.5, least_texels: 1.0),
                 ladder: [
                     Shed([SkyFaceRate, BloomLevel, Gtao]),
                     Scale(0.85),
@@ -271,6 +283,7 @@
                 foliage: (wind_levels: 2, alpha_to_coverage: true, translucency: false),
                 reflections: (cube_size: 32),
                 inset: (max_side: 512, supersample: 1),
+                culling: (distance: 4500, least_pixels: 1.5, least_texels: 1.0),
                 // No GTAO to shed, no frame rate under its own 30 and no tier below.
                 ladder: [
                     Shed([SkyFaceRate, BloomLevel]),

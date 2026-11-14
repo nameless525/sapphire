@@ -13,9 +13,9 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 use super::reference;
 use crate::graph::{FrameGraph, GraphExecutor, TextureId};
 use crate::{
-    CameraData, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, FramePacketRing,
-    InstanceId, MaterialDrive, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, SkinningStats,
-    ViewData,
+    CameraData, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, CullingMode,
+    FramePacketRing, InstanceId, MaterialDrive, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer,
+    SkinningStats, ViewData,
 };
 
 /// `material` embedded in a mesh's material slot, as the glTF importer embeds one.
@@ -184,6 +184,12 @@ fn read_words(gpu: &GpuContext, buffer: &wgpu::Buffer) -> Vec<u32> {
     words
 }
 
+/// The settings of the tests that read back every pose's outputs: no view culls, so every
+/// instance is drawn and skinning poses each, wherever its random pose takes it (M5 D3).
+fn every_pose() -> RenderSettings {
+    RenderSettings { view_culling: CullingMode::Off, ..RenderSettings::default() }
+}
+
 fn camera(aspect: f32) -> CameraData {
     CameraData::look_at(Vec3::new(0.0, 1.0, 6.0), Vec3::new(0.0, 1.0, 0.0), Vec3::Y, 0.8, aspect, 0.05)
 }
@@ -198,8 +204,8 @@ fn gpu_skinning_matches_the_cpu_reference() {
         random_mesh(&mut rng, 3000, 40, PositionFormat::Unorm16),
         random_mesh(&mut rng, 1500, 300, PositionFormat::Float32),
     ];
-    let mut renderer = Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
-        .expect("renderer");
+    let mut renderer =
+        Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, every_pose()).expect("renderer");
     let handles: Vec<_> = meshes.iter().map(|mesh| upload(&mut renderer, mesh)).collect();
     let texture = target(&gpu, (64, 64));
     let view = texture.create_view(&Default::default());
@@ -284,8 +290,8 @@ fn gpu_skinning_matches_the_cpu_reference() {
 /// shading as the passes after decode it.
 fn deformed_shading(mesh: &Mesh, palette: Vec<Affine3A>, weights: Vec<f32>) -> Vec<VertexShading> {
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
-        .expect("renderer");
+    let mut renderer =
+        Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, every_pose()).expect("renderer");
     let handle = upload(&mut renderer, mesh);
     let texture = target(&gpu, (64, 64));
     let view = texture.create_view(&Default::default());
@@ -599,8 +605,7 @@ impl Skinner {
     fn new(limit: u64) -> Self {
         let gpu = gpu();
         let mut renderer =
-            Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
-                .expect("renderer");
+            Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, every_pose()).expect("renderer");
         renderer.limit_buffers(1024, 1024, None, Some(limit));
         let view = target(&gpu, (64, 64)).create_view(&Default::default());
         Self { gpu, renderer, packets: FramePacketRing::new(), executor: GraphExecutor::new(), view }

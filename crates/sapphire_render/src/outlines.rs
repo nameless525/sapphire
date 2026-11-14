@@ -24,12 +24,26 @@
 //! # Later milestones
 //!
 //! - With LOD selection (culling), the cutoff becomes the LOD past which hulls stop.
+//!
+//! # How far a hull reaches (M5 D3)
+//!
+//! View culling grows an instance whose hull the frame draws by how far its widest line can reach
+//! past its surface ([`CharacterReach`], the `view_cull` module), from its materials alone: a line
+//! is the material's width × its widest region's scale × the vertex color's G (at most 1) × the
+//! model scale, in pixels of a 1080-row target, × the curve's scale. Past the curve's near
+//! distance that scale is at most the largest of its near scale, 1 and its far scale; closer, the
+//! line holds its width in the world, `2 × width × near scale × near × tan(22.5°) / 1080` meters
+//! whatever the depth. So a hull reaches at most that many pixels across the screen, or that many
+//! meters, which the test takes both of. An eye's highlight layer drifts across the model's front
+//! by its material's meters (`highlight_drift` in `anime_character.wgsl`), which counts too.
 
 use sapphire_assets::material::AnimeCharacterParams;
 
 use crate::CameraData;
 use crate::mesh_pool::MeshRecord;
+use crate::pipelines::SurfaceVariant;
 use crate::scene::{DrawList, InstanceSlots};
+use crate::view_cull::CharacterReach;
 
 /// tan(22.5°): effective distances are normalized to a 45° vertical field of view
 /// (`OUTLINE_REFERENCE_TAN_HALF_FOV` in `outline.wgsl`).
@@ -50,6 +64,10 @@ pub(crate) struct OutlineCull {
     /// Per draw record (`DrawList::draws`): whether the frame draws its hull; false for draws
     /// without one.
     visible: Vec<bool>,
+    /// Per instance slot: how far its drawn hulls and eye highlights reach past its bounds.
+    reach: Vec<CharacterReach>,
+    /// The widest of [`Self::reach`]'s hulls, in pixels of a 1080-row target.
+    widest: f32,
     counts: OutlineCounts,
 }
 
@@ -97,13 +115,17 @@ impl OutlineCull {
             |camera: &CameraData| 1.0 / (camera.proj.y_axis.y.abs().max(1e-6) * REFERENCE_TAN_HALF_FOV);
         self.visible.clear();
         self.visible.resize(list.draws.len(), false);
+        self.reach.clear();
+        self.reach.resize(slots.len(), CharacterReach::default());
+        self.widest = 0.0;
         let hulls =
             list.commands.iter().flatten().flatten().filter(|command| command.outline).map(|c| c.draw_id);
         let deformed = list.deformed.iter().flatten().filter(|draw| draw.outline).map(|draw| draw.draw_id);
         let mut counts = OutlineCounts::default();
         for draw_id in hulls.chain(deformed) {
             let draw = &list.draws[draw_id as usize];
-            let cutoff = params(draw.material).map_or(0.0, |params| params.outline_curve[3]) * scale;
+            let block = params(draw.material);
+            let cutoff = block.as_ref().map_or(0.0, |params| params.outline_curve[3]) * scale;
             // A cutoff of 0 (or one that isn't a number) draws nothing, wherever the hull is.
             // An inset's instance is judged by the inset's camera (M3 U6).
             let camera = insets.camera(draw.instance).unwrap_or(camera);
@@ -117,6 +139,28 @@ impl OutlineCull {
             self.visible[draw_id as usize] = visible;
             counts.drawn += u32::from(visible);
             counts.culled += u32::from(!visible);
+            if let Some(params) = block.filter(|_| visible) {
+                let reach = &mut self.reach[draw.instance as usize];
+                let (pixels, meters) = hull_reach(&params);
+                reach.hulled = true;
+                reach.pixels = reach.pixels.max(pixels);
+                reach.meters = reach.meters.max(meters);
+                self.widest = self.widest.max(pixels);
+            }
+        }
+        // Eye highlights drift across the model's front, by up to their material's meters in x
+        // and in y.
+        let layers = SurfaceVariant::EYE_LAYERS.index();
+        let statics =
+            list.commands.iter().flat_map(|commands| &commands[layers]).map(|command| command.draw_id);
+        let deformed = list.deformed[layers].iter().map(|draw| draw.draw_id);
+        for draw_id in statics.chain(deformed) {
+            let draw = &list.draws[draw_id as usize];
+            if let Some(params) = params(draw.material) {
+                let drift = params.surface_color[0].abs() * std::f32::consts::SQRT_2;
+                let reach = &mut self.reach[draw.instance as usize];
+                reach.drift = reach.drift.max(if drift.is_finite() { drift } else { f32::INFINITY });
+            }
         }
         debug_assert_eq!((counts.drawn + counts.culled) as usize, list.outlines(), "every hull counted once");
         self.counts = counts;
@@ -131,6 +175,32 @@ impl OutlineCull {
     pub(crate) fn counts(&self) -> OutlineCounts {
         self.counts
     }
+
+    /// Per instance slot: how far the last prepared frame's hulls and eye highlights reach past its
+    /// bounds (see the module docs).
+    pub(crate) fn reach(&self) -> &[CharacterReach] {
+        &self.reach
+    }
+
+    /// The widest line of the last prepared frame's hulls, in pixels of a 1080-row target: what
+    /// the views' frusta move out by for hulled instances.
+    pub(crate) fn widest(&self) -> f32 {
+        self.widest
+    }
+}
+
+/// How far a hull of `params` reaches past its surface: in pixels of a 1080-row target, and in
+/// meters close up (see the module docs). Not finite stays not finite, which keeps the instance.
+fn hull_reach(params: &AnimeCharacterParams) -> (f32, f32) {
+    let regions = (params.modes[1].max(1) as usize).min(params.regions.len());
+    let region = params.regions[..regions].iter().map(|region| region.outline[3].abs()).fold(0.0, f32::max);
+    let width = params.edges[2].abs() * region * params.outline_shape[2].abs();
+    let [near, ..] = params.outline_curve;
+    let [near_scale, far_scale, ..] = params.outline_shape.map(f32::abs);
+    let pixels = width * near_scale.max(1.0).max(far_scale);
+    let meters = 2.0 * width * near_scale * near.abs() * REFERENCE_TAN_HALF_FOV / 1080.0;
+    let keep = |value: f32| if value.is_finite() { value } else { f32::INFINITY };
+    (keep(pixels), keep(meters))
 }
 
 #[cfg(test)]

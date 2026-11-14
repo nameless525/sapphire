@@ -36,6 +36,9 @@ const FLAG_FLOAT_POSITIONS: u32 = 1u;
 const FLAG_SKIN: u32 = 2u;
 const FLAG_WIDE_INFLUENCES: u32 = 4u;
 const FLAG_MORPHS: u32 = 8u;
+// Positions alone (M5 D3): a kept pose skinned into the half previous positions are read from,
+// beside the job that writes the instance's new pose and its shading.
+const FLAG_POSITIONS_ONLY: u32 = 16u;
 
 // Every skinned or morphed mesh's streams, skin and regrouped morph deltas, as words
 // (`mesh_pool.rs`, "Skinned and morphed meshes").
@@ -292,6 +295,9 @@ fn cs_skinning(
     outputs[out] = bitcast<u32>(position.x);
     outputs[out + 1u] = bitcast<u32>(position.y);
     outputs[out + 2u] = bitcast<u32>(position.z);
+    if (job.flags & FLAG_POSITIONS_ONLY) != 0u {
+        return;
+    }
     outputs[job.out_shading + 2u * vertex] = normal_word;
     outputs[job.out_shading + 2u * vertex + 1u] = outline_word;
 }

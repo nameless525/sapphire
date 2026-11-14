@@ -200,6 +200,16 @@ pub(crate) struct InsetBindings<'a> {
     pub labels: bool,
 }
 
+/// What view culling needs of an inset (M5 D3).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InsetCullView {
+    pub camera: CameraData,
+    /// Its scene's size, in pixels.
+    pub scene: (u32, u32),
+    /// Whether it draws this frame.
+    pub draws: bool,
+}
+
 /// The renderer's insets. See the module docs.
 #[derive(Debug)]
 pub(crate) struct Insets {
@@ -287,6 +297,19 @@ impl Insets {
     /// Per instance slot, the view it stands in (`MeshDraws::stands`), and each inset's camera.
     pub(crate) fn stands(&self) -> crate::outlines::Insets<'_> {
         crate::outlines::Insets { stands: &self.stands, cameras: &self.cameras }
+    }
+
+    /// Per inset, by index (its stand − 1): what view culling needs of it (M5 D3); `None` past the
+    /// frame's insets.
+    pub(crate) fn cull_views(&self) -> [Option<InsetCullView>; MAX_INSETS] {
+        std::array::from_fn(|index| {
+            let target = self.targets.get(index)?;
+            Some(InsetCullView {
+                camera: *self.cameras.get(index)?,
+                scene: target.scene_size,
+                draws: target.draw,
+            })
+        })
     }
 
     /// Whether the frame shows any inset.

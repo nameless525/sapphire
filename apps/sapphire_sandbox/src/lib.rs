@@ -352,9 +352,13 @@
 //!   diffusion glow, character bloom, gradient layers, lens flare, vignette tint or sharpening),
 //!   which the golden scenes from before them pin (M1 P2). Post then builds none of the layers'
 //!   pipeline variants (`RenderSettings::post_variants`).
-//! - `--view-culling on|off`: cull static world instances outside the main view (review RA-O01,
-//!   `RenderSettings::view_culling`), on by default. Off draws them all, the same pixels, for
+//! - `--view-culling on|frustum|off`: how the views cull (review RA-O01, M5 D3,
+//!   `RenderSettings::view_culling`), on by default. `frustum` drops the tier's distance and
+//!   size tests; off draws them all, the same pixels as `frustum`, for
 //!   benches that compare the two.
+//! - `--cull-thresholds <distance>,<pixels>,<texels>`: distance and size culling's thresholds instead of the
+//!   tier's (M5 D3, `RenderSettings::culling`), for the walks that choose them: meters past which nothing is
+//!   drawn (0 for none), the least output pixels and the least cascade texels an instance's bounds must span.
 //! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
 //! - `--focus <distance>,<sharp>,<near>,<far>,<blur>`: depth of field held at a fixed focus for look-dev (M5

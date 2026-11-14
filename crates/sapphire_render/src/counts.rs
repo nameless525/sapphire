@@ -14,7 +14,8 @@
 //!   its counts at zero. Read between a frame's record and its execution, they're zero.
 //! - **"Culled" says by what:** a mesh draw a pass looked at and didn't draw counts against the first of
 //!   its tests that left it out ([`PassCounts::culled_by_frustum`], [`PassCounts::culled_by_pass`],
-//!   [`PassCounts::culled_by_cutoff`]). Draws of another view (an inset's, the world's) and of another
+//!   [`PassCounts::culled_by_cutoff`], and since M5 D3 [`PassCounts::culled_by_distance`] and
+//!   [`PassCounts::culled_by_size`]). Draws of another view (an inset's, the world's) and of another
 //!   set (an outline pass's surfaces without a hull) aren't looked at.
 //! - **Levels of detail:** every mesh draw counts in [`PassCounts::levels`] by the level it drew. Every
 //!   draw is LOD0 until levels are selected (m5-plan D4, D5); the buckets are fixed so that work fills
@@ -27,6 +28,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::inset::MAX_INSETS;
 use crate::shadows::MAX_CASCADES;
+use crate::view_cull::Verdict;
 
 /// The levels of detail [`PassCounts::levels`] tells apart: LOD0 and the cook's three coarser levels
 /// (spec §5.27). A deeper level counts in the last.
@@ -48,8 +50,9 @@ pub struct PassCounts {
     /// Mesh draws the pass looked at: those of its set (surfaces, hulls, eyes through hair) standing in
     /// its view, drawn or culled.
     pub considered: u32,
-    /// Of those, the ones the main view's frustum left out (the `view_cull` module): the main pass, the
-    /// scene prepass and the debug views' replays.
+    /// Of those, the ones their view's frustum left out (the `view_cull` module): the main pass, both
+    /// prepasses, the debug views' replays and each inset's passes. A shadow view's own volume counts
+    /// in [`Self::culled_by_pass`].
     pub culled_by_frustum: u32,
     /// Of those, the ones the pass's own pick left out: a cascade's caster test, a character map's
     /// character, the character prepass's listed characters. The casters a receiver reads (M5 L12's
@@ -59,6 +62,13 @@ pub struct PassCounts {
     /// Of those, outline hulls past their material's distance cutoff
     /// ([`RenderStats::outlines_culled`](crate::RenderStats::outlines_culled) counts them by instance).
     pub culled_by_cutoff: u32,
+    /// Of those, the ones past their tier's culling distance (M5 D3, `CullingThresholds::distance`): in
+    /// the world's views and every cascade.
+    pub culled_by_distance: u32,
+    /// Of those, the ones smaller than their tier's least size (M5 D3): in output pixels in the world's
+    /// views (`CullingThresholds::least_pixels`), in a cascade's own texels in it
+    /// (`CullingThresholds::least_texels`).
+    pub culled_by_size: u32,
     /// Mesh draws by the level of detail they drew, LOD0 first. They sum to the pass's mesh draws.
     pub levels: [u32; MESH_LEVELS],
 }
@@ -84,6 +94,17 @@ impl PassCounts {
         self.levels[usize::from(level).min(MESH_LEVELS - 1)] += 1;
     }
 
+    /// One more mesh draw left out by `verdict`'s test (`view_cull`), or by the pass's own pick
+    /// for a shadow view's volume ([`Verdict::Frustum`] there): none for one drawn.
+    pub(crate) fn count_culled(&mut self, verdict: Verdict) {
+        match verdict {
+            Verdict::Drawn => {}
+            Verdict::Frustum => self.culled_by_frustum += 1,
+            Verdict::Distance => self.culled_by_distance += 1,
+            Verdict::Size => self.culled_by_size += 1,
+        }
+    }
+
     /// Mesh draws counted in [`Self::levels`].
     pub fn mesh_draws(&self) -> u32 {
         self.levels.iter().sum()
@@ -91,7 +112,11 @@ impl PassCounts {
 
     /// Mesh draws looked at and left out, by any test.
     pub fn culled(&self) -> u32 {
-        self.culled_by_frustum + self.culled_by_pass + self.culled_by_cutoff
+        self.culled_by_frustum
+            + self.culled_by_pass
+            + self.culled_by_cutoff
+            + self.culled_by_distance
+            + self.culled_by_size
     }
 
     /// `self` and `other` together.
@@ -110,6 +135,8 @@ impl PassCounts {
             culled_by_frustum: self.culled_by_frustum + other.culled_by_frustum,
             culled_by_pass: self.culled_by_pass + other.culled_by_pass,
             culled_by_cutoff: self.culled_by_cutoff + other.culled_by_cutoff,
+            culled_by_distance: self.culled_by_distance + other.culled_by_distance,
+            culled_by_size: self.culled_by_size + other.culled_by_size,
             levels,
         }
     }
@@ -285,6 +312,8 @@ pub(crate) struct Counter {
     culled_by_frustum: AtomicU32,
     culled_by_pass: AtomicU32,
     culled_by_cutoff: AtomicU32,
+    culled_by_distance: AtomicU32,
+    culled_by_size: AtomicU32,
     levels: [AtomicU32; MESH_LEVELS],
 }
 
@@ -306,6 +335,8 @@ impl Counter {
         add(&self.culled_by_frustum, counts.culled_by_frustum);
         add(&self.culled_by_pass, counts.culled_by_pass);
         add(&self.culled_by_cutoff, counts.culled_by_cutoff);
+        add(&self.culled_by_distance, counts.culled_by_distance);
+        add(&self.culled_by_size, counts.culled_by_size);
         for (counter, &value) in self.levels.iter().zip(&counts.levels) {
             add(counter, value);
         }
@@ -322,6 +353,8 @@ impl Counter {
             culled_by_frustum: read(&self.culled_by_frustum),
             culled_by_pass: read(&self.culled_by_pass),
             culled_by_cutoff: read(&self.culled_by_cutoff),
+            culled_by_distance: read(&self.culled_by_distance),
+            culled_by_size: read(&self.culled_by_size),
             levels: self.levels.each_ref().map(read),
         }
     }
@@ -336,6 +369,8 @@ impl Counter {
             &self.culled_by_frustum,
             &self.culled_by_pass,
             &self.culled_by_cutoff,
+            &self.culled_by_distance,
+            &self.culled_by_size,
         ] {
             zero(counter);
         }

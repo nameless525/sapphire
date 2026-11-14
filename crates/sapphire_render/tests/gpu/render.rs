@@ -20,6 +20,7 @@ use sapphire_render::{
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 mod counts;
+mod culling;
 mod insets;
 mod lists;
 mod lost_frames;
@@ -1001,12 +1002,20 @@ fn skinned_outputs_survive_growth_and_bad_poses_are_ignored() {
     let posed = read_back(&gpu, &texture);
     let before = frames.renderer.stats();
 
-    // Thirty more characters grow the output buffer while instance 0 holds its pose.
+    // Thirty more characters grow the output buffer while instance 0 holds its pose. They stand out
+    // of every view, so none is skinned yet (M5 D3: skinning poses only what some view drew).
     assert!(frames.render(&gpu, &view, camera, &far_away(1..31), &[]).is_none());
     let grown = frames.renderer.stats();
     assert!(grown.buffer_growths > before.buffer_growths, "{grown:?}");
-    assert_eq!((grown.skinning.instances, grown.skinning.skinned), (31, 30), "only the new ones skin");
+    assert_eq!((grown.skinning.instances, grown.skinning.skinned), (31, 0), "out of view, none skins");
     assert!(read_back(&gpu, &texture) == posed, "instance 0's outputs moved with the buffer");
+
+    // Brought into view with no pose of their own, the new ones skin their bind pose; instance 0,
+    // with no new pose, doesn't.
+    let in_view: Vec<_> = (1..31).map(|id| instance(id, mesh, Mat4::IDENTITY)).collect();
+    assert!(frames.render(&gpu, &view, camera, &in_view, &[]).is_none());
+    let shown = frames.renderer.stats().skinning;
+    assert_eq!((shown.instances, shown.skinned), (31, 30), "only the new ones skin");
 
     // Removed and added again: the freed outputs are reused.
     let bytes = grown.skinning.output_bytes;

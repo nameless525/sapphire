@@ -77,9 +77,11 @@
 //!   every tier, into persistent targets the main pass reads, and a scene prepass of depth,
 //!   world normals and velocity as frame-graph transients, which the graph culls while nothing
 //!   reads them ([`PrepassTargets`]).
-//! - Main-view culling (`view_cull`, review RA-O01): static instances of environment and foliage
-//!   surfaces wholly outside the main view's frustum are left out of the main pass, the scene
-//!   prepass and the debug views ([`RenderSettings::view_culling`], [`ViewCullingStats`]).
+//! - View culling (`view_cull`, review RA-O01, M5 D3): every view leaves out the instances wholly
+//!   outside its frustum, by their posed bounds and their hulls' reach, and the tier's distance and
+//!   size culling leaves out the far and the small ([`RenderSettings::view_culling`],
+//!   [`RenderSettings::culling`], [`ViewCullingStats`]); skinning poses only what some view draws
+//!   ([`Renderer::drawn_by`]).
 //! - Temporal AA and upsampling ([`temporal`], M1 R7): the projection's sub-pixel jitter, the
 //!   responsive mask, and a resolve that accumulates frames in a history at the target's size,
 //!   upsampling a smaller scene, before bloom and grading. The desktop tiers resolve with it;
@@ -971,7 +973,7 @@ pub use temporal::{HistoryReset, TemporalStats};
 pub use ui::{UI_PASS, UiStats};
 pub use vfx::VfxRenderStats;
 pub use vfx::distortion::{DistortionResolution, PASS as DISTORTION_PASS};
-pub use view_cull::ViewCullingStats;
+pub use view_cull::{CullingMode, CullingThresholds, DrawnBy, ViewCullingStats};
 pub use warm_up::{WarmUpProgress, WarmUpRequest, WarmUpStats};
 
 /// Log target for this crate.

@@ -14,9 +14,9 @@ use sapphire_assets::mesh::{
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
-    AmbientLight, BloomParams, CameraData, ColorGrade, DebugView, DirectionalLight, FramePacketRing,
-    InstanceId, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, Renderer,
-    SkyGradient, ToneCurve, ViewCullingStats, ViewData, Vignette, Wind,
+    AmbientLight, BloomParams, CameraData, ColorGrade, CullingMode, DebugView, DirectionalLight,
+    FramePacketRing, InstanceId, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings,
+    Renderer, SkyGradient, ToneCurve, ViewCullingStats, ViewData, Vignette, Wind,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -302,25 +302,25 @@ fn crowd() -> Vec<(Kind, Mat4)> {
         .collect()
 }
 
-fn settings(view_culling: bool) -> RenderSettings {
+fn settings(view_culling: CullingMode) -> RenderSettings {
     RenderSettings { view_culling, ..RenderSettings::default() }
 }
 
 /// TAA's settings: MSAA off and a jittered projection.
-fn jittered(view_culling: bool) -> RenderSettings {
+fn jittered(view_culling: CullingMode) -> RenderSettings {
     RenderSettings { msaa: Msaa::Off, temporal: true, ..settings(view_culling) }
 }
 
 /// Draws `shots` with culling on and off and checks every frame is the same, byte for byte:
 /// the frames with culling on.
 fn same_with_and_without(
-    settings: fn(bool) -> RenderSettings,
+    settings: fn(CullingMode) -> RenderSettings,
     instances: &[(Kind, Mat4)],
     shots: &[Shot],
     wind: bool,
 ) -> Vec<(Vec<u8>, ViewCullingStats)> {
-    let culled = render(settings(true), instances, shots, wind);
-    let whole = render(settings(false), instances, shots, wind);
+    let culled = render(settings(CullingMode::On), instances, shots, wind);
+    let whole = render(settings(CullingMode::Off), instances, shots, wind);
     for (frame, ((culled, stats), (whole, off))) in culled.iter().zip(&whole).enumerate() {
         assert_eq!(off.tested + off.culled, 0, "culling off tests nothing");
         let differ = culled.chunks(4).zip(whole.chunks(4)).filter(|(a, b)| a != b).count();
@@ -335,7 +335,10 @@ fn offscreen_instances_are_culled_and_change_no_pixel() {
     let shots = [shot(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO)];
     let frames = same_with_and_without(settings, &crowd(), &shots, false);
     let (pixels, stats) = &frames[0];
-    assert_eq!(*stats, ViewCullingStats { tested: 1088, culled: 1024, drawn: 64 });
+    assert_eq!(
+        *stats,
+        ViewCullingStats { tested: 1088, culled: 1024, drawn: 64, ..ViewCullingStats::default() }
+    );
     // The quads in view show: not the sky alone.
     let sky = &pixels[..4];
     assert!(pixels.chunks(4).filter(|pixel| pixel != &sky).count() > 1000);
@@ -363,7 +366,10 @@ fn instances_across_the_frustums_edges_draw() {
     let shots = [shot(Vec3::ZERO, Vec3::NEG_Z)];
     let frames = same_with_and_without(settings, &instances, &shots, false);
     // Only those well past their edge are culled: the padding keeps the ones a pixel or two out.
-    assert_eq!(frames[0].1, ViewCullingStats { tested: 16, culled: 4, drawn: 12 });
+    assert_eq!(
+        frames[0].1,
+        ViewCullingStats { tested: 16, culled: 4, drawn: 12, ..ViewCullingStats::default() }
+    );
 }
 
 #[test]
@@ -424,12 +430,19 @@ fn foliage_the_wind_carries_into_view_is_drawn() {
     let shots: Vec<Shot> = (0..4).map(|_| shot(Vec3::ZERO, Vec3::NEG_Z)).collect();
     let frames = same_with_and_without(settings, &[(Kind::Card, card), ground], &shots, true);
     for (frame, (pixels, stats)) in frames.iter().enumerate() {
-        assert_eq!(*stats, ViewCullingStats { tested: 2, culled: 0, drawn: 2 }, "frame {frame}");
+        assert_eq!(
+            *stats,
+            ViewCullingStats { tested: 2, culled: 0, drawn: 2, ..ViewCullingStats::default() },
+            "frame {frame}"
+        );
         let red = |pixel: &[u8]| u16::from(pixel[0]) > 2 * u16::from(pixel[1].max(pixel[2])) && pixel[0] > 60;
         let red = pixels.chunks(4).filter(|pixel| red(pixel)).count();
         assert!(red > 20, "frame {frame}: the card is in view ({red} pixels)");
     }
     // Calm, it stays out of view, and is culled.
     let frames = same_with_and_without(settings, &[(Kind::Card, card), ground], &shots[..1], false);
-    assert_eq!(frames[0].1, ViewCullingStats { tested: 2, culled: 1, drawn: 1 });
+    assert_eq!(
+        frames[0].1,
+        ViewCullingStats { tested: 2, culled: 1, drawn: 1, ..ViewCullingStats::default() }
+    );
 }

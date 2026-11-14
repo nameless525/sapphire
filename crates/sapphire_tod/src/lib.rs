@@ -20,11 +20,12 @@
 //!   setting groups of values ([`TodGroup`]: sun, moon, sky, ambient, fog, shadow tint,
 //!   character, day/night, exposure, grade, bloom, vignette, the sky's layers: discs, stars, clouds
 //!   and the nebula, post's layers: diffusion, character bloom, gradients and lens flare, the world's
-//!   emission scale and the characters' shadow hue). The base timeline sets them all but the sky's
-//!   and post's layers, the emission scale and the shadow hue, which are optional
-//!   ([`TodGroup::OPTIONAL`]): a timeline without them, as every timeline before them was, draws the
-//!   sky's gradient alone, post as it was ([`sapphire_look::PostParams::plain`]), emission as
-//!   authored and characters' shadow sides in the key light's color. A zone's override and a
+//!   emission scale, the characters' shadow hue and the weather). The base timeline sets them all but
+//!   the sky's and post's layers, the emission scale, the shadow hue and the weather, which are
+//!   optional ([`TodGroup::OPTIONAL`]): a timeline without them, as every timeline before them was,
+//!   draws the sky's gradient alone, post as it was ([`sapphire_look::PostParams::plain`]), emission
+//!   as authored, characters' shadow sides in the key light's color and the zone's weather all day
+//!   ([`KeyedWeather`], M5 L4). A zone's override and a
 //!   cutscene's track are keys too, setting every group or only some ([`check_keys`] checks
 //!   either).
 //! - **[`TodLook`]**: the look at one moment, every group resolved, as plain values.
@@ -72,9 +73,9 @@ pub use key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CharacterShadeKey, CloudsKey,
     DiffusionKey, DiscKey, DiscsKey, FogKey, FogLayerKey, GradeKey, GradientBlendKey, GradientKey,
     GradientShapeKey, HeightFogKey, LensFlareKey, NebulaKey, Rgb, SkyKey, TodEase, TodGroup, TodGroups,
-    TodKey, VignetteKey,
+    TodKey, VignetteKey, WeatherKey,
 };
-pub use look::{GradeMix, Mix, TodLook, celestial_sphere, mix};
+pub use look::{GradeMix, KeyedWeather, Mix, TodLook, celestial_sphere, mix};
 pub use timeline::{DAY_HOURS, KeyTimes, Segment, TodTimeline, check_keys, segment};
 
 /// A timeline or cutscene that isn't valid, or a timeline that can't be the base.
@@ -91,8 +92,8 @@ pub enum TodError {
     #[error("key {key}: `{field}` {problem}")]
     Invalid { key: usize, field: &'static str, problem: &'static str },
     #[error(
-        "the base timeline must set every group but the optional ones (the sky's and post's layers and \
-         the emission scale), and its keys have no `{0}`"
+        "the base timeline must set every group but the optional ones (the sky's and post's layers, \
+         the emission scale, the characters' shadow hue and the weather), and its keys have no `{0}`"
     )]
     Incomplete(TodGroup),
     #[error("cutscene: `{field}` {problem}")]

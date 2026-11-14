@@ -113,7 +113,7 @@ use sapphire_render::quality::TierId;
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis,
     MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers,
-    ViewData, Wind,
+    ViewData, Weather, Wind,
 };
 #[cfg(feature = "samples")]
 use sapphire_render::{LightKind, LocalLight};
@@ -564,6 +564,8 @@ pub struct Scene {
     plain_sky: bool,
     /// Time of day's fog, unless `--fog off` (M1 W3).
     fog: bool,
+    /// The weather in place of the zone's and its day's (`--weather`, M5 L4).
+    weather: Option<Weather>,
     /// Post without its compositing layers (`--plain-post`).
     plain_post: bool,
     /// Merges every thread's debug draws into each frame's packet (M2 T1).
@@ -720,6 +722,7 @@ impl Scene {
             cloud_cover: None,
             plain_sky: false,
             fog: true,
+            weather: None,
             plain_post: false,
             debug_draw: Collector::new(),
             #[cfg(feature = "samples")]
@@ -841,6 +844,12 @@ impl Scene {
     /// did before fog, for scenes about something else (`--fog off`).
     pub fn set_fog(&mut self, fog: bool) {
         self.fog = fog;
+    }
+
+    /// Draws `weather` whatever the zone and its day say (M5 L4), or theirs again with `None`: the last of the
+    /// three places the frame's weather comes from, for captures and benches (`--weather`). A trip keeps it.
+    pub fn set_weather(&mut self, weather: Option<Weather>) {
+        self.weather = weather;
     }
 
     /// Draws post as it was before its compositing layers (M1 P2): no diffusion glow, character
@@ -2370,7 +2379,7 @@ impl Scene {
         self.ecs.presentation(alpha);
         show.present(self, alpha, drawable_aspect(target_size));
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
-        let fog = self.fog;
+        let (fog, weather) = (self.fog, self.weather);
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
         let focus = self.focus;
         let (probe_hours, reflection_hours) = (&self.probe_hours, &self.reflection_hours);
@@ -2397,15 +2406,21 @@ impl Scene {
             let probe = camera.eye();
             // Interpolated like everything else drawn this frame.
             packet.time_seconds = clock.0.presented_ticks(alpha) / f64::from(TICK_HZ);
-            time_of_day.resolve(probe, alpha).write(packet);
+            let today = time_of_day.resolve(probe, alpha);
+            today.write(packet);
+            let keyed_weather = today.look.weather;
             // The probe grid's bounce keys for the hour (M1 W5): none without a grid.
             packet.probe_keys = time_of_day.probe_keys(probe_hours);
             // And the reflection probes' keys, by the same blend (M5 L3): none without probes.
             packet.reflection_keys = time_of_day.probe_keys(reflection_hours);
             packet.post.filter_strength = crate::cvars::filter_strength();
             packet.post.sharpening = sharpening.unwrap_or_else(crate::cvars::sharpening);
-            // A zone's weather, fog and sky (M5 M6): what names none of them leaves the stage's.
-            zone_air.write(packet, sky_material, zone_origin);
+            // A zone's weather, fog and sky (M5 M6): what names none of them leaves the stage's. Its day's
+            // keyed weather lies over the zone's (M5 L4), and a tool's over both.
+            zone_air.write(packet, sky_material, zone_origin, keyed_weather);
+            if let Some(weather) = weather {
+                packet.weather = weather;
+            }
             if let Some(cover) = cloud_cover {
                 packet.sky_layers.clouds.coverage = cover;
                 packet.sky_layers.clouds.cirrus = cover;
@@ -4428,5 +4443,38 @@ mod tests {
         assert_eq!(changed(scene.frame_packet(1.0, Some((1920, 1080)), &mut ())), [character]);
         scene.end_frame();
         assert!(scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).instances.is_empty());
+    }
+
+    /// The frame's weather (M5 L4) is the zone's, under its day's keyed weather by the keys' share, under a
+    /// tool's; and a day that keys none leaves the zone's.
+    #[test]
+    fn the_weather_is_the_zones_under_its_days_under_a_tools() {
+        let weather = |scene: &mut Scene| {
+            let weather = scene.frame_packet(1.0, None, &mut ()).weather;
+            scene.end_frame();
+            weather
+        };
+        let mut scene = scene();
+        assert_eq!(weather(&mut scene), Weather::DRY, "dry by default");
+        let zone = Weather { wetness: 0.7, puddles: 0.3 };
+        scene.zone_air.weather = zone;
+        assert_eq!(weather(&mut scene), zone, "a day that keys none leaves the zone's");
+
+        let mut keys = scene.time_of_day().timeline().keys().to_vec();
+        for key in &mut keys {
+            key.weather = Some(tod::WeatherKey { wetness: 1.0, puddles: 0.5 });
+        }
+        let day = tod::TodTimeline::new(keys).expect("a day keyed wet");
+        scene.time_of_day_mut().set_timeline(day).expect("it takes");
+        let keyed = Weather { wetness: 1.0, puddles: 0.5 };
+        assert_eq!(weather(&mut scene), keyed, "the day's over the zone's");
+
+        let flag = Weather { wetness: 0.2, puddles: 0.0 };
+        scene.set_weather(Some(flag));
+        assert_eq!(weather(&mut scene), flag, "a tool's over both");
+        scene.set_weather(Some(Weather::DRY));
+        assert_eq!(weather(&mut scene), Weather::DRY, "dry is a tool's weather too");
+        scene.set_weather(None);
+        assert_eq!(weather(&mut scene), keyed);
     }
 }

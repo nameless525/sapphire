@@ -70,9 +70,10 @@
 //!
 //! # Later milestones
 //!
-//! - **Weather** as partial overrides between zones and cutscenes (the research notes' weather
-//!   layer): cloud cover and tones, a storm's sky. Scheduled switches with a fade (local lights on
-//!   at night) rather than blends.
+//! - **More of the weather** (the research notes' weather layer): its wetness is keyed already (a
+//!   day's optional `weather` group, M5 L4, which lies over the zone's by its keys' share, so a
+//!   volume or cutscene that keys it blends it in); cloud cover and tones and a storm's sky are
+//!   not. Scheduled switches with a fade (local lights on at night) rather than blends.
 //! - **The sky's pole per zone** (its latitude) once zones are data; a constant until then.
 //! - **More LUTs**: a zone that changes the grade while time crosses between keys of different
 //!   grades can need three grades at once; post's two LUTs drop the lightest

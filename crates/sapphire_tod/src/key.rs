@@ -101,6 +101,12 @@ pub struct TodKey {
     /// every timeline written before it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub character_shade: Option<CharacterShadeKey>,
+    /// The weather at this hour (M5 L4; [`sapphire_look::Weather`]), in place of the zone's: how wet
+    /// the world is and how far its puddles have filled, so a zone can dry out or a shower pass as the
+    /// hours run. A timeline that leaves it out leaves the zone's weather standing all day, as every
+    /// timeline written before it did; a zone's or a cutscene's override replaces it by its weight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather: Option<WeatherKey>,
 }
 
 fn is_linear(ease: &TodEase) -> bool {
@@ -320,6 +326,20 @@ pub struct CharacterShadeKey {
     /// 0 to 1: how much of the shadow side's light takes the hue rather than the key light's
     /// color.
     pub share: f32,
+}
+
+/// The weather at a key (M5 L4; [`sapphire_look::Weather`]): two shares, 0 to 1. Between keys each
+/// blends linearly, so wetness can rise through a shower and fall as it dries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct WeatherKey {
+    /// How wet surfaces are, 0 (dry) to 1 (soaked).
+    pub wetness: f32,
+    /// How far puddles have filled, 0 (none, the default) to 1 (every place a material lets water
+    /// stand).
+    #[serde(default)]
+    pub puddles: f32,
 }
 
 /// A color grade ([`ColorGrade`]); every field left out is neutral, so a key writes only what
@@ -607,10 +627,11 @@ pub enum TodGroup {
     Emission,
     Nebula,
     CharacterShade,
+    Weather,
 }
 
 impl TodGroup {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Sun,
         Self::Moon,
         Self::Sky,
@@ -633,6 +654,7 @@ impl TodGroup {
         Self::Emission,
         Self::Nebula,
         Self::CharacterShade,
+        Self::Weather,
     ];
 
     /// The sky's layers over its gradient (M1 W2, the nebula M1 X1 part 2e): optional even in
@@ -649,10 +671,11 @@ impl TodGroup {
 
     /// Every group the base timeline may leave out: the sky's layers ([`Self::SKY_LAYERS`]),
     /// post's ([`Self::POST_LAYERS`]), the emission scale (M1 W1's keyed emission), which a
-    /// timeline that leaves it out keeps at 1, as authored, and the characters' shadow hue (M1
-    /// C8), which a timeline that leaves it out leaves to the key light. Each draws where unset as
-    /// every timeline written before it drew.
-    pub const OPTIONAL: [Self; 10] = [
+    /// timeline that leaves it out keeps at 1, as authored, the characters' shadow hue (M1 C8),
+    /// which a timeline that leaves it out leaves to the key light, and the weather (M5 L4), which
+    /// a timeline that leaves it out leaves to the zone. Each draws where unset as every timeline
+    /// written before it drew.
+    pub const OPTIONAL: [Self; 11] = [
         Self::Discs,
         Self::Stars,
         Self::Clouds,
@@ -663,6 +686,7 @@ impl TodGroup {
         Self::LensFlare,
         Self::Emission,
         Self::CharacterShade,
+        Self::Weather,
     ];
 
     /// The group's field name in a key.
@@ -690,6 +714,7 @@ impl TodGroup {
             Self::Emission => "emission",
             Self::Nebula => "nebula",
             Self::CharacterShade => "character_shade",
+            Self::Weather => "weather",
         }
     }
 
@@ -712,8 +737,8 @@ impl TodGroups {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self((1 << TodGroup::ALL.len()) - 1);
     /// What the base timeline must set: every group but the optional ones
-    /// ([`TodGroup::OPTIONAL`]: the sky's layers, post's, the emission scale and the characters'
-    /// shadow hue).
+    /// ([`TodGroup::OPTIONAL`]: the sky's layers, post's, the emission scale, the characters'
+    /// shadow hue and the weather).
     pub const REQUIRED: Self = {
         let mut bits = Self::ALL.0;
         let mut index = 0;
@@ -789,6 +814,7 @@ impl TodKey {
             (TodGroup::Emission, self.emission.is_some()),
             (TodGroup::Nebula, self.nebula.is_some()),
             (TodGroup::CharacterShade, self.character_shade.is_some()),
+            (TodGroup::Weather, self.weather.is_some()),
         ];
         for (group, present) in set {
             if present {
@@ -926,6 +952,10 @@ impl TodKey {
             }
             within(shade.share, 0.0, 1.0, "character_shade.share", "must be within 0..=1")?;
         }
+        if let Some(weather) = &self.weather {
+            within(weather.wetness, 0.0, 1.0, "weather.wetness", "must be within 0..=1")?;
+            within(weather.puddles, 0.0, 1.0, "weather.puddles", "must be within 0..=1")?;
+        }
         Ok(())
     }
 }
@@ -1051,6 +1081,17 @@ mod tests {
         assert_eq!(check(TodKey { emission: Some(2.5), ..TodKey::default() }), None, "a night boost");
         for wrong in [-0.1, f32::NAN, f32::INFINITY] {
             assert_eq!(check(TodKey { emission: Some(wrong), ..TodKey::default() }), Some("emission"));
+        }
+        let shower = WeatherKey { wetness: 1.0, puddles: 0.5 };
+        assert_eq!(check(TodKey { weather: Some(shower), ..TodKey::default() }), None, "a shower");
+        for wrong in [-0.1, 1.5, f32::NAN] {
+            let soaked = WeatherKey { wetness: wrong, ..shower };
+            assert_eq!(check(TodKey { weather: Some(soaked), ..TodKey::default() }), Some("weather.wetness"));
+            let flooded = WeatherKey { puddles: wrong, ..shower };
+            assert_eq!(
+                check(TodKey { weather: Some(flooded), ..TodKey::default() }),
+                Some("weather.puddles")
+            );
         }
     }
 }

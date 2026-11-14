@@ -5,7 +5,7 @@ use sapphire_look::{
     AmbientLight, BloomParams, CameraRim, Celestial, CharacterBloom, CharacterGi, CharacterLight,
     CharacterLighting, CharacterShade, CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer,
     GradientLayer, GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc,
-    SkyGradient, SkyLayers, Vignette,
+    SkyGradient, SkyLayers, Vignette, Weather,
 };
 use sapphire_math::color::{luminance, mix_oklab};
 use sapphire_math::det::slerp_direction;
@@ -14,7 +14,7 @@ use sapphire_math::{Quat, Vec3};
 use super::key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CharacterShadeKey, CloudsKey,
     DiffusionKey, DiscKey, FogKey, FogLayerKey, GradeKey, GradientKey, HeightFogKey, LensFlareKey, NebulaKey,
-    SkyKey, TodKey, VignetteKey,
+    SkyKey, TodKey, VignetteKey, WeatherKey,
 };
 use super::timeline::DAY_HOURS;
 
@@ -60,6 +60,9 @@ pub struct TodLook {
     /// timeline keys it. Characters take it through the world's frame
     /// (`sapphire_world::tod::TodFrame::character_lighting`).
     pub character_shade: CharacterShade,
+    /// The weather the day keys (M5 L4), over the zone's: none unless the timeline, a zone's
+    /// override or a cutscene keys it ([`Self::weather_over`]).
+    pub weather: KeyedWeather,
 }
 
 impl Default for TodLook {
@@ -93,11 +96,20 @@ impl Default for TodLook {
             // As authored, as the packet's default draws it.
             emission: 1.0,
             character_shade: CharacterShade::default(),
+            // The zone's weather stands.
+            weather: KeyedWeather::default(),
         }
     }
 }
 
 impl TodLook {
+    /// The weather this look draws over the zone's `zone` (M5 L4): the keyed weather by its share,
+    /// the zone's for the rest. Exactly `zone` where nothing keys weather, and exactly the keys'
+    /// where the day keys it whole.
+    pub fn weather_over(&self, zone: Weather) -> Weather {
+        self.weather.over(zone)
+    }
+
     /// The world's key light: the light that shades the scene and casts its shadows.
     ///
     /// A body gives light only from above the horizon: its intensity fades out over its last
@@ -230,6 +242,7 @@ impl TodLook {
         group(&mut self.emission, from.emission.as_ref(), to.emission.as_ref(), segment, weight);
         let (from_shade, to_shade) = (from.character_shade.as_ref(), to.character_shade.as_ref());
         group(&mut self.character_shade, from_shade, to_shade, segment, weight);
+        group(&mut self.weather, from.weather.as_ref(), to.weather.as_ref(), segment, weight);
     }
 }
 
@@ -265,6 +278,48 @@ fn above_horizon(light: &DirectionalLight) -> DirectionalLight {
     let height = -light.direction.y / light.direction.length();
     let fade = sapphire_math::Ease::Smooth.apply(height / HORIZON_FADE);
     if fade >= 1.0 { *light } else { DirectionalLight { intensity: light.intensity * fade, ..*light } }
+}
+
+/// The weather time of day keys (M5 L4), as it lies over a zone's: the keyed weather, premultiplied
+/// by its share, and the share of the zone's weather it replaces. Premultiplied, so a zone's
+/// override or a cutscene's track at part weight blends it as linearly as any value: the timeline's
+/// keys replace the zone's weather whole (share 1), and a look with no weather keyed leaves it
+/// whole (share 0, the default).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KeyedWeather {
+    /// The keyed weather, each share times [`Self::share`].
+    pub weather: Weather,
+    /// How much of the zone's weather it replaces, 0 to 1.
+    pub share: f32,
+}
+
+impl KeyedWeather {
+    /// `zone`'s weather with this over it: exactly `zone` at share 0, exactly the keyed weather at 1.
+    pub fn over(&self, zone: Weather) -> Weather {
+        if self.share <= 0.0 {
+            return zone;
+        }
+        if self.share >= 1.0 {
+            return self.weather;
+        }
+        let keep = 1.0 - self.share;
+        Weather {
+            wetness: zone.wetness * keep + self.weather.wetness,
+            puddles: zone.puddles * keep + self.weather.puddles,
+        }
+    }
+}
+
+impl Mix for KeyedWeather {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            weather: Weather {
+                wetness: lerp(self.weather.wetness, other.weather.wetness, t),
+                puddles: lerp(self.weather.puddles, other.weather.puddles, t),
+            },
+            share: lerp(self.share, other.share, t),
+        }
+    }
 }
 
 /// Up to two color grades and the blend between them: what post's two LUTs can show (spec
@@ -685,6 +740,7 @@ impl Mix for TodLook {
             lens_flare: self.lens_flare.mix(&other.lens_flare, t),
             emission: self.emission.mix(&other.emission, t),
             character_shade: self.character_shade.mix(&other.character_shade, t),
+            weather: self.weather.mix(&other.weather, t),
         }
     }
 }
@@ -856,6 +912,15 @@ impl Resolve for Vec<GradientKey> {
     }
 }
 
+/// A keyed weather replaces the zone's whole.
+impl Resolve for WeatherKey {
+    type Value = KeyedWeather;
+
+    fn resolve(&self) -> KeyedWeather {
+        KeyedWeather { weather: Weather { wetness: self.wetness, puddles: self.puddles }, share: 1.0 }
+    }
+}
+
 impl Resolve for LensFlareKey {
     type Value = LensFlare;
 
@@ -870,6 +935,19 @@ mod tests {
 
     fn grade(saturation: f32) -> ColorGrade {
         ColorGrade { saturation, ..ColorGrade::NEUTRAL }
+    }
+
+    #[test]
+    fn keyed_weather_lies_over_the_zones_by_its_share() {
+        let zone = Weather { wetness: 0.7, puddles: 0.3 };
+        assert_eq!(TodLook::default().weather_over(zone), zone, "nothing keyed: the zone's, exactly");
+        let shower = WeatherKey { wetness: 1.0, puddles: 0.5 }.resolve();
+        let keyed = TodLook { weather: shower, ..TodLook::default() };
+        assert_eq!(keyed.weather_over(zone), Weather { wetness: 1.0, puddles: 0.5 }, "the keys', exactly");
+        // A cutscene's track at half weight over a look with none keyed.
+        let half = mix(&TodLook::default().weather, &shower, 0.5);
+        let over = half.over(zone);
+        assert!((over.wetness - 0.85).abs() < 1e-6 && (over.puddles - 0.4).abs() < 1e-6, "{over:?}");
     }
 
     #[test]

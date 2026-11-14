@@ -328,6 +328,8 @@
 //!   `0` is a clear sky.
 //! - `--plain-sky`: draw the sky's gradient alone (no discs, glows, stars or clouds), a backdrop
 //!   the same at any hour, which the golden scenes from before the sky's layers pin.
+//! - `--weather <wetness>,<puddles>` (each 0 to 1) or `--weather dry`: draw this weather in place of the
+//!   zone's and its day's (M5 L4), the last of the three places the frame's weather comes from.
 //! - `--no-reflection-probes`: load no zone's reflection probes (M5 L3), so glossy surfaces reflect the
 //!   sky alone, which the golden scenes from before probes pin.
 //! - `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the look-dev character held at a spawner of the zone

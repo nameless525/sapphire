@@ -10,7 +10,7 @@ use sapphire_render::quality::{
 };
 use sapphire_render::{
     ColorVision, CullingMode, CullingThresholds, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE,
-    MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Wind,
+    MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Weather, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -347,6 +347,10 @@ pub(crate) struct Options {
     pub cloud_cover: Option<f32>,
     /// `--plain-sky`: the sky's gradient alone, with no discs, glows, stars or clouds.
     pub plain_sky: bool,
+    /// `--weather <wetness>,<puddles>` or `--weather dry`: the frame's weather in place of the zone's and its
+    /// day's (M5 L4), each a share from 0 to 1; `dry` is `0,0`, what a scene from before wet surfaces pins in a
+    /// zone with weather.
+    pub weather: Option<Weather>,
     /// `--no-reflection-probes`: no zone's reflection probes loaded (M5 L3), so glossy surfaces reflect the
     /// sky alone, as in the scenes captured before them.
     pub no_reflection_probes: bool,
@@ -570,6 +574,7 @@ impl Options {
         }
         scene.set_cloud_cover(self.cloud_cover);
         scene.set_plain_sky(self.plain_sky);
+        scene.set_weather(self.weather);
         scene.set_fog(!self.fog_off);
         scene.set_plain_post(self.plain_post);
         scene.set_sharpening(self.sharpening);
@@ -1205,6 +1210,7 @@ impl Options {
                     }
                     options.cloud_cover = Some(cover);
                 }
+                "--weather" => options.weather = Some(parse_weather(&value("--weather")?)?),
                 "--view" => options.view = Some(parse_view(&value("--view")?)?),
                 "--fov" => {
                     let degrees: f32 = number(&value("--fov")?, "--fov")?;
@@ -2013,6 +2019,20 @@ fn parse_view(raw: &str) -> Result<(f32, f32), String> {
     Ok((yaw, pitch))
 }
 
+/// `--weather`'s `<wetness>,<puddles>`, each a share from 0 to 1, or `dry` (M5 L4).
+fn parse_weather(raw: &str) -> Result<Weather, String> {
+    let invalid = || format!("--weather expects <wetness>,<puddles>, each 0 to 1, or dry, got {raw:?}");
+    if raw == "dry" {
+        return Ok(Weather::DRY);
+    }
+    let (wetness, puddles) = raw.split_once(',').ok_or_else(invalid)?;
+    let share = |text: &str| -> Result<f32, String> {
+        let value: f32 = text.trim().parse().map_err(|_| invalid())?;
+        if (0.0..=1.0).contains(&value) { Ok(value) } else { Err(invalid()) }
+    };
+    Ok(Weather { wetness: share(wetness)?, puddles: share(puddles)? })
+}
+
 /// `--effect-scale`'s `<flashes>:<motion>`: flashes `normal` or `reduced`, as the player's setting has them
 /// (M4 A3), and motion 0 to 1.
 fn parse_effect_scale(raw: &str) -> Result<EffectScale, String> {
@@ -2571,6 +2591,13 @@ mod tests {
         assert!(probes.no_reflection_probes && !Options::default().no_reflection_probes);
         assert_eq!(parse(&["--view", " -40.5 , 10 "]).unwrap().0.view, Some((-40.5, 10.0)));
         assert_eq!(parse(&[]).unwrap().0.cloud_cover, None);
+        let wet = parse(&["--weather", "0.8,0.25"]).unwrap().0;
+        assert_eq!(wet.weather, Some(Weather { wetness: 0.8, puddles: 0.25 }));
+        assert_eq!(parse(&["--weather=dry"]).unwrap().0.weather, Some(Weather::DRY));
+        assert_eq!(parse(&[]).unwrap().0.weather, None, "the zone's and its day's");
+        for wrong in ["0.5", "1.5,0", "0,-0.1", "NaN,0", "wet"] {
+            assert!(parse(&["--weather", wrong]).is_err(), "{wrong}");
+        }
         assert!(parse(&["--cloud-cover", "1.5"]).is_err());
         assert!(parse(&["--cloud-cover", "NaN"]).is_err());
         assert!(parse(&["--view", "120"]).is_err());

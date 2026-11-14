@@ -25,6 +25,10 @@
 //! arrival puts them on. A zone that names none of something gets the stage's own back. And what the zone
 //! arriving prefetches stays mounted, the zone left behind included, so a hub's next zone isn't mounted again
 //! on every visit.
+//!
+//! The frame's weather (M5 L4) comes from three places, each over the last: the zone's (dry with none), then its
+//! day's keyed weather by the keys' share (`TodLook::weather_over`: a day that keys none leaves the zone's), then a
+//! tool's (`Scene::set_weather`, the sandbox's `--weather`). The simulation never reads it.
 
 use std::f32::consts::PI;
 
@@ -44,7 +48,7 @@ use sapphire_render::{
 use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary};
 use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer};
-use sapphire_world::tod::{TimeOfDay, TodTimeline};
+use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline};
 use sapphire_zone::{ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, Zone, ZoneFog};
 
 use super::{Figure, LOG_TARGET, Lamp, Scene};
@@ -374,7 +378,7 @@ pub(super) struct ZoneAir {
     /// The stage's own day, rigs and wind, for a zone that names none of them.
     own: Option<StageLook>,
     /// The zone's weather: dry without one.
-    weather: Weather,
+    pub(super) weather: Weather,
     /// Its fog over the day's.
     fog: Option<ZoneFog>,
     /// Its sky material on the renderer, once it's there (`Content::zone_sky_material`).
@@ -389,10 +393,17 @@ struct StageLook {
 }
 
 impl ZoneAir {
-    /// Writes the zone's weather and its fog over the day's into `packet`, after time of day has written it, the
-    /// zone's origin lying at `origin` in the world's height; and its sky in place of the app's `sky`.
-    pub(super) fn write(&self, packet: &mut FramePacket, sky: Option<MaterialHandle>, origin: f32) {
-        packet.weather = self.weather;
+    /// Writes the zone's weather under the day's `keyed` weather (M5 L4) and its fog over the day's into `packet`,
+    /// after time of day has written it, the zone's origin lying at `origin` in the world's height; and its sky in
+    /// place of the app's `sky`.
+    pub(super) fn write(
+        &self,
+        packet: &mut FramePacket,
+        sky: Option<MaterialHandle>,
+        origin: f32,
+        keyed: KeyedWeather,
+    ) {
+        packet.weather = keyed.over(self.weather);
         packet.sky_material = self.sky.or(sky);
         if let Some(zone) = self.fog {
             thicken(&mut packet.fog, zone, origin);

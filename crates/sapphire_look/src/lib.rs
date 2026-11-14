@@ -30,6 +30,9 @@
 //!   decals' signed distance shapes ([`VfxDecal`], M5 L7).
 //! - **Colour vision** ([`color_vision`], M4 A5): the three dichromacies by Machado et al. (2009), which
 //!   the renderer's colour-vision debug view and the cue tests share, and Oklab's distance.
+//! - **The weather** ([`weather`], M5 L4): how wet the world is and how far its puddles have
+//!   filled ([`Weather`]), which a zone, its day's keys and a tool resolve and the environment's
+//!   wet surfaces draw.
 //! - **The on-screen interface's draw list** ([`ui`], M2 I2): quads over a distance field atlas
 //!   ([`UiDrawList`], [`UiQuad`], [`UiAtlas`]), so `sapphire_ui` writes straight into the packet
 //!   with no edge to the renderer, and the renderer draws them with no edge to `sapphire_ui`.
@@ -37,17 +40,17 @@
 //! # Does not own
 //!
 //! - The frame packet itself and the rest of what it carries (views, instance deltas, poses,
-//!   local lights, characters' faces and bodies, weather, wind, the probe keys): the renderer's,
+//!   local lights, characters' faces and bodies, wind, the probe keys): the renderer's,
 //!   beside the code that reads them.
 //! - Drawing: the renderer's passes and WGSL. The CPU models here mirror its shaders, and the
 //!   renderer's tests hold the two together.
 //! - Where the values come from: time of day's keys (`sapphire_tod`), the world's light rigs and
-//!   screen effects (`sapphire_world`).
+//!   screen effects (`sapphire_world`), a zone's weather (the stage).
 //!
 //! # Later milestones
 //!
-//! - **Weather and wind** join the look here once the world resolves them per zone and hour (M2);
-//!   until then they are the renderer's plain packet data, like the rest of the packet.
+//! - **Wind** joins the look here once the world resolves it per hour, as the weather has (M5 L4);
+//!   until then it is the renderer's plain packet data, like the rest of the packet.
 
 pub mod color_vision;
 pub mod fog;
@@ -56,6 +59,7 @@ pub mod post;
 pub mod sky;
 pub mod ui;
 pub mod vfx;
+pub mod weather;
 
 pub use color_vision::Dichromacy;
 pub use fog::{Fog, FogLayer, FogRay, HeightFog};
@@ -80,3 +84,4 @@ pub use vfx::mesh::{
     VfxPattern,
 };
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};
+pub use weather::Weather;

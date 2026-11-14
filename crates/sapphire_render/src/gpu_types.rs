@@ -49,7 +49,8 @@ pub(crate) struct FrameUniforms {
     pub ambient_ground: [f32; 4],
     /// rgb: the share of the key light kept in shadow (`FramePacket::shadow_tint`).
     pub shadow_tint: [f32; 4],
-    /// x: wetness; y: puddle coverage (`FramePacket::weather`).
+    /// x: wetness; y: how far puddles have filled (`FramePacket::weather`, held to 0 to 1, NaN
+    /// dry), which the environment's wet surfaces read (M5 L4); both 0 is a dry frame.
     pub weather: [f32; 4],
     /// The fog over the world and the sky (`FramePacket::fog`, M1 W3).
     pub fog: GpuFog,
@@ -80,7 +81,10 @@ impl FrameUniforms {
             ambient_sky: (frame.ambient.sky * frame.ambient.intensity).extend(0.0).to_array(),
             ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
             shadow_tint: frame.shadow_tint.extend(0.0).to_array(),
-            weather: [frame.weather.wetness, frame.weather.puddles, 0.0, 0.0],
+            weather: {
+                let weather = frame.weather.clamped();
+                [weather.wetness, weather.puddles, 0.0, 0.0]
+            },
             fog,
         }
     }

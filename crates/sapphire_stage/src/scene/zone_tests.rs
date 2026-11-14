@@ -1083,7 +1083,11 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
             ..RoomLook::default()
         },
         RoomLook { grid: Some(vec![12.0, 18.0]), ..RoomLook::default() },
-        RoomLook { fog: Some(ZoneFog { density: 2.0, height_base: Some(1.5) }), ..RoomLook::default() },
+        RoomLook {
+            fog: Some(ZoneFog { density: 2.0, height_base: Some(1.5) }),
+            weather: Some(ZoneWeather { wetness: 0.25, puddles: 0.5 }),
+            ..RoomLook::default()
+        },
     ];
     let mut walk = Walk::dressed_rooms(SMALL, &looks, no_limits());
     walk.look_from(Vec3::new(16.0, 0.0, 16.0));
@@ -1143,6 +1147,8 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(on_renderer(&walk), None);
     assert_eq!(in_third.fog.near.density, 2.0 * in_second.fog.near.density, "its fog, twice the day's");
     assert_eq!(in_third.fog.height.density, 2.0 * in_second.fog.height.density);
+    // Its weather (M5 L4), taken at the arrival, which a trip's wipe covers.
+    assert_eq!((in_third.weather.wetness, in_third.weather.puddles), (0.25, 0.5), "its weather");
     assert_eq!(in_third.fog.height.base, 1.5, "on its floor");
 
     walk.trip(0, settings);

@@ -77,7 +77,8 @@ impl TodTimeline {
 
     /// Whether the keys set every group the base timeline must: all but the optional ones
     /// ([`TodGroup::OPTIONAL`](super::TodGroup::OPTIONAL): the sky's and post's layers, which draw
-    /// nothing where unset, and the emission scale, which shows emission as authored).
+    /// nothing where unset, the emission scale, which shows emission as authored, and the weather,
+    /// which leaves the zone's).
     pub fn is_complete(&self) -> bool {
         TodGroups::REQUIRED.first_missing_from(self.groups).is_none()
     }

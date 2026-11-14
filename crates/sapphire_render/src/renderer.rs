@@ -66,7 +66,7 @@ use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
 use crate::texture::{GpuTexture, TextureError};
 use crate::ui::{Ui, UiPicture, UiStats};
-use crate::vfx::{self, AfterResolveTargets, Vfx, VfxRenderStats};
+use crate::vfx::{self, AfterResolveTargets, Vfx, VfxParts, VfxRenderStats};
 use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
 use crate::warm_up::{
     Done as WarmUpDone, Job as WarmUpJob, WarmUpProgress, WarmUpRequest, WarmUpStats, WarmUps,
@@ -1752,8 +1752,9 @@ impl Renderer {
             debug_draw: has(Program::DebugDraw)
                 .then(|| self.debug_draw.as_ref().map(|draw| draw.rebuild()))
                 .flatten(),
-            // Only those built so far: none before the first effect.
-            vfx: has(Program::Vfx).then(|| self.vfx.rebuild()).flatten(),
+            // Only those built so far: none before the first effect, and the meshes' none before the first
+            // effect mesh.
+            vfx: self.vfx.rebuild(has(Program::Vfx), has(Program::VfxMesh)),
             ui: has(Program::Ui).then(|| self.ui.rebuild()).flatten(),
             changed,
         }
@@ -2058,7 +2059,10 @@ impl Renderer {
             ambient: self.ambient.warm(inventory.probe_grid, reflection),
             skinning: inventory.skinning.then(|| self.skinning.warm(device, &self.pipeline_builds)).flatten(),
             post: self.post.warm(inventory.post, inventory.insets, &inventory.color_vision, on),
-            vfx: inventory.effects.then(|| self.vfx.warm(true, on)).flatten(),
+            vfx: self.vfx.warm(
+                VfxParts { sprites: inventory.effects, meshes: inventory.effect_meshes, mask: true },
+                on,
+            ),
             ui: inventory.ui.then(|| self.ui.warm()).flatten(),
             sky: self.sky.warm(&inventory.sky, &self.materials, on),
             debug_draw,
@@ -2165,8 +2169,9 @@ impl Renderer {
             }
             let on = BuildOn::sources(renderer.edited_shaders);
             renderer.post.prewarm(inventory.post, on);
-            if inventory.effects {
-                renderer.vfx.build(&renderer.shaders, true, on);
+            let parts = VfxParts { sprites: inventory.effects, meshes: inventory.effect_meshes, mask: true };
+            if parts.sprites || parts.meshes {
+                renderer.vfx.build(&renderer.shaders, parts, on);
             }
             if inventory.ui {
                 renderer.ui.build(&renderer.shaders);

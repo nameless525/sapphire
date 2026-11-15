@@ -229,7 +229,9 @@
 //!   clears each tile it draws with a tiny pipeline of its own (`vs_clear_tile`). A lost frame
 //!   forgets the tiles it drew.
 //! - **Casters:** everything a cascade would take inside the tile's view, at the level its texel
-//!   asks for there, with the shared casters' bias; characters and their masked parts too.
+//!   asks for there, with the shared casters' bias; characters and their masked parts too, one that
+//!   chooses its level by error (M5 D5) at its tile's as at its map's, so skinning skins no more of it
+//!   for a lamp (M5 Z3g), one kept whole at level 0.
 //! - **Receivers:** the local lights' loops (environment, anime character, foliage): a light's
 //!   record names its tile (`GpuLight::cone`'s z), and `spot_visibility` in `frame.wgsl` takes the
 //!   cascades' tent and bias at the tile's texel, its center kept inside the tile so the filter never

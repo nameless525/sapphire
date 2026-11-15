@@ -725,9 +725,13 @@ impl ShadowPlan {
                         });
                     }
                     self.moving[slot as usize] = true;
+                    // A spot tile draws it at the tile's texel as its map does: kept whole, at
+                    // level 0; by error, at the level the tile asks for, so a lamp doesn't make
+                    // skinning skin it whole.
                     if !self.spots.is_empty() {
+                        let stretch = max_stretch(transform);
                         spot_caster =
-                            slots.world_bounds(slot, meshes).map(|sphere| (sphere, true, None, 1.0));
+                            slots.world_bounds(slot, meshes).map(|sphere| (sphere, true, errors, stretch));
                     }
                 }
                 SlotCharacter::Environment => {

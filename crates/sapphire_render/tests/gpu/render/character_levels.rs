@@ -10,7 +10,7 @@ use sapphire_assets::mesh::Lod;
 use sapphire_render::quality::TierTable;
 use sapphire_render::{
     CharacterBody, CharacterDetail, CharacterFace, CharacterInstance, CharacterLighting, LevelSettings,
-    LevelsMode, MaterialDrive, RenderStats,
+    LevelsMode, MaterialDrive, RenderStats, ShadowSettings,
 };
 
 use super::*;
@@ -68,6 +68,19 @@ fn run(
     detail: impl Fn(u32) -> CharacterDetail,
     posed: impl Fn(u32) -> bool,
 ) -> Vec<Frame> {
+    run_lit(gpu, settings, mesh, frames_count, detail, posed, &[])
+}
+
+/// [`run`], with `lights` in every frame.
+fn run_lit(
+    gpu: &GpuContext,
+    settings: RenderSettings,
+    mesh: &Mesh,
+    frames_count: u32,
+    detail: impl Fn(u32) -> CharacterDetail,
+    posed: impl Fn(u32) -> bool,
+    lights: &[LocalLight],
+) -> Vec<Frame> {
     let mut frames = Frames::with_settings(gpu, FORMAT, settings).expect("renderer");
     frames.renderer.set_render_scale(1.0);
     // The depth read below reads the scene prepass, which a tier may otherwise leave unbuilt.
@@ -98,6 +111,7 @@ fn run(
         packet.sky = frames.sky;
         packet.ambient = frames.ambient;
         packet.post = frames.post;
+        packet.lights.extend_from_slice(lights);
         if frame == 0 {
             packet.instances.changed.push(instance(1, mesh, Mat4::IDENTITY));
         }
@@ -244,4 +258,43 @@ fn depth_and_motion_across_a_switch_are_those_of_no_switch() {
             |frame: usize| switched[frame].0[2].iter().filter(|texel| rg16f(**texel) != [0.0, 0.0]).count();
         assert!(motion(4) > 0, "{label}: the frame the prefix grows on has motion");
     }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_spot_tile_draws_a_coarser_character_at_its_texel() {
+    let gpu = gpu();
+    let leveled = sphere_with_levels();
+    let full = leveled.streams.len() as u32;
+    // A flagged spot above and beside the camera, its cone round the character: a tile it casts into.
+    let lamp_at = Vec3::new(2.0, 4.0, 4.0);
+    let lamp = LocalLight {
+        position: lamp_at,
+        color: Vec3::ONE,
+        intensity: 1.0,
+        range: 20.0,
+        kind: LightKind::Spot {
+            direction: -lamp_at.normalize(),
+            inner_angle: 25f32.to_radians(),
+            outer_angle: 30f32.to_radians(),
+            shadow: true,
+        },
+    };
+    let shadows = ShadowSettings { spots: 2, ..ShadowSettings::default() };
+    let settings = with_levels(LevelsMode::Fixed(1), RenderSettings { shadows: Some(shadows), ..moving() });
+    let last = |detail: fn(u32) -> CharacterDetail| {
+        run_lit(&gpu, settings, &leveled, 3, detail, |_| true, &[lamp]).pop().expect("frames").1
+    };
+    // Held at level 1, it casts into the tile at level 1 too, so only level 1's prefix is skinned.
+    let coarse = last(|_| CharacterDetail::ByError);
+    let spots = coarse.passes.spots;
+    assert!(spots.levels[1] > 0, "the tile draws it at level 1: {spots:?}");
+    assert_eq!(spots.levels[0], 0, "and not at level 0: {spots:?}");
+    assert_eq!(coarse.skinning.coarser, 1, "{:?}", coarse.skinning);
+    assert_eq!(coarse.skinning.vertices, CAP_VERTICES, "the cap's prefix alone is skinned");
+    // One the stage keeps whole casts whole.
+    let whole = last(|_| CharacterDetail::Whole);
+    let spots = whole.passes.spots;
+    assert!(spots.levels[0] > 0 && spots.levels[1] == 0, "the tile draws it whole: {spots:?}");
+    assert_eq!(whole.skinning.vertices, full);
 }

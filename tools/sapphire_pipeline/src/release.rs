@@ -28,7 +28,10 @@
 //! anything is written unless an install of the earlier release would take it, of the same cook, newer, and
 //! signed by a key the earlier names, and unless it carries only what a patch may: every file the simulation
 //! reads as the earlier release has it, the first one that isn't named (m4-plan §3 "What a patch may carry").
-//! What the simulation reads otherwise is compiled into the app, so no pack can change it. A patch also counts
+//! What the simulation reads otherwise is compiled into the app, but for the stock arena's two bound bodies,
+//! which hash their graphs, clips, skeletons and rigs, and the warrior's kind, from packs: a patch that
+//! changes those bytes changes the simulation, and nothing here refuses it, since every pack file counts as
+//! patchable. M5's review measured that and left it as a known risk. A patch also counts
 //! what it moves, by kind, and is warned of when that's more than an edit moves or when the two releases were
 //! cooked on different architectures ([`PatchSize`], M4 S7).
 //!

@@ -165,7 +165,8 @@ pub(crate) struct ShadowPlan {
     /// Per cascade (M5 D8, a cache that keeps): what its map holds is no longer what its casters
     /// would draw, since something in it moved, came, left or changed its level after it drew.
     stale: [bool; MAX_CASCADES],
-    /// The draw list's build the maps were last checked against: a new one leaves every map stale.
+    /// The draw list's build `cutout` was listed from ([`Self::follow_list`]): a new one lists it
+    /// again, and leaves no map stale by itself.
     list_build: Option<u32>,
     /// Per instance slot: what the maps hold of it.
     kept: Vec<KeptCaster>,

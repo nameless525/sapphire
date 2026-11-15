@@ -85,8 +85,8 @@
 //! - **Casters** are the depth-writing surfaces of environment instances (opaque and
 //!   alpha-tested, drawn solid but for the anime character family's, below; transparent ones cast
 //!   nothing, as in the prepasses), culled per
-//!   cascade by their bounding spheres; skinned and morphed environment instances go into every
-//!   cascade, since the cascades don't read their posed bounds yet. Outline hulls cast nothing.
+//!   cascade by their bounding spheres, a skinned or morphed environment instance's posed ones
+//!   (M5 D3: around its pending pose and its last drawn one). Outline hulls cast nothing.
 //!   Casters are drawn two-sided, so single-sided walls cast, with a slope-scaled depth bias
 //!   (`CASTER_BIAS`).
 //! - **Masked casters** (M5 L12): the alpha-tested anime character variants cast through a

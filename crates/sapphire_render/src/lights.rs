@@ -38,6 +38,11 @@
 //! anything else. They keep their own directions: the rig's limits on where a key light may come
 //! from are for the key light alone.
 //!
+//! A spot flagged to cast a shadow (M5 L16) carries its tile of the spot layer in its record
+//! (`GpuLight::cone`'s z, the tile plus 1), which [`Lights::prepare`] takes from the shadows'
+//! choice of the frame's spots, made before the lights are packed. Its shadow enters its own split
+//! as occlusion (the `shadows` module docs, "Spot lights' shadows").
+//!
 //! # Later milestones
 //!
 //! - **Light layers** keep VFX lights off faces and off the depth-offset rim, which every local

@@ -370,7 +370,8 @@ A zone's look is its own since M5 M6, as it opens and when a trip arrives in it:
    ],
    ```
    A probe stands about eye height, and its box is the space it stands in: a room's walls, floor and ceiling, a street's two fronts, an open place's edges and a height over its roofs. The box must hold the probe, at least 0.1 m a side. Names are unique, and a zone holds at most 42. The cook bakes them under the zone's day (`day`, or the default day) from its cells, backdrop and instances, into `<zone>.sreflect` beside the `.szone`, and only the probes, the instances' places and what they see key it ([proving_ground.zone.ron](../content/zones/proving_ground/proving_ground.zone.ron)). Glossy surfaces reflect them since M5 L3: "A reflection probe" below says how to place one well and how to look at it.
-6. **Take its copies again** (step 6 above), since the zone's cook moved. Then `cargo xtask replay` to show no checksum did. A golden of it is a row ("A golden").
+6. **Its lamps' shadows** (M5 L16): a spot light casts a shadow when its shape says so, `shape: Spot(direction: (0.0, -1.0, 0.2), inner_degrees: 35.0, outer_degrees: 45.0, shadow: true)`. Flag the lamps a character walks under, at most 60° round the axis (a wider one casts nothing, with a warning). Desktop-High casts the 4 flagged spots nearest the view, Desktop-Low 2 and phones none, each a cached tile: a lamp costs a tile's draw only on the frames something in its cone moves (a character under it, foliage in the wind), and its lookup only on the pixels it lights. Count `spot tiles redrawn` on the zone's walk to see what yours cost.
+7. **Take its copies again** (step 6 above), since the zone's cook moved. Then `cargo xtask replay` to show no checksum did. A golden of it is a row ("A golden").
 
 ### A reflection probe (M5 L3)
 

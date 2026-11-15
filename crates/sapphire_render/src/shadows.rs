@@ -177,13 +177,42 @@
 //!   casts only its capsule, so dozens of them cost the named ones a few capsule slots and each
 //!   other nothing.
 //!
+//! # Spot lights' shadows (M5 L16)
+//!
+//! A spot light whose author flagged it (`LightKind::Spot::shadow`) casts, on a tier with
+//! [`ShadowSettings::spots`] (Desktop-High 4, Desktop-Low 2, phones none). The `spots` module plans
+//! them: which flagged spots cast (those whose cone reaches the view, nearest first, the last one
+//! fading out before it gives its tile up; none wider than 120°), the perspective each tile looks
+//! through, and the cache.
+//!
+//! - **Where:** one more layer of the cascades' array, the spot layer, 2 × 2 tiles of half a
+//!   cascade's resolution. Not the character atlas: its pass clears it whole every frame a character
+//!   draws a map, and a spot tile is meant to outlive frames. Nothing that walks the cascades sees
+//!   the layer: the cascades are `cascades` layers from 0, the cache, the plan's fits, the debug
+//!   views and the `cascade N` counts are indexed by cascade, and the spot views have their own
+//!   `Walk::Spot` lists, views (after the character maps') and counter (`Counted::Spots`).
+//! - **Cached:** a tile is drawn again only when its spot was just given it or moved, when what
+//!   casts into it changed (a signature of its casters' slots, meshes, levels and transforms), when
+//!   something in it moves by itself (characters, skinned instances, foliage in the wind), or when
+//!   a mesh or material was replaced or shaders rebuilt (`Shadows::forget_spots`). The spot pass
+//!   (`spot shadows`) clears the layer when every tile a spot holds is drawn, else loads it and
+//!   clears each tile it draws with a tiny pipeline of its own (`vs_clear_tile`). A lost frame
+//!   forgets the tiles it drew.
+//! - **Casters:** everything a cascade would take inside the tile's view, at the level its texel
+//!   asks for there, with the shared casters' bias; characters and their masked parts too.
+//! - **Receivers:** the local lights' loops (environment, anime character, foliage): a light's
+//!   record names its tile (`GpuLight::cone`'s z), and `spot_visibility` in `frame.wgsl` takes the
+//!   cascades' tent and bias at the tile's texel, its center kept inside the tile so the filter never
+//!   reads a neighbour, into that light's terminator or split. All behind `SPOT_SHADOWS`, a pipeline
+//!   constant on only where the tier casts spots.
+//!
 //! # Passes and bindings
 //!
 //! Side-effect passes before the main pass, since the maps are persistent textures outside the
 //! frame graph (as the sky cube is): `shadow cascade 0`… for each cascade drawn this frame,
 //! `character shadows` (the atlas, when a character draws a map) and `face shadows` (compute,
-//! when a face or an eye draws). Their GPU time is the shadow row of the stats overlay and of
-//! the bench ([`PASSES`]). Receivers read group 0: the
+//! when a face or an eye draws) and `spot shadows` (the spot layer's tiles drawn this frame, M5
+//! L16). Their GPU time is the shadow row of the stats overlay and of the bench ([`PASSES`]). Receivers read group 0: the
 //! `ShadowUniforms` at binding 4 (light space, every cascade's and map's area and depth transform,
 //! the capsules), the cascades at 5, the atlas at 6 and a comparison sampler at 7; no
 //! storage buffer is added. The caster pipelines bind the view group (each map's view at its own
@@ -211,7 +240,8 @@
 //!   with penumbra classification and screen-space contact shadows.
 //! - **Clearing only the atlas tiles drawn:** the whole character atlas clears every frame a
 //!   character draws a map (4096 × 2048 on Desktop-High, about 80 µs on an M5).
-//! - **Cloud shadows** from the card clouds' coverage (W2), and local-light shadows.
+//! - **Cloud shadows** from the card clouds' coverage (W2), and point lights' shadows (spot lights
+//!   cast since M5 L16).
 //! - **GPU culling** of casters with the main view's (spec §5.12, "Culling"); then a cascade's
 //!   casters can be drawn only where the camera's motion uncovered new ground (NTE's tiles).
 //! - **A shadows cvar** (`r.shadows`) for the overlay: a change makes a new renderer, as `r.tier`

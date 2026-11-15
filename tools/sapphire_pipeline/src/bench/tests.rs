@@ -32,15 +32,16 @@ fn generating_twice_writes_the_same_bytes() {
     for preset in Preset::ALL {
         let (first, second) =
             (dir.path().join(format!("{preset}_a")), dir.path().join(format!("{preset}_b")));
-        generate(&bench_dir(), preset, &first).unwrap();
-        generate(&bench_dir(), preset, &second).unwrap();
+        generate(&bench_dir(), preset, Cook::Desktop, &first).unwrap();
+        generate(&bench_dir(), preset, Cook::Desktop, &second).unwrap();
         let (first, second) = (tree(&first), tree(&second));
         assert_eq!(first.keys().collect::<Vec<_>>(), second.keys().collect::<Vec<_>>(), "{preset}");
         for (path, bytes) in &first {
             assert!(second[path] == *bytes, "{preset}: {path} differs");
         }
         // Again over the first: nothing changes.
-        let again = generate(&bench_dir(), preset, &dir.path().join(format!("{preset}_a"))).unwrap();
+        let again =
+            generate(&bench_dir(), preset, Cook::Desktop, &dir.path().join(format!("{preset}_a"))).unwrap();
         assert!(again.created.is_empty() && again.replaced.is_empty(), "{preset}: {again:?}");
     }
 }
@@ -65,7 +66,7 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
         ("district/textures", "3e8613b7430eec9bb2d03163a999abe8ff34be45744a6c7908f0b94d853005c0"),
     ];
     let dir = TempDir::new("bench_pinned");
-    generate(&bench_dir(), Preset::Ci, dir.path()).unwrap();
+    generate(&bench_dir(), Preset::Ci, Cook::Desktop, dir.path()).unwrap();
     let mut folders: BTreeMap<String, blake3::Hasher> = BTreeMap::new();
     for (path, bytes) in tree(dir.path()) {
         let folder = path.rsplit_once('/').map_or(".", |(folder, _)| folder).to_owned();
@@ -88,7 +89,7 @@ fn a_preset_scales_the_district_and_the_cast() {
     let dir = TempDir::new("bench_presets");
     let count = |preset: Preset, pattern: &str| {
         let out = dir.path().join(preset.name());
-        generate(&bench_dir(), preset, &out).unwrap();
+        generate(&bench_dir(), preset, Cook::Desktop, &out).unwrap();
         tree(&out).keys().filter(|path| path.ends_with(pattern)).count()
     };
     assert_eq!(count(Preset::Ci, ".ptex.ron"), 4 * 3);
@@ -129,12 +130,12 @@ fn a_preset_scales_the_district_and_the_cast() {
 fn what_an_earlier_run_wrote_goes() {
     let dir = TempDir::new("bench_stale");
     let out = dir.path().join("out");
-    generate(&bench_dir(), Preset::Budget, &out).unwrap();
-    generate(&bench_dir(), Preset::Ci, &out).unwrap();
+    generate(&bench_dir(), Preset::Budget, Cook::Desktop, &out).unwrap();
+    generate(&bench_dir(), Preset::Ci, Cook::Desktop, &out).unwrap();
     assert!(!out.join("district/textures/set_004.color.ptex.ron").exists());
     assert!(!out.join("cast/hero_01").exists(), "an emptied folder goes too");
     let fresh = dir.path().join("fresh");
-    generate(&bench_dir(), Preset::Ci, &fresh).unwrap();
+    generate(&bench_dir(), Preset::Ci, Cook::Desktop, &fresh).unwrap();
     assert_eq!(tree(&out), tree(&fresh));
 }
 
@@ -142,7 +143,10 @@ fn what_an_earlier_run_wrote_goes() {
 fn a_tree_it_didnt_write_is_left_alone() {
     let dir = TempDir::new("bench_foreign");
     fs::write(dir.path().join("keep.txt"), "mine").unwrap();
-    assert!(matches!(generate(&bench_dir(), Preset::Ci, dir.path()), Err(BenchError::NotGenerated(_))));
+    assert!(matches!(
+        generate(&bench_dir(), Preset::Ci, Cook::Desktop, dir.path()),
+        Err(BenchError::NotGenerated(_))
+    ));
     assert_eq!(fs::read_to_string(dir.path().join("keep.txt")).unwrap(), "mine");
 }
 
@@ -152,4 +156,26 @@ fn presets_parse_by_name() {
     assert_eq!("budget".parse::<Preset>().unwrap(), Preset::Budget);
     assert_eq!("double".parse::<Preset>().unwrap(), Preset::Double);
     assert!(matches!("huge".parse::<Preset>(), Err(BenchError::Preset(_))));
+}
+
+/// Each cook's tree is its own (M5 B6): its marker says its cook, and a tree is never generated over as the
+/// other cook's, either way round, so a desktop tree can't become the phones' nor the phones' the desktop's.
+/// The desktop's marker reads as it always has.
+#[test]
+fn a_tree_is_never_generated_over_as_the_other_cooks() {
+    let dir = TempDir::new("bench_cooks");
+    for (cook, other) in [(Cook::Desktop, Cook::Mobile), (Cook::Mobile, Cook::Desktop)] {
+        let out = dir.path().join(cook.name());
+        generate(&bench_dir(), Preset::Ci, cook, &out).unwrap();
+        let marker = fs::read_to_string(out.join(MARKER)).unwrap();
+        assert_eq!(marker, marker_text(Preset::Ci, cook));
+        assert_eq!(marker_cook(&marker), cook);
+        let refused = generate(&bench_dir(), Preset::Ci, other, &out);
+        assert!(matches!(refused, Err(BenchError::OtherCook { .. })), "{cook}'s tree generated as {other}'s");
+        assert_eq!(fs::read_to_string(out.join(MARKER)).unwrap(), marker, "the refused tree is untouched");
+    }
+    assert_eq!(
+        marker_text(Preset::Budget, Cook::Desktop),
+        "Generated by `sapphire_pipeline gen-bench --preset budget`: never commit it.\n"
+    );
 }

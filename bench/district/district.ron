@@ -9,9 +9,13 @@
 // The budget preset is 8 × 8 cells, 256 m square, at 160 texture sets of three 2K maps: 16 MiB a set in BC7
 // and BC5 with full mips, 2.5 GiB, the desktop pool. `double` is the same district at twice the pool, for the
 // streamer's proof; nothing cooks it unless asked.
+//
+// The phones' cook reads a tree of its own (`gen-bench --cook mobile`, M5 B6): the same district, its cells
+// drawing four materials (`phone_palette`) where the desktop's draw sixteen (`palette`), as a phone build's
+// content would. The engine reduces no cell's materials by itself.
 (
     type: "sapphire::pipeline::BenchDistrict",
-    version: 3,
+    version: 4,
     data: (
         cell_size: 32.0,
         // Widths in metres; `edge` is the alley between the outer blocks and the boundary wall.
@@ -69,6 +73,9 @@
         // Texture sets a cell's props and ground draw from: a cell's merged mesh has at most this many
         // materials, and its ground the first.
         palette: 16,
+        // The same in the phones' tree (M5 B6): a phone build's content carries fewer materials a cell, since a
+        // cell's merged mesh draws a call a material and the engine reduces none by itself.
+        phone_palette: 4,
         // Its look: the day in this folder (a dusk key and a night key), and its own air.
         day: "district_day.ron",
         wind: Some((direction: (0.8, 0.0, 0.6), strength: 0.4, gustiness: 0.3)),

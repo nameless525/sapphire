@@ -2,8 +2,10 @@
 //! them, all under `target/bench/` (M5 B1).
 //!
 //! The pipeline's `gen-bench` writes the preset's sources into `target/bench/<preset>/sources/`, each with its
-//! sidecar (`sapphire_pipeline::bench`); the pipeline's cook then reads them as it reads `content/`, into
-//! loose files in `target/bench/<preset>/loose/<cook>/` and packs in `target/bench/<preset>/<cook>/`, through
+//! sidecar (`sapphire_pipeline::bench`), and the phones' into `sources-mobile/` beside it (M5 B6: their
+//! district's cells carry four materials where the desktop's carry sixteen, as a phone build's content would);
+//! each cook reads its own tree, whose marker names its cook, and refuses the other's. The pipeline's cook
+//! reads them as it reads `content/`, into loose files in `target/bench/<preset>/loose/<cook>/` and packs in `target/bench/<preset>/<cook>/`, through
 //! a cache of its own in `target/bench/cache/`. So `rm -rf target/bench` takes all of it, and nothing it
 //! makes is committed. A sources folder that holds files but not `gen-bench`'s marker, as a tool that prunes
 //! `target/` can leave it, is removed first and generated anew, since `gen-bench` replaces only its own trees.
@@ -80,9 +82,18 @@ pub fn output_dir() -> PathBuf {
     workspace::output_dir().join("bench")
 }
 
-/// A preset's generated sources: `target/bench/<preset>/sources/`.
+/// A preset's generated sources for the desktop's cook: `target/bench/<preset>/sources/`.
 pub fn source_dir(preset: Preset) -> PathBuf {
     output_dir().join(preset.name()).join("sources")
+}
+
+/// A preset's generated sources for `cook` (M5 B6): the desktop's in [`source_dir`], the phones' beside it in
+/// `target/bench/<preset>/sources-mobile/`, since the phones' district carries fewer materials a cell.
+pub fn source_dir_for(preset: Preset, cook: Cook) -> PathBuf {
+    match cook {
+        Cook::Mobile => output_dir().join(preset.name()).join("sources-mobile"),
+        Cook::Desktop | Cook::Editor => source_dir(preset),
+    }
 }
 
 /// A preset's packs for a cook: `target/bench/<preset>/<cook>/`, what a benchmark run mounts.
@@ -115,7 +126,7 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
     let preset_dir = output_dir().join(preset.name());
     fs::create_dir_all(&preset_dir)?;
 
-    let source = source_dir(preset);
+    let source = source_dir_for(preset, cook);
     {
         let lock = workspace::lock_file(&preset_dir.join("generate.lock"))?;
         workspace::wait_for_lock(
@@ -136,10 +147,14 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
             .arg("gen-bench")
             .arg("--bench")
             .arg(workspace::root().join(SOURCE_DIR))
-            .args(["--preset", preset.name()])
+            .args(["--preset", preset.name(), "--cook", cook.name()])
             .arg("--out")
             .arg(&source);
         workspace::run(&mut generate)?;
+        let written = marker_cook(&fs::read_to_string(source.join(MARKER))?);
+        if written != cook {
+            bail!("{} is the {written} cook's generated tree, not the {cook} cook's", source.display());
+        }
     }
 
     let out = cooked_dir(preset, cook);
@@ -165,6 +180,12 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
 /// The file `gen-bench` writes into every tree it generates: `sapphire_pipeline::bench::MARKER`, which xtask
 /// doesn't link (`the_marker_is_the_pipelines`).
 const MARKER: &str = ".bench-source";
+
+/// The cook a generated tree's marker says it is for: `sapphire_pipeline::bench::marker_cook`'s rule, the
+/// phones' marker naming its cook and the desktop's not (`the_marker_is_the_pipelines`).
+fn marker_cook(text: &str) -> Cook {
+    if text.contains("--cook mobile") { Cook::Mobile } else { Cook::Desktop }
+}
 
 /// Removes `dir` if it holds anything but no [`MARKER`], and says whether it did. `gen-bench` refuses to
 /// replace such a folder, rightly for a path a person typed; but this one is xtask's own, under `target/`,
@@ -385,6 +406,8 @@ mod tests {
         assert_eq!("double".parse::<Preset>().unwrap(), Preset::Double);
         assert!("huge".parse::<Preset>().is_err());
         assert!(source_dir(Preset::Budget).ends_with("target/bench/budget/sources"));
+        assert_eq!(source_dir_for(Preset::Budget, Cook::Desktop), source_dir(Preset::Budget));
+        assert!(source_dir_for(Preset::Ci, Cook::Mobile).ends_with("target/bench/ci/sources-mobile"));
         assert!(cooked_dir(Preset::Ci, Cook::Mobile).ends_with("target/bench/ci/mobile"));
         assert!(loose_dir(Preset::Ci, Cook::Desktop).ends_with("target/bench/ci/loose/desktop"));
         assert!(cache_dir().ends_with("target/bench/cache"));
@@ -444,6 +467,19 @@ mod tests {
         let source = workspace::root().join("tools/sapphire_pipeline/src/bench.rs");
         let text = fs::read_to_string(&source).unwrap();
         assert!(text.contains(&format!("pub const MARKER: &str = \"{MARKER}\";")), "{}", source.display());
+        // The marker's cook, read by the same rule (M5 B6).
+        assert!(text.contains("if text.contains(\"--cook mobile\") { Cook::Mobile } else { Cook::Desktop }"));
+    }
+
+    /// A cook reads only its own cook's tree (M5 B6): the phones' marker names its cook, the desktop's
+    /// doesn't, and each is read as what it is.
+    #[test]
+    fn a_tree_is_read_as_its_own_cook() {
+        let desktop = "Generated by `sapphire_pipeline gen-bench --preset ci`: never commit it.\n";
+        let phones =
+            "Generated by `sapphire_pipeline gen-bench --preset ci --cook mobile`: never commit it.\n";
+        assert_eq!((marker_cook(desktop), marker_cook(phones)), (Cook::Desktop, Cook::Mobile));
+        assert_ne!(source_dir_for(Preset::Ci, Cook::Desktop), source_dir_for(Preset::Ci, Cook::Mobile));
     }
 
     #[test]
@@ -459,7 +495,7 @@ mod tests {
             assert!(inside(&content::cooked_dir(cook), &shipping));
             for preset in [Preset::Ci, Preset::Budget, Preset::Double] {
                 let kinds = [kinds_dir(preset), with_content_dir_for(preset, cook)];
-                for dir in [source_dir(preset), cooked_dir(preset, cook), loose_dir(preset, cook)]
+                for dir in [source_dir_for(preset, cook), cooked_dir(preset, cook), loose_dir(preset, cook)]
                     .into_iter()
                     .chain(kinds)
                 {

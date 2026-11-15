@@ -21,9 +21,17 @@ struct Generated {
 }
 
 fn generated(preset: Preset) -> Generated {
+    generated_for(preset, Cook::Desktop)
+}
+
+/// What a preset generates for `cook`, read back.
+fn generated_for(preset: Preset, cook: Cook) -> Generated {
     let district: BenchDistrict = read_document(&dir().join("district.ron")).unwrap();
-    let sources: BTreeMap<String, Source> =
-        generate(&dir(), preset).unwrap().into_iter().map(|source| (source.path.clone(), source)).collect();
+    let sources: BTreeMap<String, Source> = generate(&dir(), preset, cook)
+        .unwrap()
+        .into_iter()
+        .map(|source| (source.path.clone(), source))
+        .collect();
     let zone = sapphire_serialize::from_ron(std::str::from_utf8(&sources[ZONE].bytes).unwrap()).unwrap();
     let plan = Plan::new(&district, district.presets.get(preset).cells);
     Generated { district, plan, zone, sources }
@@ -111,8 +119,10 @@ fn the_budget_district_holds_the_specs_counts() {
 
 #[test]
 fn the_tour_passes_every_variant_and_every_set() {
-    for preset in [Preset::Ci, Preset::Budget, Preset::Double] {
-        let Generated { district, plan, zone, sources } = generated(preset);
+    let both = |preset| [(preset, Cook::Desktop), (preset, Cook::Mobile)];
+    for (preset, cook) in both(Preset::Ci).into_iter().chain(both(Preset::Budget)).chain(both(Preset::Double))
+    {
+        let Generated { district, plan, zone, sources } = generated_for(preset, cook);
         let sets = district.presets.get(preset).texture_sets;
         // What a walk along it has in view close by.
         const NEAR: f32 = SEEN;
@@ -141,12 +151,12 @@ fn the_tour_passes_every_variant_and_every_set() {
             assert_eq!(
                 standing.len(),
                 district.buildings.variants as usize,
-                "{preset}: a variant stands away"
+                "{preset} for {cook}: a variant stands away"
             );
         }
         for set in 0..sets {
             let id = asset_id(PART, &format!("materials/set_{set:03}.material.ron"));
-            assert!(seen.contains(&id), "{preset}: the tour doesn't pass set {set}");
+            assert!(seen.contains(&id), "{preset} for {cook}: the tour doesn't pass set {set}");
         }
     }
 }
@@ -231,11 +241,12 @@ fn the_budgets_textures_fill_the_pool_and_double_twice() {
 
 #[test]
 fn the_zones_simulation_is_the_codes() {
-    for preset in [Preset::Ci, Preset::Budget] {
-        let Generated { district, zone, sources, .. } = generated(preset);
+    let both = |preset| [(preset, Cook::Desktop), (preset, Cook::Mobile)];
+    for (preset, cook) in both(Preset::Ci).into_iter().chain(both(Preset::Budget)) {
+        let Generated { district, zone, sources, .. } = generated_for(preset, cook);
         let cells = district.presets.get(preset).cells;
         let code = simulation::simulation(cells);
-        assert_eq!(zone.simulation().unwrap(), code, "{preset}");
+        assert_eq!(zone.simulation().unwrap(), code, "{preset} for {cook}");
         assert_eq!(sources[ENCOUNTER].bytes, document_bytes(&simulation::encounter()), "{preset}");
         assert_eq!(sources[COLLIDERS].bytes, document_bytes(&simulation::colliders()), "{preset}");
         assert_eq!(zone.encounters, [asset_id(PART, ENCOUNTER)]);
@@ -322,7 +333,57 @@ fn a_wrong_document_is_an_error() {
     let mut missing = district.clone();
     missing.dressing.frontage.push("fountain".to_owned());
     assert!(check(&missing, scale).is_err(), "a prop it doesn't hold");
+    let phones = |phone_palette| BenchDistrict { phone_palette, ..district.clone() };
+    assert!(check(&phones(0), scale).is_err(), "a phone cell binds no set");
+    assert!(check(&phones(17), scale).is_err(), "more sets on the phones than the desktop");
     // Too many sets for the tour to pass.
     let plan = Plan::new(&district, 4);
     assert!(Assignment::new(&plan, &district.buildings, 1, 1000, &BTreeMap::new()).is_err());
+}
+
+/// The materials each cell's ground and props bind: what its merged mesh draws, a call each.
+fn cell_materials(plan: &Plan, zone: &ZoneDocument) -> BTreeMap<[u32; 2], BTreeSet<AssetId>> {
+    let mut cells: BTreeMap<[u32; 2], BTreeSet<AssetId>> = BTreeMap::new();
+    for placement in &zone.placements {
+        let cell = plan.cell_of([placement.at[0], placement.at[2]]);
+        cells.entry(cell).or_default().extend(placement.materials.values().copied());
+    }
+    cells
+}
+
+/// The phones' cells carry four materials where the desktop's carry sixteen (M5 B6), and nothing else differs:
+/// every source but the zone is the desktop's byte for byte, and the zone differs only in its placements' binds.
+#[test]
+fn the_phones_cells_draw_four_materials_where_the_desktops_draw_sixteen() {
+    for preset in [Preset::Ci, Preset::Budget, Preset::Double] {
+        let desktop = generated_for(preset, Cook::Desktop);
+        let phone = generated_for(preset, Cook::Mobile);
+        assert_eq!((desktop.district.palette, desktop.district.phone_palette), (16, 4));
+        // Grounds and props alike: a cell's placements bind no set outside its four.
+        let most = |generated: &Generated| {
+            cell_materials(&generated.plan, &generated.zone).values().map(BTreeSet::len).max().unwrap()
+        };
+        assert!(most(&phone) <= 4, "{preset}: a phone cell binds {} sets", most(&phone));
+        if preset != Preset::Ci {
+            assert!(most(&desktop) > 4, "{preset}: the desktop's cells keep their sixteen");
+        }
+        assert_eq!(desktop.sources.keys().collect::<Vec<_>>(), phone.sources.keys().collect::<Vec<_>>());
+        for (path, source) in &desktop.sources {
+            if path != ZONE {
+                assert!(phone.sources[path] == *source, "{preset}: {path} differs on the phones");
+            }
+        }
+        let unbound = |zone: &ZoneDocument| {
+            let mut zone = zone.clone();
+            for placement in &mut zone.placements {
+                placement.materials.clear();
+            }
+            zone
+        };
+        assert!(
+            unbound(&desktop.zone) == unbound(&phone.zone),
+            "{preset}: the zones differ past their binds"
+        );
+        assert!(desktop.zone.placements != phone.zone.placements, "{preset}: the binds are the phones' own");
+    }
 }

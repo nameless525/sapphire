@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{BenchError, Preset, Presets, Source, asset_id, document_bytes, read_document};
 use crate::character_maps::MapKind;
+use crate::cook::Cook;
 use crate::figure::{self, Figure, FigureFile, FileKind, MaterialGroup, Surface};
 use crate::import::vrm::{VrmSettings, VrmVersion};
 use crate::material::MaterialSettings;
@@ -162,8 +163,8 @@ impl CastMember {
     }
 }
 
-/// Generates the cast from the documents in `dir` (`bench/cast/`) at `preset`'s scale.
-pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
+/// Generates the cast from the documents in `dir` (`bench/cast/`) at `preset`'s scale: the same for every cook.
+pub fn generate(dir: &Path, preset: Preset, _cook: Cook) -> Result<Vec<Source>, BenchError> {
     let mut sources = Vec::new();
     for member in members(dir, preset)? {
         // Copies differ only in their folder: build and paint the figure once.
@@ -476,7 +477,7 @@ mod tests {
             assert_eq!(member.skeleton, Some(id), "{}", member.figure.name);
             assert_eq!(member.figure.joints, owner.figure.joints, "{}", member.figure.name);
         }
-        let sources = generate(&cast_dir(), Preset::Ci).unwrap();
+        let sources = generate(&cast_dir(), Preset::Ci, Cook::Desktop).unwrap();
         let model = sources
             .iter()
             .find(|source| source.path == "ambient_b_00/ambient_b.glb")
@@ -539,7 +540,7 @@ mod tests {
         morphs: usize,
     }
 
-    fn cooked(path: &Path, lods: Option<LodSettings>, cook: crate::cook::Cook) -> Cooked {
+    fn cooked(path: &Path, lods: Option<LodSettings>, cook: Cook) -> Cooked {
         let settings = MeshSettings { lods: lods.unwrap_or_default(), ..MeshSettings::default() };
         let mesh = crate::cook::cook_mesh(path, &settings, cook).unwrap();
         Cooked {
@@ -584,7 +585,6 @@ mod tests {
     /// is held as it is, and named in the spec's §3.4.
     #[test]
     fn every_budget_figure_cooks_at_its_row() {
-        use crate::cook::Cook;
         let dir = crate::test_util::TempDir::new("cast_budget_rows");
         for member in members(&cast_dir(), Preset::Budget).unwrap() {
             let figure = member.copy(0);
@@ -651,7 +651,7 @@ mod tests {
     /// merged slot's material and maps.
     #[test]
     fn the_hero_s_merge_leaves_its_desktop_cook_as_it_was() {
-        use crate::cook::{Cook, CookOptions, cook_dir};
+        use crate::cook::{CookOptions, cook_dir};
         let dir = crate::test_util::TempDir::new("cast_hero_merge");
         let merged = member(Preset::Ci, "hero");
         assert_eq!(merged.entry.merge.len(), 1);
@@ -708,7 +708,6 @@ mod tests {
     #[test]
     fn every_budget_map_cooks_within_the_part_budget() {
         use crate::character_maps::MapSettings;
-        use crate::cook::Cook;
         let mut capped = 0;
         for member in members(&cast_dir(), Preset::Budget).unwrap() {
             let figure = member.copy(0);
@@ -746,7 +745,7 @@ mod tests {
     /// triangles in each cook, its joints, material slots, morph targets and springs, by its own sidecar.
     #[test]
     fn the_look_dev_character_measured_against_the_hero_row() {
-        use crate::cook::{Cook, cook_mesh};
+        use crate::cook::cook_mesh;
         let path = cast_dir().join("../../content/lookdev/character/character.vrm");
         let meta = crate::meta::read(&crate::meta::sidecar_path(&path)).unwrap();
         let settings = meta.importer.mesh().expect("a mesh's sidecar").clone();

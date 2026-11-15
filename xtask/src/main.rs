@@ -52,9 +52,10 @@ Commands:
       target/content/editor/, which no app ships.
   bench-content [--preset ci|budget|double] [--cook desktop|mobile] [--with-content]
       Generate the benchmark's sources from the documents in bench/ at a preset's scale into
-      target/bench/<preset>/sources/, then cook them into target/bench/<preset>/loose/<cook>/ and
-      pack them into target/bench/<preset>/<cook>/ (defaults: ci, desktop; cache:
-      target/bench/cache/). `ci` is small, for CI; `budget` is the shipped game's load, gigabytes
+      target/bench/<preset>/sources/ (the phones' into sources-mobile/, their district's cells
+      drawing four materials where the desktop's draw sixteen), then cook them into
+      target/bench/<preset>/loose/<cook>/ and pack them into target/bench/<preset>/<cook>/
+      (defaults: ci, desktop; cache: target/bench/cache/). `ci` is small, for CI; `budget` is the shipped game's load, gigabytes
       of 2K texture sets: check the disk first; `double` is the budget at twice the texture pool.
       Past `ci` it also makes the kinds part (M5 C12b): content/ linked into
       target/bench/<preset>/kinds/source/ with the figures bench/kinds.ron names made again at the

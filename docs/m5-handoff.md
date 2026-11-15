@@ -769,6 +769,11 @@ Each item names the package and its hand-back or row, and why it waits.
 - **121 Metal captures differ from their goldens on this Mac,** within the gates (R1). Drift between machines, not a regression.
 - **Placeholder sounds compare by bytes only on macOS arm64,** and within 5% RMS elsewhere (R4).
 
+**Draws at scale** (M5 D2b, B6):
+
+- **No atlas a cell at cook time.** Packing a cell's texture sets into one atlas would draw its merged mesh in one call, but the district's sets are shared across cells, so each cell's atlas would copy them: several times the phones' texture memory, already their worst break after draws. B6 gives the phones' content four materials a cell instead, as a phone build's content would.
+- **No detail distance a tier.** Dropping a cell's props past a tier's distance pops them a cell at a time, and hiding that needs a new culling class and a fade. The phones' row is read with the main view's runs (D2b) and the phones' four materials a cell (B6); the engine reduces no cell's materials by itself.
+
 ### Waiting since M3
 
 [m4-handoff.md](m4-handoff.md)'s "Known to the run" and "From the spec's 'Can't do' lines" have each; M4 took none of them (m4-plan §3, "Waiting"): voice in conversations; Progress v1's one zone; `tables_hash` at a zone entry; the script VM's heap in replays; one board for every script; no production path loading a `.sscript`; the editor's scenario choice and live tuning of kinds; post's gradient packing; the "Can't do" lines for zones, navigation, kinds, encounters, timelines, dialogue, music and scripts; memory-mapped packs, which M5 decides against ([m5-plan.md](m5-plan.md) §3, "No memory mapping"), and mip streaming; live link's pairing token; nightly device runs and gate 5. The renderer's "warm-up blocks a load" is closed (H1, H2).

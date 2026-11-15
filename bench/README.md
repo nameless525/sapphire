@@ -10,9 +10,11 @@ cargo xtask bench-content --preset budget --cook mobile # the shipped game's loa
 cargo xtask bench-content --preset double              # the budget at twice the texture pool: only when asked
 ```
 
-Each run writes the preset's sources to `target/bench/<preset>/sources/`, with their sidecars, and cooks them
-to `target/bench/<preset>/<cook>/` (packs) and `target/bench/<preset>/loose/<cook>/`, with a cache of its own
-in `target/bench/cache/`. `rm -rf target/bench` takes all of it. Generating twice writes the same bytes.
+Each run writes the preset's sources to `target/bench/<preset>/sources/`, with their sidecars, and the phones'
+to `target/bench/<preset>/sources-mobile/` (M5 B6: the same district, its cells drawing four materials where
+the desktop's draw sixteen, as a phone build's content would; the engine reduces no cell's materials by
+itself). Each cook reads its own tree and refuses the other's. It cooks them to `target/bench/<preset>/<cook>/`
+(packs) and `target/bench/<preset>/loose/<cook>/`, with a cache of its own in `target/bench/cache/`. `rm -rf target/bench` takes all of it. Generating twice writes the same bytes.
 
 **Nothing cooked or generated from here is committed, and nothing here ships.** Apps, packages and releases
 cook `content/` alone; `bench/` sits beside it, never in it.

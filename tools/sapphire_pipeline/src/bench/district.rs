@@ -58,6 +58,15 @@
 //! first, so every set is drawn by something within [`SEEN`] of the tour: generation fails rather than make a
 //! set it can't see.
 //!
+//! # The phones' district
+//!
+//! The phones' tree (`gen-bench --cook mobile`, M5 B6) carries four materials a cell (`phone_palette`) where
+//! the desktop's carries sixteen (`palette`), as a phone build's content would: a cell's props merge into one
+//! mesh that draws a call a material, so the cells' props are most of a phone's main view, and the engine
+//! reduces no cell's materials by itself. Every placement, prefab, building, light, the tour, the day and the
+//! simulation's half are the desktop's; only which sets the cells' ground and props bind differs, given out
+//! by the same rule from the smaller palette, so the tour still passes every set.
+//!
 //! # Determinism
 //!
 //! Integer hashes, the four operations, `floor` and `sqrt` only: no transcendental is reached, and every turn
@@ -85,6 +94,7 @@ use crate::assembly::{
 };
 use crate::character_maps::ramp::SrgbColor;
 use crate::colliders::ColliderSettings;
+use crate::cook::Cook;
 use crate::material::MaterialSettings;
 use crate::meta::{ImportSettings, MeshSettings};
 use crate::optimize::LodSettings;
@@ -140,8 +150,11 @@ pub struct BenchDistrict {
     pub props: BTreeMap<String, Prop>,
     pub lanterns: Lanterns,
     pub dressing: Dressing,
-    /// Texture sets a cell's props and ground draw from.
+    /// Texture sets a cell's props and ground draw from, in the desktop's tree.
     pub palette: u32,
+    /// The same in the phones' tree (M5 B6), at most `palette`: what a phone build's content carries, fewer
+    /// materials a cell, since a cell's merged mesh draws a call a material.
+    pub phone_palette: u32,
     /// The day the zone names: a timeline document in `bench/district/`.
     pub day: String,
     #[serde(default)]
@@ -177,8 +190,8 @@ pub struct DistrictCrowd {
 }
 
 impl Versioned for BenchDistrict {
-    /// 1: M5 B1. 2: M5 B2, the district. 3: M5 D6, its cells' levels.
-    const VERSION: u32 = 3;
+    /// 1: M5 B1. 2: M5 B2, the district. 3: M5 D6, its cells' levels. 4: M5 B6, the phones' palette.
+    const VERSION: u32 = 4;
 }
 
 /// The streets' widths, in metres.
@@ -274,8 +287,10 @@ pub struct DistrictScale {
     pub crowd: bool,
 }
 
-/// Generates the district from the documents in `dir` (`bench/district/`) at `preset`'s scale.
-pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
+/// Generates the district from the documents in `dir` (`bench/district/`) at `preset`'s scale, for `cook`:
+/// the phones' cells draw from `phone_palette` sets where the desktop's draw from `palette`, and nothing else
+/// differs (see the [module docs](self#the-phones-district)).
+pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, BenchError> {
     let document_path = dir.join("district.ron");
     let district: BenchDistrict = read_document(&document_path)?;
     let scale = *district.presets.get(preset);
@@ -315,9 +330,12 @@ pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
     let plan = Plan::new(&district, scale.cells);
     let slot_counts: BTreeMap<String, usize> =
         slots.iter().map(|(stem, names)| (stem.clone(), names.len())).collect();
-    let assignment =
-        Assignment::new(&plan, &district.buildings, district.palette, scale.texture_sets, &slot_counts)
-            .map_err(|why| invalid(format!("{preset}: {why}")))?;
+    let palette = match cook {
+        Cook::Desktop => district.palette,
+        Cook::Mobile => district.phone_palette,
+    };
+    let assignment = Assignment::new(&plan, &district.buildings, palette, scale.texture_sets, &slot_counts)
+        .map_err(|why| invalid(format!("{preset} for {cook}: {why}")))?;
     let set = |user: usize| materials[assignment.sets[user] as usize];
 
     for (stem, bytes) in prefab_bytes {
@@ -570,8 +588,10 @@ fn check(district: &BenchDistrict, scale: DistrictScale) -> Result<(), String> {
     if !district.props.values().flat_map(|prop| prop.clear).all(|half| half.is_finite() && half > 0.0) {
         return Err("every prop keeps some room clear".to_owned());
     }
-    if district.palette == 0 {
-        return Err("a cell's palette holds at least a set".to_owned());
+    if district.palette == 0 || !(1..=district.palette).contains(&district.phone_palette) {
+        return Err(
+            "a cell's palette holds at least a set, and the phones' no more than the desktop's".to_owned()
+        );
     }
     if district.day.contains(['/', '\\']) {
         return Err("`day` is a file in `bench/district/`".to_owned());

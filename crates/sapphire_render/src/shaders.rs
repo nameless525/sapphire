@@ -67,8 +67,12 @@ pub enum ShaderFile {
     Focus,
     /// The fused pass's distorted composites (M5 L6), after depth of field's in post's program.
     PostDistortion,
-    /// The phone tiers' edge-adaptive upscale and sharpen (M5 L14), last in post's program.
+    /// The phone tiers' edge-adaptive upscale and sharpen (M5 L14), after the distorted composites in post's
+    /// program.
     PostUpscale,
+    /// Light shafts from a low sun (M5 L13): the sky's mask, the march and bloom's top level with the shafts, last in
+    /// post's program.
+    PostShafts,
     /// Temporal AA: the responsive mask and the resolve, which binds its own groups.
     Temporal,
     /// The shadow passes: casters and the face pass (the receivers are `frame.wgsl`'s).
@@ -108,7 +112,7 @@ pub enum ShaderFile {
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -124,6 +128,7 @@ impl ShaderFile {
         Self::Focus,
         Self::PostDistortion,
         Self::PostUpscale,
+        Self::PostShafts,
         Self::Temporal,
         Self::Shadows,
         Self::Foliage,
@@ -160,6 +165,7 @@ impl ShaderFile {
             Self::Focus => "focus.wgsl",
             Self::PostDistortion => "post_distortion.wgsl",
             Self::PostUpscale => "post_upscale.wgsl",
+            Self::PostShafts => "post_shafts.wgsl",
             Self::Temporal => "temporal.wgsl",
             Self::Shadows => "shadows.wgsl",
             Self::Foliage => "foliage.wgsl",
@@ -202,6 +208,7 @@ impl ShaderFile {
             Self::Focus => include_str!("../shaders/focus.wgsl"),
             Self::PostDistortion => include_str!("../shaders/post_distortion.wgsl"),
             Self::PostUpscale => include_str!("../shaders/post_upscale.wgsl"),
+            Self::PostShafts => include_str!("../shaders/post_shafts.wgsl"),
             Self::Temporal => include_str!("../shaders/temporal.wgsl"),
             Self::Shadows => include_str!("../shaders/shadows.wgsl"),
             Self::Foliage => include_str!("../shaders/foliage.wgsl"),
@@ -327,7 +334,7 @@ impl Program {
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
             Self::Skinning => &[F::Skinning],
-            Self::Post => &[F::Post, F::Focus, F::PostDistortion, F::PostUpscale],
+            Self::Post => &[F::Post, F::Focus, F::PostDistortion, F::PostUpscale, F::PostShafts],
             Self::Temporal => &[F::Temporal],
             Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
             Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Foliage],
@@ -1005,7 +1012,9 @@ mod tests {
             "\n",
             include_str!("../shaders/post_distortion.wgsl"),
             "\n",
-            include_str!("../shaders/post_upscale.wgsl")
+            include_str!("../shaders/post_upscale.wgsl"),
+            "\n",
+            include_str!("../shaders/post_shafts.wgsl")
         );
         assert_eq!(sources.program(Program::Post), post);
         // Every file is in a program, and found by its name.

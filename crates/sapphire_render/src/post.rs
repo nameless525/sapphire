@@ -302,6 +302,7 @@ mod effects;
 pub(crate) mod focus;
 pub(crate) mod layers;
 mod lut;
+mod shafts;
 mod upscale;
 mod variants;
 
@@ -311,6 +312,7 @@ mod gpu_tests;
 use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
+use glam::Vec3;
 use sapphire_look::Dichromacy;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
@@ -333,9 +335,15 @@ use lut::{LUT_SIZE, LUT_TEXELS, Lut, LutKey, LutSlots};
 pub use sapphire_look::post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Crt, Desaturation, Diffusion, Duotone,
     EffectCoverage, EffectScale, Flash, Focus, Glitch, GradientBlend, GradientLayer, GradientShape, Halftone,
-    Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects, PostParams, RadialBlur, SpeedLines, ToneCurve,
-    Vignette,
+    Inversion, LensFlare, LightShafts, MAX_GRADIENT_LAYERS, MAX_SHAFT_LENGTH, PostEffects, PostParams,
+    RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
+pub(crate) use shafts::ShaftUniforms;
+pub use shafts::{
+    MARCH_PASS as SHAFT_MARCH_PASS, MASK_PASS as SHAFT_MASK_PASS, MAX_TAPS as MAX_SHAFT_TAPS,
+    MIN_TAPS as MIN_SHAFT_TAPS, PASSES as SHAFT_PASSES, taps as shaft_taps,
+};
+use shafts::{ShaftFrame, ShaftPass};
 use upscale::UpscalePass;
 pub(crate) use upscale::UpscaleUniforms;
 pub use upscale::{
@@ -510,6 +518,8 @@ pub struct PostStats {
     /// The frame was drawn below render scale 1 on a tier that upscales along edges (M5 L14, [`Upscaler`]): the
     /// fused pass wrote the scene's size and the upscale and sharpen took it to the target's.
     pub upscale: bool,
+    /// Light shafts drew (M5 L13, [`LightShafts`]): the mask and the march ran, and bloom's top up level added them.
+    pub shafts: bool,
     /// Post's pipelines built so far, of 16 variants and the inset's, color vision's, depth of
     /// field's (M5 L8), the distorted composites (M5 L6) and the upscaler's (M5 L14) beside them:
     /// the variants built ahead of the frames
@@ -577,6 +587,13 @@ pub(crate) struct PostProcess {
     upscaler: Upscaler,
     /// The upscaler's constants and their group 0: only on a tier that upscales along edges.
     upscale: Option<UpscaleGroup>,
+    /// Light shafts' constants and their group 0 (M5 L13): only on a tier that has them.
+    shafts: Option<ShaftGroup>,
+    /// The shafts the last prepared frame draws, where the tier has them, they aren't shed, the key asks and bloom
+    /// runs: the sizes are `record`'s.
+    shaft_frame: Option<ShaftFrame>,
+    /// The thermal ladder sheds the shafts ([`Self::shed_shafts`]).
+    shed_shafts: bool,
     /// Levels the thermal ladder sheds in place, from the widest ([`Self::shed_bloom_levels`]).
     shed_levels: u32,
     bind_groups: Box<BindGroups>,
@@ -613,6 +630,13 @@ struct UpscaleGroup {
     shared: wgpu::BindGroup,
 }
 
+/// Light shafts' constants buffer and the group 0 that binds it with post's own (M5 L13).
+#[derive(Debug)]
+struct ShaftGroup {
+    buffer: wgpu::Buffer,
+    shared: wgpu::BindGroup,
+}
+
 /// Post's pipelines with what a warm-up built ([`PostProcess::warm`]).
 #[derive(Debug)]
 pub(crate) struct WarmedPost(Pipelines);
@@ -638,12 +662,21 @@ struct Layouts {
     /// The upscaler's group 0 (M5 L14): its constants and nearest sampler at bindings 2 and 3, past what post's own
     /// group 0 binds.
     upscale: wgpu::BindGroupLayout,
+    /// Light shafts' group 0 (M5 L13): post's constants and sampler, and the shafts' constants at binding 4.
+    shaft: wgpu::BindGroupLayout,
+    /// The shafts' mask: the scene prepass's depth at binding 8.
+    shaft_mask: wgpu::BindGroupLayout,
+    /// Bloom's top up level with the shafts: `texture0`, `texture1` and the march at binding 9.
+    shaft_up: wgpu::BindGroupLayout,
 }
 
 /// Where depth of field's passes bind their textures: `focus.wgsl` puts the depth at binding 6, past the
 /// textures post's own passes bind.
 const FOCUS_DEPTH_BINDINGS: [u32; 2] = [0, 6];
 const FOCUS_COMPOSITE_BINDINGS: [u32; 3] = [0, 1, 6];
+/// Where light shafts' passes bind theirs (M5 L13): `post_shafts.wgsl` puts the depth at 8 and the march at 9.
+const SHAFT_MASK_BINDINGS: [u32; 1] = [8];
+const SHAFT_UP_BINDINGS: [u32; 3] = [0, 1, 9];
 
 /// A group 1 bind group, for the most textures a post pass reads: a distorted composite's eight.
 type CachedBindGroup = bind_cache::CachedBindGroup<8>;
@@ -659,6 +692,9 @@ struct BindGroups {
     focus_composite: CachedBindGroup,
     upscale_edge: CachedBindGroup,
     upscale_sharpen: CachedBindGroup,
+    shaft_mask: CachedBindGroup,
+    shaft_march: CachedBindGroup,
+    shaft_up: CachedBindGroup,
     down: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
     up: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
 }
@@ -686,6 +722,9 @@ pub(crate) struct PostInputs {
     /// Effects' bends' offsets (M5 L6, the `vfx` module's `distortion`), which a frame with bends reads the frame
     /// through: `None` without any.
     pub distortion: Option<TextureId>,
+    /// The scene prepass's depth where the frame writes it anyway, which light shafts read the sky from (M5 L13):
+    /// under temporal AA, or while GTAO runs. `None` draws no shafts.
+    pub shaft_depth: Option<TextureId>,
 }
 
 /// An inset's resolve, which [`PostProcess::record`] adds after post's own passes: its scene, exposed
@@ -723,7 +762,8 @@ impl PostProcess {
     /// Creates post-processing, writing `output_format` (the target's), with `bloom_levels` and
     /// the tier's `effects`, and builds the pipelines of `variants` (the module docs' "Building
     /// the variants"). `distortion` says the tier has bends (M5 L6), and `upscaler` how a smaller frame reaches
-    /// the target (M5 L14): the edge upscaler's pipelines build here, where the tier has it. Fails if the device
+    /// the target (M5 L14): the edge upscaler's pipelines build here, where the tier has it, and light shafts' with
+    /// `shafts` (M5 L13). Fails if the device
     /// can't filter the
     /// grading LUTs' format. The scene-color format is the renderer's to check: it is the main pass's
     /// attachment.
@@ -736,6 +776,7 @@ impl PostProcess {
         depth_of_field: DepthOfFieldSettings,
         distortion: bool,
         upscaler: Upscaler,
+        shafts: bool,
         variants: PostVariants,
         builds: &PipelineBuilds,
         sources: &ShaderSources,
@@ -780,27 +821,25 @@ impl PostProcess {
             },
             count: None,
         };
-        let shared_layout = layout(
-            "post",
-            &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: both,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(size_of::<PostUniforms>() as u64),
-                    },
-                    count: None,
+        let shared_entries = [
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: both,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(size_of::<PostUniforms>() as u64),
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: both,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        );
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: both,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ];
+        let shared_layout = layout("post", &shared_entries);
         let fragment = S::FRAGMENT;
         let layouts = Layouts {
             one: layout("post one texture", &[texture(0, fragment, flat)]),
@@ -855,6 +894,28 @@ impl PostProcess {
                     },
                 ],
             ),
+            shaft: layout(
+                "light shafts",
+                &[
+                    shared_entries[0],
+                    shared_entries[1],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: fragment,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(size_of::<ShaftUniforms>() as u64),
+                        },
+                        count: None,
+                    },
+                ],
+            ),
+            shaft_mask: layout("shaft mask", &[wgpu::BindGroupLayoutEntry { binding: 8, ..depth }]),
+            shaft_up: layout(
+                "bloom up with shafts",
+                &[texture(0, fragment, flat), texture(1, fragment, flat), texture(9, fragment, flat)],
+            ),
         };
 
         let builder = Builder {
@@ -871,7 +932,9 @@ impl PostProcess {
         let mut pipelines = Pipelines::default();
         // The upscaler's with the variants: a phone's frames are below scale 1 from the first (`upscale`).
         let upscaling = UpscalePass::ALL.map(Slot::Upscale).into_iter().filter(|_| upscaler.edge());
-        let slots = Slot::within(variants, bloom_levels).chain(upscaling);
+        // Light shafts' with them (M5 L13): the frame a key's strength first rises from zero builds nothing.
+        let shafting = ShaftPass::ALL.map(Slot::Shafts).into_iter().filter(|_| shafts);
+        let slots = Slot::within(variants, bloom_levels).chain(upscaling).chain(shafting);
         let built = pipelines.build_all(&builder, &module, slots, BuildOn::Jobs);
         let upscale = upscaler.edge().then(|| {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -916,6 +979,24 @@ impl PostProcess {
                 wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
+        });
+        let shafts = shafts.then(|| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("light shaft uniforms"),
+                size: size_of::<ShaftUniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let shared = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("light shafts"),
+                layout: &builder.layouts.shaft,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                    wgpu::BindGroupEntry { binding: 4, resource: buffer.as_entire_binding() },
+                ],
+            });
+            ShaftGroup { buffer, shared }
         });
         // wgpu zero-initializes textures, so this one is black without an upload.
         let no_bloom = device
@@ -973,6 +1054,9 @@ impl PostProcess {
             distorting: false,
             upscaler,
             upscale,
+            shafts,
+            shaft_frame: None,
+            shed_shafts: false,
             shed_levels: 0,
             bind_groups: Box::default(),
             uniforms: PostUniforms::default(),
@@ -1002,6 +1086,13 @@ impl PostProcess {
     /// same pipelines, so nothing builds.
     pub(crate) fn shed_bloom_levels(&mut self, levels: u32) {
         self.shed_levels = levels.min(self.bloom_levels);
+    }
+
+    /// Draws no light shafts from the next frame while `shed` (the thermal ladder's
+    /// [`OptionalPass::Shafts`](crate::quality::OptionalPass::Shafts), M5 L13): their pipelines stay built, so
+    /// nothing builds when they come back.
+    pub(crate) fn shed_shafts(&mut self, shed: bool) {
+        self.shed_shafts = shed;
     }
 
     /// The levels a frame draws.
@@ -1068,7 +1159,8 @@ impl PostProcess {
         // Of the other's first uses, those this pass can draw: a shorter bloom chain draws fewer levels.
         let drawable: Vec<Slot> = Slot::within(PostVariants::ALL, self.bloom_levels)
             .chain(Slot::others().filter(|slot| {
-                slot.drawable_with(self.depth_of_field, self.distortion, self.upscaler.edge())
+                let shafts = self.shafts.is_some();
+                slot.drawable_with(self.depth_of_field, self.distortion, self.upscaler.edge(), shafts)
             }))
             .collect();
         let carried = held.slots.iter().copied().filter(|slot| drawable.contains(slot));
@@ -1215,6 +1307,7 @@ impl PostProcess {
     /// logged). `camera` is the main view's (the frame's aspect, which round gradients and flare
     /// elements need), `sun` where it sees the sun's disc, for the lens flare, and `bends` whether the frame's
     /// effects bend the picture (M5 L6): on a tier with bends, its fused pass reads the frame through them.
+    /// `sun_toward` is the sky's sun's direction, which light shafts stream from (M5 L13).
     /// Whether the upscaler (M5 L14) draws is `record`'s to say, from the sizes it is given: the render scale
     /// may change between the two.
     pub(crate) fn prepare(
@@ -1223,6 +1316,7 @@ impl PostProcess {
         params: &PostParams,
         camera: Option<&CameraData>,
         sun: Option<SunOnScreen>,
+        sun_toward: Option<Vec3>,
         bends: bool,
     ) {
         profiling::scope!("PostProcess::prepare");
@@ -1275,6 +1369,18 @@ impl PostProcess {
             color_effects: drawn.color(),
             ..layers.variant
         };
+        // Light shafts (M5 L13): where the tier has them and the ladder hasn't shed them, with bloom's chain to
+        // carry them (two levels or more, an intensity above 0) and the sun where they can be seen.
+        let carried = self.bloom && uniforms.composite[1] > 0.0 && self.drawn_levels() >= 2;
+        self.shaft_frame = camera
+            .zip(sun_toward)
+            .filter(|_| self.shafts.is_some() && !self.shed_shafts && carried)
+            .and_then(|(camera, toward)| ShaftFrame::new(&params.shafts, camera, toward, aspect));
+        if self.shaft_frame.is_none() {
+            self.bind_groups.shaft_mask = CachedBindGroup::default();
+            self.bind_groups.shaft_march = CachedBindGroup::default();
+            self.bind_groups.shaft_up = CachedBindGroup::default();
+        }
         if !self.bloom {
             self.bind_groups.prefilter = CachedBindGroup::default();
             self.bind_groups.down = Default::default();
@@ -1355,6 +1461,20 @@ impl PostProcess {
         Some((UpscaleUniforms::new(self.upscaler, input, output), &group.buffer))
     }
 
+    /// Light shafts' constants (M5 L13) for a frame whose post input is `input` texels, and the buffer `record`'s
+    /// caller uploads them to with post's own: `None` unless the frame just prepared draws them.
+    pub(crate) fn shaft_uniforms(&self, input: (u32, u32)) -> Option<(ShaftUniforms, &wgpu::Buffer)> {
+        let (frame, group) = (self.shaft_frame?, self.shafts.as_ref()?);
+        Some((frame.uniforms(input, self.uniforms.composite[1]), &group.buffer))
+    }
+
+    /// Whether the frame just prepared draws light shafts (M5 L13), given whether it writes the scene prepass's
+    /// depth (`depth`): the tier has them, they're built, and `prepare` found the sun and bloom to carry them.
+    pub(crate) fn draws_shafts(&self, depth: bool) -> bool {
+        let built = ShaftPass::ALL.iter().all(|&pass| self.pipelines.get(Slot::Shafts(pass)).is_some());
+        depth && self.shafts.is_some() && self.shaft_frame.is_some() && built
+    }
+
     /// The frame's exposure multiplier (2^EV), which temporal AA weights its resolve by.
     pub(crate) fn exposure(&self) -> f32 {
         self.uniforms.composite[0]
@@ -1399,11 +1519,14 @@ impl PostProcess {
         counter: &'f Counter,
         upscale_counter: &'f Counter,
     ) {
-        let PostInputs { input, scene_color, depth, target: output, distortion } = inputs;
+        let PostInputs { input, scene_color, depth, target: output, distortion, shaft_depth } = inputs;
         // The upscaler (M5 L14), at the sizes this frame draws at.
         let (input_size, output_size) = (graph.size(input), graph.size(output));
         let upscaling = self.upscales(input_size, output_size);
         self.stats.upscale = upscaling;
+        // Light shafts (M5 L13): the frame prepared them and keeps the scene prepass's depth to find the sky in.
+        let shaft = self.shafts.as_ref().zip(shaft_depth).filter(|_| self.draws_shafts(true));
+        self.stats.shafts = shaft.is_some();
         let Self {
             ref builder,
             ref pipelines,
@@ -1434,6 +1557,9 @@ impl PostProcess {
             ref mut focus_composite,
             ref mut upscale_edge,
             ref mut upscale_sharpen,
+            ref mut shaft_mask,
+            ref mut shaft_march,
+            ref mut shaft_up,
         } = **bind_groups;
         let bloom_levels = bloom_levels - shed_levels;
         let pass = |pipeline, layout, cache| Fullscreen {
@@ -1541,19 +1667,85 @@ impl PostProcess {
                     pass(pipeline(Slot::Down), &layouts.one, cache),
                 );
             }
+            // Light shafts (M5 L13, `shafts`): the sky's share at an eighth, the march at a quarter, which bloom's
+            // top up level adds after its blur.
+            let march = shaft.map(|(group, depth)| {
+                let (width, height) = graph.size(input);
+                let share = |(width, height), format| TransientDesc {
+                    width,
+                    height,
+                    format,
+                    sample_count: 1,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                };
+                let mask = graph.create_texture(
+                    shafts::MASK_PASS,
+                    share(shafts::mask_size((width, height)), shafts::MASK_FORMAT),
+                );
+                add_fullscreen(
+                    graph,
+                    shafts::MASK_PASS,
+                    [Input::Graph(depth)],
+                    mask,
+                    Fullscreen {
+                        shared: &group.shared,
+                        bindings: &SHAFT_MASK_BINDINGS,
+                        ..pass(pipeline(Slot::Shafts(ShaftPass::Mask)), &layouts.shaft_mask, shaft_mask)
+                    },
+                );
+                let march = graph.create_texture(
+                    shafts::MARCH_PASS,
+                    share(shafts::march_size((width, height)), shafts::MARCH_FORMAT),
+                );
+                add_fullscreen(
+                    graph,
+                    shafts::MARCH_PASS,
+                    [Input::Graph(mask)],
+                    march,
+                    Fullscreen {
+                        shared: &group.shared,
+                        ..pass(pipeline(Slot::Shafts(ShaftPass::March)), &layouts.one, shaft_march)
+                    },
+                );
+                (group, march)
+            });
+            let mut shaft_up = Some(shaft_up);
             // The diffusion glow reads the widest level that is still smooth: the first up level
             // (from the smallest), or the only level of a chain of one.
             let mut lower = downs[levels - 1];
             let mut widest = lower;
             for (index, cache) in (0..levels - 1).zip(up).rev() {
-                let upsampled = graph.create_texture(UP_NAMES[index], level(index));
-                add_fullscreen(
-                    graph,
-                    UP_NAMES[index],
-                    [Input::Graph(lower), Input::Graph(downs[index])],
-                    upsampled,
-                    pass(pipeline(Slot::Up), &layouts.two, cache),
-                );
+                let shafted = march.filter(|_| index == 0).zip(shaft_up.take_if(|_| index == 0));
+                let upsampled = match shafted {
+                    // Bloom's top level at half floats, with the shafts added once, after its blur and threshold.
+                    Some(((group, march), cache)) => {
+                        let desc = TransientDesc { format: shafts::UP_FORMAT, ..level(index) };
+                        let upsampled = graph.create_texture(UP_NAMES[index], desc);
+                        add_fullscreen(
+                            graph,
+                            UP_NAMES[index],
+                            [Input::Graph(lower), Input::Graph(downs[index]), Input::Graph(march)],
+                            upsampled,
+                            Fullscreen {
+                                shared: &group.shared,
+                                bindings: &SHAFT_UP_BINDINGS,
+                                ..pass(pipeline(Slot::Shafts(ShaftPass::Up)), &layouts.shaft_up, cache)
+                            },
+                        );
+                        upsampled
+                    }
+                    None => {
+                        let upsampled = graph.create_texture(UP_NAMES[index], level(index));
+                        add_fullscreen(
+                            graph,
+                            UP_NAMES[index],
+                            [Input::Graph(lower), Input::Graph(downs[index])],
+                            upsampled,
+                            pass(pipeline(Slot::Up), &layouts.two, cache),
+                        );
+                        upsampled
+                    }
+                };
                 if index == levels - 2 {
                     widest = upsampled;
                 }
@@ -1794,8 +1986,8 @@ mod tests {
             exposure: f32::NAN,
             bloom: BloomParams { knee: 5.0, scatter: -1.0, ..BloomParams::default() },
             grade_blend: 2.0,
-            vignette: Vignette { start: 1.0, color: glam::Vec3::splat(f32::NAN), ..Vignette::default() },
-            diffusion: Diffusion { intensity: f32::INFINITY, threshold: -1.0, color: glam::Vec3::ONE },
+            vignette: Vignette { start: 1.0, color: Vec3::splat(f32::NAN), ..Vignette::default() },
+            diffusion: Diffusion { intensity: f32::INFINITY, threshold: -1.0, color: Vec3::ONE },
             sharpening: 7.0,
             ..PostParams::default()
         };

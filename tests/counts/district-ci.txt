@@ -63,7 +63,7 @@ desktop-high-dusk | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 t
 desktop-high-dusk | outline draws | p50 14 p95 14 worst 14 total 7434
 desktop-high-dusk | pipelines built on first use | not exercised
 desktop-high-dusk | pipelines built on the frame's thread | not exercised
-desktop-high-dusk | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
+desktop-high-dusk | pipelines prewarmed | p50 75 p95 75 worst 75 total 75
 desktop-high-dusk | pipelines rebuilt | not exercised
 desktop-high-dusk | pipelines set | p50 30 p95 30 worst 30 total 15930
 desktop-high-dusk | poses evaluated | not exercised
@@ -154,7 +154,7 @@ desktop-high-night | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 
 desktop-high-night | outline draws | p50 14 p95 14 worst 14 total 7434
 desktop-high-night | pipelines built on first use | not exercised
 desktop-high-night | pipelines built on the frame's thread | not exercised
-desktop-high-night | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
+desktop-high-night | pipelines prewarmed | p50 75 p95 75 worst 75 total 75
 desktop-high-night | pipelines rebuilt | not exercised
 desktop-high-night | pipelines set | p50 30 p95 30 worst 30 total 15894
 desktop-high-night | poses evaluated | not exercised
@@ -245,7 +245,7 @@ desktop-low-dusk | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 to
 desktop-low-dusk | outline draws | p50 14 p95 14 worst 14 total 7434
 desktop-low-dusk | pipelines built on first use | not exercised
 desktop-low-dusk | pipelines built on the frame's thread | not exercised
-desktop-low-dusk | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
+desktop-low-dusk | pipelines prewarmed | p50 75 p95 75 worst 75 total 75
 desktop-low-dusk | pipelines rebuilt | not exercised
 desktop-low-dusk | pipelines set | p50 30 p95 30 worst 30 total 15930
 desktop-low-dusk | poses evaluated | not exercised
@@ -336,7 +336,7 @@ desktop-low-night | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 t
 desktop-low-night | outline draws | p50 14 p95 14 worst 14 total 7434
 desktop-low-night | pipelines built on first use | not exercised
 desktop-low-night | pipelines built on the frame's thread | not exercised
-desktop-low-night | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
+desktop-low-night | pipelines prewarmed | p50 75 p95 75 worst 75 total 75
 desktop-low-night | pipelines rebuilt | not exercised
 desktop-low-night | pipelines set | p50 30 p95 30 worst 30 total 15889
 desktop-low-night | poses evaluated | not exercised
@@ -427,7 +427,7 @@ mobile-high-dusk | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 to
 mobile-high-dusk | outline draws | p50 14 p95 14 worst 14 total 7434
 mobile-high-dusk | pipelines built on first use | not exercised
 mobile-high-dusk | pipelines built on the frame's thread | not exercised
-mobile-high-dusk | pipelines prewarmed | p50 69 p95 69 worst 69 total 69
+mobile-high-dusk | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
 mobile-high-dusk | pipelines rebuilt | not exercised
 mobile-high-dusk | pipelines set | p50 25 p95 25 worst 25 total 13275
 mobile-high-dusk | poses evaluated | not exercised
@@ -518,7 +518,7 @@ mobile-high-night | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 t
 mobile-high-night | outline draws | p50 14 p95 14 worst 14 total 7434
 mobile-high-night | pipelines built on first use | not exercised
 mobile-high-night | pipelines built on the frame's thread | not exercised
-mobile-high-night | pipelines prewarmed | p50 69 p95 69 worst 69 total 69
+mobile-high-night | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
 mobile-high-night | pipelines rebuilt | not exercised
 mobile-high-night | pipelines set | p50 25 p95 25 worst 25 total 13239
 mobile-high-night | poses evaluated | not exercised

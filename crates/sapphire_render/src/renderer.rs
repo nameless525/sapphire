@@ -192,6 +192,12 @@ pub struct RenderSettings {
     /// module): bilinear in post's fused pass, the default, or the edge-adaptive upscale and sharpen after it,
     /// the phone tiers'. A renderer with [`Self::temporal`] ignores it, as its resolve upsamples.
     pub upscaler: Upscaler,
+    /// Light shafts from a low sun (M5 L13, `post`'s `shafts` module): where a day's key asks for them, bloom's
+    /// top up level adds a screen-space march over the sky toward the sun. They read the scene prepass's depth
+    /// and never make it run, so a tier draws them under [`Self::temporal`] or while its GTAO runs: their three
+    /// pipelines build with the renderer where this is on and the frame reads the prepass, and none otherwise.
+    /// Off by default.
+    pub shafts: bool,
     /// What view culling does (review RA-O01, M5 D3, the `view_cull` module): every view culls the
     /// instances it draws by their bounds, which changes no pixel, and by the tier's distance and
     /// size ([`Self::culling`]). On by default; only tests and the bench set
@@ -260,6 +266,7 @@ impl Default for RenderSettings {
             depth_of_field: DepthOfFieldSettings::OFF,
             distortion: DistortionResolution::Off,
             upscaler: Upscaler::Bilinear,
+            shafts: false,
             view_culling: CullingMode::On,
             culling: CullingThresholds::NONE,
             levels: LevelSettings::ON,
@@ -902,6 +909,7 @@ impl Renderer {
                             settings.depth_of_field.with_temporal(settings.temporal),
                             settings.distortion.any(),
                             settings.upscaler.without_temporal(settings.temporal),
+                            settings.shafts && settings.reads_scene_prepass(),
                             settings.post_variants,
                             builds,
                             shaders_ref,
@@ -2738,7 +2746,8 @@ impl Renderer {
         // Bends (M5 L6) only where the tier has them: elsewhere the frame is drawn as if it had none.
         let bends = !packet.vfx.distortions.is_empty() && self.vfx.distortion().any();
         self.checked_build(|renderer| {
-            renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun, bends)
+            let toward = renderer.sky.sun_disc().map(|disc| disc.toward);
+            renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun, toward, bends)
         });
         // The insets (M3 U6), graded as post just settled: their targets, which instances stand in them,
         // and which draw. The first frame showing one builds its resolve unless an inventory declared it.
@@ -3005,6 +3014,9 @@ impl Renderer {
         if self.ambient.fit(size) || prepass_resized {
             self.rebuild_frame_bind_groups();
         }
+        // Light shafts (M5 L13) follow the depth this frame writes: temporal AA's, or GTAO's as it was just fitted.
+        let shaft_depth = self.temporal.is_some() || self.ambient.gtao_runs();
+        self.stats.post.shafts = self.post.draws_shafts(shaft_depth);
         // Unjittered: velocity and reprojection compare the camera's motion alone. After a cut
         // the camera counts as unmoved.
         let clip_from_world = camera.proj * camera.view;
@@ -3155,6 +3167,8 @@ impl Renderer {
         let (scene_uploads, draw_list, records) = scene.split_for_record();
         let (material_uploads, material_records) = materials.split_for_record();
         let (sky_uniforms, sky_buffer, sky_draw, sky_cube) = sky.record(material_records);
+        // Whether GTAO draws, so the scene prepass's depth is written without temporal AA (M5 L13's shafts).
+        let gtao_runs = ambient.gtao_runs();
         let ambient = ambient.split_for_record(sky_cube.as_ref().map_or(0..0, |cube| cube.faces()));
         let ambient_upload = ambient.upload;
         let (light_uploads, cluster_pass) = lights.split_for_record();
@@ -3242,6 +3256,10 @@ impl Renderer {
             .upscale_uniforms(size, output)
             .filter(|_| upscales)
             .map(|(uniforms, buffer)| (uniforms, buffer.clone()));
+        // Light shafts' (M5 L13), at the size post reads: temporal AA's resolve at the target's, else the scene's.
+        let shaft_input = if temporal.is_some() { output } else { size };
+        let shaft_upload =
+            post.shaft_uniforms(shaft_input).map(|(uniforms, buffer)| (uniforms, buffer.clone()));
         // Handles, so `post` and `temporal` can be borrowed mutably for their passes below.
         let post_buffer = post_buffer.clone();
         let temporal_upload = temporal.as_ref().map(|(_, passes)| {
@@ -3293,6 +3311,9 @@ impl Renderer {
             }
             upload(uploads, ctx.encoder, &post_buffer, bytemuck::bytes_of(&post_uniforms));
             if let Some((uniforms, buffer)) = &upscale_upload {
+                upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(uniforms));
+            }
+            if let Some((uniforms, buffer)) = &shaft_upload {
                 upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(uniforms));
             }
             if let Some((uniforms, buffer)) = &temporal_upload {
@@ -3758,7 +3779,10 @@ impl Renderer {
             });
             offsets
         });
-        let inputs = PostInputs { input: resolved, scene_color, depth, target, distortion };
+        // Light shafts (M5 L13) read the same depth where the frame writes it anyway: under temporal AA, or while
+        // GTAO runs (Mobile-High). They never make the prepass run.
+        let shaft_depth = (temporal_targets.is_some() || gtao_runs).then_some(targets.depth);
+        let inputs = PostInputs { input: resolved, scene_color, depth, target, distortion, shaft_depth };
         let (insets, counter) = (inset_resolves.into_iter().flatten(), counts.get(Counted::Post));
         post.record(graph, inputs, effects, insets, labels, counter, counts.get(Counted::Upscale));
         // The debug view over the finished frame (M1 F5).
@@ -4098,6 +4122,7 @@ impl Renderer {
         self.shed = passes;
         self.ambient.shed_gtao(passes.contains(OptionalPass::Gtao));
         self.post.shed_bloom_levels(u32::from(passes.contains(OptionalPass::BloomLevel)));
+        self.post.shed_shafts(passes.contains(OptionalPass::Shafts));
         let interval = self.settings.sky.cube_interval;
         let doubled = passes.contains(OptionalPass::SkyFaceRate);
         self.sky.set_cube_interval(if doubled { interval * 2 } else { interval });

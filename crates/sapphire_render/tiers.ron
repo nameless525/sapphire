@@ -61,6 +61,11 @@
 //   output's; `sharpen` is the sharpen's strength in percent of its strongest, faded to nothing as the scale
 //   nears 1. Built with the renderer, as a phone draws below scale 1 from its first frame. A tier without it
 //   upscales bilinearly in the fused pass; the desktop tiers' TAA upsamples on its own.
+// - `shafts` (M5 L13, `sapphire_render::post`'s `shafts` module): light shafts from a low sun where a day's key
+//   asks, a march over the sky at a quarter of post's input composited through bloom's top up level. They read
+//   the scene prepass's depth and never make it run: the desktops' TAA keeps it; Mobile-High's GTAO writes it,
+//   so shedding GTAO sheds them too. Mobile-Low has neither and draws none. The ladder sheds them first of its
+//   in-place rung, as an accent the look keeps without.
 // - `ladder` (M4 T2, spec §6.3): the rungs the tier gives up when the device runs hot or dynamic
 //   resolution can't hold its budget at its floor, each holding the ones above it, and taken back
 //   after a hold (`sapphire_render::quality::ladder`). They spend what the look can spare first (M4
@@ -167,10 +172,11 @@
                 inset: (max_side: 960, supersample: 2),
                 depth_of_field: (view: true, insets: true),
                 distortion: Half,
+                shafts: true,
                 culling: (distance: 6000, least_pixels: 1.0, least_texels: 1.0),
                 ladder: [
                     Scale(0.85),
-                    Shed([SkyFaceRate, Gtao, BloomLevel]),
+                    Shed([SkyFaceRate, Shafts, Gtao, BloomLevel]),
                     Scale(0.7),
                     LodBias(1.0),
                     FrameRate(30),
@@ -215,10 +221,11 @@
                 inset: (max_side: 720, supersample: 2),
                 depth_of_field: (view: true, insets: true),
                 distortion: Half,
+                shafts: true,
                 culling: (distance: 5000, least_pixels: 1.0, least_texels: 1.0),
                 ladder: [
                     Scale(0.85),
-                    Shed([SkyFaceRate, Gtao, BloomLevel]),
+                    Shed([SkyFaceRate, Shafts, Gtao, BloomLevel]),
                     Scale(0.7),
                     LodBias(1.0),
                     FrameRate(30),
@@ -264,8 +271,9 @@
                 distortion: Quarter,
                 culling: (distance: 5000, least_pixels: 1.5, least_texels: 1.0),
                 upscaler: Edge(sharpen: 50),
+                shafts: true,
                 ladder: [
-                    Shed([SkyFaceRate, BloomLevel, Gtao]),
+                    Shed([SkyFaceRate, Shafts, BloomLevel, Gtao]),
                     Scale(0.85),
                     Scale(0.75),
                     LodBias(1.0),

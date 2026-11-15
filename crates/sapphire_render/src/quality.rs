@@ -307,6 +307,9 @@ pub struct QualityTier {
     /// [`RenderSettings::upscaler`]). A table without it gets bilinear.
     #[serde(default)]
     pub upscaler: Upscaler,
+    /// Light shafts from a low sun (M5 L13, [`RenderSettings::shafts`]). A table without it draws none.
+    #[serde(default)]
+    pub shafts: bool,
     /// The thermal ladder's rungs, from the top (M4 T2, [`ladder`]). A tier without them answers
     /// neither heat nor dynamic resolution's pressure.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -490,6 +493,7 @@ impl QualityTier {
             depth_of_field: self.depth_of_field,
             distortion: self.distortion,
             upscaler: self.upscaler,
+            shafts: self.shafts,
             view_culling: CullingMode::On,
             culling: self.culling,
             levels: LevelSettings { mode: LevelsMode::On, bias: self.lod_bias },
@@ -938,11 +942,14 @@ pub enum OptionalPass {
     SkyFaceRate,
     /// Bloom's lowest level, its widest glow.
     BloomLevel,
+    /// Light shafts (M5 L13): the sky's light past roofs and trees at golden hour, an accent the look keeps
+    /// without.
+    Shafts,
 }
 
 impl OptionalPass {
-    pub const ALL: [Self; 5] =
-        [Self::Gtao, Self::Cirrus, Self::WindLevel, Self::SkyFaceRate, Self::BloomLevel];
+    pub const ALL: [Self; 6] =
+        [Self::Gtao, Self::Cirrus, Self::WindLevel, Self::SkyFaceRate, Self::BloomLevel, Self::Shafts];
 
     /// How the command line spells it: `sky-face-rate`.
     pub fn key(self) -> &'static str {
@@ -952,6 +959,7 @@ impl OptionalPass {
             Self::WindLevel => "wind-level",
             Self::SkyFaceRate => "sky-face-rate",
             Self::BloomLevel => "bloom-level",
+            Self::Shafts => "shafts",
         }
     }
 
@@ -961,11 +969,11 @@ impl OptionalPass {
     }
 
     /// Whether [`Renderer::set_shed`](crate::Renderer::set_shed) sheds it in place, building nothing:
-    /// GTAO, the sky's face rate and a bloom level, the passes the thermal ladder takes. The cirrus
+    /// GTAO, the sky's face rate, a bloom level and light shafts (M5 L13), the passes the thermal ladder takes. The cirrus
     /// and the wind levels aren't rungs (M4 plan §3), and only a new renderer sheds them: the wind
     /// levels are pipeline constants.
     pub fn in_place(self) -> bool {
-        matches!(self, Self::Gtao | Self::SkyFaceRate | Self::BloomLevel)
+        matches!(self, Self::Gtao | Self::SkyFaceRate | Self::BloomLevel | Self::Shafts)
     }
 
     /// `settings` without this pass: as they are where they draw none of it.
@@ -989,6 +997,7 @@ impl OptionalPass {
                 ..settings
             },
             Self::BloomLevel => RenderSettings { bloom_levels: bloom_levels.saturating_sub(1), ..settings },
+            Self::Shafts => RenderSettings { shafts: false, ..settings },
         }
     }
 }
@@ -1564,6 +1573,7 @@ mod tests {
                 inset: tier.inset,
                 depth_of_field: DepthOfFieldSettings { view: true, insets: true },
                 distortion: DistortionResolution::Half,
+                shafts: true,
                 culling: tier.culling,
                 levels: LevelSettings { mode: LevelsMode::On, bias: tier.lod_bias },
                 ..RenderSettings::default()
@@ -1594,6 +1604,13 @@ mod tests {
             assert_eq!(settings.distortion, distortion, "{id}");
             // The edge upscaler and its sharpen (M5 L14): phones only, as no TAA upsamples their frames.
             assert!(settings.upscaler.edge(), "{id}");
+            // Light shafts (M5 L13) where GTAO writes the prepass's depth: Mobile-High, not Mobile-Low.
+            assert_eq!(settings.shafts, insets && settings.reads_scene_prepass(), "{id}");
+        }
+        // And on both desktops, whose temporal AA keeps it.
+        for id in [TierId::DesktopHigh, TierId::DesktopLow] {
+            let settings = table.get(id).render_settings();
+            assert!(settings.shafts && settings.reads_scene_prepass(), "{id}");
         }
     }
 
@@ -1963,6 +1980,8 @@ mod tests {
         assert_eq!(shed(OptionalPass::SkyFaceRate, mobile_low).sky.cube_interval, 4);
         assert_eq!(shed(OptionalPass::BloomLevel, desktop_low).bloom_levels, 4);
         assert_eq!(shed(OptionalPass::BloomLevel, mobile_low).bloom_levels, 3);
+        assert!(desktop_low.shafts && !shed(OptionalPass::Shafts, desktop_low).shafts);
+        assert_eq!(shed(OptionalPass::Shafts, mobile_low), mobile_low, "Mobile-Low has no shafts");
         let still = RenderSettings {
             foliage: FoliageSettings { wind_levels: 0, ..mobile_low.foliage },
             ..mobile_low
@@ -1983,6 +2002,7 @@ mod tests {
                 sky: settings.sky,
                 foliage: settings.foliage,
                 bloom_levels: settings.bloom_levels,
+                shafts: settings.shafts,
                 ..shed
             };
             assert_eq!(restored, settings, "{}", tier.id);

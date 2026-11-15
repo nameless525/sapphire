@@ -2160,6 +2160,13 @@ impl Ambient {
         }
     }
 
+    /// Whether GTAO draws this frame, and so whether the scene prepass's depth is written on a tier without temporal
+    /// AA: it has its textures, so it is neither shed nor in a scene too small for it. Light shafts (M5 L13) read
+    /// that depth only then, so they never make the prepass run.
+    pub(crate) fn gtao_runs(&self) -> bool {
+        self.gtao.as_ref().is_some_and(|gtao| gtao.textures.is_some())
+    }
+
     /// Makes GTAO's textures fit a scene of `size` pixels, before a frame records, or drops them
     /// for a scene too small for the view distance's mips ([`GTAO_MIN_SIDE`]) or while it is shed
     /// ([`Self::shed_gtao`]): GTAO then dispatches nothing and the environment reads the open

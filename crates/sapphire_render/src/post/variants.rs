@@ -9,6 +9,7 @@ use sapphire_rhi::wgpu;
 
 use super::focus::{DepthOfFieldSettings, FocusPass};
 use super::layers::Variant;
+use super::shafts::{self, ShaftPass};
 use super::upscale::{self, UpscalePass};
 use super::{
     CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, COMPOSITE_PASS, GpuEffects, LAYERS_CONSTANT,
@@ -136,6 +137,9 @@ pub(super) enum Slot {
     /// The upscaler's passes (M5 L14, `upscale`): outside [`Self::all`], built with the renderer on a tier that
     /// upscales along edges, and on no other.
     Upscale(UpscalePass),
+    /// Light shafts' passes (M5 L13, `shafts`): outside [`Self::all`], built with the renderer on a tier that has
+    /// them, and on no other.
+    Shafts(ShaftPass),
 }
 
 impl Slot {
@@ -148,7 +152,8 @@ impl Slot {
         + Dichromacy::ALL.len()
         + FocusPass::ALL.len()
         + Variant::COMPOSITES
-        + UpscalePass::ALL.len();
+        + UpscalePass::ALL.len()
+        + ShaftPass::ALL.len();
 
     /// The pipelines outside the frame's variants, which something else asks for.
     pub(super) fn others() -> impl Iterator<Item = Self> {
@@ -158,21 +163,25 @@ impl Slot {
             .chain(FocusPass::ALL.map(Self::Focus))
             .chain((0..Variant::COMPOSITES).map(Self::Distorted))
             .chain(UpscalePass::ALL.map(Self::Upscale))
+            .chain(ShaftPass::ALL.map(Self::Shafts))
     }
 
-    /// Whether a post pass with depth of field's `settings`, bends or not (`distortion`) and the edge upscaler or
-    /// not (`upscaler`) can draw with it: not depth of field's passes a tier lacks, a distorted composite on a tier
-    /// without bends, nor the upscaler's passes on a tier without them.
+    /// Whether a post pass with depth of field's `settings`, bends or not (`distortion`), the edge upscaler or
+    /// not (`upscaler`) and light shafts or not (`shafts`) can draw with it: not depth of field's passes a tier
+    /// lacks, a distorted composite on a tier without bends, nor the upscaler's or the shafts' passes on a tier
+    /// without them.
     pub(super) fn drawable_with(
         self,
         settings: DepthOfFieldSettings,
         distortion: bool,
         upscaler: bool,
+        shafts: bool,
     ) -> bool {
         match self {
             Self::Focus(pass) => settings.has(pass),
             Self::Distorted(_) => distortion,
             Self::Upscale(_) => upscaler,
+            Self::Shafts(_) => shafts,
             _ => true,
         }
     }
@@ -210,6 +219,15 @@ impl Slot {
                     + Variant::COMPOSITES
                     + pass as usize
             }
+            Self::Shafts(pass) => {
+                Self::COUNT
+                    + 1
+                    + Dichromacy::ALL.len()
+                    + FocusPass::ALL.len()
+                    + Variant::COMPOSITES
+                    + UpscalePass::ALL.len()
+                    + pass as usize
+            }
         }
     }
 
@@ -227,7 +245,9 @@ impl Slot {
                     PostVariants { layers, sharpening, lens_effects, color_effects, ..PostVariants::NONE };
                 (switches, 0)
             }
-            Self::Inset | Self::ColorVision(_) | Self::Focus(_) | Self::Upscale(_) => (PostVariants::NONE, 0),
+            Self::Inset | Self::ColorVision(_) | Self::Focus(_) | Self::Upscale(_) | Self::Shafts(_) => {
+                (PostVariants::NONE, 0)
+            }
         }
     }
 
@@ -247,9 +267,12 @@ impl Slot {
             Self::Prefilter { characters } => bloom && characters == variant.characters,
             Self::Down | Self::Up => bloom && bloom_levels >= 2,
             Self::Composite(index) => index == composite,
-            Self::Inset | Self::ColorVision(_) | Self::Focus(_) | Self::Distorted(_) | Self::Upscale(_) => {
-                false
-            }
+            Self::Inset
+            | Self::ColorVision(_)
+            | Self::Focus(_)
+            | Self::Distorted(_)
+            | Self::Upscale(_)
+            | Self::Shafts(_) => false,
         })
     }
 }
@@ -356,6 +379,26 @@ impl Builder {
                     UpscalePass::Sharpen => self.output_format,
                 };
                 let groups = [&self.layouts.upscale, &self.layouts.one];
+                self.pipeline_in(
+                    groups,
+                    module,
+                    PipelineFamily::Post,
+                    (name, fullscreen, fragment),
+                    format,
+                    &[],
+                )
+            }
+            // Light shafts' (M5 L13): their own group 0 (post's constants and sampler, and theirs), and the depth,
+            // the mask or bloom's two levels and the march in. The mask and the march write their shares, the up
+            // pass bloom's top level at half floats.
+            Slot::Shafts(pass) => {
+                let (name, fragment) = pass.names();
+                let (layout, format) = match pass {
+                    ShaftPass::Mask => (&self.layouts.shaft_mask, shafts::MASK_FORMAT),
+                    ShaftPass::March => (&self.layouts.one, shafts::MARCH_FORMAT),
+                    ShaftPass::Up => (&self.layouts.shaft_up, shafts::UP_FORMAT),
+                };
+                let groups = [&self.layouts.shaft, layout];
                 self.pipeline_in(
                     groups,
                     module,

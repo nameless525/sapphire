@@ -47,12 +47,12 @@ fn depths(moves: &Moves) -> Vec<usize> {
 
 #[test]
 fn the_shipped_ladders_spend_what_the_look_can_spare_first() {
-    use OptionalPass::{BloomLevel, Gtao, SkyFaceRate};
+    use OptionalPass::{BloomLevel, Gtao, Shafts, SkyFaceRate};
     // Desktops: 0.85, the optional passes, the floor, coarser levels (M5 D4), 30 fps, and
     // Desktop-High a tier.
     let desktop = [
         Rung::Scale(0.85),
-        Rung::Shed(vec![SkyFaceRate, Gtao, BloomLevel]),
+        Rung::Shed(vec![SkyFaceRate, Shafts, Gtao, BloomLevel]),
         Rung::Scale(0.7),
         Rung::LodBias(1.0),
     ];
@@ -68,7 +68,7 @@ fn the_shipped_ladders_spend_what_the_look_can_spare_first() {
     assert_eq!(
         mobile_high.ladder,
         [
-            Rung::Shed(vec![SkyFaceRate, BloomLevel, Gtao]),
+            Rung::Shed(vec![SkyFaceRate, Shafts, BloomLevel, Gtao]),
             Rung::Scale(0.85),
             Rung::Scale(0.75),
             Rung::LodBias(1.0),

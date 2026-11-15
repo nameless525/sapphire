@@ -310,6 +310,7 @@ fn disabling_bloom_releases_only_its_dormant_bindings() {
         settings.depth_of_field,
         settings.distortion.any(),
         settings.upscaler,
+        settings.shafts,
         settings.post_variants,
         &crate::pipeline_builds::PipelineBuilds::new(None),
         &ShaderSources::compiled_in(),
@@ -337,9 +338,9 @@ fn disabling_bloom_releases_only_its_dormant_bindings() {
     bind(&mut post.bind_groups.composite);
     let enabled =
         PostParams { bloom: BloomParams { intensity: 1.0, ..BloomParams::default() }, ..passthrough() };
-    post.prepare(gpu.queue(), &enabled, None, None, false);
+    post.prepare(gpu.queue(), &enabled, None, None, None, false);
     assert_eq!(post.bind_groups.prefilter.get(gpu.device(), None, &layout, &[&post.no_bloom]), &prefilter);
-    post.prepare(gpu.queue(), &passthrough(), None, None, false);
+    post.prepare(gpu.queue(), &passthrough(), None, None, None, false);
     assert!(post.bind_groups.prefilter.is_empty());
     assert!(post.bind_groups.down.iter().all(super::CachedBindGroup::is_empty));
     assert!(post.bind_groups.up.iter().all(super::CachedBindGroup::is_empty));

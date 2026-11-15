@@ -618,6 +618,8 @@ pub struct Scene {
     sharpening: Option<f32>,
     /// A fixed focus for look-dev (`--focus`, M5 L8), in place of whatever the show's timeline keys.
     focus: Option<sapphire_render::Focus>,
+    /// Light shafts for look-dev (`--shafts-look`, M5 L13), in place of whatever the day's keys ask.
+    shafts: Option<sapphire_render::LightShafts>,
     /// Every inset's soft backdrop for look-dev and benches (`--soft-backdrop`, M5 L8), in place of none.
     soft_backdrop: Option<f32>,
     /// How the characters fade (`--fade`, `--proximity-fade`).
@@ -776,6 +778,7 @@ impl Scene {
             debug_draw_demo: None,
             sharpening: None,
             focus: None,
+            shafts: None,
             soft_backdrop: None,
             fade: Fade::Off,
             drive: MaterialDrive::NONE,
@@ -946,6 +949,13 @@ impl Scene {
     /// or lets the show's through again with `None`. A tier without depth of field ignores it.
     pub fn set_focus(&mut self, focus: Option<sapphire_render::Focus>) {
         self.focus = focus;
+    }
+
+    /// Draws light shafts as `shafts` says for look-dev (`--shafts-look`, M5 L13), over whatever the day's keys ask,
+    /// or lets the day's through again with `None`. A tier without shafts ignores it, and so does a frame whose
+    /// bloom doesn't run.
+    pub fn set_shafts(&mut self, shafts: Option<sapphire_render::LightShafts>) {
+        self.shafts = shafts;
     }
 
     /// Softens every inset's backdrop by `blur` (`--soft-backdrop`, M5 L8: a radius over the picture's height,
@@ -2495,7 +2505,7 @@ impl Scene {
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         let (fog, weather) = (self.fog, self.weather);
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
-        let focus = self.focus;
+        let (focus, shafts) = (self.focus, self.shafts);
         let (probe_hours, reflection_hours) = (&self.probe_hours, &self.reflection_hours);
         let (zone_air, zone_origin) = (&self.zone_air, self.zone.as_ref().map_or(0.0, |zone| -zone.stand.y));
         let vfx = &mut self.vfx;
@@ -2554,6 +2564,9 @@ impl Scene {
             show.adjust_post(&mut packet.post);
             if let Some(focus) = focus {
                 packet.post.focus = focus;
+            }
+            if let Some(shafts) = shafts {
+                packet.post.shafts = shafts;
             }
         }
         // Lamps by night, before extraction writes the lights.

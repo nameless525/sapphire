@@ -52,6 +52,7 @@ Common options:
   --aa off|msaa|taa         Antialiasing override
   --render-scale <0.25..1>   Render scale override
   --upscaler bilinear|edge  Phone tiers' upscaler override
+  --shafts on|off           Light shafts override
   --look-dev <scene>        Select a look-development scene
   --replay <file>           Play a recorded simulation
   --record <file>           Record a simulation
@@ -187,6 +188,12 @@ pub(crate) struct Options {
     /// scale 1 on a phone tier, in place of its edge upscaler and sharpen, as the goldens from before it pin;
     /// `edge` is the tier's own. A desktop tier has no edge upscaler, so either changes nothing there.
     pub bilinear_upscale: bool,
+    /// `--shafts on|off` (M5 L13): light shafts on a tier that has them, or none, as the goldens from before them
+    /// pin; the tier's without it. `on` can't give a tier without them any.
+    pub shafts: Option<Switch>,
+    /// `--shafts-look <strength>,<length>[,<r>,<g>,<b>]`: light shafts for look-dev (M5 L13), over whatever the
+    /// day's keys ask, as a day's shafts key says them; the tint is white without its three.
+    pub shafts_look: Option<sapphire_render::LightShafts>,
     /// `--dynamic-resolution`: let dynamic resolution lower the render scale.
     pub dynamic_resolution: bool,
     /// `--shadows on|off`: the player's shadow setting; the tier's without it.
@@ -622,6 +629,7 @@ impl Options {
         scene.set_plain_post(self.plain_post);
         scene.set_sharpening(self.sharpening);
         scene.set_focus(self.focus);
+        scene.set_shafts(self.shafts_look);
         scene.set_soft_backdrop(self.soft_backdrop);
         // Only when asked: the arena's stand fades its fighters as the game's does (M4 C7).
         if self.fade.is_some() || self.proximity_fade {
@@ -804,6 +812,7 @@ impl Options {
             draw_runs: self.draw_runs.unwrap_or(tier.draw_runs),
             upscaler: if self.bilinear_upscale { Upscaler::Bilinear } else { tier.upscaler },
             capsule_bins: self.capsule_bins.unwrap_or(tier.capsule_bins),
+            shafts: tier.shafts && self.shafts != Some(Switch::Off),
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
                 spots: if self.no_spot_shadows { 0 } else { shadows.spots },
@@ -901,6 +910,14 @@ impl Options {
                         other => return Err(format!("--upscaler expects bilinear or edge, got {other:?}")),
                     };
                 }
+                "--shafts" => {
+                    options.shafts = Some(match value("--shafts")?.as_str() {
+                        "on" => Switch::On,
+                        "off" => Switch::Off,
+                        other => return Err(format!("--shafts expects on or off, got {other:?}")),
+                    });
+                }
+                "--shafts-look" => options.shafts_look = Some(parse_shafts(&value("--shafts-look")?)?),
                 "--dynamic-resolution" => options.dynamic_resolution = true,
                 "--shadows" => {
                     options.shadows = Some(match value("--shadows")?.as_str() {
@@ -2188,6 +2205,38 @@ fn unit(flag: &str, raw: &str) -> Result<f32, String> {
         .ok_or_else(|| format!("{flag} expects a number from 0 to 1, got {raw:?}"))
 }
 
+/// `<strength>,<length>[,<r>,<g>,<b>]`: a day's shafts key's numbers, each in its range (M5 L13).
+fn parse_shafts(raw: &str) -> Result<sapphire_render::LightShafts, String> {
+    let invalid = || {
+        format!(
+            "--shafts-look expects STRENGTH,LENGTH[,R,G,B]: a strength above 0, a length above 0 and at most {} frame \
+             heights, and a linear tint from 0, got {raw:?}",
+            sapphire_render::MAX_SHAFT_LENGTH
+        )
+    };
+    let values: Vec<f32> = raw
+        .split(',')
+        .map(|part| part.trim().parse::<f32>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| invalid())?;
+    let (strength, length, tint) = match values[..] {
+        [strength, length] => (strength, length, sapphire_math::Vec3::ONE),
+        [strength, length, r, g, b] => (strength, length, sapphire_math::Vec3::new(r, g, b)),
+        _ => return Err(invalid()),
+    };
+    let good = strength.is_finite()
+        && strength > 0.0
+        && length.is_finite()
+        && length > 0.0
+        && length <= sapphire_render::MAX_SHAFT_LENGTH
+        && tint.is_finite()
+        && tint.min_element() >= 0.0;
+    if !good {
+        return Err(invalid());
+    }
+    Ok(sapphire_render::LightShafts { strength, tint, length })
+}
+
 /// `<distance>,<sharp>,<near>,<far>,<blur>`: a focus key's numbers, each in its range.
 fn parse_focus(raw: &str) -> Result<sapphire_render::Focus, String> {
     let invalid = || {
@@ -2949,6 +2998,27 @@ mod tests {
         assert_eq!(Options::default().shade_hue, None);
         for wrong in ["0.5,0.6,1", "0,0,0,0.5", "1,1,1,1.5", "1,-1,1,0.5", "1,1,NaN,0.5", "1,1,1,0.5,1"] {
             assert!(parse(&["--shade-hue", wrong]).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn shafts_switch_off_and_hold_a_look() {
+        let tier = || RenderSettings { shafts: true, ..RenderSettings::default() };
+        let options = |args: &[&str]| parse(args).unwrap().0;
+        assert!(options(&[]).render_settings(tier()).shafts);
+        assert!(options(&["--shafts", "on"]).render_settings(tier()).shafts);
+        assert!(!options(&["--shafts", "off"]).render_settings(tier()).shafts);
+        assert!(!options(&["--shafts", "on"]).render_settings(RenderSettings::default()).shafts);
+        assert!(parse(&["--shafts", "maybe"]).unwrap_err().contains("on or off"));
+        let look = options(&["--shafts-look", "0.5,0.6,1,0.7,0.4"]).shafts_look.expect("a look");
+        assert_eq!(look.tint, sapphire_math::Vec3::new(1.0, 0.7, 0.4));
+        assert_eq!((look.strength, look.length), (0.5, 0.6));
+        assert_eq!(
+            options(&["--shafts-look", "0.5,0.6"]).shafts_look.expect("a look").tint,
+            sapphire_math::Vec3::ONE
+        );
+        for bad in ["0,0.5", "0.5,0", "0.5,1.5", "0.5", "0.5,0.5,1,1", "0.5,0.5,-1,1,1", "a,b", "NaN,0.5"] {
+            assert!(parse(&["--shafts-look", bad]).is_err(), "{bad:?}");
         }
     }
 

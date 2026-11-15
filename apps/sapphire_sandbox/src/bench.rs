@@ -488,6 +488,8 @@ fn gpu_times(
     let (mut focus, mut soft_backdrop) = (zero, zero);
     // Each of the three's exclusive time, in `post::FOCUS_PASSES`' order.
     let mut focus_each = [Duration::ZERO; 3];
+    // Light shafts' mask and march (M5 L13); bloom's top up level, which adds them, counts as bloom's.
+    let mut shafts = zero;
     // Each frame's UI pass and its whole span, for medians that other work's swings move less.
     let mut ui_each: Vec<(Duration, Duration)> = Vec::new();
     // Post's passes are summed only over frames whose timings hold every one of them and the
@@ -512,7 +514,7 @@ fn gpu_times(
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
         // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
         // over the frame (M1 F5): what showing it costs.
-        let groups: [(&[&str], &mut Sums); 18] = [
+        let groups: [(&[&str], &mut Sums); 19] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&[MAIN_PASS], &mut main),
@@ -531,6 +533,7 @@ fn gpu_times(
             (&inset::PASSES, &mut insets),
             (&post::FOCUS_PASSES, &mut focus),
             (&[post::FOCUS_BACKDROP_PASS], &mut soft_backdrop),
+            (&post::SHAFT_PASSES, &mut shafts),
         ];
         for (sum, name) in focus_each.iter_mut().zip(post::FOCUS_PASSES) {
             *sum += timings.get(name).map_or(Duration::ZERO, |pass| pass.exclusive);
@@ -632,6 +635,9 @@ fn gpu_times(
         gpu_focus_us = format_args!("{:.1}", micros(focus.0, focus.2)),
         gpu_focus_duration_us = format_args!("{:.1}", micros(focus.1, focus.2)),
         focus_frames = focus.2,
+        gpu_shafts_us = format_args!("{:.1}", micros(shafts.0, shafts.2)),
+        gpu_shafts_duration_us = format_args!("{:.1}", micros(shafts.1, shafts.2)),
+        shafts_frames = shafts.2,
         gpu_focus_prepare_us = format_args!("{:.1}", micros(focus_each[0], focus.2)),
         gpu_focus_gather_us = format_args!("{:.1}", micros(focus_each[1], focus.2)),
         gpu_focus_composite_us = format_args!("{:.1}", micros(focus_each[2], focus.2)),

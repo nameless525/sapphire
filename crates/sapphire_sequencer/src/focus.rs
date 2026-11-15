@@ -94,7 +94,8 @@ impl ShotFocus {
 }
 
 /// Turns each frame's [`ShotFocus`] into the [`Focus`] post draws: finds the target, holds it while it's lost, eases over a jump, lands a cut at once, and scales the blur by the
-/// camera's blend. Plain values; allocates nothing.
+/// camera's blend. Plain values; allocates nothing. One a timeline: whoever shows a new one starts a new
+/// follow, so its first shot lands on its own focus rather than easing from the last timeline's plane.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FocusFollow {
     /// Where the plane is, once a target has been found.

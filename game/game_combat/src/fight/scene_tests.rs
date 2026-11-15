@@ -875,6 +875,49 @@ fn a_skip_lets_go_on_the_next_frame_and_blends_home() {
     assert!(eye.distance(eye_before) < 0.01, "and home: {eye} for {eye_before}");
 }
 
+/// A shot of the square keyed to keep a plane `distance` metres out sharp all its length (M5 L8).
+fn focused_look(distance: f32) -> Arc<Timeline> {
+    let focus = format!("focus: Some((on: Distance({distance}), near: 1.0, far: 3.0, blur: 0.01))");
+    let text = format!(
+        r#"(
+            type: "sapphire::timeline::TimelineDocument",
+            version: 3,
+            data: (
+                length: 4.0,
+                clock: Real,
+                camera: Some((
+                    blend_in: 0.15,
+                    blend_out: 0.2,
+                    eye: Exact,
+                    keys: [
+                        (at: 0.0, eye: (6.0, 1.3, 2.4), look_at: (3.2, 1.2, 5.0), fov_degrees: 40.0, {focus}),
+                        (at: 4.0, eye: (1.0, 1.6, 2.2), look_at: (3.2, 1.3, 5.0), fov_degrees: 32.0, {focus}),
+                    ],
+                )),
+            ),
+        )"#
+    );
+    let document = sapphire_timeline::TimelineDocument::from_ron(&text).expect("reads");
+    Arc::new(document.cook().expect("cooks"))
+}
+
+/// A timeline played in place of another lands on its own focus on its first frame, as the first did: the
+/// plane the last one held is no shot of this one's to ease from (M5 L8).
+#[test]
+fn a_new_timeline_lands_on_its_own_focus() {
+    const FRAME: f32 = 1.0 / 60.0;
+    let (mut scene, _) = arena_stage(ArenaShot::Director);
+    scene.show.play_timeline(focused_look(2.0), Origin::default());
+    let (_, post) = timeline_frame(&mut scene, FRAME);
+    assert_eq!(post.focus.distance, 2.0, "the first lands at once");
+    for _ in 0..30 {
+        timeline_frame(&mut scene, FRAME);
+    }
+    scene.show.play_timeline(focused_look(10.0), Origin::default());
+    let (_, post) = timeline_frame(&mut scene, FRAME);
+    assert_eq!(post.focus.distance, 10.0, "the next lands on its own, not eased from the last one's");
+}
+
 /// A timeline's time scale is on the simulation's world, and what the scene's clock times has to stay
 /// with it, as it does with a perfect dodge.
 #[test]

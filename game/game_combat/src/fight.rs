@@ -498,7 +498,7 @@ pub struct FightShow {
     /// that its end can say how many it added (M3 Q3).
     timeline_unready: Option<u64>,
     /// Follows the playing timeline's focus keys (M5 L8): a role's head as it moves, and the fade with the
-    /// camera's blend back once it ends.
+    /// camera's blend back once it ends. A new one for each timeline shown.
     focus: FocusFollow,
     /// This frame's focus, for post.
     frame_focus: Focus,
@@ -1169,6 +1169,10 @@ impl FightShow {
         self.draws_latest = show.holds_simulation();
         self.timeline = Some(show);
         self.timeline_unready = None;
+        // Its first shot lands on its own focus: the plane the last timeline held is no shot of this one's to
+        // ease from. Not a cut of the player's, which would also snap the camera's blend in and drop temporal
+        // AA's history.
+        self.focus = FocusFollow::default();
     }
 
     /// Holds what plays beside each timeline `simulation` has loaded, found among the shared pack's and those

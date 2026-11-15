@@ -1279,9 +1279,11 @@ fn a_zone_coming_next_warms_up_off_the_frame() {
 
 /// Trip after trip between two zones, a hub and a room, each with a probe grid it brings (M5 M6), on each class
 /// of device's settings and budgets: after the first round, each visit to a room holds the same as the visit
-/// before it, on the server and the renderer, its mesh pool's capacity among it (M5 D9), the other's pack kept
-/// mounted as the room leads back to it, and no buffer but the mesh pool's grows. `--nocapture` in release
-/// reports it at a size worth reporting; a debug build, as CI's, goes between small ones and holds the same.
+/// before it, on the server and the renderer, its mesh pool's capacity among it (M5 D9), and no buffer grows.
+/// Each room leads back to the other, so the room left stays warm for the trip back: its pack mounted and its
+/// cells cached, on the server and on the renderer, counted against the mesh budget and within it, and given
+/// back when the cache is let go of. `--nocapture` in release reports it at a size worth reporting; a debug
+/// build, as CI's, goes between small ones and holds the same.
 #[test]
 #[ignore = "needs a GPU"]
 fn a_repeated_trip_does_not_grow() {
@@ -1318,7 +1320,7 @@ fn a_repeated_trip_does_not_grow() {
             zone.texture,
         );
         // A hub holds where it is and where it leads at once, so the first round may grow buffers to two rooms'
-        // worth; no round after it grows anything but the mesh pool, which gave the last room back.
+        // worth; no round after it grows anything.
         let mut after_first: Option<(u64, u32)> = None;
         // What each room held on the round before, from the second on.
         let mut visits: [Option<TripHolds>; 2] = [None, None];
@@ -1328,6 +1330,9 @@ fn a_repeated_trip_does_not_grow() {
             if lap > 0 {
                 let before = visits[room as usize].get_or_insert(held);
                 assert_eq!(held, *before, "{name}, trip {lap}, {how}");
+                // From the second round on, every trip leaves the other room.
+                let kept = left_warm(walk, 1 - room);
+                assert!(kept > 0, "{name}, trip {lap}, {how}: the room left stays warm for the trip back");
             }
         };
         for lap in 0..6 {
@@ -1351,8 +1356,9 @@ fn a_repeated_trip_does_not_grow() {
             );
             walk.trip(lap % 2, settings);
             holds_as_before(&mut walk, lap % 2, lap, "back");
-            // The pool gives each room's room back as it's left (M5 D9), so it grows again on each arrival, to
-            // what that room held the time before: `holds_as_before` counts its capacity. Nothing else grows.
+            // The room left stays warm, so the pool holds both rooms after the first round and gives nothing back
+            // on a trip between them (the give-back, M5 D9, is for a zone that doesn't lead back); it never grows
+            // past what it held after that round, and nothing else grows.
             let stats = walk.renderer.stats();
             let now = (stats.mesh_pool_capacity, stats.buffer_growths - stats.mesh_pool.growths);
             match after_first {
@@ -1366,7 +1372,30 @@ fn a_repeated_trip_does_not_grow() {
                 }
             }
         }
+        // What stays of the room left is a cache: nothing holds it, so letting the cache go gives it back, from
+        // the server and then from the renderer.
+        let meshes = walk.renderer.stats().meshes;
+        let kept = left_warm(&mut walk, 0);
+        walk.content.trim();
+        walk.drain();
+        assert_eq!(left_warm(&mut walk, 0), 0, "{name}: the room left is a cache, which goes");
+        assert!(
+            walk.renderer.stats().meshes + kept as u32 <= meshes,
+            "{name}: and its meshes leave the renderer"
+        );
     }
+}
+
+/// How many of room `left`'s meshes the server still holds, which must be within the mesh budget with the rest
+/// of what it holds (M5 M6: a room that leads back keeps the one left warm, as a cache under the budget).
+fn left_warm(walk: &mut Walk, left: u32) -> usize {
+    let (server, _) = walk.content.streaming_parts();
+    let meshes = server.assets_of_kind(&room_pack(left), AssetKind::Mesh);
+    let kept = meshes.iter().filter(|&&id| server.is_resident(id)).count();
+    let stats = server.stats();
+    let (held, budget) = (stats.resident[AssetKind::Mesh.index()], stats.budgets.resident(AssetKind::Mesh));
+    assert!(held <= budget, "the meshes resident, {held} B, are within their budget, {budget} B");
+    kept
 }
 
 /// A trip gives the mesh pool's room back under its wipe (M5 D9): around three rooms, each leading only to the

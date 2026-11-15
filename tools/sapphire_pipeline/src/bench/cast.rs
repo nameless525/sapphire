@@ -81,6 +81,8 @@ pub struct CastFigure {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FigureScale {
+    /// One unless it says: a kind (`super::kinds`) is always one.
+    #[serde(default = "one")]
     pub copies: u32,
     /// Over the spec's `detail`.
     #[serde(default)]
@@ -91,6 +93,29 @@ pub struct FigureScale {
     /// Over the spec's exact count, and its budget with it.
     #[serde(default)]
     pub triangles: Option<u32>,
+}
+
+impl FigureScale {
+    /// Makes `spec` what this scale says: its detail, its maps' size and its exact triangles over its own
+    /// (the triangles raise its budget with them). The cast's members and the kinds' (`super::kinds`) both
+    /// take it here. Says why not if the scale sizes maps a spec doesn't paint.
+    pub fn apply(&self, spec: &mut Figure) -> Result<(), &'static str> {
+        if let Some(detail) = self.detail {
+            spec.detail = detail;
+        }
+        if let Some(size) = self.maps {
+            spec.maps.as_mut().ok_or("its spec paints no `maps`")?.size = size;
+        }
+        if let Some(triangles) = self.triangles {
+            spec.triangles = Some(triangles);
+            spec.max_triangles = spec.max_triangles.max(triangles);
+        }
+        Ok(())
+    }
+}
+
+fn one() -> u32 {
+    1
 }
 
 /// The most copies of a figure.
@@ -111,7 +136,7 @@ pub const PART_MAP: MaxSize = MaxSize { desktop: NonZeroU32::new(2048), mobile: 
 
 /// The cap a figure's maps take: spec §3.4's on each cook its maps are over, so a map within both is
 /// written as it always was.
-fn map_cap(figure: &Figure) -> MaxSize {
+pub(crate) fn map_cap(figure: &Figure) -> MaxSize {
     let size = figure.maps.as_ref().map_or(0, |maps| maps.size);
     let over = |cap: Option<NonZeroU32>| cap.filter(|cap| size > cap.get());
     MaxSize { desktop: over(PART_MAP.desktop), mobile: over(PART_MAP.mobile) }
@@ -173,20 +198,7 @@ pub fn members(dir: &Path, preset: Preset) -> Result<Vec<CastMember>, BenchError
         }
         let path = spec_path(&entry.spec);
         let mut spec = figure::read(&path)?;
-        if let Some(detail) = scale.detail {
-            spec.detail = detail;
-        }
-        if let Some(size) = scale.maps {
-            let maps = spec
-                .maps
-                .as_mut()
-                .ok_or_else(|| invalid(format!("{}: its spec paints no `maps`", entry.spec)))?;
-            maps.size = size;
-        }
-        if let Some(triangles) = scale.triangles {
-            spec.triangles = Some(triangles);
-            spec.max_triangles = spec.max_triangles.max(triangles);
-        }
+        scale.apply(&mut spec).map_err(|why| invalid(format!("{}: {why}", entry.spec)))?;
         // A shared skeleton is the owner's joints, and its first copy's.
         let skeleton = match &entry.skeleton {
             None => None,

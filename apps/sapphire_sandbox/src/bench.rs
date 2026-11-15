@@ -637,6 +637,8 @@ fn gpu_times(
         gpu_soft_backdrop_us = format_args!("{:.1}", micros(soft_backdrop.0, soft_backdrop.2)),
         soft_backdrop_frames = soft_backdrop.2,
         insets = ?stage.renderer.stats().insets,
+        // The last frame's capsules by cluster (M5 L18): what a pixel walks, summed and at most.
+        capsule_bins = ?stage.renderer.stats().capsule_bins,
         "bench gpu",
     );
     Ok(())

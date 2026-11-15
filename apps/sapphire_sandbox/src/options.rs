@@ -399,6 +399,10 @@ pub(crate) struct Options {
     pub texture_streaming: Option<bool>,
     /// `--texture-pool <MiB>`: the streamer's pool instead of the tier's `texture_pool_mib`.
     pub texture_pool_mib: Option<u32>,
+    /// `--capsule-bins on|off`: the characters' capsules by cluster (M5 L18,
+    /// `RenderSettings::capsule_bins`), on by default; off walks the plain loops with 16 capsules
+    /// a list, for comparisons.
+    pub capsule_bins: Option<bool>,
     /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
     /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
     /// the default.
@@ -792,6 +796,7 @@ impl Options {
             levels: LevelSettings { mode: self.lods.unwrap_or(tier.levels.mode), ..tier.levels },
             draw_runs: self.draw_runs.unwrap_or(tier.draw_runs),
             upscaler: if self.bilinear_upscale { Upscaler::Bilinear } else { tier.upscaler },
+            capsule_bins: self.capsule_bins.unwrap_or(tier.capsule_bins),
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
                 ..shadows
@@ -1390,6 +1395,13 @@ impl Options {
                             return Err(format!("--character-lods expects on, off or hero, got {other:?}"));
                         }
                     };
+                }
+                "--capsule-bins" => {
+                    options.capsule_bins = Some(match value("--capsule-bins")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--capsule-bins expects on or off, got {other:?}")),
+                    });
                 }
                 "--cull-thresholds" => {
                     let raw = value("--cull-thresholds")?;
@@ -3021,6 +3033,16 @@ mod tests {
         assert_eq!(options(&["--texture-pool", "256"]).texture_pool_mib, Some(256));
         assert!(parse(&["--texture-streaming", "some"]).is_err());
         assert!(parse(&["--texture-pool", "0"]).is_err() && parse(&["--texture-pool", "lots"]).is_err());
+    }
+
+    #[test]
+    fn capsule_bins_turn_off_for_comparisons() {
+        let tier = RenderSettings::default();
+        assert!(Options::default().render_settings(tier).capsule_bins, "on by default");
+        let bins = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).capsule_bins;
+        assert!(!bins(&["--capsule-bins", "off"]));
+        assert!(bins(&["--capsule-bins=on"]));
+        assert!(parse(&["--capsule-bins", "some"]).is_err());
     }
 
     #[test]

@@ -374,6 +374,9 @@
 //! - `--character-lods on|off|hero`: who may draw coarser (M5 D5, `CharacterLods`): as the stage
 //!   marks them (the default), no character (what characters' levels save, static draws keeping
 //!   theirs), or the scene's own character too, to see the hero's model as a crowd would draw it.
+//! - `--capsule-bins on|off`: the characters' capsules by cluster (M5 L18, `RenderSettings::capsule_bins`),
+//!   on by default: each pixel walks only the shadow and AO capsules that reach its cluster, 64 a list. Off
+//!   walks the plain loops with 16 a list, as before; with 16 capsules or fewer the two draw the same bytes.
 //! - `--cull-thresholds <distance>,<pixels>,<texels>`: distance and size culling's thresholds instead of the
 //!   tier's (M5 D3, `RenderSettings::culling`), for the walks that choose them: meters past which nothing is
 //!   drawn (0 for none), the least output pixels and the least cascade texels an instance's bounds must span.

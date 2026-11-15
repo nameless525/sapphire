@@ -858,10 +858,12 @@ mod tests {
                 && !name.starts_with("lod-")
                 && !name.starts_with("upscale-")
                 && !name.starts_with("zone-district-")
+                && name != "lookdev-night-stars"
             {
                 // The tier scenes (M4 T0), the levels' (M5 D4) and the upscaler's (M5 L14) draw a phone's frame at a
                 // phone's shape, and the benchmark district's (M5 X4) draw small, since lavapipe and WARP draw them on
-                // every pull request.
+                // every pull request. `lookdev-night-stars` (M5 L17) draws at 1280 × 720, where the nebula's own
+                // grid of stars is big enough to draw.
                 assert_eq!(size, SIZE, "{name}");
             }
         }

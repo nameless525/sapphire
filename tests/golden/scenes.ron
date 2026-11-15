@@ -907,6 +907,17 @@
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 62.0, warp: 85.6),
             ),
+            // The sky shot at night at 1280 × 720 (M5 L17), where the nebula's own grid of stars draws
+            // (its cells about six pixels wide; at 640 × 360 the grid's fade drops it): a crowd of fine
+            // stars in the nebula's clouds and wisps, sparser off them, over the finer cumulus's
+            // moonlit rims.
+            (
+                name: "lookdev-night-stars",
+                size: "1280x720",
+                ticks: 90,
+                args: ["--lods", "off", "--look-dev", "sky", "--time-of-day", "23", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "32"],
+            ),
             // The street out of the square at night (X1 part 2b): Jinzhou's white walls and charcoal
             // tile roofs under a blue night, its parametric halls, gateway and tower, the paper
             // lanterns strung across it and on posts glowing amber (the posts' lamps lighting the

@@ -223,6 +223,16 @@
                 serves: [6],
             ),
             (
+                name: "shadow-cache",
+                about: "kept and held cascades (D8) on the tour, held against drawn in turns",
+                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [(name: "held", args: ["--shadow-cache", "held"]), (name: "turns", args: ["--shadow-cache", "turns"])],
+                rows: ["cpu frame", "render", "gpu frame", "gpu shadows", "shadow triangles", "cascades drawn"],
+                serves: [6],
+            ),
+            (
                 name: "capsule-bins",
                 about: "the characters' capsules by cluster (L18) on the crowd's tour, on against off",
                 args: [

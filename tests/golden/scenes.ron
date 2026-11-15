@@ -1081,7 +1081,7 @@
                 name: "timeline-camera-post",
                 ticks: 120,
                 args: ["--arena", "--timeline", "455708fd-5c63-4cf4-98b6-1c0921bf8213", "--time-of-day", "13",
-                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32", "--spot-shadows", "off"],
                 ci_seconds: (lavapipe: 16.0, warp: 47.0),
             ),
             // A zone trip's wipe (M3 W4), from `zone-trip`'s first entry, due after its 120th tick: 14 steps
@@ -3206,7 +3206,7 @@
                 name: "tier-face-desktop-high-rung-one",
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "desktop-high", "--rung", "1",
-                       "--capture-frames", "12"],
+                       "--capture-frames", "12", "--spot-shadows", "off"],
                 ci_seconds: (lavapipe: 18.0, warp: 33.9),
             ),
             (
@@ -3766,7 +3766,7 @@
                 name: "effects-desaturation-keeps-characters",
                 ticks: 90,
                 args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
-                       "--capture-frames", "32", "--post-effect", "desaturation@0.3"],
+                       "--capture-frames", "32", "--post-effect", "desaturation@0.3", "--spot-shadows", "off"],
                 ci_seconds: (lavapipe: 52.0, warp: 69.6),
             ),
             // The halftone: ink dots on a turned grid, as large as the world is dark, over the world behind the

@@ -300,7 +300,7 @@ use crate::renderer::pass_weight;
 use crate::scene::{DrawList, InstanceSlots};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
-use crate::shadows::plan::SlotCaster;
+use crate::shadows::plan::{KeptCaster, SlotCaster};
 use crate::{FramePacket, RenderError};
 use plan::{ShadowPlan, WindMargin};
 
@@ -735,6 +735,20 @@ struct ShadowTextures {
     /// The character atlas, drawn into and sampled whole.
     atlas: wgpu::TextureView,
     atlas_size: (u32, u32),
+}
+
+/// One texel, in meters, of each shadow view whose casters' textures a frame's estimate reads
+/// ([`Shadows::texels`], the `coverage` module).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ShadowTexels {
+    /// Each cascade's the frame draws or holds.
+    pub cascades: [Option<f32>; MAX_CASCADES],
+    /// Bit `i`: cascade `i` is held (M5 D8): drawn on an earlier frame, so what its map holds is
+    /// [`Shadows::kept`], not its list.
+    pub held: u8,
+    /// Each character map's, the first `maps`.
+    pub map_texels: [f32; MAX_CHARACTER_MAPS],
+    pub maps: usize,
 }
 
 /// The renderer's shadows: settings, maps, pipelines and each frame's plan.
@@ -1307,21 +1321,32 @@ impl Shadows {
         cascades.chain(map).chain(spot_levels).min()
     }
 
-    /// One texel, in meters, of each cascade the frame draws and of each character map, as
-    /// [`Self::caster_tests`] lists them: what a masked caster's or a foliage card's texture is read
-    /// by in a shadow view (the `coverage` module, M5 M5).
-    pub(crate) fn texels(&self) -> ([Option<f32>; MAX_CASCADES], [f32; MAX_CHARACTER_MAPS], usize) {
+    /// One texel, in meters, of each cascade the frame draws or holds (M5 D8) and of each character
+    /// map, as [`Self::caster_tests`] lists them: what a masked caster's or a foliage card's texture
+    /// is read by in a shadow view (the `coverage` module, M5 M5). With them, bit `i` set where
+    /// cascade `i` is held: its map was drawn on an earlier frame, so its list isn't this frame's,
+    /// and what it holds is the plan's [`Self::kept`].
+    pub(crate) fn texels(&self) -> ShadowTexels {
         let active = self.pipelines.is_some() && self.plan.active;
+        let held = if active { self.plan.held_mask() } else { 0 };
         let cascades = std::array::from_fn(|index| {
-            let drawn = self.plan.drawn.get(index).copied().flatten();
-            drawn.filter(|_| active).map(|fit| fit.texel())
+            let drawn = self.plan.drawn.get(index).copied().flatten().filter(|_| active);
+            let fit = drawn.or_else(|| self.plan.fit(index).filter(|_| held & (1 << index) != 0));
+            fit.map(|fit| fit.texel())
         });
         let maps = match self.settings {
             Some(_) if active => self.plan.maps.len().min(MAX_CHARACTER_MAPS),
             _ => 0,
         };
-        let texels = std::array::from_fn(|index| self.plan.maps.get(index).map_or(0.0, |fit| fit.texel()));
-        (cascades, texels, maps)
+        let map_texels =
+            std::array::from_fn(|index| self.plan.maps.get(index).map_or(0.0, |fit| fit.texel()));
+        ShadowTexels { cascades, held, map_texels, maps }
+    }
+
+    /// Per instance slot: what the cascades' maps hold of it (M5 D8, a cache that keeps), which a
+    /// held cascade's texture reads are taken from.
+    pub(crate) fn kept(&self) -> &[KeptCaster] {
+        self.plan.kept()
     }
 
     /// The view of cascade `index` (below [`MAX_CASCADES`]), of character map `index −

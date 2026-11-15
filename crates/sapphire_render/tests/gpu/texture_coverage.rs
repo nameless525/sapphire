@@ -239,7 +239,13 @@ struct Frames {
 
 impl Frames {
     fn new(gpu: &GpuContext) -> Self {
-        let settings = RenderSettings { msaa: Msaa::Off, temporal: false, ..RenderSettings::default() };
+        Self::with_settings(
+            gpu,
+            RenderSettings { msaa: Msaa::Off, temporal: false, ..RenderSettings::default() },
+        )
+    }
+
+    fn with_settings(gpu: &GpuContext, settings: RenderSettings) -> Self {
         let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width: SIZE.0, height: SIZE.1, depth_or_array_layers: 1 },
@@ -497,5 +503,75 @@ fn textures_at_the_top_their_estimate_needs_draw_the_whole_textures_picture() {
         let first_change =
             first_change.unwrap_or_else(|| panic!("texture {index} lowered to its tail drew the same"));
         eprintln!("texture {index}: need {}, first change at {first_change}", needs[index]);
+    }
+}
+
+/// An alpha-tested foliage card out of the main view's frustum, aside and ahead, whose shadow a
+/// cascade casts: a still view holds every cascade a cache that keeps drew (M5 D8), and a held map
+/// still reads the card's base colour, so the estimate wants it on every frame, not only on those
+/// that drew a cascade (M5 Z3a's F1: the streamer lowered it to its tail once the cascades were
+/// held, and the held map redrew with the coarse cut-out).
+#[test]
+#[ignore = "needs a GPU"]
+fn a_held_cascade_keeps_its_casters_textures_wanted() {
+    use sapphire_render::{CascadeCache, ShadowSettings};
+
+    for cache in [CascadeCache::Kept, CascadeCache::Held] {
+        let gpu = gpu();
+        let shadows = ShadowSettings { spots: 0, cache, ..ShadowSettings::default() };
+        let settings = RenderSettings {
+            msaa: Msaa::Off,
+            temporal: false,
+            shadows: Some(shadows),
+            ..RenderSettings::default()
+        };
+        let mut frames = Frames::with_settings(&gpu, settings);
+        let card_id = AssetId::from_bytes([0x70; 16]);
+        let texture = whole_texture(&gpu, &mut frames, card_id, 1);
+
+        // Ground for the shadow to fall on, untextured.
+        let ground = frames.material(&EnvironmentMaterial::default(), (card_id, &texture));
+        let plane = rectangle(
+            Vec3::new(-60.0, 0.0, 20.0),
+            Vec3::new(120.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, -140.0),
+            [1.0; 2],
+        );
+        frames.show(&mesh(plane), ground);
+
+        // The card, 2 m square, 25 m aside at 15 m ahead: 59° off the view's axis, past the frustum's
+        // 38° half width, and in the last cascade's reach.
+        let card = FoliageMaterial {
+            base_color: [1.0; 4],
+            base_color_map: Some(card_id),
+            alpha_cutoff: 0.5,
+            wind: WindResponse { sway: 0.0, bend: 0.0, flutter: 0.0, flutter_frequency: 1.0 },
+            ..FoliageMaterial::default()
+        };
+        let card = frames.material(&card, (card_id, &texture));
+        let quad = rectangle(Vec3::new(25.0, 0.5, -15.0), Vec3::X * 2.0, Vec3::Y * 2.0, [1.0, 1.0]);
+        let mut card_mesh = mesh(quad);
+        let still = vec![FoliageVertex { gradient: 1.0, ..FoliageVertex::default() }; 4];
+        card_mesh.streams = card_mesh.streams.clone().with_foliage(&still);
+        frames.show(&card_mesh, card);
+
+        let mut drawn = Vec::new();
+        let mut read = Vec::new();
+        for _ in 0..8 {
+            frames.render(&gpu);
+            drawn.push(frames.renderer.stats().shadows.cascades_drawn);
+            frames.renderer.estimate_texture_coverage();
+            let wanted =
+                frames.renderer.texture_coverage().textures.iter().any(|entry| entry.texture == card_id);
+            read.push(wanted);
+        }
+        // The first frame draws every cascade and a still view none after it: the case, or the test
+        // proves nothing.
+        assert!(
+            drawn[0] > 0 && drawn[2..].iter().all(|&count| count == 0),
+            "{cache:?}: cascades drawn {drawn:?}"
+        );
+        assert!(read[0], "{cache:?}: the frame that drew the cascades reads the card's texture");
+        assert!(read.iter().all(|&wanted| wanted), "{cache:?}: the card's texture was wanted on {read:?}");
     }
 }

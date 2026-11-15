@@ -22,13 +22,19 @@
 //! - **The other views.** An inset reads whatever its draws bind whole, as a close-up must open sharp. A
 //!   shadow view reads the base color of the alpha-tested anime character variants (the masked casters)
 //!   and of foliage's cards: by the cascade's or character map's texel, which is orthographic. A cascade
-//!   is redrawn every few frames, so the stage's lowering, which waits seconds, covers the frames between.
+//!   a frame draws reads its list's casters; one it holds (M5 D8, a cache that keeps: a still view holds
+//!   every cascade for as long as nothing in it changes) reads what its map holds, as the shadow plan
+//!   kept it ([`CoverageInputs::kept`]): its list is of the frame that drew it, which a rebuilt draw list
+//!   no longer matches. So a held map's cut-outs stay wanted for as long as it's held, and the stage
+//!   never lowers one below the level the held map reads it at.
 //!   The lines read an outlined character's base color through hulls whose footprint isn't the surface's,
 //!   so an outlined draw wants its base color whole.
 //! - **Deformed meshes** stretch their surfaces as they pose: their bound is halved, one level finer.
 //! - **Cost.** Once a recorded frame, when the stage asks ([`crate::Renderer::estimate_texture_coverage`],
 //!   at the top of its loading, only while it streams), on the frame's thread, over the main view's list,
-//!   the insets' and the shadow views' masked and foliage groups; no allocation once its vectors have grown.
+//!   the insets' and the shadow views' masked and foliage groups, and where a cascade is held, once over
+//!   the draw list's masked and foliage draws, whatever the number of cascades held; no allocation once
+//!   its vectors have grown.
 //!
 //! Levels of detail (m5-plan D4, D5): a draw of any level finds its submesh's density, the least over the
 //! levels, so the need a level change leaves is the one the estimate gave before it.
@@ -41,12 +47,13 @@ use sapphire_assets::material::{
 use sapphire_assets::mesh::{ArchivedMesh, PositionFormat};
 
 use crate::bounds::{Sphere, max_stretch};
-use crate::draw::{DrawSet, Source, ViewList, ViewLists, Walk};
+use crate::draw::{DrawSet, Source, ViewList, ViewLists, Walk, has_level};
 use crate::inset::MAX_INSETS;
 use crate::materials::MaterialRecord;
 use crate::mesh_pool::MeshRecord;
 use crate::pipelines::{Shading, SurfaceVariant, format_index};
 use crate::scene::{DeformedDraw, DrawCommand, DrawList, InstanceSlots};
+use crate::shadows::plan::KeptCaster;
 use crate::shadows::{MAX_CASCADES, MAX_CHARACTER_MAPS};
 
 /// Where a list's draws come from, every source.
@@ -326,8 +333,11 @@ pub(crate) struct CoverageViews {
     pub footprint: Footprint,
     /// The insets that drew, by index.
     pub insets: [bool; MAX_INSETS],
-    /// One texel of each cascade drawn, in meters, and of each character map drawn (the first `maps`).
+    /// One texel of each cascade drawn or held, in meters, and of each character map drawn (the first
+    /// `maps`).
     pub cascades: [Option<f32>; MAX_CASCADES],
+    /// Bit `i`: cascade `i` is held, not drawn (M5 D8): what it reads is in [`CoverageInputs::kept`].
+    pub held: u8,
     pub map_texels: [f32; MAX_CHARACTER_MAPS],
     pub maps: usize,
 }
@@ -341,6 +351,8 @@ pub(crate) struct CoverageInputs<'a> {
     /// The views' lists.
     pub lists: &'a ViewLists,
     pub views: CoverageViews,
+    /// Per instance slot: what the cascades' maps hold of it, as they were last drawn (M5 D8).
+    pub kept: &'a [KeptCaster],
 }
 
 impl CoverageEstimate {
@@ -364,6 +376,9 @@ impl CoverageEstimate {
             if let Some(list) = inputs.lists.list(walk) {
                 self.walk(inputs, list, view);
             }
+        }
+        if views.held != 0 {
+            self.walk_held(inputs);
         }
         self.textures.clear();
         for &material in &self.touched {
@@ -410,6 +425,36 @@ impl CoverageEstimate {
                     if let Some(draw) = draw {
                         self.take(inputs, draw, view);
                     }
+                }
+            }
+        }
+    }
+
+    /// Takes the masked and foliage draws the held cascades' maps hold ([`CoverageViews::held`]), each
+    /// by the finest texel of those holding it at the level it was drawn at: one walk of the draw list's
+    /// surfaces a shadow view reads, whatever the number of cascades held.
+    fn walk_held(&mut self, inputs: &CoverageInputs<'_>) {
+        let views = inputs.views;
+        let shadow = View::Shadow(0.0);
+        for variant in SurfaceVariant::ALL.into_iter().filter(|&variant| shadow.reads(variant)) {
+            let index = variant.index();
+            let statics = inputs.list.commands.iter().flat_map(|commands| &commands[index]);
+            let statics = statics.map(|command| (Drawn::of_static(command), command.levels));
+            let deformed =
+                inputs.list.deformed[index].iter().map(|draw| (Drawn::of_deformed(draw), draw.levels));
+            for (draw, levels) in statics.chain(deformed) {
+                let Some(kept) = inputs.kept.get(draw.slot as usize) else { continue };
+                let held = kept.maps & views.held;
+                if held == 0 {
+                    continue;
+                }
+                // A submesh simplified away at a cascade's level wasn't drawn into it.
+                let texel = (0..MAX_CASCADES)
+                    .filter(|&cascade| held & (1 << cascade) != 0 && has_level(levels, kept.levels[cascade]))
+                    .filter_map(|cascade| views.cascades[cascade])
+                    .reduce(f32::min);
+                if let Some(texel) = texel {
+                    self.take(inputs, draw, View::Shadow(texel));
                 }
             }
         }
@@ -488,11 +533,14 @@ impl Drawn {
 }
 
 /// The lists a frame's estimate reads, each with how its view reads its draws' textures: the main view by
-/// its footprint, each inset that drew whole, and each shadow view drawn by its texel.
+/// its footprint, each inset that drew whole, and each shadow view drawn by its texel (a held cascade's
+/// casters are walked apart, [`CoverageEstimate::walk_held`]).
 fn reads(views: &CoverageViews) -> impl Iterator<Item = (Walk, View)> + '_ {
     let main = std::iter::once((Walk::Main, View::Main));
     let insets = views.insets.iter().enumerate().filter(|(_, drew)| **drew);
-    let cascades = views.cascades.iter().enumerate().filter_map(|(index, texel)| Some((index, (*texel)?)));
+    // A held cascade's list is of the frame that drew it: what it reads is walked apart.
+    let drawn = views.cascades.iter().enumerate().filter(|(index, _)| views.held & (1 << index) == 0);
+    let cascades = drawn.filter_map(|(index, texel)| Some((index, (*texel)?)));
     let maps = views.map_texels[..views.maps].iter().enumerate();
     main.chain(insets.map(|(index, _)| (Walk::InsetMain(index), View::Whole)))
         .chain(cascades.map(|(index, texel)| (Walk::Cascade(index), View::Shadow(texel))))

@@ -76,7 +76,7 @@ use crate::shader_builds::{
 };
 use crate::shaders::{BuildOn, ProbeRead, Program, ShaderError, ShaderSources};
 use crate::shadows::plan::CasterCull;
-use crate::shadows::{CasterBindings, MAX_SPOT_SHADOWS, ShadowSettings, ShadowStats, Shadows};
+use crate::shadows::{CasterBindings, MAX_SPOT_SHADOWS, ShadowSettings, ShadowStats, ShadowTexels, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
@@ -1539,6 +1539,7 @@ impl Renderer {
             materials: self.materials.records(),
             lists: &self.view_lists,
             views,
+            kept: self.shadows.kept(),
         });
     }
 
@@ -3326,11 +3327,12 @@ impl Renderer {
         let run_list = lists.records();
         // The views, for the estimate of how finely they read each streamed texture (M5 M5) that the
         // stage's streamer asks for.
-        let (cascades, map_texels, maps) = shadows.texels();
+        let ShadowTexels { cascades, held, map_texels, maps } = shadows.texels();
         *coverage_views = Some(CoverageViews {
             footprint: Footprint::new(camera.view, camera.proj, camera.position, size),
             insets: std::array::from_fn(|index| inset_frame.draws[index].is_some()),
             cascades,
+            held,
             map_texels,
             maps,
         });

@@ -56,7 +56,9 @@ use std::ops::Range;
 use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
-pub(crate) use self::lists::{CasterTests, Entry, Orders, Source, ViewList, ViewLists, ViewTests, Walk};
+pub(crate) use self::lists::{
+    CasterTests, Entry, Orders, Source, ViewList, ViewLists, ViewTests, Walk, has_level,
+};
 pub(crate) use self::runs::RunRecords;
 pub use self::runs::{DrawRuns, RunStats};
 use crate::buffer::GrowableBuffer;
@@ -611,7 +613,7 @@ impl MeshDraws<'_> {
                         // At the main view's family's level (M5 D5); a submesh simplified away
                         // there isn't drawn, as a list leaves it out.
                         let level = self.ordered_level(command.slot);
-                        if !lists::has_level(command.levels, level) {
+                        if !has_level(command.levels, level) {
                             continue;
                         }
                         let indices = self.deformed_indices(command, level);

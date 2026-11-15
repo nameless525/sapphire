@@ -70,10 +70,10 @@ pub(crate) struct SlotCaster {
 /// What the cascades' maps hold of one instance slot, as they were last drawn (M5 D8): what a
 /// cascade that keeps compares the frame's casters with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct KeptCaster {
+pub(crate) struct KeptCaster {
     /// Bit `i`: cascade `i`'s map holds it, at `levels[i]`.
-    maps: u8,
-    levels: [u8; MAX_CASCADES],
+    pub maps: u8,
+    pub levels: [u8; MAX_CASCADES],
 }
 
 impl SlotCaster {
@@ -982,6 +982,26 @@ impl ShadowPlan {
     fn moving_casters(&self) -> u32 {
         let casters = self.casters.iter().zip(&self.moving);
         casters.filter(|(caster, moving)| **moving && caster.cascades != 0).count() as u32
+    }
+
+    /// Bit `i`: cascade `i` holds its map from an earlier frame, under the fit it has this frame,
+    /// and isn't drawn this one (M5 D8, a cache that keeps; drawing in turns, a cascade not drawn
+    /// has no fit this frame).
+    pub(crate) fn held_mask(&self) -> u8 {
+        (0..MAX_CASCADES)
+            .filter(|&index| self.fits[index].is_some() && self.drawn[index].is_none())
+            .fold(0, |bits, index| bits | 1 << index)
+    }
+
+    /// The fit cascade `index` is tested in this frame, drawn or held.
+    pub(crate) fn fit(&self, index: usize) -> Option<CascadeFit> {
+        self.fits.get(index).copied().flatten()
+    }
+
+    /// Per instance slot: what the cascades' maps hold of it, as they were last drawn (M5 D8, a
+    /// cache that keeps; empty drawing in turns).
+    pub(crate) fn kept(&self) -> &[KeptCaster] {
+        &self.kept
     }
 
     /// Bit `i`: cascade `i` is drawn this frame.

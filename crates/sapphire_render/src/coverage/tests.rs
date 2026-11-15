@@ -9,6 +9,7 @@ use super::{
 use crate::MaterialHandle;
 use crate::bounds::Sphere;
 use crate::draw::Walk;
+use crate::inset::MAX_INSETS;
 use crate::mesh_pool::{SubmeshDraw, SubmeshMaterial};
 use crate::pipelines::SurfaceVariant;
 use crate::shadows::MAX_CHARACTER_MAPS;
@@ -88,6 +89,7 @@ fn an_insets_draws_want_their_textures_whole() {
         footprint: Footprint::new(Mat4::IDENTITY, Mat4::IDENTITY, Vec3::ZERO, (64, 64)),
         insets: std::array::from_fn(|index| index == 1),
         cascades: std::array::from_fn(|index| (index == 0).then_some(0.05)),
+        held: 0,
         map_texels: [0.01; MAX_CHARACTER_MAPS],
         maps: 1,
     };
@@ -104,6 +106,23 @@ fn an_insets_draws_want_their_textures_whole() {
     // Whole reads every surface it draws, at level 0.
     assert!(SurfaceVariant::ALL.into_iter().all(|variant| View::Whole.reads(variant)));
     assert_eq!(View::Whole.bound_of(|| unreachable!("a whole view needs no footprint")), 0.0);
+}
+
+/// A held cascade's list is of the frame that drew it (M5 D8), which a rebuilt draw list no longer
+/// matches: it isn't walked, and what its map holds is taken from the shadow plan's kept casters
+/// instead ([`CoverageEstimate::walk_held`], the GPU test `a_held_cascade_keeps_its_casters_textures_wanted`).
+#[test]
+fn a_held_cascades_list_isnt_walked() {
+    let views = CoverageViews {
+        footprint: Footprint::new(Mat4::IDENTITY, Mat4::IDENTITY, Vec3::ZERO, (64, 64)),
+        insets: [false; MAX_INSETS],
+        cascades: std::array::from_fn(|index| (index < 2).then_some(0.05 * (index + 1) as f32)),
+        held: 0b10,
+        map_texels: [0.01; MAX_CHARACTER_MAPS],
+        maps: 0,
+    };
+    let read: Vec<(Walk, View)> = reads(&views).collect();
+    assert_eq!(read, [(Walk::Main, View::Main), (Walk::Cascade(0), View::Shadow(0.05))]);
 }
 
 /// A coarser level of a mesh asks for the same texture levels as LOD0 (m5-plan D4): each slot takes its least

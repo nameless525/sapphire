@@ -308,7 +308,9 @@ made: it proves the batch runs and its logs parse, in an ordinary slot, and meas
 §3.4 (its draws on `main draws`, the main view's calls after culling, as m5-plan §3 decided; `draw calls`, every
 pass's, has no budget), memory against §3.1, streaming against exit test 2, load times and trips. A timed walk's
 streaming rows, its 30-frame bound and its trips read both laps, the cold one (`first`) and the warm one (`cpu`),
-each labelled, and judge the worse: the cold lap is where surfaces come into view from their tails. A time is the least of the
+each labelled, and judge the worse: the cold lap is where surfaces come into view from their tails. The 30-frame
+line's bound is the trace column's worst frame, since the column is each frame's longest debt and its worst
+bounds every surface's wait; the frames' 99th percentile stands beside it, named as that. A time is the least of the
 rounds at p50 and p95 with the worst and where along the walk it fell; a count must be the same in every round
 of a run that counts exactly, or the report says it differs and fails. A row over its budget says by how much;
 a row the log doesn't have reads "missing", never zero. With `--baseline` (a folder of B4's logs named

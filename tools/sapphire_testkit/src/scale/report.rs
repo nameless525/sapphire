@@ -706,32 +706,40 @@ fn cell_worst(cell: &CountCell) -> u64 {
 }
 
 fn streaming_notes(out: &mut String, rounds: &Rounds) {
-    // Each lap's worst of the rounds' 99th percentiles, then the worse lap.
+    // Each lap's column: the worst frame of any round, which bounds every surface's wait, and the worst of the
+    // rounds' 99th percentiles of frames, which bounds nothing and stands beside it, named as that. Then the
+    // worse lap, by its worst.
     let lap = |phase: &str| {
         rounds
             .rounds
             .iter()
             .filter_map(|round| {
                 let column = trace_column(round.trace.as_deref()?, phase, "worst_texture_debt")?;
-                percentile(&column, 0.99)
+                let worst = column.iter().copied().reduce(f64::max)?;
+                Some((worst, percentile(&column, 0.99)?))
             })
-            .reduce(f64::max)
+            .reduce(|(worst, p99), (other, other_p99)| (worst.max(other), p99.max(other_p99)))
     };
     let bound = LAPS
         .iter()
         .filter_map(|&(phase, name)| Some((lap(phase)?, name)))
-        .reduce(|worse, other| if other.0 > worse.0 { other } else { worse });
+        .reduce(|worse, other| if other.0.0 > worse.0.0 { other } else { worse });
     let _ = writeln!(
         out,
-        "- **A surface newly in view at its level within 30 frames (exit test 2, 99th percentile):** {}. A \
-         conservative bound, not the row itself: each frame's most frames any texture has been in debt, so a \
-         surface's own wait is at most this; a finer counter is built only if the bound fails.",
+        "- **A surface newly in view at its level within 30 frames (exit test 2):** {}. A conservative bound, not \
+         the row itself: the trace's column is each frame's most frames any texture has been in debt, so its worst \
+         frame bounds every surface's wait and the exit test's 99th percentile of surfaces with it; a percentile \
+         of frames bounds no surface's wait. A finer counter is built only if the bound fails.",
         match bound {
-            Some((frames, lap)) if frames > 30.0 => format!(
-                "**{frames:.0} frames**, over 30 (the worst of the rounds' 99th percentiles, on the {lap}, the worse)"
+            Some(((worst, p99), lap)) => format!(
+                "{} (the column's worst frame in any round, on the {lap}, the worse); the frames' 99th \
+                 percentile {p99:.0}, the worst of the rounds'",
+                if worst > 30.0 {
+                    format!("**{worst:.0} frames**, over 30")
+                } else {
+                    format!("{worst:.0} frames")
+                }
             ),
-            Some((frames, lap)) =>
-                format!("{frames:.0} frames (the worst of the rounds' 99th percentiles, on the {lap}, the worse)"),
             None =>
                 "no trace (a counting walk writes none): the worst texture debt frames row's worst bounds it"
                     .to_owned(),
@@ -1054,6 +1062,28 @@ mod tests {
         let mut trips_text = String::new();
         trips(&mut trips_text, &walk);
         assert!(trips_text.contains("cold lap r1 trip 0: covered 3 frames 40.0 ms"), "{trips_text}");
+    }
+
+    /// The trace's column is each frame's longest debt, not a surface's wait: its worst bounds every surface's
+    /// wait, and its 99th percentile of frames bounds nothing. The bound is the worst; the percentile stands
+    /// beside it, named as the frames'.
+    #[test]
+    fn the_30_frame_line_bounds_by_the_columns_worst() {
+        let manifest = manifest();
+        let (run, tier) = (&manifest.runs[0], &manifest.tiers[0]);
+        let mut trace = "phase,frame,worst_texture_debt\n".to_owned();
+        for frame in 0..199 {
+            let _ = writeln!(trace, "cpu,{frame},5");
+        }
+        trace.push_str("cpu,199,60\nfirst,0,4\n");
+        let mut walk = rounds(&[&count_line("cpu", "worst texture debt frames", [0, 1, 2], None)]);
+        walk.rounds[0].trace = Some(trace);
+        let mut out = String::new();
+        section(&mut out, &mut Vec::new(), &manifest, run, tier, &walk, None);
+        let line = out.lines().find(|line| line.contains("within 30 frames (exit test 2")).expect(&out);
+        assert!(line.contains("**60 frames**, over 30"), "the column's worst is the bound: {line}");
+        assert!(line.contains("the frames' 99th percentile 5"), "the percentile beside it, named: {line}");
+        assert!(line.contains("warm lap"), "the worse lap: {line}");
     }
 
     /// B4's baseline drew the phones at their scenes' size; the report says so once, beside a baseline.

@@ -250,7 +250,7 @@ pub fn cook_kinds(preset: Preset, cook: Cook) -> anyhow::Result<KindsCooked> {
     Ok(KindsCooked { dir: out, _lock: lock, _source: source_lock })
 }
 
-/// The shipped desktop cook with the `ci` district's pack beside it, for tests, held under a shared lock
+/// A shipped cook with the `ci` district's pack beside it, for tests, held under a shared lock
 /// until dropped (see the module docs).
 #[derive(Debug)]
 pub struct WithContent {
@@ -260,26 +260,25 @@ pub struct WithContent {
     _bench: BenchCooked,
 }
 
-/// The folder the golden scenes and the scale lane mount: `target/bench/ci/with-content/desktop/`.
-pub fn with_content_dir() -> PathBuf {
-    output_dir().join(Preset::Ci.name()).join("with-content").join(Cook::Desktop.name())
-}
-
-/// Cooks the `ci` district for desktop and puts it together with `shipped`, the desktop cook of `content/`,
-/// for a shipping build: every file of the shipped cook but its manifest, linked (or copied where links can't
-/// be made), the district's pack beside them, and a manifest of the folder from the pipeline. It takes the
-/// shipped cook already held, since a run that holds it can't cook it again.
+/// Cooks the `ci` district for `shipped`'s cook and puts it together with `shipped`, the desktop or mobile cook
+/// of `content/`, for a shipping build: every file of the shipped cook but its manifest, linked (or copied where
+/// links can't be made), the district's pack beside them, and a manifest of the folder from the pipeline, in
+/// `target/bench/ci/with-content/<cook>/`. It takes the shipped cook already held, since a run that holds it
+/// can't cook it again. The golden scenes mount the desktop one; the scale lane's phone walks the mobile one
+/// (M5 Z3).
 pub fn with_content(shipped: content::Cooked) -> anyhow::Result<WithContent> {
-    if shipped.dir != content::cooked_dir(Cook::Desktop) {
-        bail!("the district goes beside the desktop cook, not {}", shipped.dir.display());
-    }
-    let bench = cook(Preset::Ci, Cook::Desktop)?;
-    let out = with_content_dir();
+    let Some(target) =
+        [Cook::Desktop, Cook::Mobile].into_iter().find(|&cook| shipped.dir == content::cooked_dir(cook))
+    else {
+        bail!("the district goes beside the desktop or the mobile cook, not {}", shipped.dir.display());
+    };
+    let bench = cook(Preset::Ci, target)?;
+    let out = with_content_dir_for(Preset::Ci, target);
     fs::create_dir_all(out.parent().expect("under target/bench"))?;
     let lock = workspace::lock_file(&out.with_extension("lock"))?;
     let waiting = "to finish putting the content and the district together";
     workspace::wait_for_lock(&lock, File::try_lock, File::lock, waiting)?;
-    put_beside(&shipped.dir, &bench.dir, &out, Cook::Desktop)?;
+    put_beside(&shipped.dir, &bench.dir, &out, target)?;
     lock.unlock()?;
     workspace::wait_for_lock(&lock, File::try_lock_shared, File::lock_shared, waiting)?;
     Ok(WithContent { dir: out, _lock: lock, _content: shipped, _bench: bench })
@@ -389,7 +388,9 @@ mod tests {
         assert!(cooked_dir(Preset::Ci, Cook::Mobile).ends_with("target/bench/ci/mobile"));
         assert!(loose_dir(Preset::Ci, Cook::Desktop).ends_with("target/bench/ci/loose/desktop"));
         assert!(cache_dir().ends_with("target/bench/cache"));
-        assert!(with_content_dir().ends_with("target/bench/ci/with-content/desktop"));
+        assert!(
+            with_content_dir_for(Preset::Ci, Cook::Desktop).ends_with("target/bench/ci/with-content/desktop")
+        );
         assert!(kinds_dir(Preset::Budget).ends_with("target/bench/budget/kinds"));
         assert!(
             with_content_dir_for(Preset::Budget, Cook::Mobile)

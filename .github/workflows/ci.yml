@@ -255,6 +255,11 @@ jobs:
       # The content and the benchmark's `ci` district beside it, which three scenes draw (M5 X4).
       - name: Cook the desktop content and the district
         run: cargo --locked xtask --locked bench-content --with-content
+      # The scale lane's phone walks read the mobile cook (M5 Z3): about a minute and 36 MB packed on an M5, so
+      # only the runs that walk cook it.
+      - name: Cook the mobile content and the district (scale lane)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: cargo --locked xtask --locked bench-content --with-content --cook mobile
       - name: Package exact-commit golden inputs
         shell: bash
         env:
@@ -262,8 +267,12 @@ jobs:
         run: |
           ci_python=python3
           if [ "$RUNNER_OS" = Windows ]; then ci_python=python; fi
+          mobile=()
+          if [ -d target/bench/ci/with-content/mobile ]; then
+            mobile=(--mobile-content target/bench/ci/with-content/mobile)
+          fi
           "$ci_python" .github/scripts/golden_bundle.py create --archive "$RUNNER_TEMP/golden-bundle.tar.gz" \
-            --commit "$GITHUB_SHA" --family "$GOLDEN_FAMILY"
+            --commit "$GITHUB_SHA" --family "$GOLDEN_FAMILY" "${mobile[@]}"
       - name: Upload golden inputs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -464,7 +473,8 @@ jobs:
           WALK: ${{ matrix.walk }}
         run: |
           target/golden-input/bin/sapphire_testkit counts --sandbox target/golden-input/bin/sapphire_sandbox \
-            --content target/golden-input/content --table tests/counts/district-ci.txt --out target/counts \
+            --content target/golden-input/content --mobile-content target/golden-input/mobile-content \
+            --table tests/counts/district-ci.txt --out target/counts \
             --walk "$WALK" --walk-timeout 2400
       - name: Upload the count rows
         if: always()

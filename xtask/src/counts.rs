@@ -1,6 +1,7 @@
 //! `cargo xtask counts [--update] [--walk <name>]... [--walk-timeout <seconds>]`: CI's scale lane (M5 X4).
 //!
-//! Cooks the desktop content and the benchmark's `ci` district beside it ([`bench::with_content`]), builds
+//! Cooks the desktop content and the benchmark's `ci` district beside it ([`bench::with_content`]), and the
+//! mobile content and district the same way for the phone tiers' walks (M5 Z3), builds
 //! the sandbox and `sapphire_testkit` as the golden scenes do, then runs `sapphire_testkit counts`, which
 //! walks the district's tour at each tier's settings and holds what each walk counted to
 //! `tests/counts/district-ci.txt` (`sapphire_testkit::counts`). It runs as a process because nothing may
@@ -9,6 +10,7 @@
 use std::process::Command;
 
 use crate::bench::{self, Preset};
+use crate::content::{self, Cook};
 use crate::platforms::{self, App, Options, SANDBOX};
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
@@ -28,6 +30,8 @@ pub struct Counts<'a> {
 pub fn run(counts: &Counts<'_>) -> anyhow::Result<()> {
     let (content, sandbox) = platforms::desktop_build(&App::load(SANDBOX)?, &Options::default())?;
     let content = bench::with_content(content)?;
+    // The phone tiers' walks read the mobile cook, as a phone would (M5 Z3).
+    let mobile = bench::with_content(content::cook(Cook::Mobile)?)?;
     let env = platforms::host_build_env()?;
     let testkit = workspace::build_binary(
         &CargoBuild { package: TESTKIT, target: None, profile: BuildProfile::Dev, features: &[], env: &env },
@@ -40,6 +44,8 @@ pub fn run(counts: &Counts<'_>) -> anyhow::Result<()> {
         .arg(sandbox.path())
         .arg("--content")
         .arg(&content.dir)
+        .arg("--mobile-content")
+        .arg(&mobile.dir)
         .arg("--sources")
         .arg(bench::source_dir(Preset::Ci))
         .arg("--table")

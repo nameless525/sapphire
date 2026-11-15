@@ -32,13 +32,15 @@ Usage:
                                [--scene-timeout <seconds>]
       Draw the stores' screenshots (sapphire_testkit::store_shots) into <out>/<store>/<size>/
       <language>/, emptied first, with each capture's log in <out>/logs/.
-  sapphire_testkit counts --sandbox <exe> --content <dir> --table <file> --out <dir>
-                          [--sources <dir>] [--update] [--walk <name>]... [--walk-timeout <seconds>]
+  sapphire_testkit counts --sandbox <exe> --content <dir> --mobile-content <dir> --table <file>
+                          --out <dir> [--sources <dir>] [--update] [--walk <name>]...
+                          [--walk-timeout <seconds>]
       Walk the benchmark district's tour with the sandbox's walk bench at each tier's
       settings, dusk and night, and compare each walk's count rows with the table: one line
       for each row that moved, with what the table holds, what the walk saw and which way.
-      --content is a desktop cook with the district's pack and a release manifest naming it
-      (`cargo xtask counts` makes it). --sources is the district's generated sources, whose
+      --content is a desktop cook with the district's pack and a release manifest naming it,
+      which the desktop tiers read, and --mobile-content the same for the mobile cook, which
+      the phone tiers read (`cargo xtask counts` makes both). --sources is the district's generated sources, whose
       digest the table names. --walk runs one walk (more than once for more); --update
       rewrites those walks' rows. Each walk's log is <out>/<walk>.log, and what every walk
       counted is <out>/counts.txt, a table (sapphire_testkit::counts).
@@ -164,6 +166,7 @@ fn counts(mut args: Vec<String>) -> Result<Vec<String>, String> {
     let paths = counts::Paths {
         sandbox: path("--sandbox")?,
         content: path("--content")?,
+        mobile_content: path("--mobile-content")?,
         table: path("--table")?,
         out: path("--out")?,
         sources: value("--sources")?.map(PathBuf::from),

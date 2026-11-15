@@ -123,14 +123,23 @@ impl Walk {
         .map(str::to_owned)
         .to_vec()
     }
+
+    /// The cook the walk reads: a phone tier's the mobile one, as a phone would (M5 Z3), a desktop tier's the
+    /// desktop one.
+    pub fn content<'p>(&self, paths: &'p Paths) -> &'p Path {
+        if self.tier.starts_with("mobile") { &paths.mobile_content } else { &paths.content }
+    }
 }
 
 /// Where the lane finds and puts things.
 pub struct Paths {
     /// The sandbox executable.
     pub sandbox: PathBuf,
-    /// The desktop cook with the district's pack beside it, and a release manifest naming both.
+    /// The desktop cook with the district's pack beside it, and a release manifest naming both: the desktop
+    /// tiers' walks read it.
     pub content: PathBuf,
+    /// The same for the mobile cook: the phone tiers' walks read it.
+    pub mobile_content: PathBuf,
     /// The committed table.
     pub table: PathBuf,
     /// The district's generated sources, whose digest the table's header names: checked when given.
@@ -143,7 +152,10 @@ pub struct Paths {
 /// table's rows for those walks.
 pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Result<Vec<String>, String> {
     let selected = select(walks)?;
-    crate::output_paths::disjoint(&paths.out, &[&paths.content, &paths.sandbox, &paths.table])?;
+    crate::output_paths::disjoint(
+        &paths.out,
+        &[&paths.content, &paths.mobile_content, &paths.sandbox, &paths.table],
+    )?;
     if paths.out.exists() {
         fs::remove_dir_all(&paths.out)
             .map_err(|e| format!("failed to empty {}: {e}", paths.out.display()))?;
@@ -174,7 +186,7 @@ pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Re
         let walked = Stopwatch::start();
         let log = paths.out.join(format!("{}.log", walk.name));
         let mut command = Command::new(&paths.sandbox);
-        command.env(CONTENT_DIR_ENV, &paths.content).args(walk.args());
+        command.env(CONTENT_DIR_ENV, walk.content(paths)).args(walk.args());
         let exit = run_with_deadline(&mut command, &log, timeout)
             .map_err(|e| format!("failed to run the sandbox for {} ({}): {e}", walk.name, log.display()))?;
         let failed = |what: String| {
@@ -278,7 +290,7 @@ fn header(digest: Option<&str>) -> Vec<String> {
         ));
     }
     header.push(format!(
-        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour --mount zone_proving_hub --ambient on, at each tier's settings"
+        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour --mount zone_proving_hub --ambient on, at each tier's settings and cook"
     ));
     header.push("reported in counts.txt, not held (the order cells arrive in is timing):".to_owned());
     header.extend(REPORTED.iter().map(|(row, why)| format!("  {row}: {why}")));
@@ -486,6 +498,23 @@ mod tests {
                 format!("{}-{}", walk.tier, if walk.time_of_day == "23" { "night" } else { "dusk" })
             );
             assert!(walk.args().windows(2).any(|pair| pair == ["--tier", walk.tier]));
+        }
+    }
+
+    /// A phone tier's walk reads the mobile cook, as a phone would; a desktop tier's the desktop cook.
+    #[test]
+    fn the_phone_walks_read_the_mobile_cook() {
+        let paths = Paths {
+            sandbox: PathBuf::from("sandbox"),
+            content: PathBuf::from("desktop"),
+            mobile_content: PathBuf::from("mobile"),
+            table: PathBuf::from("table.txt"),
+            sources: None,
+            out: PathBuf::from("out"),
+        };
+        for walk in WALKS {
+            let cook = if walk.tier.starts_with("mobile") { "mobile" } else { "desktop" };
+            assert_eq!(walk.content(&paths), Path::new(cook), "{}", walk.name);
         }
     }
 

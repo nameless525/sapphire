@@ -61,9 +61,9 @@ Commands:
       preset's rows from tools/figures/ under the same IDs, cooked into
       target/bench/<preset>/kinds/<cook>/ through content's cache. Nothing it writes is committed
       or shipped. --with-content puts the content beside the district with a release manifest
-      naming both, which a shipping sandbox mounts: for `ci` (desktop only) content/'s cook, in
-      target/bench/ci/with-content/desktop/, what `golden` and `counts` draw and what CI's golden
-      jobs bundle; past `ci` the kinds part's cook, in target/bench/<preset>/with-content/<cook>/,
+      naming both, which a shipping sandbox mounts: for `ci` content/'s cook, in
+      target/bench/ci/with-content/<cook>/, what `golden` (desktop) and `counts` (both) draw and
+      what CI's golden jobs bundle; past `ci` the kinds part's cook, in target/bench/<preset>/with-content/<cook>/,
       the one root a run at that preset mounts (the district, the arena's party-three-kinds fight).
   release --cook desktop|mobile --out <dir> --release-version <n> --expires <YYYY-MM-DD>
       --min-build <n> [--next-keys <hex>[,<hex>...]] [--patch-from <manifest>]
@@ -194,8 +194,8 @@ Commands:
       output is in target/golden/<scene>.log, and their times in timings.json there.
   counts [--update] [--walk <name>]... [--walk-timeout <seconds>]
       CI's scale lane (M5 X4): walk the benchmark district's tour (the ci preset, cooked beside
-      the content as `bench-content --with-content` does) with the sandbox's walk bench at each
-      tier's settings, dusk and night, drawing every seventh frame headlessly, and compare what each
+      the content as `bench-content --with-content` does, for desktop and for mobile: the phone
+      tiers read the mobile cook) with the sandbox's walk bench at each tier's settings, dusk and night, drawing every seventh frame headlessly, and compare what each
       walk counted with tests/counts/district-ci.txt. It prints one line for each row that
       moved: the walk and row, what the table holds, what the walk saw, and which way. No time
       is read. --update rewrites the table's rows for the walks run, when a count moves on
@@ -335,12 +335,12 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             args.finish(false)?;
             let (preset, cook) = (preset.unwrap_or(bench::Preset::Ci), cook.unwrap_or(Cook::Desktop));
             if with_content && !bench::has_kinds(preset) {
-                if cook != Cook::Desktop {
+                if cook == Cook::Editor {
                     bail!(
-                        "--with-content puts the ci preset's desktop cook beside the shipped one, and no other"
+                        "--with-content puts the ci district beside a desktop or mobile cook, not the editor's"
                     );
                 }
-                let together = bench::with_content(content::cook(Cook::Desktop)?)?;
+                let together = bench::with_content(content::cook(cook)?)?;
                 eprintln!("put the content and the ci district together in {}", together.dir.display());
                 return Ok(());
             }

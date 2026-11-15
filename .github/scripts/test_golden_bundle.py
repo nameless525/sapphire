@@ -74,6 +74,18 @@ class GoldenBundleTests(unittest.TestCase):
         self.assertTrue((self.destination / "bin/sapphire_sandbox.exe").is_file())
         self.assertTrue((self.destination / "bin/sapphire_sandbox.pdb").is_file())
 
+    def test_the_mobile_cook_rides_along_for_the_scale_lanes_phone_walks(self):
+        mobile = self.workspace / golden_bundle.MOBILE_CONTENT
+        mobile.mkdir(parents=True)
+        (mobile / "shared.spack").write_bytes(b"mobile shared pack bytes")
+        self.fixture()
+        golden_bundle.create(
+            self.workspace, self.archive, self.commit, "vulkan-lavapipe", mobile_content=golden_bundle.MOBILE_CONTENT
+        )
+        golden_bundle.unpack(self.archive, self.destination, self.commit, "vulkan-lavapipe")
+        self.assertEqual((self.destination / "mobile-content/shared.spack").read_bytes(), b"mobile shared pack bytes")
+        self.assertEqual((self.destination / "content/shared.spack").read_bytes(), b"shared pack bytes")
+
     def test_other_commit_or_family_never_extracts(self):
         self.fixture()
         self.assert_refused(commit="b" * 40)

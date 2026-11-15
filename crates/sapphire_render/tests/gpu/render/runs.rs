@@ -27,7 +27,7 @@ use sapphire_render::{
 use super::sequences::{character, sequence_meshes};
 use super::*;
 
-const SIZE: (u32, u32) = (160, 96);
+pub(super) const SIZE: (u32, u32) = (160, 96);
 const INSET: (u32, u32) = (48, 48);
 /// Instances of the scene's meshes, in an order that mixes them.
 const SCATTERED: u64 = 72;
@@ -192,6 +192,11 @@ impl Side {
             .collect();
         let reads = std::array::from_fn(|_| Readback::new(gpu, SIZE));
         Self { frames, handles, reads }
+    }
+
+    /// Draws the scene at `scale` of the target's size from the next frame (1 from [`Self::new`]).
+    pub(super) fn set_render_scale(&mut self, scale: f32) {
+        self.frames.renderer.set_render_scale(scale);
     }
 
     /// Draws frame `frame` of the scene into `view`, returning its target, its prepass targets

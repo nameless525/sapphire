@@ -272,6 +272,51 @@
 //! Mobile-High's 1600 × 740. With nothing reading it, the frame graph culls it: a boxed closure a
 //! frame and no GPU time.
 //!
+//! # A depth-equal main pass (M5 D10)
+//!
+//! Asked for, the main pass shades each pixel's visible surface alone: it loads the scene prepass's
+//! depth, read-only, and its opaque and alpha-tested surfaces and their outline hulls test `Equal`
+//! against it and write none ([`MainDepth::FromPrepass`], [`RenderSettings::main_depth`]). Every tier
+//! keeps the main pass's own depth ([`MainDepth::Own`]) for now: `Equal` keeps the last of the triangles
+//! tied at a pixel's depth where `Greater` kept the first, and between triangles of one draw that can't
+//! be undone by order (below, "Ties"). The sandbox's `--main-depth prepass` takes it.
+//!
+//! - **Where:** asked for, with temporal AA and one sample, so the prepass's depth is temporal AA's, at
+//!   the scene's size and through the same jittered view as the main pass's
+//!   ([`RenderSettings::main_depth_from_prepass`]: the desktop tiers' settings; a phone, MSAA, `--aa off`
+//!   and the insets keep their own). A frame keeps its own
+//!   depth too where the prepass can't stand in for it: an environment alpha-tested draw in the main view's
+//!   list, which the prepass draws uncut (`SurfaceVariant::UNCUT_IN_PREPASS`; no shipped content has one),
+//!   and the main view's runs ([`DrawRuns::EveryView`]), whose instances can't be walked in reverse.
+//!   [`RenderStats::main_depth`] says which a frame took.
+//! - **Who has a twin:** every depth-writing variant of the main pass draws in the prepass with the same
+//!   clip position, `@invariant` in both and built by the same expression: the anime character surfaces
+//!   (opaque, the masked alpha-tested ones and the two-sided ones), the environment's opaque ones, foliage
+//!   (displaced by the same wind, cut out alike) and the hulls (plain and masked). Decals, eyes through
+//!   hair, the sky, transparent surfaces, eye layers, fog cards and effects never wrote depth, so the pass
+//!   writes none and fog cards may sample the depth it tests against.
+//! - **Ties:** under `Greater` the first draw at a pixel's depth kept it; under `Equal` every tied draw
+//!   passes and the last keeps it. So the depth-writing surfaces, then (after the decals, as before) the
+//!   hulls, draw in the reverse of their order: variants last to first, the skinned and morphed draws
+//!   before each variant's static ones, formats last to first, each group's draws last to first
+//!   (`draw_main_pass_with_decals`). Surface against surface and hull against hull, every tie keeps its
+//!   owner. A hull lying exactly on a surface (one drawn with no width and no depth offset over a two-sided
+//!   surface) passes where it tied, though the surface kept the pixel before (`render::depth_equal`
+//!   counts it, though its flat hull culls every face it would tie with, so it shows none either way). Two triangles of one draw tied at a pixel keep the later
+//!   one, where the earlier did, and no order of draws undoes it. Shipped content looks to have such ties:
+//!   taken on the desktop tiers, the pass moved 175 of the 437 Metal goldens' captures by a few code
+//!   values on at most a few hundred pixels (a character's material seams and rims, roofs against the
+//!   sky; one frame of a capture moves a pixel or two by one, and temporal AA carries them), so it isn't
+//!   any tier's. A stencil bit the first passing fragment sets (the prepass's depth with stencil,
+//!   tested `Equal`, and the stencil `Equal` 0, replaced) would keep the first tied fragment, as `Greater`
+//!   did, in the old order, and let every desktop tier take it.
+//! - **Pipelines:** each surface variant that shares the prepass's depth, and each hull coverage, has an
+//!   `Equal` twin beside its own, built only on a renderer that may load that depth, from the same modules
+//!   and constants (on Metal the depth test isn't part of the compiled pipeline state, so a twin costs no
+//!   compile): declared and prewarmed with what they twin, rebuilt with them on a shader edit, an ambient
+//!   change and the weather's swap. A renderer that can't take it, every tier's as shipped, builds
+//!   nothing new.
+//!
 //! # Render scale
 //!
 //! Every pass before post's final one renders at the scene's size, [`scaled_size`] of the target
@@ -816,10 +861,9 @@
 //!   selected LOD's prefix; exact normals for
 //!   non-uniformly scaled joints; outline-normal deltas for morph targets that bend hard edges;
 //!   vertex pulling for multi-draw-indirect of skinned instances.
-//! - **Prepasses:** their other consumers (GTAO); and, now that TAA turns MSAA off on desktop,
-//!   letting the main pass reuse the scene prepass's depth (load it and test `Equal`, skipping
-//!   overdraw), which needs the prepass to cut the environment's alpha-tested surfaces out too
-//!   (the anime character family's are, M1 C7, and foliage's, M1 W6).
+//! - **Prepasses:** cutting the environment's alpha-tested surfaces out of the scene prepass (the anime
+//!   character family's are, M1 C7, and foliage's, M1 W6), so a frame that draws one can test `Equal`
+//!   too (see "A depth-equal main pass").
 //! - **Local lights** (see the `lights` module): cluster occupancy counted on the GPU, light
 //!   layers (VFX lights kept off faces and rims), local-light shadows, and two-level culling for
 //!   hundreds of lights.

@@ -567,7 +567,7 @@ mod tests {
     use super::*;
 
     /// Test code that makes a pipeline of its own, none of which a renderer ever draws through.
-    const OTHER_ROUTES: [&str; 6] = [
+    const OTHER_ROUTES: [&str; 7] = [
         // The route itself.
         "crates/sapphire_render/src/pipeline_builds.rs",
         // Writes and reads a probe array to prove what `GpuCaps` says of cube arrays, with no renderer.
@@ -576,6 +576,9 @@ mod tests {
         "crates/sapphire_render/src/shaders.rs",
         // Draws the sky's shader into a target of its own, with no renderer.
         "crates/sapphire_render/src/sky/gpu_tests.rs",
+        // Draws one quad with a pixel occluded to see whether a depth-killed fragment runs whole for its
+        // quad's derivatives, with no renderer.
+        "crates/sapphire_render/tests/gpu/render/killed_fragments.rs",
         // Samples textures to prove they uploaded, with no renderer.
         "crates/sapphire_render/tests/gpu/texture.rs",
         // Draws a ramp into a texture for a pane to show, with no renderer.

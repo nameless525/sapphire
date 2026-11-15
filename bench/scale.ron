@@ -161,6 +161,20 @@
                 beside: Some("tour-night"),
                 serves: [1, 5, 7],
             ),
+            // Exit test 5's fight (M5 C12b): the heroine, Aster and Wren against twelve Ember Lancers on the arena,
+            // from the root that holds the kinds at the preset's rows (`bench/kinds.ron`): Aster at 80,000
+            // triangles, Wren at 83,808 (4.8% over the row), the heroine at her model's 36,470: 200,278 of 240,000.
+            (
+                name: "party-kinds",
+                about: "the party of three kinds against twelve Ember Lancers, the kinds at the preset's rows",
+                args: [
+                    "--arena", "--party", "--replay", "{replays}/party-three-kinds.sreplay", "--no-hot-reload",
+                    "--live-link", "off",
+                ],
+                frames: Count(600),
+                read: [Cpu, Gpu, Counts, Cast, Pipelines],
+                serves: [5],
+            ),
             // Each package's own on/off pair.
             (
                 name: "lods",

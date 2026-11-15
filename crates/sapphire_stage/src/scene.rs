@@ -840,6 +840,32 @@ impl Scene {
         }
     }
 
+    /// Spawns a street lamp (`--street-lamp`, M5 L16): a warm spot light flagged to cast a shadow,
+    /// high in front of the character and off to its right, placed by its bounds, so the character
+    /// and whatever stands beside it cast away from it on the floor and on each other. The golden
+    /// scenes `shadows-spot-lamp` and `shadows-spot-lamp-low` show it at night.
+    #[cfg(feature = "samples")]
+    pub fn spawn_street_lamp(&mut self) {
+        let [min, max] = self.bounds.map(Vec3::from);
+        let height = (max.y - min.y).max(0.1);
+        let base = Vec3::new((min.x + max.x) * 0.5, min.y, (min.z + max.z) * 0.5);
+        let at = |x: f32, y: f32, z: f32| base + Vec3::new(x, y, z) * height;
+        let position = at(0.7, 1.9, 0.9);
+        let light = LocalLight {
+            position,
+            color: Vec3::new(1.0, 0.72, 0.42),
+            intensity: 3.0,
+            range: 4.0 * height,
+            kind: LightKind::Spot {
+                direction: at(-0.25, 0.0, -0.3) - position,
+                inner_angle: 40f32.to_radians(),
+                outer_angle: 50f32.to_radians(),
+                shadow: true,
+            },
+        };
+        self.ecs.world_mut().spawn(RenderLight(light));
+    }
+
     /// Sets the turntable's speed in radians per second (`--spin`): fast spins show how edges and
     /// outlines hold up in motion under temporal AA.
     pub fn set_spin(&mut self, speed: f32) {

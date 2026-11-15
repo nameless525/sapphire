@@ -242,6 +242,9 @@ impl App for SandboxApp {
         if options.lights {
             scene.spawn_demo_lights();
         }
+        if options.street_lamp {
+            scene.spawn_street_lamp();
+        }
         if let Some(stalk) = renderer.stalk {
             scene.set_stalk_mesh(stalk);
         }

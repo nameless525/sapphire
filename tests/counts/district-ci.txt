@@ -63,7 +63,7 @@ desktop-high-dusk | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 t
 desktop-high-dusk | outline draws | p50 14 p95 14 worst 14 total 7434
 desktop-high-dusk | pipelines built on first use | not exercised
 desktop-high-dusk | pipelines built on the frame's thread | not exercised
-desktop-high-dusk | pipelines prewarmed | p50 71 p95 71 worst 71 total 71
+desktop-high-dusk | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
 desktop-high-dusk | pipelines rebuilt | not exercised
 desktop-high-dusk | pipelines set | p50 30 p95 30 worst 30 total 15930
 desktop-high-dusk | poses evaluated | not exercised
@@ -81,6 +81,10 @@ desktop-high-dusk | shadow triangles | p50 1961182 p95 2300788 worst 2474724 tot
 desktop-high-dusk | skinned instances | not exercised
 desktop-high-dusk | skinned instances above level 0 | not exercised
 desktop-high-dusk | skinned vertices | not exercised
+desktop-high-dusk | spot draws | not exercised
+desktop-high-dusk | spot load bytes | not exercised
+desktop-high-dusk | spot tiles cached | not exercised
+desktop-high-dusk | spot tiles redrawn | not exercised
 desktop-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-high-dusk | streamed texture pool | not exercised
 desktop-high-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
@@ -150,7 +154,7 @@ desktop-high-night | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 
 desktop-high-night | outline draws | p50 14 p95 14 worst 14 total 7434
 desktop-high-night | pipelines built on first use | not exercised
 desktop-high-night | pipelines built on the frame's thread | not exercised
-desktop-high-night | pipelines prewarmed | p50 71 p95 71 worst 71 total 71
+desktop-high-night | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
 desktop-high-night | pipelines rebuilt | not exercised
 desktop-high-night | pipelines set | p50 30 p95 30 worst 30 total 15894
 desktop-high-night | poses evaluated | not exercised
@@ -168,6 +172,10 @@ desktop-high-night | shadow triangles | p50 1952772 p95 2176391 worst 2233094 to
 desktop-high-night | skinned instances | not exercised
 desktop-high-night | skinned instances above level 0 | not exercised
 desktop-high-night | skinned vertices | not exercised
+desktop-high-night | spot draws | not exercised
+desktop-high-night | spot load bytes | not exercised
+desktop-high-night | spot tiles cached | not exercised
+desktop-high-night | spot tiles redrawn | not exercised
 desktop-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-high-night | streamed texture pool | not exercised
 desktop-high-night | temporal draws | p50 1 p95 1 worst 1 total 531
@@ -237,7 +245,7 @@ desktop-low-dusk | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 to
 desktop-low-dusk | outline draws | p50 14 p95 14 worst 14 total 7434
 desktop-low-dusk | pipelines built on first use | not exercised
 desktop-low-dusk | pipelines built on the frame's thread | not exercised
-desktop-low-dusk | pipelines prewarmed | p50 71 p95 71 worst 71 total 71
+desktop-low-dusk | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
 desktop-low-dusk | pipelines rebuilt | not exercised
 desktop-low-dusk | pipelines set | p50 30 p95 30 worst 30 total 15930
 desktop-low-dusk | poses evaluated | not exercised
@@ -255,6 +263,10 @@ desktop-low-dusk | shadow triangles | p50 1742003 p95 2045735 worst 2166627 tota
 desktop-low-dusk | skinned instances | not exercised
 desktop-low-dusk | skinned instances above level 0 | not exercised
 desktop-low-dusk | skinned vertices | not exercised
+desktop-low-dusk | spot draws | not exercised
+desktop-low-dusk | spot load bytes | not exercised
+desktop-low-dusk | spot tiles cached | not exercised
+desktop-low-dusk | spot tiles redrawn | not exercised
 desktop-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-low-dusk | streamed texture pool | not exercised
 desktop-low-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
@@ -324,7 +336,7 @@ desktop-low-night | mesh pool floor | p50 85983248 p95 85983248 worst 85983248 t
 desktop-low-night | outline draws | p50 14 p95 14 worst 14 total 7434
 desktop-low-night | pipelines built on first use | not exercised
 desktop-low-night | pipelines built on the frame's thread | not exercised
-desktop-low-night | pipelines prewarmed | p50 71 p95 71 worst 71 total 71
+desktop-low-night | pipelines prewarmed | p50 72 p95 72 worst 72 total 72
 desktop-low-night | pipelines rebuilt | not exercised
 desktop-low-night | pipelines set | p50 30 p95 30 worst 30 total 15889
 desktop-low-night | poses evaluated | not exercised
@@ -342,6 +354,10 @@ desktop-low-night | shadow triangles | p50 1658751 p95 1879372 worst 1950995 tot
 desktop-low-night | skinned instances | not exercised
 desktop-low-night | skinned instances above level 0 | not exercised
 desktop-low-night | skinned vertices | not exercised
+desktop-low-night | spot draws | not exercised
+desktop-low-night | spot load bytes | not exercised
+desktop-low-night | spot tiles cached | not exercised
+desktop-low-night | spot tiles redrawn | not exercised
 desktop-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-low-night | streamed texture pool | not exercised
 desktop-low-night | temporal draws | p50 1 p95 1 worst 1 total 531
@@ -429,6 +445,10 @@ mobile-high-dusk | shadow triangles | p50 835996 p95 1039361 worst 1086456 total
 mobile-high-dusk | skinned instances | not exercised
 mobile-high-dusk | skinned instances above level 0 | not exercised
 mobile-high-dusk | skinned vertices | not exercised
+mobile-high-dusk | spot draws | not exercised
+mobile-high-dusk | spot load bytes | not exercised
+mobile-high-dusk | spot tiles cached | not exercised
+mobile-high-dusk | spot tiles redrawn | not exercised
 mobile-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-high-dusk | streamed texture pool | not exercised
 mobile-high-dusk | temporal draws | not exercised
@@ -516,6 +536,10 @@ mobile-high-night | shadow triangles | p50 827504 p95 1041685 worst 1067097 tota
 mobile-high-night | skinned instances | not exercised
 mobile-high-night | skinned instances above level 0 | not exercised
 mobile-high-night | skinned vertices | not exercised
+mobile-high-night | spot draws | not exercised
+mobile-high-night | spot load bytes | not exercised
+mobile-high-night | spot tiles cached | not exercised
+mobile-high-night | spot tiles redrawn | not exercised
 mobile-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-high-night | streamed texture pool | not exercised
 mobile-high-night | temporal draws | not exercised
@@ -603,6 +627,10 @@ mobile-low-dusk | shadow triangles | p50 743197 p95 881534 worst 930705 total 37
 mobile-low-dusk | skinned instances | not exercised
 mobile-low-dusk | skinned instances above level 0 | not exercised
 mobile-low-dusk | skinned vertices | not exercised
+mobile-low-dusk | spot draws | not exercised
+mobile-low-dusk | spot load bytes | not exercised
+mobile-low-dusk | spot tiles cached | not exercised
+mobile-low-dusk | spot tiles redrawn | not exercised
 mobile-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-low-dusk | streamed texture pool | not exercised
 mobile-low-dusk | temporal draws | not exercised
@@ -690,6 +718,10 @@ mobile-low-night | shadow triangles | p50 723772 p95 887235 worst 917567 total 3
 mobile-low-night | skinned instances | not exercised
 mobile-low-night | skinned instances above level 0 | not exercised
 mobile-low-night | skinned vertices | not exercised
+mobile-low-night | spot draws | not exercised
+mobile-low-night | spot load bytes | not exercised
+mobile-low-night | spot tiles cached | not exercised
+mobile-low-night | spot tiles redrawn | not exercised
 mobile-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-low-night | streamed texture pool | not exercised
 mobile-low-night | temporal draws | not exercised

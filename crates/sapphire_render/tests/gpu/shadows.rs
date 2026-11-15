@@ -37,6 +37,8 @@ use sapphire_render::{
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 
+mod spots;
+
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// Square targets this many pixels a side.
 const SIZE: u32 = 256;
@@ -67,6 +69,7 @@ fn mobile() -> RenderSettings {
         cached_cascades: 1,
         character_shadow: false,
         filter: ShadowFilter::Tent3,
+        spots: 0,
         ..ShadowSettings::default()
     };
     RenderSettings { shadows: Some(shadows), ..RenderSettings::default() }
@@ -317,6 +320,8 @@ struct Harness {
     shadow_tint: Vec3,
     /// Copied into every packet.
     characters: Vec<CharacterInstance>,
+    /// Copied into every packet (M5 L16's spot lights).
+    lights: Vec<sapphire_render::LocalLight>,
     added: Vec<MeshInstance>,
     removed: Vec<InstanceId>,
     /// Sent with the next packet only.
@@ -366,6 +371,7 @@ impl Harness {
             sun: DirectionalLight { direction: -toward(45.0, 0.0), color: Vec3::ONE, intensity: 1.0 },
             shadow_tint: Vec3::new(0.4, 0.45, 0.65),
             characters: Vec::new(),
+            lights: Vec::new(),
             added: Vec::new(),
             removed: Vec::new(),
             poses: Vec::new(),
@@ -457,6 +463,7 @@ impl Harness {
         packet.shadow_tint = self.shadow_tint;
         packet.post = passthrough();
         packet.characters.extend_from_slice(&self.characters);
+        packet.lights.extend_from_slice(&self.lights);
         packet.instances.changed.append(&mut self.added);
         packet.instances.removed.append(&mut self.removed);
         for (id, palette) in self.poses.drain(..) {
@@ -1294,8 +1301,8 @@ fn an_edited_shadows_wgsl_rebuilds_the_shadow_passes() {
     let update = harness.renderer.set_shader_sources(&shadows).expect("a valid edit");
     assert_eq!(
         update,
-        ShaderUpdate { programs: 1, pipelines: 2 },
-        "the face pass and the quantized meshes' caster"
+        ShaderUpdate { programs: 1, pipelines: 3 },
+        "the face pass, the quantized meshes' caster and the spot tiles' clear (M5 L16)"
     );
     assert_eq!(harness.render().pixels, before.pixels, "a comment draws the same frame");
     // The receivers live in frame.wgsl: every program with it, the shadow passes', foliage's (M1

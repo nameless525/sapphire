@@ -117,6 +117,11 @@ pub(super) struct Counted {
     pub capsule_clusters: u32,
     pub capsule_bits: u32,
     pub capsule_fullest: u32,
+    /// Spot lights' shadow tiles (M5 L16, `ShadowStats`): drawn again this frame, sampled as
+    /// drawn before, and the spot layer's bytes the spot pass loaded.
+    pub spot_tiles_redrawn: u32,
+    pub spot_tiles_cached: u32,
+    pub spot_load_bytes: u64,
 }
 
 impl Counted {
@@ -215,6 +220,9 @@ impl Counted {
             capsule_clusters: render.capsule_bins.marked_clusters,
             capsule_bits: render.capsule_bins.bits,
             capsule_fullest: render.capsule_bins.fullest,
+            spot_tiles_redrawn: render.shadows.spot_tiles_drawn,
+            spot_tiles_cached: render.shadows.spot_tiles_cached,
+            spot_load_bytes: render.shadows.spot_load_bytes,
             ..Self::default()
         }
     }
@@ -235,8 +243,8 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
 /// What's logged, the frame's whole first, then pass by pass, the ambient pass's dispatches, then what
 /// culled, the levels drawn (the main view's and the shadows' apart, and the main view's switches, M5
 /// D4), the state the mesh passes changed, the instanced runs, skinning, lights, the asset server's,
-/// animation's, a zone's crowd's, the texture streamer's, and the characters' capsules by cluster.
-pub(super) const COUNT_ROWS: [CountRow; 80] = [
+/// animation's, a zone's crowd's, the texture streamer's, the characters' capsules by cluster, and spot lights' shadow tiles.
+pub(super) const COUNT_ROWS: [CountRow; 84] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -256,6 +264,11 @@ pub(super) const COUNT_ROWS: [CountRow; 80] = [
     row("cascade 3 draws", |c| u64::from(c.passes.cascades[3].draws)),
     row("shadow triangles", |c| c.passes.shadows().triangles),
     row("character map draws", |c| u64::from(c.passes.character_maps.draws)),
+    // Spot lights' shadows (M5 L16): a still street redraws no tile.
+    row("spot tiles redrawn", |c| u64::from(c.spot_tiles_redrawn)),
+    row("spot tiles cached", |c| u64::from(c.spot_tiles_cached)),
+    row("spot draws", |c| u64::from(c.passes.spots.draws)),
+    row("spot load bytes", |c| c.spot_load_bytes),
     row("inset draws", |c| c.passes.insets.iter().map(|inset| u64::from(inset.draws)).sum()),
     row("temporal draws", |c| u64::from(c.passes.temporal.draws)),
     row("post draws", |c| u64::from(c.passes.post.draws)),

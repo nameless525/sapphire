@@ -174,6 +174,9 @@ pub(crate) struct Options {
     pub msaa: Option<Msaa>,
     /// `--lights`: place the demo lights around the character.
     pub lights: bool,
+    /// `--street-lamp`: a warm spot light high in front of the character, flagged to cast a shadow
+    /// (M5 L16), for the spot shadows' golden scenes.
+    pub street_lamp: bool,
     /// `--light-path clustered|per-object`: override the quality tier's.
     pub light_path: Option<LightPath>,
     /// `--tier <tier>`: the player's quality tier instead of the device's.
@@ -930,6 +933,7 @@ impl Options {
                         })?);
                 }
                 "--lights" => options.lights = true,
+                "--street-lamp" => options.street_lamp = true,
                 "--skinned" => options.skinned = true,
                 "--time-of-day" => {
                     let hours: f32 = number(&value("--time-of-day")?, "--time-of-day")?;

@@ -264,6 +264,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if options.lights {
         scene.spawn_demo_lights();
     }
+    if options.street_lamp {
+        scene.spawn_street_lamp();
+    }
     if options.skinned {
         scene.set_stalk_mesh(sapphire_stage::skinned::upload_stalk(renderer)?);
     }

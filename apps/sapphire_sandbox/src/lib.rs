@@ -108,6 +108,8 @@
 //!   paving (M5 L6), and `distort-haze` one at the start, its haze shimmering over the burn; `distort-one` and
 //!   `distort-full` keep one landing, or the tier's cap of bends, playing, as the bench's load.
 //! - `--lights`: place three colored local lights around the character.
+//! - `--street-lamp`: place a warm street lamp high in front of the character, a spot light
+//!   flagged to cast a shadow (M5 L16), as the spot shadows' golden scenes do at night.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
 //!   (compute skinning, M1 R2).
 //! - `--swatches`: place three spheres on the character's other side that show the anime

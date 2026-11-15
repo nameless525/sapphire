@@ -48,7 +48,7 @@ use crate::inset::{
     INSET_CHARACTER_PASS, INSET_MAIN_PASS, InsetBindings, InsetDraw, InsetFrame, InsetSettings, InsetStats,
     Insets, MAX_INSETS,
 };
-use crate::levels::{LevelSettings, LevelStats};
+use crate::levels::{LevelSettings, LevelStats, RungBias};
 use crate::lights::capsule_bins::{self, CapsuleBinStats};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
@@ -737,8 +737,9 @@ pub struct Renderer {
     texture_tops: HashMap<AssetId, StreamedTops>,
     /// Optional passes shed in place ([`Self::set_shed`]).
     shed: OptionalPasses,
-    /// What the thermal ladder's rung adds to the levels of detail's bias ([`Self::set_rung_lod_bias`]).
-    rung_lod_bias: f32,
+    /// What the thermal ladder's rung adds to the levels of detail's bias ([`Self::set_rung_lod_bias`]):
+    /// its target, and what the frame applies on the way to it.
+    rung_lod_bias: RungBias,
     /// The debug views' pipelines and passes, made by the first frame that shows one: `None` until
     /// then, so a renderer that never shows one builds nothing for them.
     debug_views: Option<Box<DebugViews>>,
@@ -1161,7 +1162,7 @@ impl Renderer {
             cull_pose: None,
             texture_tops: HashMap::new(),
             shed: OptionalPasses::NONE,
-            rung_lod_bias: 0.0,
+            rung_lod_bias: RungBias::default(),
             debug_views: None,
             color_vision: ColorVision::Off,
             color_vision_draw: None,
@@ -2695,6 +2696,8 @@ impl Renderer {
         self.mip_streaming.submit(queue);
         self.pipeline_builds.frame_started();
         self.settle_last_frame();
+        // The rung's bias one step nearer its target, for everything this frame chooses levels by.
+        self.rung_lod_bias.step();
         self.device_lost = gpu.is_lost();
         self.fence.begin_frame(self.device_lost);
         // A finished shader build swaps in here, before anything reads a pipeline: the whole
@@ -4340,11 +4343,13 @@ impl Renderer {
         self.shed
     }
 
-    /// Adds `bias` to the tier's levels of detail's bias ([`RenderSettings::levels`]) from the next
-    /// frame: the thermal ladder's [`Rung::LodBias`](crate::quality::Rung::LodBias), 0 for none. It
-    /// builds nothing, and the main view's levels move through their hysteresis, as a step of the
-    /// camera moves them, rather than all at once (the `levels` module). A bias that isn't finite,
-    /// or that would take the sum past ±[`LevelSettings::MAX_BIAS`], is refused.
+    /// Adds `bias` to the tier's levels of detail's bias ([`RenderSettings::levels`]): the thermal
+    /// ladder's [`Rung::LodBias`](crate::quality::Rung::LodBias), 0 for none. It builds nothing, and
+    /// the frames apply it a 32nd of a doubling at a time, from the next on, either way (the
+    /// `levels` module's `RungBias`): a rung of 1 arrives over 32 frames, so each frame switches
+    /// what a 2% step of the camera would, never half the view at once. A tier change drops it at
+    /// once. A bias that isn't finite, or that would take the sum past
+    /// ±[`LevelSettings::MAX_BIAS`], is refused.
     pub fn set_rung_lod_bias(&mut self, bias: f32) -> Result<(), RenderError> {
         let total = self.settings.levels.bias + bias;
         if !(bias.is_finite() && total.abs() <= LevelSettings::MAX_BIAS) {
@@ -4353,13 +4358,17 @@ impl Renderer {
                 problem: "must be finite, and keep the tier's bias with it within -4..=4",
             });
         }
-        self.rung_lod_bias = bias;
+        self.rung_lod_bias.set(bias);
         Ok(())
     }
 
-    /// The levels of detail this frame chooses by: the tier's mode, and its bias with the rung's.
+    /// The levels of detail this frame chooses by: the tier's mode, and its bias with the rung's as
+    /// far as the frames have applied it.
     fn level_settings(&self) -> LevelSettings {
-        LevelSettings { bias: self.settings.levels.bias + self.rung_lod_bias, ..self.settings.levels }
+        LevelSettings {
+            bias: self.settings.levels.bias + self.rung_lod_bias.applied(),
+            ..self.settings.levels
+        }
     }
 
     /// The local lights, for tests that read their buffers back.

@@ -19,8 +19,9 @@
 //!   constants.
 //! - [`Rung::LodBias`]: levels of detail coarser by this much on the tier's bias (M5 D4, the `levels`
 //!   module): [`Renderer::set_rung_lod_bias`](crate::Renderer::set_rung_lod_bias) builds nothing and
-//!   allocates nothing, and the main view's levels move through their hysteresis rather than all at
-//!   once. Every tier lists it last before its frame-rate cap: what it saves is triangles and vertices,
+//!   allocates nothing, and the frames apply it a 32nd of a doubling at a time, either way, so the levels
+//!   move through their hysteresis as a slow step of the camera moves them, never half the view on one
+//!   frame. Every tier lists it last before its frame-rate cap: what it saves is triangles and vertices,
 //!   unmeasured until the zones' meshes have levels (m5-plan D6), and what it costs is pops a little
 //!   nearer, which show less than a halved frame rate and more than a scale or a pass.
 //! - [`Rung::FrameRate`]: frames per second at most, which the platform paces to; dynamic resolution's

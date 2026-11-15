@@ -81,3 +81,88 @@ fn the_settings_check_the_bias_and_force_levels() {
     assert!((allowance(0.5) - 2f32.sqrt()).abs() < 1e-6);
     assert_eq!(LevelStats { coarser: 2, finer: 3 }.switches(), 5);
 }
+
+/// A street's chain: the district's levels, 15, 40 and 100 mm.
+const STREET_CHAIN: [f32; 4] = [0.0, 0.015, 0.04, 0.1];
+
+/// A thousand instances of [`STREET_CHAIN`] from 2 to 200 m away, log-uniform.
+fn street() -> Vec<f32> {
+    (0..1000).map(|i| 2.0 * 100f32.powf(i as f32 / 999.0)).collect()
+}
+
+/// One frame of the main view over `street`'s instances, each `scale` times as far, at `bias`, seen
+/// at 1080 rows through 0.8 rad: each chooses from the level it held, which it then holds. Returns
+/// how many switched.
+fn frame(levels: &mut [u8], street: &[f32], scale: f32, bias: f32) -> usize {
+    let meters_per_pixel = 2.0 * 0.4f32.tan() / 1080.0;
+    let mut switched = 0;
+    for (level, distance) in levels.iter_mut().zip(street) {
+        let budget = allowance(bias) * meters_per_pixel * distance * scale;
+        let next = choose(&STREET_CHAIN, budget, Some(*level));
+        switched += usize::from(next != *level);
+        *level = next;
+    }
+    switched
+}
+
+/// `street`'s levels after the view has held still at `bias` until nothing switches.
+fn settled(street: &[f32], bias: f32) -> Vec<u8> {
+    let mut levels = vec![0; street.len()];
+    for _ in 0..8 {
+        if frame(&mut levels, street, 1.0, bias) == 0 {
+            return levels;
+        }
+    }
+    panic!("the street settles at {bias}");
+}
+
+#[test]
+fn a_rung_bias_switches_no_more_than_a_dolly_does() {
+    let street = street();
+    // A dolly away by the ramp's step, 2^(1/32) or 2.2% (a doubling in 32 steps): what a camera's
+    // step switches. Within half again: the grain of a thousand instances on three thresholds.
+    let dolly = frame(&mut settled(&street, 0.0), &street, RUNG_BIAS_STEP.exp2(), 0.0);
+    assert!(dolly > 0, "the dolly switches some");
+    let most = dolly * 3 / 2;
+    // The rung taken, then left, each frame at the bias it applies.
+    let mut levels = settled(&street, 0.0);
+    let mut rung = RungBias::default();
+    let mut total = 0;
+    for target in [1.0, 0.0] {
+        rung.set(target);
+        for at in 0..40 {
+            rung.step();
+            let switched = frame(&mut levels, &street, 1.0, rung.applied());
+            assert!(switched <= most, "to {target}, frame {at}: {switched} switch, a dolly's {dolly}");
+            total += switched;
+        }
+    }
+    assert!(total > 10 * dolly, "the rung switches many over its frames: {total}");
+}
+
+#[test]
+fn the_rung_bias_arrives_and_settles_where_one_step_would() {
+    let street = street();
+    for (from, to) in [(0.0, 1.0), (1.0, 0.0), (0.5, 1.5)] {
+        let mut rung = RungBias::default();
+        rung.set(from);
+        (0..200).for_each(|_| rung.step());
+        assert_eq!(rung.applied(), from);
+        let mut ramped = settled(&street, from);
+        let mut stepped = ramped.clone();
+        rung.set(to);
+        // A doubling in 32 frames: not before, and exactly at the target then.
+        let frames = ((to - from) / RUNG_BIAS_STEP).abs().round() as u32;
+        assert_eq!(frames, 32, "{from} to {to}");
+        for at in 1..=frames {
+            rung.step();
+            frame(&mut ramped, &street, 1.0, rung.applied());
+            assert_eq!(rung.applied() == to, at == frames, "{from} to {to}, frame {at}: {}", rung.applied());
+        }
+        // The ramp leaves every instance where the bias taken in one frame would, and settled there.
+        frame(&mut stepped, &street, 1.0, to);
+        assert_eq!(frame(&mut ramped, &street, 1.0, to), 0, "{from} to {to}: settled");
+        assert_eq!(frame(&mut stepped, &street, 1.0, to), 0, "{from} to {to}: settled");
+        assert!(ramped == stepped, "{from} to {to}: the ramp's levels are one step's");
+    }
+}

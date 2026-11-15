@@ -207,9 +207,9 @@ impl Renderer {
         self.rebuild_frame_bind_groups();
         self.insets.redraw();
         // Shed passes and the rung's bias are the old owners'; the ladder gives them again with its
-        // next step.
+        // next step. The bias drops at once, not down the ramp: the change is a cut.
         self.shed = super::OptionalPasses::NONE;
-        self.rung_lod_bias = 0.0;
+        self.rung_lod_bias = crate::levels::RungBias::default();
         self.prepared = None;
         self.previous_clip_from_world = None;
         self.pending_cut = true;

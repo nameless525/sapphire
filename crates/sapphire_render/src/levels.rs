@@ -29,8 +29,12 @@
 //!   surface toward its receiver by less than the bias already allows for: no acne, and no
 //!   shadow peeling off a foot.
 //! - **The bias** is the tier's ([`LevelSettings::bias`], `tiers.ron`'s `lod_bias`), plus the
-//!   thermal ladder's [`Rung::LodBias`](crate::quality::Rung::LodBias), which builds nothing and
-//!   moves levels through the hysteresis, like a camera's step, rather than all at once.
+//!   thermal ladder's [`Rung::LodBias`](crate::quality::Rung::LodBias), which builds nothing. The
+//!   frames apply a rung's bias at most [`RUNG_BIAS_STEP`] (a 32nd of a doubling) at a time, either
+//!   way ([`RungBias`]): taken at once, a doubled allowance would switch every instance whose next
+//!   switch lies within twice its distance on one frame, about half of those with levels, and redraw
+//!   every held cascade whose casters' levels moved. Ramped, each frame switches what a 2% step of
+//!   the camera would, through the same hysteresis. A tier change drops it at once, as a cut.
 //! - **Characters** (M5 D5) choose only where the stage says so
 //!   ([`CharacterDetail::ByError`](crate::CharacterDetail::ByError) on the character's body: a
 //!   fight's enemies while nothing pins them, a zone's ambient characters, the sandbox's
@@ -150,6 +154,41 @@ impl LevelStats {
     /// Every switch.
     pub fn switches(&self) -> u32 {
         self.coarser + self.finer
+    }
+}
+
+/// The most the rung's applied bias moves in a frame: a 32nd of a doubling, so each frame's switches
+/// are those of a step of the camera 2.2% away or nearer.
+pub(crate) const RUNG_BIAS_STEP: f32 = 1.0 / 32.0;
+
+/// The thermal ladder's [`Rung::LodBias`](crate::quality::Rung::LodBias) as the frames apply it (M5
+/// Z3g): the rung's target, and the bias applied, which moves toward it by at most
+/// [`RUNG_BIAS_STEP`] a frame, either way (see the module docs).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RungBias {
+    target: f32,
+    applied: f32,
+}
+
+impl RungBias {
+    /// The rung's bias from now on, which the frames reach a step at a time.
+    pub(crate) fn set(&mut self, target: f32) {
+        self.target = target;
+    }
+
+    /// The bias this frame applies.
+    pub(crate) fn applied(&self) -> f32 {
+        self.applied
+    }
+
+    /// Starts a frame: the applied bias one step nearer the target, or on it once within a step.
+    pub(crate) fn step(&mut self) {
+        let left = self.target - self.applied;
+        self.applied = if left.abs() <= RUNG_BIAS_STEP {
+            self.target
+        } else {
+            self.applied + RUNG_BIAS_STEP.copysign(left)
+        };
     }
 }
 

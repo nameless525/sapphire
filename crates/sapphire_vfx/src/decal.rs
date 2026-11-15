@@ -446,6 +446,29 @@ mod tests {
         frame
     }
 
+    /// Past the cap, of equal priority the decals of the effects that started first are kept, whichever slot
+    /// each took: one started in the slot an older effect left is the newest, so no older decal goes for it.
+    #[test]
+    fn past_the_cap_a_reused_slot_never_evicts_an_older_layer() {
+        let library = library(&format!("(shape: Disc(radius: 1.0), lifetime: 1.0, {WHITE})"));
+        let budget = VfxBudget { max_decals: 2, ..VfxBudget::DESKTOP_HIGH };
+        let mut world = VfxWorld::new(library, budget, 3);
+        let start = |world: &mut VfxWorld, x: f32| {
+            world.spawn(EffectId(0), OwnerId::WORLD, Placement::at(Vec3::X * x)).expect("spawned");
+        };
+        start(&mut world, 0.0);
+        step(&mut world, &[], 0.5);
+        start(&mut world, 1.0);
+        start(&mut world, 2.0);
+        // The first plays out, leaving its slot, the lowest, to the next.
+        assert_eq!(step(&mut world, &[], 0.6).decals.len(), 2);
+        start(&mut world, 3.0);
+        let frame = step(&mut world, &[], 0.1);
+        let decals: Vec<_> = frame.decals.iter().map(|decal| decal.position.x as i32).collect();
+        assert_eq!(decals, [1, 2], "the two oldest");
+        assert_eq!(frame.stats.dropped_decals, 1);
+    }
+
     /// A strike set on the spawn sets its telegraph's life, on its owner's clock: a hitstop on the way holds
     /// the fill and slow motion slows it, and it fills on the step its owner's clock reaches the strike.
     #[test]

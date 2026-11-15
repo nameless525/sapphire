@@ -677,6 +677,32 @@ mod tests {
         assert_eq!((frame.stats.meshes, frame.stats.dropped_meshes), (4, 5));
     }
 
+    /// Past the cap, of equal priority the effects that started first are kept, whichever slot each took: one
+    /// started in the slot an older effect left is the newest, so no older layer goes for it, as light or as a
+    /// bend.
+    #[test]
+    fn past_the_cap_a_reused_slot_never_evicts_an_older_layer() {
+        let layers =
+            format!("(shape: Ring, lifetime: 1.0, {WHITE}, distortion: Some((strength: [(0.0, 0.01)])))");
+        let budget = VfxBudget { max_meshes: 2, max_distortions: 2, ..VfxBudget::DESKTOP_LOW };
+        let mut world = world(&layers, "", budget);
+        let start = |world: &mut VfxWorld, x: f32| {
+            world.spawn(EffectId(0), OwnerId::WORLD, Placement::at(Vec3::X * x)).expect("spawned");
+        };
+        start(&mut world, 0.0);
+        step(&mut world, 0.5);
+        start(&mut world, 1.0);
+        start(&mut world, 2.0);
+        // The first plays out, leaving its slot, the lowest, to the next.
+        assert_eq!(step(&mut world, 0.6).meshes.len(), 2);
+        start(&mut world, 3.0);
+        let frame = step(&mut world, 0.1);
+        let lights: Vec<_> = frame.meshes.iter().map(|mesh| mesh.position.x as i32).collect();
+        let bends: Vec<_> = frame.distortions.iter().map(|bend| bend.mesh.position.x as i32).collect();
+        assert_eq!((lights, bends), (vec![1, 2], vec![1, 2]), "the two oldest");
+        assert_eq!((frame.stats.dropped_meshes, frame.stats.dropped_distortions), (1, 1));
+    }
+
     /// An owner in hitstop holds its layers exactly where they are.
     #[test]
     fn hitstop_holds_a_layer() {

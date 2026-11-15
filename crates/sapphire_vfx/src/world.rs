@@ -171,6 +171,9 @@ pub struct VfxWorld {
     slots: Vec<Slot>,
     /// Slots not in use, the next last.
     free_slots: Vec<u16>,
+    /// Slots in use, in the order their effects started: what a cap keeps of equal priority, whichever slot an
+    /// effect took ([`write_capped`]).
+    by_age: Vec<u16>,
     particles: Vec<Particle>,
     rings: Vec<TrailRing>,
     samples: Vec<TrailSample>,
@@ -198,6 +201,7 @@ impl VfxWorld {
             marks: 0,
             slots: vec![Slot::new(); usize::from(effects)],
             free_slots: (0..effects).rev().collect(),
+            by_age: Vec::with_capacity(usize::from(effects)),
             particles: Vec::with_capacity(budget.max_particles as usize),
             rings: vec![TrailRing::default(); trails],
             samples: vec![TrailSample::default(); trails * MAX_TRAIL_SAMPLES],
@@ -252,6 +256,7 @@ impl VfxWorld {
                 self.free_slots.push(index as u16);
             }
         }
+        self.by_age.clear();
         self.effects = 0;
     }
 
@@ -354,6 +359,7 @@ impl VfxWorld {
                 state.time_left = duration;
             }
         }
+        self.by_age.push(index);
         self.effects += 1;
         Some(EffectHandle { slot: index, generation: slot.generation })
     }
@@ -519,7 +525,8 @@ impl VfxWorld {
     }
 
     fn retire_effects(&mut self) {
-        let Self { library, budget, slots, free_slots, rings, effects, .. } = self;
+        let Self { library, budget, slots, free_slots, by_age, rings, effects, .. } = self;
+        let mut retired = false;
         for (index, slot) in slots.iter_mut().enumerate() {
             if !slot.live || slot.particles > 0 {
                 continue;
@@ -542,6 +549,10 @@ impl VfxWorld {
             slot.generation = slot.generation.wrapping_add(1);
             free_slots.push(index as u16);
             *effects -= 1;
+            retired = true;
+        }
+        if retired {
+            by_age.retain(|&index| slots[usize::from(index)].live);
         }
     }
 
@@ -596,13 +607,13 @@ impl VfxWorld {
     }
 
     /// The live effects' mesh layers, by the budget: past [`VfxBudget::max_meshes`] the highest priority
-    /// draw, and of equal priority the effects in the oldest slots, so what's kept doesn't flicker; the
+    /// draw, and of equal priority those of the effects that started first, so what's kept doesn't flicker; the
     /// rest are counted in `dropped_meshes`, once a frame each. Two passes, no allocation.
     fn write_meshes(&mut self, frame: &mut VfxFrame, unplayed: f32) {
-        let Self { library, slots, budget, dropped_meshes, .. } = self;
+        let Self { library, slots, by_age, budget, dropped_meshes, .. } = self;
         let (library, slots): (&EffectLibrary, &[Slot]) = (library, slots);
         let dropped = write_capped(
-            slots,
+            ByAge { slots, order: by_age },
             unplayed,
             budget.max_meshes,
             move |slot| library.effect(EffectId(slot.effect)).map_or(&[][..], |effect| &effect.meshes[..]),
@@ -616,10 +627,10 @@ impl VfxWorld {
     /// The live effects' ground decals, by the budget, as [`Self::write_meshes`] does meshes:
     /// past [`VfxBudget::max_decals`], counted in `dropped_decals`.
     fn write_decals(&mut self, frame: &mut VfxFrame, unplayed: f32) {
-        let Self { library, slots, budget, dropped_decals, .. } = self;
+        let Self { library, slots, by_age, budget, dropped_decals, .. } = self;
         let (library, slots, budget): (&EffectLibrary, &[Slot], VfxBudget) = (library, slots, *budget);
         let dropped = write_capped(
-            slots,
+            ByAge { slots, order: by_age },
             unplayed,
             budget.max_decals,
             move |slot| library.effect(EffectId(slot.effect)).map_or(&[][..], |effect| &effect.decals[..]),
@@ -640,10 +651,10 @@ impl VfxWorld {
         if self.budget.max_distortions == 0 {
             return;
         }
-        let Self { library, slots, budget, dropped_distortions, .. } = self;
+        let Self { library, slots, by_age, budget, dropped_distortions, .. } = self;
         let (library, slots): (&EffectLibrary, &[Slot]) = (library, slots);
         let dropped = write_capped(
-            slots,
+            ByAge { slots, order: by_age },
             unplayed,
             budget.max_distortions,
             move |slot| library.effect(EffectId(slot.effect)).map_or(&[][..], |effect| &effect.meshes[..]),
@@ -725,12 +736,27 @@ fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, ste
     }
 }
 
-/// Appends the live slots' layers (`layers` of each) that show at the frame's age to `out`, by priority up to
-/// `cap`: the highest priority first, and of equal priority those of the oldest slots, so what's kept doesn't
-/// flicker. `shows` gives a layer's priority where it shows then, and `resolve` what it draws. Returns how
-/// many didn't fit. Two passes, no allocation once `out` has held as much.
-fn write_capped<'a, L: 'a, T>(
+/// The live slots in the order their effects started, the oldest first: [`VfxWorld`]'s `by_age` over its slots.
+#[derive(Clone, Copy)]
+struct ByAge<'a> {
     slots: &'a [Slot],
+    order: &'a [u16],
+}
+
+impl<'a> ByAge<'a> {
+    fn iter(self) -> impl Iterator<Item = &'a Slot> {
+        self.order.iter().map(move |&index| &self.slots[usize::from(index)])
+    }
+}
+
+/// Appends the live slots' layers (`layers` of each) that show at the frame's age to `out`, by priority up to
+/// `cap`: the highest priority first, and of equal priority those of the effects that started first, whichever
+/// slot each took ([`ByAge`]), so what's kept doesn't flicker and an effect started in a slot an older one left
+/// never evicts a layer already drawing. `shows` gives a layer's priority where it shows then, and `resolve`
+/// what it draws; `out` is in the order the effects started. Returns how many didn't fit. Two passes over the
+/// live slots, no sort and no allocation once `out` has held as much.
+fn write_capped<'a, L: 'a, T>(
+    live_slots: ByAge<'a>,
     unplayed: f32,
     cap: u32,
     layers: impl Fn(&Slot) -> &'a [L],
@@ -741,7 +767,7 @@ fn write_capped<'a, L: 'a, T>(
     let mut showing = [0_u32; 256];
     let mut total = 0_u32;
     let live = || {
-        slots.iter().filter(|slot| slot.live).flat_map(|slot| {
+        live_slots.iter().flat_map(|slot| {
             let age = slot.age - unplayed * slot.step;
             layers(slot).iter().map(move |layer| (layer, slot, age))
         })

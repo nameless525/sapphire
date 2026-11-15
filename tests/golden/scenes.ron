@@ -874,6 +874,16 @@
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 76.4, warp: 93.6),
             ),
+            // Light shafts from a low sun (M5 L13): `lookdev-town-golden`'s wide shot with a shafts look given on
+            // the command line (no shipped day asks for them), the sun low over the rooftops streaking warm light
+            // past the roofs, eaves and the tree into the sky beside them, soft and wide, fading with distance
+            // from the sun. The renderer's frame with `--shafts off`, or without the look, is that scene's.
+            (
+                name: "shafts-golden-hour",
+                ticks: 90,
+                args: ["--lods", "off", "--look-dev", "wide", "--time-of-day", "18.5", "--tier", "desktop-high", "--ao", "off",
+                       "--shafts-look", "0.35,0.7,1,0.72,0.45", "--capture-frames", "32"],
+            ),
             // The wide shot at the blue hour (X1 part 2): the sun gone, a cyan-blue sky and haze over
             // a blue town, the windows and lanterns coming on in amber, the character's skin warm.
             (

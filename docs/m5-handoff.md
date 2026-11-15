@@ -523,6 +523,16 @@ Depth of field is a key on a timeline's camera, a cutscene's or a move's cinemat
 4. **Where it shows:** the desktop tiers. Mobile-High and Mobile-Low ignore it, at no cost. A move's effects (sprites, trails, effect meshes) draw over the blur and stay sharp wherever they are.
 5. **Look at it:** `--look-dev hero --tier desktop-high --focus <distance>,<sharp>,<near>,<far>,<blur>` holds a focus on the look-dev close-up, as `dof-closeup` shows it, and `--arena --timeline <id>` plays a timeline's keys.
 
+### Light shafts in a day (M5 L13)
+
+Light shafts are a group on a day's time-of-day keys. Spec §5.12's and §5.21's "As built (M5 L13)" are the reference. No step edits Rust, and no replay moves: shafts are presentation.
+
+1. **The key:** a key takes `shafts: Some((strength: 0.35, tint: (1.0, 0.72, 0.45), length: 0.7))`. `strength` is the light at the sun in the units bloom adds (0.2 to 0.5 reads as a golden hour), `tint` a linear colour (white without it), `length` how far they reach from the sun in frame heights, above 0 and at most 1. Every key of the timeline sets the group or none does; set `strength: 0.0` at the hours without them, and they fade in and out with the blend.
+2. **Bloom:** the same key needs its own `bloom` with an intensity above 0; the document's check refuses one without, naming `shafts.strength`.
+3. **Where it shows:** a low sun in or near the frame, over open sky: they fade as the sun leaves the frame or sets. Desktop-High, Desktop-Low and Mobile-High draw them; Mobile-Low, and Mobile-High once its ladder sheds GTAO, draw none at no cost.
+4. **Cost per tier:** two passes, a mask at an eighth and a march at a quarter of post's input (up to 160 taps a pixel, 81 at 1080 rows and length 0.6), and bloom's top level written at half floats on those frames. Longer shafts take more taps; a key with strength 0 draws and costs nothing.
+5. **Look at it:** `--look-dev wide --time-of-day 18.5 --tier desktop-high --shafts-look <strength>,<length>[,<r>,<g>,<b>]` holds a look on the look-dev town, as `shafts-golden-hour` shows it; `--shafts off` takes a tier's away.
+
 ### A game screen
 
 The worked examples are the six documents in [content/ui/](../content/ui/). Spec §5.17 is the reference.

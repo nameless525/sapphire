@@ -143,6 +143,29 @@ pub(super) fn wall(z: f32, half: f32) -> Mesh {
     )
 }
 
+/// Triangles `indices` over `corners` in the XY plane, facing +Z.
+fn flat(corners: &[[f32; 2]], indices: Vec<u32>) -> Mesh {
+    let corner = |&[x, y]: &[f32; 2]| Vertex {
+        position: [x, y, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        outline_normal: [0.0, 0.0, 1.0],
+        uv: [0.5, 0.5],
+        color: VERTEX_COLOR_NEUTRAL,
+        flags: VertexFlags::NONE,
+    };
+    let vertices: Vec<Vertex> = corners.iter().map(corner).collect();
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let placeholder = Material::from_document(&AnimeCharacterMaterial::default(), &swizzles).expect("valid");
+    let index_count = u32::try_from(indices.len()).expect("a test's mesh");
+    Mesh::from_vertices(
+        &vertices,
+        indices,
+        vec![Submesh { first_index: 0, index_count, material: 0 }],
+        vec![MaterialSlot::embedded("flat".to_owned(), placeholder)],
+        PositionFormat::Float32,
+    )
+}
+
 pub(super) struct Harness {
     gpu: Arc<GpuContext>,
     pub(super) renderer: Renderer,
@@ -230,6 +253,23 @@ impl Harness {
     pub(super) fn add_surface(&mut self, transform: Mat4, emission: Vec3) -> MeshInstance {
         let material = self.material(&glowing(emission));
         let mesh = self.mesh(&wall(0.0, 1.0), material);
+        let id = self.add(mesh);
+        let instance = MeshInstance { id, mesh, transform };
+        self.place(instance);
+        instance
+    }
+
+    /// Triangles `indices` over `corners` in its own XY plane, facing +Z, glowing `emission`, placed by
+    /// `transform`. [`Self::place`] moves it.
+    pub(super) fn add_flat(
+        &mut self,
+        corners: &[[f32; 2]],
+        indices: Vec<u32>,
+        transform: Mat4,
+        emission: Vec3,
+    ) -> MeshInstance {
+        let material = self.material(&glowing(emission));
+        let mesh = self.mesh(&flat(corners, indices), material);
         let id = self.add(mesh);
         let instance = MeshInstance { id, mesh, transform };
         self.place(instance);

@@ -7,13 +7,14 @@
 //! `-- --nocapture` to see the margins each backend reads back.
 //!
 //! The scenes are `vfx`'s: linear values as they are, over a flat grey sky, the camera at the origin looking down
-//! -Z over 90°. The ground is a glowing square turned to face the camera at an angle, so a pixel's ray says where
-//! on it, and on the decal, it lands.
+//! -Z over 90°. The ground is a glowing plane turned to face the camera at an angle, so a pixel's ray says where
+//! on it, and on the decal, it lands: a square of two triangles, or for the z-fight test cells as a zone's ground
+//! is cut ([`add_cells`]).
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 use sapphire_render::{
-    Fog, FogLayer, FrameCounts, HeightFog, Msaa, PassCounts, PipelineInventory, RenderSettings, VfxDecal,
-    VfxDecalBlend, VfxDecalShape,
+    Fog, FogLayer, FrameCounts, HeightFog, MeshInstance, Msaa, PassCounts, PipelineInventory, RenderSettings,
+    VfxDecal, VfxDecalBlend, VfxDecalShape,
 };
 
 use super::vfx::{GREY, Harness, SIDE, TOLERANCE, assert_near, flat_settings, temporal_settings};
@@ -202,6 +203,73 @@ fn least_whole_offset(
     Some((high, offsets[high]))
 }
 
+/// The `#ground` builtin's cells (`sapphire_pipeline::assembly`): two metres across where a camera stands...
+const GROUND_CELL: f32 = 2.0;
+/// ...out to this radius...
+const GROUND_FINE: f32 = 40.0;
+/// ...then each ring this many times the last's radius...
+const GROUND_GROWTH: f32 = 1.25;
+/// ...every ring of this many segments.
+const GROUND_SEGMENTS: u32 = 128;
+/// Past the farthest any view's decal reaches from the point under its camera: 150 m away at 85°, 149 m from it
+/// and the decal 900 m round.
+const GROUND_RIM: f32 = 1_800.0;
+
+/// The z-fight test's ground, glowing [`GROUND`], cut as a zone's ground is where a camera can stand
+/// (`sapphire_pipeline`'s `#ground` builtin): rings [`GROUND_CELL`] apart out to [`GROUND_FINE`] round the point of
+/// the plane under the camera, then each [`GROUND_GROWTH`] times the last out past the view, [`GROUND_SEGMENTS`]
+/// segments round, sharing whole edges. In metres as they are at every view, as a game's are, so the triangles under
+/// the pixels measured never reach the near plane. [`place_cells`] places it.
+///
+/// Not the other tests' square ([`View::ground`]): two triangles up to 2.2 km across, reaching under and past the
+/// camera, so the near plane clips them to vertices far outside the screen. A game never draws ground like that
+/// (the builtins are cut because WARP mishandles such triangles), and under temporal AA's jitter WARP gave that
+/// square a depth nearer than its own at 150 m: a decal lying on it lost 377 pixels to it at 85°, and needed lifting
+/// 3e-5 m to show whole at 60°, where over these cells it read as without jitter.
+fn add_cells(harness: &mut Harness) -> MeshInstance {
+    let (corners, indices) = cells();
+    harness.add_flat(&corners, indices, Mat4::IDENTITY, Vec3::splat(GROUND))
+}
+
+/// Places [`add_cells`]' `ground` in `view`'s plane, its middle the point nearest the camera.
+fn place_cells(harness: &mut Harness, ground: &mut MeshInstance, view: View) {
+    let under = view.normal() * view.normal().dot(view.middle());
+    ground.transform =
+        Mat4::from_rotation_translation(Quat::from_rotation_arc(Vec3::Z, view.normal()), under);
+    harness.place(*ground);
+}
+
+/// [`add_cells`]' corners in its XY plane, and its triangles, counterclockwise seen from +Z.
+fn cells() -> (Vec<[f32; 2]>, Vec<u32>) {
+    let mut radii = Vec::new();
+    let mut radius = GROUND_CELL;
+    while radius < GROUND_RIM {
+        radii.push(radius);
+        radius = if radius < GROUND_FINE { radius + GROUND_CELL } else { radius * GROUND_GROWTH };
+    }
+    radii.push(radius);
+    let mut corners = vec![[0.0, 0.0]];
+    for &radius in &radii {
+        for segment in 0..GROUND_SEGMENTS {
+            let turn = std::f32::consts::TAU * segment as f32 / GROUND_SEGMENTS as f32;
+            corners.push([radius * turn.cos(), radius * turn.sin()]);
+        }
+    }
+    let at = |ring: u32, segment: u32| 1 + ring * GROUND_SEGMENTS + segment % GROUND_SEGMENTS;
+    let mut indices = Vec::new();
+    for segment in 0..GROUND_SEGMENTS {
+        indices.extend([0, at(0, segment), at(0, segment + 1)]);
+    }
+    for ring in 0..radii.len() as u32 - 1 {
+        for segment in 0..GROUND_SEGMENTS {
+            let (a, b) = (at(ring, segment), at(ring, segment + 1));
+            let (c, d) = (at(ring + 1, segment), at(ring + 1, segment + 1));
+            indices.extend([a, c, d, a, d, b]);
+        }
+    }
+    (corners, indices)
+}
+
 /// What one view read on one path.
 #[derive(Clone, Debug)]
 struct Reading {
@@ -314,12 +382,11 @@ fn readings() -> (Vec<Reading>, Vec<SizeReading>) {
     let mut sizes = Vec::new();
     for (path, settings) in paths() {
         let mut harness = Harness::new(settings);
-        let mut ground = harness.add_surface(Mat4::IDENTITY, Vec3::splat(GROUND));
+        let mut ground = add_cells(&mut harness);
         harness.render(|_| {});
         for view in VIEWS {
             let inside = view.inside();
-            ground.transform = view.ground(0.0);
-            harness.place(ground);
+            place_cells(&mut harness, &mut ground, view);
             let lying = settled(&mut harness, settings.temporal, view.decal(0.0));
             let expected = Vec3::splat(GROUND) + LIGHT;
             let lying_off = inside
@@ -345,8 +412,7 @@ fn readings() -> (Vec<Reading>, Vec<SizeReading>) {
             });
         }
         for view in SIZE_VIEWS {
-            ground.transform = view.ground(0.0);
-            harness.place(ground);
+            place_cells(&mut harness, &mut ground, view);
             let inside = view.inside_of(SMALL_REACH);
             // Both on the same steps, up to where the small one raised still covers its pixels.
             let top = (0.5 * view.height()).min(0.1 * SMALL_REACH);
@@ -389,7 +455,8 @@ const VIEWS: [View; 12] = [
 /// whole sunk a little under the ground, by its pull's reach past the depths' own mismatch, under two millimetres
 /// per metre away everywhere at this test's 128 pixels over 90°, where a pixel is 15 times as wide as at 1080p
 /// over 60°: so a decal never visibly floats. The decal is as wide as the view's reach (up to 900 m round), so at
-/// 60° and 85° the camera stands over it and its quad crosses the near plane.
+/// 60° and 85° the camera stands over it and its quad crosses the near plane. The ground is cut as a zone's is
+/// ([`add_cells`]).
 ///
 /// And the margin doesn't hang on the decal's size: at 60°, 20 m and 150 m away, a decal of [`SMALL_REACH`] and
 /// one of the whole reach read the same margin at the small one's pixels, a step apart at most. That's what a

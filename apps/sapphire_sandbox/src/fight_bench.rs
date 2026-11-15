@@ -381,6 +381,10 @@ struct Run<'a> {
     last_timed: u64,
     /// The asset server's counters after the last frame, for what the next one admitted.
     assets: sapphire_assets::AssetStats,
+    /// A walk under a running day (`--day-length`): the hour its tour starts at, which each phase's restart of
+    /// the tour sets again, so every phase walks the same stretch of the day (M5 Z1). `None` where time stands
+    /// still or for a fight, which nothing here changes.
+    walk_hour: Option<f32>,
 }
 
 /// The render and compute pipelines the stage's device has: zero where its backend can't say.
@@ -427,7 +431,11 @@ pub(crate) fn run(
         first_traced: 0,
         last_timed: 0,
         assets,
+        walk_hour: None,
     };
+    if option.is_none() && run.stage.scene.time_of_day().clock().day_length().is_some() {
+        run.walk_hour = Some(run.stage.scene.time_of_day().clock().hours(1.0));
+    }
     if run.draw_every.is_some() {
         run.phase(Phase::First, frames)?;
         zone::report(run.stage, &run.trace, Phase::First);
@@ -471,6 +479,7 @@ impl Run<'_> {
         let (mut played, mut fight, mut start_over) = (0_u32, 0_u32, phase != Phase::First);
         let at_start = pipelines(self.stage);
         let mut after_first_frame = at_start;
+        let mut first_hour = 0.0;
         loop {
             self.stage.lose_frames = self.draw_every.is_some_and(|every| played % every != 0);
             let frame = self.frame(phase, played, fight, start_over)?;
@@ -479,6 +488,7 @@ impl Run<'_> {
             self.read_gpu_times();
             if played == 1 {
                 after_first_frame = pipelines(self.stage);
+                first_hour = self.stage.scene.time_of_day().clock().hours(1.0);
             }
             self.check_first_uses()?;
             start_over = false;
@@ -499,6 +509,7 @@ impl Run<'_> {
                     warmed_off_frame = builds.warmed_off_frame,
                     frame_thread = builds.frame_thread_builds,
                     frame_waits = builds.frame_waits,
+                    first_hour = format_args!("{first_hour:.4}"),
                     "fight pipelines",
                 );
                 return Ok(played);
@@ -544,8 +555,13 @@ impl Run<'_> {
                         combat.restart();
                     }
                 }
-                // A walk starts its tour again.
-                None => stage.scene.restart_zone_walk(),
+                // A walk starts its tour again, at the hour it first started at if the day runs.
+                None => {
+                    stage.scene.restart_zone_walk();
+                    if let Some(hour) = self.walk_hour {
+                        stage.scene.time_of_day_mut().clock_mut().set_hours(hour);
+                    }
+                }
             }
             restart = stopwatch.lap();
         }

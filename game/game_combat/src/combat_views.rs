@@ -488,7 +488,8 @@ mod tests {
     use sapphire_core::alloc::{self, PER_THREAD_COUNTS};
     use sapphire_core::debug_draw::{Depth, LabelText};
     use sapphire_gameplay::replay::{
-        ARCHITECTURE, ChecksumFile, Player, Replay, SCENARIOS, checksums_file_name, find_scenario, test_moves,
+        ARCHITECTURE, ChecksumFile, Player, Replay, SCENARIOS, Scenario, checksums_file_name, find_scenario,
+        test_moves,
     };
     use sapphire_gameplay::{ActorSpawn, ControllerProfile, SimConfig, TickActions};
     use sapphire_math::Quat;
@@ -1133,7 +1134,12 @@ mod tests {
 
     fn player(name: &str) -> Player {
         let bytes = fs::read(replays().join(format!("{name}.sreplay"))).expect("committed");
-        Player::new(Replay::decode(&bytes).expect("reads"), &ALL).expect("starts")
+        // With the district's builder, as the replay runner holds them (M5 B5).
+        let scenarios: Vec<Scenario> = ALL
+            .iter()
+            .map(|scenario| Scenario { zones: sapphire_synthetic_zone::district::ZONES, ..*scenario })
+            .collect();
+        Player::new(Replay::decode(&bytes).expect("reads"), &scenarios).expect("starts")
     }
 
     /// The property: the views look at every tick of the suite's fights, with volumes and the moves and

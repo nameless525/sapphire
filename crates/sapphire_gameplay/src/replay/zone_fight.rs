@@ -3,7 +3,7 @@
 //! (`ScenarioDocument::stands_in_zone`).
 
 use super::scenario::ScenarioError;
-use super::{SCENARIOS, find_scenario};
+use super::{SCENARIOS, Scenario, find_scenario};
 use crate::arena::ArenaSpawns;
 
 /// What the stage needs of a fight that stands in a zone: which zone, where the scenario stands its two
@@ -14,14 +14,25 @@ pub struct ZoneFight {
     pub player_at: &'static str,
     pub spawns: ArenaSpawns,
     pub colliders: sapphire_serialize::cooked::AlignedVec,
+    /// How many ways out its zone has: a party crossing one is unproven on a stage (M5 B5), which refuses it.
+    pub exits: usize,
 }
 
-/// [`ZoneFight`] for the scenario named `scenario`, if it stands in a zone: a scenario document whose zone
-/// stands on colliders of its own, which says the rest.
+/// [`ZoneFight`] for the scenario named `scenario` among [`SCENARIOS`], if it stands in a zone: see
+/// [`Scenario::zone_fight`].
 pub fn zone_fight(scenario: &str) -> Option<Result<ZoneFight, ScenarioError>> {
-    let document = find_scenario(&SCENARIOS, scenario)?.document()?;
-    document.stands_in_zone()?;
-    Some(document.zone_fight())
+    find_scenario(&SCENARIOS, scenario)?.zone_fight()
+}
+
+impl Scenario {
+    /// [`ZoneFight`] for it, if it stands in a zone: a scenario document whose zone stands on colliders of its
+    /// own, or a zone code builds (M5 B5), which its [`Self::zones`] builds, and which says the rest.
+    #[must_use]
+    pub fn zone_fight(&self) -> Option<Result<ZoneFight, ScenarioError>> {
+        let document = self.document()?;
+        document.zone_name()?;
+        Some(document.zone_fight(self.zones))
+    }
 }
 
 #[cfg(test)]

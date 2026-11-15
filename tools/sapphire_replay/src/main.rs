@@ -7,8 +7,7 @@ use anyhow::{Context as _, bail};
 use sapphire_core::alloc::CountingAllocator;
 use sapphire_gameplay::replay::{ARCHITECTURE, Scenario};
 use sapphire_playtest::{Kept, REPORT_FILE, Report};
-use sapphire_replay::{Record, Suite, check, list, record, values_help};
-use sapphire_script::scenarios::ALL;
+use sapphire_replay::{Record, SCENARIOS, Suite, check, list, record, values_help};
 
 /// What gate 4 reads: the suite refuses to run without it. Every allocation in this process counts,
 /// and the gate looks only at the simulation thread's, inside its steps.
@@ -71,8 +70,8 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<ExitCode> {
     let mut args = Args(std::env::args().skip(1).collect());
     anyhow::ensure!(!args.0.is_empty(), "no command given\n\n{USAGE}");
-    // Gameplay's list can't name a script, which stands above it.
-    let scenarios: &[Scenario] = &ALL;
+    // Gameplay's list can't name a script, which stands above it, or a zone code builds.
+    let scenarios: &[Scenario] = &SCENARIOS;
     let command = args.0.remove(0);
     if command == "report" {
         let session = PathBuf::from(args.required("--session")?);

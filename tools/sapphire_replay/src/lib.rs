@@ -20,6 +20,7 @@ mod output_paths;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use anyhow::{Context as _, bail, ensure};
 use sapphire_core::alloc;
@@ -30,6 +31,13 @@ use sapphire_gameplay::replay::{
 
 /// A replay file's extension.
 pub const EXTENSION: &str = "sreplay";
+
+/// Every scenario the runner plays: the game's, those with a script among them, with the zones code builds
+/// handed to them (M5 B5), so a scenario on the benchmark district plays here with no cook of it.
+pub static SCENARIOS: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
+    let zones = sapphire_synthetic_zone::district::ZONES;
+    sapphire_script::scenarios::ALL.iter().map(|scenario| Scenario { zones, ..*scenario }).collect()
+});
 
 /// Most lines of values a failing run prints: the file holds them all.
 const PRINTED_LINES: usize = 200;

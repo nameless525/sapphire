@@ -233,6 +233,8 @@ edges = [
     ["sapphire_stage", "sapphire_livelink"],
     ["game_combat", "sapphire_hot_reload"],
     ["game_combat", "sapphire_livelink"],
+    # The benchmark district (M5 B5), a zone code builds, which a development build's fight hands to its scenario.
+    ["game_combat", "sapphire_synthetic_zone"],
     # The interface reads the fight, and the fight knows no interface.
     ["game_ui", "game_combat"],
     # The flow runs the fight and shows the interface; neither reads the flow.

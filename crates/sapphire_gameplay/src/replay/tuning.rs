@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn a_scenarios_documents_are_the_sets_it_loads() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for scenario in SCENARIOS.iter() {
+        for scenario in crate::replay::scenario::WITH_ZONES.iter() {
             let (sim, _) = scenario.start(scenario.config).expect("sets up");
             let library = sim.move_library();
             assert_eq!(library.set_count(), scenario.documents.len(), "{}", scenario.name);

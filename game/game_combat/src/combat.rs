@@ -59,6 +59,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use sapphire_assets::AssetId;
 use sapphire_dialogue::ConditionId;
@@ -72,11 +73,22 @@ use sapphire_gameplay::{ActorId, Buttons, DialogueEffect, Simulation, TickAction
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
 use sapphire_script::ConditionSet;
-/// Every scenario a fight here can start from, those with a script among them.
-pub use sapphire_script::scenarios::ALL as SCENARIOS;
 use sapphire_serialize::cooked::AlignedVec;
 
 use crate::LOG_TARGET;
+
+/// Every scenario a fight here can start from, those with a script among them. A development build's carry the
+/// zones code builds (M5 B5), so `district-encounter` stands on the benchmark district; a game's carry none, and
+/// that scenario refuses to set up, saying a development build hands its builder over.
+pub static SCENARIOS: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
+    sapphire_script::scenarios::ALL.iter().map(|scenario| Scenario { zones: ZONES, ..*scenario }).collect()
+});
+
+/// The zones code builds that this build's scenarios can stand on: the benchmark district's, under `dev`.
+#[cfg(feature = "dev")]
+const ZONES: sapphire_gameplay::replay::ZoneBuilders = sapphire_synthetic_zone::district::ZONES;
+#[cfg(not(feature = "dev"))]
+const ZONES: sapphire_gameplay::replay::ZoneBuilders = &[];
 
 /// A script's actions: its document's, a tick at a time.
 type ScriptActions = &'static Script;

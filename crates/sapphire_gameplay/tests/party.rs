@@ -1385,7 +1385,8 @@ fn the_three_kinds_fight_does_what_its_script_says() {
 }
 
 /// The wave's kind of enemy fights only where `party-three-kinds` puts it (M5 C12): no zone's spawner names
-/// it and no other scenario lists it, so no shipped encounter or zone changes with it.
+/// it and no other scenario lists it but one standing on a built zone, the district's (M5 B5), which no shipped
+/// build plays, so no shipped encounter or zone changes with it.
 #[test]
 fn the_three_kinds_wave_is_in_no_zone() {
     let scenario = find_scenario(&SCENARIOS, "party-three-kinds").expect("listed");
@@ -1412,6 +1413,9 @@ fn the_three_kinds_wave_is_in_no_zone() {
     assert!(read > 0, "the zones are there");
     for other in SCENARIOS.iter() {
         let lists = other.document().is_some_and(|document| document.enemies.contains(kind));
-        assert!(!lists || other.name == scenario.name, "{} fields {stem} too", other.name);
+        // The district's encounter fields it too (M5 B5): it stands on a zone code builds, which only the replay
+        // runner and a development build's fight hand over, so no shipped build plays it.
+        let built = other.document().is_some_and(|document| document.built.is_some());
+        assert!(!lists || other.name == scenario.name || built, "{} fields {stem} too", other.name);
     }
 }

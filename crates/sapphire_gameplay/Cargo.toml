@@ -50,6 +50,8 @@ xxhash-rust.workspace = true
 ron.workspace = true
 # A checkpoint's `ZoneStart` through a real save file (M3 B4's `tests/walks.rs`).
 sapphire_save.workspace = true
+# The benchmark district's builder (M5 B5), handed to the scenarios that stand on it, as the replay runner does.
+sapphire_synthetic_zone.workspace = true
 
 [lints]
 workspace = true

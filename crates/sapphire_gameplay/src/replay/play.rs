@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn every_script_records_and_plays_back_on_every_scenario() {
-        for scenario in SCENARIOS.iter() {
+        for scenario in crate::replay::scenario::WITH_ZONES.iter() {
             for script in SCRIPTS.iter() {
                 let mut recording = Recording::new(scenario, scenario.config).unwrap();
                 // A script for everyone on a party's fight against twelve would press for more than a tick holds.
@@ -1029,7 +1029,7 @@ mod tests {
                     recording.step(&mut source).unwrap();
                 }
                 let (replay, recorded) = recording.finish();
-                let mut player = Player::new(replay, &SCENARIOS).unwrap();
+                let mut player = Player::new(replay, &crate::replay::scenario::WITH_ZONES).unwrap();
                 player.run_to_end();
                 assert_eq!(player.finish().trail, recorded.trail, "{} {}", scenario.name, script.name);
             }

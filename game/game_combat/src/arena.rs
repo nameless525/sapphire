@@ -89,7 +89,7 @@ use sapphire_core::debug_draw::{Color, Shape, Style};
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profile, spawns};
-use sapphire_gameplay::replay::{ZoneFight, zone_fight};
+use sapphire_gameplay::replay::{ScenarioError, ZoneFight, find_scenario};
 use sapphire_gameplay::{
     ActorId, ActorView, Buttons, Faction, MoveLibrary, MoveSetId, PARTY_SLOTS, Simulation,
 };
@@ -210,8 +210,10 @@ pub(crate) fn follow_target(player: Vec3) -> Vec3 {
 pub const ZONE_TRIP_SCENARIO: &str = "zone-trip";
 
 /// Refuses a fight that doesn't start from a scenario document on the arena's colliders or in a zone, or with
-/// `party` a party's on the arena's colliders: its actors aren't standing here, or there aren't three looks to
-/// draw them in. Without `party` a party has only the one look. A new scenario here takes no Rust.
+/// `party` a party's on the arena's colliders or in a zone with no way out: its actors aren't standing here, or
+/// there aren't three looks to draw them in. Without `party` a party has only the one look. A party in a zone
+/// with an exit is refused, naming it (M5 B5): a party's crossing on a stage is unproven. A new scenario here
+/// takes no Rust.
 pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(), String> {
     check_scenario_named(combat.scenario(), party)
 }
@@ -223,19 +225,42 @@ pub fn check_scenario_named(scenario: &str, party: bool) -> Result<(), String> {
     let on_the_stage =
         document.filter(|document| document.colliders == sapphire_gameplay::arena::COLLIDERS_PATH);
     let has_a_party = on_the_stage.is_some_and(|document| document.party.is_some());
+    // A fight a zone stands, a document's on its zone's own colliders (M3 C2) or a zone code builds (M5 B5), and
+    // how many ways out its zone has. A built zone this build has no builder for refuses here, saying so.
+    let zone = || match document.and(zone_fight_of(scenario)) {
+        Some(Ok(fight)) => Ok(Some(fight.exits)),
+        Some(Err(error)) => Err(format!("`{scenario}`: {error}")),
+        None => Ok(None),
+    };
     if party {
         if has_a_party {
             return Ok(());
         }
+        // A party in a zone (M5 B5): its triggers, checkpoints and returns watch whoever's on the field, and a
+        // swap in a trigger's volume starts its encounter once (`replay::document`'s tests), so it stands here,
+        // unless its zone has a way out.
+        if document.is_some_and(|document| document.party.is_some()) {
+            match zone()? {
+                Some(0) => return Ok(()),
+                Some(exits) => {
+                    return Err(format!(
+                        "--arena --party: `{scenario}` stands a party in a zone with {exits} way(s) out, and a \
+                         party's crossing to another zone isn't proven on a stage"
+                    ));
+                }
+                None => {}
+            }
+        }
         return Err(format!(
-            "--arena --party plays a fight of a party on the arena's colliders such as `{PARTY_SCENARIO}`, and \
-             this one starts from `{scenario}`"
+            "--arena --party plays a fight of a party on the arena's colliders such as `{PARTY_SCENARIO}`, or in \
+             a zone with no way out such as `district-encounter`, and this one starts from `{scenario}`"
         ));
     }
-    // A fight on the arena's colliders, or one a zone stands, a document's on its zone's own colliders (M3 C2);
-    // or the one that goes between the proving zones (M3 W4), from the arena.
+    // A fight on the arena's colliders, or one a zone stands with no party; or the one that goes between the
+    // proving zones (M3 W4), from the arena.
+    // One whose zone refuses to stand is let through, for `FightPlace::of` to say why.
     let in_a_zone =
-        document.is_some_and(|document| document.party.is_none() && zone_fight(scenario).is_some());
+        document.is_some_and(|document| document.party.is_none()) && zone_fight_of(scenario).is_some();
     // And the animation bench's crowds (M5 C1), code on the arena's colliders.
     let crowd = sapphire_gameplay::replay::CROWD_SCENARIOS.contains(&scenario);
     if (on_the_stage.is_some() && !has_a_party) || in_a_zone || scenario == ZONE_TRIP_SCENARIO || crowd {
@@ -246,6 +271,12 @@ pub fn check_scenario_named(scenario: &str, party: bool) -> Result<(), String> {
          or `{SKIRMISH_SCENARIO}`, `{ZONE_TRIP_SCENARIO}`, or one in a zone such as `ward-court`, and this one \
          starts from `{scenario}`",
     ))
+}
+
+/// [`ZoneFight`] for the scenario named `scenario` among this build's [`crate::combat::SCENARIOS`], if it stands
+/// in a zone: a development build's hand a zone code builds its builder (M5 B5), and a game's don't.
+pub(crate) fn zone_fight_of(scenario: &str) -> Option<Result<ZoneFight, ScenarioError>> {
+    find_scenario(&crate::combat::SCENARIOS, scenario)?.zone_fight()
 }
 
 /// Where a fight stands (M3 Q3): the town's square, or a zone a scenario names, whose ground is that zone's
@@ -263,9 +294,9 @@ pub struct FightPlace {
 impl FightPlace {
     /// Where the scenario named `scenario` stands its fight.
     pub fn of(scenario: &str) -> Result<Self, ArenaError> {
-        match zone_fight(scenario) {
+        match zone_fight_of(scenario) {
             Some(fight) => {
-                let ZoneFight { stem, player_at, spawns, colliders } =
+                let ZoneFight { stem, player_at, spawns, colliders, .. } =
                     fight.map_err(|error| ArenaError::Scenario(error.to_string()))?;
                 Ok(Self { zone: Some((stem, player_at)), spawns, statics: statics_digest(&colliders)? })
             }
@@ -1367,6 +1398,27 @@ mod tests {
 
     fn entry_at_ground(entry: &ColliderEntry) -> Vec3 {
         Vec3::new(entry.position[0], 0.0, entry.position[2])
+    }
+
+    /// The benchmark district stands only where its builder is handed over (M5 B5): a development build's fight
+    /// stands the party at the avenue's start in the district, and a game's refuses it, saying who hands the
+    /// builder over. Without `--party` it's refused as any party's fight is, having only the one look.
+    #[test]
+    fn the_district_stands_in_a_development_build_alone() {
+        const DISTRICT: &str = "district-encounter";
+        let checked = check_scenario_named(DISTRICT, true);
+        let place = FightPlace::of(DISTRICT);
+        if cfg!(feature = "dev") {
+            checked.expect("a development build stands it");
+            assert_eq!(place.expect("it stands").zone, Some(("district", "avenue_start")));
+        } else {
+            let error = checked.expect_err("a game's build has no builder");
+            assert!(error.contains("builds no zone `district`"), "{error}");
+            assert!(error.contains("hand its builder over"), "{error}");
+            let Err(ArenaError::Scenario(error)) = place else { panic!("it can't stand") };
+            assert!(error.contains("builds no zone `district`"), "{error}");
+        }
+        assert!(check_scenario_named(DISTRICT, false).is_err(), "one look for three");
     }
 
     /// The stage plants its trees, so the town's assembly can't say where they stand: this does. Each

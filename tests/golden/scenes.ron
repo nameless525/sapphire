@@ -1627,6 +1627,21 @@
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 61.3, warp: 90.9),
             ),
+            // Aster (M5 C8) close up where the warrior stands, by `--model`, at rest: her skin, jacket and
+            // gear one slot since M5 L15, drawn from one atlas a map in one range, her face, hair and skirt
+            // their own. At Desktop-High, then at Mobile-Low's settings. Metal only.
+            (
+                name: "lookdev-merged-desktop-high",
+                ticks: 90,
+                args: ["--look-dev", "enemy", "--model", "2533d8d7-9400-4972-88f3-f99ff9473913", "--zoom", "0.45",
+                       "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off", "--capture-frames", "32"],
+            ),
+            (
+                name: "lookdev-merged-mobile-low",
+                ticks: 90,
+                args: ["--look-dev", "enemy", "--model", "2533d8d7-9400-4972-88f3-f99ff9473913", "--zoom", "0.45",
+                       "--time-of-day", "13", "--tier", "mobile-low", "--ao", "off", "--capture-frames", "32"],
+            ),
             // The player's moves (M2 O3), in place, each drawn playing up to its tick, sword in hand. The
             // first cut coming through, seen as a fight sees it from behind the right shoulder: the hips
             // ahead of the arm and the right foot about to land. Springs are pinned off while N5 tunes the

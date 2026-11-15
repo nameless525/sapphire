@@ -39,6 +39,7 @@ fn download(host: &Host, roots: Roots, dir: &TestDir) -> Result<Outcome, Downloa
         staging: dir.0.clone(),
         now: NOW,
         app_build: APP_BUILD,
+        checking: retries(),
         retries: retries(),
         room: None,
     };

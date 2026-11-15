@@ -6,10 +6,11 @@
 //!
 //! A [`Download`] runs on a thread of its own (`patcher`) and goes through three phases ([`Phase`]):
 //!
-//! 1. **Checking:** it fetches the host's `release.smanifest`, capped at the most a manifest may be, and
-//!    asks the installed release to take it as its successor ([`Manifest::accept_successor`]): signed by
-//!    a key the installed release names, newer, unexpired at the caller's clock, for this app build and
-//!    cook. One that isn't is refused before anything else is fetched. The same version as the installed one is
+//! 1. **Checking:** it fetches the host's `release.smanifest`, capped at the most a manifest may be and tried
+//!    as [`Request::checking`] says (a boot tries it once, [`Retries::ONCE`]), and asks the installed release
+//!    to take it as its successor ([`Manifest::accept_successor`]): signed by a key the installed release
+//!    names, newer, unexpired at the caller's clock, for this app build and cook. One that isn't is refused
+//!    before anything else is fetched. The same version as the installed one is
 //!    [`Outcome::UpToDate`]. The new release must leave every file a patch may not change as it was
 //!    ([`Plan::new`]).
 //! 2. **Reading:** each pack the install doesn't hold by header hash is a changed pack, and its tables (the
@@ -29,8 +30,8 @@
 //!
 //! A dropped connection, a short or long body, wrong bytes, an ignored `Range`, a stall and a body that comes
 //! slower than [`Timeouts::min_rate`] each fail the request they hit ([`FetchError`]). Failed requests are
-//! tried again, with a wait that doubles ([`Retries`]); blocks that arrived whole and right before a failure
-//! are kept. An item still failing after its attempts stops the download with [`DownloadError::Host`],
+//! tried again, with a wait that doubles ([`Request::retries`]; the manifest as [`Request::checking`] says);
+//! blocks that arrived whole and right before a failure are kept. An item still failing after its attempts stops the download with [`DownloadError::Host`],
 //! naming it, and what was kept stays for the next run. Nothing the host sends is trusted without its hash or signature,
 //! and nothing it sends can panic the patcher.
 //!

@@ -214,6 +214,7 @@ fn what_a_download_stages_installs() {
             staging: app.staging.clone(),
             now: NOW,
             app_build: APP_BUILD,
+            checking: retries(),
             retries: retries(),
             room: None,
         };
@@ -279,6 +280,7 @@ fn a_patch_whose_install_cant_fit_is_refused_before_it_is_fetched() {
             staging: app.staging.clone(),
             now: NOW,
             app_build: APP_BUILD,
+            checking: retries(),
             retries: retries(),
             room: Some(installation.room().with_free_space(move |_| Ok(free))),
         };

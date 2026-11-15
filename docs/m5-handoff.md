@@ -195,7 +195,7 @@ M3's systems are as [m4-handoff.md](m4-handoff.md)'s "What M4 builds on" has the
 
 - **The release manifest** (`sapphire_assets::manifest`, P1): ed25519-signed, with a version that only grows, an expiry, the minimum app build, each pack's header hash and each file outside the packs. A shipping build mounts only packs its manifest names.
 - **`cargo xtask release`** lays a release out for a static host; `package` signs one with the build's options (P3). `Manifest::unpatchable_change` is the one rule for what a patch may not carry.
-- **`Installation`** (P3) assembles a new release beside the current one and switches by one rename. **`game_flow::update`** (P4) checks, downloads and installs in the boot, and never blocks play. The keys and host are `platform/patch.toml`'s, both empty.
+- **`Installation`** (P3) assembles a new release beside the current one and switches by one rename. **`game_flow::update`** (P4) checks, downloads and installs in the boot. Its check waits at most 3 s (`CHECK_DEADLINE`, one try of the manifest, M5 Z3) before the game goes on with what it has; once a release is accepted, its download and install hold the boot until they end or fail. A download asks for room to stage and install before it fetches a block (`Installation::room`, Z3). The keys and host are `platform/patch.toml`'s, both empty.
 - **Keys and sizes:** `cargo xtask release-key new|public <file>` makes a release key and prints its public half (X4). `cargo xtask patch sizes <name>=<content dir>... [--cook desktop|mobile]` patches release 1 with each edited copy of `content/` and reports each download by kind (Z1).
 
 ### Tiers, heat and the ladder

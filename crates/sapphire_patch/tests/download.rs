@@ -30,6 +30,7 @@ fn download(host: &Host, staging: &TestDir) -> Download {
         staging: staging.0.clone(),
         now: NOW,
         app_build: APP_BUILD,
+        checking: retries(),
         retries: retries(),
         room: None,
     };

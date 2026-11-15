@@ -36,6 +36,10 @@ pub struct Request {
     pub now: u64,
     /// The app's build number: a release that needs a later one is refused.
     pub app_build: u32,
+    /// The tries of the check, its manifest's request: [`Retries::ONCE`] in a boot, which gives up on a host it
+    /// can't reach for this launch rather than wait it out.
+    pub checking: Retries,
+    /// The tries of each request once a release is accepted: its tables, files and blocks.
     pub retries: Retries,
     /// The room it asks the disk for once it knows what it moves, before it fetches a block
     /// ([`Installation::room`](crate::Installation::room)): none, and it asks nothing.
@@ -108,6 +112,9 @@ impl Default for Retries {
 }
 
 impl Retries {
+    /// One try and no wait: a check that gives up on a host it can't reach for this launch (M5 Z3).
+    pub const ONCE: Self = Self { attempts: 1, first_wait: Duration::ZERO, longest_wait: Duration::ZERO };
+
     /// The wait after an item's `failures`-th failure.
     fn wait(&self, failures: u32) -> Duration {
         let doublings = failures.saturating_sub(1).min(16);
@@ -207,7 +214,12 @@ impl Download {
     /// Starts `request` on a thread of its own, named `patcher`, fetching through `transport`.
     pub fn start(request: Request, transport: impl Transport + 'static) -> io::Result<Self> {
         let shared = Arc::new(Shared::default());
-        let mut patcher = Patcher { shared: shared.clone(), transport, retries: request.retries };
+        let mut patcher = Patcher {
+            shared: shared.clone(),
+            transport,
+            checking: request.checking,
+            retries: request.retries,
+        };
         let thread = thread::Builder::new().name("patcher".to_owned()).spawn(move || {
             let outcome = patcher.run(request);
             match &outcome {
@@ -309,6 +321,7 @@ impl Shared {
 struct Patcher<T> {
     shared: Arc<Shared>,
     transport: T,
+    checking: Retries,
     retries: Retries,
 }
 
@@ -319,7 +332,7 @@ impl<T: Transport> Patcher<T> {
         let current = installed.manifest();
 
         self.shared.set_phase(Phase::Checking);
-        let (signed, ()) = self.fetch(MANIFEST_PATH, None, manifest::MAX_LEN, |_| Some(()))?;
+        let (signed, ()) = self.fetch(MANIFEST_PATH, None, manifest::MAX_LEN, self.checking, |_| Some(()))?;
         let next = match current.accept_successor(&signed, request.now, request.app_build) {
             Ok(next) => next,
             Err(ManifestError::NotNewer { installed, offered }) if offered == installed => {
@@ -396,7 +409,7 @@ impl<T: Transport> Patcher<T> {
             let bytes = match range_of(0..file.size) {
                 // A file is at most 64 MiB (`manifest::MAX_FILE_SIZE`).
                 Some(range) => {
-                    self.fetch(&remote, Some(range), file.size as usize, |bytes| {
+                    self.fetch(&remote, Some(range), file.size as usize, self.retries, |bytes| {
                         hashes_to(bytes, &file.hash)
                     })?
                     .0
@@ -428,16 +441,18 @@ impl<T: Transport> Patcher<T> {
     /// A changed pack's header and table of contents, each checked against what the manifest names.
     fn fetch_table(&mut self, pack: &ReleasedPack) -> Result<(Vec<u8>, Toc), DownloadError> {
         let remote = pack_path(&pack.header_hash);
-        let (mut bytes, header) = self.fetch(&remote, Some(0..HEADER_LEN as u64), HEADER_LEN, |bytes| {
-            PackHeader::read(bytes)
-                .ok()
-                .filter(|header| header.hash() == pack.header_hash && header.file_len() == pack.size)
-        })?;
+        let (mut bytes, header) =
+            self.fetch(&remote, Some(0..HEADER_LEN as u64), HEADER_LEN, self.retries, |bytes| {
+                PackHeader::read(bytes)
+                    .ok()
+                    .filter(|header| header.hash() == pack.header_hash && header.file_len() == pack.size)
+            })?;
         let toc = match range_of(header.toc_range()) {
             Some(range) => {
                 let len = usize::try_from(range.end - range.start).unwrap_or(usize::MAX);
-                let (toc_bytes, toc) =
-                    self.fetch(&remote, Some(range), len, |toc| Toc::read(header, toc, pack.size).ok())?;
+                let (toc_bytes, toc) = self.fetch(&remote, Some(range), len, self.retries, |toc| {
+                    Toc::read(header, toc, pack.size).ok()
+                })?;
                 bytes.extend_from_slice(&toc_bytes);
                 toc
             }
@@ -451,12 +466,13 @@ impl<T: Transport> Patcher<T> {
     }
 
     /// Fetches `path` (`range` of it, if given), at most `limit` bytes and exactly that many for a range, and
-    /// what `check` makes of them, trying again as [`Retries`] says.
+    /// what `check` makes of them, trying again as `retries` says.
     fn fetch<V>(
         &mut self,
         path: &str,
         range: Option<Range<u64>>,
         limit: usize,
+        retries: Retries,
         check: impl Fn(&[u8]) -> Option<V>,
     ) -> Result<(Vec<u8>, V), DownloadError> {
         let mut attempts = 0;
@@ -477,7 +493,7 @@ impl<T: Transport> Patcher<T> {
                     None => FetchError::Mismatch,
                 },
             };
-            self.failed(path, attempts, error)?;
+            self.failed(path, attempts, error, retries)?;
         }
     }
 
@@ -531,20 +547,26 @@ impl<T: Transport> Patcher<T> {
                 failed.push(block);
             }
             if let Some((attempts, why)) = last {
-                self.failed(&path, attempts, why)?;
+                self.failed(&path, attempts, why, self.retries)?;
                 queue.extend(runs(failed));
             }
         }
         Ok(())
     }
 
-    /// Stops the download if the item at `path` has failed `attempts` times or can't succeed; else waits
-    /// before its next try.
-    fn failed(&self, path: &str, attempts: u32, error: FetchError) -> Result<(), DownloadError> {
-        if attempts >= self.retries.attempts || !error.is_retryable() {
+    /// Stops the download if the item at `path` has failed `attempts` times, as many as `retries` allows, or
+    /// can't succeed; else waits before its next try.
+    fn failed(
+        &self,
+        path: &str,
+        attempts: u32,
+        error: FetchError,
+        retries: Retries,
+    ) -> Result<(), DownloadError> {
+        if attempts >= retries.attempts || !error.is_retryable() {
             return Err(DownloadError::Host { path: path.to_owned(), attempts, last: error });
         }
-        let wait = self.retries.wait(attempts);
+        let wait = retries.wait(attempts);
         tracing::warn!(target: "sapphire::patch", path, attempts, %error, ?wait, "trying a failed request");
         self.shared.wait(wait)
     }

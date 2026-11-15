@@ -35,6 +35,7 @@ fn patcher(staging: &Path, url: &str, install: &Path) -> ExitCode {
         staging: staging.to_owned(),
         now: NOW,
         app_build: APP_BUILD,
+        checking: retries(),
         retries: retries(),
         room: None,
     };

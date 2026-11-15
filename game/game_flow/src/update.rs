@@ -12,9 +12,11 @@
 //! into the staging, and installing on a thread of its own once it's staged whole. An install that switches
 //! releases gives the boot the new content to stand on, in the same boot.
 //!
-//! **Nothing here stops the game.** No host, no network, a release the build refuses (older, expired, signed by
-//! a key it doesn't trust, for a later app build), a download that fails or a disk without room: each is
-//! logged, and the game starts on what it has. A kill mid-download leaves what was staged whole, and the next
+//! **Nothing here stops the game.** The check waits at most `CHECK_DEADLINE` (3 s) for the host's release:
+//! one try of its manifest, then the game goes on with what it has for this launch, whatever the network is
+//! doing. Once a release is accepted, its download and install hold the boot until they end. No host, no
+//! network, a release the build refuses (older, expired, signed by a key it doesn't trust, for a later app
+//! build), a download that fails or a disk without room: each is logged, and the game starts on what it has. A kill mid-download leaves what was staged whole, and the next
 //! launch's check fetches only the rest (`sapphire_patch`'s "Staging, and resuming"). Before it fetches a block
 //! the download asks the disk for room to stage what's left and then to install the release
 //! ([`Installation::room`]), so a release the disk can't hold installed is never fetched; an install that finds
@@ -32,6 +34,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::Duration;
 
 use sapphire_assets::manifest::PublicKey;
 use sapphire_patch::{
@@ -39,6 +42,7 @@ use sapphire_patch::{
     Request, Retries, Roots, Timeouts,
 };
 use sapphire_platform::{ContentFs, Host};
+use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 
@@ -49,6 +53,12 @@ const STAGING: &str = "staging";
 /// its install ends: a launch finding it installs before anything mounts. A staging without it is a download
 /// still under way, which the boot's check resumes, so a launch never assembles from half of one.
 const STAGED: &str = "staged";
+
+/// The longest the boot's check waits for the host's release before the game goes on with what it has, for this
+/// launch (M5 Z3), whatever the transport is still waiting for: its manifest request is tried once
+/// ([`Retries::ONCE`]), with no waits between tries. Once a release is accepted, its download keeps
+/// [`Retries::default`].
+const CHECK_DEADLINE: Duration = Duration::from_secs(3);
 
 /// How a build patches: what it trusts, what it is and where it looks.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,6 +162,7 @@ impl Patches {
                 staging: staging.clone(),
                 now: sapphire_time::calendar_seconds(),
                 app_build: self.setup.app_build,
+                checking: Retries::ONCE,
                 retries: Retries::default(),
                 room: Some(installation.room()),
             };
@@ -168,6 +179,8 @@ impl Patches {
                 staged: self.setup.dir.join(STAGED),
                 app_build: self.setup.app_build,
                 received: 0,
+                checking: Stopwatch::start(),
+                deadline: CHECK_DEADLINE,
             })
         };
         match started() {
@@ -243,6 +256,10 @@ pub struct Update {
     app_build: u32,
     /// Bytes the download received from the host.
     received: u64,
+    /// Started with the download: the check gives up once it reads past [`Self::deadline`].
+    checking: Stopwatch,
+    /// [`CHECK_DEADLINE`], or a test's.
+    deadline: Duration,
 }
 
 impl fmt::Debug for Update {
@@ -281,7 +298,16 @@ impl Update {
             State::Downloading(download) => {
                 let progress = download.progress();
                 match progress.phase {
-                    Phase::Checking => return UpdateState::Checking,
+                    Phase::Checking if self.checking.elapsed() < self.deadline => {
+                        return UpdateState::Checking;
+                    }
+                    Phase::Checking => {
+                        let deadline = self.deadline.as_secs_f32();
+                        tracing::warn!(target: LOG_TARGET, deadline, "the host didn't answer the update's check in time; the game starts on what it has");
+                        // Dropping the download cancels it: its thread ends at its next read, or its timeout.
+                        self.state = State::Done;
+                        return UpdateState::Done(None);
+                    }
                     Phase::Reading | Phase::Fetching => {
                         self.received = progress.received;
                         let fraction = if progress.total == 0 {
@@ -423,4 +449,101 @@ fn make_patch_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     sapphire_platform::exclude_from_backup(dir)
         .map_err(|error| format!("{} stays in backups: {error}", dir.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    use sapphire_assets::manifest::{self, Manifest};
+    use sapphire_time::Stopwatch;
+
+    use super::*;
+
+    /// A directory of the test's own, removed afterward.
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("game_flow-update-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("makes the test's directory");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The boot's check of a host at `url`, over an app that shipped an empty cook (an unsigned release 0).
+    fn check(dir: &TestDir, url: String) -> Update {
+        let content = dir.0.join("content");
+        std::fs::create_dir_all(&content).expect("makes the content");
+        let shipped = Manifest {
+            version: 0,
+            expires: u64::MAX,
+            min_app_build: 0,
+            cook: "desktop".to_owned(),
+            successor_keys: Vec::new(),
+            packs: Vec::new(),
+            files: Vec::new(),
+        };
+        std::fs::write(content.join(manifest::FILE_NAME), shipped.encode(&[]).expect("encodes"))
+            .expect("writes the shipped manifest");
+        let setup =
+            PatchSetup { dir: dir.0.join("patch"), host: Some(url), root_keys: Vec::new(), app_build: 1 };
+        Patches::open(&Host::with_content_at(&content), setup).check().expect("the check starts")
+    }
+
+    /// Polls `update` until it's done, as a boot does a frame at a time, and says how long it took since
+    /// `started`, before the check began: at most `most`, past which the check never ended.
+    fn until_done(update: &mut Update, stopwatch: Stopwatch, most: Duration) -> Duration {
+        loop {
+            match update.poll() {
+                UpdateState::Done(content) => {
+                    assert!(content.is_none(), "nothing to install");
+                    return stopwatch.elapsed();
+                }
+                state => assert!(stopwatch.elapsed() < most, "still {state:?} after {most:?}"),
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// No host at the address: the check tries once and the game goes on at once, not after the download's
+    /// retries (about 7.5 s of waits) or the deadline (M5 Z3).
+    #[test]
+    fn a_check_of_a_closed_port_ends_at_once() {
+        let dir = TestDir::new("closed");
+        let port =
+            TcpListener::bind("127.0.0.1:0").expect("a port").local_addr().expect("its address").port();
+        let stopwatch = Stopwatch::start();
+        let mut update = check(&dir, format!("http://127.0.0.1:{port}/"));
+        // Far past what the test allows, so only the refused connection can end it.
+        update.deadline = Duration::from_secs(60);
+        let took = until_done(&mut update, stopwatch, Duration::from_secs(30));
+        // A refusal is a few milliseconds; the bound is wide for a CI runner that stalls threads.
+        assert!(took < Duration::from_secs(5), "{took:?}");
+    }
+
+    /// A host that takes the connection and never answers: the check gives up at its deadline, whatever the
+    /// transport is waiting for (its response timeout is 20 s), and the game goes on (M5 Z3).
+    #[test]
+    fn a_check_of_a_silent_host_ends_at_its_deadline() {
+        let dir = TestDir::new("silent");
+        // Listening, so the OS completes the connection, and never accepting or answering.
+        let silent = TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = silent.local_addr().expect("its address").port();
+        let stopwatch = Stopwatch::start();
+        let mut update = check(&dir, format!("http://127.0.0.1:{port}/"));
+        let took = until_done(&mut update, stopwatch, Duration::from_secs(30));
+        assert!(took >= CHECK_DEADLINE, "not before its deadline: {took:?}");
+        // The deadline and a poll; far under the transport's own 20 s.
+        assert!(took < Duration::from_secs(15), "{took:?}");
+        drop(silent);
+    }
 }

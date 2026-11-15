@@ -62,6 +62,7 @@ Each milestone has a plan (work packages and their "As built" notes), an exit ru
 | [m4-handoff.md](m4-handoff.md) | What M4 inherited from M3, with the first "How to add" recipes |
 | [m5-handoff.md](m5-handoff.md) | What the next milestone inherits from M4 (also under "Working in the code") |
 | [m5-plan.md](m5-plan.md) | M5, fidelity at scale, **the milestone under way**: a benchmark at the content budgets, exit tests (§1), decisions (§3), work packages by track (§4), what's needed from the maintainer (§7) |
+| [m5-exit-run.md](m5-exit-run.md) | M5's exit-test runbook: for each test, what is run (counted, timed or in CI), the line read and the rule that passes it on each tier, and what only a device proves |
 
 `docs/media/` holds screenshots the older docs show.
 

@@ -3578,6 +3578,7 @@
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-high",
                        "--render-scale", "0.474359"],
+                ci_seconds: (lavapipe: 2.9, warp: 14.3),
             ),
             (
                 name: "upscale-face-mobile-low-floor",
@@ -3585,6 +3586,7 @@
                 ticks: 90,
                 args: ["--look-dev", "face", "--time-of-day", "13", "--tier", "mobile-low",
                        "--render-scale", "0.378205"],
+                ci_seconds: (lavapipe: 3.2, warp: 11.1),
             ),
             (
                 name: "upscale-ward-mobile-high-floor",
@@ -3592,6 +3594,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
                        "--render-scale", "0.474359"],
+                ci_seconds: (lavapipe: 3.9, warp: 12.5),
             ),
             (
                 name: "upscale-crt-mobile-high-floor",
@@ -3599,6 +3602,7 @@
                 ticks: 90,
                 args: ["--look-dev", "face", "--view", "0,30", "--time-of-day", "18", "--tier", "mobile-high",
                        "--ao", "off", "--render-scale", "0.474359", "--post-effect", "crt@0.5"],
+                ci_seconds: (lavapipe: 4.2, warp: 18.2),
             ),
             // The player's settings, seen (M4 A2, A3). The impact frame with flashes reduced and no camera
             // motion: its duotone and speed lines held within 0.08 of the frame's relative luminance, and

@@ -407,6 +407,10 @@ pub(crate) struct Options {
     /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
     /// the default.
     pub own_shadows_only: bool,
+    /// `--spot-shadows off`: no spot light casts a shadow (M5 L16, `ShadowSettings::spots` 0), so
+    /// the shaders compile their local lights' loops as before spot shadows. `on`, the tier's, is
+    /// the default.
+    pub no_spot_shadows: bool,
     /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
     pub sharpening: Option<f32>,
     /// `--focus <distance>,<sharp>,<near>,<far>,<blur>`: depth of field held at a fixed focus for look-dev (M5 L8),
@@ -799,6 +803,7 @@ impl Options {
             capsule_bins: self.capsule_bins.unwrap_or(tier.capsule_bins),
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
+                spots: if self.no_spot_shadows { 0 } else { shadows.spots },
                 ..shadows
             }),
             ..tier
@@ -1360,6 +1365,13 @@ impl Options {
                         other => {
                             return Err(format!("--character-shadows expects own or others, got {other:?}"));
                         }
+                    };
+                }
+                "--spot-shadows" => {
+                    options.no_spot_shadows = match value("--spot-shadows")?.as_str() {
+                        "on" => false,
+                        "off" => true,
+                        other => return Err(format!("--spot-shadows expects on or off, got {other:?}")),
                     };
                 }
                 "--view-culling" => {
@@ -3064,6 +3076,16 @@ mod tests {
         assert!(parse(&["--character-shadows", "all"]).is_err());
         let off = RenderSettings { shadows: None, ..tier };
         assert_eq!(parse(&["--character-shadows", "own"]).unwrap().0.render_settings(off).shadows, None);
+    }
+
+    #[test]
+    fn spot_lights_cast_the_tiers_shadows_unless_told_off() {
+        let tier = RenderSettings { shadows: Some(ShadowSettings::default()), ..RenderSettings::default() };
+        let spots = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).shadows.map(|s| s.spots);
+        assert_eq!(spots(&[]), Some(ShadowSettings::default().spots), "the tier's");
+        assert_eq!(spots(&["--spot-shadows", "off"]), Some(0));
+        assert_eq!(spots(&["--spot-shadows=on"]), Some(ShadowSettings::default().spots));
+        assert!(parse(&["--spot-shadows", "some"]).is_err());
     }
 
     /// A phone's app runs from nowhere it can write: a path of its own stands, and any other goes under

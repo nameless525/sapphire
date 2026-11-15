@@ -80,6 +80,10 @@
 //!   (M5 L12, `ShadowSettings::others`), as the tier says by default (`others`). `own` keeps each
 //!   character's shadow on the world alone, as before, for comparisons and the golden scenes from
 //!   before it.
+//! - `--spot-shadows on|off`: whether flagged spot lights cast shadows (M5 L16,
+//!   `ShadowSettings::spots`), as the tier says by default (`on`: 4 on Desktop-High, 2 on
+//!   Desktop-Low, none on phones). `off` compiles the local lights' loops as before them, for
+//!   comparisons and the golden scenes from before them that move.
 //! - `--ao off|capsule|full`: the player's ambient occlusion setting (M1 W5); the tier's without
 //!   it. `capsule` is capsule AO from the characters' bodies alone, `full` adds GTAO (the
 //!   tier's, or the desktop tiers' on Mobile-Low), and `off`, which the golden scenes from before

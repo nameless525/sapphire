@@ -56,10 +56,15 @@ Commands:
       pack them into target/bench/<preset>/<cook>/ (defaults: ci, desktop; cache:
       target/bench/cache/). `ci` is small, for CI; `budget` is the shipped game's load, gigabytes
       of 2K texture sets: check the disk first; `double` is the budget at twice the texture pool.
-      Nothing it writes is committed or shipped. --with-content also cooks content/ for desktop
-      and puts the two together in target/bench/ci/with-content/desktop/ with a release manifest
-      naming both, which a shipping sandbox mounts: what `golden` and `counts` draw, and what
-      CI's golden jobs bundle.
+      Past `ci` it also makes the kinds part (M5 C12b): content/ linked into
+      target/bench/<preset>/kinds/source/ with the figures bench/kinds.ron names made again at the
+      preset's rows from tools/figures/ under the same IDs, cooked into
+      target/bench/<preset>/kinds/<cook>/ through content's cache. Nothing it writes is committed
+      or shipped. --with-content puts the content beside the district with a release manifest
+      naming both, which a shipping sandbox mounts: for `ci` (desktop only) content/'s cook, in
+      target/bench/ci/with-content/desktop/, what `golden` and `counts` draw and what CI's golden
+      jobs bundle; past `ci` the kinds part's cook, in target/bench/<preset>/with-content/<cook>/,
+      the one root a run at that preset mounts (the district, the arena's party-three-kinds fight).
   release --cook desktop|mobile --out <dir> --release-version <n> --expires <YYYY-MM-DD>
       --min-build <n> [--next-keys <hex>[,<hex>...]] [--patch-from <manifest>]
       Cook, then sign the cook's release with the keys in SAPPHIRE_RELEASE_KEY (each a 32-byte
@@ -200,8 +205,8 @@ Commands:
       [--counts] [--baseline <dir>]
       The benches at scale (M5 Z1): every row exit tests 1, 2, 5, 6 and 7 measure, on each tier,
       run from bench/scale.ron by sapphire_testkit scale, all under target/bench-scale/<commit>/.
-      prepare cooks both cooks of content/ and of the preset's district (the manifest's, budget:
-      check the disk first), puts each pair together, builds the release dev sandbox and records
+      prepare cooks both cooks of content/ (past ci, with the kinds part, as bench-content does) and
+      of the preset's district (the manifest's, budget: check the disk first), puts each pair together, builds the release dev sandbox and records
       the crowds' replays. plan prints the sittings (each at most ten minutes, a pair's sides
       alternating), the minutes by tier and what is left. run runs the next sitting not yet done
       (--sitting <n> that one, --counts the runs that read counts alone) and is resumable: a timed
@@ -328,10 +333,9 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             let cook = args.value::<Cook>("--cook")?;
             let with_content = args.flag("--with-content");
             args.finish(false)?;
-            if with_content {
-                if preset.is_some_and(|preset| preset != bench::Preset::Ci)
-                    || cook.is_some_and(|cook| cook != Cook::Desktop)
-                {
+            let (preset, cook) = (preset.unwrap_or(bench::Preset::Ci), cook.unwrap_or(Cook::Desktop));
+            if with_content && !bench::has_kinds(preset) {
+                if cook != Cook::Desktop {
                     bail!(
                         "--with-content puts the ci preset's desktop cook beside the shipped one, and no other"
                     );
@@ -340,9 +344,25 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
                 eprintln!("put the content and the ci district together in {}", together.dir.display());
                 return Ok(());
             }
-            let (preset, cook) = (preset.unwrap_or(bench::Preset::Ci), cook.unwrap_or(Cook::Desktop));
+            if with_content {
+                let together = bench::with_content_for(preset, cook)?;
+                eprintln!(
+                    "put the content with the {} kinds and the district together for {cook} in {}",
+                    preset.name(),
+                    together.dir.display()
+                );
+                return Ok(());
+            }
             let cooked = bench::cook(preset, cook)?;
             eprintln!("cooked the {} benchmark for {cook} into {}", preset.name(), cooked.dir.display());
+            if bench::has_kinds(preset) {
+                let kinds = bench::cook_kinds(preset, cook)?;
+                eprintln!(
+                    "cooked the content with the {} kinds for {cook} into {}",
+                    preset.name(),
+                    kinds.dir.display()
+                );
+            }
             Ok(())
         }
         "release" => {

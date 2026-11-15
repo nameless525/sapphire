@@ -15,6 +15,14 @@
 //! Generating takes `target/bench/<preset>/generate.lock` and a cook `target/bench/<preset>/<cook>.lock`, as
 //! `content` locks its cooks, so a desktop and a mobile cook of one preset can run at once.
 //!
+//! **The kinds** ([`cook_kinds`], M5 C12b): a preset past `ci` cooks the shipped content with the party's kinds
+//! and the wave's at spec §3.4's rows, as `bench/kinds.ron` says. The pipeline's `gen-kinds` links `content/`
+//! into `target/bench/<preset>/kinds/source/` and writes over it those figures, made again from their specs in
+//! `tools/figures/` under the same IDs; the tree cooks as `content/` does, through its cache
+//! ([`content::cook_copy`]), into `target/bench/<preset>/kinds/<cook>/`. With the preset's district beside it
+//! ([`with_content_for`]) that is the one root a run at the preset mounts: the district's walks, the arena's
+//! fight of the party's kinds, and the district's encounter.
+//!
 //! **What tests draw** ([`with_content`], M5 X4): the golden scenes and CI's scale lane (`cargo xtask counts`)
 //! run a shipping build, which mounts only what its release manifest names, so they take the shipped desktop
 //! cook with the `ci` district's pack beside it, in `target/bench/ci/with-content/desktop/`, and a manifest
@@ -173,6 +181,75 @@ fn clear_unmarked(dir: &Path) -> anyhow::Result<bool> {
 /// The district's pack in a preset's cook: the zone the generated sources are.
 pub const DISTRICT_PACK: &str = "zone_district.spack";
 
+/// Whether `preset` makes the kinds again: every preset past `ci`, whose kinds are the shipped ones
+/// (`bench/kinds.ron` gives `ci` none).
+pub fn has_kinds(preset: Preset) -> bool {
+    preset != Preset::Ci
+}
+
+/// A preset's kinds: `target/bench/<preset>/kinds/`, its source tree in `source/` and a cook's packs in
+/// `<cook>/`.
+pub fn kinds_dir(preset: Preset) -> PathBuf {
+    output_dir().join(preset.name()).join("kinds")
+}
+
+/// The figure specs the kinds are made again from, relative to the workspace root.
+const SPECS_DIR: &str = "tools/figures";
+
+/// The content with a preset's kinds, cooked: what stands in for the shipped cook in a run at the preset,
+/// held under a shared lock until dropped.
+#[derive(Debug)]
+pub struct KindsCooked {
+    pub dir: PathBuf,
+    _lock: File,
+    _source: File,
+}
+
+/// Makes the kinds' source tree for `preset` anew and cooks it for `cook`, desktop or mobile (see the module
+/// docs). The tree is held shared while it cooks, so a desktop and a mobile cook can share it, and neither
+/// makes it again under the other.
+pub fn cook_kinds(preset: Preset, cook: Cook) -> anyhow::Result<KindsCooked> {
+    if cook == Cook::Editor {
+        bail!("the kinds cook for desktop or mobile, not the editor");
+    }
+    if !has_kinds(preset) {
+        bail!("the {} preset's kinds are the shipped ones: cook content/", preset.name());
+    }
+    let pipeline = content::pipeline()?;
+    content::generate(&pipeline)?;
+    let dir = kinds_dir(preset);
+    fs::create_dir_all(&dir)?;
+    let source = dir.join("source");
+    let source_lock = workspace::lock_file(&dir.join("source.lock"))?;
+    let making = format!("to finish with the {} kinds' source", preset.name());
+    workspace::wait_for_lock(&source_lock, File::try_lock, File::lock, &making)?;
+    let root = workspace::root();
+    let mut generate = Command::new(&pipeline);
+    generate
+        .arg("gen-kinds")
+        .arg("--bench")
+        .arg(root.join(SOURCE_DIR))
+        .args(["--preset", preset.name()])
+        .arg("--specs")
+        .arg(root.join(SPECS_DIR))
+        .arg("--content")
+        .arg(root.join(content::SOURCE_DIR))
+        .arg("--out")
+        .arg(&source);
+    workspace::run(&mut generate)?;
+    source_lock.unlock()?;
+    workspace::wait_for_lock(&source_lock, File::try_lock_shared, File::lock_shared, &making)?;
+
+    let out = dir.join(cook.name());
+    let lock = workspace::lock_file(&out.with_extension("lock"))?;
+    let waiting = format!("to finish with the {} kinds' {cook} cook", preset.name());
+    workspace::wait_for_lock(&lock, File::try_lock, File::lock, &waiting)?;
+    content::cook_copy(&source, &dir.join("loose").join(cook.name()), &out, cook)?;
+    lock.unlock()?;
+    workspace::wait_for_lock(&lock, File::try_lock_shared, File::lock_shared, &waiting)?;
+    Ok(KindsCooked { dir: out, _lock: lock, _source: source_lock })
+}
+
 /// The shipped desktop cook with the `ci` district's pack beside it, for tests, held under a shared lock
 /// until dropped (see the module docs).
 #[derive(Debug)]
@@ -206,6 +283,37 @@ pub fn with_content(shipped: content::Cooked) -> anyhow::Result<WithContent> {
     lock.unlock()?;
     workspace::wait_for_lock(&lock, File::try_lock_shared, File::lock_shared, waiting)?;
     Ok(WithContent { dir: out, _lock: lock, _content: shipped, _bench: bench })
+}
+
+/// A preset's district beside the content at that preset, for `cook`: `target/bench/<preset>/with-content/<cook>/`.
+pub fn with_content_dir_for(preset: Preset, cook: Cook) -> PathBuf {
+    output_dir().join(preset.name()).join("with-content").join(cook.name())
+}
+
+/// The content at a preset past `ci` (the shipped content with its kinds, [`cook_kinds`]) with the preset's
+/// district beside it, for `cook`: the one root a run at the preset mounts, held under a shared lock until
+/// dropped. `ci`'s is [`with_content`].
+pub fn with_content_for(preset: Preset, cook: Cook) -> anyhow::Result<WithKinds> {
+    let kinds = cook_kinds(preset, cook)?;
+    let bench = self::cook(preset, cook)?;
+    let out = with_content_dir_for(preset, cook);
+    fs::create_dir_all(out.parent().expect("under target/bench"))?;
+    let lock = workspace::lock_file(&out.with_extension("lock"))?;
+    let waiting = format!("to finish putting the {} content and district together", preset.name());
+    workspace::wait_for_lock(&lock, File::try_lock, File::lock, &waiting)?;
+    put_beside(&kinds.dir, &bench.dir, &out, cook)?;
+    lock.unlock()?;
+    workspace::wait_for_lock(&lock, File::try_lock_shared, File::lock_shared, &waiting)?;
+    Ok(WithKinds { dir: out, _lock: lock, _kinds: kinds, _bench: bench })
+}
+
+/// [`with_content_for`]'s root, held.
+#[derive(Debug)]
+pub struct WithKinds {
+    pub dir: PathBuf,
+    _lock: File,
+    _kinds: KindsCooked,
+    _bench: BenchCooked,
 }
 
 /// Makes `out` anew: every file of `shipped` (a cook of `content/`) but its manifest, linked, the district's pack
@@ -282,6 +390,14 @@ mod tests {
         assert!(loose_dir(Preset::Ci, Cook::Desktop).ends_with("target/bench/ci/loose/desktop"));
         assert!(cache_dir().ends_with("target/bench/cache"));
         assert!(with_content_dir().ends_with("target/bench/ci/with-content/desktop"));
+        assert!(kinds_dir(Preset::Budget).ends_with("target/bench/budget/kinds"));
+        assert!(
+            with_content_dir_for(Preset::Budget, Cook::Mobile)
+                .ends_with("target/bench/budget/with-content/mobile")
+        );
+        assert!(!has_kinds(Preset::Ci) && has_kinds(Preset::Budget) && has_kinds(Preset::Double));
+        assert!(workspace::root().join(SPECS_DIR).join("wren.figure.ron").is_file());
+        assert!(workspace::root().join(SOURCE_DIR).join("kinds.ron").is_file());
     }
 
     #[test]
@@ -341,7 +457,11 @@ mod tests {
         for cook in [Cook::Desktop, Cook::Mobile] {
             assert!(inside(&content::cooked_dir(cook), &shipping));
             for preset in [Preset::Ci, Preset::Budget, Preset::Double] {
-                for dir in [source_dir(preset), cooked_dir(preset, cook), loose_dir(preset, cook)] {
+                let kinds = [kinds_dir(preset), with_content_dir_for(preset, cook)];
+                for dir in [source_dir(preset), cooked_dir(preset, cook), loose_dir(preset, cook)]
+                    .into_iter()
+                    .chain(kinds)
+                {
                     assert!(!inside(&dir, &shipping) && !inside(&shipping, &dir), "{}", dir.display());
                 }
             }

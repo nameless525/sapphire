@@ -81,6 +81,13 @@ pub(super) struct Counted {
     /// its shadow shows.
     pub ambient_spawned: u32,
     pub ambient_in_view: u32,
+    /// Of those in view, the ones in the animation levels' middle and far bands, and the people holding
+    /// spring bones' state (M5 C11), which none do.
+    pub ambient_middle_band: u32,
+    pub ambient_far_band: u32,
+    pub ambient_springs: u32,
+    /// Skinned instances every view drew past their first level (M5 C11, `SkinningStats::coarser`).
+    pub skinned_coarser: u32,
     /// Instances the main view drew last frame at another level of detail (M5 D4, `LevelStats`).
     pub level_switches: u32,
     /// The texture streamer's (M5 M5): textures in debt and the worst debt in frames, levels raised and
@@ -127,6 +134,9 @@ impl Counted {
             animation_jobs: anim.jobs,
             ambient_spawned: ambient.spawned,
             ambient_in_view: ambient.in_view,
+            ambient_middle_band: ambient.middle_band,
+            ambient_far_band: ambient.far_band,
+            ambient_springs: ambient.springs,
             ..self
         }
     }
@@ -171,6 +181,7 @@ impl Counted {
             skinned: render.skinning.skinned,
             joints: render.skinning.joints,
             skinned_vertices: render.skinning.vertices,
+            skinned_coarser: render.skinning.coarser,
             lights: render.lights.drawn,
             lights_culled: render.lights.culled,
             lights_dropped: render.lights.dropped,
@@ -225,7 +236,7 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
 /// culled, the levels drawn (the main view's and the shadows' apart, and the main view's switches, M5
 /// D4), the state the mesh passes changed, the instanced runs, skinning, lights, the asset server's,
 /// animation's, a zone's crowd's, the texture streamer's, and the characters' capsules by cluster.
-pub(super) const COUNT_ROWS: [CountRow; 76] = [
+pub(super) const COUNT_ROWS: [CountRow; 80] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -280,6 +291,8 @@ pub(super) const COUNT_ROWS: [CountRow; 76] = [
     row("skinned instances", |c| u64::from(c.skinned)),
     row("joints", |c| u64::from(c.joints)),
     row("skinned vertices", |c| u64::from(c.skinned_vertices)),
+    // Skinned instances every view draws past level 0, a character's levels (M5 D5, C11).
+    row("skinned instances above level 0", |c| u64::from(c.skinned_coarser)),
     // §3.4: 64 lights a desktop frame, 8 a phone's.
     CountRow {
         name: "lights",
@@ -304,6 +317,10 @@ pub(super) const COUNT_ROWS: [CountRow; 76] = [
     row("animation jobs", |c| u64::from(c.animation_jobs)),
     row("ambient characters spawned", |c| u64::from(c.ambient_spawned)),
     row("ambient characters in view", |c| u64::from(c.ambient_in_view)),
+    // Of those in view, by animation band, and those holding springs, which none may (M5 C11).
+    row("ambient in the middle band", |c| u64::from(c.ambient_middle_band)),
+    row("ambient in the far band", |c| u64::from(c.ambient_far_band)),
+    row("ambient spring rigs", |c| u64::from(c.ambient_springs)),
     row("textures in debt", |c| c.textures_in_debt),
     row("worst texture debt frames", |c| c.worst_texture_debt),
     row("texture levels raised", |c| c.levels_raised),

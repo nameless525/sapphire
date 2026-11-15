@@ -168,6 +168,10 @@ pub struct SkinningStats {
     /// (M2 N4; shadow maps, hull cutoffs and lights follow). Before admission these cover both
     /// last drawn and pending geometry; a successfully executed shrink commits next prepare.
     pub past_bounds: u32,
+    /// Skinned instances drawn past their first level of detail in every view that draws them (M5
+    /// C11): those [`CharacterDetail::ByError`](crate::CharacterDetail::ByError) left coarser, so each
+    /// skins only a level's prefix. Counted at the record; a frame not recorded counts none.
+    pub coarser: u32,
 }
 
 /// One instance's work in the frame's dispatch (WGSL `Job` in `shaders/skinning.wgsl`, read as
@@ -577,6 +581,7 @@ impl Skinning {
             unplaced: self.unplaced.len() as u32,
             deferred_poses: self.deferred,
             past_bounds,
+            coarser: 0,
         };
     }
 
@@ -880,6 +885,8 @@ impl Skinning {
         self.stats.vertices = vertices;
         self.stats.joints = joints;
         self.stats.palette_bytes = joints * size_of::<PaletteRows>() as u32;
+        self.stats.coarser =
+            self.live.iter().filter(|&&slot| drawn(slot).is_some_and(|level| level > 0)).count() as u32;
         // The poses left waiting go first in the next record.
         self.queued.clear();
         std::mem::swap(&mut self.queued, &mut self.waiting);

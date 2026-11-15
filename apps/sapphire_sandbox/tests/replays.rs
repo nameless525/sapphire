@@ -470,6 +470,64 @@ fn a_zones_people_stand_the_same_at_a_tick_however_the_frames_came() {
     assert!(people > 400, "the hub's people cover {people} pixels");
 }
 
+/// A zone's ambient characters cost what C1 and D5 say they may (M5 C11): no one holds spring bones'
+/// state at any distance, so their count row is never exercised, and the hub's people farther off draw
+/// and skin past their first level as D5's rule gives them, which `--character-lods off` takes away. The
+/// character the stage stands stays whole, so every skinned instance past level 0 is one of the people.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn a_zones_people_hold_no_springs_and_draw_at_their_levels() {
+    let bench = |lods: &str| {
+        let output = sandbox(
+            &[
+                "--bench",
+                "120",
+                "--draw-every",
+                "4",
+                "--zone",
+                "proving_hub:player_start",
+                "--tier",
+                "desktop-high",
+                "--size",
+                "640x360",
+                "--weather",
+                "dry",
+                "--character-lods",
+                lods,
+                "--no-hot-reload",
+                "--live-link",
+                "off",
+            ],
+            &content(),
+        );
+        let log = log_of(&output);
+        assert!(output.status.success(), "--character-lods {lods}: {log}");
+        log
+    };
+    // A row's worst over the drawn frames, or 0 when the bench says it wasn't exercised.
+    let worst = |log: &str, row: &str| -> u64 {
+        let named = format!("row=\"{row}\"");
+        let line = log
+            .lines()
+            .find(|line| {
+                line.contains("count row") && line.contains(&named) && line.contains("phase=\"drawn\"")
+            })
+            .unwrap_or_else(|| panic!("no {row} row: {log}"));
+        if line.contains("not exercised") {
+            return 0;
+        }
+        let at = line.find(" worst=").unwrap_or_else(|| panic!("no worst: {line}")) + " worst=".len();
+        line[at..].split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok()).expect("a count")
+    };
+    let on = bench("on");
+    assert!(worst(&on, "ambient characters in view") > 0, "{on}");
+    assert_eq!(worst(&on, "ambient spring rigs"), 0, "{on}");
+    let coarser = worst(&on, "skinned instances above level 0");
+    assert!(coarser > 0, "no one past level 0: {on}");
+    let off = bench("off");
+    assert_eq!(worst(&off, "skinned instances above level 0"), 0, "{off}");
+}
+
 /// The rule that governs a zone's streaming (M3 W2): the simulation streams nothing. The arena's replay
 /// walks through the town with the town's zone off, on as its tier has it, on another budget and radius
 /// by which cells come and go all the way, and on a phone's settings, and every run reaches every one of

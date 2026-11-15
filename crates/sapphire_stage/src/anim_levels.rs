@@ -211,6 +211,11 @@ impl LevelState {
         self.current
     }
 
+    /// The band it was last found in, on screen or held off it: 0 the nearest (M5 C11's counts).
+    pub fn band(&self) -> u8 {
+        self.band
+    }
+
     /// Posed this frame with no levels at all: the next frame with levels poses it.
     pub fn pose_full(&mut self) {
         *self = Self::default();

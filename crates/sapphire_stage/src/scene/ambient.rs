@@ -23,7 +23,9 @@
 //!   is the distance it has walked over the walk clip's stride: its first pose starts, cut, as far back as the
 //!   distance since its stride last began, and the walk plays at a rate its speed sets, so a phase is a
 //!   distance along the path (what C11 can bucket by). A post's person stands and breathes on a clock its rank
-//!   shifts, and plays its gestures, the graph's moves, on a schedule that's a function of the tick.
+//!   shifts, and plays its gestures, the graph's moves, on a schedule that's a function of the tick. No one
+//!   holds spring bones (`GraphDriver::new` without them, `springs_run` false), at any distance (M5 C11), and
+//!   each draws and skins at the level its error gives ([`CharacterLevels`](super::CharacterLevels), M5 D5).
 //! - **Making way.** A walker steps aside, to its right, from the character and from the other people ahead of
 //!   it within a couple of metres, by how close they are, without slowing, so its phase stays its distance. It
 //!   doesn't see walls, fighters or anyone the scene doesn't draw, and nobody turns to look: the graph has no
@@ -108,6 +110,13 @@ pub struct AmbientStats {
     pub spawned: u32,
     /// Of those, the ones a view or its shadow shows, by the animation levels' test.
     pub in_view: u32,
+    /// Of those in view, the ones in the animation levels' middle band and in their far band and past
+    /// (M5 C11): the rest are in the nearest.
+    pub middle_band: u32,
+    pub far_band: u32,
+    /// Standing people holding spring bones' state: none ever do, as the [module docs](self) say (M5
+    /// C11), and the bench's count row says so.
+    pub springs: u32,
     /// What deciding who's there took, with the spawning and despawning: a cell's activation.
     pub activation: Duration,
 }
@@ -858,7 +867,8 @@ impl Scene {
     /// Poses the crowd for this frame, after everyone else (see the [module docs](self)).
     pub(super) fn animate_ambient(&mut self, content: &Content, alpha: f32) {
         self.ambient.anim = AnimStats::default();
-        self.ambient.stats.in_view = 0;
+        let ambient = &mut self.ambient.stats;
+        (ambient.in_view, ambient.middle_band, ambient.far_band, ambient.springs) = (0, 0, 0, 0);
         if self.ambient.shown.is_empty() {
             return;
         }
@@ -930,7 +940,7 @@ impl Scene {
         gathered.sort_unstable_by_key(|person| person.index);
 
         let mut stats = AnimStats::default();
-        let mut in_view = 0;
+        let (mut in_view, mut bands, mut springs) = (0, [0u32; 3], 0);
         let mut work: Vec<AmbientJob<'_>> = reuse_list(std::mem::take(&mut crowd.jobs));
         for mut person in gathered.drain(..) {
             let Ok(at) = crowd.shown.binary_search_by_key(&person.index, |&(index, _)| index) else {
@@ -944,17 +954,21 @@ impl Scene {
             stats.characters += 1;
             let clock =
                 LevelClock { tick: ticks.max(0.0) as u64, place: person.index, cut: !person.person.posed };
-            let level = match levels.pace(person.driver.level_mut(), transform, &person.figure, clock) {
+            let pace = levels.pace(person.driver.level_mut(), transform, &person.figure, clock);
+            springs += u32::from(person.driver.has_springs());
+            if !matches!(pace, AnimPace::Hold { off_screen: true }) {
+                in_view += 1;
+                bands[usize::from(person.driver.level_mut().band()).min(2)] += 1;
+            }
+            let level = match pace {
                 AnimPace::Update(level) => level,
                 AnimPace::Hold { off_screen } => {
                     stats.held += 1;
                     stats.thinned += 1;
                     stats.off_screen += u32::from(off_screen);
-                    in_view += u32::from(!off_screen);
                     continue;
                 }
             };
-            in_view += 1;
             stats.thinned += u32::from(level.is_thinned());
             // A level past the nearest poses on a whole tick; the nearest between ticks, where transforms draw.
             let at_ticks = if level.interval <= 1 { ticks } else { ticks.floor() };
@@ -1020,6 +1034,7 @@ impl Scene {
         stats.time = started.elapsed();
         crowd.anim = stats;
         crowd.stats.in_view = in_view;
+        (crowd.stats.middle_band, crowd.stats.far_band, crowd.stats.springs) = (bands[1], bands[2], springs);
     }
 
     /// Draws the crowd with its cast's meshes on a new renderer: after device loss or for a new tier.

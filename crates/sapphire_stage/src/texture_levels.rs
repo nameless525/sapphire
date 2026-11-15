@@ -70,6 +70,17 @@
 //!   streaming row.
 //! - **Debt.** A texture is in debt while its top is coarser than its need; its debt is the frames it has
 //!   been, which [`TextureStreamingStats`] reports with the levels raised and lowered and the bytes held.
+//! - **Waits** ([`TextureWaits`], m5-plan exit test 2). A wait starts when a texture is needed finer than it
+//!   held at the last update and ends when its debt is paid; its length in frames goes to a fixed histogram
+//!   (0 to 31, and 32 or more) where the debt resets. The exit test reads every wait
+//!   ([`TextureStreamingStats::all_waits`]): a surface the pool holds coarser is blurred all the same. Each
+//!   wait has a kind that says why it was long: the pool held it at some frame
+//!   ([`TextureStreamingStats::pool_waits`]), or it waited only for its levels
+//!   ([`TextureStreamingStats::waits`]). Waits still open are counted at each update with the longest of
+//!   them, so a texture starved for good shows. The histograms add up from the renderer's first update or
+//!   the last [`crate::Content::start_texture_waits_over`] (the bench calls it at each phase's start); a wait
+//!   open across it lands after it, with its whole length. They take no bytes a texture beyond a flag and
+//!   the top last counted, and a branch a texture an update.
 //! - **A capture that streams** ([`crate::CaptureTextures::Settled`]) brings each texture to the plan for the
 //!   frame drawn before, unbudgeted, before it draws: what a player sees once streaming settles.
 
@@ -159,6 +170,87 @@ pub struct TextureStreamingStats {
     /// What the renderer's estimate of the last frame's coverage took
     /// ([`Renderer::estimate_texture_coverage`]), at the top of the update, on the calling thread.
     pub coverage_time: std::time::Duration,
+    /// Waits for a level that the pool never held: a texture needed finer than it held, waiting only for its
+    /// levels to load and raise. m5-plan exit test 2's "within 30 frames" reads every wait, these and
+    /// [`Self::pool_waits`] together ([`Self::all_waits`]); the kinds say why a wait was long.
+    pub waits: TextureWaits,
+    /// Waits the pool held at any frame: long because the pool kept the texture coarser, not the loads.
+    pub pool_waits: TextureWaits,
+}
+
+impl TextureStreamingStats {
+    /// Every wait, of both kinds: what exit test 2 reads.
+    #[must_use]
+    pub fn all_waits(&self) -> TextureWaits {
+        let (waits, pool) = (self.waits, self.pool_waits);
+        TextureWaits {
+            frames: std::array::from_fn(|bin| waits.frames[bin].saturating_add(pool.frames[bin])),
+            open: waits.open + pool.open,
+            longest_open: waits.longest_open.max(pool.longest_open),
+        }
+    }
+}
+
+/// Bins of [`TextureWaits::frames`]: 0 to 31 frames, and the last for 32 or more.
+pub const WAIT_BINS: usize = 33;
+
+/// Waits of one kind for a texture's level (m5-plan exit test 2). A wait starts at the update a texture is
+/// needed finer than it held at the last, and ends at the first its top reaches what it needs, its debt
+/// paid; its length is the updates in between it was in debt: 0 when its levels came the same update.
+/// Completed waits add up from the renderer's first update, or from the last
+/// [`crate::Content::start_texture_waits_over`] (a new renderer starts over too); open ones are counted afresh
+/// each update, so a wait open across a start over lands after it, with its whole length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextureWaits {
+    /// Completed waits by their length in frames: bin `k` for `k`, the last for [`WAIT_BINS`] - 1 or more.
+    pub frames: [u32; WAIT_BINS],
+    /// Waits still open at the last update, and the longest of them, in frames: one that never ends shows
+    /// here.
+    pub open: u32,
+    pub longest_open: u32,
+}
+
+impl Default for TextureWaits {
+    fn default() -> Self {
+        Self { frames: [0; WAIT_BINS], open: 0, longest_open: 0 }
+    }
+}
+
+impl TextureWaits {
+    /// Waits completed.
+    #[must_use]
+    pub fn completed(&self) -> u32 {
+        self.frames.iter().sum()
+    }
+
+    /// The bin of the completed waits' `share` percentile (0.99 for the 99th; nearest rank), `None` with no
+    /// waits completed. The last bin, [`WAIT_BINS`] - 1, reads as that many frames or more.
+    #[must_use]
+    pub fn percentile(&self, share: f64) -> Option<u32> {
+        let completed = u64::from(self.completed());
+        let rank = ((share.clamp(0.0, 1.0) * completed as f64).ceil() as u64).max(1);
+        let mut below = 0;
+        (0..WAIT_BINS as u32).find(|&bin| {
+            below += u64::from(self.frames[bin as usize]);
+            completed > 0 && below >= rank
+        })
+    }
+
+    /// The bin of the longest completed wait, `None` with none.
+    #[must_use]
+    pub fn worst(&self) -> Option<u32> {
+        (0..WAIT_BINS as u32).rev().find(|&bin| self.frames[bin as usize] > 0)
+    }
+
+    fn complete(&mut self, frames: u32) {
+        let bin = &mut self.frames[(frames as usize).min(WAIT_BINS - 1)];
+        *bin = bin.saturating_add(1);
+    }
+
+    fn still_open(&mut self, frames: u32) {
+        self.open += 1;
+        self.longest_open = self.longest_open.max(frames);
+    }
 }
 
 /// One texture's state, for the scale views (m5-plan X1), from [`crate::Content::texture_levels`].
@@ -233,6 +325,10 @@ struct Choice {
     pool: Option<PoolLowered>,
     /// Frames its top has been coarser than its need.
     debt: u32,
+    /// The pool held it coarser than its need at some frame of its debt ([`TextureStreamingStats::pool_waits`]).
+    debt_held: bool,
+    /// Its top at the last count: needed finer than that, it's waiting.
+    counted_top: u32,
     /// Its missing levels may start loading this frame, and how urgently.
     start: Option<LoadPriority>,
     /// It may lower to its plan this frame ([`MAX_LOWERS`]).
@@ -408,6 +504,11 @@ impl TextureLevels {
 
     pub(crate) fn stats(&self) -> TextureStreamingStats {
         self.stats
+    }
+
+    /// Starts the completed waits over ([`TextureWaits`]); open ones go on, to land when they end.
+    pub(crate) fn start_waits_over(&mut self) {
+        start_waits_over(&mut self.stats);
     }
 
     /// Has `renderer` estimate the coverage of the frame it recorded last, while streaming, and times it:
@@ -931,6 +1032,9 @@ fn count(
 ) {
     let (mut resident, mut tails, mut count, mut held_whole) = (0, 0, 0, 0);
     let (mut in_debt, mut worst_debt, mut over_pool) = (0, 0, 0);
+    for waits in [&mut stats.waits, &mut stats.pool_waits] {
+        (waits.open, waits.longest_open) = (0, 0);
+    }
     for (&id, wanted) in wants.iter_mut() {
         let Some(texture) = textures.get(&id).map(|held| &held.object) else { continue };
         let above = texture.above();
@@ -946,13 +1050,12 @@ fn count(
             None => wanted_top(asked, id, wanted, above),
         };
         let floor = wanted.failed.map_or(0, |failed| failed + 1).min(above);
-        if top > need.max(floor) {
-            wanted.choice.debt = wanted.choice.debt.saturating_add(1);
+        let required = need.max(floor);
+        let pool_held = streaming.is_some() && wanted.choice.planned > required;
+        if wait(&mut wanted.choice, top, required, pool_held, stats) {
             in_debt += 1;
             worst_debt = worst_debt.max(wanted.choice.debt);
-            over_pool += u32::from(streaming.is_some() && wanted.choice.planned > need.max(floor));
-        } else {
-            wanted.choice.debt = 0;
+            over_pool += u32::from(pool_held);
         }
     }
     *stats = TextureStreamingStats {
@@ -967,6 +1070,42 @@ fn count(
         over_pool,
         ..*stats
     };
+}
+
+/// Empties the completed waits' histograms of both kinds, leaving the open waits, which each count recounts.
+fn start_waits_over(stats: &mut TextureStreamingStats) {
+    for waits in [&mut stats.waits, &mut stats.pool_waits] {
+        waits.frames = [0; WAIT_BINS];
+    }
+}
+
+/// Counts a texture's debt at an update, with its top at `top` and what it needs at `required`, and its wait
+/// ([`TextureWaits`]): in debt, an open wait, of the pool's kind if `pool_held` this frame or any frame
+/// before in the wait; out of it, a wait completed if it was in debt or is needed finer than it held at
+/// the last count. Returns whether it's in debt.
+fn wait(
+    choice: &mut Choice,
+    top: u32,
+    required: u32,
+    pool_held: bool,
+    stats: &mut TextureStreamingStats,
+) -> bool {
+    let in_debt = top > required;
+    if in_debt {
+        choice.debt = choice.debt.saturating_add(1);
+        choice.debt_held |= pool_held;
+    }
+    let waits = if choice.debt_held { &mut stats.pool_waits } else { &mut stats.waits };
+    if in_debt {
+        waits.still_open(choice.debt);
+    } else {
+        if choice.debt > 0 || required < choice.counted_top {
+            waits.complete(choice.debt);
+        }
+        (choice.debt, choice.debt_held) = (0, false);
+    }
+    choice.counted_top = top;
+    in_debt
 }
 
 /// Asks the server for `texture`'s levels from `top` to `on_gpu`, the texture's top, that aren't on their

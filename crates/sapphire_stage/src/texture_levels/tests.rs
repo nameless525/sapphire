@@ -244,3 +244,120 @@ fn a_streamed_texture_never_rises_past_one_held_whole_the_pool_lowered() {
         }
     }
 }
+
+/// One update's count of a texture for [`wait`], with the open waits started over as `count` does.
+fn count_wait(
+    choice: &mut Choice,
+    stats: &mut TextureStreamingStats,
+    top: u32,
+    required: u32,
+    pool_held: bool,
+) {
+    for waits in [&mut stats.waits, &mut stats.pool_waits] {
+        (waits.open, waits.longest_open) = (0, 0);
+    }
+    wait(choice, top, required, pool_held, stats);
+}
+
+/// m5-plan exit test 2's waits: a texture settled at its tail is needed two levels finer, and its levels
+/// come `k` updates later; the wait lands in bin `k`, the last bin for 32 or more. One the pool held at any
+/// update of its wait is the pool's kind; one that hasn't ended shows as open with its length.
+#[test]
+fn a_wait_lands_in_the_bin_of_the_frames_it_took() {
+    let mut stats = TextureStreamingStats::default();
+    for (k, bin) in [(0, 0), (1, 1), (31, 31), (32, 32), (200, 32)] {
+        let mut choice = Choice::default();
+        count_wait(&mut choice, &mut stats, 5, 5, false);
+        for _ in 0..k {
+            count_wait(&mut choice, &mut stats, 5, 2, false);
+        }
+        assert_eq!((stats.waits.open, stats.waits.longest_open), (u32::from(k > 0), k), "k = {k}");
+        count_wait(&mut choice, &mut stats, 2, 2, false);
+        assert_eq!(stats.waits.frames[bin], 1 + u32::from(k == 200), "k = {k}: {:?}", stats.waits.frames);
+        assert_eq!(stats.waits.open, 0);
+        // Settled, it waits no more.
+        count_wait(&mut choice, &mut stats, 2, 2, false);
+    }
+    assert_eq!(stats.waits.completed(), 5);
+    assert_eq!(stats.pool_waits, TextureWaits::default(), "the pool held none");
+
+    // The pool held it for one update of its wait: the pool's kind, open while it lasts.
+    let mut choice = Choice::default();
+    count_wait(&mut choice, &mut stats, 5, 5, false);
+    count_wait(&mut choice, &mut stats, 5, 2, true);
+    for _ in 0..499 {
+        count_wait(&mut choice, &mut stats, 5, 2, false);
+    }
+    assert_eq!((stats.pool_waits.open, stats.pool_waits.longest_open), (1, 500), "a starved one shows");
+    assert_eq!(stats.waits.open, 0);
+    count_wait(&mut choice, &mut stats, 2, 2, false);
+    assert_eq!((stats.pool_waits.completed(), stats.pool_waits.worst()), (1, Some(32)));
+    assert_eq!(stats.waits.completed(), 5, "the other kind's unchanged");
+
+    // Needed coarser, or as it holds, it isn't waiting.
+    let mut choice = Choice::default();
+    count_wait(&mut choice, &mut stats, 2, 2, false);
+    count_wait(&mut choice, &mut stats, 2, 4, false);
+    count_wait(&mut choice, &mut stats, 4, 4, false);
+    assert_eq!(stats.waits.completed(), 5);
+}
+
+/// The percentile of completed waits at the bins' edges.
+#[test]
+fn a_percentile_of_waits_reads_its_bin() {
+    let mut waits = TextureWaits::default();
+    assert_eq!((waits.percentile(0.5), waits.worst()), (None, None), "no waits");
+    waits.frames[0] = 98;
+    waits.frames[31] = 1;
+    waits.frames[32] = 1;
+    assert_eq!(waits.percentile(0.5), Some(0));
+    assert_eq!(waits.percentile(0.98), Some(0), "the 98th of 100 is the last in bin 0");
+    assert_eq!(waits.percentile(0.99), Some(31));
+    assert_eq!(waits.percentile(1.0), Some(32), "32 or more");
+    assert_eq!(waits.percentile(0.0), Some(0), "the first");
+    assert_eq!(waits.worst(), Some(32));
+    let one =
+        TextureWaits { frames: std::array::from_fn(|bin| u32::from(bin == 7)), ..TextureWaits::default() };
+    assert_eq!((one.percentile(0.01), one.percentile(0.99), one.worst()), (Some(7), Some(7), Some(7)));
+}
+
+/// Exit test 2 reads both kinds together: 98 quick waits for loads and two long ones the pool held put the
+/// 99th percentile in the pool's.
+#[test]
+fn every_wait_counts_whichever_kind_it_is() {
+    let mut stats = TextureStreamingStats::default();
+    stats.waits.frames[2] = 98;
+    stats.pool_waits.frames[WAIT_BINS - 1] = 2;
+    (stats.waits.open, stats.waits.longest_open) = (3, 7);
+    (stats.pool_waits.open, stats.pool_waits.longest_open) = (1, 90);
+    let all = stats.all_waits();
+    assert_eq!(all.completed(), 100);
+    assert_eq!((all.percentile(0.5), all.percentile(0.99), all.worst()), (Some(2), Some(32), Some(32)));
+    assert_eq!(stats.waits.percentile(0.99), Some(2), "the loads' kind alone would flatter it");
+    assert_eq!((all.open, all.longest_open), (4, 90));
+}
+
+/// Starting over empties what completed before it; a wait open across it lands after it, whole.
+#[test]
+fn a_wait_open_across_a_start_over_lands_after_it_whole() {
+    let mut stats = TextureStreamingStats::default();
+    let (mut done, mut open) = (Choice::default(), Choice::default());
+    count_wait(&mut done, &mut stats, 5, 5, false);
+    count_wait(&mut open, &mut stats, 5, 5, false);
+    for _ in 0..3 {
+        wait(&mut done, 5, 2, false, &mut stats);
+        count_wait(&mut open, &mut stats, 5, 2, false);
+    }
+    wait(&mut done, 2, 2, false, &mut stats);
+    count_wait(&mut open, &mut stats, 5, 2, true);
+    assert_eq!((stats.waits.completed(), stats.pool_waits.open), (1, 1));
+    start_waits_over(&mut stats);
+    assert_eq!(stats.all_waits().completed(), 0, "what completed before is gone");
+    assert_eq!((stats.pool_waits.open, stats.pool_waits.longest_open), (1, 4), "the open wait goes on");
+    for _ in 0..6 {
+        count_wait(&mut open, &mut stats, 5, 2, false);
+    }
+    count_wait(&mut open, &mut stats, 2, 2, false);
+    assert_eq!(stats.all_waits().completed(), 1);
+    assert_eq!(stats.pool_waits.frames[10], 1, "with its whole length: {:?}", stats.pool_waits.frames);
+}

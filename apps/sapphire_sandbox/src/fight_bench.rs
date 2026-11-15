@@ -66,6 +66,7 @@ use game_combat::combat::CombatOption;
 use game_combat::fight::trip::TripPhase;
 use sapphire_stage::FrameLaps;
 use sapphire_stage::audio::OfflineAudio;
+use sapphire_stage::{TextureStreamingStats, WAIT_BINS};
 
 pub(crate) mod counts;
 mod zone;
@@ -482,6 +483,7 @@ impl Run<'_> {
         self.stage.measure_gpu = phase == Phase::Gpu;
         self.first_graph_frame = self.stage.graph.frames() + 1;
         self.first_traced = self.trace.len();
+        self.stage.content.start_texture_waits_over();
         let (mut played, mut fight, mut start_over) = (0_u32, 0_u32, phase != Phase::First);
         let at_start = pipelines(self.stage);
         let mut after_first_frame = at_start;
@@ -518,6 +520,7 @@ impl Run<'_> {
                     first_hour = format_args!("{first_hour:.4}"),
                     "fight pipelines",
                 );
+                report_texture_waits(phase, &self.stage.content.texture_streaming_stats());
                 return Ok(played);
             }
             if over {
@@ -777,6 +780,79 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
         );
         zone::report(run.stage, &run.trace, phase);
         counts::report(&run.trace, phase, column);
+    }
+}
+
+/// A phase's waits for a texture's level, while streaming (m5-plan exit test 2), from the phase's start: every
+/// wait completed in it, of both kinds, with their 50th and 99th percentiles and the worst, in frames; the
+/// pool's share of them; and those open at its end, with the longest. A wait open at a phase's start lands
+/// in the phase it ends in, with its whole length.
+fn report_texture_waits(phase: Phase, stats: &TextureStreamingStats) {
+    if !stats.streaming {
+        return;
+    }
+    let line = WaitsLine::of(phase, stats);
+    tracing::info!(
+        target: LOG_TARGET,
+        phase = line.phase,
+        completed = line.completed,
+        p50_frames = %line.p50,
+        p99_frames = %line.p99,
+        worst_frames = %line.worst,
+        pool_held = line.pool_held,
+        pool_held_p99_frames = %line.pool_p99,
+        pool_held_worst_frames = %line.pool_worst,
+        open = line.open,
+        longest_open_frames = line.longest_open,
+        pool_open = line.pool_open,
+        pool_longest_open_frames = line.pool_longest_open,
+        "texture waits",
+    );
+}
+
+/// What a phase's `texture waits` line says.
+#[derive(Debug, PartialEq, Eq)]
+struct WaitsLine {
+    phase: &'static str,
+    completed: u32,
+    p50: String,
+    p99: String,
+    worst: String,
+    pool_held: u32,
+    pool_p99: String,
+    pool_worst: String,
+    open: u32,
+    longest_open: u32,
+    pool_open: u32,
+    pool_longest_open: u32,
+}
+
+impl WaitsLine {
+    fn of(phase: Phase, stats: &TextureStreamingStats) -> Self {
+        let (all, pool) = (stats.all_waits(), stats.pool_waits);
+        Self {
+            phase: phase.name(),
+            completed: all.completed(),
+            p50: wait_frames(all.percentile(0.5)),
+            p99: wait_frames(all.percentile(0.99)),
+            worst: wait_frames(all.worst()),
+            pool_held: pool.completed(),
+            pool_p99: wait_frames(pool.percentile(0.99)),
+            pool_worst: wait_frames(pool.worst()),
+            open: all.open,
+            longest_open: all.longest_open,
+            pool_open: pool.open,
+            pool_longest_open: pool.longest_open,
+        }
+    }
+}
+
+/// A bin of [`sapphire_stage::TextureWaits`] in frames: the last reads `32+`, none `-`.
+fn wait_frames(bin: Option<u32>) -> String {
+    match bin {
+        None => "-".to_owned(),
+        Some(bin) if bin as usize == WAIT_BINS - 1 => format!("{bin}+"),
+        Some(bin) => bin.to_string(),
     }
 }
 
@@ -1094,5 +1170,34 @@ mod tests {
         let header = format!("{TRACE_HEADER}{}", counts::TRACE_COLUMNS);
         assert_eq!(line.split(',').count(), header.split(',').count(), "{line}");
         assert!(line.starts_with("cpu,0,0,12,1,345.0,"), "{line}");
+    }
+
+    /// The waits line reads the last bin as 32 or more, and no wait as none.
+    #[test]
+    fn a_wait_bin_reads_in_frames() {
+        let names = [None, Some(0), Some(31), Some(32)].map(wait_frames);
+        assert_eq!(names, ["-", "0", "31", "32+"]);
+    }
+
+    /// A phase's waits line: its label, both kinds together, the pool's share, and `-` for no waits.
+    #[test]
+    fn a_phases_waits_line_reads_both_kinds() {
+        let mut stats = TextureStreamingStats { streaming: true, ..TextureStreamingStats::default() };
+        let line = WaitsLine::of(Phase::First, &stats);
+        assert_eq!(
+            (line.phase, line.completed, line.p99.as_str(), line.pool_worst.as_str()),
+            ("first", 0, "-", "-")
+        );
+        stats.waits.frames[3] = 99;
+        stats.pool_waits.frames[WAIT_BINS - 1] = 1;
+        (stats.pool_waits.open, stats.pool_waits.longest_open) = (1, 500);
+        let line = WaitsLine::of(Phase::Cpu, &stats);
+        assert_eq!(line.phase, "cpu");
+        assert_eq!(
+            (line.completed, line.p50.as_str(), line.p99.as_str(), line.worst.as_str()),
+            (100, "3", "3", "32+")
+        );
+        assert_eq!((line.pool_held, line.pool_p99.as_str(), line.pool_worst.as_str()), (1, "32+", "32+"));
+        assert_eq!((line.open, line.longest_open, line.pool_open, line.pool_longest_open), (1, 500, 1, 500));
     }
 }

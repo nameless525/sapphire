@@ -1520,6 +1520,12 @@ impl Content {
         self.gpu.levels.stats()
     }
 
+    /// Starts the streamer's completed waits over ([`crate::TextureWaits`]), as a bench does at each phase's
+    /// start; waits open now go on, and land in the histogram they end in, with their whole length.
+    pub fn start_texture_waits_over(&mut self) {
+        self.gpu.levels.start_waits_over();
+    }
+
     /// Each texture on the renderer's wanted, resident and tail tops and its debt, in ID order: what the scale
     /// views show (m5-plan X1).
     pub fn texture_levels(&self) -> impl Iterator<Item = (AssetId, TextureLevelState)> + '_ {
@@ -6200,6 +6206,10 @@ mod tests {
             let in_debt = states.iter().filter(|state| state.resident > state.wanted).count();
             assert_eq!(stats.in_debt as usize, in_debt, "{states:?}");
             assert_eq!(stats.worst_debt, states.iter().map(|state| state.debt).max().unwrap_or(0));
+            // Each texture in debt is an open wait, of one kind or the other.
+            let (waits, pool) = (stats.waits, stats.pool_waits);
+            assert_eq!(waits.open + pool.open, stats.in_debt, "{stats:?}");
+            assert_eq!(waits.longest_open.max(pool.longest_open), stats.worst_debt);
             assert_eq!(stats.tails, 3 * streamed_bytes(STREAMED_ABOVE));
             // Nothing's on its way between frames once settled, so what's held is what's on the GPU.
             let on_gpu: u64 = states.iter().map(|state| streamed_bytes(state.resident)).sum();
@@ -6242,6 +6252,10 @@ mod tests {
         );
         assert!(stats.in_debt >= 2 && stats.over_pool >= 2, "{stats:?}");
         assert!(stats.worst_debt >= 190, "debt the pool keeps is never paid: {stats:?}");
+        assert!(
+            stats.pool_waits.open >= 2 && stats.pool_waits.longest_open >= 190,
+            "the pool's waits: {stats:?}"
+        );
         assert!(raised > 0, "raised {raised}, lowered {lowered}");
 
         // A pool with room: every texture rises to what the views read, and the debt's paid.
@@ -6250,6 +6264,7 @@ mod tests {
         stage.frames_until(|stage| stage.content.texture_streaming_stats().in_debt == 0);
         let stats = stage.check_streaming_counters();
         assert_eq!((stats.over_pool, stats.worst_debt), (0, 0));
+        assert!(stats.pool_waits.completed() >= 2, "the pool's waits end once it has room: {stats:?}");
         for (id, state) in stage.content.texture_levels() {
             assert_eq!(state.resident, state.wanted, "{id}");
             assert!(state.wanted > 0, "{id}: a 32-pixel view never reads a 128-texel texture whole");

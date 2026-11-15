@@ -289,15 +289,15 @@ impl ShadowPlan {
     }
 
     /// Follows the draw list (M5 D8): after a build other than the last one seen (`build`, the
-    /// scene's count of them), instances may have come, gone, changed mesh or material or moved to
-    /// other slots, so every cascade's map is stale; and which slots cast
-    /// through a pipeline that reads a texture is listed again from `list`.
+    /// scene's count of them), which slots cast through a pipeline that reads a texture is listed
+    /// again from `list`. What came, went or changed mesh the slots say ([`InstanceSlots::freed`],
+    /// [`InstanceSlots::meshed`]); a material replaced in place calls [`Self::forget_kept`]; the
+    /// rest a build follows (meshes uploaded or moved in the pool, characters' fades) casts the same.
     pub(crate) fn follow_list(&mut self, build: u32, list: &DrawList) {
         if self.list_build == Some(build) {
             return;
         }
         self.list_build = Some(build);
-        self.forget_kept();
         self.cutout.iter_mut().for_each(|cutout| *cutout = false);
         let cut = SurfaceVariant::CHARACTER_ALPHA_TEST
             .into_iter()
@@ -496,6 +496,16 @@ impl ShadowPlan {
         let turn = self.turn.wrapping_sub(1);
         self.kept.resize(slots.len(), KeptCaster::default());
         let mut changed = 0u8;
+        // What the maps held of an instance that left, and of one that came or changed mesh, in
+        // its slot (whatever they held of the slot's last instance included).
+        for &slot in slots.freed() {
+            let kept = &mut self.kept[slot as usize];
+            changed |= kept.maps;
+            *kept = KeptCaster::default();
+        }
+        for &slot in slots.meshed() {
+            changed |= self.kept[slot as usize].maps | self.casters[slot as usize].cascades;
+        }
         for (slot, _) in slots.live() {
             let slot = slot as usize;
             let (caster, kept) = (&self.casters[slot], &self.kept[slot]);
@@ -1579,7 +1589,8 @@ mod tests {
         slots(&[instance(1, 0, Vec3::ZERO), instance(2, 0, Vec3::new(0.0, 0.0, -80.0))])
     }
 
-    /// Plans `frames` frames, each drawn (its slots settled after), and gives each one's mask.
+    /// Plans `frames` frames, each drawn (its slots settled and the next frame's empty deltas applied
+    /// after), and gives each one's mask.
     fn masks(
         plan: &mut ShadowPlan,
         settings: &ShadowSettings,
@@ -1591,6 +1602,8 @@ mod tests {
             .map(|_| {
                 update(plan, settings, packet, slots);
                 slots.settle_drawn();
+                // The next frame's deltas, none, as the renderer applies them every frame.
+                slots.apply(&InstanceDeltas { changed: Vec::new(), removed: Vec::new() });
                 plan.drawn_mask()
             })
             .collect()
@@ -1726,13 +1739,20 @@ mod tests {
         masks(&mut plan, &KEPT, &packet, &mut slots, 2);
         plan.follow_list(0, &list);
         assert_eq!(masks(&mut plan, &KEPT, &packet, &mut slots, 1), [0], "the same build");
-        // A new build: every cascade that holds something (an empty one stays as it was cleared).
+        // A new build alone (meshes uploaded or moved) casts the same.
         let holding = plan.casters[0].cascades | plan.casters[1].cascades;
         plan.follow_list(1, &list);
-        assert_eq!(
-            masks(&mut plan, &KEPT, &packet, &mut slots, 2).iter().fold(0, |all, mask| all | mask),
-            holding
-        );
+        assert_eq!(masks(&mut plan, &KEPT, &packet, &mut slots, 2), [0, 0]);
+        // The near cube leaves and another comes into its slot, the same size where it stood: the
+        // cascades it is in are drawn again.
+        let near = plan.casters[0].cascades;
+        slots.apply(&InstanceDeltas { changed: Vec::new(), removed: vec![InstanceId(1)] });
+        let left = masks(&mut plan, &KEPT, &packet, &mut slots, 2).iter().fold(0, |all, mask| all | mask);
+        assert_eq!(left, near, "drawn without it");
+        slots.apply(&InstanceDeltas { changed: vec![instance(3, 0, Vec3::ZERO)], removed: Vec::new() });
+        assert_eq!(slots.meshed(), [0], "into its slot");
+        let came = masks(&mut plan, &KEPT, &packet, &mut slots, 2).iter().fold(0, |all, mask| all | mask);
+        assert_eq!(came, near, "drawn with it");
         // A texture changed: the cascades the cutout cube is in, and no others.
         let far = plan.casters[1].cascades;
         plan.textures_changed();
@@ -1745,6 +1765,177 @@ mod tests {
             masks(&mut plan, &KEPT, &packet, &mut slots, 2).iter().fold(0, |all, mask| all | mask),
             holding
         );
+    }
+
+    const HELD: ShadowSettings = ShadowSettings { cache: CascadeCache::Held, ..SETTINGS };
+
+    /// The fits `settings` gives `packet`'s view now, as drawing in turns takes them.
+    fn view_fits(settings: &ShadowSettings, packet: &FramePacket) -> Vec<CascadeFit> {
+        let camera = &packet.views[0].camera;
+        let light = LightSpace::new(fit::quantize(-packet.sun.direction));
+        let frustum = Frustum::of(camera);
+        let cascades = settings.cascades as usize;
+        let splits = fit::split_distances(frustum.near, settings.distance as f32, cascades);
+        let mut from = frustum.near;
+        splits[..cascades]
+            .iter()
+            .map(|&to| {
+                let sphere = fit::slice_sphere(camera, &frustum, from, to);
+                from = to;
+                CascadeFit::new(light, sphere, settings.resolution)
+            })
+            .collect()
+    }
+
+    /// A view `x` meters along a walk across the light, looking down the street.
+    fn walked(x: f32) -> FramePacket {
+        let mut packet = packet(Vec::new());
+        let eye = Vec3::new(x, 1.5, 4.0);
+        packet.views[0].camera =
+            CameraData::look_at(eye, eye + Vec3::new(0.3, -0.4, -4.0), Vec3::Y, 0.75, 1.5, 0.05);
+        packet
+    }
+
+    #[test]
+    fn a_held_cascade_keeps_its_fit_until_the_view_has_moved_a_64th_of_its_width() {
+        // A walk of 30 m at 0.1 m a frame (6 m/s at 60 Hz): kept, a cached cascade takes the view's
+        // fit on each of its turns; held, only once the view's has moved a 64th of its width, which
+        // it never trails by more than that and the frames to its turn.
+        let mut slots = near_and_far();
+        let (mut kept, mut held) = (ShadowPlan::default(), ShadowPlan::default());
+        let (mut kept_fits, mut held_fits) = ([0u32; 4], [0u32; 4]);
+        let mut last = [None; 4];
+        let step = 0.1;
+        for frame in 0..300 {
+            let packet = walked(step * frame as f32);
+            update(&mut kept, &KEPT, &packet, &mut slots);
+            update(&mut held, &HELD, &packet, &mut slots);
+            let fits = view_fits(&HELD, &packet);
+            for index in 2..4 {
+                kept_fits[index] += u32::from(kept.drawn[index].is_some());
+                let fit = held.cached[index].expect("fitted");
+                held_fits[index] += u32::from(last[index] != Some(fit));
+                last[index] = Some(fit);
+                let behind = (fit.center.truncate() - fits[index].center.truncate()).abs().max_element();
+                let most = HOLD_SHARE * 2.0 * fit.radius + 2.0 * step + fit.texel();
+                assert!(behind <= most, "frame {frame}, cascade {index}: {behind} m behind, at most {most}");
+            }
+            slots.settle_drawn();
+        }
+        assert!(kept_fits[2..].iter().all(|&fits| fits >= 140), "kept: about every turn, {kept_fits:?}");
+        for index in 2..4 {
+            assert!(
+                held_fits[index] * 3 < kept_fits[index],
+                "cascade {index}: held {held_fits:?}, kept {kept_fits:?}"
+            );
+        }
+        // The farthest cascade, about 85 m across here, takes a new fit every 2.7 m or so.
+        assert!(held_fits[3] <= 30_u32.div_ceil(2) + 1, "{held_fits:?}");
+    }
+
+    /// Whether `fit` holds light-space point `at` for a receiver, as `cascade_lookup` in `frame.wgsl`
+    /// reads it: inside the square less its edge texels (3.5, `SHADOW_EDGE_TEXELS`), and not past
+    /// its far plane. Returns how far past the square's reach it lies, in meters (0 inside).
+    fn outside_by(fit: &CascadeFit, at: Vec3) -> f32 {
+        let reach = fit.radius - 3.5 * fit.texel();
+        let past = (at.truncate() - fit.center.truncate()).abs().max_element() - reach;
+        if at.z < fit.far { f32::INFINITY } else { past.max(0.0) }
+    }
+
+    /// The receivers across `camera`'s view out to the shadow distance that its own fits cover and
+    /// no cascade does with every cached one held `share` of its width behind, along one of eight
+    /// directions: each one's distance from the camera and how far past the last cascade it lies.
+    fn uncovered(settings: &ShadowSettings, camera: &CameraData, share: f32) -> Vec<(f32, f32)> {
+        let mut packet = packet(Vec::new());
+        packet.views[0].camera = *camera;
+        let light = LightSpace::new(fit::quantize(-packet.sun.direction));
+        let fits = view_fits(settings, &packet);
+        let fresh = (settings.cascades - settings.cached_cascades) as usize;
+        let (inverse, frustum, reach) =
+            (camera.view.inverse(), Frustum::of(camera), settings.distance as f32);
+        let mut found = Vec::new();
+        for direction in 0..8 {
+            // The largest offset along the direction whose larger component is `share` of the
+            // width, in whole texels (as the fits snap).
+            let angle = direction as f32 * std::f32::consts::FRAC_PI_4;
+            let along = glam::Vec2::new(angle.cos(), angle.sin());
+            let along = along / along.abs().max_element();
+            let held: Vec<CascadeFit> = (fits.iter().enumerate())
+                .map(|(index, fit)| {
+                    let offset = (along * share * 2.0 * fit.radius / fit.texel()).round() * fit.texel();
+                    let center = if index < fresh { fit.center } else { fit.center + offset.extend(0.0) };
+                    CascadeFit { center, ..*fit }
+                })
+                .collect();
+            for (u, v) in (0..=40).flat_map(|u| (0..=40).map(move |v| (u, v))) {
+                let ray = Vec3::new(
+                    (u as f32 / 20.0 - 1.0) * frustum.tangents.x,
+                    (v as f32 / 20.0 - 1.0) * frustum.tangents.y,
+                    -1.0,
+                );
+                for step in 0..400 {
+                    let depth = frustum.near + (reach - frustum.near) * (step as f32 / 399.0).powi(2);
+                    let world = inverse.transform_point3(ray * depth);
+                    let distance = world.distance(camera.position);
+                    if distance >= reach {
+                        break;
+                    }
+                    let at = light.point(world);
+                    let covered = |fits: &[CascadeFit]| fits.iter().any(|fit| outside_by(fit, at) == 0.0);
+                    if covered(&fits) && !covered(&held) {
+                        found.push((distance, outside_by(held.last().expect("a cascade"), at)));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_held_fit_leaves_no_receiver_its_view_fit_covers_bar_a_sliver_in_the_fade() {
+        // Points across the view out to the shadow distance, in light space; a receiver takes the
+        // first cascade that holds it. Every cached cascade held a 64th of its width behind the
+        // view's fit (the most `Held` lets it trail on its turn), along eight directions: whatever
+        // the view's fits cover, the held ones still do, bar at most a sliver of the last cascade
+        // in the distance's fade. Eight times as far behind, they would not.
+        let views = [
+            CameraData::look_at(Vec3::new(0.0, 1.5, 4.0), Vec3::new(0.0, 1.0, 0.0), Vec3::Y, 0.75, 1.5, 0.05),
+            CameraData::look_at(
+                Vec3::new(0.0, 1.7, 0.0),
+                Vec3::new(10.0, 1.4, 3.0),
+                Vec3::Y,
+                0.75,
+                16.0 / 9.0,
+                0.1,
+            ),
+            CameraData::look_at(
+                Vec3::new(0.0, 12.0, 0.0),
+                Vec3::new(5.0, 0.0, -8.0),
+                Vec3::Y,
+                0.9,
+                16.0 / 9.0,
+                0.1,
+            ),
+        ];
+        let phone =
+            ShadowSettings { cascades: 2, resolution: 1024, distance: 50, cached_cascades: 1, ..HELD };
+        for (name, settings) in [("desktop-high", HELD), ("mobile", phone)] {
+            let reach = settings.distance as f32;
+            let found: Vec<(f32, f32)> =
+                views.iter().flat_map(|camera| uncovered(&settings, camera, HOLD_SHARE)).collect();
+            for &(distance, past) in &found {
+                assert!(
+                    distance >= 0.9 * reach && past.is_finite(),
+                    "{name}: {distance} m off, {past} m past"
+                );
+            }
+            let worst = found.iter().map(|&(_, past)| past).fold(0.0, f32::max);
+            assert!(worst <= 0.005 * reach, "{name}: a sliver of {worst} m");
+            eprintln!("{name}: {} receivers uncovered, a sliver of at most {worst:.2} m", found.len());
+            let further: usize =
+                views.iter().map(|camera| uncovered(&settings, camera, 8.0 * HOLD_SHARE).len()).sum();
+            assert!(further > 0, "{name}: an eighth of the width behind leaves receivers uncovered");
+        }
     }
 
     /// `count` instances in a row, each listed as a character with a body of its own.

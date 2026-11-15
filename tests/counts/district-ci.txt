@@ -89,7 +89,7 @@ desktop-high-dusk | spot load bytes | not exercised
 desktop-high-dusk | spot tiles cached | not exercised
 desktop-high-dusk | spot tiles redrawn | not exercised
 desktop-high-dusk | spring rigs stepped | not exercised
-desktop-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+desktop-high-dusk | streamed texture bytes | p50 46816234 p95 46816234 worst 46816234 total 24859420254
 desktop-high-dusk | streamed texture pool | not exercised
 desktop-high-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-high-dusk | texture bytes raised | not exercised
@@ -97,7 +97,7 @@ desktop-high-dusk | texture bytes wanted | not exercised
 desktop-high-dusk | texture levels lowered | not exercised
 desktop-high-dusk | texture levels raised | not exercised
 desktop-high-dusk | texture lowers waiting | not exercised
-desktop-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+desktop-high-dusk | texture pool bytes | p50 46839056 p95 46839056 worst 46839056 total 24871538736
 desktop-high-dusk | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
 desktop-high-dusk | textures in debt | not exercised
 desktop-high-dusk | triangles | p50 1606875 p95 2469685 worst 3324727 total 868212091
@@ -184,7 +184,7 @@ desktop-high-night | spot load bytes | not exercised
 desktop-high-night | spot tiles cached | not exercised
 desktop-high-night | spot tiles redrawn | not exercised
 desktop-high-night | spring rigs stepped | not exercised
-desktop-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+desktop-high-night | streamed texture bytes | p50 46816234 p95 46816234 worst 46816234 total 24859420254
 desktop-high-night | streamed texture pool | not exercised
 desktop-high-night | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-high-night | texture bytes raised | not exercised
@@ -192,7 +192,7 @@ desktop-high-night | texture bytes wanted | not exercised
 desktop-high-night | texture levels lowered | not exercised
 desktop-high-night | texture levels raised | not exercised
 desktop-high-night | texture lowers waiting | not exercised
-desktop-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+desktop-high-night | texture pool bytes | p50 46839056 p95 46839056 worst 46839056 total 24871538736
 desktop-high-night | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
 desktop-high-night | textures in debt | not exercised
 desktop-high-night | triangles | p50 1555541 p95 2552589 worst 3261840 total 836663105
@@ -279,7 +279,7 @@ desktop-low-dusk | spot load bytes | not exercised
 desktop-low-dusk | spot tiles cached | not exercised
 desktop-low-dusk | spot tiles redrawn | not exercised
 desktop-low-dusk | spring rigs stepped | not exercised
-desktop-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+desktop-low-dusk | streamed texture bytes | p50 46816234 p95 46816234 worst 46816234 total 24859420254
 desktop-low-dusk | streamed texture pool | not exercised
 desktop-low-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-low-dusk | texture bytes raised | not exercised
@@ -287,7 +287,7 @@ desktop-low-dusk | texture bytes wanted | not exercised
 desktop-low-dusk | texture levels lowered | not exercised
 desktop-low-dusk | texture levels raised | not exercised
 desktop-low-dusk | texture lowers waiting | not exercised
-desktop-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+desktop-low-dusk | texture pool bytes | p50 46839056 p95 46839056 worst 46839056 total 24871538736
 desktop-low-dusk | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
 desktop-low-dusk | textures in debt | not exercised
 desktop-low-dusk | triangles | p50 1492924 p95 2439675 worst 3054977 total 818737149
@@ -374,7 +374,7 @@ desktop-low-night | spot load bytes | not exercised
 desktop-low-night | spot tiles cached | not exercised
 desktop-low-night | spot tiles redrawn | not exercised
 desktop-low-night | spring rigs stepped | not exercised
-desktop-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+desktop-low-night | streamed texture bytes | p50 46816234 p95 46816234 worst 46816234 total 24859420254
 desktop-low-night | streamed texture pool | not exercised
 desktop-low-night | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-low-night | texture bytes raised | not exercised
@@ -382,7 +382,7 @@ desktop-low-night | texture bytes wanted | not exercised
 desktop-low-night | texture levels lowered | not exercised
 desktop-low-night | texture levels raised | not exercised
 desktop-low-night | texture lowers waiting | not exercised
-desktop-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+desktop-low-night | texture pool bytes | p50 46839056 p95 46839056 worst 46839056 total 24871538736
 desktop-low-night | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
 desktop-low-night | textures in debt | not exercised
 desktop-low-night | triangles | p50 1403899 p95 2338764 worst 3008759 total 768868104
@@ -469,7 +469,7 @@ mobile-high-dusk | spot load bytes | not exercised
 mobile-high-dusk | spot tiles cached | not exercised
 mobile-high-dusk | spot tiles redrawn | not exercised
 mobile-high-dusk | spring rigs stepped | not exercised
-mobile-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+mobile-high-dusk | streamed texture bytes | p50 46816234 p95 46816234 worst 46816234 total 24859420254
 mobile-high-dusk | streamed texture pool | not exercised
 mobile-high-dusk | temporal draws | not exercised
 mobile-high-dusk | texture bytes raised | not exercised
@@ -477,7 +477,7 @@ mobile-high-dusk | texture bytes wanted | not exercised
 mobile-high-dusk | texture levels lowered | not exercised
 mobile-high-dusk | texture levels raised | not exercised
 mobile-high-dusk | texture lowers waiting | not exercised
-mobile-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+mobile-high-dusk | texture pool bytes | p50 46839056 p95 46839056 worst 46839056 total 24871538736
 mobile-high-dusk | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
 mobile-high-dusk | textures in debt | not exercised
 mobile-high-dusk | triangles | p50 1040470 p95 1934993 worst 2190750 total 598776040
@@ -564,7 +564,7 @@ mobile-high-night | spot load bytes | not exercised
 mobile-high-night | spot tiles cached | not exercised
 mobile-high-night | spot tiles redrawn | not exercised
 mobile-high-night | spring rigs stepped | not exercised
-mobile-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+mobile-high-night | streamed texture bytes | p50 46816234 p95 46816234 worst 46816234 total 24859420254
 mobile-high-night | streamed texture pool | not exercised
 mobile-high-night | temporal draws | not exercised
 mobile-high-night | texture bytes raised | not exercised
@@ -572,7 +572,7 @@ mobile-high-night | texture bytes wanted | not exercised
 mobile-high-night | texture levels lowered | not exercised
 mobile-high-night | texture levels raised | not exercised
 mobile-high-night | texture lowers waiting | not exercised
-mobile-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+mobile-high-night | texture pool bytes | p50 46839056 p95 46839056 worst 46839056 total 24871538736
 mobile-high-night | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
 mobile-high-night | textures in debt | not exercised
 mobile-high-night | triangles | p50 963248 p95 1900383 worst 2248370 total 573206134
@@ -659,7 +659,7 @@ mobile-low-dusk | spot load bytes | not exercised
 mobile-low-dusk | spot tiles cached | not exercised
 mobile-low-dusk | spot tiles redrawn | not exercised
 mobile-low-dusk | spring rigs stepped | not exercised
-mobile-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+mobile-low-dusk | streamed texture bytes | p50 46816234 p95 46816234 worst 46816234 total 24859420254
 mobile-low-dusk | streamed texture pool | not exercised
 mobile-low-dusk | temporal draws | not exercised
 mobile-low-dusk | texture bytes raised | not exercised
@@ -667,7 +667,7 @@ mobile-low-dusk | texture bytes wanted | not exercised
 mobile-low-dusk | texture levels lowered | not exercised
 mobile-low-dusk | texture levels raised | not exercised
 mobile-low-dusk | texture lowers waiting | not exercised
-mobile-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+mobile-low-dusk | texture pool bytes | p50 46839056 p95 46839056 worst 46839056 total 24871538736
 mobile-low-dusk | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
 mobile-low-dusk | textures in debt | not exercised
 mobile-low-dusk | triangles | p50 642168 p95 1315685 worst 1443908 total 392906208
@@ -754,7 +754,7 @@ mobile-low-night | spot load bytes | not exercised
 mobile-low-night | spot tiles cached | not exercised
 mobile-low-night | spot tiles redrawn | not exercised
 mobile-low-night | spring rigs stepped | not exercised
-mobile-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
+mobile-low-night | streamed texture bytes | p50 46816234 p95 46816234 worst 46816234 total 24859420254
 mobile-low-night | streamed texture pool | not exercised
 mobile-low-night | temporal draws | not exercised
 mobile-low-night | texture bytes raised | not exercised
@@ -762,7 +762,7 @@ mobile-low-night | texture bytes wanted | not exercised
 mobile-low-night | texture levels lowered | not exercised
 mobile-low-night | texture levels raised | not exercised
 mobile-low-night | texture lowers waiting | not exercised
-mobile-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
+mobile-low-night | texture pool bytes | p50 46839056 p95 46839056 worst 46839056 total 24871538736
 mobile-low-night | texture tail bytes | p50 3869674 p95 3869674 worst 3869674 total 2054796894
 mobile-low-night | textures in debt | not exercised
 mobile-low-night | triangles | p50 580809 p95 1352464 worst 1470947 total 369865680

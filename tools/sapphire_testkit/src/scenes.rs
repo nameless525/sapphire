@@ -800,8 +800,9 @@ mod tests {
                 // The game as it ships, on the zone's own look, at a tier no device chooses for it.
                 assert!(scene.has("--game"), "{}", scene.name);
                 assert!(pinned("--tier", "desktop-high"), "{}", scene.name);
-            } else if scene.name.starts_with("tier-") {
-                // A tier as it ships (M4 T0), whose GTAO the thermal ladder's rungs shed.
+            } else if scene.name.starts_with("tier-") || scene.name.starts_with("lod-") {
+                // A tier as it ships (M4 T0), whose GTAO the thermal ladder's rungs shed; its levels of
+                // detail (M5 D4) too.
                 assert!(scene.has("--tier") && !scene.has("--ao"), "{}", scene.name);
             } else {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
@@ -831,9 +832,13 @@ mod tests {
             let size = scene.value("--size").expect("the runner's size").to_owned();
             if hud {
                 sizes.push(size);
-            } else if !display_text && !name.starts_with("tier-") && !name.starts_with("zone-district-") {
-                // The tier scenes (M4 T0) draw a phone's frame at a phone's shape, and the benchmark district's
-                // (M5 X4) draw small, since lavapipe and WARP draw them on every pull request.
+            } else if !display_text
+                && !name.starts_with("tier-")
+                && !name.starts_with("lod-")
+                && !name.starts_with("zone-district-")
+            {
+                // The tier scenes (M4 T0) and the levels' (M5 D4) draw a phone's frame at a phone's shape, and the
+                // benchmark district's (M5 X4) draw small, since lavapipe and WARP draw them on every pull request.
                 assert_eq!(size, SIZE, "{name}");
             }
         }

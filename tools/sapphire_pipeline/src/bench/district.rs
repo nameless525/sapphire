@@ -30,7 +30,8 @@
 //! - `prefabs/`: the committed props, a cell's `ground`, and a lane's `closure` wall, which zones place and
 //!   the cook merges into each cell's mesh, each placement drawing from its cell's palette of sets.
 //! - `plaza.encounter.ron`: the plaza's fight, and `district_day.ron`, the day the zone names.
-//! - `district.zone.ron`: the zone. Its simulation half (spawners, the plaza's volume, a checkpoint and the
+//! - `district.zone.ron`: the zone, whose sidecar asks for its cells' levels of detail (`cell_levels`, M5 D6).
+//!   Its simulation half (spawners, the plaza's volume, a checkpoint and the
 //!   fight) is `sapphire_synthetic_zone::district`'s, written here as its code builds it; its presentation is
 //!   the cells, buildings, lights, day, wind and fog, the `tour` spline and, for a preset with a crowd, its
 //!   ambient characters.
@@ -83,9 +84,11 @@ use crate::assembly::{
 use crate::character_maps::ramp::SrgbColor;
 use crate::material::MaterialSettings;
 use crate::meta::{ImportSettings, MeshSettings};
+use crate::optimize::LodSettings;
 use crate::procedural::{self, ProceduralSettings, ProceduralTexture, SurfaceMap};
 use crate::samples::noise;
 use crate::texture::MaxSize;
+use crate::zone::ZoneSettings;
 
 /// This part's folder, under `bench/` and in the output.
 pub const PART: &str = "district";
@@ -140,6 +143,9 @@ pub struct BenchDistrict {
     pub wind: Option<ZoneWind>,
     #[serde(default)]
     pub fog: Option<ZoneFog>,
+    /// Each cell's levels of detail (M5 D6), which the zone's sidecar asks the cook for: errors as a share
+    /// of a cell's mesh's extent, as every mesh's are (`zone`'s "Levels of detail").
+    pub cell_levels: LodSettings,
     /// The people a preset with `crowd` stands and walks in the streets (M5 C10).
     #[serde(default)]
     pub crowd: Option<DistrictCrowd>,
@@ -166,8 +172,8 @@ pub struct DistrictCrowd {
 }
 
 impl Versioned for BenchDistrict {
-    /// 1: M5 B1. 2: M5 B2, the district.
-    const VERSION: u32 = 2;
+    /// 1: M5 B1. 2: M5 B2, the district. 3: M5 D6, its cells' levels.
+    const VERSION: u32 = 3;
 }
 
 /// The streets' widths, in metres.
@@ -423,7 +429,8 @@ pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
         ambient: crowd(&district, scale, &plan),
     };
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
-    sources.push(Source::asset(ZONE, document_bytes(&zone), ImportSettings::Zone(Default::default())));
+    let settings = ZoneSettings { lods: district.cell_levels.clone(), ..ZoneSettings::default() };
+    sources.push(Source::asset(ZONE, document_bytes(&zone), ImportSettings::Zone(settings)));
     Ok(sources)
 }
 

@@ -11,7 +11,7 @@
 // streamer's proof; nothing cooks it unless asked.
 (
     type: "sapphire::pipeline::BenchDistrict",
-    version: 2,
+    version: 3,
     data: (
         cell_size: 32.0,
         // Widths in metres; `edge` is the alley between the outer blocks and the boundary wall.
@@ -73,6 +73,17 @@
         day: "district_day.ron",
         wind: Some((direction: (0.8, 0.0, 0.6), strength: 0.4, gustiness: 0.3)),
         fog: Some((density: 1.2)),
+        // Each cell's levels of detail (M5 D6, the mesh cook's settings): each level stops at its share of the
+        // cell's triangles or its error, a share of the cell mesh's extent (about 40 m, so about 2, 8 and 24 cm),
+        // whichever comes first. The mobile cook keeps every level: its cells are already the light detail.
+        cell_levels: (
+            levels: [
+                (triangle_ratio: 0.5, max_error: 0.0005),
+                (triangle_ratio: 0.25, max_error: 0.002),
+                (triangle_ratio: 0.125, max_error: 0.006),
+            ],
+            mobile_skip: 0,
+        ),
         // Its people (M5 C10), for a preset with `crowd`: in front of every block side, one standing and two
         // walking its length there and back, 720 on the budget's 240 sides, which the tiers' caps draw from.
         // The cast and graph are the shipped content's, the proving hub's (`content/ambient/`), so a run that

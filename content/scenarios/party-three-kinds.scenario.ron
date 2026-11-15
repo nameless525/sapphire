@@ -1,0 +1,39 @@
+// A party of three kinds against twelve enemies (M5 C12): spec §3.4's fight at its rows. The heroine, Aster
+// and Wren, one on the field at a time, against a wave of twelve Ember Lancers, each on the Lancer's moves
+// and brain at the enemy row's 8,000 triangles, standing on the enemy's place and the first eleven of the
+// crowd's. The fight bench plays its replay on each tier for the count rows.
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "`party` with three kinds (M5 C12): the heroine, Aster and Wren, one on the field, against a wave of twelve Ember Lancers on the Lancer's brain",
+        max_actors: 15,
+        colliders: "content/arena/square.colliders.ron",
+        moves: [
+            "content/combat/player/player.moves.ron",
+            "content/combat/hero/hero.moves.ron",
+            "content/combat/wren/wren.moves.ron",
+            "content/combat/lancer/lancer.moves.ron",
+        ],
+        enemies: ["content/combat/ember_lancer/ember_lancer.enemy.ron"],
+        // Each member names the playable kind she draws as, which plays her set.
+        cast: [
+            (moves: "player", at: "player", faction: 1, soft_lock: true, playable: "heroine"),
+            (moves: "hero", at: "player", faction: 1, soft_lock: true, playable: "hero"),
+            (moves: "wren", at: "player", faction: 1, soft_lock: true, playable: "wren"),
+            (moves: "ember_lancer", at: "enemy", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_0", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_1", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_2", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_3", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_4", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_5", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_6", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_7", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_8", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_9", faction: 2, brain: true),
+            (moves: "ember_lancer", at: "crowd_10", faction: 2, brain: true),
+        ],
+        party: Some((members: [0, 1, 2], swap_cooldown: 60, rest: 150)),
+    ),
+)

@@ -193,6 +193,54 @@ pub(crate) mod tests {
         assert_eq!(of_scenario(crate::arena::KINDS_SCENARIO), Ok(KIND));
     }
 
+    /// The shipped playable kind whose file is `<name>.playable.ron`, anywhere under `content/combat/`, as
+    /// the gameplay crate's build finds one a cast member names.
+    fn shipped_named(name: &str) -> (AssetId, PlayableDocument) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let file = format!("{name}.playable.ron");
+        let mut folders = vec![root.join("combat")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).expect("readable") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.file_name().is_some_and(|found| found.to_string_lossy() == file) {
+                    let relative = path.strip_prefix(&root).expect("under content");
+                    return shipped(&relative.to_string_lossy());
+                }
+            }
+        }
+        panic!("no shipped {file}")
+    }
+
+    /// The three kinds' scenario (M5 C12): the heroine, then Aster, then the kind its third member's
+    /// document names, each named as its document names it. Nothing here knows the third kind's name: it's
+    /// read from the scenario, as a kind added with no Rust is.
+    #[test]
+    fn the_three_kinds_party_is_the_heroine_aster_and_the_documents_third() {
+        let scenario = crate::arena::THREE_KINDS_SCENARIO;
+        let document = sapphire_script::scenarios::document_of(scenario).expect("compiled in");
+        let party = document.party.as_ref().expect("a party");
+        assert_eq!(party.members.len(), 3, "a party of three");
+        let named = document.cast[party.members[2]].playable.as_deref().expect("its third names a kind");
+        let (third, third_document) = shipped_named(named);
+        let (aster, aster_document) = shipped("combat/hero/hero.playable.ron");
+        let kinds = party_of_scenario(scenario).expect("reads").expect("a party");
+        let [first, second, last] = kinds.slots().clone();
+        assert_eq!(first, Some(PartyMember { kind: KIND, name: Some("character-name-wanderer".to_owned()) }));
+        assert_eq!(second, Some(PartyMember { kind: aster, name: Some(aster_document.name) }));
+        assert_eq!(last, Some(PartyMember { kind: third, name: Some(third_document.name.clone()) }));
+        assert!(third != KIND && third != aster, "three kinds");
+        assert!(kinds.is_mixed());
+        assert_eq!(of_scenario(scenario), Ok(KIND));
+        // It draws as itself: its own mesh and graph.
+        let look = PlayableLook::of(third, &third_document.compile()).expect("a look");
+        let aster_look =
+            PlayableLook::of(aster, &shipped("combat/hero/hero.playable.ron").1.compile()).expect("a look");
+        assert!(look.mesh != heroine().mesh && look.mesh != aster_look.mesh);
+        assert!(look.graph != heroine().graph && look.graph != aster_look.graph);
+    }
+
     /// Aster's look: her own mesh and rig, her own graph, nothing in her hands.
     #[test]
     fn aster_draws_as_herself() {

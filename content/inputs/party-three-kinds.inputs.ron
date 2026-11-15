@@ -1,0 +1,32 @@
+// The `party-three-kinds` scenario's fight (M5 C12), whose input names the party's first member throughout:
+// the heroine cuts into the wave, Aster comes in on a swap and lands her assist and her punch and kick, Wren
+// comes in on the next swap with the staff's string and the skill, and the heroine comes back on a
+// third swap and cuts. After the presses they stand there, and the twelve fell whoever's on the field.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "three kinds in one party against twelve Ember Lancers: the heroine's cuts, a swap to Aster and her punch and kick, a swap to Wren and the staff's string and skill, a swap back to the heroine and her cut, then nothing while the wave fells each in turn",
+        ticks: 1200,
+        tracks: [
+            (
+                presses: [
+                    (at: [
+                        (60, [Light]), // The heroine's `light_1`, toward the nearest of the wave.
+                        (80, [Light]), // Her `light_2`.
+                        (130, [Swap]), // Aster comes in on her `swap_in`.
+                        (180, [Light]), // Her punch.
+                        (194, [Light]), // Out of it, her kick.
+                        (270, [Swap]), // Wren comes in on the staff's `swap_in`.
+                        (320, [Light]), // The staff's `light_1`,
+                        (336, [Light]), // `light_2`,
+                        (352, [Light]), // and `light_1` again: the string is two, and goes round.
+                        (420, [Skill]), // The skill's turn.
+                        (500, [Swap]), // The heroine has rested: back to her.
+                        (540, [Light]),
+                    ]),
+                ],
+            ),
+        ],
+    ),
+)

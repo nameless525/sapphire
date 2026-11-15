@@ -494,7 +494,34 @@ impl Script {
         })
     }
 
+    /// Whether every tick of this script fits one [`TickActions`] on a cast of `members`: a track for
+    /// everyone can press for each of them at once, and a tick holds input for at most
+    /// [`TickActions::CAPACITY`]. So a script for everyone drives a fight of a few, and not a party's
+    /// fight against twelve (M5 C12), whose input is the player's alone.
+    #[must_use]
+    pub fn fits(&self, members: usize) -> bool {
+        let everyone = self.tracks.iter().any(|track| matches!(track.who, Who::Everyone { .. }));
+        let driven = if everyone {
+            members
+        } else {
+            let mut places: Vec<u32> = (self.tracks.iter())
+                .filter_map(|track| match track.who {
+                    Who::Cast(place) => Some(place).filter(|&place| (place as usize) < members),
+                    Who::Everyone { .. } => None,
+                })
+                .collect();
+            places.sort_unstable();
+            places.dedup();
+            places.len()
+        };
+        driven <= TickActions::CAPACITY
+    }
+
     /// The actions of `tick`, which counts from 0, for `cast`, the player first. Allocates nothing.
+    ///
+    /// # Panics
+    ///
+    /// If the script doesn't [fit](Self::fits) `cast`, and a tick presses for more of it than it holds.
     #[must_use]
     pub fn actions(&self, tick: u64, cast: &[ActorId]) -> TickActions {
         let mut actions = TickActions::NEUTRAL;
@@ -646,6 +673,23 @@ mod tests {
         assert_eq!(at(0), [Buttons::LIGHT, Buttons::HEAVY, Buttons::LIGHT]);
         assert_eq!(at(5), [Buttons::NONE, Buttons::LIGHT, Buttons::NONE]);
         assert_eq!(script.actions(0, &cast[..1]).len(), 1, "a place nobody stands in is nobody's");
+    }
+
+    #[test]
+    fn a_script_for_everyone_fits_a_cast_a_tick_holds() {
+        let everyone = script(
+            "about: \"a\", ticks: 10, tracks: [(who: Everyone(stagger: 0), presses: [(at: [(0, [Light])])])]",
+        );
+        let room = TickActions::CAPACITY;
+        assert!(everyone.fits(room));
+        assert!(!everyone.fits(room + 1), "a tick would hold one too many");
+        assert_eq!(everyone.actions(0, &cast(room as u32)).len(), room);
+        let player = script("about: \"a\", ticks: 10, tracks: [(presses: [(at: [(0, [Light])])])]");
+        assert!(player.fits(13), "the player's input fits any cast");
+        assert_eq!(player.actions(0, &cast(13)).len(), 1);
+        for script in SCRIPTS.iter() {
+            assert!(script.fits(room), "{} drives more than a tick holds", script.name);
+        }
     }
 
     #[test]

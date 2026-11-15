@@ -1020,6 +1020,10 @@ mod tests {
         for scenario in SCENARIOS.iter() {
             for script in SCRIPTS.iter() {
                 let mut recording = Recording::new(scenario, scenario.config).unwrap();
+                // A script for everyone on a party's fight against twelve would press for more than a tick holds.
+                if !script.fits(recording.cast().len()) {
+                    continue;
+                }
                 let mut source = script;
                 for _ in 0..200 {
                     recording.step(&mut source).unwrap();

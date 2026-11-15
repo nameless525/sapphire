@@ -372,6 +372,13 @@ pub fn record(request: &Record<'_>) -> anyhow::Result<()> {
     let ticks = ticks.unwrap_or(script.ticks);
     ensure!(ticks > 0, "a replay needs at least one tick");
     let mut recording = Recording::new(scenario, config)?;
+    let cast = recording.cast().len();
+    ensure!(
+        script.fits(cast),
+        "`{}` presses for each of `{}`'s cast of {cast}, more than a tick holds",
+        script.name,
+        scenario.name
+    );
     recording.run_script(script, ticks)?;
     let (replay, played) = recording.finish();
     played.allocation_gate()?;

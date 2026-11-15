@@ -24,7 +24,7 @@ fn made(
 ) -> bool {
     let commands: Vec<_> =
         script.commands.iter().copied().filter(|&(tick, _)| tick < replay.ticks()).collect();
-    if commands != replay.commands() {
+    if commands != replay.commands() || !script.fits(cast.len()) {
         return false;
     }
     let mut held = false;

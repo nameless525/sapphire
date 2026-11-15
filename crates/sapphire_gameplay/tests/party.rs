@@ -1330,3 +1330,88 @@ fn the_two_kinds_fight_does_what_its_script_says() {
     let [punch, kick] = [Name::new("punch"), Name::new("kick")];
     assert_eq!(asters[..3], [SWAP_IN_MOVE, punch, kick], "{asters:?}");
 }
+
+/// The suite's `party-three-kinds` (M5 C12): a party of three kinds, the heroine, Aster and the kind the
+/// scenario's third member names, against a wave of twelve of one kind of enemy on the Lancer's moves and
+/// brain. Nothing here names the third kind or the enemy's: the scenario's documents do. Each member takes
+/// the field and lands a hit, the swaps go round, and the twelve stand on twelve places.
+#[test]
+fn the_three_kinds_fight_does_what_its_script_says() {
+    let scenario = find_scenario(&SCENARIOS, "party-three-kinds").expect("listed");
+    let enemy_kinds = scenario.kinds_of_enemy().expect("reads");
+    assert_eq!(enemy_kinds.len(), 1, "one kind of enemy: {enemy_kinds:?}");
+    let bytes =
+        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/replays/party-three-kinds.sreplay"))
+            .expect("in the suite");
+    let mut player = Player::new(Replay::decode(&bytes).expect("decodes"), &SCENARIOS).expect("starts");
+    let members: Vec<ActorId> = player.simulation().party().slots().map(|slot| slot.actor).collect();
+    let [heroine, aster, third] = members[..] else { panic!("{members:?}") };
+    let sim = player.simulation();
+    let sets = [heroine, aster, third].map(|member| sim.actor(member).expect("standing").moves.set);
+    assert!(sets[0] != sets[1] && sets[1] != sets[2] && sets[0] != sets[2], "each plays a set of its own");
+    // The wave: twelve, every one on the enemy kind's set with a brain, each on a place of its own. The cast
+    // input drives is the party's first and the wave: members past the first are the party's to bring in.
+    let wave: Vec<ActorView> =
+        player.cast()[1..].iter().map(|&id| sim.actor(id).expect("standing")).collect();
+    assert_eq!(wave.len(), 12, "a wave of twelve");
+    assert!(wave.iter().all(|enemy| enemy.moves.set == Some(enemy_kinds[0].set)), "all of the one kind");
+    assert!(wave.iter().all(|enemy| enemy.brain.is_on()), "each thinks for itself");
+    for (at, a) in wave.iter().enumerate() {
+        for b in &wave[at + 1..] {
+            assert!(a.position.distance(b.position) >= 2.0, "{} and {}", a.position, b.position);
+        }
+    }
+    let mut swaps = Vec::new();
+    let mut struck_by = [false; 3];
+    while player.step() {
+        let sim = player.simulation();
+        for cue in sim.cues() {
+            if cue.cue == PARTY_SWAP {
+                swaps.push((sim.tick(), cue.actor));
+            }
+            if cue.hit.is_some() {
+                for (index, member) in [heroine, aster, third].into_iter().enumerate() {
+                    struck_by[index] |= cue.actor == member;
+                }
+            }
+        }
+    }
+    // Three pressed, a tick after the script's, the second five ticks on, held in the buffer until Aster could go:
+    // Aster comes in, then the third kind, then the heroine. Then the wave fells the heroine and Aster in
+    // turn, each fall bringing in the next one standing.
+    assert_eq!(&swaps[..3], &[(131, aster), (276, third), (501, heroine)][..], "{swaps:?}");
+    assert_eq!(swaps[3..].iter().map(|&(_, who)| who).collect::<Vec<_>>(), [aster, third], "{swaps:?}");
+    assert_eq!(struck_by, [true; 3], "each lands a hit");
+}
+
+/// The wave's kind of enemy fights only where `party-three-kinds` puts it (M5 C12): no zone's spawner names
+/// it and no other scenario lists it, so no shipped encounter or zone changes with it.
+#[test]
+fn the_three_kinds_wave_is_in_no_zone() {
+    let scenario = find_scenario(&SCENARIOS, "party-three-kinds").expect("listed");
+    let document = scenario.document().expect("a document");
+    let [kind] = &document.enemies[..] else { panic!("one kind of enemy: {:?}", document.enemies) };
+    let file = kind.rsplit('/').next().expect("a path");
+    let stem = file.strip_suffix(".enemy.ron").expect("an enemy's document");
+    let spawner = format!("spawns: \"{stem}\"");
+    let mut folders =
+        vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/zones"))];
+    let mut read = 0;
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).expect("readable") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "ron") {
+                let text = std::fs::read_to_string(&path).expect("a document");
+                assert!(!text.contains(&spawner), "{} spawns {stem}", path.display());
+                read += 1;
+            }
+        }
+    }
+    assert!(read > 0, "the zones are there");
+    for other in SCENARIOS.iter() {
+        let lists = other.document().is_some_and(|document| document.enemies.contains(kind));
+        assert!(!lists || other.name == scenario.name, "{} fields {stem} too", other.name);
+    }
+}

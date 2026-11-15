@@ -32,7 +32,8 @@
 //!   bounds `InstanceSlots::world_bounds` gives), its mesh, its material and its record, **and the
 //!   level of detail the view draws it at** ([`Entry`], M5 D4, the `levels` module): the main
 //!   view's family's from its culling ([`ViewTests::levels`]), each cascade's from its plan
-//!   (`SlotCaster::levels`), 0 for a character map, an inset and anything deformed. A submesh its
+//!   (`SlotCaster::levels`), a character map's from its texel (`SlotCaster::map_level`, M5 D5), 0
+//!   for an inset and for anything that stays whole (`view_cull`'s `whole`). A submesh its
 //!   level simplified away is left out unlisted and uncounted, as a draw outside the group's set
 //!   is. The shadow views draw by (mesh, level, submesh, record): their order built at level 0, and
 //!   a group whose instances of one mesh draw at more than one level sorted again as it's compacted.
@@ -298,9 +299,8 @@ impl Listed for DeformedDraw {
     fn outline(&self) -> bool {
         self.outline
     }
-    /// Skinned and morphed instances draw level 0 alone (m5-plan D5's to change).
-    fn at_level(&self, _: u8) -> Option<u8> {
-        Some(0)
+    fn at_level(&self, level: u8) -> Option<u8> {
+        has_level(self.levels, level).then_some(level)
     }
 }
 
@@ -570,7 +570,8 @@ pub(crate) enum Walk {
 }
 
 /// What a frame's shadow casters are tested by, in one walk for every shadow view: each cascade
-/// lists a caster at its level there (`SlotCaster::levels`), a character map at level 0.
+/// lists a caster at its level there (`SlotCaster::levels`), a character map at its own
+/// (`SlotCaster::map_level`, M5 D5).
 pub(crate) struct CasterTests<'a, P> {
     pub stands: &'a [u16],
     /// The cascades drawn this frame.
@@ -881,7 +882,10 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
             // Each map looks at every caster and draws its own character's.
             let skipped = match map.map(usize::from).and_then(|map| maps.get_mut(map)) {
                 Some(list) => {
-                    list.draws.push(Entry { at: index, level: 0 });
+                    // At the map's level (M5 D5); a submesh simplified away there isn't drawn.
+                    if has_level(levels, caster.map_level) {
+                        list.draws.push(Entry { at: index, level: caster.map_level });
+                    }
                     others
                 }
                 None => to_u32(drawn_maps),
@@ -908,7 +912,7 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
             }
             Source::Deformed => {
                 let draws = &list.deformed[variant.index()];
-                draws.iter().zip(0..).for_each(|(draw, at)| take(draw.slot, at, 1));
+                draws.iter().zip(0..).for_each(|(draw, at)| take(draw.slot, at, draw.levels));
             }
         }
         for ((cascade, start), &drawn) in cascades.iter_mut().zip(starts).zip(&tests.cascades) {

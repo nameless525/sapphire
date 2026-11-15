@@ -54,6 +54,9 @@ pub(crate) struct SlotCaster {
     /// by the cascade's texel alone; 0 where it doesn't draw it, for a character and for whatever
     /// draws level 0 alone.
     pub levels: [u8; MAX_CASCADES],
+    /// The level its character map draws it at (M5 D5), by the map's texel as a cascade chooses:
+    /// 0 for a character that stays whole, and where no map draws it.
+    pub map_level: u8,
 }
 
 impl SlotCaster {
@@ -343,6 +346,17 @@ impl ShadowPlan {
                         Cast::Map(map) => Some(map),
                         Cast::Capsule(_) | Cast::Nothing => None,
                     });
+                    // A character that chooses its level by error (M5 D5): its map's, by its texel.
+                    let errors = meshes
+                        .get(mesh.index())
+                        .filter(|record| record.lod_errors.len() > 1 && !cull.culled.whole(slot))
+                        .map(|record| record.lod_errors.as_slice());
+                    if let (Some(map), Some(errors)) = (caster.map, errors) {
+                        let texel = self.maps[usize::from(map)].texel();
+                        caster.map_level = cull.levels.forced(errors.len()).unwrap_or_else(|| {
+                            levels::cascade_level(errors, max_stretch(transform), texel, cull.levels.bias)
+                        });
+                    }
                 }
                 SlotCharacter::Environment => {
                     let sphere = match meshes.get(mesh.index()) {

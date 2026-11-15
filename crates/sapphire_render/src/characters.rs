@@ -98,8 +98,8 @@ use crate::buffer::{self, GrowableBuffer};
 use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
 use crate::{
-    AmbientLight, CameraRim, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting,
-    CharacterShade, FramePacket, InsetView, InstanceId, MaterialDrive, ShadowRole,
+    AmbientLight, CameraRim, CharacterBody, CharacterDetail, CharacterFace, CharacterInstance,
+    CharacterLighting, CharacterShade, FramePacket, InsetView, InstanceId, MaterialDrive, ShadowRole,
 };
 
 /// The radius of the sphere around a character's head that the face pass samples the
@@ -619,13 +619,14 @@ impl CharacterUpload<'_> {
 /// The group of an entry whose body casts nothing, or that no instance reads.
 const NO_GROUP: u32 = u32::MAX;
 
-/// A body's bits, −0 taken as 0, and its role: bodies that compare equal (valid ones are finite)
-/// have the same key.
-type BodyKey = ([u32; 7], ShadowRole);
+/// A body's bits, −0 taken as 0, its role and its detail: bodies that compare equal (valid ones
+/// are finite) have the same key.
+type BodyKey = ([u32; 7], ShadowRole, CharacterDetail);
 
 fn body_key(body: &CharacterBody) -> BodyKey {
-    let CharacterBody { base, top, radius, role } = *body;
-    ([base.x, base.y, base.z, top.x, top.y, top.z, radius].map(|value| (value + 0.0).to_bits()), role)
+    let CharacterBody { base, top, radius, role, detail } = *body;
+    let bits = [base.x, base.y, base.z, top.x, top.y, top.z, radius].map(|value| (value + 0.0).to_bits());
+    (bits, role, detail)
 }
 
 /// Whether `a` and `b` list one character's parts: its lighting, face, body, fade and drive, all

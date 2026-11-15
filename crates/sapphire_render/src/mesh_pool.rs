@@ -837,6 +837,16 @@ impl MeshPool {
             morph_reach: crate::bounds::morph_reach(mesh),
             foliage: (foliage_len > 0).then_some(first_foliage),
         };
+        // What a skinned or morphed mesh's levels allow (M5 D5): where each switch falls.
+        if matches!(record.streams, MeshStreams::Deformable(_)) {
+            tracing::debug!(
+                target: crate::LOG_TARGET,
+                errors = ?record.lod_errors,
+                vertices = ?record.lod_vertices,
+                radius = record.bounds.radius,
+                "deformable mesh uploaded with its levels"
+            );
+        }
         Ok((record, moves))
     }
 

@@ -21,9 +21,19 @@
 //! lines fully reactive (`outline.wgsl`'s header; the `temporal` module). A dropped one leaves
 //! neither, which is nothing to lose: its width had faded out.
 //!
+//! # Levels of detail (M5 D5)
+//!
+//! A hull draws at its body's level: the list entry of a character that may draw coarser carries
+//! the level its surfaces draw at, and its hull's draw takes that level's indices, so the line
+//! sits on the silhouette it outlines. The cutoff stays where its material puts it, in effective
+//! meters: the shipped characters' cutoffs lie well past their first switch (80 m against about
+//! 5 m at 1080p), so lines and coarser levels meet, and the switch gates measure the line's
+//! width and strength and the two-tone edge at each switch.
+//!
 //! # Later milestones
 //!
-//! - With LOD selection (culling), the cutoff becomes the LOD past which hulls stop.
+//! - A cutoff as a level rather than a distance (a hull drawn only at its body's first levels),
+//!   if a switch's gate ever needs one: the gates hold the line's width without it.
 //!
 //! # How far a hull reaches (M5 D3)
 //!
@@ -271,6 +281,8 @@ mod tests {
                     draw_id,
                     material: handle,
                     mesh: MeshHandle::from_raw(0),
+                    submesh: 0,
+                    levels: 1,
                     outline: true,
                 }),
                 outline => list.commands[0][0].push(DrawCommand {

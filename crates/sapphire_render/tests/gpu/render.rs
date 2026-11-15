@@ -19,6 +19,7 @@ use sapphire_render::{
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
+mod character_levels;
 mod counts;
 mod culling;
 mod insets;

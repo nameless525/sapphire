@@ -822,9 +822,10 @@
 //! - **Local lights** (see the `lights` module): cluster occupancy counted on the GPU, light
 //!   layers (VFX lights kept off faces and rims), local-light shadows, and two-level culling for
 //!   hundreds of lights.
-//! - **Levels of detail for what deforms** (m5-plan D5): static draws choose theirs since M5 D4
-//!   (the `levels` module), while skinned and morphed instances, characters' parts, foliage and
-//!   fog cards draw level 0. Skinning the drawn level's prefix, by [`DrawnBy::finest`], is D5's.
+//! - **Levels of detail past D5's:** static draws choose theirs since M5 D4 and the characters the
+//!   stage lets draw coarser since M5 D5 (the `levels` module), skinning only the finest drawn
+//!   level's prefix ([`DrawnBy::finest`]); foliage, fog cards and what deforms without being a
+//!   character draw level 0, and a switch pops (no crossfade, no impostors).
 //! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured
 //!   on a real phone first (spec open question Q14).
 //! - **Upscaling** (spec §5.12, "Anti-aliasing and upscaling"): temporal AA upsamples on the
@@ -937,9 +938,9 @@ pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};
 pub use fog::FogStats;
 pub use foliage::FoliageSettings;
 pub use frame::{
-    CameraData, CharacterBody, CharacterFace, CharacterInstance, FaceExpression, FramePacket,
-    FramePacketRing, HeadBasis, InsetView, InstanceDeltas, InstanceId, LightKind, LocalLight, MaterialDrive,
-    MeshInstance, PacketRange, ShadowRole, SkinnedInstance, ViewData, Weather, Wind,
+    CameraData, CharacterBody, CharacterDetail, CharacterFace, CharacterInstance, FaceExpression,
+    FramePacket, FramePacketRing, HeadBasis, InsetView, InstanceDeltas, InstanceId, LightKind, LocalLight,
+    MaterialDrive, MeshInstance, PacketRange, ShadowRole, SkinnedInstance, ViewData, Weather, Wind,
 };
 pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use interface_screen::InterfaceScreen;

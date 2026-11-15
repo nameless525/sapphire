@@ -3181,6 +3181,7 @@ impl Renderer {
             view: view_cull.culled(),
             run_records: run_records.buffer(),
             runs: true,
+            levels: Some(view_cull.levels()),
         };
         let InsetFrame { uploads: inset_uploads, draws: inset_draws, shown: inset_shown, .. } = inset_frame;
         // Temporal AA's resolve writes the target's size, so post upsamples only without it: in its fused pass,

@@ -69,6 +69,16 @@
 //! pixels, with hysteresis from the level drawn last frame), worked out in the same chunks.
 //! [`Culled::level`] gives it to the lists; [`DrawnBy`] says what level each view drew, a frame
 //! late.
+//!
+//! # Characters' levels (M5 D5)
+//!
+//! A character the stage lets draw coarser ([`CharacterDetail::ByError`] on its body) gives its
+//! parts its body's group, as an ambient crowd's culling does. Before the chunks, each such
+//! character chooses one level from the sphere around its parts, the coarsest every part with
+//! levels is good enough at, with the hysteresis held from the coarsest level the main view drew
+//! a part at last frame; each part then draws the coarsest of its own levels within its
+//! character's ([`part_level`]). [`ViewCull::drawn`] gives skinning the finest level any view drew
+//! an instance at, whose prefix it skins. Every other character draws level 0.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -79,10 +89,10 @@ use serde::{Deserialize, Serialize};
 use crate::bounds::{Sphere, max_stretch};
 use crate::characters::CharacterTable;
 use crate::inset::MAX_INSETS;
-use crate::levels::{self, LevelSettings, LevelStats};
+use crate::levels::{self, LevelSettings, LevelStats, LevelsMode};
 use crate::mesh_pool::MeshRecord;
 use crate::scene::{DrawList, InstanceSlots};
-use crate::{CameraData, ShadowRole};
+use crate::{CameraData, CharacterDetail, ShadowRole};
 
 /// Pixels the frustum's sides move out by, beyond temporal AA's jitter: whole pixels of margin
 /// for the samples a triangle at the edge could cover under MSAA, and for the debug views' lines.
@@ -402,11 +412,15 @@ pub(crate) struct SlotCull {
     /// The level of detail the main view's family draws it at this frame (M5 D4): what it drew
     /// last frame until the frame's verdicts are worked out, which its hysteresis starts from.
     level: u8,
-    /// It draws at level 0 in every view (the `levels` module): a character's part, foliage, a fog
-    /// card.
+    /// It draws at level 0 in every view (the `levels` module): a character's part unless its
+    /// character chooses by error (M5 D5), foliage, a fog card, anything else skinned or morphed.
     whole: bool,
     /// The finest level any view drew it at last frame ([`DrawnBy::finest`]).
     finest: u8,
+    /// The character it is a part of, if that character chooses its level by error (M5 D5,
+    /// [`CharacterDetail::ByError`]): its body's group, whose level every part takes ([`NO_GROUP`]
+    /// if not).
+    character: u32,
 }
 
 #[cfg(test)]
@@ -417,6 +431,7 @@ impl SlotCull {
             verdict,
             far: verdict == Verdict::Distance,
             group: NO_GROUP,
+            character: NO_GROUP,
             ..SlotCull::default()
         };
         verdicts.iter().map(cull).collect()
@@ -424,12 +439,12 @@ impl SlotCull {
 
     /// A drawn slot that draws level 0 alone (M5 D4).
     pub(crate) fn whole() -> SlotCull {
-        SlotCull { whole: true, group: NO_GROUP, ..SlotCull::default() }
+        SlotCull { whole: true, group: NO_GROUP, character: NO_GROUP, ..SlotCull::default() }
     }
 
     /// Drawn slots at these levels of detail (M5 D4).
     pub(crate) fn at_levels(levels: &[u8]) -> Vec<SlotCull> {
-        let cull = |&level| SlotCull { level, group: NO_GROUP, ..SlotCull::default() };
+        let cull = |&level| SlotCull { level, group: NO_GROUP, character: NO_GROUP, ..SlotCull::default() };
         levels.iter().map(cull).collect()
     }
 }
@@ -441,14 +456,20 @@ const BY_VIEW: u8 = 1;
 const BY_SHADOW: u8 = 2;
 const BY_INSET: u8 = 4;
 
-/// An ambient character, culled by distance and size as one.
+/// A character with a body that casts, by its body's group ([`CharacterTable::bodies`]): an
+/// ambient one is culled by distance and size as one, and one that chooses its level by error
+/// (M5 D5) draws all its parts at one level.
 #[derive(Clone, Copy, Debug)]
 struct Group {
+    /// Around every part it lists.
     sphere: Option<Sphere>,
     far: bool,
     small: bool,
     /// Its state came from a part it had last frame.
     known: bool,
+    /// The level of detail the main view's family draws its parts at this frame, before each
+    /// part takes the coarsest its mesh has (M5 D5): 0 unless it chooses by error.
+    level: u8,
 }
 
 /// Per instance slot, the frame's culling, for the passes that read it: copied into each, as the
@@ -527,6 +548,11 @@ pub(crate) struct ViewCull {
     groups: Vec<Group>,
     /// The named characters' bounds: what overlaps them is kept.
     named: Vec<Sphere>,
+    /// The slots of the parts of characters that choose their level by error (M5 D5), in the
+    /// order the frame lists them.
+    parts: Vec<u32>,
+    /// Per group, the level its parts draw at this frame (M5 D5): [`Group::level`], for the chunks.
+    group_levels: Vec<u8>,
     /// Per group, below the least size this frame.
     small_groups: Vec<bool>,
     mode: CullingMode,
@@ -555,7 +581,7 @@ impl ViewCull {
         profiling::scope!("ViewCull::prepare");
         self.mode = mode;
         self.thresholds = thresholds;
-        let blank = SlotCull { fresh: true, group: NO_GROUP, ..SlotCull::default() };
+        let blank = SlotCull { fresh: true, group: NO_GROUP, character: NO_GROUP, ..SlotCull::default() };
         self.slots.resize(slots.len(), blank);
         for cull in &mut self.slots {
             cull.fresh = false;
@@ -569,7 +595,7 @@ impl ViewCull {
         // characters join their group. An inset's instances are kept by the record, which knows
         // this frame's insets.
         for cull in &mut self.slots {
-            (cull.kept, cull.group, cull.whole) = (false, NO_GROUP, false);
+            (cull.kept, cull.group, cull.whole, cull.character) = (false, NO_GROUP, false, NO_GROUP);
         }
         for candidate in &list.cullable {
             let cull = &mut self.slots[candidate.slot as usize];
@@ -578,18 +604,34 @@ impl ViewCull {
             cull.whole = candidate.whole;
         }
         self.named.clear();
+        self.parts.clear();
         self.groups.clear();
         self.groups.extend(characters.bodies.iter().map(|_| Group {
             sphere: None,
             far: false,
             small: false,
             known: false,
+            level: 0,
         }));
         for &slot in characters.listed {
             let Some(cull) = self.slots.get_mut(slot as usize) else { continue };
-            cull.whole = true;
             let sphere = slots.world_bounds(slot, meshes);
             let body = characters.body(slot);
+            // Level 0 in every view, unless the stage says its character chooses by error (M5 D5).
+            let coarsens = body
+                .is_some_and(|group| characters.bodies[group as usize].detail == CharacterDetail::ByError);
+            cull.whole = !coarsens;
+            if let Some(group) = body {
+                let entry = &mut self.groups[group as usize];
+                entry.sphere = match (entry.sphere, sphere) {
+                    (Some(group), Some(part)) => Some(group.union(part)),
+                    (group, part) => group.or(part),
+                };
+                if coarsens {
+                    cull.character = group;
+                    self.parts.push(slot);
+                }
+            }
             match body.map(|group| (group, characters.bodies[group as usize].role)) {
                 Some((group, ShadowRole::Ambient)) => {
                     cull.group = group;
@@ -598,10 +640,6 @@ impl ViewCull {
                     if known && !entry.known {
                         (entry.far, entry.small, entry.known) = (cull.far, cull.small, true);
                     }
-                    entry.sphere = match (entry.sphere, sphere) {
-                        (Some(group), Some(part)) => Some(group.union(part)),
-                        (group, part) => group.or(part),
-                    };
                 }
                 _ => {
                     cull.kept = true;
@@ -670,8 +708,9 @@ impl ViewCull {
         for (group, &small) in self.groups.iter_mut().zip(&self.small_groups) {
             group.small = small;
         }
-        let Self { slots, named, small_groups, .. } = self;
-        let (named, small_groups) = (&named[..], &small_groups[..]);
+        self.choose_character_levels(inputs);
+        let Self { slots, named, small_groups, group_levels, .. } = self;
+        let (named, small_groups, group_levels) = (&named[..], &small_groups[..], &group_levels[..]);
         let tests = (mode.frustum(), sizing);
         sapphire_jobs::par_for_each_chunk_mut(slots, CHUNK, |start, chunk| {
             let first = candidates.partition_point(|candidate| (candidate.slot as usize) < start);
@@ -687,7 +726,8 @@ impl ViewCull {
                 // cut, for a new instance, or for one the main view didn't draw.
                 let held = (!inputs.cut && !cull.fresh && cull.drawn_by & BY_VIEW != 0).then_some(cull.level);
                 cull.level = 0;
-                let Some(verdict) = verdict(inputs, tests, candidate, cull, named, small_groups, held) else {
+                let groups = (small_groups, group_levels);
+                let Some(verdict) = verdict(inputs, tests, candidate, cull, named, groups, held) else {
                     continue;
                 };
                 seen += 1;
@@ -720,6 +760,68 @@ impl ViewCull {
         };
         let [coarser, finer] = switched.map(AtomicU32::into_inner);
         self.level_stats = LevelStats { coarser, finer };
+    }
+
+    /// Chooses the level of each character that chooses its level by error (M5 D5), before the
+    /// chunks: one level for all its parts, by the sphere around them, the coarsest every part
+    /// with levels is good enough at (each by its own mesh's errors and stretch), held as one by
+    /// the hysteresis from the finest level the main view drew a part at last frame. A part with
+    /// one level never holds its character back; each part then draws the coarsest of its own
+    /// levels within its character's ([`part_level`]).
+    fn choose_character_levels<M>(&mut self, inputs: &CullInputs<'_, M>) {
+        let Self { slots, groups, parts, group_levels, .. } = self;
+        group_levels.clear();
+        group_levels.resize(groups.len(), 0);
+        let settings = inputs.levels;
+        let Some(view) = inputs.views[0].filter(|_| settings.mode == LevelsMode::On) else { return };
+        // Last frame's level, one above it in `group_levels` until chosen (0 for none): the
+        // coarsest a part drew at, of those the main view drew (a part with fewer levels drew its
+        // own coarsest, below its character's); none after a cut.
+        for group in groups.iter_mut() {
+            group.level = u8::MAX;
+        }
+        for &slot in parts.iter() {
+            let cull = &slots[slot as usize];
+            if inputs.cut || cull.fresh || cull.drawn_by & BY_VIEW == 0 {
+                continue;
+            }
+            let entry = &mut group_levels[cull.character as usize];
+            *entry = (*entry).max(cull.level + 1);
+        }
+        for &slot in parts.iter() {
+            let character = slots[slot as usize].character as usize;
+            let group = &mut groups[character];
+            let stand = inputs.stands.get(slot as usize).copied().unwrap_or(0);
+            let (Some(sphere), Some(transform), Some(mesh)) =
+                (group.sphere, inputs.slots.transform(slot), inputs.slots.mesh(slot))
+            else {
+                continue;
+            };
+            let Some(record) = inputs.meshes.get(mesh.index()).filter(|record| record.lod_errors.len() > 1)
+            else {
+                continue;
+            };
+            if stand != 0 {
+                continue;
+            }
+            // A projective part has no stretch to scale its errors by: its character stays whole.
+            if transform.row(3) != Vec4::W {
+                group.level = 0;
+                continue;
+            }
+            let errors = &record.lod_errors;
+            let held = group_levels[character].checked_sub(1);
+            let budget =
+                levels::allowance(settings.bias) * view.meters_per_pixel(&sphere) / max_stretch(transform);
+            let choice = levels::choose(errors, budget, held);
+            // At its own coarsest, a part holds its character back no further.
+            if choice < levels::last_level(errors.len()) {
+                group.level = group.level.min(choice);
+            }
+        }
+        for (entry, group) in group_levels.iter_mut().zip(groups.iter()) {
+            *entry = group.level;
+        }
     }
 
     /// Records which views drew each instance this frame, and the finest level any drew it at: the
@@ -764,9 +866,10 @@ impl ViewCull {
         }
     }
 
-    /// Whether some view drew the instance in `slot` this frame: what skinning poses.
-    pub(crate) fn drawn(&self, slot: u32) -> bool {
-        self.slots.get(slot as usize).is_some_and(|cull| cull.drawn_by != 0)
+    /// The finest level any view drew the instance in `slot` at this frame, if any drew it: what
+    /// skinning poses, and the prefix of its vertices it skins (M5 D5).
+    pub(crate) fn drawn(&self, slot: u32) -> Option<u8> {
+        self.slots.get(slot as usize).filter(|cull| cull.drawn_by != 0).map(|cull| cull.finest)
     }
 
     /// The frame's verdicts, for the passes; `None` with culling off.
@@ -825,7 +928,7 @@ fn verdict<M: Fn(&MeshRecord) -> f32>(
     candidate: &CullCandidate,
     cull: &mut SlotCull,
     named: &[Sphere],
-    small_groups: &[bool],
+    (small_groups, group_levels): (&[bool], &[u8]),
     held: Option<u8>,
 ) -> Option<Verdict> {
     let slot = candidate.slot;
@@ -880,13 +983,31 @@ fn verdict<M: Fn(&MeshRecord) -> f32>(
     } else {
         Verdict::Drawn
     };
-    // The main view's family draws one level of it (M5 D4); an inset's instances, characters,
-    // foliage and fog cards level 0.
+    // The main view's family draws one level of it (M5 D4), a character's part its character's
+    // (M5 D5); an inset's instances, whole characters, foliage and fog cards level 0.
     if verdict == Verdict::Drawn && stand == 0 && !cull.whole {
-        let meters_per_pixel = view.meters_per_pixel(&bounds);
-        cull.level = main_level(inputs.levels, &record.lod_errors, stretch, meters_per_pixel, held);
+        cull.level = match group_levels.get(cull.character as usize) {
+            Some(&character) => part_level(inputs.levels, &record.lod_errors, character),
+            None => {
+                let meters_per_pixel = view.meters_per_pixel(&bounds);
+                main_level(inputs.levels, &record.lod_errors, stretch, meters_per_pixel, held)
+            }
+        };
     }
     Some(verdict)
+}
+
+/// The level a part of a character that chooses by error draws at, where its mesh's levels' errors
+/// are `errors` and its character's level is `character` ([`ViewCull::choose_character_levels`]):
+/// the coarsest of its own levels within its character's, or what the mode forces.
+pub(crate) fn part_level(settings: LevelSettings, errors: &[f32], character: u8) -> u8 {
+    if let Some(level) = settings.forced(errors.len()) {
+        return level;
+    }
+    if errors.len() < 2 {
+        return 0;
+    }
+    character.min(levels::last_level(errors.len()))
 }
 
 /// The main view's level of a mesh whose levels' errors are `errors`, for an instance stretched at

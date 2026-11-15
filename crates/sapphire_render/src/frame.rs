@@ -779,12 +779,33 @@ impl Default for MaterialDrive {
 /// character's ambient takes what the other bodies leave of it, each body once however many
 /// instances list it. A body of radius 0 (the default) casts no shadow of a character's own,
 /// nor capsule AO: the character still receives the world's.
+///
+/// Its `detail` says whether the character may draw at a coarser level of detail (M5 D5): the
+/// body is what makes a character's parts one, so its parts choose their level together.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CharacterBody {
     pub base: Vec3,
     pub top: Vec3,
     pub radius: f32,
     pub role: ShadowRole,
+    pub detail: CharacterDetail,
+}
+
+/// Whether a character may draw at a coarser level of detail (M5 D5, spec §5.12 "Scene and
+/// draws"), as the stage resolves it each frame: the renderer never guesses who matters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CharacterDetail {
+    /// Always its meshes' first level, in every view: the character the player controls and
+    /// whoever is on the field with it, what they hold, and every character in a cutscene's or a
+    /// cut-in's shot. The default, so a character nobody marks never goes coarser.
+    #[default]
+    Whole,
+    /// Each view chooses its level by its meshes' cooked error projected to pixels, with
+    /// hysteresis, as it chooses a static instance's: enemies, a zone's ambient characters,
+    /// stand-ins off the field. Its parts take one level, chosen by the character's bounds. Only
+    /// a character whose body casts ([`CharacterBody::casts`]) can be told apart from its parts,
+    /// so one with no body stays whole.
+    ByError,
 }
 
 /// A character's part in the characters' shadows of each other (M5 L12, spec §5.12 "Lighting"):
@@ -807,12 +828,17 @@ pub enum ShadowRole {
 impl CharacterBody {
     /// A named character's capsule from `base` to `top`, `radius` thick.
     pub fn capsule(base: Vec3, top: Vec3, radius: f32) -> Self {
-        Self { base, top, radius, role: ShadowRole::Named }
+        Self { base, top, radius, role: ShadowRole::Named, detail: CharacterDetail::Whole }
     }
 
     /// The same body with `role`.
     pub fn with_role(self, role: ShadowRole) -> Self {
         Self { role, ..self }
+    }
+
+    /// The same body with `detail` (M5 D5).
+    pub fn with_detail(self, detail: CharacterDetail) -> Self {
+        Self { detail, ..self }
     }
 
     /// Whether the renderer can draw by it: finite, with a radius of 0 or more.
@@ -833,7 +859,7 @@ impl CharacterBody {
             base: transform.transform_point3(self.base),
             top: transform.transform_point3(self.top),
             radius: self.radius * crate::bounds::max_stretch(transform),
-            role: self.role,
+            ..*self
         }
     }
 }

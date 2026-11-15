@@ -1,5 +1,5 @@
-//! Levels of detail for static draws (M5 D4, spec §5.12 "Scene and draws"): which of its mesh's
-//! cooked levels each view draws an instance at.
+//! Levels of detail for static draws (M5 D4, spec §5.12 "Scene and draws") and characters (M5 D5):
+//! which of its mesh's cooked levels each view draws an instance at.
 //!
 //! The cook writes up to four levels a mesh (spec §5.27), each a prefix of the vertex streams with
 //! its own index ranges and its error: how far it may stray from LOD0, in object-space meters,
@@ -31,10 +31,21 @@
 //! - **The bias** is the tier's ([`LevelSettings::bias`], `tiers.ron`'s `lod_bias`), plus the
 //!   thermal ladder's [`Rung::LodBias`](crate::quality::Rung::LodBias), which builds nothing and
 //!   moves levels through the hysteresis, like a camera's step, rather than all at once.
-//! - **Level 0 always** (never coarser in this package): anything skinned or morphed (m5-plan
-//!   D5's), a character's every part, everything in an inset, fog cards, foliage (its cooked
-//!   error measures the cards' geometry, not the canopy's coverage, so a coarser canopy would thin),
-//!   and what isn't an instance (the sky, effects, decals, the interface).
+//! - **Characters** (M5 D5) choose only where the stage says so
+//!   ([`CharacterDetail::ByError`](crate::CharacterDetail::ByError) on the character's body: a
+//!   fight's enemies while nothing pins them, a zone's ambient characters, the sandbox's
+//!   `--character-lods hero`). Such a character chooses one level a frame for all its parts, by the
+//!   sphere around them, as a static draw chooses (the same allowance and hysteresis): the
+//!   coarsest every part with levels is good enough at, a part at its own coarsest holding it back
+//!   no further; each part then draws the coarsest of its own levels within that
+//!   (`view_cull::part_level`). Its character map chooses by the map's texel as a cascade does.
+//!   Skinning skins the prefix of the finest level any view drew (`DrawnBy::finest`), and its
+//!   outline hull draws at its body's level, out to the material's unchanged cutoff.
+//! - **Level 0 always:** a character the stage doesn't mark (the hero, its on-field party, what
+//!   they hold, everyone in a cutscene's or a cut-in's shot), anything skinned or morphed that isn't
+//!   a character, everything in an inset, fog cards, foliage (its cooked error measures the cards'
+//!   geometry, not the canopy's coverage, so a coarser canopy would thin), and what isn't an
+//!   instance (the sky, effects, decals, the interface).
 //!
 //! A switch pops: there is no crossfade. [`LevelsMode::Off`] draws every instance at level 0
 //! through the same path, the pictures of the renderer before levels, and [`LevelsMode::Fixed`]
@@ -148,7 +159,7 @@ pub(crate) fn allowance(bias: f32) -> f32 {
 }
 
 /// The coarsest level that `levels` may draw.
-fn last_level(levels: usize) -> u8 {
+pub(crate) fn last_level(levels: usize) -> u8 {
     u8::try_from(levels.clamp(1, MAX_LEVELS) - 1).expect("at most MAX_LEVELS")
 }
 

@@ -680,6 +680,11 @@ pub(crate) struct DeformedDraw {
     pub material: MaterialHandle,
     /// The instance's mesh.
     pub mesh: MeshHandle,
+    /// Which of its mesh's level-0 submeshes it draws, as [`DrawCommand::submesh`]: a view that
+    /// draws the instance at another level draws that level's ranges (M5 D5).
+    pub submesh: u16,
+    /// Bit `l`: the submesh has triangles at level `l`, as [`DrawCommand::levels`].
+    pub levels: u8,
     /// It draws an outline hull too.
     pub outline: bool,
 }
@@ -837,6 +842,8 @@ impl DrawList {
                             draw_id,
                             material,
                             mesh,
+                            submesh: u16::try_from(index).expect("a submesh per material slot"),
+                            levels: submesh_levels(record, index),
                             outline,
                         });
                     }
@@ -1384,6 +1391,8 @@ mod tests {
                 draw_id: 4,
                 material,
                 mesh: MeshHandle::from_raw(3),
+                submesh: 0,
+                levels: 1,
                 outline: false
             }]
         );

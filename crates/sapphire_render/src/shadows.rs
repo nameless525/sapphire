@@ -950,7 +950,7 @@ impl Shadows {
         let cascades = (0..MAX_CASCADES)
             .filter(|&index| caster.cascades & (1 << index) != 0 && self.plan.drawn[index].is_some())
             .map(|index| caster.levels[index]);
-        let map = (maps && caster.map.is_some()).then_some(0);
+        let map = (maps && caster.map.is_some()).then_some(caster.map_level);
         cascades.chain(map).min()
     }
 

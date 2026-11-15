@@ -1,4 +1,4 @@
-use glam::{Affine3A, Vec3};
+use glam::{Affine3A, Mat4, Vec3};
 use sapphire_assets::material::{MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::PositionFormat;
 
@@ -398,11 +398,12 @@ fn who_drew_each_instance_is_published_for_the_next_frame() {
     assert!(!drawn[2].any());
     assert_eq!(drawn[3], DrawnBy { shadow: true, inset: true, ..DrawnBy::default() });
     assert!(!drawn[4].any(), "past the slots");
-    assert_eq!((0..4).map(|slot| culling.drawn(slot)).collect::<Vec<_>>(), [true, true, false, true]);
+    let drawn = (0..4).map(|slot| culling.drawn(slot).is_some()).collect::<Vec<_>>();
+    assert_eq!(drawn, [true, true, false, true]);
     // An inset whose picture is held draws nothing that stands in it.
     views[1] = false;
     culling.publish(&stands, &views, |_| None);
-    assert!(!culling.drawn(3));
+    assert!(culling.drawn(3).is_none());
 }
 
 #[test]
@@ -620,4 +621,138 @@ fn a_camera_held_at_a_switch_never_flaps() {
     let (levels, stats) = levels_over(20, back, |_| 0.0, |frame| frame == 15);
     assert_eq!((levels[9], levels[12], levels[16]), (0, 1, 2), "held at 1 inside the band, then cut to 2");
     assert_eq!(stats, LevelStats { coarser: 1, finer: 0 });
+}
+
+/// Meshes 0 to 2 for a character's three parts: `CHAIN`'s levels, two levels (its coarsest 2 mm
+/// off), and a coarser chain that needs a finer level sooner; mesh 3 an environment mesh with
+/// `CHAIN`'s levels.
+fn character_meshes() -> [MeshRecord; 4] {
+    let mut meshes = [record(false, true), record(false, true), record(false, true), record(false, false)];
+    meshes[0].lod_errors = CHAIN.to_vec();
+    meshes[1].lod_errors = vec![0.0, 0.002];
+    meshes[2].lod_errors = vec![0.0, 0.005, 0.02, 0.05];
+    meshes[3].lod_errors = CHAIN.to_vec();
+    for mesh in &mut meshes[..3] {
+        mesh.lods[0][0].material.handle = MaterialHandle::from_raw(2);
+    }
+    meshes
+}
+
+/// Its parts' levels each frame as `camera(frame)` looks at a character of `parts` (its meshes in
+/// [`character_meshes`]), standing 100 m down −z, listed with `detail`, chosen with `levels`; a
+/// cut where `cut(frame)`. Also each frame, the level a lone environment mesh with mesh 0's levels
+/// and bounds draws where the character stands.
+fn character_levels(
+    parts: &[u32],
+    detail: CharacterDetail,
+    levels: LevelSettings,
+    frames: u32,
+    camera: impl Fn(u32) -> CameraData,
+    cut: impl Fn(u32) -> bool,
+) -> Vec<(Vec<u8>, u8)> {
+    let meshes = character_meshes();
+    let place_at = Mat4::from_translation(Vec3::NEG_Z * 100.0);
+    let mut instances: Vec<MeshInstance> =
+        parts.iter().zip(0..).map(|(&mesh, id)| place(id, mesh, place_at)).collect();
+    // The lone instance, culled as any static mesh with levels is, for comparison.
+    let lone = parts.len() as u32;
+    instances.push(place(u64::from(lone), 3, place_at));
+    let (mut slots, list) = scene(&meshes, &instances);
+    let body = crate::CharacterBody::capsule(Vec3::ZERO, Vec3::Y * 1.6, 0.3).with_detail(detail);
+    let lighting = crate::CharacterLighting::unstyled(crate::DirectionalLight {
+        intensity: 1.0,
+        ..crate::DirectionalLight::default()
+    });
+    let listed = (0..parts.len() as u64).map(|id| crate::CharacterInstance {
+        id: InstanceId(id),
+        lighting,
+        face: crate::CharacterFace::default(),
+        body,
+        opacity: 1.0,
+        drive: crate::MaterialDrive::NONE,
+    });
+    let packet = crate::FramePacket {
+        views: vec![crate::ViewData::new(camera(0))],
+        characters: listed.collect(),
+        ..crate::FramePacket::default()
+    };
+    let mut characters = CharacterList::default();
+    characters.update(&packet, &mut slots, false, None);
+    let mut culling = ViewCull::default();
+    let mut out = Vec::new();
+    for frame in 0..frames {
+        let camera = camera(frame);
+        let fresh = if frame == 0 { 0..lone + 1 } else { 0..0 };
+        let (on, none) = (CullingMode::On, CullingThresholds::NONE);
+        culling.prepare(on, none, Some(&camera), &list, &slots, &meshes, characters.table(), fresh);
+        let mut views = [None; CULL_VIEWS];
+        views[0] = Some(CullView::new(&camera, SIZE, SIZE.1, PAD_PIXELS, 0.0));
+        let inputs = CullInputs {
+            list: &list,
+            slots: &slots,
+            meshes: &meshes,
+            margin: |_: &MeshRecord| 0.0,
+            reach: &[],
+            stands: &[],
+            views,
+            levels,
+            cut: cut(frame),
+        };
+        culling.record(&inputs);
+        culling.publish(&[], &[true; CULL_VIEWS], |_| None);
+        let level = |slot: u32| culling.levels().level(slot);
+        out.push(((0..lone).map(level).collect(), level(lone)));
+        for slot in 0..=lone {
+            assert_eq!(culling.drawn(slot), Some(level(slot)), "what skinning skins: the level drawn");
+        }
+    }
+    out
+}
+
+#[test]
+fn a_characters_parts_choose_one_level_together() {
+    // 5 m from its nearest point: a pixel covers 1.6 cm, where `CHAIN` alone would take level 2.
+    let at_five = |_: u32| nearest(5.0);
+    let by_error = CharacterDetail::ByError;
+    let levels =
+        |parts: &[u32], detail| character_levels(parts, detail, LevelSettings::ON, 1, at_five, |_| false);
+    assert_eq!(levels(&[0], by_error), [(vec![2], 2)], "alone, as a static mesh would");
+    // A part at its own coarsest holds its character back no further: it draws that.
+    assert_eq!(levels(&[0, 1], by_error), [(vec![2, 1], 2)]);
+    // A part that needs a finer level holds every part there: the finest any part needs.
+    assert_eq!(levels(&[0, 1, 2], by_error), [(vec![1, 1, 1], 2)]);
+    // A character the stage keeps whole draws level 0, whatever its size on screen.
+    assert_eq!(levels(&[0, 1, 2], CharacterDetail::Whole), [(vec![0, 0, 0], 2)]);
+    // The modes reach characters: off draws level 0; a level holds every part there, or at its
+    // coarsest.
+    let off = LevelSettings { mode: LevelsMode::Off, bias: 0.0 };
+    let fixed = LevelSettings { mode: LevelsMode::Fixed(2), bias: 0.0 };
+    let mode = |levels| character_levels(&[0, 1, 2], by_error, levels, 1, at_five, |_| false);
+    assert_eq!(mode(off), [(vec![0, 0, 0], 0)]);
+    assert_eq!(mode(fixed), [(vec![2, 1, 2], 2)]);
+}
+
+#[test]
+fn a_character_holds_its_level_as_one_and_chooses_afresh_after_a_cut() {
+    // Walking out from 0.3 m to 30 m and back, 5 cm a frame: its parts switch together, at the
+    // frames a lone mesh with the same levels and bounds switches, under the same hysteresis.
+    let walk = |frame: u32| {
+        let step = frame.min(1188 - frame) as f32;
+        nearest(0.3 + step * 0.05)
+    };
+    let frames =
+        character_levels(&[0, 1], CharacterDetail::ByError, LevelSettings::ON, 1189, walk, |_| false);
+    for (frame, (parts, lone)) in frames.iter().enumerate() {
+        assert_eq!(parts[..], [*lone, (*lone).min(1)], "frame {frame}");
+    }
+    assert_eq!((frames[0].1, frames[594].1, frames[1188].1), (0, 3, 0));
+    // Swaying 5 cm either side of a switch never flaps; a cut every frame chooses afresh.
+    let switch = 0.01 * camera().proj.y_axis.y * SIZE.1 as f32 * 0.5;
+    let sway = |frame: u32| nearest(switch + if frame.is_multiple_of(2) { 0.05 } else { -0.05 });
+    let held = character_levels(&[0], CharacterDetail::ByError, LevelSettings::ON, 120, sway, |_| false);
+    assert!(held[1..].iter().all(|(parts, _)| parts[..] == [1]), "{held:?}");
+    let cut =
+        character_levels(&[0], CharacterDetail::ByError, LevelSettings::ON, 4, |f| sway(f + 1), |_| true);
+    let chosen: Vec<u8> = cut.iter().map(|(parts, _)| parts[0]).collect();
+    assert_eq!(chosen, [1, 2, 1, 2], "afresh each cut");
 }

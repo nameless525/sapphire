@@ -607,6 +607,7 @@ fn district(instances: u32) -> (DrawList, Vec<SlotCull>, Vec<SlotCaster>) {
             held: 0b1111,
             far: verdict(slot) == Verdict::Distance,
             levels: [0, 1, 2, 3].map(|level| ((slot + level) % 3) as u8),
+            map_level: 0,
         })
         .collect();
     (list, culled, casters)

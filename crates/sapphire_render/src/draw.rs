@@ -36,10 +36,12 @@
 //! ([`MeshDraws::count_left_out`]). The debug views' replays walk the main view's list and still
 //! test the instances they pick.
 //!
-//! **A static draw draws its level of detail's indices** (M5 D4, the `levels` module): its list
-//! entry's level picks the index range its mesh's record holds for its submesh at that level, from
-//! the same vertex streams (each level reads a prefix of them). Skinned and morphed instances and
-//! fog cards draw level 0.
+//! **A draw draws its level of detail's indices** (M5 D4, the `levels` module): its list entry's
+//! level, the index range its mesh's record holds for its submesh at that level, from the same
+//! vertex streams (each level reads a prefix of them). A skinned or morphed instance draws its
+//! entry's level too (M5 D5), from outputs skinned only as far as the finest level any view drew
+//! it at; the ordered draws (an eye's layers, the transparent ones) draw it at the main view's
+//! family's ([`MeshDraws::levels`]). Fog cards draw level 0.
 //!
 //! **Runs draw as one call** (M5 D2, the [`runs`] module): where a view's list formed runs of a
 //! static depth-writing group, each run binds its mesh's streams and material once, its records at
@@ -61,7 +63,7 @@ use crate::buffer::GrowableBuffer;
 use crate::counts::{ChangeCounter, Counter, PassCounts, StateChanges};
 use crate::gpu_types::DrawData;
 use crate::materials::{MaterialHandle, MaterialRecord};
-use crate::mesh_pool::MeshPool;
+use crate::mesh_pool::{MeshHandle, MeshPool};
 use crate::pipelines::{MeshPass, SurfaceVariant, format_index, slot};
 use crate::scene::{DeformedDraw, DrawCommand, DrawList};
 use crate::skinning::SkinnedOutputs;
@@ -109,6 +111,10 @@ pub(crate) struct MeshDraws<'a> {
     /// Whether the pass draws its list's runs as one call each: every pass but the debug views'
     /// replays, which draw a call a draw.
     pub runs: bool,
+    /// Per instance slot, the level the main view's family draws it at (M5 D4, D5): what the
+    /// ordered draws of a skinned or morphed instance draw at, since only that much of it is
+    /// skinned. `None` draws level 0.
+    pub levels: Option<Culled<'a>>,
 }
 
 /// One of a variant's draws in the draw list: a static mesh's command, by format and position
@@ -164,17 +170,33 @@ impl MeshDraws<'_> {
     /// The indices `command` draws at `level`: its submesh's range in its mesh's record at that
     /// level (M5 D4), its own at level 0.
     fn indices(&self, command: &DrawCommand, level: u8) -> Range<u32> {
+        self.level_indices(command.mesh, command.submesh, &command.indices, level)
+    }
+
+    /// The indices `command`, a skinned or morphed instance's, draws at `level`, as
+    /// [`Self::indices`] (M5 D5).
+    fn deformed_indices(&self, command: &DeformedDraw, level: u8) -> Range<u32> {
+        self.level_indices(command.mesh, command.submesh, &command.indices, level)
+    }
+
+    /// `submesh` of `mesh`'s range at `level`: `own`, its level 0's, at level 0.
+    fn level_indices(&self, mesh: MeshHandle, submesh: u16, own: &Range<u32>, level: u8) -> Range<u32> {
         if level == 0 {
-            return command.indices.clone();
+            return own.clone();
         }
         let records = self.meshes.records();
         let submesh = records
-            .get(command.mesh.index())
-            .and_then(|record| record.lods.get(usize::from(level))?.get(usize::from(command.submesh)));
+            .get(mesh.index())
+            .and_then(|record| record.lods.get(usize::from(level))?.get(usize::from(submesh)));
         submesh.map_or_else(
-            || command.indices.clone(),
+            || own.clone(),
             |submesh| submesh.first_index..submesh.first_index + submesh.index_count,
         )
+    }
+
+    /// The level the ordered draws draw the instance in `slot` at: the main view's family's.
+    fn ordered_level(&self, slot: u32) -> u8 {
+        self.levels.map_or(0, |levels| levels.level(slot))
     }
 }
 
@@ -397,26 +419,28 @@ impl MeshDraws<'_> {
         let mut counts = PassCounts::default();
         let hull = set == DrawSet::Outlines;
         let deformed = &self.list.deformed[variant.index()];
-        let mut draw = |command: &DeformedDraw, bound: &mut Bound, counts: &mut PassCounts| {
-            let indices = command.indices.len() as u32;
-            if pipelines.is_empty() && self.draw_deformed_command(pass, kind, command, bound) {
-                counts.mesh_call(1, indices, 0, hull);
+        let mut draw = |command: &DeformedDraw, level: u8, bound: &mut Bound, counts: &mut PassCounts| {
+            let indices = self.deformed_indices(command, level);
+            let count = indices.len() as u32;
+            if pipelines.is_empty() && self.draw_deformed_command(pass, kind, command, indices.clone(), bound)
+            {
+                counts.mesh_call(1, count, level, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
                 bound.changes.pipelines += 1;
-                if self.draw_deformed_command(pass, kind, command, bound) {
-                    counts.mesh_call(1, indices, 0, hull);
+                if self.draw_deformed_command(pass, kind, command, indices.clone(), bound) {
+                    counts.mesh_call(1, count, level, hull);
                 }
             }
         };
         let Some(list) = self.listed() else { return };
-        // Level 0 alone (m5-plan D5's to change): their entries' levels are 0.
-        for &Entry { at, .. } in list.group(Source::Deformed, variant, set) {
+        // Each at its entry's level (M5 D5): 0 for a character that stays whole.
+        for &Entry { at, level } in list.group(Source::Deformed, variant, set) {
             let command = &deformed[at as usize];
             counts.considered += 1;
             if instance(command.slot) {
-                draw(command, &mut bound, &mut counts);
+                draw(command, level, &mut bound, &mut counts);
             } else {
                 counts.culled_by_pass += 1;
             }
@@ -425,14 +449,16 @@ impl MeshDraws<'_> {
         self.changes.add(&bound.changes);
     }
 
-    /// Draws `command`, a skinned or morphed instance's, binding its streams and material unless
-    /// `bound` says they are bound already. Whether it drew: an instance whose outputs didn't fit
+    /// Draws `indices` of `command`, a skinned or morphed instance's (its level's,
+    /// [`Self::deformed_indices`]), binding its streams and material unless `bound` says they are
+    /// bound already. Whether it drew: an instance whose outputs didn't fit
     /// (`SkinningStats::unplaced`) doesn't.
     fn draw_deformed_command(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         kind: MeshPass,
         command: &DeformedDraw,
+        indices: Range<u32>,
         bound: &mut Bound,
     ) -> bool {
         let streams = Streams::Deformed { slot: command.slot };
@@ -454,7 +480,7 @@ impl MeshDraws<'_> {
             bound.streams = Some(streams);
         }
         self.bind_material(pass, kind, command.material, bound);
-        self.draw_from(pass, self.records.buffer(), command.draw_id, 1, command.indices.clone());
+        self.draw_from(pass, self.records.buffer(), command.draw_id, 1, indices);
         true
     }
 
@@ -510,8 +536,16 @@ impl MeshDraws<'_> {
                     let deformed = &self.list.deformed[variant.index()];
                     if let Some(command) = deformed.get(index as usize).filter(|c| self.stands_here(c.slot)) {
                         counts.considered += 1;
-                        if self.draw_deformed_command(pass, kind, command, &mut bound) {
-                            counts.mesh_call(1, command.indices.len() as u32, 0, false);
+                        // At the main view's family's level (M5 D5); a submesh simplified away
+                        // there isn't drawn, as a list leaves it out.
+                        let level = self.ordered_level(command.slot);
+                        if !lists::has_level(command.levels, level) {
+                            continue;
+                        }
+                        let indices = self.deformed_indices(command, level);
+                        let count = indices.len() as u32;
+                        if self.draw_deformed_command(pass, kind, command, indices, &mut bound) {
+                            counts.mesh_call(1, count, level, false);
                         }
                     }
                 }

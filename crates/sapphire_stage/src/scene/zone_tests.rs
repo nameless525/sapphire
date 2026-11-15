@@ -456,6 +456,8 @@ struct RoomLook {
     grid: Option<Vec<f32>>,
     sky: bool,
     day: bool,
+    /// Its light rigs' document text, if it names any.
+    rigs: Option<&'static str>,
     wind: Option<ZoneWind>,
     weather: Option<ZoneWeather>,
     fog: Option<ZoneFog>,
@@ -496,6 +498,7 @@ impl RoomLook {
             presentation.probes = look.grid.as_ref().map(|_| Self::grid_id(room));
             presentation.sky = look.sky.then(|| Self::sky_id(room));
             presentation.day = look.day.then(|| LOOKDEV_DAY.to_owned());
+            presentation.rigs = look.rigs.map(str::to_owned);
             presentation.wind = look.wind;
             presentation.weather = look.weather;
             presentation.fog = look.fog;
@@ -1162,6 +1165,51 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(walk.content.probe_hours(), [6.0], "and back");
     assert_eq!(again.fog.near.density, in_first.fog.near.density);
     assert!(again.sky_material.is_some());
+}
+
+/// Light rigs that read as a library's by their type, as a cook checks them, but name one preset twice.
+const TWICE_NAMED_RIGS: &str = r#"(
+    type: "sapphire::world::LightRigLibrary",
+    version: 1,
+    data: (rigs: [(name: "gameplay", rig: ()), (name: "gameplay", rig: ())]),
+)"#;
+
+/// A zone whose look doesn't read (Z3 review F4) can't come, as one whose look's assets don't load can't:
+/// the trip into it fails, and the content and the stage both keep the look of the zone on stage, its probe
+/// grid on the renderer and its day.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_zone_whose_look_does_not_read_cannot_come() {
+    let settings = small_settings();
+    let looks = [
+        RoomLook { grid: Some(vec![6.0]), day: true, ..RoomLook::default() },
+        RoomLook { grid: Some(vec![12.0, 18.0]), rigs: Some(TWICE_NAMED_RIGS), ..RoomLook::default() },
+    ];
+    let mut walk = Walk::dressed_rooms(SMALL, &looks, no_limits());
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    walk.trip(0, settings);
+    walk.frame();
+    let rigs = walk.scene.ecs.world().resource::<LightRigLibrary>().clone();
+    walk.scene.prefetch_zone(room(1), settings);
+    walk.scene.hurry_zone(room(1).zone);
+    let mut frames = 0;
+    while walk.scene.zone_load(room(1).zone) == ZoneLoad::Waiting {
+        walk.frame();
+        frames += 1;
+        assert!(frames < 100_000, "it never said");
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    let load = walk.scene.zone_load(room(1).zone);
+    assert!(
+        matches!(&load, ZoneLoad::Failed(error) if error.contains("light rigs") && error.contains("twice")),
+        "{load:?}"
+    );
+    assert!(walk.scene.arrive_in_zone(room(1).zone, &mut walk.content).is_none());
+    walk.frame();
+    walk.frame();
+    assert_eq!(walk.content.probe_hours(), [6.0], "the grid on stage stays");
+    assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "and the day with it");
+    assert_eq!(walk.scene.ecs.world().resource::<LightRigLibrary>(), &rigs, "and the rigs");
 }
 
 /// A pack that isn't there says so, and what's on stage stays. Asking again tries again.

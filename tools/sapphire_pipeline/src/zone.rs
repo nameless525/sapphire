@@ -191,7 +191,9 @@ pub const GRID_LINE_TOLERANCE: f32 = 1e-3;
 pub const SOURCE_SUFFIX: &str = ".zone.ron";
 
 /// The document type a zone's `rigs` must be. The library's reader is `sapphire_world`'s, which the
-/// cooker can't link, so a cook checks what it can and the runtime reads the rest.
+/// cooker can't link (its presets resolve through the renderer's types), so a cook checks the type alone:
+/// `sapphire_stage`'s `zone_looks` test reads every shipped zone's rigs with the runtime's reader, and a
+/// zone whose rigs don't read can't be tripped into or opened.
 const RIG_LIBRARY: &str = "sapphire::world::LightRigLibrary";
 
 /// The document type a zone's `sky` must be: a sky material, not one of another family's.
@@ -1016,8 +1018,12 @@ pub fn read_document(zone: &Path, field: &str, relative: &str) -> Result<(PathBu
 fn day_text(bytes: Vec<u8>) -> Result<String, ZoneCookError> {
     let text = String::from_utf8(bytes)
         .map_err(|error| ZoneCookError::invalid("day", format!("it isn't UTF-8: {error}")))?;
-    TodTimeline::from_ron(&text)
+    let day = TodTimeline::from_ron(&text)
         .map_err(|error| ZoneCookError::invalid("day", format!("it doesn't read: {error}")))?;
+    // The stage takes it in place of its own, which must key every group (`TimeOfDay::set_timeline`).
+    if !day.is_complete() {
+        return Err(ZoneCookError::invalid("day", "it doesn't key every group a stage's day must"));
+    }
     Ok(text)
 }
 
@@ -1168,6 +1174,18 @@ pub fn cook(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A zone's day must be one a stage can take (Z3 review F4): it reads, and keys every group a stage's day
+    /// must, as the look-dev day does; a key with none reads, and is refused.
+    #[test]
+    fn a_zones_day_must_be_complete() {
+        let lookdev = include_str!("../../../content/lookdev/lookdev_day.ron");
+        assert_eq!(day_text(lookdev.as_bytes().to_vec()).expect("a complete day"), lookdev);
+        let bare = r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 12.0)]))"#;
+        assert!(TodTimeline::from_ron(bare).is_ok(), "it reads");
+        let error = day_text(bare.as_bytes().to_vec()).expect_err("it keys nothing").to_string();
+        assert!(error.contains("every group"), "{error}");
+    }
 
     /// A parse kept in the cache is checked as one just made is, since a check added after it was kept bumps
     /// no stage: one that fails isn't taken for the document, which is parsed again.

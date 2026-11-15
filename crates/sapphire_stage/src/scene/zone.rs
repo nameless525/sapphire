@@ -150,6 +150,8 @@ struct ComingLook {
     grid: Option<Handle<ProbeGrid>>,
     sky: Option<Handle<Material>>,
     reflections: Option<Handle<ReflectionProbes>>,
+    /// Its day, rigs and air, read as the zone came in: one that doesn't read can't come.
+    read: Option<ZoneLook>,
     /// All are in, or the zone names none.
     ready: bool,
 }
@@ -171,6 +173,7 @@ impl ComingLook {
             grid: grid.map_err(|error| error.to_string())?,
             sky: sky.map_err(|error| error.to_string())?,
             reflections: reflections.map_err(|error| error.to_string())?,
+            read: None,
             ready: false,
         })
     }
@@ -240,7 +243,14 @@ impl NextZone {
                         // Its wet surfaces, off the frame, if it may go wet (M5 L4): the pack's prewarm
                         // couldn't say, with the zone unread.
                         let wet = !tool_weather && may_be_wet(presentation);
-                        self.coming = match ComingLook::ask(server, names, self.priority()) {
+                        // Its day and rigs read now, so a look that doesn't read fails the trip before the
+                        // arrival switches anything (Z3 review F4).
+                        let read = ZoneLook::read(presentation).map_err(|error| format!("its look: {error}"));
+                        let priority = self.priority();
+                        self.coming = match read.and_then(|read| {
+                            ComingLook::ask(server, names, priority)
+                                .map(|look| ComingLook { read: Some(read), ..look })
+                        }) {
                             Ok(look) => {
                                 self.look = look;
                                 Coming::Near(Box::new(Streamer::new(zone.clone(), self.settings)))
@@ -358,9 +368,17 @@ pub struct ZoneLook {
 }
 
 impl ZoneLook {
-    /// Reads `presentation`'s, whose day and rigs a cook checked.
+    /// Reads `presentation`'s: its day must be complete, as a stage's must, and its rigs a valid library. A cook
+    /// checked the day; the rigs only by their type (a content test reads the shipped zones'), so a zone coming
+    /// reads its look before it's ready, and can't come if it doesn't read (Z3 review F4).
     pub fn read(presentation: &ArchivedZonePresentation) -> Result<Self, String> {
-        let day = presentation.day.as_ref().map(|text| TodTimeline::from_ron(text.as_str())).transpose();
+        let day = presentation.day.as_ref().map(|text| TodTimeline::from_ron(text.as_str()));
+        let day = match day.transpose().map_err(|error| format!("its day: {error}"))? {
+            Some(day) if !day.is_complete() => {
+                return Err("its day: it doesn't key every group a stage's day must".to_owned());
+            }
+            day => day,
+        };
         let rigs =
             presentation.rigs.as_ref().map(|text| LightRigLibrary::from_ron(text.as_str())).transpose();
         let wind = presentation.wind.as_ref().map(|wind| {
@@ -372,7 +390,7 @@ impl ZoneLook {
             Weather { wetness: weather.wetness, puddles: weather.puddles }
         });
         Ok(Self {
-            day: day.map_err(|error| format!("its day: {error}"))?,
+            day,
             rigs: rigs.map_err(|error| format!("its light rigs: {error}"))?,
             wind,
             weather,
@@ -744,6 +762,14 @@ impl Scene {
     /// until [`Self::zone_arrived`], and [`Self::end_arrival`] lets it go. `None` for a zone that isn't ready.
     pub fn arrive_in_zone(&mut self, zone: AssetId, content: &mut Content) -> Option<ArrivedZone> {
         let at = self.next_zones.iter().position(|next| next.target.zone == zone && next.is_ready())?;
+        // The stage takes the look first, read and checked as the zone came: should it not take, nothing
+        // switches, the content's look included, and the zone can't come (Z3 review F4).
+        let read = self.next_zones[at].look.read.take().expect("a ready zone's look was read");
+        if let Err(error) = self.take_zone_look(read) {
+            tracing::error!(target: LOG_TARGET, %zone, error, "a zone's look didn't take");
+            self.next_zones[at].coming = Coming::Failed(format!("its look: {error}"));
+            return None;
+        }
         let NextZone { target, coming, focus, look, .. } = self.next_zones.remove(at);
         let Coming::Near(streamer) = coming else { unreachable!("it was just looked at") };
         let (server, _) = content.streaming_parts();
@@ -755,7 +781,6 @@ impl Scene {
             .filter(|exit| exit.prefetch)
             .map(|exit| exit.pack.as_str().to_owned())
             .collect();
-        let read = ZoneLook::read(&arrived.presentation);
         content.arrive_in_zone(look.grid, look.sky, look.reflections);
         let left = self.close_zone_keeping(content, &ahead);
         self.leave_town();
@@ -773,10 +798,6 @@ impl Scene {
             stand: Vec3::ZERO,
             held_focus: Some(focus),
         });
-        // A cook checked its day and rigs: one that doesn't read leaves the stage the look it had.
-        if let Err(error) = read.and_then(|look| self.take_zone_look(look)) {
-            tracing::error!(target: LOG_TARGET, %zone, error, "a zone's look didn't read");
-        }
         Some(ArrivedZone { focus: Vec3::from(focus), left })
     }
 

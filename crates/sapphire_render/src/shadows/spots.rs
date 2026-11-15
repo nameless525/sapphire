@@ -3,12 +3,17 @@
 //! earlier frame drew it.
 //!
 //! - **Who:** a [`LightKind::Spot`] whose author set `shadow`, that can light something, whose cone
-//!   is at most [`MAX_HALF_ANGLE`] round its axis, and whose cone reaches the main view's frustum.
-//!   Of those the nearest the camera take the tier's tiles ([`ShadowSettings::spots`]), ties to
-//!   the earlier light. The last chosen yields to the first left out as their distances meet,
-//!   over a quarter of its range ([`YIELD_SHARE`]): its shadow's weight falls to 0 before its tile
-//!   changes hands, so a shadow fades rather than pops. Nothing but the tiles' cache is kept
-//!   between frames.
+//!   is at most [`MAX_HALF_ANGLE`] round its axis, and whose cone reaches the main view's frustum
+//!   or lies within [`VIEW_MARGIN`] of it. Of those the nearest the camera take the tier's tiles
+//!   ([`ShadowSettings::spots`]), ties to the earlier light, a cone outside the view ranked further
+//!   by [`TURN_PENALTY`] yield bands per radian the camera would turn to bring it in. The last
+//!   chosen yields to the first left out as their ranks meet, over a quarter of its range
+//!   ([`YIELD_SHARE`], its yield band): its shadow's weight falls to 0 before its tile changes
+//!   hands, so a shadow fades rather than pops. A cone outside the view yields the same way as its
+//!   penalty passes its band, so its weight is 0 a few degrees out, and every weight moves
+//!   continuously as cones enter and leave the view (review F1, 2026-11-15: a nearer cone
+//!   entering used to take the last tile at once). A chosen spot outside the view still has its
+//!   tile drawn, cached as any other. Nothing but the tiles' cache is kept between frames.
 //! - **Where:** a perspective view from the light along its axis, square, wide enough that its
 //!   cone keeps [`TILE_PADDING`] texels clear of the tile's edges, from [`SPOT_NEAR`] (geometry
 //!   nearer the light, its own housing, casts nothing) out to the light's range ([`SpotFit`]).
@@ -37,6 +42,16 @@ pub(crate) const MAX_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_3;
 /// Over what share of its range the last chosen spot's shadow fades as the first left out comes as
 /// near the camera: they trade the tile at weight 0.
 pub(crate) const YIELD_SHARE: f32 = 0.25;
+/// How far outside the main view a flagged spot's cone stays a candidate, as the angle the camera
+/// would turn to bring it in (its cone sphere's distance past the frustum over its distance from
+/// the camera): 90°.
+pub(crate) const VIEW_MARGIN: f32 = std::f32::consts::FRAC_PI_2;
+/// The penalty on the rank of a spot whose cone is outside the view, in its yield bands per radian of
+/// that turn: its own weight is 0 an eighth of a radian (7°) out, and at [`VIEW_MARGIN`] it ranks
+/// over twelve bands further than its distance, past the lights in view it could otherwise displace
+/// at once. A quarter-degree turn moves its rank by 0.035 bands, so no weight steps by more than
+/// about 0.05.
+pub(crate) const TURN_PENALTY: f32 = 8.0;
 
 /// Where a spot light's tile looks: a square perspective view from `position` along `direction`,
 /// `tangent` the tangent of its half-angle, from [`SPOT_NEAR`] to `far` (the light's range),
@@ -181,8 +196,10 @@ pub(crate) struct SpotTile {
 pub(crate) struct Candidate {
     pub light: u32,
     pub fit: SpotFit,
-    /// From the camera to the light.
+    /// From the camera to the light, plus its penalty.
     pub rank: f32,
+    /// How much further it ranks for its cone being outside the view ([`TURN_PENALTY`]), meters.
+    pub penalty: f32,
 }
 
 /// Chooses this frame's spots into `chosen` from `lights` for `camera` (at most `count`), each with
@@ -213,12 +230,17 @@ pub(crate) fn choose(
             }
             SpotCast::Fit(fit) => fit,
         };
-        let seen = SpotFit::cone_sphere(light).is_some_and(|sphere| {
-            planes.iter().all(|plane| plane.truncate().dot(sphere.center) + plane.w >= -sphere.radius)
-        });
-        if seen {
-            let rank = light.position.distance(camera.position);
-            candidates.push(Candidate { light: index as u32, fit, rank });
+        let Some(sphere) = SpotFit::cone_sphere(light) else { continue };
+        // How far the cone lies past the frustum's farthest plane, and the turn that brings it in.
+        let outside = planes
+            .iter()
+            .map(|plane| -(plane.truncate().dot(sphere.center) + plane.w) - sphere.radius)
+            .fold(0.0f32, f32::max);
+        let turn = outside / sphere.center.distance(camera.position).max(sphere.radius).max(1e-3);
+        if turn <= VIEW_MARGIN {
+            let penalty = TURN_PENALTY * turn * yield_band(&fit);
+            let rank = light.position.distance(camera.position) + penalty;
+            candidates.push(Candidate { light: index as u32, fit, rank, penalty });
         }
     }
     // In place; equal distances keep the packet's order.
@@ -227,8 +249,12 @@ pub(crate) fn choose(
     let next = candidates.get(count).map(|left_out| left_out.rank);
     let mut taken = [false; MAX_SPOT_SHADOWS];
     for candidate in candidates.iter().take(count) {
-        let band = (YIELD_SHARE * candidate.fit.far).max(1e-3);
-        let weight = next.map_or(1.0, |next| smoothstep(0.0, band, next - candidate.rank));
+        // It yields to the first left out, and outside the view to its own penalty: in view, with
+        // none left out, 1.
+        let band = yield_band(&candidate.fit);
+        let own = band - candidate.penalty;
+        let room = next.map_or(own, |next| (next - candidate.rank).min(own));
+        let weight = smoothstep(0.0, band, room);
         // The tile that holds this very fit keeps it.
         let held = (0..count).find(|&tile| !taken[tile] && tiles[tile].drawn == Some(candidate.fit));
         let tile = held.map_or(u8::MAX, |tile| {
@@ -247,6 +273,11 @@ pub(crate) fn choose(
         }
     }
     too_wide
+}
+
+/// Over what distance in rank a spot's shadow yields: a quarter of its range ([`YIELD_SHARE`]).
+fn yield_band(fit: &SpotFit) -> f32 {
+    (YIELD_SHARE * fit.far).max(1e-3)
 }
 
 /// What cast into a tile, folded into one word (64-bit FNV-1a over each caster's slot, mesh, level
@@ -441,6 +472,55 @@ mod tests {
         }
         assert!(traded);
         assert!(lights[4].position.distance(camera().position) < fourth_rank);
+    }
+
+    /// As the camera turns, a nearer flagged spot's cone entering the view (or leaving it) moves
+    /// every weight continuously: the last chosen fades out before it gives up its tile, the spot
+    /// arriving fades in from 0, and none steps by more than 0.08 for a quarter-degree turn, either
+    /// way round, on two tiles and on four.
+    #[test]
+    fn a_cone_entering_the_view_fades_the_last_chosen_out() {
+        let mut lights: Vec<LocalLight> =
+            (0..4).map(|index| lamp(Vec3::new(1.5, 4.0, -6.0 * index as f32), 40.0, true)).collect();
+        // Beside the camera and behind it on the left, both outside the view looking down the
+        // street, and nearer than the street's last lamps.
+        lights.push(lamp(Vec3::new(10.0, 4.0, 4.0), 40.0, true));
+        lights.push(lamp(Vec3::new(-6.0, 4.0, 6.0), 40.0, true));
+        let tiles = [SpotTile::default(); MAX_SPOT_SHADOWS];
+        let ahead = camera();
+        let forward = Vec3::new(0.0, -0.6, -24.0);
+        // Quarter degrees from 100° left to 100° right.
+        let quarters: Vec<i32> = (-400..=400).collect();
+        for count in [2, 4] {
+            let weights = |quarter: i32| {
+                let turn = glam::Quat::from_rotation_y(-(quarter as f32 * 0.25).to_radians());
+                let target = ahead.position + turn * forward;
+                let camera = CameraData::look_at(ahead.position, target, Vec3::Y, 0.9, 16.0 / 9.0, 0.05);
+                let mut chosen = Vec::new();
+                choose(&lights, &camera, (count, 1024), &tiles, &mut Vec::new(), &mut chosen);
+                let mut weights = [None; 6];
+                for spot in &chosen {
+                    weights[spot.light as usize] = Some(spot.weight);
+                }
+                weights
+            };
+            for order in [quarters.clone(), quarters.iter().rev().copied().collect()] {
+                let mut last = weights(order[0]);
+                for &quarter in &order[1..] {
+                    let now = weights(quarter);
+                    for (light, (was, is)) in last.iter().zip(&now).enumerate() {
+                        let at = format!("{count} tiles, light {light}, at {}°", quarter as f32 * 0.25);
+                        match (*was, *is) {
+                            (Some(was), Some(is)) => assert!((is - was).abs() <= 0.08, "{at}: {was} to {is}"),
+                            (Some(was), None) => assert!(was <= 0.01, "{at}: {was} to absent"),
+                            (None, Some(is)) => assert!(is <= 0.01, "{at}: absent to {is}"),
+                            (None, None) => {}
+                        }
+                    }
+                    last = now;
+                }
+            }
+        }
     }
 
     /// A signature follows what cast: the same casters fold to the same word, and any moved,

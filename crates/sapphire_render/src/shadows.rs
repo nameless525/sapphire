@@ -204,9 +204,10 @@
 //!
 //! A spot light whose author flagged it (`LightKind::Spot::shadow`) casts, on a tier with
 //! [`ShadowSettings::spots`] (Desktop-High 4, Desktop-Low 2, phones none). The `spots` module plans
-//! them: which flagged spots cast (those whose cone reaches the view, nearest first, the last one
-//! fading out before it gives its tile up; none wider than 120°), the perspective each tile looks
-//! through, and the cache.
+//! them: which flagged spots cast (those whose cone reaches the view, nearest first, a cone just
+//! outside it ranked further by how far the camera would turn to see it, the last one fading out
+//! before it gives its tile up; none wider than 120°), the perspective each tile looks through, and
+//! the cache.
 //!
 //! - **Where:** one more layer of the cascades' array, the spot layer, 2 × 2 tiles of half a
 //!   cascade's resolution. Not the character atlas: its pass clears it whole every frame a character

@@ -4100,6 +4100,19 @@
                        "--capture-frames", "32", "--distortion", "off"],
                 ci_seconds: (lavapipe: 68.8, warp: 167.8),
             ),
+            // A party of three kinds against a wave of twelve (M5 C12), over the recorded `party-three-kinds`:
+            // Wren on the field, the third kind, added with no Rust, mid-swing with the staff skinned in, among
+            // the Ember Lancers, and the HUD naming each slot's member, the heroine and Aster resting. It pins
+            // `--decals off` and `--distortion off` as the two kinds' scene does. Metal only.
+            (
+                name: "game-hud-party-three-en",
+                size: "1280x720",
+                ticks: 340,
+                args: ["--lods", "off", "--cues", "--decals", "off", "--hud", "live", "--arena", "--arena-shot", "follow", "--party",
+                       "--replay", "tests/replays/party-three-kinds.sreplay", "--ui-game", "hud", "--ui-locale", "en",
+                       "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
+                       "--capture-frames", "32", "--distortion", "off"],
+            ),
             // Bends (M5 L6), at dusk round the look-dev character: a heavy's landing behind it, its shockwave's
             // band a third of the way out, bending the paving and the buildings past it outward while the
             // character in front stands unbent; the haze a second after a landing, shimmering over the burn; the

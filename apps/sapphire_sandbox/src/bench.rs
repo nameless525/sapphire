@@ -165,6 +165,20 @@ pub(crate) fn check_no_waits(builds: sapphire_render::PipelineStats) -> Result<(
     }
 }
 
+/// Whether a counting walk (`walk`: a zone walk under `--draw-every`) is put back at its rail's start after frame
+/// `frame`: through the warm-up, so its count rows start at its first step rather than [`WARMUP_FRAMES`] steps in
+/// (M5 Z3). The warm-up still steps, streams and draws there, which is what it's for.
+fn holds_at_start(frame: u64, walk: bool) -> bool {
+    walk && frame < u64::from(WARMUP_FRAMES)
+}
+
+/// Whether frame `frame` runs its graph under `--draw-every <every>`: a counting walk's every `every`th from its
+/// first measured frame, so the frame of its first step is drawn; anything else's every `every`th from frame 0.
+fn drawn_frame(frame: u64, every: u64, walk: bool) -> bool {
+    let from = if walk { u64::from(WARMUP_FRAMES) } else { 0 };
+    frame.abs_diff(from) % every == 0
+}
+
 /// With `--debug-overlay` the bench measures the overlay shown; otherwise, in `dev` builds,
 /// its hooks with it hidden.
 pub(crate) fn run(
@@ -220,8 +234,10 @@ pub(crate) fn run(
     let mut drawn = draw_every
         .filter(|_| options.zone.is_some())
         .map(|every| DrawnCounts::new(&stage, (u64::from(frames) / every + 1) as usize));
+    // A counting walk (M5 Z3) holds at its start through the warm-up and draws its first step.
+    let counting_walk = drawn.is_some() && options.zone_walk.is_some();
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
-        stage.lose_frames = draw_every.is_some_and(|every| frame % every != 0);
+        stage.lose_frames = draw_every.is_some_and(|every| !drawn_frame(frame, every, counting_walk));
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
         spin_insets(&mut stage, spin);
@@ -236,6 +252,9 @@ pub(crate) fn run(
         if let Some(drawn) = &mut drawn {
             let measured = frame >= u64::from(WARMUP_FRAMES);
             drawn.frame(&stage, frame, measured && !stage.lose_frames);
+        }
+        if holds_at_start(frame, counting_walk) {
+            stage.scene.restart_zone_walk();
         }
         if frame >= u64::from(WARMUP_FRAMES) {
             cpu.push(frame_cpu);
@@ -670,7 +689,22 @@ fn gpu_times(
 mod tests {
     use sapphire_render::PipelineStats;
 
-    use super::check_no_waits;
+    use super::{WARMUP_FRAMES, check_no_waits, drawn_frame, holds_at_start};
+
+    /// A counting walk holds at its rail's start through the warm-up and counts from its first step: the first
+    /// measured frame is drawn, and the frames drawn are every `n`th from it. A held view keeps its old cadence.
+    #[test]
+    fn a_counting_walk_counts_from_its_first_step() {
+        let first = u64::from(WARMUP_FRAMES);
+        assert!((0..first).all(|frame| holds_at_start(frame, true)), "held through the warm-up");
+        assert!(
+            !holds_at_start(first, true) && !holds_at_start(0, false),
+            "walks from the first measured frame"
+        );
+        assert!(drawn_frame(first, 7, true), "the first step is drawn");
+        assert!(drawn_frame(first + 7, 7, true) && !drawn_frame(first + 1, 7, true), "then every 7th");
+        assert!(drawn_frame(0, 7, false) && drawn_frame(63, 7, false), "a held view's cadence stays");
+    }
 
     /// A frame of a zone walk that waited on the warm-up stalled as surely as one that built: the walk fails.
     #[test]

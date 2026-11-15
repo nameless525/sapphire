@@ -6,7 +6,9 @@
 //!   settings at one hour: every frame steps, streams, prepares and records, every `n`th runs its graph, and
 //!   the bench logs what the frames it drew submitted (`count row`), what the load built and what the zone
 //!   placed ([`WALK_ROWS`]). The walk draws without simulating, so the same build draws the same frames on any
-//!   machine at any load: no GPU time is read, and none is a result.
+//!   machine at any load: no GPU time is read, and none is a result. The walk holds at the tour's start through
+//!   the bench's warm-up and counts from its first step, which is drawn (M5 Z3): before, the warm-up walked the
+//!   first 6 m uncounted.
 //! - **Every row is exact,** held both ways: a count that goes down fails too, until the change that lowered
 //!   it writes it down. Two things made the timing-paced rows exact: a counting bench sees every texture whole,
 //!   as a capture does (the sandbox's `--draw-every`), so the texture pool's bytes and what the asset server

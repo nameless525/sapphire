@@ -1,0 +1,24 @@
+// The `district-encounter` scenario's run (M5 B5), whose input names the party's first member throughout: from
+// the avenue's start at z 60 it runs north up the avenue, crossing into the plaza's volume at z 27, which brings
+// the twelve, and stops short of their front row. Then rounds of the string and a dodge, with a swap every 200
+// ticks, so each kind takes the field in turn and the twelve's blows are shared, to a fixed end before any falls:
+// against the Ember Lancers its first member falls at about tick 1,800 and the whole party by about 2,500.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the party up the district's avenue into the plaza, whose twelve Ember Lancers come at it, then rounds of strings, dodges and swaps to a fixed end (M5 B5)",
+        ticks: 1600,
+        tracks: [
+            (
+                presses: [
+                    (from: 420, every: 75, at: [(0, [Light]), (16, [Light]), (32, [Light]), (56, [Dodge])]),
+                    (from: 600, every: 200, at: [(0, [Swap])]),
+                ],
+                stick: Legs([
+                    (stick: (0, -127), ticks: 420),
+                ]),
+            ),
+        ],
+    ),
+)

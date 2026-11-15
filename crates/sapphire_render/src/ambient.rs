@@ -132,10 +132,12 @@
 //! environment's ambient light alone (its diffuse through Jimenez's multi-bounce fit, its
 //! specular through Lagarde's specular occlusion), behind pipeline constants too:
 //!
-//! - **Capsule AO**, every tier: the nearest [`MAX_CAPSULES`] character bodies, each a sphere at
-//!   the point of its axis nearest the shaded point taking its cosine-weighted solid angle
-//!   (Quílez's sphere occlusion), faded out between three and five radii. It costs a short loop
-//!   per pixel and no pass.
+//! - **Capsule AO**, every tier: the nearest [`MAX_CAPSULES`] character bodies (64; 16 with
+//!   capsules by cluster off, `RenderSettings::capsule_bins`), each a sphere at the point of its
+//!   axis nearest the shaded point taking its cosine-weighted solid angle (Quílez's sphere
+//!   occlusion), faded out between three and five radii. No pass: a pixel walks the bodies its
+//!   light cluster's mask holds (M5 L18, `lights::capsule_bins`, which marks a body in every
+//!   cluster within five radii of its axis), in index order, or every body with the bins off.
 //! - **GTAO** ([`GtaoSettings`]), desktop and Mobile-High (`occlusion.wgsl`): half resolution from
 //!   the scene prepass's depth and normals, which it makes run. The depth is first reduced to
 //!   view distance and `GTAO_DEPTH_MIPS` − 1 coarser mips (XeGTAO's prefilter), which samples
@@ -385,8 +387,9 @@ impl ProbeKeys {
 }
 
 /// The most character bodies the environment's capsule AO reads in a frame, nearest the camera
-/// first (WGSL `MAX_AMBIENT_CAPSULES`).
-pub const MAX_CAPSULES: usize = 16;
+/// first (WGSL `MAX_AMBIENT_CAPSULES`), with capsule bins on (M5 L18); 16 with them off
+/// ([`UNBINNED_CAPSULES`](crate::lights::capsule_bins::UNBINNED_CAPSULES)).
+pub const MAX_CAPSULES: usize = crate::lights::capsule_bins::BINNED_CAPSULES;
 
 /// The ambient pass's name in the frame graph, for GPU timing: one compute pass for every
 /// ambient dispatch of a frame (with a grid, the sky's projection, the reflection prefilter, the
@@ -513,8 +516,8 @@ pub(crate) struct GpuAmbientCapsule {
     pub top: [f32; 4],
 }
 
-/// Group 0 binding 8 (WGSL `AmbientUniforms`): where the grid is, the atlas, GTAO's size and the
-/// capsules. 624 bytes.
+/// Group 0 binding 11 (WGSL `AmbientUniforms`): where the grid is, the atlas, GTAO's size and the
+/// capsules. 2,160 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(crate) struct AmbientUniforms {
@@ -572,7 +575,7 @@ pub(crate) struct GtaoUniforms {
 }
 
 /// Every ambient uniform of a frame, in one buffer staged with one write: each struct at a
-/// multiple of [`REGION_ALIGNMENT`], where its bindings point. 3,328 bytes.
+/// multiple of [`REGION_ALIGNMENT`], where its bindings point. 4,864 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct AmbientBlock {
@@ -606,7 +609,7 @@ const _: () = {
     );
     assert!(size_of::<PrefilterRegion>() as u64 == REGION_ALIGNMENT);
     assert!(COMPOSE_REGION.is_multiple_of(REGION_ALIGNMENT));
-    assert!(size_of::<AmbientBlock>() == 3328);
+    assert!(size_of::<AmbientBlock>() == 4864);
 };
 
 /// `size` bytes of `buffer` from `offset`, as a binding.
@@ -1400,13 +1403,14 @@ impl Placeholders {
     }
 }
 
-/// Select the exact baseline nearest prefix. A seventeenth entry witnesses any
-/// tie crossing the cutoff. Equal distances fall back to the baseline's complete
-/// unstable sort so even its implementation-defined tie order stays unchanged.
+/// Select the exact baseline nearest prefix of `cap` bodies. An entry past the cap
+/// witnesses any tie crossing the cutoff. Equal distances fall back to the baseline's
+/// complete unstable sort so even its implementation-defined tie order stays unchanged.
 #[inline]
 fn select_capsules(
     bodies: impl Iterator<Item = CharacterBody> + Clone,
     eye: Vec3,
+    cap: usize,
     candidates: &mut Vec<(f32, CharacterBody)>,
 ) {
     if bodies.size_hint().1.is_some_and(|n| n <= 64) {
@@ -1417,23 +1421,21 @@ fn select_capsules(
     for body in bodies.clone().filter(CharacterBody::casts) {
         let center = 0.5 * (body.base + body.top);
         let distance = center.distance_squared(eye);
-        if candidates.len() == MAX_CAPSULES + 1 && distance.total_cmp(&candidates[MAX_CAPSULES].0).is_gt() {
+        if candidates.len() == cap + 1 && distance.total_cmp(&candidates[cap].0).is_gt() {
             continue;
         }
         // A duplicate outside the prefix cannot later enter it: its distance is
-        // identical and the cutoff only decreases. Deduplication needs 17 slots.
+        // identical and the cutoff only decreases. Deduplication needs cap + 1 slots.
         if candidates.iter().any(|(_, other)| *other == body) {
             continue;
         }
         let index = candidates.partition_point(|(d, _)| d.total_cmp(&distance).is_le());
         candidates.insert(index, (distance, body));
-        candidates.truncate(MAX_CAPSULES + 1);
+        candidates.truncate(cap + 1);
         // Common symmetric crowds: once the entire retained prefix ties, the
         // exact-order fallback is inevitable unless later nearer bodies replace
         // it. Taking it early is always correct and avoids an extra whole scan.
-        if candidates.len() == MAX_CAPSULES + 1
-            && candidates[0].0.total_cmp(&candidates[MAX_CAPSULES].0).is_eq()
-        {
+        if candidates.len() == cap + 1 && candidates[0].0.total_cmp(&candidates[cap].0).is_eq() {
             select_capsules_full(bodies, eye, candidates);
             return;
         }
@@ -2095,18 +2097,19 @@ impl Ambient {
     }
 
     /// The CPU half of a frame: the capsules the environment reads (the resolved live
-    /// `characters`, one per body, nearest its main view first), the keys the
+    /// `characters`, one per body, nearest its main view first, at most `capsules`), the keys the
     /// relight blends, and the character entries the character pass reads. Allocates
     /// nothing once its scratch has grown.
-    pub(crate) fn prepare(&mut self, packet: &FramePacket, characters: CharacterTable<'_>) {
+    pub(crate) fn prepare(&mut self, packet: &FramePacket, characters: CharacterTable<'_>, capsules: usize) {
+        let cap = capsules.min(MAX_CAPSULES);
         profiling::scope!("Ambient::prepare");
         let mut capsules = 0;
         if self.occlusion.capsules
             && let Some(view) = packet.main_view()
         {
             let eye = view.camera.position;
-            select_capsules(characters.bodies.iter().copied(), eye, &mut self.candidates);
-            for (gpu, (_, body)) in self.block.ambient.capsules.iter_mut().zip(&self.candidates) {
+            select_capsules(characters.bodies.iter().copied(), eye, cap, &mut self.candidates);
+            for (gpu, (_, body)) in self.block.ambient.capsules[..cap].iter_mut().zip(&self.candidates) {
                 *gpu = GpuAmbientCapsule {
                     base: body.base.extend(body.radius).to_array(),
                     top: body.top.extend(0.0).to_array(),
@@ -2131,6 +2134,16 @@ impl Ambient {
                 .filter(|&(&key, weight)| weight > 0.0 && key < grid.relight.counts[3])
                 .count() as u32;
         }
+    }
+
+    /// The capsules the environment's capsule AO reads this frame, nearest first, `(base, top,
+    /// radius)` (M5 L18's binning): none without capsule AO or a view.
+    pub(crate) fn capsules(&self) -> impl Iterator<Item = (Vec3, Vec3, f32)> + '_ {
+        let ambient = &self.block.ambient;
+        let count = (ambient.counts[0] as usize).min(MAX_CAPSULES);
+        ambient.capsules[..count].iter().map(|capsule| {
+            (Vec3::from_slice(&capsule.base[..3]), Vec3::from_slice(&capsule.top[..3]), capsule.base[3])
+        })
     }
 
     /// Sheds GTAO from the next frame, or brings it back (the thermal ladder's
@@ -3024,6 +3037,7 @@ mod tests {
     use sapphire_assets::probes::{EMPTY_BRICK, ProbeData, ProbeGrid};
 
     use super::*;
+    use crate::lights::capsule_bins::UNBINNED_CAPSULES;
     use crate::shaders::{ShaderFile, evaluate_on_gpu};
 
     #[test]
@@ -3284,10 +3298,10 @@ mod tests {
     fn bounded_capsules_preserve_the_exact_ordered_gpu_prefix() {
         // Compare the bytes sent to the GPU, including signed zero, rather than
         // float equality. Equal-distance entries must keep the full sort's order.
-        let prefix = |candidates: &[(f32, CharacterBody)]| -> Vec<[u32; 8]> {
+        let prefix = |candidates: &[(f32, CharacterBody)], cap: usize| -> Vec<[u32; 8]> {
             candidates
                 .iter()
-                .take(MAX_CAPSULES)
+                .take(cap)
                 .map(|(_, body)| {
                     let base = body.base.extend(body.radius).to_array();
                     let top = body.top.extend(0.0).to_array();
@@ -3321,15 +3335,18 @@ mod tests {
                         bodies[1] = bodies[0];
                         bodies[1].base.x = -0.0;
                     }
-                    for eye in [Vec3::ZERO, Vec3::new(12.0, -3.0, 9.0), Vec3::splat(f32::MAX)] {
+                    for (eye, cap) in [Vec3::ZERO, Vec3::new(12.0, -3.0, 9.0), Vec3::splat(f32::MAX)]
+                        .into_iter()
+                        .flat_map(|eye| [(eye, UNBINNED_CAPSULES), (eye, MAX_CAPSULES)])
+                    {
                         let mut expected = Vec::new();
                         let mut actual = Vec::new();
                         select_capsules_full(bodies.iter().copied(), eye, &mut expected);
-                        select_capsules(bodies.iter().copied(), eye, &mut actual);
+                        select_capsules(bodies.iter().copied(), eye, cap, &mut actual);
                         assert_eq!(
-                            prefix(&actual),
-                            prefix(&expected),
-                            "seed={seed} count={count} kind={kind}"
+                            prefix(&actual, cap),
+                            prefix(&expected, cap),
+                            "seed={seed} count={count} kind={kind} cap={cap}"
                         );
                         // Iterators without an upper bound must also use the exact prefix.
                         let mut index = 0;
@@ -3339,8 +3356,8 @@ mod tests {
                             index += 1;
                             body
                         });
-                        select_capsules(unknown_length, eye, &mut actual);
-                        assert_eq!(prefix(&actual), prefix(&expected));
+                        select_capsules(unknown_length, eye, cap, &mut actual);
+                        assert_eq!(prefix(&actual, cap), prefix(&expected, cap));
                     }
                 }
             }
@@ -3355,15 +3372,15 @@ mod tests {
             })
             .collect();
         let mut candidates = Vec::new();
-        select_capsules(bodies.iter().copied(), Vec3::ZERO, &mut candidates);
-        assert_eq!(candidates.len(), MAX_CAPSULES + 1);
+        select_capsules(bodies.iter().copied(), Vec3::ZERO, UNBINNED_CAPSULES, &mut candidates);
+        assert_eq!(candidates.len(), UNBINNED_CAPSULES + 1);
 
         // A tie just beyond the selected sixteen must still trigger the fallback:
         // the full unstable sort can put either tied body in its last GPU slot.
         bodies[16].base.x = bodies[15].base.x;
         bodies[16].top.x = bodies[15].top.x;
         bodies[16].radius = 0.75;
-        select_capsules(bodies.iter().copied(), Vec3::ZERO, &mut candidates);
+        select_capsules(bodies.iter().copied(), Vec3::ZERO, UNBINNED_CAPSULES, &mut candidates);
         assert_eq!(candidates.len(), bodies.len());
         let mut expected = Vec::new();
         select_capsules_full(bodies.iter().copied(), Vec3::ZERO, &mut expected);

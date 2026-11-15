@@ -23,7 +23,7 @@ struct AmbientCapsule {
     top: vec4<f32>,
 }
 
-const MAX_AMBIENT_CAPSULES: u32 = 16u;
+const MAX_AMBIENT_CAPSULES: u32 = 64u;
 
 struct AmbientUniforms {
     // xyz: the grid's first probe, world space; w: meters between probes.
@@ -204,24 +204,47 @@ fn grid_sky_visibility(grid: GridSample, d: vec3<f32>) -> f32 {
     return saturate(sh_l1(grid.visibility, d));
 }
 
+// Capsule `index`'s share of the light from the hemisphere around unit `n` at `position`: the
+// body is a sphere at the point of its axis nearest the position, whose cosine-weighted solid
+// angle it takes (Quílez's sphere occlusion), faded out by four radii past its surface.
+fn capsule_occluder(index: u32, position: vec3<f32>, n: vec3<f32>) -> f32 {
+    let capsule = ambient.capsules[index];
+    let a = capsule.base.xyz;
+    let radius = capsule.base.w;
+    let axis = capsule.top.xyz - a;
+    let along = select(0.0, saturate(dot(position - a, axis) / dot(axis, axis)), dot(axis, axis) > 1e-8);
+    let to_center = a + along * axis - position;
+    let distance = max(length(to_center), 1e-4);
+    let facing = saturate(dot(n, to_center / distance));
+    let ratio = radius / max(distance, radius);
+    let reach = 1.0 - smoothstep(2.0 * radius, 4.0 * radius, distance - radius);
+    return 1.0 - facing * ratio * ratio * reach;
+}
+
 // Capsule AO: how much light from the hemisphere around unit `n` at `position` the characters'
-// bodies leave. Each body is a sphere at the point of its axis nearest the position, whose
-// cosine-weighted solid angle it takes (Quílez's sphere occlusion), faded out by four radii.
+// bodies leave. With the capsules by cluster (M5 L18, frame.wgsl's `capsule_bin`), the bodies its
+// cluster's mask holds, in index order; otherwise every one. A body a mask leaves out leaves
+// exactly 1 at the point, so both multiply the same factors in the same order.
 fn capsule_occlusion(position: vec3<f32>, n: vec3<f32>) -> f32 {
     var visibility = 1.0;
-    let count = min(ambient.counts.x, MAX_AMBIENT_CAPSULES);
-    for (var index = 0u; index < count; index++) {
-        let capsule = ambient.capsules[index];
-        let a = capsule.base.xyz;
-        let radius = capsule.base.w;
-        let axis = capsule.top.xyz - a;
-        let along = select(0.0, saturate(dot(position - a, axis) / dot(axis, axis)), dot(axis, axis) > 1e-8);
-        let to_center = a + along * axis - position;
-        let distance = max(length(to_center), 1e-4);
-        let facing = saturate(dot(n, to_center / distance));
-        let ratio = radius / max(distance, radius);
-        let reach = 1.0 - smoothstep(2.0 * radius, 4.0 * radius, distance - radius);
-        visibility *= 1.0 - facing * ratio * ratio * reach;
+    if frame.capsule_bins != 0u {
+        if ambient.counts.x > 0u {
+            let bin = capsule_bin(position);
+            for (var word = 0u; word < CAPSULE_BIN_WORDS; word++) {
+                var bits = bin[CAPSULE_BIN_WORDS + word];
+                let count = countOneBits(bits);
+                for (var taken = 0u; taken < count; taken++) {
+                    let index = word * 32u + firstTrailingBit(bits);
+                    bits &= bits - 1u;
+                    visibility *= capsule_occluder(index, position, n);
+                }
+            }
+        }
+    } else {
+        let count = min(ambient.counts.x, MAX_AMBIENT_CAPSULES);
+        for (var index = 0u; index < count; index++) {
+            visibility *= capsule_occluder(index, position, n);
+        }
     }
     return visibility;
 }

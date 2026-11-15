@@ -21,7 +21,7 @@ use crate::environment::{self, EnvironmentSettings};
 use crate::fog;
 use crate::foliage::{self, FoliageSettings, WindUniforms};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
-use crate::lights::GpuLight;
+use crate::lights::{GpuLight, capsule_bins};
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::{Cancel, Step};
 use crate::shaders::{self, BuildOn, ProbeRead, Program, ShaderSources};
@@ -1124,6 +1124,18 @@ fn frame_entries(group: FrameGroup, read: ProbeRead) -> Vec<wgpu::BindGroupLayou
             binding: 10,
             visibility: S::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+            count: None,
+        },
+        // The characters' capsules by cluster (M5 L18), which the world's surfaces and the anime
+        // character family's environment instances and outlines read.
+        wgpu::BindGroupLayoutEntry {
+            binding: capsule_bins::FRAME_BINDING,
+            visibility: S::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Uint,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count: None,
         },
     ];
@@ -3459,7 +3471,7 @@ mod tests {
                 MaterialFamily::Foliage
             ]
         );
-        assert_eq!(MESH_FAMILIES.map(|family| free(family, S::FRAGMENT)), [(2, 0), (3, 1), (6, 1), (6, 1)]);
+        assert_eq!(MESH_FAMILIES.map(|family| free(family, S::FRAGMENT)), [(1, 0), (2, 1), (5, 1), (5, 1)]);
         assert_eq!(MESH_FAMILIES.map(|family| free(family, S::VERTEX)), [(16, 2), (14, 2), (14, 2), (14, 2)]);
     }
 

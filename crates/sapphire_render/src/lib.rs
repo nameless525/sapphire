@@ -317,8 +317,9 @@
 //! frame) leaves out the characters' entries and the character prepass's depth and IDs (3, 8, 9).
 //! The frame makes a bind group of each, and the main pass binds a draw's family's as it binds
 //! its scene group. At the device's floor of 16 sampled textures and 4 storage buffers a stage,
-//! the anime character family's fragment stage has 3 textures free and no storage buffer, the
-//! environment's 5 and 1, fog cards' and foliage's 8 and 1
+//! the anime character family's fragment stage has 1 texture free and no storage buffer, the
+//! environment's 2 and 1, fog cards' and foliage's 5 and 1, since both groups bind the capsules
+//! by cluster (22, M5 L18)
 //! (`pipelines::tests::each_family_counts_the_binding_slots_it_leaves_free`).
 //!
 //! Vertex buffers: slot 0 is the draw records, slots 1–4 a mesh's streams (above). The
@@ -944,6 +945,7 @@ pub use frame::{
 };
 pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use interface_screen::InterfaceScreen;
+pub use lights::capsule_bins::{BINNED_CAPSULES, CapsuleBinStats, UNBINNED_CAPSULES};
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
 pub use mesh_pool::{MeshHandle, MeshPoolStats};

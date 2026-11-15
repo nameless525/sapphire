@@ -537,6 +537,8 @@ impl InsetTarget {
             ambient_sky: (ambient.sky * ambient.intensity).extend(0.0).to_array(),
             ambient_ground: (ambient.ground * ambient.intensity).extend(0.0).to_array(),
             fog: crate::fog::GpuFog::new(&sapphire_look::Fog::default()),
+            // The capsules are binned for the main view's clusters: an inset walks the plain loops.
+            capsule_bins: 0,
             ..*world
         };
         let camera = view.camera;

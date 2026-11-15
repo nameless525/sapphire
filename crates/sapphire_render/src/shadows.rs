@@ -130,8 +130,12 @@
 //! - **Phones,** and characters past the desktop's maps: the body's capsule casts a soft shadow
 //!   analytically (the closest approach of the light's ray from the receiver to the capsule's
 //!   axis, against a radius that softens with distance). No map, no pass. At most
-//!   [`MAX_CAPSULES`]. A crowd's ambient characters ([`ShadowRole::Ambient`](crate::ShadowRole))
-//!   cast their capsules on desktop too, leaving the maps to the named ones.
+//!   [`MAX_CAPSULES`] (64) with capsules by cluster on, the default, and 16 with them off
+//!   (`RenderSettings::capsule_bins`, M5 L18): each frame the CPU marks which capsules can reach
+//!   each light cluster (`lights::capsule_bins`), and an environment, foliage or outline pixel
+//!   multiplies only its cluster's, in index order, which with 16 or fewer is the plain loop's
+//!   every byte. A crowd's ambient characters ([`ShadowRole::Ambient`](crate::ShadowRole)) cast
+//!   their capsules on desktop too, leaving the maps to the named ones.
 //!
 //! # Characters shadowing each other (M5 L12)
 //!
@@ -220,6 +224,7 @@ use std::num::NonZeroU64;
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
+use glam::Vec3;
 use sapphire_assets::mesh::PositionFormat;
 use sapphire_rhi::wgpu;
 use serde::{Deserialize, Serialize};
@@ -249,8 +254,10 @@ pub const MAX_CASCADES: usize = 4;
 /// The most characters that draw a shadow map of their own in a frame, nearest the camera
 /// first: the tiles of the desktop's character atlas.
 pub const MAX_CHARACTER_MAPS: usize = 8;
-/// The most characters that cast a capsule shadow in a frame, nearest the camera first.
-pub const MAX_CAPSULES: usize = 16;
+/// The most characters that cast a capsule shadow in a frame, nearest the camera first, with
+/// capsule bins on (M5 L18); 16 with them off
+/// ([`UNBINNED_CAPSULES`](crate::lights::capsule_bins::UNBINNED_CAPSULES)).
+pub const MAX_CAPSULES: usize = crate::lights::capsule_bins::BINNED_CAPSULES;
 /// The most other characters' shadows a character receives (M5 L12): the slots of its entry's
 /// `received` ([`ShadowSettings::others`] per tier).
 pub const MAX_OTHERS: usize = 4;
@@ -836,7 +843,7 @@ impl Shadows {
     /// has the packet's instance deltas applied, `meshes` are the pool's records, `wind_margin`
     /// how far the frame's wind carries each one's vertices past its bounds, `list` the draw list,
     /// `characters` the frame's characters as the character buffer resolved them, `cull` what view
-    /// culling leaves out of every cascade (M5 D3).
+    /// culling leaves out of every cascade (M5 D3), `capsules` the most that cast capsules (M5 L18).
     #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
     pub(crate) fn prepare(
         &mut self,
@@ -847,6 +854,7 @@ impl Shadows {
         list: &DrawList,
         characters: CharacterTable<'_>,
         cull: plan::CasterCull<'_>,
+        capsules: usize,
     ) {
         let Some(settings) = self.settings else { return };
         self.entries = characters.count;
@@ -863,6 +871,7 @@ impl Shadows {
             characters,
             self.textures.atlas_size,
             cull,
+            capsules,
         );
     }
 
@@ -882,6 +891,19 @@ impl Shadows {
     /// Counters from the last frame with a view.
     pub(crate) fn stats(&self) -> ShadowStats {
         self.plan.stats
+    }
+
+    /// The capsules receivers read this frame, in their order, `(base, top, radius)`, and the
+    /// direction toward the key light they cast along (M5 L18's binning): none while shadows are
+    /// off or the frame has no view.
+    pub(crate) fn capsules(&self) -> (impl Iterator<Item = (Vec3, Vec3, f32)> + '_, Vec3) {
+        let active = self.settings.is_some() && self.plan.active;
+        let uniforms = &self.plan.uniforms;
+        let count = if active { (uniforms.counts[2] as usize).min(MAX_CAPSULES) } else { 0 };
+        let capsules = uniforms.capsules[..count].iter().map(|capsule| {
+            (Vec3::from_slice(&capsule.base[..3]), Vec3::from_slice(&capsule.top[..3]), capsule.base[3])
+        });
+        (capsules, Vec3::from_slice(&uniforms.light_z[..3]))
     }
 
     /// The shadows' share of a frame's uploads pass: the receivers' uniforms, and the view of

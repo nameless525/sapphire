@@ -12,6 +12,9 @@
 //!   infinity, matching the infinite far plane. A pixel finds its slice from its reverse-Z depth `z`:
 //!   view depth is `near / z` (see the crate docs' conventions).
 //! - **Clusters** are numbered `(slice × 9 + tile y) × 16 + tile x`.
+//! - **The characters' capsules share the grid** (M5 L18, [`super::capsule_bins`]): the CPU marks
+//!   each cluster with the shadow and AO capsules that can reach it, every tier, and the grid's
+//!   WGSL (`CLUSTER_*`, `cluster_slice`) lives in `frame.wgsl` for both.
 //!
 //! # The cluster buffer
 //!

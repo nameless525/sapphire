@@ -1489,6 +1489,7 @@ mod tests {
                     day_night,
                     outline_distance,
                     emission_scale,
+                    capsule_bins,
                     ambient_sky,
                     ambient_ground,
                     shadow_tint,
@@ -2556,6 +2557,7 @@ mod tests {
             assert_eq!(wgsl_u32(module, "MAX_SHADOW_CASCADES") as usize, MAX_CASCADES);
             assert_eq!(wgsl_u32(module, "MAX_CHARACTER_SHADOW_MAPS") as usize, MAX_CHARACTER_MAPS);
             assert_eq!(wgsl_u32(module, "MAX_SHADOW_CAPSULES") as usize, MAX_CAPSULES);
+            assert_eq!(wgsl_u32(module, "CAPSULE_BIN_WORDS") as usize, crate::lights::capsule_bins::WORDS);
             for constant in [override_constant::SHADOWS, override_constant::TENT] {
                 assert!(
                     module.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(constant)),

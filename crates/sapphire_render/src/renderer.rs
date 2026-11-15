@@ -45,6 +45,7 @@ use crate::inset::{
     Insets, MAX_INSETS,
 };
 use crate::levels::{LevelSettings, LevelStats};
+use crate::lights::capsule_bins::{self, CapsuleBinStats};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshPoolStats, MeshRecord, PoolMoves, SubmeshMaterial};
@@ -212,6 +213,11 @@ pub struct RenderSettings {
     /// runs and every view's are for the test that compares them and for the bench ([`DrawRuns`]
     /// says why neither is the default). [`RenderStats::runs`] says what they made.
     pub draw_runs: DrawRuns,
+    /// The characters' capsules by cluster (M5 L18, the `lights` module's `capsule_bins`): each
+    /// pixel walks only the shadow and AO capsules that can reach its cluster, and each list holds
+    /// 64 capsules instead of 16. It draws the same bytes as the plain loops with the same capsules.
+    /// On by default; only tests and the bench turn it off, for comparisons.
+    pub capsule_bins: bool,
 }
 
 impl RenderSettings {
@@ -258,6 +264,7 @@ impl Default for RenderSettings {
             culling: CullingThresholds::NONE,
             levels: LevelSettings::ON,
             draw_runs: DrawRuns::default(),
+            capsule_bins: true,
         }
     }
 }
@@ -515,6 +522,9 @@ pub struct RenderStats {
     /// [`RenderSettings::levels`]); [`PassCounts::levels`](crate::PassCounts::levels) counts the
     /// levels each pass drew.
     pub levels: LevelStats,
+    /// The characters' capsules by cluster in the last recorded frame (M5 L18,
+    /// [`RenderSettings::capsule_bins`]).
+    pub capsule_bins: CapsuleBinStats,
     /// Skinned and morphed instances and the skinning they need.
     pub skinning: SkinningStats,
     /// The sky's layers and its cube.
@@ -1626,6 +1636,18 @@ impl Renderer {
         self.stats.levels = self.view_cull.level_stats();
     }
 
+    /// Bins the frame's shadow and AO capsules into the clusters of the main view of `camera`, drawn
+    /// at `size` with temporal AA's `jitter` (M5 L18): whether its pixels read the masks.
+    fn bin_capsules(&mut self, camera: &CameraData, size: (u32, u32), jitter: [f32; 2]) -> bool {
+        let (shadows, toward_light) = self.shadows.capsules();
+        let shadows = capsule_bins::gather(shadows);
+        let occlusion = capsule_bins::gather(self.ambient.capsules());
+        let bins = self.lights.capsule_bins_mut();
+        let read = bins.bin(camera, size, jitter, (shadows.as_slice(), toward_light), occlusion.as_slice());
+        self.stats.capsule_bins = bins.stats();
+        read
+    }
+
     /// Which views drew the instance `id` in the last recorded frame (M5 D3): the main view, a
     /// shadow (a cascade or a character map), its inset. What animates instances reads it in the
     /// next frame, to spend less on what nothing drew; a character's parts are instances each,
@@ -2621,7 +2643,9 @@ impl Renderer {
         if lists_replaced || characters_replaced {
             self.rebuild_frame_bind_groups();
         }
-        self.ambient.prepare(packet, self.characters.table());
+        // Each list's capsules, 64 with capsule bins on and 16 with them off (M5 L18).
+        let capsules = self.lights.capsule_bins().capacity();
+        self.ambient.prepare(packet, self.characters.table(), capsules);
         // What no view draws for being past the tier's distance, and what is never culled by
         // distance or size (M5 D3): the shadow plan leaves the far out of its cascades too.
         let slots = self.scene.slots();
@@ -2648,6 +2672,7 @@ impl Renderer {
             self.scene.draw_list(),
             self.characters.table(),
             CasterCull { culled: self.view_cull.casters(), least_texels, levels: self.level_settings() },
+            capsules,
         );
         // The other characters' shadows each character receives go into its entry (M5 L12).
         if packet.main_view().is_some() {
@@ -2941,7 +2966,7 @@ impl Renderer {
         self.mip_streaming.submit(&self.queue);
         // This frame's passes count afresh as they record; a frame that never runs counts nothing.
         self.counts.reset();
-        let PreparedFrame { camera, constants, wind } = self.prepared.take()?;
+        let PreparedFrame { camera, mut constants, wind } = self.prepared.take()?;
         let cut = self.pending_cut;
         let output = graph.size(target);
         // On a lost device the frame's work would do nothing, and the staging belt can't map the
@@ -2988,6 +3013,8 @@ impl Renderer {
         // frustum, padded by the jitter too, so the jittered views and the debug views' unjittered
         // one cull alike, and each inset's camera for its own instances.
         self.cull_views(&camera, size, output, jitter, (&wind, cut));
+        // The characters' capsules by cluster (M5 L18), for the main view as it is drawn.
+        constants.capsule_bins = u32::from(self.bin_capsules(&camera, size, jitter));
         // Skinning poses only what some view draws this frame (M5 D3).
         let view_cull = &self.view_cull;
         self.skinning.begin_record(&self.device, &self.queue, &self.meshes, |slot| view_cull.drawn(slot));
@@ -4548,6 +4575,7 @@ pub(crate) fn create_frame_bind_groups(
         wgpu::BindGroupEntry { binding: 0, resource: frame_uniforms.as_entire_binding() },
         wgpu::BindGroupEntry { binding: 1, resource: lights.light_buffer().as_entire_binding() },
         wgpu::BindGroupEntry { binding: 2, resource: lights.list_buffer().as_entire_binding() },
+        lights.capsule_bins().frame_entry(),
         wgpu::BindGroupEntry {
             binding: frame_binding::CHARACTERS,
             resource: characters.buffer().as_entire_binding(),

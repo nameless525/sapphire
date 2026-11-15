@@ -41,8 +41,10 @@ pub(crate) struct FrameUniforms {
     /// How much of the world's authored emission shows (`FramePacket::emission_scale`, M1 W1's
     /// keyed emission), made safe by [`emission_scale()`].
     pub emission_scale: f32,
-    /// Pads to the next vector, as WGSL aligns it.
-    pub padding: f32,
+    /// 1 when this group's view reads the capsules by cluster (M5 L18, the `lights` module's
+    /// `capsule_bins`): the main view's, on a frame with capsules and bins on. 0 reads the plain
+    /// loops: insets, and any frame without.
+    pub capsule_bins: u32,
     /// rgb: ambient light from above (`FramePacket::ambient`, sky × intensity).
     pub ambient_sky: [f32; 4],
     /// rgb: ambient light from below (ground × intensity).
@@ -77,7 +79,8 @@ impl FrameUniforms {
             day_night: frame.day_night,
             outline_distance,
             emission_scale: emission_scale(frame.emission_scale),
-            padding: 0.0,
+            // Set as the frame records, once its capsules are binned.
+            capsule_bins: 0,
             ambient_sky: (frame.ambient.sky * frame.ambient.intensity).extend(0.0).to_array(),
             ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
             shadow_tint: frame.shadow_tint.extend(0.0).to_array(),

@@ -35,22 +35,8 @@ const LIGHT_LISTS_NONE: u32 = 0u;
 const LIGHT_LISTS_CLUSTERS: u32 = 1u;
 const LIGHT_LISTS_OBJECTS: u32 = 2u;
 
-// The cluster grid: 16 × 9 screen tiles by 24 depth slices; cluster index
-// (slice × 9 + tile y) × 16 + tile x, with tile y counted from the top.
-const CLUSTER_TILES_X: u32 = 16u;
-const CLUSTER_TILES_Y: u32 = 9u;
-const CLUSTER_SLICES: u32 = 24u;
-const CLUSTER_COUNT: u32 = 3456u;
-
-// The depth slice holding view-space depth `depth` (meters in front of the camera).
-fn cluster_slice(depth: f32) -> u32 {
-    let start = frame.clusters.y;
-    if depth < start {
-        return 0u;
-    }
-    let slice = 1.0 + floor(log2(depth / start) * frame.clusters.z);
-    return u32(min(slice, f32(CLUSTER_SLICES - 1u)));
-}
+// The cluster grid (`CLUSTER_*`, `cluster_slice`) is frame.wgsl's, which the capsules' clusters
+// share (M5 L18).
 
 // The light list a fragment walks: on the clustered path its cluster's, from the fragment's
 // position (`@builtin(position)`: pixel coordinates and reverse-Z depth), on the per-object path

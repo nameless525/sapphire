@@ -48,6 +48,9 @@ struct FrameUniforms {
     // `FramePacket::emission_scale`, M1 W1's keyed emission): environment.wgsl multiplies its
     // materials' emission by it, but for the share each keeps steady. Never negative.
     emission_scale: f32,
+    // 1 when this group's view reads the capsules by cluster (M5 L18, `capsule_bin` below): the
+    // main view on a frame with capsules; 0 walks the plain loops (insets, bins off).
+    capsule_bins: u32,
     // Ambient light (time of day's `FramePacket::ambient`), color × intensity: rgb from the
     // sky above and from the ground below (see `ambient_light`).
     ambient_sky: vec4<f32>,
@@ -257,6 +260,25 @@ struct CharacterData {
 @group(2) @binding(0) var<storage, read> instances: array<InstanceData>;
 // The anime character family's blocks, by the draw record's material slot.
 @group(2) @binding(1) var<storage, read> materials: array<AnimeCharacterParams>;
+
+// The cluster grid (spec §5.12 "Lighting", `sapphire_render::lights::clusters`): 16 × 9 screen
+// tiles by 24 depth slices of the main view; cluster index (slice × 9 + tile y) × 16 + tile x,
+// with tile y counted from the top. The local lights' clusters (lights.wgsl) and the capsules'
+// (M5 L18, `capsule_bin`) share it.
+const CLUSTER_TILES_X: u32 = 16u;
+const CLUSTER_TILES_Y: u32 = 9u;
+const CLUSTER_SLICES: u32 = 24u;
+const CLUSTER_COUNT: u32 = 3456u;
+
+// The depth slice holding view-space depth `depth` (meters in front of the camera).
+fn cluster_slice(depth: f32) -> u32 {
+    let start = frame.clusters.y;
+    if depth < start {
+        return 0u;
+    }
+    let slice = 1.0 + floor(log2(depth / start) * frame.clusters.z);
+    return u32(min(slice, f32(CLUSTER_SLICES - 1u)));
+}
 // The frame's characters, by `InstanceData::character`: entry 0 is the world's key light with
 // unstyled GI, for instances that aren't characters.
 @group(0) @binding(3) var<storage, read> characters: array<CharacterData>;
@@ -814,7 +836,7 @@ struct ShadowCapsule {
 
 const MAX_SHADOW_CASCADES: u32 = 4u;
 const MAX_CHARACTER_SHADOW_MAPS: u32 = 8u;
-const MAX_SHADOW_CAPSULES: u32 = 16u;
+const MAX_SHADOW_CAPSULES: u32 = 64u;
 
 struct ShadowUniforms {
     // Light space's axes in the world: x, y, and z toward the key light as shadows are cast.
@@ -1047,14 +1069,54 @@ fn capsule_lookup(index: u32, position: vec3<f32>) -> f32 {
     return select(1.0 - occlusion * fade, 1.0, t <= 0.0);
 }
 
-// The key light's visibility at `position` past the characters' capsules.
+// The key light's visibility at `position` past the characters' capsules: with the capsules by
+// cluster, those its cluster's mask holds, in index order; otherwise every one. A capsule a
+// mask leaves out is exactly 1 at the point, so both multiply the same factors in the same order.
 fn capsule_visibility(position: vec3<f32>) -> f32 {
     var visibility = 1.0;
-    let count = min(shadows.counts.z, MAX_SHADOW_CAPSULES);
-    for (var index = 0u; index < count; index++) {
-        visibility *= capsule_lookup(index, position);
+    if frame.capsule_bins != 0u {
+        let bin = capsule_bin(position);
+        for (var word = 0u; word < CAPSULE_BIN_WORDS; word++) {
+            var bits = bin[word];
+            let count = countOneBits(bits);
+            for (var taken = 0u; taken < count; taken++) {
+                let index = word * 32u + firstTrailingBit(bits);
+                bits &= bits - 1u;
+                visibility *= capsule_lookup(index, position);
+            }
+        }
+    } else {
+        let count = min(shadows.counts.z, MAX_SHADOW_CAPSULES);
+        for (var index = 0u; index < count; index++) {
+            visibility *= capsule_lookup(index, position);
+        }
     }
     return visibility;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Capsules by cluster (M5 L18, `sapphire_render::lights::capsule_bins`): per cluster of the main
+// view, a mask per list of the capsules that can change any point inside it, built by the CPU
+// each frame on every tier. A texel a cluster (tile x across, tile y + 9 × slice down): r and g
+// the shadows' (`shadows.capsules`), b and a capsule AO's (`ambient.capsules`), bit i capsule i.
+// Read only while `frame.capsule_bins` is 1.
+@group(0) @binding(22) var capsule_bins: texture_2d<u32>;
+
+// Words of one list's mask: 64 capsules.
+const CAPSULE_BIN_WORDS: u32 = 2u;
+
+// The masks of the cluster world `position` lies in, through this pass's view: the same cluster
+// for the jittered main view and the debug views' unjittered replay, which the CPU's bounds pad
+// for.
+fn capsule_bin(position: vec3<f32>) -> vec4<u32> {
+    let clip = view.clip_from_world * vec4<f32>(position, 1.0);
+    let ndc = clip.xy / clip.w;
+    let tiles = vec2<f32>(f32(CLUSTER_TILES_X), f32(CLUSTER_TILES_Y));
+    // Tile rows count down from the top, NDC y up.
+    let at = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * tiles;
+    let tile = vec2<u32>(clamp(at, vec2<f32>(0.0), tiles - 1.0));
+    let slice = cluster_slice(clip.w);
+    return textureLoad(capsule_bins, vec2<u32>(tile.x, slice * CLUSTER_TILES_Y + tile.y), 0);
 }
 
 // The key light's visibility at `position` on an environment surface whose geometric normal is

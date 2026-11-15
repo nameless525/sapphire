@@ -494,6 +494,7 @@ impl QualityTier {
             culling: self.culling,
             levels: LevelSettings { mode: LevelsMode::On, bias: self.lod_bias },
             draw_runs: DrawRuns::default(),
+            capsule_bins: true,
         }
     }
 

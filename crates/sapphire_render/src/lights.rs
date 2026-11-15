@@ -54,6 +54,7 @@
 //! - **Local-light shadows** for a few hero lights, and environment shading (W4) through the
 //!   same lists.
 
+pub(crate) mod capsule_bins;
 pub(crate) mod clusters;
 mod objects;
 
@@ -70,6 +71,7 @@ use crate::scene::InstanceSlots;
 use crate::shader_builds::Step;
 use crate::shaders::ShaderSources;
 use crate::{CameraData, FramePacket, LightKind, LocalLight, MeshHandle, RenderSettings};
+use capsule_bins::CapsuleBins;
 use clusters::{ClusterPass, ClusterPipelines};
 use objects::{LIGHTS_PER_OBJECT, LIST_BYTES, ObjectLists};
 
@@ -238,6 +240,8 @@ pub(crate) struct Lights {
     stats: LightStats,
     /// Instances past the list buffer's limit were logged: once.
     warned: bool,
+    /// The characters' capsules by cluster (M5 L18), over the clusters' grid on every tier.
+    capsule_bins: CapsuleBins,
 }
 
 impl Lights {
@@ -306,6 +310,7 @@ impl Lights {
             uniforms: LightUniforms::default(),
             stats: LightStats::default(),
             warned: false,
+            capsule_bins: CapsuleBins::new(device, settings.capsule_bins),
         }
     }
 
@@ -419,6 +424,15 @@ impl Lights {
         self.lists.buffer()
     }
 
+    /// The characters' capsules by cluster (M5 L18): group 0's [`capsule_bins::FRAME_BINDING`].
+    pub(crate) fn capsule_bins(&self) -> &CapsuleBins {
+        &self.capsule_bins
+    }
+
+    pub(crate) fn capsule_bins_mut(&mut self) -> &mut CapsuleBins {
+        &mut self.capsule_bins
+    }
+
     /// Times the list buffer grew.
     pub(crate) fn growths(&self) -> u32 {
         self.lists.growths()
@@ -459,9 +473,11 @@ impl Lights {
             ref mut objects,
             ref cluster_pass,
             bin,
+            ref capsule_bins,
             ..
         } = *self;
-        let upload = LightUpload { packed, unsent, light_buffer, lists: lists.buffer(), objects };
+        let upload =
+            LightUpload { packed, unsent, light_buffer, lists: lists.buffer(), objects, capsule_bins };
         let drawn = packed.len() as u32;
         (upload, cluster_pass.as_ref().filter(|_| bin).map(|pass| (pass, drawn)))
     }
@@ -474,12 +490,15 @@ pub(crate) struct LightUpload<'a> {
     light_buffer: &'a wgpu::Buffer,
     lists: &'a wgpu::Buffer,
     objects: &'a mut ObjectLists,
+    capsule_bins: &'a CapsuleBins,
 }
 
 impl LightUpload<'_> {
-    /// Writes the lights if they changed, and the per-object lists that did, through `belt`.
+    /// Writes the lights if they changed, the per-object lists that did, and the capsules' masks
+    /// on a frame that reads them, through `belt`.
     pub(crate) fn write(self, belt: &mut wgpu::util::StagingBelt, encoder: &mut wgpu::CommandEncoder) {
-        let Self { packed, unsent, light_buffer, lists, objects } = self;
+        let Self { packed, unsent, light_buffer, lists, objects, capsule_bins } = self;
+        capsule_bins.upload(belt, encoder);
         if std::mem::take(unsent) {
             buffer::stage(belt, encoder, light_buffer, 0, bytemuck::cast_slice(packed));
         }

@@ -169,8 +169,9 @@ impl ShadowPlan {
     /// `meshes` are the pool's records, `wind_margin` how far the frame's wind can carry each
     /// mesh's vertices past its bounds (foliage's; 0 for the rest), `list` the frame's draw list
     /// (for the stats' counts), `characters` the frame's characters as the character buffer
-    /// resolved them, `atlas` the character atlas's size in texels, and `cull` what view culling
-    /// leaves out of every cascade (M5 D3).
+    /// resolved them, `atlas` the character atlas's size in texels, `cull` what view culling
+    /// leaves out of every cascade (M5 D3), and `capsules` the most characters that cast capsules
+    /// (M5 L18: [`MAX_CAPSULES`] with capsule bins on, 16 with them off).
     #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
     pub(crate) fn update(
         &mut self,
@@ -183,6 +184,7 @@ impl ShadowPlan {
         characters: CharacterTable<'_>,
         atlas: (u32, u32),
         cull: CasterCull<'_>,
+        capsules: usize,
     ) {
         profiling::scope!("ShadowPlan::update");
         self.drawn = [None; MAX_CASCADES];
@@ -207,7 +209,7 @@ impl ShadowPlan {
             self.toward = Some(toward);
         }
         self.plan_cascades(settings, camera, light);
-        self.classify(characters, slots, (meshes, wind_margin), settings, camera, light, cull);
+        self.classify(characters, slots, (meshes, wind_margin), settings, camera, light, cull, capsules);
         self.receive(settings, light);
         self.skip_empty(list);
         self.uniforms = self.pack(settings, camera, light, characters.count, atlas);
@@ -274,6 +276,7 @@ impl ShadowPlan {
         camera: &CameraData,
         light: LightSpace,
         cull: CasterCull<'_>,
+        most_capsules: usize,
     ) {
         self.casters.clear();
         self.casters.resize(slots.len(), SlotCaster::default());
@@ -314,6 +317,7 @@ impl ShadowPlan {
             groups[a as usize].distance.total_cmp(&groups[b as usize].distance).then(a.cmp(&b))
         });
         let reach = settings.distance as f32;
+        let most_capsules = most_capsules.min(MAX_CAPSULES);
         let (mut capsules, mut uncast) = (0u32, 0u32);
         for &index in &self.order {
             let group = &mut self.groups[index as usize];
@@ -323,7 +327,7 @@ impl ShadowPlan {
             } else if settings.character_shadow && named && self.maps.len() < MAX_CHARACTER_MAPS {
                 self.maps.push(CascadeFit::character(light, group.sphere, settings.character_resolution));
                 Cast::Map(self.maps.len() as u8 - 1)
-            } else if (capsules as usize) < MAX_CAPSULES {
+            } else if (capsules as usize) < most_capsules {
                 capsules += 1;
                 Cast::Capsule(capsules as u8 - 1)
             } else {
@@ -750,6 +754,17 @@ mod tests {
         packet: &FramePacket,
         slots: &mut InstanceSlots,
     ) {
+        update_capped(plan, settings, packet, slots, MAX_CAPSULES);
+    }
+
+    /// [`update`] giving out at most `capsules` capsules.
+    fn update_capped(
+        plan: &mut ShadowPlan,
+        settings: &ShadowSettings,
+        packet: &FramePacket,
+        slots: &mut InstanceSlots,
+        capsules: usize,
+    ) {
         let mut list = CharacterList::default();
         list.update(packet, slots, false, None);
         let meshes = meshes();
@@ -779,6 +794,7 @@ mod tests {
             list.table(),
             (4096, 2048),
             CasterCull::NONE,
+            capsules,
         );
     }
 
@@ -817,6 +833,7 @@ mod tests {
             characters.table(),
             (4096, 2048),
             CasterCull::NONE,
+            MAX_CAPSULES,
         );
         assert_eq!(plan.drawn_mask(), 0b1111, "new maps must be cleared");
         plan.update(
@@ -829,6 +846,7 @@ mod tests {
             characters.table(),
             (4096, 2048),
             CasterCull::NONE,
+            MAX_CAPSULES,
         );
         assert_eq!(plan.drawn_mask(), 0, "transparent geometry writes no shadow depth");
         list.commands[0][transparent.index()].clear();
@@ -842,6 +860,7 @@ mod tests {
             characters.table(),
             (4096, 2048),
             CasterCull::NONE,
+            MAX_CAPSULES,
         );
         assert_eq!(plan.drawn_mask(), 0, "a disowned slot also writes no depth");
     }
@@ -913,6 +932,39 @@ mod tests {
         assert!(plan.is_character(1), "a character without a body still never casts into the cascades");
         assert_eq!(plan.casters[1], SlotCaster::default());
         assert_eq!((plan.stats.capsules, plan.stats.character_maps), (1, 0));
+    }
+
+    /// With capsule bins off a frame gives out the 16 capsules it always did, and with them on the
+    /// same 16 first, in the same order, then the rest up to 64 (M5 L18).
+    #[test]
+    fn a_crowd_casts_sixteen_capsules_unbinned_and_every_one_binned() {
+        use crate::lights::capsule_bins::UNBINNED_CAPSULES;
+        let mobile = ShadowSettings { cascades: 2, cached_cascades: 1, character_shadow: false, ..SETTINGS };
+        let instances: Vec<MeshInstance> = (0..70)
+            .map(|index| {
+                instance(index, 0, Vec3::new((index % 10) as f32 * 2.0, 0.0, (index / 10) as f32 * -2.0))
+            })
+            .collect();
+        let characters = instances
+            .iter()
+            .map(|instance| {
+                let base = instance.transform.transform_point3(Vec3::ZERO);
+                character(instance.id.0, CharacterBody::capsule(base, base + Vec3::Y, 0.25))
+            })
+            .collect();
+        let packet = packet(characters);
+        let mut plain = ShadowPlan::default();
+        update_capped(&mut plain, &mobile, &packet, &mut slots(&instances), UNBINNED_CAPSULES);
+        let mut binned = ShadowPlan::default();
+        update_capped(&mut binned, &mobile, &packet, &mut slots(&instances), MAX_CAPSULES);
+        assert_eq!(plain.uniforms.counts[2], UNBINNED_CAPSULES as u32);
+        assert_eq!(binned.uniforms.counts[2], MAX_CAPSULES as u32, "70 characters fill the 64");
+        assert_eq!(
+            plain.uniforms.capsules[..UNBINNED_CAPSULES],
+            binned.uniforms.capsules[..UNBINNED_CAPSULES]
+        );
+        assert_eq!(plain.stats.capsules, 16);
+        assert_eq!(binned.stats.capsules, 64);
     }
 
     #[test]
@@ -1039,6 +1091,7 @@ mod tests {
                 CharacterList::default().table(),
                 (4096, 2048),
                 CasterCull::NONE,
+                MAX_CAPSULES,
             );
             plan.casters[0].cascades & 1 == 1
         };
@@ -1425,7 +1478,18 @@ mod tests {
             let mut plan = ShadowPlan::default();
             let cull = CasterCull { culled: Culled::new(&culled), least_texels: 0.0, levels };
             let table = characters.table();
-            plan.update(&SETTINGS, &packet, &slots, meshes, &|_| 0.0, &list, table, (4096, 2048), cull);
+            plan.update(
+                &SETTINGS,
+                &packet,
+                &slots,
+                meshes,
+                &|_| 0.0,
+                &list,
+                table,
+                (4096, 2048),
+                cull,
+                MAX_CAPSULES,
+            );
             plan
         };
         let mut meshes = meshes();

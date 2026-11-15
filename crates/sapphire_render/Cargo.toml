@@ -47,6 +47,8 @@ sapphire_platform.workspace = true
 sapphire_testkit.workspace = true
 # Real Japanese through the pass, with a font the test is given.
 sapphire_text.workspace = true
+# The levels' seam tests cook a zone's cells on its grid (M5 D6).
+sapphire_zone.workspace = true
 epaint_default_fonts.workspace = true
 sapphire_ui.workspace = true
 tracing-subscriber.workspace = true

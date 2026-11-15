@@ -4847,6 +4847,7 @@ dependencies = [
  "sapphire_testkit",
  "sapphire_text",
  "sapphire_ui",
+ "sapphire_zone",
  "serde",
  "thiserror 2.0.21",
  "tracing",

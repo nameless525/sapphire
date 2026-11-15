@@ -266,6 +266,44 @@ From `main` to the first pipeline, on an M5, a `--capture` run holds about 190 K
 
 A release the boot installs makes the game's show again from inside the boot's frames (M4 H4): `GameApp::iterate`, `Boot::frame`, `Boot::stand_on` (since M4 Z3e `Boot::remake_part`), `GameShow::from_content` and `GameShow::new` held about 580 KiB on an M5 with the show (31 KiB) and the stage in the boot by value (116 KiB), and overflowed the Android emulator's main thread. With the show's fight and menus and the boot's show, renderer and stage boxed, and `Boot::make_stage` kept out of `Boot::frame`, that chain is about 110 KiB. Size tests hold `Boot` to 16 KiB and `GameShow` to 8 KiB beside `Renderer` and `Scene`.
 
+## The benches at scale
+
+M5's batch (Z1) measures every row exit tests 1, 2, 5, 6 and 7 ask for, on each tier, at any commit: B4's
+eight walks of the budget district by their exact flags, exit test 1's walk under a running day with the
+crowd about, the night held wet against dry, the streamer under a binding pool, the crowd held at its
+densest and walked, the cast, each package's on/off pair and the counting walks. The runs are data,
+[`bench/scale.ron`](../bench/scale.ron), whose header says what each field means; adding a run is one more
+entry there. Everything goes under `target/bench-scale/<commit>/` (with `-dirty` for a tree with changes),
+which is never committed:
+
+```sh
+cargo xtask bench-scale prepare            # cook both cooks and the budget district, build, record replays
+cargo xtask bench-scale plan               # the sittings, the minutes by tier, what is left
+cargo xtask bench-scale run --counts       # the counting walks, in any slot: no time is read
+cargo xtask bench-scale run                # the next timed sitting, with nothing else running
+cargo xtask bench-scale report --baseline <dir>   # report.md beside the logs
+```
+
+`prepare` takes gigabytes and most of an hour cold (two budget cooks of about 1.1 GB each, beside
+`target/bench/`'s cache): check the disk first. Each sitting plans at most ten minutes by its units' stated
+lengths, so one quiet stretch of the machine covers it; a pair's two sides run in the same sitting, their order turned
+each round, and the rounds are sittings apart. `run` is resumable: it skips every unit whose status file says
+it finished, and prints the sittings left; `--sitting <n>` runs one again. A timed reading records the load at
+its start and end, and the report marks one above the manifest's bound (8) rather than dropping it.
+
+`--smoke` runs every unit at 200 frames and 320x180 into `smoke/` with the preset `prepare --preset ci`
+made: it proves the batch runs and its logs parse, in an ordinary slot, and measures nothing.
+
+**Reading the report.** One section a tier: CPU rows against spec §3.2, GPU rows against §3.3, counts against
+§3.4, memory against §3.1, streaming against exit test 2, load times and trips. A time is the least of the
+rounds at p50 and p95 with the worst and where along the walk it fell; a count must be the same in every round
+of a run that counts exactly, or the report says it differs and fails. A row over its budget says by how much;
+a row the log doesn't have reads "missing", never zero. With `--baseline` (a folder of B4's logs named
+`<run>.<tier>.r<n>.log`), each row stands beside its baseline reading. A stand-in's rows say what they stand in
+for and are never read as a pass, and the gaps the batch can't measure yet are listed at the top. Metal's
+passes overlap, so of its GPU rows only the frame's is exact. The Mac is none of §3.1's devices: its readings
+compare commits and tiers, not a phone's budget.
+
 ## Measurements
 
 Controlled local measurements use Rust 1.99.0 on an Apple M5, four Cargo build jobs, isolated target

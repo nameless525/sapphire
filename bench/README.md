@@ -77,5 +77,12 @@ The `ci` cook took 19 s on the M5 (cold cache, under a load of about 20): 158 as
    --scene <name>` once for each, then lavapipe's and WARP's from the pull request's first CI run, as a new
    scene's are taken (`tests/golden/scenes.ron`'s header).
 
+## At scale (M5 Z1)
+
+`bench/scale.ron` lists every run of the benches at scale: B4's walks of the `budget` preset, the exit tests'
+runs and each package's pairs. `cargo xtask bench-scale` prepares, runs and reports them under
+`target/bench-scale/<commit>/`; `docs/development-iteration.md` ("The benches at scale") says how to run
+the batch and read its report.
+
 See `docs/m5-plan.md` (B1 to B4) and the spec's §5.27 for the route, and `sapphire_pipeline::procedural` for
 the procedural texture documents.

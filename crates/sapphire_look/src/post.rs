@@ -47,6 +47,9 @@ pub struct PostParams {
     pub gradients: [GradientLayer; MAX_GRADIENT_LAYERS],
     /// Sprites along the axis from the sun through the middle of the frame (M1 P2).
     pub lens_flare: LensFlare,
+    /// Light shafts from a low sun (M5 L13), as time of day keys them. [`LightShafts::NONE`], the default, draws
+    /// none and costs nothing; a tier without shafts ignores them.
+    pub shafts: LightShafts,
     /// The player's sharpening, 0 (off) to 1: contrast-adaptive sharpening (RCAS) in the fused
     /// pass (M1 P2). Off by default: after temporal AA it moves the image away from 4× MSAA
     /// and draws halos along outlines (spec §5.12, "As built (M1 R7)" and "(M1 P2)").
@@ -86,6 +89,7 @@ impl Default for PostParams {
             character_bloom: CharacterBloom::NEUTRAL,
             gradients: [GradientLayer::NONE; MAX_GRADIENT_LAYERS],
             lens_flare: LensFlare::NONE,
+            shafts: LightShafts::NONE,
             sharpening: 0.0,
             effects: PostEffects::NONE,
             focus: Focus::NONE,
@@ -107,6 +111,7 @@ impl PostParams {
             character_bloom: CharacterBloom::NEUTRAL,
             gradients: [GradientLayer::NONE; MAX_GRADIENT_LAYERS],
             lens_flare: LensFlare::NONE,
+            shafts: LightShafts::NONE,
             sharpening: 0.0,
             ..self
         }
@@ -452,6 +457,36 @@ pub struct LensFlare {
 impl LensFlare {
     /// No flare.
     pub const NONE: Self = Self { intensity: 0.0, color: Vec3::ONE };
+}
+
+/// The longest light shafts reach ([`LightShafts::length`]), in frame heights: past it the renderer's taps would
+/// step over more than a texel of its sky mask.
+pub const MAX_SHAFT_LENGTH: f32 = 1.0;
+
+/// Light shafts from a low sun (M5 L13; look pillar 3): light streaking from the sun past roofs, eaves and
+/// trees, as the reference games' evening streets read, soft, wide and coloured by the hour. Only open sky
+/// casts them (the renderer's mask is the sky the frame shows, never its colour), so a lantern or a bright wall
+/// casts nothing, and they reach `length` frame heights from the sun's place on screen, fading out with the
+/// distance. They are light added to the exposed scene before the grade, with bloom's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightShafts {
+    /// Their brightness at the sun, in display-relative light (1 is about display white) added to the exposed
+    /// scene: 0 turns them off.
+    pub strength: f32,
+    /// Linear RGB, multiplying the light.
+    pub tint: Vec3,
+    /// How far from the sun they reach, in frame heights, up to [`MAX_SHAFT_LENGTH`].
+    pub length: f32,
+}
+
+impl LightShafts {
+    /// No shafts.
+    pub const NONE: Self = Self { strength: 0.0, tint: Vec3::ONE, length: 0.0 };
+
+    /// Whether they draw anything: a strength and a length.
+    pub fn drawn(&self) -> bool {
+        self.strength > 0.0 && self.length > 0.0 && self.tint.max_element() > 0.0
+    }
 }
 
 /// Combat's screen effects for one frame (M1 P3; look pillar 8, "combat screen grammar"): the

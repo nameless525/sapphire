@@ -70,8 +70,8 @@ pub use light::{
 pub use post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Crt, Desaturation, Diffusion, Duotone,
     EffectCoverage, EffectScale, Flash, Focus, Glitch, GradientBlend, GradientLayer, GradientShape, Halftone,
-    Inversion, LensFlare, MAX_FOCUS_BLUR, MAX_GRADIENT_LAYERS, MIN_FOCUS_GROWTH, PostEffects, PostParams,
-    RadialBlur, SpeedLines, ToneCurve, Vignette,
+    Inversion, LensFlare, LightShafts, MAX_FOCUS_BLUR, MAX_GRADIENT_LAYERS, MAX_SHAFT_LENGTH,
+    MIN_FOCUS_GROWTH, PostEffects, PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use sky::{CloudLight, Nebula, SkyDisc, SkyGradient, SkyLayers};
 pub use ui::{

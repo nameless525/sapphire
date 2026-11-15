@@ -4,8 +4,8 @@
 use sapphire_look::{
     AmbientLight, BloomParams, CameraRim, Celestial, CharacterBloom, CharacterGi, CharacterLight,
     CharacterLighting, CharacterShade, CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer,
-    GradientLayer, GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc,
-    SkyGradient, SkyLayers, Vignette, Weather,
+    GradientLayer, GradientShape, HeightFog, LensFlare, LightShafts, MAX_GRADIENT_LAYERS, Nebula, PostParams,
+    SkyDisc, SkyGradient, SkyLayers, Vignette, Weather,
 };
 use sapphire_math::color::{luminance, mix_oklab};
 use sapphire_math::det::slerp_direction;
@@ -14,7 +14,7 @@ use sapphire_math::{Quat, Vec3};
 use super::key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CharacterShadeKey, CloudsKey,
     DiffusionKey, DiscKey, FogKey, FogLayerKey, GradeKey, GradientKey, HeightFogKey, LensFlareKey, NebulaKey,
-    SkyKey, TodKey, VignetteKey, WeatherKey,
+    ShaftsKey, SkyKey, TodKey, VignetteKey, WeatherKey,
 };
 use super::timeline::DAY_HOURS;
 
@@ -63,6 +63,8 @@ pub struct TodLook {
     /// The weather the day keys (M5 L4), over the zone's: none unless the timeline, a zone's
     /// override or a cutscene keys it ([`Self::weather_over`]).
     pub weather: KeyedWeather,
+    /// Light shafts from a low sun (M5 L13): none unless the timeline keys them.
+    pub shafts: LightShafts,
 }
 
 impl Default for TodLook {
@@ -98,6 +100,7 @@ impl Default for TodLook {
             character_shade: CharacterShade::default(),
             // The zone's weather stands.
             weather: KeyedWeather::default(),
+            shafts: post.shafts,
         }
     }
 }
@@ -178,6 +181,7 @@ impl TodLook {
             character_bloom: self.character_bloom,
             gradients: self.gradients,
             lens_flare: self.lens_flare,
+            shafts: self.shafts,
             ..PostParams::default()
         }
     }
@@ -243,6 +247,7 @@ impl TodLook {
         let (from_shade, to_shade) = (from.character_shade.as_ref(), to.character_shade.as_ref());
         group(&mut self.character_shade, from_shade, to_shade, segment, weight);
         group(&mut self.weather, from.weather.as_ref(), to.weather.as_ref(), segment, weight);
+        group(&mut self.shafts, from.shafts.as_ref(), to.shafts.as_ref(), segment, weight);
     }
 }
 
@@ -624,6 +629,16 @@ impl Mix for LensFlare {
     }
 }
 
+impl Mix for LightShafts {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            strength: lerp(self.strength, other.strength, t),
+            tint: mix_color(self.tint, other.tint, t),
+            length: lerp(self.length, other.length, t),
+        }
+    }
+}
+
 /// Gradient layers blend slot by slot ([`GradientKey`] says how).
 impl Mix for [GradientLayer; MAX_GRADIENT_LAYERS] {
     fn mix(&self, other: &Self, t: f32) -> Self {
@@ -741,6 +756,7 @@ impl Mix for TodLook {
             emission: self.emission.mix(&other.emission, t),
             character_shade: self.character_shade.mix(&other.character_shade, t),
             weather: self.weather.mix(&other.weather, t),
+            shafts: self.shafts.mix(&other.shafts, t),
         }
     }
 }
@@ -921,6 +937,14 @@ impl Resolve for WeatherKey {
     }
 }
 
+impl Resolve for ShaftsKey {
+    type Value = LightShafts;
+
+    fn resolve(&self) -> LightShafts {
+        (*self).into()
+    }
+}
+
 impl Resolve for LensFlareKey {
     type Value = LensFlare;
 
@@ -1058,6 +1082,32 @@ mod tests {
         // A full blend shows B alone through LUT A.
         let full = GradeMix { blend: 1.0, ..mixed };
         assert_eq!(full.lut_pair(), (grade(0.9), grade(0.9), 0.0));
+    }
+
+    #[test]
+    fn shafts_blend_between_keys_and_reach_none_with_their_strength() {
+        let bloom = |intensity| BloomKey { intensity, ..BloomKey::default() };
+        let shafts = |strength| ShaftsKey { strength, tint: [1.0, 0.7, 0.4], length: 0.6 };
+        let evening = TodKey { bloom: Some(bloom(0.08)), shafts: Some(shafts(0.5)), ..TodKey::default() };
+        let night = TodKey { bloom: Some(bloom(0.0)), shafts: Some(shafts(0.0)), ..TodKey::default() };
+        let mut look = TodLook::default();
+        assert_eq!(look.post().shafts, LightShafts::NONE, "none unless keyed");
+        look.blend_keys(&evening, &night, 0.0, 1.0);
+        assert_eq!(look.post().shafts, shafts(0.5).resolve(), "the first key exactly");
+        let mut previous = (f32::INFINITY, f32::INFINITY);
+        for step in 1..=20 {
+            let segment = step as f32 / 20.0;
+            look.blend_keys(&evening, &night, segment, 1.0);
+            let post = look.post();
+            // Strength over bloom, the share the renderer adds through bloom's top level, stays finite and falls
+            // to none as the strength does.
+            let ratio =
+                if post.bloom.intensity > 0.0 { post.shafts.strength / post.bloom.intensity } else { 0.0 };
+            assert!(ratio.is_finite() && post.shafts.strength <= previous.0 && ratio <= previous.1 + 1e-4);
+            previous = (post.shafts.strength, ratio);
+        }
+        assert_eq!(previous.0, 0.0, "none at the second key");
+        assert!(!look.post().shafts.drawn());
     }
 
     #[test]

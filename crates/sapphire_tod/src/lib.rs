@@ -72,8 +72,8 @@ mod timeline;
 pub use key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CharacterShadeKey, CloudsKey,
     DiffusionKey, DiscKey, DiscsKey, FogKey, FogLayerKey, GradeKey, GradientBlendKey, GradientKey,
-    GradientShapeKey, HeightFogKey, LensFlareKey, NebulaKey, Rgb, SkyKey, TodEase, TodGroup, TodGroups,
-    TodKey, VignetteKey, WeatherKey,
+    GradientShapeKey, HeightFogKey, LensFlareKey, NebulaKey, Rgb, ShaftsKey, SkyKey, TodEase, TodGroup,
+    TodGroups, TodKey, VignetteKey, WeatherKey,
 };
 pub use look::{GradeMix, KeyedWeather, Mix, TodLook, celestial_sphere, mix};
 pub use timeline::{DAY_HOURS, KeyTimes, Segment, TodTimeline, check_keys, segment};

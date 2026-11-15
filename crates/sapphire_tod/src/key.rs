@@ -3,7 +3,7 @@
 use bevy_reflect::Reflect;
 use sapphire_look::{
     BloomParams, CharacterBloom, ColorGrade, Diffusion, GradientBlend, GradientLayer, GradientShape,
-    LensFlare, MAX_GRADIENT_LAYERS, Vignette,
+    LensFlare, LightShafts, MAX_GRADIENT_LAYERS, MAX_SHAFT_LENGTH, Vignette,
 };
 use sapphire_math::Ease;
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,12 @@ pub struct TodKey {
     /// timeline written before it did; a zone's or a cutscene's override replaces it by its weight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weather: Option<WeatherKey>,
+    /// Light shafts from a low sun (M5 L13; [`sapphire_look::LightShafts`]): their strength, tint and
+    /// length at this hour. A timeline that leaves them out draws none, as every timeline written before
+    /// them did. They ride bloom's light into the frame, so a key with shafts must set bloom with an
+    /// intensity above 0 too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shafts: Option<ShaftsKey>,
 }
 
 fn is_linear(ease: &TodEase) -> bool {
@@ -602,6 +608,27 @@ impl From<LensFlareKey> for LensFlare {
     }
 }
 
+/// Light shafts at a key ([`LightShafts`]). Between keys each value blends linearly and the tint in
+/// OkLab, as the lens flare's do.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct ShaftsKey {
+    /// Display-relative light added at the sun: 0 turns them off.
+    pub strength: f32,
+    /// Linear RGB, multiplying the light.
+    #[serde(default = "white")]
+    pub tint: Rgb,
+    /// How far from the sun they reach, in frame heights, above 0 and at most 1.
+    pub length: f32,
+}
+
+impl From<ShaftsKey> for LightShafts {
+    fn from(key: ShaftsKey) -> Self {
+        Self { strength: key.strength, tint: key.tint.into(), length: key.length }
+    }
+}
+
 /// One group of a key: the unit a zone or cutscene overrides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TodGroup {
@@ -628,10 +655,11 @@ pub enum TodGroup {
     Nebula,
     CharacterShade,
     Weather,
+    Shafts,
 }
 
 impl TodGroup {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Sun,
         Self::Moon,
         Self::Sky,
@@ -655,6 +683,7 @@ impl TodGroup {
         Self::Nebula,
         Self::CharacterShade,
         Self::Weather,
+        Self::Shafts,
     ];
 
     /// The sky's layers over its gradient (M1 W2, the nebula M1 X1 part 2e): optional even in
@@ -673,9 +702,10 @@ impl TodGroup {
     /// post's ([`Self::POST_LAYERS`]), the emission scale (M1 W1's keyed emission), which a
     /// timeline that leaves it out keeps at 1, as authored, the characters' shadow hue (M1 C8),
     /// which a timeline that leaves it out leaves to the key light, and the weather (M5 L4), which
-    /// a timeline that leaves it out leaves to the zone. Each draws where unset as every timeline
-    /// written before it drew.
-    pub const OPTIONAL: [Self; 11] = [
+    /// a timeline that leaves it out leaves to the zone, and light shafts (M5 L13), which a timeline
+    /// that leaves them out draws none of. Each draws where unset as every timeline written before it
+    /// drew.
+    pub const OPTIONAL: [Self; 12] = [
         Self::Discs,
         Self::Stars,
         Self::Clouds,
@@ -687,6 +717,7 @@ impl TodGroup {
         Self::Emission,
         Self::CharacterShade,
         Self::Weather,
+        Self::Shafts,
     ];
 
     /// The group's field name in a key.
@@ -715,6 +746,7 @@ impl TodGroup {
             Self::Nebula => "nebula",
             Self::CharacterShade => "character_shade",
             Self::Weather => "weather",
+            Self::Shafts => "shafts",
         }
     }
 
@@ -815,6 +847,7 @@ impl TodKey {
             (TodGroup::Nebula, self.nebula.is_some()),
             (TodGroup::CharacterShade, self.character_shade.is_some()),
             (TodGroup::Weather, self.weather.is_some()),
+            (TodGroup::Shafts, self.shafts.is_some()),
         ];
         for (group, present) in set {
             if present {
@@ -956,6 +989,20 @@ impl TodKey {
             within(weather.wetness, 0.0, 1.0, "weather.wetness", "must be within 0..=1")?;
             within(weather.puddles, 0.0, 1.0, "weather.puddles", "must be within 0..=1")?;
         }
+        if let Some(shafts) = &self.shafts {
+            non_negative(shafts.strength, "shafts.strength")?;
+            color(shafts.tint, "shafts.tint")?;
+            if !(shafts.length > 0.0 && shafts.length <= MAX_SHAFT_LENGTH) {
+                return Err(("shafts.length", "must be above 0 and at most 1"));
+            }
+            // The renderer adds shafts through bloom's top level, divided by bloom's intensity: a key
+            // asking for them keys a bloom that draws, so a blend between two keys never divides by 0
+            // and reaches no shafts as their strength does.
+            let blooms = self.bloom.is_some_and(|bloom| bloom.intensity > 0.0);
+            if shafts.strength > 0.0 && !blooms {
+                return Err(("shafts.strength", "needs the key's bloom, with an intensity above 0"));
+            }
+        }
         Ok(())
     }
 }
@@ -1093,5 +1140,38 @@ mod tests {
                 Some("weather.puddles")
             );
         }
+        let shafts = ShaftsKey { strength: 0.4, tint: [1.0, 0.8, 0.6], length: 0.6 };
+        let bloom = BloomKey { intensity: 0.05, ..BloomKey::default() };
+        let evening = TodKey { shafts: Some(shafts), bloom: Some(bloom), ..TodKey::default() };
+        assert_eq!(check(evening.clone()), None, "shafts with bloom");
+        assert_eq!(
+            check(TodKey { bloom: None, ..evening.clone() }),
+            Some("shafts.strength"),
+            "no bloom keyed"
+        );
+        let dark = BloomKey { intensity: 0.0, ..bloom };
+        assert_eq!(
+            check(TodKey { bloom: Some(dark), ..evening.clone() }),
+            Some("shafts.strength"),
+            "bloom at 0"
+        );
+        let off = ShaftsKey { strength: 0.0, ..shafts };
+        assert_eq!(
+            check(TodKey { shafts: Some(off), bloom: None, ..evening.clone() }),
+            None,
+            "none asked for"
+        );
+        for length in [0.0, -0.1, 1.5, f32::NAN] {
+            let wrong = ShaftsKey { length, ..shafts };
+            assert_eq!(
+                check(TodKey { shafts: Some(wrong), ..evening.clone() }),
+                Some("shafts.length"),
+                "{length}"
+            );
+        }
+        let wrong = ShaftsKey { strength: f32::NAN, ..shafts };
+        assert_eq!(check(TodKey { shafts: Some(wrong), ..evening.clone() }), Some("shafts.strength"));
+        let wrong = ShaftsKey { tint: [1.0, -0.5, 1.0], ..shafts };
+        assert_eq!(check(TodKey { shafts: Some(wrong), ..evening }), Some("shafts.tint"));
     }
 }

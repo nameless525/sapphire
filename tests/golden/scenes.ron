@@ -4231,6 +4231,20 @@
                        "--render-scale", "0.504274", "--lods", "on", "--weather", "dry"],
                 ci_seconds: (lavapipe: 3.0, warp: 14.6),
             ),
+            // The proving hub's people under its own weather, with nothing pinned: every one of the crowd
+            // grounded by its shadow capsule and its capsule AO on the wet square, which the capsules by
+            // cluster (M5 L18) give the whole crowd at the tier's cap rather than its nearest 16. Metal only.
+            (
+                name: "crowd-hub-grounded",
+                ticks: 600,
+                args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--capture-frames", "32"],
+            ),
+            // The same on Mobile-High: up to 30 of the crowd, capsules alone, its AO capsules and GTAO.
+            (
+                name: "crowd-hub-grounded-mobile-high",
+                ticks: 600,
+                args: ["--zone", "proving_hub:player_start", "--tier", "mobile-high", "--capture-frames", "32"],
+            ),
         ],
     ),
 )

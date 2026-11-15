@@ -807,6 +807,10 @@ mod tests {
                     "{}",
                     scene.name
                 );
+            } else if scene.name.starts_with("crowd-hub-grounded") {
+                // A crowd its capsules ground (M5 L18) stands in the hub on a tier as it ships: the
+                // tier's ambient occlusion is the picture.
+                assert!(scene.has("--zone") && scene.has("--tier") && !scene.has("--ao"), "{}", scene.name);
             } else if scene.name.starts_with("tier-") || scene.name.starts_with("lod-") {
                 // A tier as it ships (M4 T0), whose GTAO the thermal ladder's rungs shed; its levels of
                 // detail (M5 D4) too.

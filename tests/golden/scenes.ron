@@ -3991,6 +3991,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:player_start", "--time-of-day", "22", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "32", "--weather", "0.9,0.6"],
+                ci_seconds: (lavapipe: 11.8, warp: 22.8),
             ),
             // The proving hub's square under its own weather (wetness 0.7, a third of its puddles), at the blue
             // hour it keeps all day: the square's probe and the dusk sky in its puddles.
@@ -3999,6 +4000,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 8.5, warp: 24.4),
             ),
             // The yard half wet as night falls: darkened and glossed, no puddle standing.
             (
@@ -4006,6 +4008,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:player_start", "--time-of-day", "20", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "32", "--weather", "0.5,0"],
+                ci_seconds: (lavapipe: 12.3, warp: 22.8),
             ),
             // `wet-street-night` on Mobile-High: all three parts, the puddles reading the probe without the box's
             // correction.
@@ -4014,6 +4017,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:player_start", "--time-of-day", "22", "--tier", "mobile-high",
                        "--ao", "off", "--capture-frames", "32", "--weather", "0.9,0.6"],
+                ci_seconds: (lavapipe: 11.5, warp: 22.9),
             ),
             // And on Mobile-Low, which darkens only: no gloss, no puddle.
             (
@@ -4021,6 +4025,7 @@
                 ticks: 90,
                 args: ["--zone", "proving_ground:player_start", "--time-of-day", "22", "--tier", "mobile-low",
                        "--ao", "off", "--capture-frames", "32", "--weather", "0.9,0.6"],
+                ci_seconds: (lavapipe: 9.3, warp: 21.3),
             ),
         ],
     ),

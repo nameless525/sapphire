@@ -126,6 +126,12 @@ pub(crate) struct Counted {
     pub spot_tiles_redrawn: u32,
     pub spot_tiles_cached: u32,
     pub spot_load_bytes: u64,
+    /// The cascades drawn this frame, the cached ones among them drawn under the fit they had
+    /// since something in them changed, and the casters that change their depth without the plan
+    /// seeing it (M5 D8, `ShadowStats`).
+    pub cascades_drawn: u32,
+    pub cached_cascades_redrawn: u32,
+    pub moving_shadow_casters: u32,
 }
 
 impl Counted {
@@ -234,6 +240,9 @@ impl Counted {
             spot_tiles_redrawn: render.shadows.spot_tiles_drawn,
             spot_tiles_cached: render.shadows.spot_tiles_cached,
             spot_load_bytes: render.shadows.spot_load_bytes,
+            cascades_drawn: render.shadows.cascades_drawn,
+            cached_cascades_redrawn: render.shadows.cached_redrawn,
+            moving_shadow_casters: render.shadows.moving_casters,
             ..Self::default()
         }
     }
@@ -281,7 +290,7 @@ const GROUPS: [&str; 13] = [
 /// and the main view's switches, M5 D4), the state the mesh passes changed, the instanced runs,
 /// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's and the
 /// characters' capsules by cluster.
-pub(crate) const COUNT_ROWS: [CountRow; 85] = [
+pub(crate) const COUNT_ROWS: [CountRow; 88] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -302,6 +311,11 @@ pub(crate) const COUNT_ROWS: [CountRow; 85] = [
     row(PASSES, "cascade 3 draws", |c| u64::from(c.passes.cascades[3].draws)),
     row(PASSES, "shadow triangles", |c| c.passes.shadows().triangles),
     row(PASSES, "character map draws", |c| u64::from(c.passes.character_maps.draws)),
+    // Kept cascades (M5 D8): a still view redraws none, and a cached one is drawn again under its
+    // fit only for what changed in it.
+    row(PASSES, "cascades drawn", |c| u64::from(c.cascades_drawn)),
+    row(PASSES, "cached cascades redrawn", |c| u64::from(c.cached_cascades_redrawn)),
+    row(PASSES, "moving shadow casters", |c| u64::from(c.moving_shadow_casters)),
     // Spot lights' shadows (M5 L16): a still street redraws no tile.
     row(PASSES, "spot tiles redrawn", |c| u64::from(c.spot_tiles_redrawn)),
     row(PASSES, "spot tiles cached", |c| u64::from(c.spot_tiles_cached)),

@@ -13,6 +13,7 @@ use game_ui::hud::OffscreenDisplay;
 use sapphire_platform::{
     AppInitError, Event, Host, KeyEvent, Keycode, Modifiers, Scancode, Timestamp, WindowId,
 };
+use sapphire_render::CascadeCache;
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
 use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
@@ -69,6 +70,10 @@ pub struct GameCapture {
     /// The screen the frames stand for: a phone's pixels per point and touch controls, or a desktop's
     /// (M4 S5's store screenshots). The default draws as captures always have.
     pub display: OffscreenDisplay,
+    /// How the shadow cascades are kept, if not as the tier says (M5 D8): a golden from before kept cascades
+    /// pins drawing in turns, as the sandbox's `--shadow-cache` does for its own scenes. Only a capture that
+    /// stands the game at once takes it: one that boots ([`boot`](Self::boot)) refuses it.
+    pub shadow_cache: Option<CascadeCache>,
 }
 
 /// A capture's last frame.
@@ -108,6 +113,11 @@ pub fn capture_with(
     show.stand_for(capture.display);
     let gpu = headless_gpu()?;
     let (mut stage, boot) = if capture.boot {
+        if capture.shadow_cache.is_some() {
+            return Err(AppInitError::msg(
+                "a capture that boots takes the tier's shadow cascades as they are",
+            ));
+        }
         let mut boot = Boot::start(host, Arc::new(gpu), FORMAT, capture.quality, show, first)?;
         if let Some(update) = update {
             boot = boot.with_update(update);
@@ -115,7 +125,10 @@ pub fn capture_with(
         let (stage, report) = boot.run_offscreen(capture.size, true)?;
         (stage, Some(report))
     } else {
-        let desc = fight_stage(StageDesc::new(host, &gpu, FORMAT, capture.quality));
+        let mut desc = fight_stage(StageDesc::new(host, &gpu, FORMAT, capture.quality));
+        if let (Some(cache), Some(shadows)) = (capture.shadow_cache, desc.settings.shadows.as_mut()) {
+            shadows.cache = cache;
+        }
         let mut content = Content::new(host, desc.character, desc.sky)?;
         let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;
         let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);

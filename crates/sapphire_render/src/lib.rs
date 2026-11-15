@@ -1023,7 +1023,7 @@ pub use sapphire_look::{
 };
 pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
-pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};
+pub use shadows::{CascadeCache, HOLD_SHARE, ShadowFilter, ShadowSettings, ShadowStats};
 pub use skinning::SkinningStats;
 pub use sky::{SkySettings, SkyStats};
 pub use temporal::{HistoryReset, TemporalStats};

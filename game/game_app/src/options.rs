@@ -249,6 +249,7 @@ impl Options {
             draw_from: 0,
             boot: true,
             display: OffscreenDisplay::default(),
+            shadow_cache: None,
         }
     }
 }
@@ -348,6 +349,7 @@ mod tests {
                 draw_from: 0,
                 boot: true,
                 display: OffscreenDisplay::default(),
+                shadow_cache: None,
             }
         );
         assert!(!options.saves());

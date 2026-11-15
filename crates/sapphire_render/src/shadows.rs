@@ -379,6 +379,45 @@ pub struct ShadowSettings {
     /// casts none and builds nothing for them. A table without it casts none.
     #[serde(default)]
     pub spots: u32,
+    /// How the cascades are kept from frame to frame (M5 D8): drawn in turns as before, kept
+    /// while nothing in them changed, or held under their fit as well. A table without it draws
+    /// in turns.
+    #[serde(default)]
+    pub cache: CascadeCache,
+}
+
+/// How the cascades are kept from frame to frame (M5 D8; the module docs' "Keeping the cascades"):
+/// each step keeps what the one before it keeps.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum CascadeCache {
+    /// Every fresh cascade every frame and the cached ones in turns, each with all of its casters
+    /// (M1 R4).
+    #[default]
+    Turns,
+    /// As in turns, but a cascade whose fit and casters are as it last drew them, nothing in it
+    /// having moved, isn't drawn again: the depth it holds is what drawing would write.
+    Kept,
+    /// Kept, and a cached cascade keeps its fit until the view has moved [`HOLD_SHARE`] of its
+    /// width, rather than taking the view's on each turn.
+    Held,
+}
+
+/// The share of its width a held cascade's fit may fall behind the view before it takes the
+/// view's ([`CascadeCache::Held`]): 32 texels at 2048, a few metres on the farthest cascade, where
+/// the shadows are already fading out.
+pub const HOLD_SHARE: f32 = 1.0 / 64.0;
+
+impl CascadeCache {
+    /// A cascade whose casters are unchanged isn't drawn again.
+    pub(crate) fn keeps(self) -> bool {
+        self >= Self::Kept
+    }
+
+    /// A cached cascade holds its fit.
+    pub(crate) fn holds(self) -> bool {
+        self >= Self::Held
+    }
 }
 
 /// How receivers filter a shadow map: a tent over `N × N` texels (Castaño 2013), smooth and
@@ -416,6 +455,7 @@ impl Default for ShadowSettings {
             filter: ShadowFilter::Tent5,
             others: MAX_OTHERS as u32,
             spots: MAX_SPOT_SHADOWS as u32,
+            cache: CascadeCache::Turns,
         }
     }
 }
@@ -533,6 +573,15 @@ pub struct ShadowStats {
     pub caster_draws: u32,
     /// Environment draws culled from the cascades drawn, one for each cascade they missed.
     pub culled_draws: u32,
+    /// Cached cascades drawn this frame under the fit they already had, since something in them
+    /// changed after they drew: a caster moved, came, left or changed its level (M5 D8, a cache that
+    /// keeps; drawing in turns, those drawn on their turn without a new fit).
+    pub cached_redrawn: u32,
+    /// Casters with a cascade to cast into this frame that change its depth without the plan
+    /// seeing a new fit or caster list: skinned or morphed characters, instances moved this frame,
+    /// and those reading a texture as they cast on a frame a texture changed (M5 D8). Foliage in
+    /// the wind isn't one: its flutter is under the cached cascades' texels.
+    pub moving_casters: u32,
     /// Times the quantized key light stepped since the renderer was created; each draws every
     /// cascade again.
     pub light_steps: u32,
@@ -653,6 +702,8 @@ impl ShadowPipelines {
 /// The textures shadows draw into and receivers sample.
 #[derive(Debug)]
 struct ShadowTextures {
+    /// The cascades and the spot layer, which tests copy out of (M5 D8).
+    texture: wgpu::Texture,
     /// The cascades' layers, each a view to draw into, then the spot layer where spots cast.
     layers: Vec<wgpu::TextureView>,
     /// Every cascade and the spot layer, as receivers sample them.
@@ -1016,9 +1067,17 @@ impl Shadows {
         self.plan.spot_tiles()
     }
 
-    /// Forgets what the spot tiles hold, so each is drawn again: a mesh was replaced in place.
-    pub(crate) fn forget_spots(&mut self) {
+    /// Forgets what the spot tiles and the cascades' maps hold, so each is drawn again on its next
+    /// turn: a mesh or material was replaced in place, or the shaders rebuilt (M5 L16, D8).
+    pub(crate) fn forget_maps(&mut self) {
         self.plan.forget_spots();
+        self.plan.forget_kept();
+    }
+
+    /// A texture was raised, lowered or rewritten (M5 D8): the casters that read one as they cast
+    /// may cast other depth, so the cascades they're in are drawn again on their turns.
+    pub(crate) fn textures_changed(&mut self) {
+        self.plan.textures_changed();
     }
 
     /// Plans the frame's shadows from `packet` (CPU only; see [`ShadowPlan::update`]): `slots`
@@ -1026,6 +1085,8 @@ impl Shadows {
     /// how far the frame's wind carries each one's vertices past its bounds, `list` the draw list,
     /// `characters` the frame's characters as the character buffer resolved them, `cull` what view
     /// culling leaves out of every cascade (M5 D3), `capsules` the most that cast capsules (M5 L18).
+    /// `list` is the scene's `list_build`th build of it (M5 D8: a new one leaves the cascades' maps
+    /// to be drawn again).
     #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
     pub(crate) fn prepare(
         &mut self,
@@ -1033,12 +1094,13 @@ impl Shadows {
         slots: &InstanceSlots,
         meshes: &[MeshRecord],
         wind_margin: &WindMargin<'_>,
-        list: &DrawList,
+        (list, list_build): (&DrawList, u32),
         characters: CharacterTable<'_>,
         cull: plan::CasterCull<'_>,
         capsules: usize,
     ) {
         let Some(settings) = self.settings else { return };
+        self.plan.follow_list(list_build, list);
         self.entries = characters.count;
         self.head_readers = SurfaceVariant::ALL.iter().any(|&variant| {
             matches!(variant.shading, Shading::Character(Part::Face | Part::Eye)) && list.len(variant) > 0
@@ -1061,6 +1123,55 @@ impl Shadows {
     /// passes (M1 review RA-001): what the plan kept of the cascades it drew doesn't hold.
     pub(crate) fn frame_lost(&mut self) {
         self.plan.not_drawn();
+    }
+
+    /// Each cascade as the last frame planned left it: its receivers' fit and its map's depth,
+    /// `resolution`² texels row by row, read back from the GPU once the work submitted is done.
+    /// For tests that compare what kept cascades hold with what drawing in turns holds (M5 D8).
+    pub(crate) fn read_cascades(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Vec<(GpuCascade, Vec<f32>)> {
+        let Some(settings) = self.settings else { return Vec::new() };
+        let side = settings.resolution;
+        let row = side * 4;
+        let layer_bytes = u64::from(row) * u64::from(side);
+        let cascades = settings.cascades;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("shadow cascades read back"),
+            size: layer_bytes * u64::from(cascades),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.textures.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::DepthOnly,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(side),
+                },
+            },
+            wgpu::Extent3d { width: side, height: side, depth_or_array_layers: cascades },
+        );
+        queue.submit([encoder.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("the read back maps"));
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("the read back completes");
+        let bytes = buffer.slice(..).get_mapped_range().expect("the read back is mapped");
+        let depths: &[f32] = bytemuck::cast_slice(&bytes);
+        let texels = (side * side) as usize;
+        let fits = &self.plan.uniforms.cascades;
+        (0..cascades as usize)
+            .map(|index| (fits[index], depths[index * texels..][..texels].to_vec()))
+            .collect()
     }
 
     /// Per body group of the last frame with a view ([`CharacterTable::bodies`]), the other
@@ -1450,7 +1561,7 @@ impl ShadowTextures {
     /// `character_resolution`²; 1 × 1 where there is nothing to draw, so the frame's bind group is
     /// complete with shadows off.
     fn new(device: &wgpu::Device, settings: Option<&ShadowSettings>) -> Self {
-        let depth = |label, width, height, layers| {
+        let depth = |label, width, height, layers, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: layers },
@@ -1458,13 +1569,15 @@ impl ShadowTextures {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: DEPTH_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | usage,
                 view_formats: &[],
             })
         };
         let (resolution, layers) =
             settings.map_or((1, 1), |settings| (settings.resolution, settings.layers()));
-        let cascades = depth("shadow cascades", resolution, resolution, layers);
+        // Copied out of only by tests that compare what kept cascades hold (M5 D8).
+        let cascades =
+            depth("shadow cascades", resolution, resolution, layers, wgpu::TextureUsages::COPY_SRC);
         let layer_views = (0..layers)
             .map(|layer| {
                 cascades.create_view(&wgpu::TextureViewDescriptor {
@@ -1482,8 +1595,9 @@ impl ShadowTextures {
             ..Default::default()
         });
         let atlas_size = settings.and_then(ShadowSettings::atlas_size).unwrap_or((1, 1));
-        let atlas = depth("character shadows", atlas_size.0, atlas_size.1, 1);
+        let atlas = depth("character shadows", atlas_size.0, atlas_size.1, 1, wgpu::TextureUsages::empty());
         Self {
+            texture: cascades,
             layers: layer_views,
             cascades: sampled,
             atlas: atlas.create_view(&wgpu::TextureViewDescriptor::default()),

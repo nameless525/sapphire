@@ -111,6 +111,9 @@
 // (M5 L16): `spots` is how many cast at once, nearest the view first, each a cached tile of half a
 // cascade's resolution in one more layer of the cascades' array; desktop alone, since a phone's
 // local-light loop has no room for a shadow lookup a light. A table without it casts none.
+// `cache` (M5 D8, the shadows module docs' "Keeping the cascades"): a cascade whose fit and casters
+// are as it last drew them isn't drawn again (`Kept`), on every tier, since it costs no memory;
+// `Turns` draws each on its turn whatever it holds, as before. A table without it draws in turns.
 //
 // Antialiasing (M1 R7, look pillar 6): desktop tiers resolve with temporal AA and MSAA off.
 // TAA's jittered history resolves edges inside a surface (painted shadow-bias steps, the
@@ -158,6 +161,7 @@
                     filter: Tent5,
                     others: 4,
                     spots: 4,
+                    cache: Kept,
                 ),
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
@@ -207,6 +211,7 @@
                     filter: Tent5,
                     others: 2,
                     spots: 2,
+                    cache: Kept,
                 ),
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
@@ -255,6 +260,7 @@
                     character_shadow: false,
                     filter: Tent3,
                     others: 2,
+                    cache: Kept,
                 ),
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 1, steps: 4, radius: 0.75))),
                 volumetric_fog: false,
@@ -305,6 +311,7 @@
                     character_shadow: false,
                     filter: Tent3,
                     others: 2,
+                    cache: Kept,
                 ),
                 ambient_occlusion: (capsules: true, gtao: None),
                 volumetric_fog: false,

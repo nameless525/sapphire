@@ -84,6 +84,11 @@
 //!   `ShadowSettings::spots`), as the tier says by default (`on`: 4 on Desktop-High, 2 on
 //!   Desktop-Low, none on phones). `off` compiles the local lights' loops as before them, for
 //!   comparisons and the golden scenes from before them that move.
+//! - `--shadow-cache turns|kept|held`: how the cascades are kept from frame to frame (M5 D8,
+//!   `ShadowSettings::cache`), as the tier says by default. `kept` draws a cascade again only once
+//!   its fit or something in it changed, the same depth as drawing it; `held` holds a cached
+//!   cascade's fit too until the view has moved a 64th of its width. `turns` draws each on its turn
+//!   whatever it holds, as before, for the bench's before and the golden scenes from before that move.
 //! - `--ao off|capsule|full`: the player's ambient occlusion setting (M1 W5); the tier's without
 //!   it. `capsule` is capsule AO from the characters' bodies alone, `full` adds GTAO (the
 //!   tier's, or the desktop tiers' on Mobile-Low), and `off`, which the golden scenes from before

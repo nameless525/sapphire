@@ -28,6 +28,7 @@ use game_flow::show::GameShow;
 use game_ui::hud::OffscreenDisplay;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::{AppInitError, Platform};
+use sapphire_render::CascadeCache;
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_save::ProgressStore;
@@ -139,7 +140,8 @@ fn step(stage: &mut impl Steps, through: bool) -> Result<(), AppInitError> {
 
 /// `--game`: the game's own show on the content's flow, from `start`, over `progress`'s save if there is one,
 /// drawn `ticks` frames with no window on the player's `quality` settings (`--tier` and the rest of the
-/// command line's) and written as any capture is (M3 G1). In `language` if one's given, and walking forward
+/// command line's), its cascades kept as `shadow_cache` says (`--shadow-cache`, M5 D8), and written as
+/// any capture is (M3 G1). In `language` if one's given, and walking forward
 /// into a cutscene if `forward` (M3 Q4), drawing from frame `draw_from` (`GameCapture::draw_from`), its menus
 /// and HUD as `display` shows them (M4 S5), and the title's version labelled `version` (0.1.0). It keeps no run's file, and the save only in a scratch directory it
 /// takes away after.
@@ -155,7 +157,7 @@ pub(crate) fn game(
         String,
     ),
     (ticks, size, display): (u32, (u32, u32), OffscreenDisplay),
-    quality: QualitySettings,
+    (quality, shadow_cache): (QualitySettings, Option<CascadeCache>),
 ) -> Result<(), AppInitError> {
     let scratch = progress.map(Scratch::holding).transpose()?;
     let setup =
@@ -176,6 +178,7 @@ pub(crate) fn game(
         draw_from,
         boot: false,
         display,
+        shadow_cache,
     };
     let captured = game_flow::capture::capture(platform.host(), show, &first, &capture, None)?;
     write_png(path, size.0, size.1, &captured.pixels)?;

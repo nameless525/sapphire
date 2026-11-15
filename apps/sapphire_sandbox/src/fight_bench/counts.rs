@@ -31,7 +31,7 @@ use crate::offscreen::Stage;
 
 /// What a frame counted, beside its times.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Counted {
+pub(crate) struct Counted {
     pub passes: FrameCounts,
     /// The pipelines, materials and mesh streams the mesh passes set (M5 D1).
     pub state_changes: StateChanges,
@@ -128,8 +128,14 @@ impl Counted {
     /// These counts with the stage's own in its last frame: what animation did (`Scene::anim_stats`) and
     /// which of a zone's ambient characters stood (`Scene::ambient_stats`).
     pub(super) fn with_stage(self, stage: &Stage) -> Self {
-        let anim = stage.scene.anim_stats();
-        let ambient = stage.scene.ambient_stats();
+        self.with_scene(&stage.scene)
+    }
+
+    /// These counts with `scene`'s own in its last frame (as [`Self::with_stage`]), for the overlay's
+    /// counts panel (M5 X1).
+    pub(crate) fn with_scene(self, scene: &sapphire_stage::Scene) -> Self {
+        let anim = scene.anim_stats();
+        let ambient = scene.ambient_stats();
         Self {
             animated: anim.characters,
             posed: anim.evaluated,
@@ -163,7 +169,7 @@ impl Counted {
 
     /// A frame's counts; `before` is the asset server's at the frame before, for what this one admitted, and
     /// `streaming` the texture streamer's.
-    pub(super) fn of(
+    pub(crate) fn of(
         render: &RenderStats,
         assets: &AssetStats,
         before: &AssetStats,
@@ -228,126 +234,161 @@ impl Counted {
     }
 }
 
-/// A count the bench tracks per frame, and spec §3.4's budget for it on each tier, if any.
-pub(super) struct CountRow {
+/// A count the bench tracks per frame, its group, and spec §3.4's budget for it on each tier, if any: the one
+/// source of the bench's count rows and the overlay's counts panel (M5 X1).
+pub(crate) struct CountRow {
+    /// The rows it is shown among in the overlay's counts panel, one of the group names below.
+    #[cfg_attr(not(feature = "dev"), allow(dead_code, reason = "the overlay, in dev builds, reads it"))]
+    pub group: &'static str,
     pub name: &'static str,
     pub read: fn(&Counted) -> u64,
     /// Desktop-High, Desktop-Low, Mobile-High, Mobile-Low.
     pub budget: [Option<u64>; 4],
 }
 
-const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
-    CountRow { name, read, budget: [None; 4] }
+const fn row(group: &'static str, name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
+    CountRow { group, name, read, budget: [None; 4] }
 }
 
-/// What's logged, the frame's whole first, then pass by pass, the ambient pass's dispatches, then what
-/// culled, the levels drawn (the main view's and the shadows' apart, and the main view's switches, M5
-/// D4), the state the mesh passes changed, the instanced runs, skinning, lights, the asset server's,
-/// animation's, a zone's crowd's, the texture streamer's, the characters' capsules by cluster, and spot lights' shadow tiles.
-pub(super) const COUNT_ROWS: [CountRow; 84] = [
+/// The count rows' groups, in their order.
+const FRAME: &str = "the frame";
+const PASSES: &str = "passes";
+const CULLING: &str = "culling";
+const LEVELS: &str = "levels of detail";
+const STATE: &str = "state changes";
+const RUNS: &str = "instanced runs";
+const SKINNING: &str = "instances and skinning";
+const LIGHTS: &str = "lights";
+const ASSETS: &str = "the asset server";
+const ANIMATION: &str = "animation";
+const CROWD: &str = "a zone's crowd";
+const STREAMING: &str = "texture streaming";
+const CAPSULES: &str = "capsules by cluster";
+/// Every group, in the rows' order (a test holds `COUNT_ROWS` to it).
+#[cfg(test)]
+const GROUPS: [&str; 13] = [
+    FRAME, PASSES, CULLING, LEVELS, STATE, RUNS, SKINNING, LIGHTS, ASSETS, ANIMATION, CROWD, STREAMING,
+    CAPSULES,
+];
+
+/// What's logged, the frame's whole first, then pass by pass (spot lights' shadow tiles among them), the
+/// ambient pass's dispatches, then what culled, the levels drawn (the main view's and the shadows' apart,
+/// and the main view's switches, M5 D4), the state the mesh passes changed, the instanced runs,
+/// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's and the
+/// characters' capsules by cluster.
+pub(crate) const COUNT_ROWS: [CountRow; 84] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
+        group: FRAME,
         read: |c| u64::from(c.passes.total().draws),
         budget: [Some(2_500), Some(2_500), Some(700), Some(700)],
     },
-    row("triangles", |c| c.passes.total().triangles),
-    row("draw instances", |c| u64::from(c.passes.total().instances)),
-    row("outline draws", |c| u64::from(c.passes.total().outline_draws)),
-    row("main draws", |c| u64::from(c.passes.main.draws)),
-    row("main triangles", |c| c.passes.main.triangles),
-    row("character prepass draws", |c| u64::from(c.passes.character_prepass.draws)),
-    row("scene prepass draws", |c| u64::from(c.passes.scene_prepass.draws)),
-    row("cascade 0 draws", |c| u64::from(c.passes.cascades[0].draws)),
-    row("cascade 1 draws", |c| u64::from(c.passes.cascades[1].draws)),
-    row("cascade 2 draws", |c| u64::from(c.passes.cascades[2].draws)),
-    row("cascade 3 draws", |c| u64::from(c.passes.cascades[3].draws)),
-    row("shadow triangles", |c| c.passes.shadows().triangles),
-    row("character map draws", |c| u64::from(c.passes.character_maps.draws)),
+    row(FRAME, "triangles", |c| c.passes.total().triangles),
+    row(FRAME, "draw instances", |c| u64::from(c.passes.total().instances)),
+    row(FRAME, "outline draws", |c| u64::from(c.passes.total().outline_draws)),
+    row(PASSES, "main draws", |c| u64::from(c.passes.main.draws)),
+    row(PASSES, "main triangles", |c| c.passes.main.triangles),
+    row(PASSES, "character prepass draws", |c| u64::from(c.passes.character_prepass.draws)),
+    row(PASSES, "scene prepass draws", |c| u64::from(c.passes.scene_prepass.draws)),
+    row(PASSES, "cascade 0 draws", |c| u64::from(c.passes.cascades[0].draws)),
+    row(PASSES, "cascade 1 draws", |c| u64::from(c.passes.cascades[1].draws)),
+    row(PASSES, "cascade 2 draws", |c| u64::from(c.passes.cascades[2].draws)),
+    row(PASSES, "cascade 3 draws", |c| u64::from(c.passes.cascades[3].draws)),
+    row(PASSES, "shadow triangles", |c| c.passes.shadows().triangles),
+    row(PASSES, "character map draws", |c| u64::from(c.passes.character_maps.draws)),
     // Spot lights' shadows (M5 L16): a still street redraws no tile.
-    row("spot tiles redrawn", |c| u64::from(c.spot_tiles_redrawn)),
-    row("spot tiles cached", |c| u64::from(c.spot_tiles_cached)),
-    row("spot draws", |c| u64::from(c.passes.spots.draws)),
-    row("spot load bytes", |c| c.spot_load_bytes),
-    row("inset draws", |c| c.passes.insets.iter().map(|inset| u64::from(inset.draws)).sum()),
-    row("temporal draws", |c| u64::from(c.passes.temporal.draws)),
-    row("post draws", |c| u64::from(c.passes.post.draws)),
-    row("upscale draws", |c| u64::from(c.passes.upscale.draws)),
-    row("ui draws", |c| u64::from(c.passes.ui.draws)),
-    row("ambient dispatches", |c| u64::from(c.ambient_dispatches)),
-    row("probe dispatches", |c| u64::from(c.probe_dispatches)),
-    row("mesh draws considered", |c| u64::from(c.passes.total().considered)),
-    row("culled by view", |c| u64::from(c.passes.total().culled_by_frustum)),
-    row("culled by a pass", |c| u64::from(c.passes.total().culled_by_pass)),
-    row("culled past outline cutoff", |c| u64::from(c.passes.total().culled_by_cutoff)),
-    row("culled by distance", |c| u64::from(c.passes.total().culled_by_distance)),
-    row("culled by size", |c| u64::from(c.passes.total().culled_by_size)),
+    row(PASSES, "spot tiles redrawn", |c| u64::from(c.spot_tiles_redrawn)),
+    row(PASSES, "spot tiles cached", |c| u64::from(c.spot_tiles_cached)),
+    row(PASSES, "spot draws", |c| u64::from(c.passes.spots.draws)),
+    row(PASSES, "spot load bytes", |c| c.spot_load_bytes),
+    row(PASSES, "inset draws", |c| c.passes.insets.iter().map(|inset| u64::from(inset.draws)).sum()),
+    row(PASSES, "temporal draws", |c| u64::from(c.passes.temporal.draws)),
+    row(PASSES, "post draws", |c| u64::from(c.passes.post.draws)),
+    row(PASSES, "upscale draws", |c| u64::from(c.passes.upscale.draws)),
+    row(PASSES, "ui draws", |c| u64::from(c.passes.ui.draws)),
+    row(PASSES, "ambient dispatches", |c| u64::from(c.ambient_dispatches)),
+    row(PASSES, "probe dispatches", |c| u64::from(c.probe_dispatches)),
+    row(CULLING, "mesh draws considered", |c| u64::from(c.passes.total().considered)),
+    row(CULLING, "culled by view", |c| u64::from(c.passes.total().culled_by_frustum)),
+    row(CULLING, "culled by a pass", |c| u64::from(c.passes.total().culled_by_pass)),
+    row(CULLING, "culled past outline cutoff", |c| u64::from(c.passes.total().culled_by_cutoff)),
+    row(CULLING, "culled by distance", |c| u64::from(c.passes.total().culled_by_distance)),
+    row(CULLING, "culled by size", |c| u64::from(c.passes.total().culled_by_size)),
     // Mesh instances by level, a run's each (M5 D2).
-    row("lod0 draws", |c| u64::from(c.passes.total().levels[0])),
-    row("lod1+ draws", |c| c.passes.total().levels[1..].iter().map(|&level| u64::from(level)).sum()),
-    row("main draws above level 0", |c| {
+    row(LEVELS, "lod0 draws", |c| u64::from(c.passes.total().levels[0])),
+    row(LEVELS, "lod1+ draws", |c| c.passes.total().levels[1..].iter().map(|&level| u64::from(level)).sum()),
+    row(LEVELS, "main draws above level 0", |c| {
         c.passes.main.levels[1..].iter().map(|&level| u64::from(level)).sum()
     }),
-    row("shadow draws above level 0", |c| {
+    row(LEVELS, "shadow draws above level 0", |c| {
         c.passes.shadows().levels[1..].iter().map(|&level| u64::from(level)).sum()
     }),
-    row("level switches", |c| u64::from(c.level_switches)),
-    row("pipelines set", |c| u64::from(c.state_changes.pipelines)),
-    row("materials bound", |c| u64::from(c.state_changes.materials)),
-    row("vertex buffers bound", |c| u64::from(c.state_changes.vertex_buffers)),
+    row(LEVELS, "level switches", |c| u64::from(c.level_switches)),
+    row(STATE, "pipelines set", |c| u64::from(c.state_changes.pipelines)),
+    row(STATE, "materials bound", |c| u64::from(c.state_changes.materials)),
+    row(STATE, "vertex buffers bound", |c| u64::from(c.state_changes.vertex_buffers)),
     // Runs of more than one draw, every view list's (an undrawn scene prepass's too).
-    row("runs", |c| u64::from(c.runs.runs)),
-    row("run instances", |c| u64::from(c.runs.instances)),
-    row("longest run", |c| u64::from(c.runs.longest)),
-    row("median run", |c| u64::from(c.runs.median)),
-    row("scene instances", |c| u64::from(c.instances)),
-    row("skinned instances", |c| u64::from(c.skinned)),
-    row("joints", |c| u64::from(c.joints)),
-    row("skinned vertices", |c| u64::from(c.skinned_vertices)),
+    row(RUNS, "runs", |c| u64::from(c.runs.runs)),
+    row(RUNS, "run instances", |c| u64::from(c.runs.instances)),
+    row(RUNS, "longest run", |c| u64::from(c.runs.longest)),
+    row(RUNS, "median run", |c| u64::from(c.runs.median)),
+    row(SKINNING, "scene instances", |c| u64::from(c.instances)),
+    row(SKINNING, "skinned instances", |c| u64::from(c.skinned)),
+    row(SKINNING, "joints", |c| u64::from(c.joints)),
+    row(SKINNING, "skinned vertices", |c| u64::from(c.skinned_vertices)),
     // Skinned instances every view draws past level 0, a character's levels (M5 D5, C11).
-    row("skinned instances above level 0", |c| u64::from(c.skinned_coarser)),
+    row(SKINNING, "skinned instances above level 0", |c| u64::from(c.skinned_coarser)),
     // §3.4: 64 lights a desktop frame, 8 a phone's.
     CountRow {
         name: "lights",
+        group: LIGHTS,
         read: |c| u64::from(c.lights),
         budget: [Some(64), Some(64), Some(8), Some(8)],
     },
-    row("lights dropped", |c| u64::from(c.lights_dropped)),
-    row("texture pool bytes", |c| c.texture_pool),
-    row("bytes over budget in use", |c| c.over_budget),
-    row("bytes admitted", |c| c.admitted),
-    row("bytes decoded waiting", |c| c.decoded_waiting),
-    row("reads held", |c| c.reads_held),
-    row("texture bytes raised", |c| c.raised),
-    row("bytes given back", |c| c.given_back),
-    row("mesh pool capacity", |c| c.mesh_pool_capacity),
-    row("mesh pool floor", |c| c.mesh_pool_floor),
-    row("characters animated", |c| u64::from(c.animated)),
-    row("poses evaluated", |c| u64::from(c.posed)),
-    row("poses held", |c| u64::from(c.held)),
-    row("characters thinned", |c| u64::from(c.thinned)),
-    row("held off screen", |c| u64::from(c.off_screen)),
-    row("animation jobs", |c| u64::from(c.animation_jobs)),
-    row("ambient characters spawned", |c| u64::from(c.ambient_spawned)),
-    row("ambient characters in view", |c| u64::from(c.ambient_in_view)),
+    row(LIGHTS, "lights dropped", |c| u64::from(c.lights_dropped)),
+    // §3.4: a zone texture pool of 2.5 GB on the desktop, 600 MB on a phone and 400 MB on Mobile-Low, as
+    // the tier table writes them (`texture_pool_mib`: 2,560, 2,560, 600 and 400 MiB).
+    CountRow {
+        group: ASSETS,
+        name: "texture pool bytes",
+        read: |c| c.texture_pool,
+        budget: [Some(2_560 << 20), Some(2_560 << 20), Some(600 << 20), Some(400 << 20)],
+    },
+    row(ASSETS, "bytes over budget in use", |c| c.over_budget),
+    row(ASSETS, "bytes admitted", |c| c.admitted),
+    row(ASSETS, "bytes decoded waiting", |c| c.decoded_waiting),
+    row(ASSETS, "reads held", |c| c.reads_held),
+    row(ASSETS, "texture bytes raised", |c| c.raised),
+    row(ASSETS, "bytes given back", |c| c.given_back),
+    row(ASSETS, "mesh pool capacity", |c| c.mesh_pool_capacity),
+    row(ASSETS, "mesh pool floor", |c| c.mesh_pool_floor),
+    row(ANIMATION, "characters animated", |c| u64::from(c.animated)),
+    row(ANIMATION, "poses evaluated", |c| u64::from(c.posed)),
+    row(ANIMATION, "poses held", |c| u64::from(c.held)),
+    row(ANIMATION, "characters thinned", |c| u64::from(c.thinned)),
+    row(ANIMATION, "held off screen", |c| u64::from(c.off_screen)),
+    row(ANIMATION, "animation jobs", |c| u64::from(c.animation_jobs)),
+    row(CROWD, "ambient characters spawned", |c| u64::from(c.ambient_spawned)),
+    row(CROWD, "ambient characters in view", |c| u64::from(c.ambient_in_view)),
     // Of those in view, by animation band, and those holding springs, which none may (M5 C11).
-    row("ambient in the middle band", |c| u64::from(c.ambient_middle_band)),
-    row("ambient in the far band", |c| u64::from(c.ambient_far_band)),
-    row("ambient spring rigs", |c| u64::from(c.ambient_springs)),
-    row("textures in debt", |c| c.textures_in_debt),
-    row("worst texture debt frames", |c| c.worst_texture_debt),
-    row("texture levels raised", |c| c.levels_raised),
-    row("texture levels lowered", |c| c.levels_lowered),
-    row("texture lowers waiting", |c| c.lowers_waiting),
-    row("streamed texture bytes", |c| c.streamed_bytes),
-    row("streamed texture pool", |c| c.streamed_pool),
-    row("texture tail bytes", |c| c.texture_tails),
-    row("texture bytes wanted", |c| c.texture_wanted),
-    row("shadow capsules", |c| u64::from(c.shadow_capsules)),
-    row("ao capsules", |c| u64::from(c.occlusion_capsules)),
-    row("capsule clusters marked", |c| u64::from(c.capsule_clusters)),
-    row("capsule bits set", |c| u64::from(c.capsule_bits)),
-    row("capsule bits in fullest cluster", |c| u64::from(c.capsule_fullest)),
+    row(CROWD, "ambient in the middle band", |c| u64::from(c.ambient_middle_band)),
+    row(CROWD, "ambient in the far band", |c| u64::from(c.ambient_far_band)),
+    row(CROWD, "ambient spring rigs", |c| u64::from(c.ambient_springs)),
+    row(STREAMING, "textures in debt", |c| c.textures_in_debt),
+    row(STREAMING, "worst texture debt frames", |c| c.worst_texture_debt),
+    row(STREAMING, "texture levels raised", |c| c.levels_raised),
+    row(STREAMING, "texture levels lowered", |c| c.levels_lowered),
+    row(STREAMING, "texture lowers waiting", |c| c.lowers_waiting),
+    row(STREAMING, "streamed texture bytes", |c| c.streamed_bytes),
+    row(STREAMING, "streamed texture pool", |c| c.streamed_pool),
+    row(STREAMING, "texture tail bytes", |c| c.texture_tails),
+    row(STREAMING, "texture bytes wanted", |c| c.texture_wanted),
+    row(CAPSULES, "shadow capsules", |c| u64::from(c.shadow_capsules)),
+    row(CAPSULES, "ao capsules", |c| u64::from(c.occlusion_capsules)),
+    row(CAPSULES, "capsule clusters marked", |c| u64::from(c.capsule_clusters)),
+    row(CAPSULES, "capsule bits set", |c| u64::from(c.capsule_bits)),
+    row(CAPSULES, "capsule bits in fullest cluster", |c| u64::from(c.capsule_fullest)),
 ];
 
 /// A frame's counts, the tick it was drawn at and the metres walked by then.
@@ -537,4 +578,47 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
         c.coverage_us,
         c.texture_starts,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn count_rows_run_in_their_groups_order() {
+        let mut seen: Vec<&str> = Vec::new();
+        for row in &COUNT_ROWS {
+            if seen.last() != Some(&row.group) {
+                assert!(!seen.contains(&row.group), "{} comes back to {}", row.name, row.group);
+                seen.push(row.group);
+            }
+        }
+        assert_eq!(seen, GROUPS, "every group, in order, and none empty");
+    }
+
+    #[test]
+    fn budgets_are_spec_section_3_4s_alone() {
+        // Desktop-High, Desktop-Low, Mobile-High, Mobile-Low; nothing measured.
+        let mib = |mib: u64| Some(mib << 20);
+        let budgeted: Vec<(&str, [Option<u64>; 4])> = COUNT_ROWS
+            .iter()
+            .filter(|row| row.budget.iter().any(Option::is_some))
+            .map(|row| (row.name, row.budget))
+            .collect();
+        assert_eq!(
+            budgeted,
+            [
+                ("draw calls", [Some(2_500), Some(2_500), Some(700), Some(700)]),
+                ("lights", [Some(64), Some(64), Some(8), Some(8)]),
+                ("texture pool bytes", [mib(2_560), mib(2_560), mib(600), mib(400)]),
+            ]
+        );
+        // The pool's figures are the tier table's, which writes §3.4's row.
+        let pool = COUNT_ROWS.iter().find(|row| row.name == "texture pool bytes").expect("a row");
+        let table = sapphire_render::quality::TierTable::shipped();
+        for tier in table.tiers() {
+            let column = super::super::tier_column(tier.id);
+            assert_eq!(pool.budget[column], mib(u64::from(tier.texture_pool_mib)), "{:?}", tier.id);
+        }
+    }
 }

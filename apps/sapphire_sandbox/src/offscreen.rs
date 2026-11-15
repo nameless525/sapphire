@@ -225,6 +225,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
     let mut stage = sapphire_stage::Stage::new_with_content(gpu, desc, content)?.with_show(show);
     stage.history_only_capture = history_only_capture;
+    stage.cull_pose = options.debug_cull_from;
     // A capture sees every texture whole, as its load left it before textures streamed (M5 M4), unless told to
     // stream, and then sees them at the streamer's plan; a bench lets them stream in, as a game does, and
     // streams them by what its views draw (M5 M5) unless told not to, but for one under `--draw-every`, which
@@ -588,6 +589,7 @@ impl FrameHooks<ShownFight> for StageTools {
             input: None,
             scene,
             assets: content.stats(),
+            streaming: content.texture_streaming_stats(),
             audio: None,
             combat: show.fight.combat.as_ref(),
         };

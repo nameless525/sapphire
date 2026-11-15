@@ -106,6 +106,7 @@
 mod budget;
 mod combat;
 mod console;
+mod counts;
 mod effects;
 mod history;
 pub mod input;
@@ -124,6 +125,7 @@ pub use combat::{
     ActorSnapshot, COMBAT_VIEW_CVARS, CombatSnapshot, IntentSnapshot, MoveSnapshot, RecorderControls,
     RecorderRequest, RecorderSnapshot, RecorderState, TrackSnapshot,
 };
+pub use counts::{CountRowView, groups as count_groups};
 pub use effects::EffectControls;
 pub use history::{FrameSummary, FrameTimes, HISTORY};
 pub use input::WindowMetrics;

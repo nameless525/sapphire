@@ -950,7 +950,12 @@ impl SandboxApp {
             self.stages.extract = presentation + stopwatch.lap();
             // Before `prepare`, which culls hulls by it, and readies the debug view.
             self.renderer.set_outline_distance(self.quality.outline_distance());
-            self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
+            let debug_view = sapphire_render::debug_view::DEBUG_VIEW.get();
+            self.renderer.set_debug_view(debug_view);
+            // The texture view's states (M5 X1), gathered only while it shows.
+            if debug_view == sapphire_render::DebugView::Textures {
+                self.renderer.set_texture_tops(self.content.streamed_tops());
+            }
             self.renderer.set_color_vision(sapphire_render::color_vision::COLOR_VISION.get());
             self.renderer.prepare(&self.gpu, packet);
             if let Some((view, size)) = target {
@@ -974,6 +979,7 @@ impl SandboxApp {
                         input: Some(&self.input),
                         scene: &self.scene,
                         assets: self.content.stats(),
+                        streaming: self.content.texture_streaming_stats(),
                         audio: self.audio.as_ref().map(DeviceAudio::stats),
                         combat: self.show.fight.combat.as_ref(),
                     };

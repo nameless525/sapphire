@@ -3,7 +3,7 @@
 
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_core::debug_draw::{Color, DebugLabel, LabelText};
-use sapphire_debug::{DebugOverlay, OverlayConfig, OverlayFrame, WindowMetrics};
+use sapphire_debug::{CountRowView, DebugOverlay, OverlayConfig, OverlayFrame, Panels, WindowMetrics};
 use sapphire_math::Vec3;
 use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowId};
 use sapphire_render::CameraData;
@@ -28,6 +28,8 @@ struct App {
     /// Debug draw's labels, and the camera they are seen through.
     camera: Option<CameraData>,
     labels: Vec<DebugLabel>,
+    /// The count rows handed over (M5 X1).
+    counts: Vec<CountRowView>,
 }
 
 impl App {
@@ -41,6 +43,7 @@ impl App {
             game_cancels: 0,
             camera: None,
             labels: Vec::new(),
+            counts: Vec::new(),
         }
     }
 
@@ -83,6 +86,7 @@ impl App {
             streaming: None,
             hot_reload: None,
             live_link: None,
+            counts: &self.counts,
         });
     }
 }
@@ -258,4 +262,86 @@ fn a_device_lost_while_recording_loses_the_overlay_frame_alone() {
     overlay.record(&mut graph, target);
     app.graph.execute(&app.gpu, graph).expect("a valid graph");
     assert!(app.gpu.is_lost());
+}
+
+/// The overlay's frame over a black target of `size`, read back.
+fn drawn(app: &mut App, overlay: &mut DebugOverlay, ms: u64, (width, height): (u32, u32)) -> Vec<[u8; 4]> {
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let device = app.gpu.device().clone();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    app.frame(overlay, ms, WindowMetrics::offscreen(width, height, 1.0), &[]);
+    let mut graph = FrameGraph::new();
+    let target = graph.import_texture("target", &view);
+    overlay.record(&mut graph, target);
+    app.graph.execute(&app.gpu, graph).expect("a valid graph");
+    let padded = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(padded * height),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(height),
+            },
+        },
+        texture.size(),
+    );
+    app.gpu.queue().submit([encoder.finish()]);
+    buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
+    device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    let mapped = buffer.get_mapped_range(..).expect("mapped");
+    mapped
+        .chunks_exact(padded as usize)
+        .flat_map(|row| row[..width as usize * 4].as_chunks::<4>().0.iter().copied())
+        .collect()
+}
+
+/// The counts panel (M5 X1), standing in for a golden, which a shipping sandbox can't take: a row past
+/// its budget draws in the warning color, and one within it doesn't.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_count_row_past_its_budget_draws_in_the_warning_color() {
+    // The panel's warning and good colors (`ui::OVER`, `ui::GOOD`).
+    let (warning, good) = ([240, 95, 85], [120, 200, 130]);
+    let count = |pixels: &[[u8; 4]], color: [u8; 3]| {
+        pixels.iter().filter(|pixel| (0..3).all(|c| pixel[c].abs_diff(color[c]) <= 2)).count()
+    };
+    let mut app = App::new();
+    let panels = Panels::parse("counts").expect("a panel");
+    let config = OverlayConfig { visible: true, panels, ..OverlayConfig::default() };
+    let mut overlay = DebugOverlay::new(&app.gpu, wgpu::TextureFormat::Rgba8UnormSrgb, config);
+    assert!(overlay.shows_counts());
+    let size = (900, 700);
+    let row = |value| CountRowView { group: "frame", name: "draw calls", value, budget: Some(700) };
+    let triangles = CountRowView { group: "frame", name: "triangles", value: 1_000, budget: None };
+    app.counts = vec![row(350), triangles];
+    let mut pixels = Vec::new();
+    for ms in [0, 100] {
+        pixels = drawn(&mut app, &mut overlay, ms, size);
+    }
+    assert!(count(&pixels, good) > 50, "within its budget: the good color");
+    assert_eq!(count(&pixels, warning), 0, "and no warning");
+    app.counts[0] = row(701);
+    for ms in [200, 300] {
+        pixels = drawn(&mut app, &mut overlay, ms, size);
+    }
+    assert!(count(&pixels, warning) > 50, "past its budget: the warning color");
 }

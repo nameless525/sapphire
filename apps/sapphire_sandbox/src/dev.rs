@@ -15,8 +15,8 @@ use sapphire_assets::AssetStats;
 use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::{
-    CombatSnapshot, CpuStages, DebugOverlay, OverlayConfig, OverlayFrame, OverlayOutput, Panels,
-    RecorderRequest, WindowMetrics,
+    CombatSnapshot, CountRowView, CpuStages, DebugOverlay, OverlayConfig, OverlayFrame, OverlayOutput,
+    Panels, RecorderRequest, WindowMetrics,
 };
 use sapphire_gameplay::TickActions;
 use sapphire_platform::{
@@ -37,8 +37,11 @@ use crate::stats::Stages;
 use game_combat::combat::{Combat, SessionRecorder};
 use game_combat::fight::Fight;
 use game_combat::tuning::{DocumentFrame, DocumentHost, LiveFight, LiveTuning};
+use sapphire_stage::TextureStreamingStats;
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::Scene;
+
+use crate::fight_bench::counts::{COUNT_ROWS, Counted};
 
 pub(crate) struct DevTools {
     overlay: DebugOverlay,
@@ -68,6 +71,10 @@ pub(crate) struct DevTools {
     recorder: SessionRecorder,
     /// What the combat panel shows, built while it does.
     combat: CombatSnapshot,
+    /// The counts panel's rows (M5 X1), evaluated from `COUNT_ROWS` while it shows, and the asset
+    /// server's counters at the frame before, for what a frame admitted.
+    count_rows: Vec<CountRowView>,
+    counted_assets: Option<AssetStats>,
 }
 
 /// What the overlay reads from the app in one frame.
@@ -84,6 +91,8 @@ pub(crate) struct FrameState<'a> {
     pub input: Option<&'a SandboxInput>,
     pub scene: &'a Scene,
     pub assets: AssetStats,
+    /// The texture streamer's counters, for the counts panel (M5 X1).
+    pub streaming: TextureStreamingStats,
     /// The audio system's counters, with `--cue`.
     pub audio: Option<sapphire_audio::AudioStats>,
     /// The fight, if one is running.
@@ -149,6 +158,8 @@ impl DevTools {
             tick: TickActions::NEUTRAL,
             recorder: SessionRecorder::new(platform.user_dir().join("replays")),
             combat: CombatSnapshot::default(),
+            count_rows: Vec::new(),
+            counted_assets: None,
         })
     }
 
@@ -353,6 +364,22 @@ impl DevTools {
             self.combat = crate::combat_panel::snapshot(frame.combat, &self.recorder, frame.input.is_some());
             &self.combat
         });
+        // The bench's count rows against their budgets (M5 X1), evaluated only while their panel shows.
+        let shows_counts = self.overlay.shows_counts();
+        self.count_rows.clear();
+        if shows_counts {
+            let before = self.counted_assets.unwrap_or(frame.assets);
+            let counted =
+                Counted::of(&frame.render, &frame.assets, &before, &frame.streaming).with_scene(frame.scene);
+            let column = crate::fight_bench::tier_column(frame.quality.stats().tier.id);
+            self.count_rows.extend(COUNT_ROWS.iter().map(|row| CountRowView {
+                group: row.group,
+                name: row.name,
+                value: (row.read)(&counted),
+                budget: row.budget[column],
+            }));
+        }
+        self.counted_assets = shows_counts.then_some(frame.assets);
         self.overlay.update(&OverlayFrame {
             now: self.now,
             window: frame.window,
@@ -377,6 +404,7 @@ impl DevTools {
             streaming: frame.scene.stream_stats(),
             hot_reload: Some(self.reload.status()),
             live_link: Some(self.link.status()),
+            counts: &self.count_rows,
         })
     }
 

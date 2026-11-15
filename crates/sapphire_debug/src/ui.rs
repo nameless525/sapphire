@@ -24,6 +24,7 @@ use sapphire_time::{NORMAL_SPEED, ScaledClock};
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
 use crate::combat::{self, CombatPanel, RecorderControls};
 use crate::console::{Completion, Console, LineKind};
+use crate::counts;
 use crate::effects::{self, EffectControls};
 use crate::history::{FrameTimes, HISTORY};
 use crate::overlay::{HotReloadStatus, LiveLinkStatus, OverlayCost, OverlayFrame};
@@ -49,6 +50,8 @@ pub struct Panels {
     pub combat: bool,
     pub console: bool,
     pub cvars: bool,
+    /// The bench's count rows against their budgets (M5 X1).
+    pub counts: bool,
 }
 
 impl Default for Panels {
@@ -59,8 +62,8 @@ impl Default for Panels {
 }
 
 impl Panels {
-    pub const NAMES: [&'static str; 8] =
-        ["stats", "graph", "time", "day", "effects", "combat", "console", "cvars"];
+    pub const NAMES: [&'static str; 9] =
+        ["stats", "graph", "time", "day", "effects", "combat", "console", "cvars", "counts"];
 
     const NONE: Self = Self {
         stats: false,
@@ -71,6 +74,7 @@ impl Panels {
         combat: false,
         console: false,
         cvars: false,
+        counts: false,
     };
     const ALL: Self = Self {
         stats: true,
@@ -81,6 +85,7 @@ impl Panels {
         combat: true,
         console: true,
         cvars: true,
+        counts: true,
     };
 
     /// A comma-separated list of [`Self::NAMES`], or `all`.
@@ -97,6 +102,7 @@ impl Panels {
                 "combat" => panels.combat = true,
                 "console" => panels.console = true,
                 "cvars" => panels.cvars = true,
+                "counts" => panels.counts = true,
                 _ => {
                     return Err(format!(
                         "unknown overlay panel `{name}`; panels: all, {}",
@@ -207,6 +213,9 @@ pub(crate) fn show(
     panel("Combat", &mut panels.combat, at(350.0, 44.0), safe)
         .default_width(480.0)
         .show(ctx, |ui| combat::panel(ui, combat, recorder, view.frame.cvars, view.frame.combat));
+    panel("Counts", &mut panels.counts, at(350.0, 44.0), safe)
+        .default_width(420.0)
+        .show(ctx, |ui| counts::panel(ui, view.frame.counts));
     panel("Cvars", &mut panels.cvars, right(380.0, (safe.height() - 250.0).max(44.0)), safe)
         .default_width(380.0)
         .show(ctx, |ui| cvars(ui, view.frame.cvars));
@@ -249,6 +258,7 @@ fn bar(ctx: &egui::Context, panels: &mut Panels, view: &View<'_>) -> bool {
                     ui.toggle_value(&mut panels.combat, "Combat");
                     ui.toggle_value(&mut panels.console, "Console");
                     ui.toggle_value(&mut panels.cvars, "Cvars");
+                    ui.toggle_value(&mut panels.counts, "Counts");
                     ui.separator();
                     let hint = format!(
                         "Hide the overlay. ` toggles it, as does holding two fingers still for {} s.",
@@ -1315,6 +1325,19 @@ fn debug_view(ui: &mut Ui, stats: &DebugViewStats) {
                 }
                 swatch(ui, [1.0; 3]);
                 ui.monospace("wider");
+            }
+            // The scale views (M5 X1): their legend's cells, a culled cell (striped in the frame)
+            // marked as such.
+            view @ (DebugView::Levels | DebugView::Textures | DebugView::Culling | DebugView::Runs) => {
+                ui.monospace(format!("{}:", view.name()));
+                for cell in view.legend() {
+                    swatch(ui, cell.color);
+                    ui.monospace(if cell.striped {
+                        format!("{} (striped)", cell.name)
+                    } else {
+                        cell.name.to_owned()
+                    });
+                }
             }
         }
     });

@@ -20,6 +20,7 @@ use sapphire_world::tod::TimeOfDay;
 
 use crate::budget::CpuStages;
 use crate::combat::{CombatSnapshot, RecorderControls};
+use crate::counts::CountRowView;
 use crate::effects::EffectControls;
 use crate::history::FrameTimes;
 use crate::input::{EguiInput, WindowMetrics};
@@ -100,6 +101,9 @@ pub struct OverlayFrame<'a> {
     pub hot_reload: Option<HotReloadStatus<'a>>,
     /// Live link, if the app runs it.
     pub live_link: Option<LiveLinkStatus<'a>>,
+    /// The frame's count rows against their budgets (M5 X1), while the counts panel shows
+    /// ([`DebugOverlay::shows_counts`]); empty otherwise.
+    pub counts: &'a [CountRowView],
 }
 
 /// What hot reload (M1 A8) did, for the stats panel. Reloaded assets are counted in
@@ -336,6 +340,13 @@ impl DebugOverlay {
     #[must_use]
     pub fn shows_combat(&self) -> bool {
         self.visible && self.memory.panels.combat
+    }
+
+    /// Whether the counts panel shows, so the app evaluates its count rows for
+    /// [`OverlayFrame::counts`] (M5 X1). Nothing asks for them otherwise.
+    #[must_use]
+    pub fn shows_counts(&self) -> bool {
+        self.visible && self.memory.panels.counts
     }
 
     /// Turns the executor's graph report and GPU timing on while the overlay shows them, and GPU

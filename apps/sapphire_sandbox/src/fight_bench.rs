@@ -67,7 +67,7 @@ use game_combat::fight::trip::TripPhase;
 use sapphire_stage::FrameLaps;
 use sapphire_stage::audio::OfflineAudio;
 
-mod counts;
+pub(crate) mod counts;
 mod zone;
 
 pub(crate) use counts::DrawnCounts;
@@ -313,7 +313,7 @@ const ROWS: [Row; 33] = [
 ];
 
 /// A row's place in [`Row::budget`].
-const fn tier_column(tier: TierId) -> usize {
+pub(crate) const fn tier_column(tier: TierId) -> usize {
     match tier {
         TierId::DesktopHigh => 0,
         TierId::DesktopLow => 1,

@@ -93,12 +93,21 @@ pub fn plan(manifest: &ScaleBench, smoke: Option<Smoke>, paths: Option<&Paths>) 
     }
     let _ = writeln!(text, "by tier:");
     for (tier, (count, seconds, left)) in manifest.tiers.iter().zip(by_tier) {
+        // What the tier's own runs add, such as exit test 2's pools: `streaming: --texture-pool 331`.
+        let own: Vec<String> = manifest
+            .runs
+            .iter()
+            .filter_map(|run| Some(format!("{}: {}", run.name, run.tier_args.get(&tier.name)?.join(" "))))
+            .collect();
         let _ = writeln!(
             text,
-            "  {:<13} {count} sittings, {:.0} min{}",
+            "  {:<13} {} {} cook, {count} sittings, {:.0} min{}{}",
             tier.name,
+            smoke.map_or(tier.size.as_str(), |smoke| smoke.size),
+            tier.cook.name(),
             f64::from(seconds) / 60.0,
-            if paths.is_some() { format!(", {left} with units left") } else { String::new() }
+            if paths.is_some() { format!(", {left} with units left") } else { String::new() },
+            if own.is_empty() { String::new() } else { format!("; {}", own.join(", ")) }
         );
     }
     let total: u32 = sittings.iter().map(Sitting::seconds).sum();
@@ -295,6 +304,8 @@ mod tests {
         assert_eq!(run(&manifest, &paths, Select::Sitting(1), None), Ok(Vec::new()));
         let text = plan(&manifest, None, Some(&paths));
         assert!(text.lines().next().unwrap().ends_with("done"), "{text}");
+        // Each tier says the size and cook its units run at.
+        assert!(text.contains("1280x590 mobile cook,"), "{text}");
         // Sitting 2 isn't, and its sandbox can't start: the run says so rather than skip it.
         assert!(run(&manifest, &paths, Select::Sitting(2), None).is_err());
         assert!(run(&manifest, &paths, Select::Sitting(99), None).unwrap_err().contains("no sitting 99"));

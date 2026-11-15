@@ -275,7 +275,10 @@ eight walks of the budget district by their exact flags, exit test 1's walk unde
 crowd about, the night held wet against dry, the streamer under a binding pool, the crowd held at its
 densest and walked, the cast, each package's on/off pair and the counting walks. The runs are data,
 [`bench/scale.ron`](../bench/scale.ron), whose header says what each field means; adding a run is one more
-entry there. Everything goes under `target/bench-scale/<commit>/` (with `-dirty` for a tree with changes),
+entry there. The phone tiers draw onto a phone's panel, 2532x1170, their scenes capped at 740 and 590 rows
+and upscaled, as they ship (B4's baseline drew them at the scenes' size, which the report says beside it), and
+exit test 2's `streaming` and `counted-streaming` give every tier a pool of half what its cook's walk holds
+whole, so the district's textures come to twice it. Everything goes under `target/bench-scale/<commit>/` (with `-dirty` for a tree with changes),
 which is never committed:
 
 ```sh

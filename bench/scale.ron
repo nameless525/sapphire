@@ -37,11 +37,15 @@
             "Exit test 6: the cells' levels before and after (D6) need a cook without them, so they aren't in this batch.",
             "Exit test 7: zero_hitches plays the ward, since a shipping build can't stand a zone code builds: the counting walks and the fight's pipeline rows (no pipeline built after the load, or the bench fails) stand in on the district.",
         ],
+        // The phones draw onto a phone's panel, 2532x1170, and their tier caps the scene at 740 and 590 rows and
+        // upscales it, as spec §3.1's "~1600×740 → native" ships: the upscale, the interface at the panel's size and
+        // the levels and size culling a panel's rows pick are all in the frame. B4's baseline drew them at
+        // 1600x740 and 1280x590, the scenes' sizes, so a phone row's baseline column isn't the same frame.
         tiers: [
             (name: "desktop-high", size: "2560x1440", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12),
             (name: "desktop-low", size: "1920x1080", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12),
-            (name: "mobile-high", size: "1600x740", cook: mobile, lap: 7600, frames_a_second: 170, startup_seconds: 12),
-            (name: "mobile-low", size: "1280x590", cook: mobile, lap: 3800, frames_a_second: 85, startup_seconds: 12),
+            (name: "mobile-high", size: "2532x1170", cook: mobile, lap: 7600, frames_a_second: 170, startup_seconds: 12),
+            (name: "mobile-low", size: "2532x1170", cook: mobile, lap: 3800, frames_a_second: 85, startup_seconds: 12),
         ],
         runs: [
             // B4's baseline, by its exact flags: the tour at dusk and at night.
@@ -90,7 +94,12 @@
                 rows: ["cpu frame", "gpu frame", "gpu main", "gpu post", "draw calls"],
                 serves: [1],
             ),
-            // Exit test 2: the streamer under a binding pool (half the desktops'; the phones' already bind).
+            // Exit test 2: the streamer under a pool that binds, the district's textures twice it: half of what each
+            // cook's walk holds whole. The desktops' 1280 MiB is half their 2,560 MiB pool, which the budget's sets
+            // fill (B2). The phones' 331 MiB is half the mobile cook's 695,870,268 bytes (663.6 MiB), the `texture
+            // pool bytes` the counting walk with whole textures (`counted`) holds at the tour's end on both phones
+            // (d1d8b612f's batch): its sets are 1K (`MOBILE_SET_SIZE`), so against the phones' own 600 and 400 MiB
+            // it is only ×1.1 and ×1.66.
             (
                 name: "streaming",
                 about: "memory and streaming along the tour, the pool binding",
@@ -101,6 +110,8 @@
                 tier_args: {
                     "desktop-high": ["--texture-pool", "1280"],
                     "desktop-low": ["--texture-pool", "1280"],
+                    "mobile-high": ["--texture-pool", "331"],
+                    "mobile-low": ["--texture-pool", "331"],
                 },
                 frames: Lap,
                 read: [Memory, Streaming],
@@ -288,9 +299,12 @@
                     "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
                     "--texture-streaming", "on", "--no-hot-reload", "--live-link", "off",
                 ],
+                // `streaming`'s pools, half what each cook's walk holds whole.
                 tier_args: {
                     "desktop-high": ["--texture-pool", "1280"],
                     "desktop-low": ["--texture-pool", "1280"],
+                    "mobile-high": ["--texture-pool", "331"],
+                    "mobile-low": ["--texture-pool", "331"],
                 },
                 frames: Lap,
                 phases: 1,

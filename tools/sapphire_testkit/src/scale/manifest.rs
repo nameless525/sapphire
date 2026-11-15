@@ -605,4 +605,26 @@ mod tests {
         assert_eq!(baseline * manifest.tiers.len(), 8);
         assert!(!manifest.counting(None).is_empty());
     }
+
+    /// A phone draws its tier's capped scene onto a native panel and upscales it (spec §3.1's "~1600×740 →
+    /// native"), so every phone unit is at a panel's size, never the scene's; and exit test 2's runs give every
+    /// tier a pool under half of what its cook's district holds whole, the phones as the desktops.
+    #[test]
+    fn the_phones_draw_at_a_panel_and_every_tier_streams_under_half_its_cook() {
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        for tier in manifest.tiers.iter().filter(|tier| tier.cook == Cook::Mobile) {
+            assert_eq!(tier.size, "2532x1170", "{} draws at its scene's size", tier.name);
+        }
+        for run in
+            manifest.runs.iter().filter(|run| run.name == "streaming" || run.name == "counted-streaming")
+        {
+            for tier in &manifest.tiers {
+                let pool = run.tier_args.get(&tier.name).and_then(|args| {
+                    let at = args.iter().position(|arg| arg == "--texture-pool")?;
+                    args.get(at + 1)?.parse::<u32>().ok()
+                });
+                assert!(pool.is_some(), "{} on {} streams under its tier's own pool", run.name, tier.name);
+            }
+        }
+    }
 }

@@ -214,6 +214,16 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
         units.len(),
         manifest.load_bound
     );
+    if inputs.baseline.is_some() {
+        let _ = writeln!(
+            out,
+            "**The baseline drew the phones at their scenes' size:** B4 walked Mobile-High at 1600x740 and \
+             Mobile-Low at 1280x590, with nothing upscaled, where this batch draws each phone tier onto its panel \
+             (the manifest's size), its scene capped and upscaled. A phone row's baseline column isn't the same \
+             frame: it leaves out the upscale and the interface at the panel's size, and its levels and size \
+             culling read fewer rows.\n"
+        );
+    }
     // Units with no status yet, by run (a batch part-way has hundreds); a unit that ran and failed by name.
     let mut not_run: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for unit in &units {
@@ -928,6 +938,15 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(budgeted_counts(&rounds(&[&log])), ["main draws"]);
+    }
+
+    /// B4's baseline drew the phones at their scenes' size; the report says so once, beside a baseline.
+    #[test]
+    fn a_baseline_says_the_phones_were_drawn_at_their_scenes_size() {
+        let (with, _) = generate(true);
+        assert_eq!(with.matches("Mobile-High at 1600x740 and Mobile-Low at 1280x590").count(), 1, "{with}");
+        let (without, _) = generate(false);
+        assert!(!without.contains("1600x740"), "no baseline, no note");
     }
 
     #[test]

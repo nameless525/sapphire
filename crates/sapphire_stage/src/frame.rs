@@ -513,16 +513,18 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
     }
 
     /// Follows [`Self::thermal`] and dynamic resolution's pressure along the tier's thermal ladder (M4 T2),
-    /// a frame's length on, and sheds on the renderer what the ladder's rung sheds: in place, so nothing
-    /// builds. The scale follows in the frame's render scale. The frame-rate cap ([`Quality::frame_rate`])
+    /// a frame's length on, and sheds on the renderer what the ladder's rung sheds and takes its levels of
+    /// detail's bias (M5 D4): in place, so nothing builds. The scale follows in the frame's render scale.
+    /// The frame-rate cap ([`Quality::frame_rate`])
     /// and a tier the ladder asks for ([`Quality::take_tier_request`], at a pause or a wipe) are the
     /// caller's.
     fn follow_heat(&mut self) -> Result<(), AppInitError> {
         let now = self.ladder_clock.advance(self.quality.frame_rate());
         self.quality.follow_heat(now, &self.thermal);
         // Every frame rather than on a step, so a renderer made since gets the rung's shed too.
-        let shed = self.quality.ladder().state().shed;
-        self.renderer.set_shed(shed).map_err(AppInitError::msg)
+        let state = self.quality.ladder().state();
+        self.renderer.set_shed(state.shed).map_err(AppInitError::msg)?;
+        self.renderer.set_rung_lod_bias(state.lod_bias).map_err(AppInitError::msg)
     }
 
     /// Hands the ladder this frame's real length, `dt`, from the window's clock: its holds count real time, so a

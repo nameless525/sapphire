@@ -61,16 +61,23 @@
 //   plan §3, from T0's measures on an M5): desktops lower the scale to 0.85, which TAA rebuilds (14-15%
 //   of Desktop-Low's frame), then shed the sky's face rate, GTAO (12-14%) and a bloom level, then the
 //   scale to the floor; phones, whose bilinear upscale softens the hard two-tone edge and the lines,
-//   shed first (a bloom level is 11-13% of Mobile-Low's frame) and lower the scale after. Then a
-//   30 fps cap, and last the class's lower tier, which the game takes at a pause or a wipe. Every
-//   shed is in place, so no rung builds a pipeline; the cirrus and the wind levels can't be (they
-//   are pipeline constants) and T0 measured no saving from either. Mobile-Low is the device floor: it
-//   already runs at 30 fps and has no lower tier.
+//   shed first (a bloom level is 11-13% of Mobile-Low's frame) and lower the scale after. Then
+//   levels of detail one step coarser (`LodBias(1.0)`, M5 D4: twice the allowance, so each switch at
+//   half the distance; what it saves in time is unmeasured, and grows when cells get levels in D6, and
+//   its pops show less than a halved frame rate), then a 30 fps cap, and last the class's lower
+//   tier, which the game takes at a pause or a wipe. Every shed is in place, so no rung builds a
+//   pipeline; the cirrus and the wind levels can't be (they are pipeline constants) and T0 measured
+//   no saving from either. Mobile-Low is the device floor: it already runs at 30 fps and has no
+//   lower tier.
 // - `texture_pool_mib` (M5 M2): §3.4's zone texture pool, which the stage gives the asset server as
 //   its textures' budget, a split texture's tail and levels together. Mobile-Low's is 400 MiB, from 600 (m5-plan §3): the process already peaked
 //   at 558 MiB there on 0.1.0's small content.
-// - Read by later packages: `volumetric_fog`, `screen_space_outlines` (C4), `max_particles`
-//   (sapphire_vfx, M2) and `lod_bias` (LOD selection).
+// - `lod_bias` (M5 D4, `sapphire_render::levels`): the levels of detail's allowance exponent. A
+//   static draw takes the coarsest level whose error covers at most 2^lod_bias output pixels at its
+//   nearest point (and a cascade's caster a quarter of a texel × 2^lod_bias), so 0.5 lets each
+//   level in at 1/√2 of the distance: Desktop-Low and Mobile-Low.
+// - Read by later packages: `volumetric_fog`, `screen_space_outlines` (C4) and `max_particles`
+//   (sapphire_vfx, M2).
 //
 // Shadows (M1 R4, look pillar 4; `sapphire_render::shadows`): spec §3.3 budgets 2 ms for 4
 // cascades on desktop and 3 ms for 2 on phones. The far half of the cascades is cached, drawn in
@@ -150,6 +157,7 @@
                     Scale(0.85),
                     Shed([SkyFaceRate, Gtao, BloomLevel]),
                     Scale(0.7),
+                    LodBias(1.0),
                     FrameRate(30),
                     Tier(DesktopLow),
                 ],
@@ -195,6 +203,7 @@
                     Scale(0.85),
                     Shed([SkyFaceRate, Gtao, BloomLevel]),
                     Scale(0.7),
+                    LodBias(1.0),
                     FrameRate(30),
                 ],
             ),
@@ -240,6 +249,7 @@
                     Shed([SkyFaceRate, BloomLevel, Gtao]),
                     Scale(0.85),
                     Scale(0.75),
+                    LodBias(1.0),
                     FrameRate(30),
                     Tier(MobileLow),
                 ],
@@ -289,6 +299,7 @@
                     Shed([SkyFaceRate, BloomLevel]),
                     Scale(0.85),
                     Scale(0.75),
+                    LodBias(1.0),
                 ],
             ),
         ],

@@ -1235,8 +1235,12 @@ impl SandboxApp {
         if step.is_some_and(|step| step.from.frame_rate != step.to.frame_rate) {
             platform.set_frame_rate(self.quality.frame_rate());
         }
-        // Every frame rather than on a step, so a renderer made since (a new tier, device loss) sheds too.
-        if let Err(error) = self.renderer.set_shed(self.quality.ladder().state().shed) {
+        // Every frame rather than on a step, so a renderer made since (a new tier, device loss) sheds too,
+        // and takes the rung's levels of detail (M5 D4).
+        let state = self.quality.ladder().state();
+        let applied =
+            self.renderer.set_shed(state.shed).and_then(|()| self.renderer.set_rung_lod_bias(state.lod_bias));
+        if let Err(error) = applied {
             tracing::error!(target: LOG_TARGET, %error, "the thermal ladder's rung");
         }
     }

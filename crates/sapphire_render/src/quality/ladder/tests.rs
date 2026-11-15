@@ -48,15 +48,22 @@ fn depths(moves: &Moves) -> Vec<usize> {
 #[test]
 fn the_shipped_ladders_spend_what_the_look_can_spare_first() {
     use OptionalPass::{BloomLevel, Gtao, SkyFaceRate};
-    // Desktops: 0.85, the optional passes, the floor, 30 fps, and Desktop-High a tier.
-    let desktop = [Rung::Scale(0.85), Rung::Shed(vec![SkyFaceRate, Gtao, BloomLevel]), Rung::Scale(0.7)];
+    // Desktops: 0.85, the optional passes, the floor, coarser levels (M5 D4), 30 fps, and
+    // Desktop-High a tier.
+    let desktop = [
+        Rung::Scale(0.85),
+        Rung::Shed(vec![SkyFaceRate, Gtao, BloomLevel]),
+        Rung::Scale(0.7),
+        Rung::LodBias(1.0),
+    ];
     let high = tier(TierId::DesktopHigh);
-    assert_eq!(high.ladder[..3], desktop);
-    assert_eq!(high.ladder[3..], [Rung::FrameRate(30), Rung::Tier(TierId::DesktopLow)]);
-    assert_eq!(tier(TierId::DesktopLow).ladder[..3], desktop);
-    assert_eq!(tier(TierId::DesktopLow).ladder[3..], [Rung::FrameRate(30)]);
-    // Phones: the passes first, then 0.85 and 0.75. Mobile-Low has no GTAO, already runs at 30 and
-    // is the floor, and its dynamic resolution stops at 0.85, leaving 0.75 to the ladder.
+    assert_eq!(high.ladder[..4], desktop);
+    assert_eq!(high.ladder[4..], [Rung::FrameRate(30), Rung::Tier(TierId::DesktopLow)]);
+    assert_eq!(tier(TierId::DesktopLow).ladder[..4], desktop);
+    assert_eq!(tier(TierId::DesktopLow).ladder[4..], [Rung::FrameRate(30)]);
+    // Phones: the passes first, then 0.85 and 0.75, then coarser levels. Mobile-Low has no GTAO,
+    // already runs at 30 and is the floor, and its dynamic resolution stops at 0.85, leaving 0.75
+    // to the ladder.
     let mobile_high = tier(TierId::MobileHigh);
     assert_eq!(
         mobile_high.ladder,
@@ -64,6 +71,7 @@ fn the_shipped_ladders_spend_what_the_look_can_spare_first() {
             Rung::Shed(vec![SkyFaceRate, BloomLevel, Gtao]),
             Rung::Scale(0.85),
             Rung::Scale(0.75),
+            Rung::LodBias(1.0),
             Rung::FrameRate(30),
             Rung::Tier(TierId::MobileLow),
         ]
@@ -71,7 +79,7 @@ fn the_shipped_ladders_spend_what_the_look_can_spare_first() {
     let mobile_low = tier(TierId::MobileLow);
     assert_eq!(
         mobile_low.ladder,
-        [Rung::Shed(vec![SkyFaceRate, BloomLevel]), Rung::Scale(0.85), Rung::Scale(0.75)]
+        [Rung::Shed(vec![SkyFaceRate, BloomLevel]), Rung::Scale(0.85), Rung::Scale(0.75), Rung::LodBias(1.0)]
     );
     assert_eq!(mobile_low.resolution.dynamic_floor, 0.85);
     assert_eq!(mobile_high.resolution.dynamic_floor, 0.75);
@@ -92,6 +100,9 @@ fn the_shipped_ladders_spend_what_the_look_can_spare_first() {
         // `optional_passes_shed_one_step_and_nothing_else` holds the rest of the settings.
         assert!(bottom.shed.iter().all(OptionalPass::in_place), "{}", tier.id);
         assert!(bottom.scale >= 0.7, "{}: no rung below T0's floors", tier.id);
+        // One step coarser, within the bias's range on every tier's own.
+        assert_eq!(bottom.lod_bias, 1.0, "{}", tier.id);
+        assert!(tier.lod_bias + bottom.lod_bias <= crate::LevelSettings::MAX_BIAS, "{}", tier.id);
     }
 }
 
@@ -101,15 +112,18 @@ type BadLadder = (TierId, fn(&mut QualityTier), &'static str);
 #[test]
 fn bad_ladders_are_refused() {
     use TierId::*;
-    let cases: [BadLadder; 8] = [
+    let cases: [BadLadder; 11] = [
         (DesktopLow, |tier| tier.ladder[2] = Rung::Scale(0.9), "scales must fall"),
         (DesktopLow, |tier| tier.ladder[0] = Rung::Scale(0.1), "scales must fall"),
         (DesktopLow, |tier| tier.ladder[1] = Rung::Shed(vec![OptionalPass::Cirrus]), "only a new renderer"),
         (MobileLow, |tier| tier.ladder.push(Rung::Shed(vec![OptionalPass::BloomLevel])), "twice"),
         (MobileLow, |tier| tier.ladder.push(Rung::FrameRate(30)), "frame rate"),
         (DesktopLow, |tier| tier.ladder.push(Rung::Tier(MobileLow)), "a tier must be lower"),
-        (MobileHigh, |tier| tier.ladder.swap(3, 4), "a tier must be lower"),
+        (MobileHigh, |tier| tier.ladder.swap(4, 5), "a tier must be lower"),
         (MobileHigh, |tier| tier.ladder.insert(1, Rung::Shed(vec![])), "sheds nothing"),
+        (MobileLow, |tier| tier.ladder.push(Rung::LodBias(0.5)), "the levels' bias more than once"),
+        (DesktopLow, |tier| tier.ladder[3] = Rung::LodBias(0.0), "the levels' bias"),
+        (DesktopLow, |tier| tier.ladder[3] = Rung::LodBias(3.75), "within 4"),
     ];
     for (id, edit, problem) in cases {
         let mut tier = tier(id);
@@ -159,8 +173,8 @@ fn heating_takes_each_state_straight_to_its_depth() {
         [
             (secs(60.0), 1, Cause::Heat(Light)),
             (secs(120.0), 2, Cause::Heat(Moderate)),
-            (secs(180.0), 4, Cause::Heat(Severe)),
-            (secs(240.0), 5, Cause::Heat(Critical)),
+            (secs(180.0), 5, Cause::Heat(Severe)),
+            (secs(240.0), 6, Cause::Heat(Critical)),
         ]
     );
     let bottom = ladder.state();
@@ -169,7 +183,7 @@ fn heating_takes_each_state_straight_to_its_depth() {
     // Severe stops short of the tier: it caps the frame rate and keeps the renderer.
     let mut severe = Ladder::new(&tier(TierId::MobileHigh));
     run(&mut severe, 0.0, 10.0, |_| (Severe, Pressure::Unknown));
-    assert_eq!((severe.state().depth, severe.tier_request()), (4, None));
+    assert_eq!((severe.state().depth, severe.tier_request()), (5, None));
 }
 
 /// Cooling from the bottom: a rung at a time, the tier after 60 s, the frame-rate cap after 60 s
@@ -183,11 +197,12 @@ fn recovery_takes_each_rung_back_after_its_hold() {
     assert_eq!(
         moves,
         [
-            (secs(90.0), 4, Cause::Calm),
-            (secs(150.0), 3, Cause::Calm),
-            (secs(160.0), 2, Cause::Calm),
-            (secs(170.0), 1, Cause::Calm),
-            (secs(180.0), 0, Cause::Calm),
+            (secs(90.0), 5, Cause::Calm),
+            (secs(150.0), 4, Cause::Calm),
+            (secs(160.0), 3, Cause::Calm),
+            (secs(170.0), 2, Cause::Calm),
+            (secs(180.0), 1, Cause::Calm),
+            (secs(190.0), 0, Cause::Calm),
         ]
     );
     assert_eq!(ladder.state(), LadderState::TOP);
@@ -225,7 +240,7 @@ fn heat_that_comes_and_goes_does_not_flap() {
     let swing = run(&mut ladder, 0.0, 600.0, |t| {
         (if ((t / 20.0) as u64).is_multiple_of(2) { Severe } else { Moderate }, Pressure::Unknown)
     });
-    assert_eq!(depths(&swing), [4], "the cap's 60 s hold outlasts every cool spell");
+    assert_eq!(depths(&swing), [5], "the cap's 60 s hold outlasts every cool spell");
 }
 
 /// A GPU in a loop with dynamic resolution: time per frame is a fixed part plus a part per scene
@@ -301,17 +316,18 @@ fn pressure_takes_the_rungs_dynamic_resolution_cannot() {
     assert!(gpu.run(&mut ladder, 0.0, 60.0, |_| 0.8).is_empty());
     assert_eq!(gpu.controller.factor(), 1.0);
     // Twice that: 16.2 ms at the 0.7 floor. The passes go (skipping 0.85), still 14.2 ms, then the
-    // cap (skipping 0.7), whose 28 ms frame holds it.
+    // coarser levels (which this model's frame doesn't price, so it stays over), then the cap
+    // (skipping 0.7), whose 28 ms frame holds it.
     let overload = gpu.run(&mut ladder, 60.0, 300.0, |_| 2.2);
-    assert_eq!(depths(&overload), [2, 4], "{overload:?}");
+    assert_eq!(depths(&overload), [2, 4, 5], "{overload:?}");
     assert!(overload.iter().all(|&(_, _, cause)| cause == Cause::Pressure));
-    assert!(overload[1].0 - overload[0].0 >= PRESSURE_DWELL);
-    assert!(overload[1].0 < secs(70.0), "within ten seconds of the load: {overload:?}");
+    assert!(overload.windows(2).all(|pair| pair[1].0 - pair[0].0 >= PRESSURE_DWELL), "{overload:?}");
+    assert!(overload[2].0 < secs(70.0), "within ten seconds of the load: {overload:?}");
     assert_eq!(ladder.state().frame_rate, Some(30));
     // The load falls back: the cap after 60 s, then a rung each 10 s, back to the top.
     let calm = gpu.run(&mut ladder, 300.0, 600.0, |_| 0.8);
-    assert_eq!(depths(&calm), [3, 2, 1, 0], "{calm:?}");
-    assert!(calm[0].0 >= secs(360.0) && calm[3].0 < secs(420.0), "{calm:?}");
+    assert_eq!(depths(&calm), [4, 3, 2, 1, 0], "{calm:?}");
+    assert!(calm[0].0 >= secs(360.0) && calm[4].0 < secs(430.0), "{calm:?}");
     assert_eq!(ladder.state(), LadderState::TOP);
     assert_eq!(gpu.controller.factor(), 1.0);
 }
@@ -363,8 +379,8 @@ fn a_lowered_tier_climbs_back_and_asks_for_the_tier_it_left() {
     assert!(run(&mut low, 5.0, 20.0, |_| (Critical, Pressure::Unknown)).is_empty());
     // Cool: each rung after 10 s, then a minute at the top before it asks.
     let moves = run(&mut low, 20.0, 200.0, |_| (Nominal, Pressure::Unknown));
-    assert_eq!(depths(&moves), [2, 1, 0]);
-    assert_eq!(moves[2].0, secs(50.0));
+    assert_eq!(depths(&moves), [3, 2, 1, 0]);
+    assert_eq!(moves[3].0, secs(60.0));
     assert_eq!(low.tier_request(), Some(TierId::MobileHigh));
     // Warm again and it stops asking.
     run(&mut low, 200.0, 201.0, |_| (Light, Pressure::Unknown));
@@ -379,8 +395,8 @@ fn forced_depths_hold_whatever_the_heat() {
     assert_eq!(ladder.update(secs(1.0), &reading(ThermalState::Critical), Pressure::Unknown, Some(2)), None);
     // Past the bottom is the bottom.
     ladder.update(secs(2.0), &ThermalReading::default(), Pressure::Unknown, Some(99));
-    assert_eq!(ladder.state().depth, 5);
+    assert_eq!(ladder.state().depth, 6);
     // Let go, a cool device climbs as usual.
     let moves = run(&mut ladder, 3.0, 300.0, |_| (ThermalState::Nominal, Pressure::Unknown));
-    assert_eq!(depths(&moves), [4, 3, 2, 1, 0]);
+    assert_eq!(depths(&moves), [5, 4, 3, 2, 1, 0]);
 }

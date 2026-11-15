@@ -417,6 +417,7 @@ fn the_ladder_walks_down_and_back_without_building_on_the_frame() {
         for depth in (0..=soft).chain((0..soft).rev()) {
             let state = LadderState::of(&tier.ladder[..depth]);
             shot.renderer.set_shed(state.shed).expect("every shipped rung sheds in place");
+            shot.renderer.set_rung_lod_bias(state.lod_bias).expect("every shipped rung's bias is in range");
             shot.render(&gpu, state.scale * base, frames);
             let stats = shot.renderer.stats();
             let what = format!("{} at rung {depth} ({}, scale {})", tier.id, state.shed, state.scale);

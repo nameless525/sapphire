@@ -5,7 +5,7 @@
 //!
 //! A tier's rungs are data, `ladder` in `tiers.ron` ([`Rung`]), and spend what the look can spare first.
 //! Each holds what the rungs above it hold ([`LadderState`]): at depth 2 a desktop renders at most 0.85 of
-//! its base scale *and* sheds its optional passes. Four kinds:
+//! its base scale *and* sheds its optional passes. Five kinds:
 //!
 //! - [`Rung::Scale`]: the render scale at most this fraction of the base. Dynamic resolution works below it
 //!   ([`DynamicResolution::set_ceiling`](super::DynamicResolution::set_ceiling)), and a scale under the
@@ -17,6 +17,12 @@
 //!   the wind levels aren't rungs (m4-plan §3: T0 measured no saving from either, and stilled leaves
 //!   show), and a ladder can't hold them: only a new renderer sheds them, the wind levels being pipeline
 //!   constants.
+//! - [`Rung::LodBias`]: levels of detail coarser by this much on the tier's bias (M5 D4, the `levels`
+//!   module): [`Renderer::set_rung_lod_bias`](crate::Renderer::set_rung_lod_bias) builds nothing and
+//!   allocates nothing, and the main view's levels move through their hysteresis rather than all at
+//!   once. Every tier lists it last before its frame-rate cap: what it saves is triangles and vertices,
+//!   unmeasured until the zones' meshes have levels (m5-plan D6), and what it costs is pops a little
+//!   nearer, which show less than a halved frame rate and more than a scale or a pass.
 //! - [`Rung::FrameRate`]: frames per second at most, which the platform paces to; dynamic resolution's
 //!   budgets stretch to the longer frame ([`QualityTier::resolution_budget_at`]).
 //! - [`Rung::Tier`]: a lower tier, the last rung. The ladder only asks: a tier change makes a new renderer,
@@ -108,6 +114,8 @@ pub enum Rung {
     Scale(f32),
     /// These optional passes off, in place.
     Shed(Vec<OptionalPass>),
+    /// Levels of detail coarser: this added to the tier's bias (`lod_bias`), in place (M5 D4).
+    LodBias(f32),
     /// Frames per second at most.
     FrameRate(u32),
     /// A lower tier of the same class, at the game's next pause or wipe.
@@ -120,7 +128,7 @@ impl Rung {
         match self {
             Self::FrameRate(_) => FRAME_RATE_HOLD,
             Self::Tier(_) => TIER_HOLD,
-            Self::Scale(_) | Self::Shed(_) => HOLD,
+            Self::Scale(_) | Self::Shed(_) | Self::LodBias(_) => HOLD,
         }
     }
 }
@@ -134,6 +142,7 @@ pub(super) fn validate(tier: &QualityTier) -> Result<(), &'static str> {
     let mut scale = 1.0;
     let mut shed = OptionalPasses::NONE;
     let mut frame_rate = None;
+    let mut lod_bias = None;
     for (index, rung) in rungs.iter().enumerate() {
         match rung {
             Rung::Scale(next) => {
@@ -155,6 +164,13 @@ pub(super) fn validate(tier: &QualityTier) -> Result<(), &'static str> {
                     }
                     shed = shed.with(pass);
                 }
+            }
+            Rung::LodBias(bias) => {
+                let total = tier.lod_bias + bias;
+                if lod_bias.is_some() || !(*bias > 0.0 && total <= crate::LevelSettings::MAX_BIAS) {
+                    return Err("raises the levels' bias more than once, or not by more than 0 within 4");
+                }
+                lod_bias = Some(*bias);
             }
             Rung::FrameRate(rate) => {
                 if frame_rate.is_some() || !(1..tier.frame_rate).contains(rate) {
@@ -181,6 +197,9 @@ pub struct LadderState {
     pub scale: f32,
     /// Optional passes off.
     pub shed: OptionalPasses,
+    /// What the levels of detail's bias is raised by (M5 D4): 0 for none
+    /// ([`Renderer::set_rung_lod_bias`](crate::Renderer::set_rung_lod_bias)).
+    pub lod_bias: f32,
     /// A frame-rate cap.
     pub frame_rate: Option<u32>,
     /// A lower tier asked for.
@@ -189,8 +208,14 @@ pub struct LadderState {
 
 impl LadderState {
     /// The ladder's top: everything the tier draws.
-    pub const TOP: Self =
-        Self { depth: 0, scale: 1.0, shed: OptionalPasses::NONE, frame_rate: None, tier: None };
+    pub const TOP: Self = Self {
+        depth: 0,
+        scale: 1.0,
+        shed: OptionalPasses::NONE,
+        lod_bias: 0.0,
+        frame_rate: None,
+        tier: None,
+    };
 
     /// What `rungs` hold together.
     pub fn of(rungs: &[Rung]) -> Self {
@@ -199,6 +224,7 @@ impl LadderState {
             Rung::Shed(passes) => {
                 Self { shed: passes.iter().fold(state.shed, |shed, &pass| shed.with(pass)), ..state }
             }
+            Rung::LodBias(bias) => Self { lod_bias: state.lod_bias + bias, ..state },
             Rung::FrameRate(rate) => {
                 Self { frame_rate: Some(state.frame_rate.map_or(*rate, |cap| cap.min(*rate))), ..state }
             }

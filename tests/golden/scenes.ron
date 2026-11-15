@@ -1574,6 +1574,7 @@
                 args: ["--look-dev", "hero", "--playable", "hero", "--graph", "run", "--view", "20,30",
                        "--zoom", "1.4", "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "30", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 24.2, warp: 56.4),
             ),
             (
                 name: "lookdev-cloth-turn",
@@ -1581,6 +1582,7 @@
                 args: ["--look-dev", "hero", "--playable", "hero", "--graph", "turn", "--view", "20,30",
                        "--zoom", "1.4", "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "30", "--capture-step", "1"],
+                ci_seconds: (lavapipe: 23.8, warp: 55.3),
             ),
             // The enemy (M2 O4) squaring up to the character in the square at midday, pinned as the other
             // look-dev scenes are: bone in its lavender shade, dark plate with a painted sheen, a wine

@@ -98,15 +98,16 @@ impl SpawnPoint {
 pub struct ArenaSpawns {
     pub player: SpawnPoint,
     pub enemy: SpawnPoint,
-    /// Where a fight with more than one enemy puts the others, in the order they join it.
-    pub crowd: [SpawnPoint; 6],
+    /// Where a fight with more than one enemy puts the others, in the order they join it: a scenario names
+    /// them `crowd_0` on.
+    pub crowd: Vec<SpawnPoint>,
     /// Where a brain with a patrol walks, as a zone's spawner names a spline. The module `patrol` has the rest.
     pub patrols: Vec<ArenaPatrol>,
 }
 
 impl Versioned for ArenaSpawns {
-    /// 1: M2 O5. 2: M3 B1's crowd. 3: M3 P3's patrols.
-    const VERSION: u32 = 3;
+    /// 1: M2 O5. 2: M3 B1's crowd. 3: M3 P3's patrols. 4: M5 C12, a list of crowd places, eleven of them.
+    const VERSION: u32 = 4;
 }
 
 /// One of the arena's patrols.

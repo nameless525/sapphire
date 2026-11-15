@@ -693,7 +693,7 @@ impl ScenarioDocument {
         // Stable, so two as far away keep the order they're named in.
         others.sort_by(|a, b| away(a).total_cmp(&away(b)));
         let enemy = others.first().copied().unwrap_or(player);
-        let crowd = std::array::from_fn(|at| others.get(at + 1).copied().unwrap_or(enemy));
+        let crowd = others.iter().skip(1).copied().collect();
 
         let colliders = ColliderDocument::from_ron(named(&self.colliders)?)?.cook()?.to_cooked()?;
         Ok(super::ZoneFight {

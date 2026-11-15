@@ -4,7 +4,8 @@
 // enemy across 6 m, on the line through the street's moon gate, so the frame looks up the street.
 //
 // `crowd` is where a fight with more than one enemy puts the others (M3 B1), on the same clear floor,
-// the first three on the enemy's side of the street and the rest down its east edge.
+// the first three on the enemy's side of the street, the next three down its east edge, and the last five
+// (M5 C12) round the enemy's side, so a wave of twelve has a place each: `crowd_0` to `crowd_10`.
 //
 // `patrols` is where a brain with a patrol walks (M3 P3): one round the square's stalls, and one up and
 // down its west side.
@@ -14,18 +15,25 @@
 // `crates/sapphire_gameplay/tests/arena.rs` holds each to the ground and clear of the colliders.
 (
     type: "sapphire::gameplay::ArenaSpawns",
-    version: 3,
+    version: 4,
     data: (
         player: (position: (3.2, 0.0, 5.0), yaw_degrees: 180.0),
         enemy: (position: (3.2, 0.0, -1.0), yaw_degrees: 0.0),
-        crowd: (
+        crowd: [
             (position: (0.4, 0.0, -3.5), yaw_degrees: 0.0),
             (position: (6.2, 0.0, -4.5), yaw_degrees: 0.0),
             (position: (1.0, 0.0, 1.0), yaw_degrees: 30.0),
             (position: (8.6, 0.0, 3.0), yaw_degrees: -90.0),
             (position: (9.6, 0.0, 0.2), yaw_degrees: -90.0),
             (position: (8.6, 0.0, 7.0), yaw_degrees: -90.0),
-        ),
+            // M5 C12's, for a wave of twelve: round the enemy's side of the street, each 2 m or more from
+            // every other place.
+            (position: (-1.6, 0.0, -1.5), yaw_degrees: 30.0),
+            (position: (2.8, 0.0, -5.5), yaw_degrees: 0.0),
+            (position: (5.2, 0.0, -2.2), yaw_degrees: -15.0),
+            (position: (7.4, 0.0, -1.6), yaw_degrees: -45.0),
+            (position: (-1.0, 0.0, 3.2), yaw_degrees: 60.0),
+        ],
         patrols: [
             (
                 name: "square_round",

@@ -133,6 +133,10 @@ pub const PARTY_SCENARIO: &str = "party";
 /// the replay made from it.
 pub const KINDS_SCENARIO: &str = "party-kinds";
 
+/// The scenario of a party of three playable kinds against a wave of twelve (M5 C12), and the replay made
+/// from it: the third kind is named only in its documents.
+pub const THREE_KINDS_SCENARIO: &str = "party-three-kinds";
+
 /// The scenario of a fight with two sides of warriors (M3 B1): the replays made from it.
 pub const SKIRMISH_SCENARIO: &str = "arena-skirmish";
 
@@ -318,7 +322,7 @@ impl ArenaGround {
         let spawns = place.spawns.clone();
         check_spawn(&world, set, "player", spawns.player)?;
         check_spawn(&world, set, "enemy", spawns.enemy)?;
-        for spawn in spawns.crowd {
+        for &spawn in &spawns.crowd {
             check_spawn(&world, set, "crowd", spawn)?;
         }
         if place.statics != world.statics_digest() {
@@ -351,7 +355,7 @@ impl ArenaGround {
         }
         let spawns = &self.spawns;
         let profile = profile();
-        let crowd = spawns.crowd.map(|spawn| (spawn, Color::YELLOW));
+        let crowd = spawns.crowd.iter().map(|&spawn| (spawn, Color::YELLOW));
         for (spawn, color) in
             [(spawns.player, Color::GREEN), (spawns.enemy, Color::RED)].into_iter().chain(crowd)
         {
@@ -2102,7 +2106,8 @@ mod tests {
     /// own view has them: the stage adds only its spawn points, so nothing draws twice.
     #[test]
     fn the_colliders_draw_once_with_or_without_a_fight() {
-        const SPAWN_SHAPES: usize = 16;
+        // Two for each spawn point: the player's, the enemy's and the crowd's eleven.
+        const SPAWN_SHAPES: usize = 26;
         let cooked = cooked_colliders().expect("it cooks");
         let ground = ArenaGround::new(ColliderSet::read(&cooked).expect("it reads")).expect("it stands");
         let colliders = ground.world.statics().len();

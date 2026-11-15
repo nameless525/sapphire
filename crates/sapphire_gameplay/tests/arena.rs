@@ -225,7 +225,7 @@ fn each_spawn_point_stands_on_the_ground() {
     let world = world(&bytes);
     let filter = QueryFilter::new(Group::World.mask());
     let spawns = spawns();
-    let crowd = spawns.crowd.map(|spawn| ("crowd", spawn));
+    let crowd = spawns.crowd.iter().map(|&spawn| ("crowd", spawn));
     for (who, spawn) in [("player", spawns.player), ("enemy", spawns.enemy)].into_iter().chain(crowd) {
         let over = spawn.position() + Vec3::Y * 2.0;
         let hit = world
@@ -243,7 +243,7 @@ fn a_capsule_of_the_characters_size_fits_at_each_spawn_point() {
     let world = world(&bytes);
     let filter = QueryFilter::new(character_filter());
     let spawns = spawns();
-    let crowd = spawns.crowd.map(|spawn| ("crowd", spawn));
+    let crowd = spawns.crowd.iter().map(|&spawn| ("crowd", spawn));
     for (who, spawn) in [("player", spawns.player), ("enemy", spawns.enemy)].into_iter().chain(crowd) {
         let mut hits = [HitTarget::Body(BodyId(0)); 8];
         let found = world.overlap(&capsule(), capsule_pose(spawn.position()), &filter, &mut hits);
@@ -253,6 +253,16 @@ fn a_capsule_of_the_characters_size_fits_at_each_spawn_point() {
     // And they stand apart from each other, with room to dodge.
     let apart = spawns.player.position().distance(spawns.enemy.position());
     assert!(apart > 4.0 * profile().radius, "{apart}");
+    // A wave of twelve takes the enemy's place and eleven of the crowd's (M5 C12), each 2 m or more from
+    // every other place, so none spawns into another.
+    assert!(spawns.crowd.len() >= 11, "{} crowd places", spawns.crowd.len());
+    let places: Vec<Vec3> =
+        [spawns.player, spawns.enemy].iter().chain(&spawns.crowd).map(|spawn| spawn.position()).collect();
+    for (at, a) in places.iter().enumerate() {
+        for b in &places[at + 1..] {
+            assert!(a.distance(*b) >= 2.0, "{a} and {b} stand {} m apart", a.distance(*b));
+        }
+    }
 }
 
 /// A patrol's points are on the ground, clear of everything, and each has a way to it from the one before.

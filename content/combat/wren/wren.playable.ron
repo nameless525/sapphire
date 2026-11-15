@@ -1,0 +1,52 @@
+// Wren as a playable kind (M5 C12): the third one, a figure of the project's own generator at its `ci`
+// scale (`tools/figures/wren.figure.ron`), with a staff skinned to the right hand. Nothing in Rust names
+// Wren: the moves are compiled into the simulation as every set a scenario lists is, and this is what draws
+// the kind.
+(
+    type: "sapphire::moves::PlayableDocument",
+    version: 2,
+    data: (
+        // The name's key in the game's words, which the HUD names the kind by: Wren.
+        name: "character-name-wren",
+        // `wren.moves.ron`.
+        moves: "9c3e222c-13cb-4171-bcdb-bcec5e75f89d",
+        look: (
+            // `wren.vrm`, and its rig, which the cook derives from it. The springs (coat, ponytail and
+            // bangs) are the VRM's own, cooked into that rig.
+            mesh: "d24300b3-9034-4deb-8bc9-9b621dc19915",
+            rig: "f8f6c93f-4abe-8a46-bf85-a687dffa6f4a",
+            // `wren.animgraph.ron`.
+            graph: "0380f08c-f4fa-4eb8-8ffc-2e7c541a59b5",
+            // What sets Wren's blinks apart from the heroine's and Aster's.
+            seed: 3,
+            // The staff is skinned to `handslot.r`: nothing else in the hands.
+            held: None,
+            // Where the body meets what it touches, by the figure's joints: Aster's frame, joint for joint.
+            body_contacts: [
+                "hips",
+                "spine",
+                "upper_chest",
+                "neck",
+                "head",
+                "upperleg.l",
+                "lowerleg.l",
+                "foot.l",
+                "toes.l",
+                "upperleg.r",
+                "lowerleg.r",
+                "foot.r",
+                "toes.r",
+                "upperarm.l",
+                "lowerarm.l",
+                "hand.l",
+                "upperarm.r",
+                "lowerarm.r",
+                "hand.r",
+            ],
+            // A little sterner than at rest.
+            expression: Some((preset: "angry", weight: 0.15)),
+            // `wren.motion.ron`: the shared springs' numbers, with the coat's tails worn as cloth.
+            motion: Some("7d4d649e-d837-4967-a351-6bb8788b4cee"),
+        ),
+    ),
+)

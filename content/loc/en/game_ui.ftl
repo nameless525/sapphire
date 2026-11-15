@@ -176,6 +176,7 @@ remap-keep = Keep both as they were
 character-title = Character
 character-name-aster = Aster
 character-name-wanderer = Wanderer
+character-name-wren = Wren
 character-level = Lv. { $level }
 character-hp = HP
 character-hp-value = { NUMBER($hp) } / { NUMBER($max) }
@@ -213,6 +214,7 @@ hud-party-down = Down
 
 enemy-warrior = Skeleton Warrior
 enemy-lancer = Lancer
+enemy-ember-lancer = Ember Lancer
 
 boss-captain = Skeleton Captain
 boss-knell-colossus = Knell Colossus

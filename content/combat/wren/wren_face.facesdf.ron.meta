@@ -1,0 +1,11 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "3229887f-8db4-46f2-b378-7f8ccf6a111d",
+        importer: CharacterMap(FaceSdf((
+            mips: true,
+            precision: Unorm16,
+        ))),
+    ),
+)

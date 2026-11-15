@@ -1,0 +1,59 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "a18d60ad-8664-4198-9d55-0a5f493a01db",
+        importer: Gltf((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [
+                    (
+                        triangle_ratio: 0.5,
+                        max_error: 0.002,
+                    ),
+                    (
+                        triangle_ratio: 0.25,
+                        max_error: 0.01,
+                    ),
+                    (
+                        triangle_ratio: 0.125,
+                        max_error: 0.03,
+                    ),
+                ],
+                mobile_skip: 1,
+            ),
+            position_format: Unorm16,
+            materials: {
+                "ember_lancer": "ee7e96e8-2730-40ea-a77f-7aff1aa0795f",
+            },
+            // The Ember Lancer (M5 C12) stands on the Lancer's joints exactly, so its model plays on the
+            // Lancer's skeleton and the Lancer's graph and every clip cooked for the Lancer play on it.
+            clips: (
+                names: [],
+                humanoid: {
+                    Hips: "hips",
+                    Spine: "spine",
+                    Chest: "chest",
+                    Head: "head",
+                    LeftUpperLeg: "upperleg.l",
+                    LeftLowerLeg: "lowerleg.l",
+                    LeftFoot: "foot.l",
+                    LeftToes: "toes.l",
+                    RightUpperLeg: "upperleg.r",
+                    RightLowerLeg: "lowerleg.r",
+                    RightFoot: "foot.r",
+                    RightToes: "toes.r",
+                    LeftUpperArm: "upperarm.l",
+                    LeftLowerArm: "lowerarm.l",
+                    LeftHand: "wrist.l",
+                    RightUpperArm: "upperarm.r",
+                    RightLowerArm: "lowerarm.r",
+                    RightHand: "wrist.r",
+                },
+            ),
+            skeleton: "41e229ad-28a3-41f9-aeb8-ba214e06be6a",
+        )),
+    ),
+)

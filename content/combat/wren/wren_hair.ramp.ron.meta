@@ -1,0 +1,12 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "33820821-0ada-4f5d-91a6-af6945f6670b",
+        importer: CharacterMap(Ramp((
+            width: 256,
+            row_height: 4,
+            mips: false,
+        ))),
+    ),
+)

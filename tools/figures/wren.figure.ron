@@ -1,0 +1,630 @@
+// Wren (M5 C12): the third playable kind, built on Aster's frame (`hero.figure.ron`, the same 64 joints of
+// body, hands and face, so the heroine's clips cook for it as they do for her) and dressed to read apart
+// from both at a glance: short dark hair with bangs and a high ponytail, a long charcoal coat open at the
+// front whose tails fall to the calves at the sides and back, a high-collared teal shirt, dark trousers,
+// boots to the knee, and a long staff in the right hand, banded in copper and tipped with a pale blue glow.
+// Where Aster is a white jacket over a skirt and long silver hair with empty hands, Wren is a dark column
+// with a staff across the frame.
+//
+// Six materials: skin, the face (face SDF masks baked from its normals; the expressions move it), hair,
+// the coat (both sides drawn), the clothes and gear. 120 joints of its own, 121 with the model's root: 64
+// for the body, hands and face, and 56 in spring chains (the coat's seven tails, the ponytail and five
+// bangs), whose springs the VRM carries. The staff is skinned to `handslot.r`, as the Lancer's spear is,
+// so the kind holds nothing else. All 18 of VRM 1.0's expression presets are morph targets on the face.
+//
+// `sapphire_pipeline gen-figures --specs tools/figures --out content` writes `content/combat/wren/`
+// (`sapphire_pipeline::figure`); its sidecars and material documents are hand-written after Aster's.
+// Metres, +Y up, facing +Z, its left toward +X, in a T-pose.
+(
+    type: "sapphire::pipeline::Figure",
+    version: 2,
+    data: (
+        dir: "combat/wren",
+        name: "wren",
+        max_triangles: 80000,
+        maps: Some((size: 256, grain: 0.04)),
+        joints: [
+            (name: "root", at: (0.0, 0.0, 0.0), aim: Some((0.0, 1.0, 0.0))),
+            (name: "hips", parent: Some("root"), at: (0.0, 0.92, 0.0)),
+            (name: "spine", parent: Some("hips"), at: (0.0, 1.0, 0.0)),
+            (name: "chest", parent: Some("spine"), at: (0.0, 1.12, 0.0)),
+            (name: "upper_chest", parent: Some("chest"), at: (0.0, 1.24, 0.0)),
+            (name: "neck", parent: Some("upper_chest"), at: (0.0, 1.36, 0.0)),
+            (name: "head", parent: Some("neck"), at: (0.0, 1.42, 0.0), aim: Some((0.0, 1.62, 0.0))),
+            (name: "jaw", parent: Some("head"), at: (0.0, 1.43, 0.02), aim: Some((0.0, 1.405, 0.08))),
+            (name: "eye.l", parent: Some("head"), at: (0.033, 1.497, 0.07), aim: Some((0.033, 1.497, 0.2))),
+            (name: "eye.r", parent: Some("head"), at: (-0.033, 1.497, 0.07), aim: Some((-0.033, 1.497, 0.2))),
+            (name: "shoulder.l", parent: Some("upper_chest"), at: (0.03, 1.33, 0.0)),
+            (name: "upperarm.l", parent: Some("shoulder.l"), at: (0.14, 1.33, -0.01)),
+            (name: "lowerarm.l", parent: Some("upperarm.l"), at: (0.395, 1.33, -0.01)),
+            (name: "hand.l", parent: Some("lowerarm.l"), at: (0.645, 1.33, -0.01)),
+            (name: "handslot.l", parent: Some("hand.l"), at: (0.72, 1.33, 0.0), aim: Some((0.72, 1.33, 1.0))),
+            (name: "thumb1.l", parent: Some("hand.l"), at: (0.67, 1.32, 0.025)),
+            (name: "thumb2.l", parent: Some("thumb1.l"), at: (0.7, 1.315, 0.045)),
+            (name: "thumb3.l", parent: Some("thumb2.l"), at: (0.725, 1.31, 0.055), aim: Some((0.745, 1.31, 0.06))),
+            (name: "index1.l", parent: Some("hand.l"), at: (0.735, 1.335, 0.022)),
+            (name: "index2.l", parent: Some("index1.l"), at: (0.77, 1.335, 0.024)),
+            (name: "index3.l", parent: Some("index2.l"), at: (0.795, 1.335, 0.025), aim: Some((0.815, 1.335, 0.025))),
+            (name: "middle1.l", parent: Some("hand.l"), at: (0.74, 1.337, 0.003)),
+            (name: "middle2.l", parent: Some("middle1.l"), at: (0.777, 1.337, 0.003)),
+            (name: "middle3.l", parent: Some("middle2.l"), at: (0.805, 1.337, 0.003), aim: Some((0.826, 1.337, 0.003))),
+            (name: "ring1.l", parent: Some("hand.l"), at: (0.735, 1.335, -0.016)),
+            (name: "ring2.l", parent: Some("ring1.l"), at: (0.77, 1.335, -0.017)),
+            (name: "ring3.l", parent: Some("ring2.l"), at: (0.795, 1.335, -0.018), aim: Some((0.814, 1.335, -0.018))),
+            (name: "little1.l", parent: Some("hand.l"), at: (0.725, 1.332, -0.033)),
+            (name: "little2.l", parent: Some("little1.l"), at: (0.752, 1.332, -0.035)),
+            (name: "little3.l", parent: Some("little2.l"), at: (0.772, 1.332, -0.036), aim: Some((0.788, 1.332, -0.036))),
+            (name: "upperarm_twist.l", parent: Some("upperarm.l"), at: (0.27, 1.33, -0.01), aim: Some((0.395, 1.33, -0.01))),
+            (name: "lowerarm_twist.l", parent: Some("lowerarm.l"), at: (0.52, 1.33, -0.01), aim: Some((0.645, 1.33, -0.01))),
+            (name: "shoulder.r", parent: Some("upper_chest"), at: (-0.03, 1.33, 0.0)),
+            (name: "upperarm.r", parent: Some("shoulder.r"), at: (-0.14, 1.33, -0.01)),
+            (name: "lowerarm.r", parent: Some("upperarm.r"), at: (-0.395, 1.33, -0.01)),
+            (name: "hand.r", parent: Some("lowerarm.r"), at: (-0.645, 1.33, -0.01)),
+            (name: "handslot.r", parent: Some("hand.r"), at: (-0.72, 1.33, 0.0), aim: Some((-0.72, 1.33, 1.0))),
+            (name: "thumb1.r", parent: Some("hand.r"), at: (-0.67, 1.32, 0.025)),
+            (name: "thumb2.r", parent: Some("thumb1.r"), at: (-0.7, 1.315, 0.045)),
+            (name: "thumb3.r", parent: Some("thumb2.r"), at: (-0.725, 1.31, 0.055), aim: Some((-0.745, 1.31, 0.06))),
+            (name: "index1.r", parent: Some("hand.r"), at: (-0.735, 1.335, 0.022)),
+            (name: "index2.r", parent: Some("index1.r"), at: (-0.77, 1.335, 0.024)),
+            (name: "index3.r", parent: Some("index2.r"), at: (-0.795, 1.335, 0.025), aim: Some((-0.815, 1.335, 0.025))),
+            (name: "middle1.r", parent: Some("hand.r"), at: (-0.74, 1.337, 0.003)),
+            (name: "middle2.r", parent: Some("middle1.r"), at: (-0.777, 1.337, 0.003)),
+            (name: "middle3.r", parent: Some("middle2.r"), at: (-0.805, 1.337, 0.003), aim: Some((-0.826, 1.337, 0.003))),
+            (name: "ring1.r", parent: Some("hand.r"), at: (-0.735, 1.335, -0.016)),
+            (name: "ring2.r", parent: Some("ring1.r"), at: (-0.77, 1.335, -0.017)),
+            (name: "ring3.r", parent: Some("ring2.r"), at: (-0.795, 1.335, -0.018), aim: Some((-0.814, 1.335, -0.018))),
+            (name: "little1.r", parent: Some("hand.r"), at: (-0.725, 1.332, -0.033)),
+            (name: "little2.r", parent: Some("little1.r"), at: (-0.752, 1.332, -0.035)),
+            (name: "little3.r", parent: Some("little2.r"), at: (-0.772, 1.332, -0.036), aim: Some((-0.788, 1.332, -0.036))),
+            (name: "upperarm_twist.r", parent: Some("upperarm.r"), at: (-0.27, 1.33, -0.01), aim: Some((-0.395, 1.33, -0.01))),
+            (name: "lowerarm_twist.r", parent: Some("lowerarm.r"), at: (-0.52, 1.33, -0.01), aim: Some((-0.645, 1.33, -0.01))),
+            (name: "upperleg.l", parent: Some("hips"), at: (0.09, 0.88, 0.0)),
+            (name: "lowerleg.l", parent: Some("upperleg.l"), at: (0.09, 0.48, 0.012)),
+            (name: "foot.l", parent: Some("lowerleg.l"), at: (0.09, 0.08, -0.01)),
+            (name: "toes.l", parent: Some("foot.l"), at: (0.09, 0.025, 0.11), aim: Some((0.09, 0.02, 0.17))),
+            (name: "upperleg_twist.l", parent: Some("upperleg.l"), at: (0.09, 0.68, 0.006), aim: Some((0.09, 0.48, 0.012))),
+            (name: "upperleg.r", parent: Some("hips"), at: (-0.09, 0.88, 0.0)),
+            (name: "lowerleg.r", parent: Some("upperleg.r"), at: (-0.09, 0.48, 0.012)),
+            (name: "foot.r", parent: Some("lowerleg.r"), at: (-0.09, 0.08, -0.01)),
+            (name: "toes.r", parent: Some("foot.r"), at: (-0.09, 0.025, 0.11), aim: Some((-0.09, 0.02, 0.17))),
+            (name: "upperleg_twist.r", parent: Some("upperleg.r"), at: (-0.09, 0.68, 0.006), aim: Some((-0.09, 0.48, 0.012))),
+        ],
+        chains: [
+            // The coat's tails, from its left side (+X) round the back to its right, 30° apart: `coat_00` at
+            // the left hip, `coat_03` at the middle of the back, `coat_06` at the right hip. Its front is open.
+            (name: "coat", parent: "hips", from: (0.15, 0.9, 0.0), to: (0.25, 0.4, 0.0), joints: 5, around: Some((count: 7, step: 30.0))),
+            (name: "ponytail", parent: "head", from: (0.0, 1.635, -0.085), to: (0.0, 1.3, -0.17), joints: 6),
+            (name: "bang", parent: "head", from: (-0.0514, 1.63, 0.0613), to: (-0.068, 1.545, 0.0858), joints: 3, around: Some((count: 5, step: 20.0))),
+        ],
+        materials: [
+            (name: "skin"),
+            (name: "face", surface: Face),
+            (name: "hair", surface: Hair),
+            (name: "coat", double_sided: true),
+            (name: "clothes"),
+            (name: "gear"),
+        ],
+        regions: [
+            (name: "skin", material: Some("skin"), albedo: [(0.0, "#fbe8dc"), (1.0, "#ecc8b4")], specular: 0.15, specular_size: 0.3),
+            // The face's skin is its middle region, so its masks mirror about the map's middle.
+            (name: "ink", material: Some("face"), albedo: [(0.0, "#4a3248"), (1.0, "#1e1424")]),
+            (name: "face_skin", material: Some("face"), albedo: [(0.0, "#fdeee4"), (1.0, "#f4d6c6")]),
+            (
+                name: "eye",
+                material: Some("face"),
+                albedo: [(0.0, "#4a2a14"), (0.4, "#d0903c"), (0.5, "#f8f4fc"), (1.0, "#e6e0f0")],
+                specular: 0.8,
+                specular_size: 0.2,
+            ),
+            (
+                name: "hair",
+                material: Some("hair"),
+                albedo: [(0.0, "#5a5e7c"), (0.5, "#30324a"), (1.0, "#16172a")],
+                specular: 0.7,
+                specular_size: 0.3,
+            ),
+            (name: "coat", material: Some("coat"), albedo: [(0.0, "#4a4c58"), (0.6, "#2c2d36"), (1.0, "#17171e")], shadow_bias: 0.55),
+            (
+                name: "coat_trim",
+                material: Some("coat"),
+                albedo: [(0.0, "#f0b88a"), (1.0, "#9a5a34")],
+                specular: 0.8,
+                specular_size: 0.6,
+                matcap: 0.6,
+            ),
+            (name: "shirt", material: Some("clothes"), albedo: [(0.0, "#5ec4c0"), (1.0, "#22706e")], shadow_bias: 0.55),
+            (name: "trousers", material: Some("clothes"), albedo: [(0.0, "#343a54"), (1.0, "#14182a")], specular: 0.2),
+            (
+                name: "metal",
+                material: Some("gear"),
+                albedo: [(0.0, "#f8d0aa"), (0.5, "#c07a48"), (1.0, "#5e3218")],
+                specular: 1.0,
+                specular_size: 0.8,
+                matcap: 1.0,
+            ),
+            (name: "leather", material: Some("gear"), albedo: [(0.0, "#3c2c2c"), (1.0, "#140c0c")], specular: 0.3, specular_size: 0.45),
+            (name: "glow", material: Some("gear"), albedo: [(0.0, "#d8f4ff"), (1.0, "#78c4f4")], shadow_bias: 0.75, emission: [(0.0, 1.0)]),
+            (name: "wood", material: Some("gear"), albedo: [(0.0, "#8a6046"), (1.0, "#3a2418")], specular: 0.3, specular_size: 0.4),
+        ],
+        shapes: [
+            // The head, front at U ½: its loft starts at the back.
+            Loft((
+                region: "face_skin", bones: ["head", "jaw"], blend: 0.03, sides: 24, across: Some((0.0, 0.0, -1.0)),
+                from: (0.0, 1.4, 0.0), to: (0.0, 1.63, 0.0),
+                rings: [
+                    (at: 0.0, radius: (0.035, 0.035)),
+                    (at: 0.1, radius: (0.06, 0.052), shift: (-0.016, 0.0)),
+                    (at: 0.2, radius: (0.076, 0.064), shift: (-0.012, 0.0)),
+                    (at: 0.3, radius: (0.086, 0.072), shift: (-0.008, 0.0)),
+                    (at: 0.42, radius: (0.094, 0.079), shift: (-0.004, 0.0)),
+                    (at: 0.55, radius: (0.098, 0.082)),
+                    (at: 0.68, radius: (0.097, 0.081)),
+                    (at: 0.8, radius: (0.092, 0.078)),
+                    (at: 0.95, radius: (0.06, 0.052)),
+                    (at: 1.0, radius: (0.01, 0.01)),
+                ],
+            )),
+            // Eyes: whites, irises, lashes and brows, and the mouth.
+            Slab((
+                region: "eye", bones: ["eye.l"], mirror: true, v: (0.6, 1.0),
+                origin: (0.033, 1.497, 0.088), u: (1.0, 0.0, -0.4), w: (0.0, 1.0, 0.0),
+                outline: [(0.017, 0.0), (0.012, 0.008), (0.0, 0.011), (-0.012, 0.008), (-0.017, 0.0), (-0.012, -0.008), (0.0, -0.011), (0.012, -0.008)],
+                thickness: 0.003,
+            )),
+            Slab((
+                region: "eye", bones: ["eye.l"], mirror: true, v: (0.0, 0.42),
+                origin: (0.033, 1.496, 0.0895), u: (1.0, 0.0, -0.4), w: (0.0, 1.0, 0.0),
+                outline: [(0.008, 0.0), (0.0057, 0.0074), (0.0, 0.0105), (-0.0057, 0.0074), (-0.008, 0.0), (-0.0057, -0.0074), (0.0, -0.0105), (0.0057, -0.0074)],
+                thickness: 0.003,
+            )),
+            Slab((
+                region: "ink", bones: ["head"], mirror: true,
+                origin: (0.033, 1.507, 0.0905), u: (1.0, 0.0, -0.4), w: (0.0, 1.0, 0.0),
+                outline: [(-0.019, -0.001), (0.019, -0.003), (0.018, 0.002), (-0.017, 0.003)],
+                thickness: 0.003,
+            )),
+            Slab((
+                region: "ink", bones: ["head"], mirror: true,
+                origin: (0.036, 1.53, 0.089), u: (1.0, 0.0, -0.4), w: (0.0, 1.0, 0.1),
+                outline: [(-0.016, -0.002), (0.016, 0.0), (0.015, 0.004), (-0.015, 0.002)],
+                thickness: 0.003,
+            )),
+            Slab((
+                region: "ink", bones: ["jaw"],
+                origin: (0.0, 1.447, 0.085), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, 0.3),
+                outline: [(-0.011, 0.0), (0.0, -0.002), (0.011, 0.0), (0.0, 0.002)],
+                thickness: 0.003,
+            )),
+            // Skin: neck, forearms, hands and fingers, thighs.
+            Loft((
+                region: "skin", bones: ["neck", "head", "upper_chest"], sides: 16,
+                from: (0.0, 1.3, 0.0), to: (0.0, 1.44, 0.0),
+                rings: [(at: 0.0, radius: (0.05, 0.045)), (at: 1.0, radius: (0.038, 0.036))],
+            )),
+            Loft((
+                region: "skin", bones: ["lowerarm.l", "lowerarm_twist.l", "hand.l"], mirror: true, sides: 16,
+                from: (0.4, 1.33, -0.01), to: (0.65, 1.33, -0.01),
+                rings: [(at: 0.0, radius: (0.037, 0.037)), (at: 0.6, radius: (0.033, 0.031)), (at: 1.0, radius: (0.026, 0.022))],
+            )),
+            Loft((
+                region: "skin", bones: ["hand.l"], mirror: true, sides: 12,
+                from: (0.64, 1.33, -0.01), to: (0.745, 1.335, 0.0),
+                rings: [(at: 0.0, radius: (0.03, 0.02)), (at: 0.5, radius: (0.042, 0.018)), (at: 1.0, radius: (0.036, 0.014))],
+            )),
+            Loft((
+                region: "skin", bones: ["thumb1.l", "thumb2.l", "thumb3.l"], blend: 0.01, mirror: true, sides: 8,
+                from: (0.67, 1.32, 0.025), to: (0.745, 1.31, 0.06),
+                rings: [(at: 0.0, radius: (0.011, 0.011)), (at: 1.0, radius: (0.008, 0.008))],
+            )),
+            Loft((
+                region: "skin", bones: ["index1.l", "index2.l", "index3.l"], blend: 0.01, mirror: true, sides: 8,
+                from: (0.735, 1.335, 0.022), to: (0.815, 1.335, 0.025),
+                rings: [(at: 0.0, radius: (0.0095, 0.0095)), (at: 1.0, radius: (0.007, 0.007))],
+            )),
+            Loft((
+                region: "skin", bones: ["middle1.l", "middle2.l", "middle3.l"], blend: 0.01, mirror: true, sides: 8,
+                from: (0.74, 1.337, 0.003), to: (0.826, 1.337, 0.003),
+                rings: [(at: 0.0, radius: (0.0095, 0.0095)), (at: 1.0, radius: (0.007, 0.007))],
+            )),
+            Loft((
+                region: "skin", bones: ["ring1.l", "ring2.l", "ring3.l"], blend: 0.01, mirror: true, sides: 8,
+                from: (0.735, 1.335, -0.016), to: (0.814, 1.335, -0.018),
+                rings: [(at: 0.0, radius: (0.0095, 0.0095)), (at: 1.0, radius: (0.007, 0.007))],
+            )),
+            Loft((
+                region: "skin", bones: ["little1.l", "little2.l", "little3.l"], blend: 0.01, mirror: true, sides: 8,
+                from: (0.725, 1.332, -0.033), to: (0.788, 1.332, -0.036),
+                rings: [(at: 0.0, radius: (0.0095, 0.0095)), (at: 1.0, radius: (0.007, 0.007))],
+            )),
+            Loft((
+                region: "trousers", bones: ["upperleg.l", "upperleg_twist.l", "lowerleg.l"], mirror: true, sides: 24,
+                from: (0.09, 0.92, 0.0), to: (0.09, 0.5, 0.012),
+                rings: [(at: 0.0, radius: (0.086, 0.086)), (at: 0.5, radius: (0.072, 0.072)), (at: 1.0, radius: (0.058, 0.06))],
+            )),
+            // Hair: the cap over the head, cut short at the nape, the bangs, and the ponytail high at the back
+            // with a copper tie.
+            Loft((
+                region: "hair", bones: ["head"], sides: 32, v: (0.0, 0.5),
+                from: (0.0, 1.47, -0.005), to: (0.0, 1.665, -0.005),
+                rings: [
+                    (at: 0.0, radius: (0.094, 0.106)),
+                    (at: 0.4, radius: (0.098, 0.114)),
+                    (at: 0.8, radius: (0.09, 0.102)),
+                    (at: 1.0, radius: (0.03, 0.03)),
+                ],
+                arc: Some((-40.0, 220.0)), thickness: 0.016,
+            )),
+            Loft((
+                region: "hair", bones: ["head", "bang_*"], blend: 0.03, sides: 24, v: (0.2, 0.9),
+                from: (0.0, 1.66, 0.0), to: (0.0, 1.535, 0.012),
+                rings: [(at: 0.0, radius: (0.06, 0.06)), (at: 0.35, radius: (0.098, 0.108)), (at: 1.0, radius: (0.094, 0.11))],
+                arc: Some((50.0, 130.0)), thickness: 0.01,
+            )),
+            Loft((
+                region: "hair", bones: ["head", "ponytail_*"], blend: 0.04, sides: 16,
+                from: (0.0, 1.64, -0.08), to: (0.0, 1.29, -0.175),
+                rings: [
+                    (at: 0.0, radius: (0.03, 0.03)),
+                    (at: 0.12, radius: (0.024, 0.024)),
+                    (at: 0.4, radius: (0.042, 0.034)),
+                    (at: 0.8, radius: (0.034, 0.026)),
+                    (at: 1.0, radius: (0.006, 0.006)),
+                ],
+            )),
+            Loft((
+                region: "metal", bones: ["head"], sides: 12,
+                from: (0.0, 1.648, -0.078), to: (0.0, 1.615, -0.09),
+                rings: [(at: 0.0, radius: (0.027, 0.027)), (at: 1.0, radius: (0.027, 0.027))],
+            )),
+            // The shirt under the coat, with its high collar, and the coat over it: body, sleeves, copper
+            // cuffs and lapels, and its tails from the waist to the calves round the sides and back.
+            Loft((
+                region: "shirt", bones: ["hips", "spine", "chest", "upper_chest"], blend: 0.06, sides: 36,
+                from: (0.0, 0.86, 0.0), to: (0.0, 1.38, 0.0),
+                rings: [
+                    (at: 0.0, radius: (0.13, 0.092)),
+                    (at: 0.25, radius: (0.12, 0.084)),
+                    (at: 0.55, radius: (0.138, 0.096)),
+                    (at: 0.8, radius: (0.152, 0.098)),
+                    (at: 0.92, radius: (0.118, 0.078)),
+                    (at: 1.0, radius: (0.05, 0.046)),
+                ],
+            )),
+            Loft((
+                region: "shirt", bones: ["upper_chest", "neck"], sides: 20,
+                from: (0.0, 1.3, 0.0), to: (0.0, 1.43, 0.006),
+                rings: [(at: 0.0, radius: (0.07, 0.062)), (at: 1.0, radius: (0.056, 0.052))],
+                thickness: 0.01,
+            )),
+            Loft((
+                region: "coat", bones: ["hips", "spine", "chest", "upper_chest"], blend: 0.06, sides: 36, v: (0.0, 0.5),
+                from: (0.0, 0.86, 0.0), to: (0.0, 1.37, 0.0),
+                rings: [
+                    (at: 0.0, radius: (0.15, 0.112)),
+                    (at: 0.25, radius: (0.142, 0.104)),
+                    (at: 0.55, radius: (0.16, 0.114)),
+                    (at: 0.8, radius: (0.18, 0.116)),
+                    (at: 0.92, radius: (0.142, 0.096)),
+                    (at: 1.0, radius: (0.07, 0.064)),
+                ],
+                arc: Some((-65.0, 245.0)), thickness: 0.012,
+            )),
+            Loft((
+                region: "coat_trim", bones: ["chest", "upper_chest"], blend: 0.06, mirror: true, sides: 4,
+                from: (0.05, 1.0, 0.105), to: (0.035, 1.36, 0.07),
+                rings: [(at: 0.0, radius: (0.012, 0.004)), (at: 0.7, radius: (0.022, 0.005)), (at: 1.0, radius: (0.014, 0.004))],
+            )),
+            Loft((
+                region: "coat", bones: ["shoulder.l", "upperarm.l", "upperarm_twist.l", "lowerarm.l"], blend: 0.05, mirror: true, sides: 24,
+                from: (0.12, 1.33, -0.01), to: (0.44, 1.33, -0.01),
+                rings: [(at: 0.0, radius: (0.07, 0.07)), (at: 0.5, radius: (0.058, 0.058)), (at: 1.0, radius: (0.06, 0.062))],
+            )),
+            Loft((
+                region: "coat_trim", bones: ["lowerarm.l"], mirror: true, sides: 20,
+                from: (0.425, 1.33, -0.01), to: (0.45, 1.33, -0.01),
+                rings: [(at: 0.0, radius: (0.063, 0.065)), (at: 1.0, radius: (0.064, 0.066))],
+                thickness: 0.012,
+            )),
+            Loft((
+                region: "coat", bones: ["hips", "coat_*"], blend: 0.06, sides: 36, v: (0.5, 1.0),
+                from: (0.0, 0.92, 0.0), to: (0.0, 0.4, 0.0),
+                rings: [
+                    (at: 0.0, radius: (0.152, 0.114)),
+                    (at: 0.3, radius: (0.19, 0.16)),
+                    (at: 0.7, radius: (0.236, 0.21)),
+                    (at: 1.0, radius: (0.262, 0.236)),
+                ],
+                arc: Some((165.0, 375.0)), thickness: 0.008,
+            )),
+            Loft((
+                region: "coat_trim", bones: ["coat_*"], blend: 0.04, sides: 36,
+                from: (0.0, 0.43, 0.0), to: (0.0, 0.4, 0.0),
+                rings: [(at: 0.0, radius: (0.252, 0.226)), (at: 1.0, radius: (0.266, 0.24))],
+                arc: Some((165.0, 375.0)), thickness: 0.01,
+            )),
+            // Gear: the belt and its buckle, boots with copper tops, the brooch at the collar, and the staff.
+            Loft((
+                region: "leather", bones: ["hips", "spine"], sides: 24,
+                from: (0.0, 0.885, 0.0), to: (0.0, 0.93, 0.0),
+                rings: [(at: 0.0, radius: (0.142, 0.106)), (at: 1.0, radius: (0.138, 0.102))],
+            )),
+            Slab((
+                region: "metal", bones: ["hips"],
+                origin: (0.0, 0.908, 0.108), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, 0.0),
+                outline: [(-0.02, -0.016), (0.02, -0.016), (0.02, 0.016), (-0.02, 0.016)],
+                thickness: 0.008,
+            )),
+            Loft((
+                region: "leather", bones: ["lowerleg.l", "foot.l"], mirror: true, sides: 24,
+                from: (0.09, 0.52, 0.012), to: (0.09, 0.075, -0.005),
+                rings: [(at: 0.0, radius: (0.057, 0.059)), (at: 0.4, radius: (0.05, 0.052)), (at: 1.0, radius: (0.043, 0.045))],
+            )),
+            Loft((
+                region: "metal", bones: ["lowerleg.l"], mirror: true, sides: 20,
+                from: (0.09, 0.5, 0.011), to: (0.09, 0.525, 0.012),
+                rings: [(at: 0.0, radius: (0.058, 0.06)), (at: 1.0, radius: (0.062, 0.064))],
+                thickness: 0.01,
+            )),
+            Loft((
+                region: "leather", bones: ["foot.l", "toes.l"], mirror: true, sides: 14, v: (0.4, 0.9),
+                from: (0.09, 0.055, -0.06), to: (0.09, 0.03, 0.16),
+                rings: [
+                    (at: 0.0, radius: (0.042, 0.055)),
+                    (at: 0.3, radius: (0.05, 0.05)),
+                    (at: 0.8, radius: (0.04, 0.035)),
+                    (at: 1.0, radius: (0.02, 0.015)),
+                ],
+            )),
+            Slab((
+                region: "glow", bones: ["upper_chest"],
+                origin: (0.0, 1.3, 0.098), u: (1.0, 0.0, 0.0), w: (0.0, 1.0, -0.3),
+                outline: [(0.0, -0.016), (0.012, 0.0), (0.0, 0.016), (-0.012, 0.0)],
+                thickness: 0.008,
+            )),
+            // The staff, along +Z from the right fist (`handslot.r`'s +Y), 2 m: the wooden shaft, copper
+            // shoes at the foot and above the grip, and its head, a copper collar holding a pale blue glow
+            // under a copper finial.
+            Loft((
+                region: "wood", bones: ["handslot.r"], sides: 10, v: (0.1, 0.9),
+                from: (-0.72, 1.33, -0.9), to: (-0.72, 1.33, 0.9),
+                rings: [(at: 0.0, radius: (0.016, 0.016)), (at: 0.5, radius: (0.019, 0.019)), (at: 1.0, radius: (0.017, 0.017))],
+            )),
+            Loft((
+                region: "metal", bones: ["handslot.r"], sides: 10,
+                from: (-0.72, 1.33, -0.95), to: (-0.72, 1.33, -0.86),
+                rings: [(at: 0.0, radius: (0.008, 0.008)), (at: 0.3, radius: (0.021, 0.021)), (at: 1.0, radius: (0.02, 0.02))],
+            )),
+            Loft((
+                region: "metal", bones: ["handslot.r"], sides: 10,
+                from: (-0.72, 1.33, 0.14), to: (-0.72, 1.33, 0.18),
+                rings: [(at: 0.0, radius: (0.022, 0.022)), (at: 1.0, radius: (0.022, 0.022))],
+            )),
+            Loft((
+                region: "metal", bones: ["handslot.r"], sides: 12,
+                from: (-0.72, 1.33, 0.88), to: (-0.72, 1.33, 0.96),
+                rings: [(at: 0.0, radius: (0.02, 0.02)), (at: 0.6, radius: (0.034, 0.034)), (at: 1.0, radius: (0.03, 0.03))],
+            )),
+            Loft((
+                region: "glow", bones: ["handslot.r"], sides: 12,
+                from: (-0.72, 1.33, 0.95), to: (-0.72, 1.33, 1.05),
+                rings: [
+                    (at: 0.0, radius: (0.02, 0.02)),
+                    (at: 0.3, radius: (0.036, 0.036)),
+                    (at: 0.7, radius: (0.036, 0.036)),
+                    (at: 1.0, radius: (0.016, 0.016)),
+                ],
+            )),
+            Loft((
+                region: "metal", bones: ["handslot.r"], sides: 8,
+                from: (-0.72, 1.33, 1.04), to: (-0.72, 1.33, 1.12),
+                rings: [(at: 0.0, radius: (0.014, 0.014)), (at: 1.0, radius: (0.002, 0.002))],
+            )),
+        ],
+        expressions: [
+            (
+                preset: "happy",
+                moves: [
+                    Squash(at: (0.033, 1.497, 0.09), radius: 0.024, axis: (0.0, 1.0, 0.0), scale: 0.35, mirror: true),
+                    Pull(at: (0.011, 1.447, 0.084), radius: 0.012, by: (0.0, 0.004, 0.0), mirror: true),
+                    Pull(at: (0.022, 1.532, 0.092), radius: 0.02, by: (0.0, 0.003, 0.0), mirror: true),
+                ],
+                override_blink: Some("block"),
+            ),
+            (
+                preset: "angry",
+                moves: [
+                    Pull(at: (0.022, 1.532, 0.092), radius: 0.016, by: (0.0, -0.006, 0.001), mirror: true),
+                    Squash(at: (0.033, 1.497, 0.09), radius: 0.024, axis: (0.0, 1.0, 0.0), scale: 0.7, mirror: true),
+                    Pull(at: (0.011, 1.447, 0.084), radius: 0.012, by: (0.0, -0.003, 0.0), mirror: true),
+                ],
+                override_blink: Some("block"),
+            ),
+            (
+                preset: "sad",
+                moves: [
+                    Pull(at: (0.022, 1.532, 0.092), radius: 0.016, by: (0.0, 0.006, 0.0), mirror: true),
+                    Pull(at: (0.05, 1.528, 0.084), radius: 0.014, by: (0.0, -0.003, 0.0), mirror: true),
+                    Pull(at: (0.011, 1.447, 0.084), radius: 0.012, by: (0.0, -0.004, 0.0), mirror: true),
+                ],
+                override_blink: Some("block"),
+            ),
+            (
+                preset: "relaxed",
+                moves: [
+                    Squash(at: (0.033, 1.497, 0.09), radius: 0.024, axis: (0.0, 1.0, 0.0), scale: 0.6, mirror: true),
+                    Pull(at: (0.011, 1.447, 0.084), radius: 0.012, by: (0.0, 0.002, 0.0), mirror: true),
+                ],
+                override_blink: Some("block"),
+            ),
+            (
+                preset: "surprised",
+                moves: [
+                    Squash(at: (0.033, 1.497, 0.09), radius: 0.024, axis: (0.0, 1.0, 0.0), scale: 1.25, mirror: true),
+                    Pull(at: (0.022, 1.532, 0.092), radius: 0.03, by: (0.0, 0.007, 0.0), mirror: true),
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (0.0, 1.0, 0.0), scale: 3.0),
+                ],
+                override_blink: Some("block"),
+                override_mouth: Some("block"),
+            ),
+            (
+                preset: "aa",
+                moves: [
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (0.0, 1.0, 0.0), scale: 4.0),
+                    Pull(at: (0.0, 1.425, 0.078), radius: 0.03, by: (0.0, -0.007, 0.0)),
+                ],
+            ),
+            (
+                preset: "ih",
+                moves: [
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (1.0, 0.0, 0.0), scale: 1.3),
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (0.0, 1.0, 0.0), scale: 1.8),
+                ],
+            ),
+            (
+                preset: "ou",
+                moves: [
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (1.0, 0.0, 0.0), scale: 0.6),
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (0.0, 1.0, 0.0), scale: 2.5),
+                    Pull(at: (0.0, 1.447, 0.085), radius: 0.02, by: (0.0, 0.0, 0.003)),
+                ],
+            ),
+            (
+                preset: "ee",
+                moves: [
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (1.0, 0.0, 0.0), scale: 1.4),
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (0.0, 1.0, 0.0), scale: 1.5),
+                ],
+            ),
+            (
+                preset: "oh",
+                moves: [
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (1.0, 0.0, 0.0), scale: 0.8),
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (0.0, 1.0, 0.0), scale: 3.0),
+                    Pull(at: (0.0, 1.425, 0.078), radius: 0.03, by: (0.0, -0.004, 0.0)),
+                ],
+            ),
+            (
+                preset: "blink",
+                moves: [
+                    Squash(at: (0.033, 1.497, 0.09), radius: 0.024, axis: (0.0, 1.0, 0.0), scale: 0.08, mirror: true),
+                ],
+            ),
+            (
+                preset: "blinkLeft",
+                moves: [
+                    Squash(at: (0.033, 1.497, 0.09), radius: 0.024, axis: (0.0, 1.0, 0.0), scale: 0.08),
+                ],
+            ),
+            (
+                preset: "blinkRight",
+                moves: [
+                    Squash(at: (-0.033, 1.497, 0.09), radius: 0.024, axis: (0.0, 1.0, 0.0), scale: 0.08),
+                ],
+            ),
+            (
+                preset: "lookUp",
+                moves: [
+                    Pull(at: (0.033, 1.497, 0.09), radius: 0.011, by: (0.0, 0.004, 0.0), mirror: true),
+                ],
+            ),
+            (
+                preset: "lookDown",
+                moves: [
+                    Pull(at: (0.033, 1.497, 0.09), radius: 0.011, by: (0.0, -0.004, 0.0), mirror: true),
+                ],
+            ),
+            (
+                preset: "lookLeft",
+                moves: [
+                    Pull(at: (0.033, 1.497, 0.09), radius: 0.011, by: (0.005, 0.0, -0.002)),
+                    Pull(at: (-0.033, 1.497, 0.09), radius: 0.011, by: (0.005, 0.0, 0.002)),
+                ],
+            ),
+            (
+                preset: "lookRight",
+                moves: [
+                    Pull(at: (0.033, 1.497, 0.09), radius: 0.011, by: (-0.005, 0.0, 0.002)),
+                    Pull(at: (-0.033, 1.497, 0.09), radius: 0.011, by: (-0.005, 0.0, -0.002)),
+                ],
+            ),
+            (
+                preset: "neutral",
+                moves: [
+                    Squash(at: (0.0, 1.447, 0.085), radius: 0.02, axis: (0.0, 1.0, 0.0), scale: 0.7),
+                ],
+            ),
+        ],
+        character: Some((
+            humanoid: {
+                "hips": "hips",
+                "spine": "spine",
+                "chest": "chest",
+                "upperChest": "upper_chest",
+                "neck": "neck",
+                "head": "head",
+                "jaw": "jaw",
+                "leftEye": "eye.l",
+                "rightEye": "eye.r",
+                "leftShoulder": "shoulder.l",
+                "leftUpperArm": "upperarm.l",
+                "leftLowerArm": "lowerarm.l",
+                "leftHand": "hand.l",
+                "leftUpperLeg": "upperleg.l",
+                "leftLowerLeg": "lowerleg.l",
+                "leftFoot": "foot.l",
+                "leftToes": "toes.l",
+                "leftThumbMetacarpal": "thumb1.l",
+                "leftThumbProximal": "thumb2.l",
+                "leftThumbDistal": "thumb3.l",
+                "leftIndexProximal": "index1.l",
+                "leftIndexIntermediate": "index2.l",
+                "leftIndexDistal": "index3.l",
+                "leftMiddleProximal": "middle1.l",
+                "leftMiddleIntermediate": "middle2.l",
+                "leftMiddleDistal": "middle3.l",
+                "leftRingProximal": "ring1.l",
+                "leftRingIntermediate": "ring2.l",
+                "leftRingDistal": "ring3.l",
+                "leftLittleProximal": "little1.l",
+                "leftLittleIntermediate": "little2.l",
+                "leftLittleDistal": "little3.l",
+                "rightShoulder": "shoulder.r",
+                "rightUpperArm": "upperarm.r",
+                "rightLowerArm": "lowerarm.r",
+                "rightHand": "hand.r",
+                "rightUpperLeg": "upperleg.r",
+                "rightLowerLeg": "lowerleg.r",
+                "rightFoot": "foot.r",
+                "rightToes": "toes.r",
+                "rightThumbMetacarpal": "thumb1.r",
+                "rightThumbProximal": "thumb2.r",
+                "rightThumbDistal": "thumb3.r",
+                "rightIndexProximal": "index1.r",
+                "rightIndexIntermediate": "index2.r",
+                "rightIndexDistal": "index3.r",
+                "rightMiddleProximal": "middle1.r",
+                "rightMiddleIntermediate": "middle2.r",
+                "rightMiddleDistal": "middle3.r",
+                "rightRingProximal": "ring1.r",
+                "rightRingIntermediate": "ring2.r",
+                "rightRingDistal": "ring3.r",
+                "rightLittleProximal": "little1.r",
+                "rightLittleIntermediate": "little2.r",
+                "rightLittleDistal": "little3.r",
+            },
+            look_from: (0.0, 0.077, 0.07),
+            colliders: [
+                (joint: "head", at: (0.0, 1.52, 0.0), radius: 0.1),
+                (joint: "upper_chest", at: (0.0, 1.15, 0.0), to: Some((0.0, 1.3, 0.0)), radius: 0.11),
+                (joint: "hips", at: (0.0, 0.88, 0.0), radius: 0.13),
+                (joint: "upperleg.l", at: (0.09, 0.85, 0.0), to: Some((0.09, 0.55, 0.012)), radius: 0.075),
+                (joint: "upperleg.r", at: (-0.09, 0.85, 0.0), to: Some((-0.09, 0.55, 0.012)), radius: 0.075),
+            ],
+            springs: [
+                (chain: "coat", stiffness: 0.55, gravity_power: 0.35, drag_force: 0.5, hit_radius: 0.02),
+                (chain: "ponytail", stiffness: 0.7, gravity_power: 0.25, drag_force: 0.4, hit_radius: 0.02),
+                (chain: "bang", stiffness: 1.2, gravity_power: 0.1, drag_force: 0.5, hit_radius: 0.01),
+            ],
+        )),
+    ),
+)

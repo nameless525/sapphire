@@ -1,0 +1,30 @@
+// How Wren's hair and coat take a fight (M5 C12): `sapphire_anim`'s `CharacterMotion`, which the kind's
+// document names. The springs and the IK's weights are the shipped document's numbers; what Wren has of
+// its own is the coat's tails, worn as cloth so they hold a surface through a stride, a turn and a fall.
+(
+    type: "sapphire::anim::CharacterMotion",
+    version: 2,
+    data: (
+        springs: (
+            root_inertia: 0.25,
+            anchor_inertia: 0.4,
+            swing_limit: 0.87266463, // 50°
+            bend_limit: 0.34906587, // 20°
+        ),
+        feet_weight: 1.0,
+        look_weight: 1.0,
+        cloth: [
+            // The coat's seven tails, each turned 30° about Wren's up from the last, from the left side round
+            // the back to the right (`tools/figures/wren.figure.ron`): an open sheet, since the coat is open
+            // at the front. Lateral links hold neighbouring tails about as far apart as the clip has them,
+            // so no gap opens between two; bend links two tails along are softer, so the coat can fold and
+            // flare without creasing flat.
+            (
+                chains: ["coat_00", "coat_01", "coat_02", "coat_03", "coat_04", "coat_05", "coat_06"],
+                closed: false,
+                lateral_compliance: 0.000001,
+                bend_compliance: 0.0001,
+            ),
+        ],
+    ),
+)

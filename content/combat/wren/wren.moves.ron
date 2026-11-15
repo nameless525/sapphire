@@ -1,0 +1,415 @@
+// Wren's moves (M5 C12): the third playable kind, with a staff. Frame data in 60 Hz ticks. A short set: a
+// string of two for the attack button, which goes round again, one skill, a dodge, the swap-in assist a party's swap brings, and
+// the five moves a hit forces. Only a party reads `swap` and `swap_in`. Nothing here is tuned: M5 tunes no
+// fight, and the damage and poise are round numbers that say nothing about balance.
+//
+// Every move with a clip plays the heroine's (`content/combat/player/`), cooked for Wren's rig through its
+// sidecar's `also`, so each move is as long as its clip. Her finisher, `light_3`, keys her sleeves' morph
+// targets, which Wren's model hasn't, so it can't be borrowed and the string is two. Root keys are that clip's `root` and `root_turn`,
+// copied key for key; the staff is keyed by hand, coarsely, from the clips at each move's own ticks, as
+// Aster's fists are. In root space +Z is forward and +X the left. `staff` is a point on the staff's
+// striking length, and a hit is a capsule there along its +Y, which the keys turn to point forward.
+//
+// The reactions have the heroine's names and lengths: a hit forces them, and the graph draws them from the
+// heroine's reactions.
+(
+    type: "sapphire::moves::MoveSetDocument",
+    version: 1,
+    data: (
+        intents: [
+            // A dodge beats a skill beats an attack when two could fire at one instant.
+            (name: "light", button: Light, buffer: 14, priority: 1),
+            (name: "skill", button: Skill, buffer: 10, priority: 2),
+            (name: "dodge", button: Dodge, buffer: 8, priority: 3),
+            (name: "swap", button: Swap, buffer: 12, priority: 4),
+        ],
+        neutral: [
+            (intent: "light", move: "light_1"),
+            (intent: "skill", move: "skill"),
+            (intent: "dodge", move: "dodge"),
+        ],
+        fighter: (
+            health: 280,
+            poise: 55,
+            poise_refill: 240,
+            hurtboxes: [
+                // From the ground to the top of the hair at 1.66 m. A dodge turns it off.
+                (name: "body", offset: (0.0, 0.83, 0.0), shape: Capsule(radius: 0.28, length: 1.1)),
+            ],
+            reactions: (
+                light: "flinch",
+                medium: "stagger",
+                heavy: "knockdown",
+                poise_break: "dazed",
+                defeat: "defeat",
+            ),
+            // Aster's: with no run or jog of its own, the graph strides at the walk's pace. Metres, seconds
+            // and degrees, and sapphire_moves' `MOVEMENT_LIMITS` says what each may be.
+            movement: (
+                run_speed: 3.6,
+                walk_speed: 2.0,
+                run_stick: 0.9,
+                walk_stick: 0.5,
+                acceleration: 40.0,
+                deceleration: 42.0,
+                turn_rate_degrees: 720.0,
+                jump_speed: 7.0,
+                gravity: 22.0,
+                air_acceleration: 18.0,
+                max_fall_speed: 30.0,
+                coyote_ticks: 5,
+                slope_limit_degrees: 50.0,
+                step_height: 0.3,
+                ground_snap: 0.3,
+                stance_radius: 0.15,
+                max_slide_speed: 8.0,
+                height: 1.6,
+                radius: 0.28,
+                skin: 0.01,
+            ),
+        ),
+        moves: [
+            (
+                // 567 ms, on the heroine's first cut: the staff swept from high on the right down across to
+                // the low left on a step. The next press takes over from tick 14.
+                name: "light_1",
+                startup: 7,
+                active: 4,
+                recovery: 23,
+                motion: (
+                    root: [
+                        (at: 0, offset: (0.0, 0.0, 0.0)),
+                        (at: 2, offset: (0.0, 0.0, 0.008)),
+                        (at: 4, offset: (0.0, 0.0, 0.023)),
+                        (at: 5, offset: (0.0, 0.0, 0.035)),
+                        (at: 6, offset: (0.0, 0.0, 0.049)),
+                        (at: 7, offset: (0.0, 0.0, 0.06)),
+                        (at: 8, offset: (0.0, 0.0, 0.14)),
+                        (at: 9, offset: (0.0, 0.0, 0.3)),
+                        (at: 10, offset: (0.0, 0.0, 0.44)),
+                        (at: 11, offset: (0.0, 0.0, 0.56)),
+                        (at: 14, offset: (0.0, 0.0, 0.65)),
+                        (at: 18, offset: (0.0, 0.0, 0.686)),
+                        (at: 22, offset: (0.0, 0.0, 0.7)),
+                        (at: 30, offset: (0.0, 0.0, 0.78)),
+                        (at: 34, offset: (0.0, 0.0, 0.89)),
+                    ],
+                    paths: [
+                        (
+                            name: "staff",
+                            keys: [
+                                (at: 0, offset: (-0.45, 1.4, 0.3), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 7, offset: (-0.4, 1.3, 0.7), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 9, offset: (0.0, 1.0, 0.95), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 11, offset: (0.4, 0.7, 0.7), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 34, offset: (0.3, 0.9, 0.4), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "light_1_hit",
+                        from: 7,
+                        to: 11,
+                        path: "staff",
+                        shape: Capsule(radius: 0.22, length: 1.0),
+                        attack: (damage: 7, poise: 10, weight: Light, hitstop: 3, knockback: (distance: 0.25, ticks: 8)),
+                    ),
+                ],
+                cancels: [
+                    (from: 2, to: 34, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 14, to: 28, allow: [
+                        (intent: "light", move: "light_2"),
+                        (intent: "skill", move: "skill"),
+                    ]),
+                ],
+                warps: [
+                    (from: 0, to: 7, max_distance: 0.6, max_turn: 0.8, keep: 1.0),
+                ],
+                cues: [
+                    (name: "swing", at: 7),
+                    (name: "step", at: 11),
+                ],
+            ),
+            (
+                // 600 ms, on the heroine's second cut: a backhand rising from low on the left to high on the
+                // right on a step.
+                name: "light_2",
+                startup: 7,
+                active: 4,
+                recovery: 25,
+                motion: (
+                    root: [
+                        (at: 0, offset: (0.0, 0.0, 0.0)),
+                        (at: 3, offset: (0.0, 0.0, 0.018)),
+                        (at: 5, offset: (0.0, 0.0, 0.038)),
+                        (at: 6, offset: (0.0, 0.0, 0.049)),
+                        (at: 7, offset: (0.0, 0.0, 0.06)),
+                        (at: 8, offset: (0.0, 0.0, 0.13)),
+                        (at: 9, offset: (0.0, 0.0, 0.26)),
+                        (at: 10, offset: (0.0, 0.0, 0.38)),
+                        (at: 11, offset: (0.0, 0.0, 0.5)),
+                        (at: 14, offset: (0.0, 0.0, 0.571)),
+                        (at: 18, offset: (0.0, 0.0, 0.59)),
+                        (at: 22, offset: (0.0, 0.0, 0.6)),
+                        (at: 32, offset: (0.0, 0.0, 0.5)),
+                        (at: 36, offset: (0.0, 0.0, 0.45)),
+                    ],
+                    paths: [
+                        (
+                            name: "staff",
+                            keys: [
+                                (at: 0, offset: (0.4, 0.7, 0.6), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 7, offset: (0.35, 0.8, 0.75), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 9, offset: (0.0, 1.1, 0.95), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 11, offset: (-0.4, 1.4, 0.7), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 36, offset: (-0.3, 1.2, 0.4), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "light_2_hit",
+                        from: 7,
+                        to: 11,
+                        path: "staff",
+                        shape: Capsule(radius: 0.22, length: 1.0),
+                        attack: (damage: 7, poise: 10, weight: Light, hitstop: 4, knockback: (distance: 0.3, ticks: 8)),
+                    ),
+                ],
+                cancels: [
+                    (from: 2, to: 36, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 14, to: 30, allow: [
+                        (intent: "light", move: "light_1"),
+                        (intent: "skill", move: "skill"),
+                    ]),
+                ],
+                warps: [
+                    (from: 0, to: 7, max_distance: 0.6, max_turn: 0.8, keep: 1.0),
+                ],
+                cues: [
+                    (name: "swing", at: 7),
+                    (name: "step", at: 11),
+                ],
+            ),
+            (
+                // 867 ms, on the heroine's skill: a coiled drop, a whole turn with the staff out, and a
+                // rising sweep out of the turn, a hit on each.
+                name: "skill",
+                startup: 12,
+                active: 14,
+                recovery: 26,
+                motion: (
+                    root: [
+                        (at: 0, offset: (0.0, 0.0, 0.0)),
+                        (at: 2, offset: (0.0, 0.0, 0.008)),
+                        (at: 5, offset: (0.0, 0.0, 0.036)),
+                        (at: 6, offset: (0.003, 0.0, 0.064)),
+                        (at: 7, offset: (0.008, 0.0, 0.096)),
+                        (at: 8, offset: (0.014, 0.0, 0.125)),
+                        (at: 12, offset: (0.031, 0.0, 0.15)),
+                        (at: 13, offset: (0.06, 0.0, 0.25), yaw: 0.5411),
+                        (at: 14, offset: (0.11, 0.0, 0.367), yaw: 1.1519),
+                        (at: 15, offset: (0.136, 0.0, 0.477), yaw: 1.85),
+                        (at: 16, offset: (0.148, 0.0, 0.524), yaw: 2.4784),
+                        (at: 17, offset: (0.16, 0.0, 0.57), yaw: 3.1067),
+                        (at: 18, offset: (0.156, 0.0, 0.597), yaw: 3.6477),
+                        (at: 19, offset: (0.148, 0.0, 0.62), yaw: 4.1888),
+                        (at: 20, offset: (0.131, 0.0, 0.65), yaw: 4.7124),
+                        (at: 21, offset: (0.112, 0.0, 0.682), yaw: 5.236),
+                        (at: 22, offset: (0.073, 0.0, 0.748), yaw: 5.62),
+                        (at: 23, offset: (0.04, 0.0, 0.82), yaw: 5.9341),
+                        (at: 25, offset: (0.012, 0.0, 0.984), yaw: 6.2134),
+                        (at: 28, offset: (0.0, 0.0, 1.056), yaw: 6.2832),
+                        (at: 31, offset: (0.0, 0.0, 1.08), yaw: 6.2832),
+                    ],
+                    paths: [
+                        (
+                            name: "staff",
+                            keys: [
+                                (at: 0, offset: (-0.3, 1.0, 0.4), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 12, offset: (-0.5, 1.1, 0.6), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 16, offset: (0.3, 1.1, 0.9), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 21, offset: (-0.4, 0.9, 0.8), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 26, offset: (0.2, 1.5, 0.9), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 52, offset: (-0.3, 1.0, 0.4), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "skill_hit_1",
+                        from: 12,
+                        to: 16,
+                        path: "staff",
+                        shape: Capsule(radius: 0.24, length: 1.0),
+                        attack: (damage: 8, poise: 10, weight: Light, hitstop: 4, knockback: (distance: 0.2, ticks: 6)),
+                    ),
+                    (
+                        name: "skill_hit_2",
+                        from: 21,
+                        to: 26,
+                        path: "staff",
+                        shape: Capsule(radius: 0.28, length: 1.0),
+                        attack: (damage: 12, poise: 20, weight: Medium, hitstop: 6, knockback: (distance: 0.6, ticks: 10)),
+                    ),
+                ],
+                invulnerable: [(from: 0, to: 12)],
+                cancels: [
+                    (from: 38, to: 52, allow: [
+                        (intent: "dodge", move: "dodge"),
+                        (intent: "light", move: "light_1"),
+                    ]),
+                ],
+                warps: [
+                    (from: 0, to: 12, max_distance: 1.0, max_turn: 1.2, keep: 1.0),
+                ],
+                cues: [
+                    (name: "skill_flash", at: 0),
+                    (name: "skill_hit", at: 12),
+                    (name: "skill_hit", at: 21),
+                    (name: "step", at: 31),
+                ],
+            ),
+            (
+                // 400 ms: the heroine's low leap straight back, 2.4 m in 16 ticks, untouchable for 13.
+                name: "dodge",
+                startup: 1,
+                active: 13,
+                recovery: 10,
+                motion: (
+                    root: [
+                        (at: 0, offset: (0.0, 0.0, 0.0)),
+                        (at: 1, offset: (0.0, 0.0, -0.105)),
+                        (at: 2, offset: (0.0, 0.0, -0.26)),
+                        (at: 4, offset: (0.0, 0.0, -0.7)),
+                        (at: 6, offset: (0.0, 0.0, -1.2)),
+                        (at: 8, offset: (0.0, 0.0, -1.63)),
+                        (at: 10, offset: (0.0, 0.0, -2.0)),
+                        (at: 12, offset: (0.0, 0.0, -2.257)),
+                        (at: 16, offset: (0.0, 0.0, -2.4)),
+                    ],
+                ),
+                hurtboxes: [
+                    (name: "body", from: 1, to: 14, state: Off),
+                ],
+                invulnerable: [(from: 1, to: 14)],
+                cancels: [
+                    (from: 16, to: 24, allow: [
+                        (intent: "light", move: "light_1"),
+                        (intent: "skill", move: "skill"),
+                    ]),
+                ],
+                cues: [
+                    (name: "dodge_start", at: 0),
+                    (name: "skid", at: 10),
+                ],
+            ),
+            (
+                // 300 ms: a light hit's. A dodge gets out of its end.
+                name: "flinch",
+                startup: 0,
+                active: 6,
+                recovery: 12,
+                cancels: [(from: 10, to: 18, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 500 ms: a medium hit's.
+                name: "stagger",
+                startup: 0,
+                active: 10,
+                recovery: 20,
+                cancels: [(from: 22, to: 30, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 1,167 ms: a heavy hit's, down and up again, untouchable throughout.
+                name: "knockdown",
+                startup: 0,
+                active: 30,
+                recovery: 40,
+                invulnerable: [(from: 0, to: 70)],
+                cancels: [(from: 60, to: 70, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "knocked_down", at: 0)],
+            ),
+            (
+                // 1,500 ms: a broken poise's, open to punishment: hits land and it stays dazed.
+                name: "dazed",
+                startup: 0,
+                active: 60,
+                recovery: 30,
+                armour: [(from: 0, to: 90, threshold: 1000)],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 2 s, with no way out: the fight's over for this one.
+                name: "defeat",
+                startup: 0,
+                active: 30,
+                recovery: 90,
+                cues: [(name: "falls", at: 0)],
+            ),
+            (
+                // 567 ms: arriving from a party's swap on the heroine's dash attack, thrown forward low with
+                // the staff swept across, untouchable until it's about to land. Its aim is whoever left's.
+                name: "swap_in",
+                startup: 5,
+                active: 5,
+                recovery: 24,
+                motion: (
+                    root: [
+                        (at: 0, offset: (0.0, 0.0, 0.0)),
+                        (at: 1, offset: (0.0, 0.0, 0.09)),
+                        (at: 3, offset: (0.0, 0.0, 0.42)),
+                        (at: 5, offset: (0.0, 0.0, 1.0)),
+                        (at: 7, offset: (0.0, 0.0, 1.72)),
+                        (at: 9, offset: (0.0, 0.0, 2.17)),
+                        (at: 11, offset: (0.0, 0.0, 2.45)),
+                        (at: 14, offset: (0.0, 0.0, 2.6)),
+                        (at: 22, offset: (0.0, 0.0, 2.64)),
+                    ],
+                    paths: [
+                        (
+                            name: "staff",
+                            keys: [
+                                (at: 0, offset: (-0.4, 0.9, 0.3), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 5, offset: (-0.4, 1.0, 0.8), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 10, offset: (0.4, 1.0, 0.8), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 34, offset: (-0.3, 1.0, 0.4), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "swap_hit",
+                        from: 5,
+                        to: 10,
+                        path: "staff",
+                        shape: Capsule(radius: 0.28, length: 1.0),
+                        attack: (damage: 10, poise: 12, weight: Medium, hitstop: 5, knockback: (distance: 0.5, ticks: 10)),
+                    ),
+                ],
+                invulnerable: [(from: 0, to: 5)],
+                cancels: [
+                    (from: 18, to: 34, allow: [
+                        (intent: "dodge", move: "dodge"),
+                        (intent: "light", move: "light_1"),
+                    ]),
+                ],
+                warps: [
+                    (from: 0, to: 10, max_distance: 2.0, max_turn: 1.2, keep: 1.1),
+                ],
+                cues: [
+                    (name: "swap_in", at: 0),
+                    (name: "swing", at: 5),
+                    (name: "skid", at: 10),
+                ],
+            ),
+        ],
+    ),
+)

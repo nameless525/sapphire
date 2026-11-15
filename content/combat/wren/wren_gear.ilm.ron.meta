@@ -1,0 +1,10 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "2b77b11e-042f-4726-a3a6-672c8525d98e",
+        importer: CharacterMap(Ilm((
+            mips: true,
+        ))),
+    ),
+)

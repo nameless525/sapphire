@@ -157,6 +157,7 @@ remap-keep = 元のままにする
 character-title = キャラクター
 character-name-aster = アスター
 character-name-wanderer = 旅人
+character-name-wren = レン
 character-level = Lv. { $level }
 character-hp = HP
 character-hp-value = { NUMBER($hp) } / { NUMBER($max) }
@@ -194,6 +195,7 @@ hud-party-down = 戦闘不能
 
 enemy-warrior = 骸骨の戦士
 enemy-lancer = 槍使い
+enemy-ember-lancer = 炎の槍使い
 
 boss-captain = 骸骨の隊長
 boss-knell-colossus = 弔鐘の巨像

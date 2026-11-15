@@ -1,0 +1,10 @@
+(
+    type: "sapphire::pipeline::RampMap",
+    version: 1,
+    data: (
+        materials: [
+            (name: "shirt", day: (stops: [(at: 0.0, color: "#6a6aa0"), (at: 0.7, color: "#8484b6"), (at: 1.0, color: "#9c9cc6")]), night: Some((stops: [(at: 0.0, color: "#565aa4"), (at: 1.0, color: "#8086bc")]))),
+            (name: "trousers", day: (stops: [(at: 0.0, color: "#6a6aa0"), (at: 0.7, color: "#8484b6"), (at: 1.0, color: "#9c9cc6")]), night: Some((stops: [(at: 0.0, color: "#565aa4"), (at: 1.0, color: "#8086bc")]))),
+        ],
+    ),
+)

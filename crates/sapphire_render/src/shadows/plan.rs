@@ -10,8 +10,9 @@ use super::{
     ATLAS_COLUMNS, GpuCapsule, GpuCascade, GpuCharacterMap, MAX_CAPSULES, MAX_CASCADES, MAX_CHARACTER_MAPS,
     MAX_OTHERS, ShadowSettings, ShadowStats, ShadowUniforms,
 };
-use crate::bounds::Sphere;
+use crate::bounds::{Sphere, max_stretch};
 use crate::characters::{CharacterTable, GpuReceived, RECEIVED_CAPSULE};
+use crate::levels::{self, LevelSettings};
 use crate::mesh_pool::{MeshRecord, MeshStreams};
 use crate::pipelines::SurfaceVariant;
 use crate::scene::{DrawList, InstanceSlots};
@@ -49,6 +50,10 @@ pub(crate) struct SlotCaster {
     pub held: u8,
     /// Past the tier's distance (`view_cull`): no cascade draws it.
     pub far: bool,
+    /// Per cascade: the level of detail it draws the instance at (M5 D4, `levels::cascade_level`),
+    /// by the cascade's texel alone; 0 where it doesn't draw it, for a character and for whatever
+    /// draws level 0 alone.
+    pub levels: [u8; MAX_CASCADES],
 }
 
 impl SlotCaster {
@@ -70,17 +75,21 @@ impl SlotCaster {
 }
 
 /// What the shadow plan culls casters by beyond each cascade's volume (M5 D3, `view_cull`): the
-/// frame's far and kept instances, and the least size in a cascade's texels (0 for none).
+/// frame's far and kept instances, and the least size in a cascade's texels (0 for none); and what
+/// it chooses their levels of detail by (M5 D4): the frame's settings, and what draws level 0
+/// alone ([`Culled::whole`]).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CasterCull<'a> {
     pub culled: Culled<'a>,
     pub least_texels: f32,
+    pub levels: LevelSettings,
 }
 
 impl CasterCull<'_> {
-    /// No culling beyond the cascades' volumes.
+    /// No culling beyond the cascades' volumes, and every caster at level 0.
     #[cfg(test)]
-    pub(crate) const NONE: CasterCull<'static> = CasterCull { culled: Culled::NONE, least_texels: 0.0 };
+    pub(crate) const NONE: CasterCull<'static> =
+        CasterCull { culled: Culled::NONE, least_texels: 0.0, levels: LevelSettings::ON };
 }
 
 /// Whether an instance slot is a character this frame (it has an entry in the character
@@ -351,6 +360,12 @@ impl ShadowPlan {
                     };
                     caster.far = cull.culled.far(slot);
                     let sized = least > 0.0 && !cull.culled.kept(slot);
+                    // Its levels' errors, if it may draw coarser than level 0 (M5 D4).
+                    let errors = meshes
+                        .get(mesh.index())
+                        .filter(|record| record.lod_errors.len() > 1 && !cull.culled.whole(slot))
+                        .map(|record| record.lod_errors.as_slice());
+                    let stretch = max_stretch(transform);
                     for (index, fit) in self.drawn.iter().enumerate() {
                         let Some(fit) = fit else { continue };
                         if !sphere.is_none_or(|sphere| fit.holds(&sphere)) {
@@ -369,6 +384,12 @@ impl ShadowPlan {
                         *small = if below { *small | bit } else { *small & !bit };
                         if !caster.far && !below {
                             caster.cascades |= bit;
+                            if let Some(errors) = errors {
+                                caster.levels[index] =
+                                    cull.levels.forced(errors.len()).unwrap_or_else(|| {
+                                        levels::cascade_level(errors, stretch, fit.texel(), cull.levels.bias)
+                                    });
+                            }
                         }
                     }
                 }
@@ -653,6 +674,7 @@ mod tests {
             dequantize: Dequantize::default(),
             lods: Vec::new(),
             lod_vertices: Vec::new(),
+            lod_errors: Vec::new(),
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere::around([[-0.5; 3], [0.5; 3]]),
@@ -726,6 +748,8 @@ mod tests {
                 draw_id: slot,
                 material: crate::materials::MaterialHandle::from_raw(0),
                 mesh: MeshHandle::from_raw(0),
+                submesh: 0,
+                levels: 1,
                 outline: false,
                 foliage: 0,
             });
@@ -762,6 +786,8 @@ mod tests {
             draw_id: 0,
             material: crate::materials::MaterialHandle::from_raw(0),
             mesh: MeshHandle::from_raw(0),
+            submesh: 0,
+            levels: 1,
             outline: false,
             foliage: 0,
         });
@@ -1349,5 +1375,85 @@ mod tests {
             assert_eq!(plan.is_character(slot), slots.character(slot) != 0, "slot {slot}");
         }
         assert_eq!(plan.maps.len(), 3, "a map each");
+    }
+
+    /// Each cascade draws a caster at the level its own texel says (M5 D4): a quarter of a texel ×
+    /// 2^bias of error, times the instance's stretch, with no memory; level 0 for what draws level 0
+    /// alone, and in a mode that forces one, that one.
+    #[test]
+    fn each_cascade_draws_the_level_its_texel_says() {
+        let instances: Vec<MeshInstance> =
+            (0..40).map(|id| instance(id, 0, Vec3::new(0.0, 0.5, 2.0 - 3.0 * id as f32))).collect();
+        let mut slots = slots(&instances);
+        let packet = packet(Vec::new());
+        let mut characters = CharacterList::default();
+        characters.update(&packet, &mut slots, false, None);
+        let mut list = DrawList::default();
+        for (slot, _) in slots.live() {
+            list.commands[0][SurfaceVariant::OPAQUE.index()].push(crate::scene::DrawCommand {
+                indices: 0..3,
+                first_vertex: 0,
+                slot,
+                draw_id: slot,
+                material: crate::materials::MaterialHandle::from_raw(0),
+                mesh: MeshHandle::from_raw(0),
+                submesh: 0,
+                levels: 0b11,
+                outline: false,
+                foliage: 0,
+            });
+        }
+        // Slot 1 draws level 0 alone, as a character's part or foliage would.
+        let mut culled = crate::view_cull::SlotCull::at_levels(&[0; 40]);
+        culled[1] = crate::view_cull::SlotCull::whole();
+        let plan_with = |meshes: &[MeshRecord], levels: LevelSettings| {
+            let mut plan = ShadowPlan::default();
+            let cull = CasterCull { culled: Culled::new(&culled), least_texels: 0.0, levels };
+            let table = characters.table();
+            plan.update(&SETTINGS, &packet, &slots, meshes, &|_| 0.0, &list, table, (4096, 2048), cull);
+            plan
+        };
+        let mut meshes = meshes();
+        let fits = plan_with(&meshes, LevelSettings::ON).drawn;
+        let texel = |index: usize| fits[index].expect("the first frame draws every cascade").texel();
+        assert!(texel(0) < texel(1) && texel(1) < texel(3));
+        // An error between cascade 0's quarter texel and cascade 1's.
+        let error = 0.25 * (texel(0) * texel(1)).sqrt();
+        meshes[0].lod_errors = vec![0.0, error];
+        // Cascade 0 keeps level 0 and the others take level 1; a bias of −2 (a sixteenth of a
+        // texel) keeps level 0 further out; forced off, level 0 everywhere.
+        let biased = LevelSettings { bias: -2.0, ..LevelSettings::ON };
+        let off = LevelSettings { mode: crate::LevelsMode::Off, bias: 0.0 };
+        for (levels, expect) in [(LevelSettings::ON, Some([0, 1, 1, 1])), (biased, None), (off, Some([0; 4]))]
+        {
+            let plan = plan_with(&meshes, levels);
+            let mut seen = [false; MAX_CASCADES];
+            for (slot, caster) in plan.casters.iter().enumerate() {
+                for (index, fit) in plan.drawn.iter().enumerate() {
+                    let Some(fit) = fit else { continue };
+                    if caster.cascades & (1 << index) == 0 {
+                        assert_eq!(caster.levels[index], 0, "slot {slot}: not drawn into {index}");
+                        continue;
+                    }
+                    let said = levels::cascade_level(&meshes[0].lod_errors, 1.0, fit.texel(), levels.bias);
+                    let level = match (slot, expect) {
+                        (1, _) => 0,
+                        (_, Some(expect)) => expect[index],
+                        (_, None) => said,
+                    };
+                    assert_eq!(caster.levels[index], level, "slot {slot}, cascade {index}, {levels:?}");
+                    if slot != 1 && levels.mode == crate::LevelsMode::On {
+                        assert_eq!(caster.levels[index], said, "slot {slot}, cascade {index}: its texel's");
+                    }
+                    seen[index] |= slot != 1;
+                }
+            }
+            assert!(seen.iter().all(|&seen| seen), "a caster in every cascade: {seen:?}");
+        }
+        // A bias of −2 needs sixteen times cascade 0's texel to take level 1.
+        let biased_level =
+            |index: usize| levels::cascade_level(&meshes[0].lod_errors, 1.0, texel(index), -2.0);
+        assert_eq!(biased_level(0), 0);
+        assert_eq!(biased_level(3), u8::from(texel(3) >= 4.0 * (texel(0) * texel(1)).sqrt()));
     }
 }

@@ -37,6 +37,12 @@
 //! draw as it goes: the filtered walk, kept for the test that compares the two
 //! (`Renderer::walk_filtered`), which m5-plan D2 deletes. The debug views' replays walk the main
 //! view's list and still test the instances they pick.
+//!
+//! **A static draw draws its level of detail's indices** (M5 D4, the `levels` module): its list
+//! entry's level, or on the filtered walk its view's ([`MeshDraws::levels`], a cascade's plan),
+//! the index range its mesh's record holds for its submesh at that level, from the same vertex
+//! streams (each level reads a prefix of them). Skinned and morphed instances and fog cards draw
+//! level 0.
 
 mod lists;
 
@@ -46,7 +52,7 @@ use sapphire_assets::material::MaterialFlags;
 use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
-pub(crate) use self::lists::{CasterTests, Orders, Source, ViewLists, ViewTests, Walk};
+pub(crate) use self::lists::{CasterTests, Entry, Orders, Source, ViewLists, ViewTests, Walk, has_level};
 use crate::buffer::GrowableBuffer;
 use crate::counts::{ChangeCounter, Counter, PassCounts, StateChanges};
 use crate::gpu_types::DrawData;
@@ -62,9 +68,6 @@ const SHADING_STRIDE: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_STRIDE: u64 = size_of::<VertexSurface>() as u64;
 const FOLIAGE_STRIDE: u64 = size_of::<VertexFoliage>() as u64;
 const DRAW_STRIDE: u64 = size_of::<DrawData>() as u64;
-
-/// The level of detail every mesh draw draws, until levels are selected (m5-plan D4).
-const DRAWN_LEVEL: u8 = 0;
 
 /// What a frame's mesh draws read, shared by every pass that draws meshes.
 #[derive(Clone, Copy)]
@@ -87,6 +90,10 @@ pub(crate) struct MeshDraws<'a> {
     /// RA-O01, M5 D3, the `view_cull` module): for the main pass, both prepasses, the debug views
     /// and each inset's passes. `None` draws every one, as the shadow views do.
     pub view: Option<Culled<'a>>,
+    /// Per instance slot, the level of detail the main view's family draws it at (M5 D4,
+    /// [`Culled::level`]), on the filtered walk; `None` draws level 0, as the character maps do
+    /// (a cascade's come from [`Self::casters`]). A view's list holds its draws' levels.
+    pub levels: Option<Culled<'a>>,
     /// A shadow cascade's casters and its index, on the filtered walk: what its pick left out by
     /// distance or size counts as such (M5 D3).
     pub casters: Option<(&'a [SlotCaster], usize)>,
@@ -208,6 +215,34 @@ impl MeshDraws<'_> {
     fn verdict(&self, slot: u32) -> Verdict {
         self.view.map_or(Verdict::Drawn, |view| view.verdict(slot))
     }
+
+    /// The level the filtered walk draws `command` at: its cascade's, or its view's; `None` if its
+    /// submesh has no triangles there, as its view's list would leave it out.
+    fn filtered_level(&self, command: &DrawCommand) -> Option<u8> {
+        let level = match self.casters {
+            Some((casters, cascade)) => {
+                casters.get(command.slot as usize).map_or(0, |caster| caster.levels[cascade])
+            }
+            None => self.levels.map_or(0, |levels| levels.level(command.slot)),
+        };
+        has_level(command.levels, level).then_some(level)
+    }
+
+    /// The indices `command` draws at `level`: its submesh's range in its mesh's record at that
+    /// level (M5 D4), its own at level 0.
+    fn indices(&self, command: &DrawCommand, level: u8) -> Range<u32> {
+        if level == 0 {
+            return command.indices.clone();
+        }
+        let records = self.meshes.records();
+        let submesh = records
+            .get(command.mesh.index())
+            .and_then(|record| record.lods.get(usize::from(level))?.get(usize::from(command.submesh)));
+        submesh.map_or_else(
+            || command.indices.clone(),
+            |submesh| submesh.first_index..submesh.first_index + submesh.index_count,
+        )
+    }
 }
 
 /// Whether a draw set holds a draw ([`MeshDraws::includes`]).
@@ -290,27 +325,28 @@ impl MeshDraws<'_> {
         let mut counts = PassCounts::default();
         let hull = set == DrawSet::Outlines;
         let commands = &self.list.commands[format_index(format)][variant.index()];
-        let mut draw = |command: &DrawCommand, bound: &mut Bound, counts: &mut PassCounts| {
-            let indices = command.indices.len() as u32;
+        let mut draw = |command: &DrawCommand, level: u8, bound: &mut Bound, counts: &mut PassCounts| {
+            let indices = self.indices(command, level);
+            let count = indices.len() as u32;
             if pipelines.is_empty() {
-                self.draw_command(pass, kind, format, command, bound);
-                counts.mesh_draw(indices, DRAWN_LEVEL, hull);
+                self.draw_command(pass, kind, format, command, indices.clone(), bound);
+                counts.mesh_draw(count, level, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
                 bound.changes.pipelines += 1;
-                self.draw_command(pass, kind, format, command, bound);
-                counts.mesh_draw(indices, DRAWN_LEVEL, hull);
+                self.draw_command(pass, kind, format, command, indices.clone(), bound);
+                counts.mesh_draw(count, level, hull);
             }
         };
         if let Some(list) = self.listed() {
             // The view's own: listed, in order, and tested already, but for a debug replay's pick
             // of instances (the passes' take every one).
-            for &index in list.group(Source::Static(format), variant, set) {
-                let command = &commands[index as usize];
+            for &Entry { at, level } in list.group(Source::Static(format), variant, set) {
+                let command = &commands[at as usize];
                 counts.considered += 1;
                 if instance(command.slot) {
-                    draw(command, &mut bound, &mut counts);
+                    draw(command, level, &mut bound, &mut counts);
                 } else {
                     counts.culled_by_pass += 1;
                 }
@@ -322,7 +358,11 @@ impl MeshDraws<'_> {
                 }
                 let pick = self.includes(set, command.draw_id, command.material, command.outline);
                 if self.passes(&mut counts, pick, command.slot, &instance) {
-                    draw(command, &mut bound, &mut counts);
+                    match self.filtered_level(command) {
+                        Some(level) => draw(command, level, &mut bound, &mut counts),
+                        // Simplified away at its level: not looked at, as its view's list says.
+                        None => counts.considered -= 1,
+                    }
                 }
             }
         }
@@ -330,14 +370,15 @@ impl MeshDraws<'_> {
         self.changes.add(&bound.changes);
     }
 
-    /// Draws `command`, a static mesh's in `format`, binding its streams and material unless
-    /// `bound` says they are bound already.
+    /// Draws `indices` of `command`, a static mesh's in `format` (its level's, [`Self::indices`]),
+    /// binding its streams and material unless `bound` says they are bound already.
     fn draw_command(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         kind: MeshPass,
         format: PositionFormat,
         command: &DrawCommand,
+        indices: Range<u32>,
         bound: &mut Bound,
     ) {
         self.bind_material(pass, kind, command.material, bound);
@@ -365,7 +406,7 @@ impl MeshDraws<'_> {
             bound.changes.vertex_buffers += streams_bound(kind);
             bound.streams = Some(streams);
         }
-        self.draw(pass, command.draw_id, command.indices.clone());
+        self.draw(pass, command.draw_id, indices);
     }
 
     /// Draws `set` of the skinned or morphed instances of `variant` with the streams `kind`
@@ -413,19 +454,20 @@ impl MeshDraws<'_> {
         let mut draw = |command: &DeformedDraw, bound: &mut Bound, counts: &mut PassCounts| {
             let indices = command.indices.len() as u32;
             if pipelines.is_empty() && self.draw_deformed_command(pass, kind, command, bound) {
-                counts.mesh_draw(indices, DRAWN_LEVEL, hull);
+                counts.mesh_draw(indices, 0, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
                 bound.changes.pipelines += 1;
                 if self.draw_deformed_command(pass, kind, command, bound) {
-                    counts.mesh_draw(indices, DRAWN_LEVEL, hull);
+                    counts.mesh_draw(indices, 0, hull);
                 }
             }
         };
         if let Some(list) = self.listed() {
-            for &index in list.group(Source::Deformed, variant, set) {
-                let command = &deformed[index as usize];
+            // Level 0 alone (m5-plan D5's to change): their entries' levels are 0.
+            for &Entry { at, .. } in list.group(Source::Deformed, variant, set) {
+                let command = &deformed[at as usize];
                 counts.considered += 1;
                 if instance(command.slot) {
                     draw(command, &mut bound, &mut counts);
@@ -522,10 +564,11 @@ impl MeshDraws<'_> {
             match draw {
                 DrawRef::Static { format, index } => {
                     let commands = &self.list.commands[format_index(format)][variant.index()];
+                    // Fog cards draw level 0 alone (M5 D4).
                     if let Some(command) = commands.get(index as usize).filter(|c| self.stands_here(c.slot)) {
-                        self.draw_command(pass, kind, format, command, &mut bound);
+                        self.draw_command(pass, kind, format, command, command.indices.clone(), &mut bound);
                         counts.considered += 1;
-                        counts.mesh_draw(command.indices.len() as u32, DRAWN_LEVEL, false);
+                        counts.mesh_draw(command.indices.len() as u32, 0, false);
                     }
                 }
                 DrawRef::Deformed { index } => {
@@ -533,7 +576,7 @@ impl MeshDraws<'_> {
                     if let Some(command) = deformed.get(index as usize).filter(|c| self.stands_here(c.slot)) {
                         counts.considered += 1;
                         if self.draw_deformed_command(pass, kind, command, &mut bound) {
-                            counts.mesh_draw(command.indices.len() as u32, DRAWN_LEVEL, false);
+                            counts.mesh_draw(command.indices.len() as u32, 0, false);
                         }
                     }
                 }

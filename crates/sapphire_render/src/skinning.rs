@@ -18,8 +18,9 @@
 //! - A frame skins only the instances posed since the last recorded frame, plus new ones, which
 //!   start in their bind pose with every weight 0. An instance that holds still (hitstop,
 //!   pause) keeps its outputs and costs nothing.
-//! - Only the LOD prefix being drawn is skinned (`MeshRecord::lod_vertices`): LOD0 until LOD
-//!   selection lands (m5-plan D4), which then passes the instance's LOD.
+//! - Only the LOD prefix being drawn is skinned (`MeshRecord::lod_vertices`): LOD0, since static
+//!   draws alone choose their levels (M5 D4, the `levels` module); m5-plan D5 passes the instance's
+//!   finest drawn level (`DrawnBy::finest`).
 //!
 //! # Only what some view draws (M5 D3)
 //!
@@ -78,7 +79,7 @@
 //!   normal, so the hull can open there by the bend's angle × the outline's width. Character
 //!   morphs (faces) move smooth surfaces, whose split vertices (UV seams) share a normal; if
 //!   hard-edged morphs need it, the cooker can bake outline-normal deltas per target.
-//! - Levels of detail: skin the drawn level's prefix (m5-plan D4).
+//! - Levels of detail: skin the drawn level's prefix (m5-plan D5).
 //! - A culled instance's pose still rides the frame's upload when every pose fits (the palettes are
 //!   uploaded whole); trimming them to the skinned ones is a follow-up if upload bandwidth shows.
 //! - GPU-driven draws: the surface stream lives with the mesh and positions with the instance,
@@ -107,7 +108,8 @@ pub(crate) const WORKGROUP_SIZE: u32 = 64;
 const OUTPUT_WORDS: u32 = 8;
 const OUTPUT_VERTEX_BYTES: u64 = OUTPUT_WORDS as u64 * 4;
 
-/// The LOD whose prefix is skinned and drawn: LOD0 until LOD selection (see the module docs).
+/// The LOD whose prefix is skinned and drawn: LOD0 until skinned instances choose levels (m5-plan
+/// D5; see the module docs).
 const DRAWN_LOD: usize = 0;
 
 /// Bits of [`Job::flags`] (`FLAG_*` in `shaders/skinning.wgsl`).

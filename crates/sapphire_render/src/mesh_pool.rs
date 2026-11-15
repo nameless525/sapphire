@@ -18,8 +18,9 @@
 //! through `base_vertex`. Relative indices also let compute skinning write each instance's
 //! vertices to buffers of its own, and the pool compact, without rewriting indices.
 //!
-//! Every LOD's indices are uploaded with the mesh and its index ranges recorded; draws use
-//! LOD0 until LOD selection lands with culling.
+//! Every LOD's indices are uploaded with the mesh and its index ranges recorded, each coarser
+//! LOD's aligned with LOD0's submeshes, with its error: a view draws the level it chooses for an
+//! instance (M5 D4, the `levels` module) from the same vertex streams, a prefix of them.
 //!
 //! Foliage meshes' foliage stream (M1 W6, [`VertexFoliage`]) goes to a buffer of its own, with
 //! its own numbering: other meshes spend nothing on it, at the cost of a second base vertex on
@@ -173,10 +174,14 @@ pub(crate) struct MeshRecord {
     /// for a deformable one, identity positions (skinning writes f32 object space) and the
     /// mesh's UVs.
     pub dequantize: Dequantize,
-    /// Per LOD, LOD0 first: its submeshes.
+    /// Per LOD, LOD0 first: its submeshes, each coarser LOD's in LOD0's order, one for each of
+    /// LOD0's (M5 D4): a submesh a coarser LOD simplified away has no indices there.
     pub lods: Vec<Vec<SubmeshDraw>>,
     /// Per LOD: the vertices it reads, a prefix of the streams.
     pub lod_vertices: Vec<u32>,
+    /// Per LOD: how far it may stray from LOD0, in object-space meters (`Lod::error`), which levels
+    /// of detail project per view (the `levels` module).
+    pub lod_errors: Vec<f32>,
     /// The pool's ranges it occupies.
     pub placement: Placement,
     /// Per material slot: the material it draws with, and whether the mesh embeds it.
@@ -294,6 +299,7 @@ impl MeshRecord {
             },
             lods: vec![Vec::new()],
             lod_vertices: vec![0],
+            lod_errors: vec![0.0],
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere::around([[0.0; 3], [0.0; 3]]),
@@ -802,21 +808,9 @@ impl MeshPool {
         let record = MeshRecord {
             streams: record_streams,
             dequantize,
-            lods: mesh
-                .lods
-                .iter()
-                .map(|lod| {
-                    lod.submeshes
-                        .iter()
-                        .map(|s| SubmeshDraw {
-                            first_index: first_index + s.first_index.to_native(),
-                            index_count: s.index_count.to_native(),
-                            material: materials[s.material.to_native() as usize],
-                        })
-                        .collect()
-                })
-                .collect(),
+            lods: aligned_lods(mesh, first_index, materials),
             lod_vertices: mesh.lods.iter().map(|lod| lod.vertex_count.to_native()).collect(),
+            lod_errors: mesh.lods.iter().map(|lod| lod.error.to_native()).collect(),
             placement: Placement {
                 vertices: (first_vertex, vertex_len),
                 indices: (first_index, index_len),
@@ -1002,6 +996,40 @@ impl DeformSource {
 
 /// A skinned or morphed mesh's region of the deformable buffer (see the module docs), with its
 /// offsets relative to the region's start.
+/// `mesh`'s LODs as draws ([`MeshRecord::lods`]): each LOD's submeshes in LOD0's order, one for each
+/// of LOD0's, their indices at `first_index` of the pool's and their material slots resolved through
+/// `materials`. A submesh a coarser LOD simplified away (the cook drops a part with no triangles left)
+/// is there with no indices. Submeshes match by material slot, which a LOD holds at most once.
+fn aligned_lods(
+    mesh: &ArchivedMesh,
+    first_index: u32,
+    materials: &[SubmeshMaterial],
+) -> Vec<Vec<SubmeshDraw>> {
+    let Some(lod0) = mesh.lods.first() else { return Vec::new() };
+    let draw = |first: u32, count: u32, slot: u32| SubmeshDraw {
+        first_index: first_index + first,
+        index_count: count,
+        material: materials[slot as usize],
+    };
+    mesh.lods
+        .iter()
+        .map(|lod| {
+            lod0.submeshes
+                .iter()
+                .map(|base| {
+                    let slot = base.material.to_native();
+                    lod.submeshes.iter().find(|submesh| submesh.material.to_native() == slot).map_or_else(
+                        || draw(base.first_index.to_native(), 0, slot),
+                        |submesh| {
+                            draw(submesh.first_index.to_native(), submesh.index_count.to_native(), slot)
+                        },
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
 fn deformable_region(mesh: &ArchivedMesh) -> (Vec<u8>, DeformSource) {
     let streams = &mesh.streams;
     let mut bytes = Vec::new();

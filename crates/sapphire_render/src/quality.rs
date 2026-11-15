@@ -54,9 +54,9 @@
 //!
 //! Plain data until their packages read them: volumetric fog (after W3's distance and height fog,
 //! which every tier has), screen-space environment outlines (the desktop option beside C4's
-//! character hulls, which no M1 package builds), the particle cap (`sapphire_vfx`, M2) and the
-//! LOD bias (LOD selection, with culling). The frame rate is also what frame pacing (§6.2, F7)
-//! will hold.
+//! character hulls, which no M1 package builds) and the particle cap (`sapphire_vfx`, M2). The LOD
+//! bias is the levels of detail's allowance exponent since M5 D4 ([`QualityTier::lod_bias`]). The
+//! frame rate is also what frame pacing (§6.2, F7) will hold.
 //!
 //! # Choosing a tier
 //!
@@ -125,8 +125,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AmbientOcclusion, CullingMode, CullingThresholds, DepthOfFieldSettings, DistortionResolution,
-    EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings, LOG_TARGET, LightPath,
-    MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, PostVariants,
+    EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings, LOG_TARGET, LevelSettings, LevelsMode,
+    LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, PostVariants,
     ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
@@ -257,8 +257,10 @@ pub struct QualityTier {
     pub texture_pool_mib: u32,
     /// Live GPU particles at most (§3.4), for `sapphire_vfx` (M2).
     pub max_particles: u32,
-    /// Added to each draw's LOD choice, in LOD levels: positive picks coarser LODs sooner. Read
-    /// by LOD selection, which arrives with culling.
+    /// The levels of detail's allowance exponent (M5 D4, the `levels` module): a level is good
+    /// enough when its error covers at most 2^`lod_bias` output pixels, so positive picks coarser
+    /// levels sooner ([`RenderSettings::levels`]). The ladder's
+    /// [`Rung::LodBias`] adds to it.
     pub lod_bias: f32,
     /// The sky's cube size and update rate and its cirrus layer ([`RenderSettings::sky`]). A
     /// table without it gets the desktop tiers' sky.
@@ -480,6 +482,7 @@ impl QualityTier {
             distortion: self.distortion,
             view_culling: CullingMode::On,
             culling: self.culling,
+            levels: LevelSettings { mode: LevelsMode::On, bias: self.lod_bias },
         }
     }
 
@@ -1547,6 +1550,7 @@ mod tests {
                 depth_of_field: DepthOfFieldSettings { view: true, insets: true },
                 distortion: DistortionResolution::Half,
                 culling: tier.culling,
+                levels: LevelSettings { mode: LevelsMode::On, bias: tier.lod_bias },
                 ..RenderSettings::default()
             };
             assert_eq!(tier.render_settings(), expected, "{id}");

@@ -17,9 +17,10 @@
 //!   [`PassCounts::culled_by_cutoff`], and since M5 D3 [`PassCounts::culled_by_distance`] and
 //!   [`PassCounts::culled_by_size`]). Draws of another view (an inset's, the world's) and of another
 //!   set (an outline pass's surfaces without a hull) aren't looked at.
-//! - **Levels of detail:** every mesh draw counts in [`PassCounts::levels`] by the level it drew. Every
-//!   draw is LOD0 until levels are selected (m5-plan D4, D5); the buckets are fixed so that work fills
-//!   them as they are.
+//! - **Levels of detail:** every mesh draw counts in [`PassCounts::levels`] by the level it drew: a static
+//!   draw's chosen level since M5 D4 (the `levels` module), level 0 for what deforms until m5-plan D5. A
+//!   submesh its level simplified away isn't looked at, so `considered` still sums what was drawn and
+//!   what was culled. The main view's switches of level are `RenderStats::levels`.
 //! - **State changes** (M5 D1, [`StateChanges`]): the pipelines the mesh passes set, the materials they
 //!   bind and the vertex buffers they bind for meshes' streams, the whole frame's together. What an
 //!   order of each view's draws buys is exact here, where time is noisy.

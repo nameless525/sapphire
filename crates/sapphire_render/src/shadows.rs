@@ -937,18 +937,20 @@ impl Shadows {
         }
     }
 
-    /// Whether the instance in `slot` casts into a cascade or a character map this frame draws:
-    /// what skinning poses besides what the views draw (M5 D3).
-    pub(crate) fn casts(&self, slot: u32) -> bool {
+    /// The finest level of detail the instance in `slot` casts at into a cascade or a character map
+    /// this frame draws (M5 D4: a map's is 0), or `None` if it casts into none: what skinning poses
+    /// besides what the views draw (M5 D3).
+    pub(crate) fn cast_level(&self, slot: u32) -> Option<u8> {
         if self.pipelines.is_none() || !self.plan.active {
-            return false;
+            return None;
         }
         let maps = self.settings.is_some() && !self.plan.maps.is_empty();
-        self.plan.casters.get(slot as usize).is_some_and(|caster| {
-            let cascades = (0..MAX_CASCADES)
-                .any(|index| caster.cascades & (1 << index) != 0 && self.plan.drawn[index].is_some());
-            cascades || (maps && caster.map.is_some())
-        })
+        let caster = self.plan.casters.get(slot as usize)?;
+        let cascades = (0..MAX_CASCADES)
+            .filter(|&index| caster.cascades & (1 << index) != 0 && self.plan.drawn[index].is_some())
+            .map(|index| caster.levels[index]);
+        let map = (maps && caster.map.is_some()).then_some(0);
+        cascades.chain(map).min()
     }
 
     /// The view of cascade `index` (below [`MAX_CASCADES`]), or of character map `index −

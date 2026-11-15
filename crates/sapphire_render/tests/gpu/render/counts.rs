@@ -74,11 +74,11 @@ fn scene_pass(frustum: bool) -> PassCounts {
     }
 }
 
-/// Every pass's mesh draws are in the levels, LOD0 alone until levels are selected, and the frame's are the
-/// passes' summed.
+/// Every pass's mesh draws are in the levels, LOD0 alone since the scene's meshes have one level (M5 D4's
+/// selection is `render::levels`), and the frame's are the passes' summed.
 fn assert_levels_add_up(passes: &FrameCounts) {
     for (name, pass) in passes.passes() {
-        assert_eq!(pass.levels[1..], [0; MESH_LEVELS - 1], "{name}: nothing selects a coarser level yet");
+        assert_eq!(pass.levels[1..], [0; MESH_LEVELS - 1], "{name}: one-level meshes draw level 0");
         assert!(pass.mesh_draws() <= pass.draws, "{name}: {pass:?}");
         assert_eq!(pass.considered, pass.mesh_draws() + pass.culled(), "{name}: drawn or culled: {pass:?}");
     }

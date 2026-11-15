@@ -224,7 +224,8 @@
 //!   adds the morph deltas (regrouped by vertex at upload, so a vertex walks only its own),
 //!   blends four palette matrices per vertex, and writes f32 positions and
 //!   [`VertexShading`](sapphire_assets::mesh::VertexShading) normals. Only the drawn LOD's
-//!   prefix of the streams is skinned (LOD0 until LOD selection).
+//!   prefix of the streams is skinned: LOD0, since skinned instances draw level 0 alone until
+//!   m5-plan D5 (the `levels` module).
 //! - **Draws** read those outputs through the f32 pipelines with an identity dequantization
 //!   (slots 1 and 2), and the mesh's surface stream (slot 3).
 //! - **Velocity:** each instance's positions are double-buffered, so the scene prepass reads
@@ -821,10 +822,9 @@
 //! - **Local lights** (see the `lights` module): cluster occupancy counted on the GPU, light
 //!   layers (VFX lights kept off faces and rims), local-light shadows, and two-level culling for
 //!   hundreds of lights.
-//! - **LOD selection**, with culling for every view (the main view culls only static world
-//!   instances so far, the `view_cull` module): the pool holds every LOD's indices and ranges, and each
-//!   cooked LOD carries its error in object-space meters, to project into pixels per view. Until
-//!   then draws use LOD0.
+//! - **Levels of detail for what deforms** (m5-plan D5): static draws choose theirs since M5 D4
+//!   (the `levels` module), while skinned and morphed instances, characters' parts, foliage and
+//!   fog cards draw level 0. Skinning the drawn level's prefix, by [`DrawnBy::finest`], is D5's.
 //! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured
 //!   on a real phone first (spec open question Q14).
 //! - **Upscaling** (spec §5.12, "Anti-aliasing and upscaling"): temporal AA upsamples on the
@@ -896,6 +896,7 @@ mod gpu_types;
 pub mod graph;
 pub mod inset;
 mod interface_screen;
+mod levels;
 mod lights;
 mod materials;
 mod mesh_pool;
@@ -954,6 +955,7 @@ pub use post::{
 };
 // The frame's look, which the packet carries and time of day resolves: plain data of a crate of
 // its own, beneath the renderer and time of day, so tools that light by it link neither.
+pub use levels::{LevelSettings, LevelStats, LevelsMode};
 pub use mip_streaming::{DEFAULT_MIP_BUDGET, MipStreamingStats};
 pub use renderer::{
     CHARACTER_PREPASS, MAIN_PASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError,

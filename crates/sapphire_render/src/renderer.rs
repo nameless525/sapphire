@@ -43,6 +43,7 @@ use crate::inset::{
     INSET_CHARACTER_PASS, INSET_MAIN_PASS, InsetBindings, InsetDraw, InsetFrame, InsetSettings, InsetStats,
     Insets, MAX_INSETS,
 };
+use crate::levels::{LevelSettings, LevelStats};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshPoolStats, MeshRecord, PoolMoves, SubmeshMaterial};
@@ -193,6 +194,13 @@ pub struct RenderSettings {
     pub view_culling: CullingMode,
     /// The tier's distance and size culling (M5 D3): none by default, as the goldens draw.
     pub culling: CullingThresholds,
+    /// Levels of detail (M5 D4, the `levels` module): each view draws an instance at the coarsest of
+    /// its mesh's cooked levels whose error covers at most 2^bias output pixels (a cascade, a quarter
+    /// of its texel × 2^bias). On with no bias by default; the tiers give their `lod_bias`, the
+    /// thermal ladder adds to it ([`Renderer::set_rung_lod_bias`]), and
+    /// [`LevelsMode::Off`](crate::LevelsMode::Off) draws level 0 alone, for older scenes.
+    /// [`RenderStats::levels`] counts the main view's switches.
+    pub levels: LevelSettings,
 }
 
 impl RenderSettings {
@@ -236,6 +244,7 @@ impl Default for RenderSettings {
             distortion: DistortionResolution::Off,
             view_culling: CullingMode::On,
             culling: CullingThresholds::NONE,
+            levels: LevelSettings::ON,
         }
     }
 }
@@ -246,6 +255,7 @@ impl RenderSettings {
     fn validate(&self) -> Result<(), (&'static str, &'static str)> {
         self.sky.validate()?;
         self.culling.validate()?;
+        self.levels.validate()?;
         if let Some(shadows) = &self.shadows {
             shadows.validate()?;
         }
@@ -487,6 +497,10 @@ pub struct RenderStats {
     /// The static instances the last recorded frame's main view tested and culled, and the
     /// surface draws its main pass drew ([`RenderSettings::view_culling`]).
     pub view_culling: ViewCullingStats,
+    /// The levels of detail the last recorded frame's main view switched (M5 D4,
+    /// [`RenderSettings::levels`]); [`PassCounts::levels`](crate::PassCounts::levels) counts the
+    /// levels each pass drew.
+    pub levels: LevelStats,
     /// Skinned and morphed instances and the skinning they need.
     pub skinning: SkinningStats,
     /// The sky's layers and its cube.
@@ -629,6 +643,8 @@ pub struct Renderer {
     debug_view: DebugView,
     /// Optional passes shed in place ([`Self::set_shed`]).
     shed: OptionalPasses,
+    /// What the thermal ladder's rung adds to the levels of detail's bias ([`Self::set_rung_lod_bias`]).
+    rung_lod_bias: f32,
     /// The debug views' pipelines and passes, made by the first frame that shows one: `None` until
     /// then, so a renderer that never shows one builds nothing for them.
     debug_views: Option<Box<DebugViews>>,
@@ -1035,6 +1051,7 @@ impl Renderer {
             outline_distance: 1.0,
             debug_view: DebugView::Off,
             shed: OptionalPasses::NONE,
+            rung_lod_bias: 0.0,
             debug_views: None,
             color_vision: ColorVision::Off,
             color_vision_draw: None,
@@ -1522,14 +1539,15 @@ impl Renderer {
     /// Works out which instances each view draws this frame (M5 D3, the `view_cull` module): the
     /// main view of `camera`, drawn at `size` onto `output` with temporal AA's `jitter`, and each
     /// inset the frame shows; then which views drew each instance, its shadows' included, for
-    /// skinning and [`Self::drawn_by`].
+    /// skinning and [`Self::drawn_by`]. With the verdicts, the level of detail the main view's
+    /// family draws each instance at (M5 D4), afresh for every one after a camera `cut`.
     fn cull_views(
         &mut self,
         camera: &CameraData,
         size: (u32, u32),
         output: (u32, u32),
         jitter: [f32; 2],
-        wind: &Wind,
+        (wind, cut): (&Wind, bool),
     ) {
         let pad = view_cull::PAD_PIXELS + jitter[0].abs().max(jitter[1].abs());
         let hull = self.outlines.widest();
@@ -1553,11 +1571,14 @@ impl Renderer {
             reach: self.outlines.reach(),
             stands,
             views,
+            levels: self.level_settings(),
+            cut,
         };
         self.view_cull.record(&inputs);
         let shadows = &self.shadows;
-        self.view_cull.publish(stands, &drawn, |slot| shadows.casts(slot));
+        self.view_cull.publish(stands, &drawn, |slot| shadows.cast_level(slot));
         self.stats.view_culling = self.view_cull.stats();
+        self.stats.levels = self.view_cull.level_stats();
     }
 
     /// Which views drew the instance `id` in the last recorded frame (M5 D3): the main view, a
@@ -2581,7 +2602,7 @@ impl Renderer {
             &margin,
             self.scene.draw_list(),
             self.characters.table(),
-            CasterCull { culled: self.view_cull.casters(), least_texels },
+            CasterCull { culled: self.view_cull.casters(), least_texels, levels: self.level_settings() },
         );
         // The other characters' shadows each character receives go into its entry (M5 L12).
         if packet.main_view().is_some() {
@@ -2919,7 +2940,7 @@ impl Renderer {
         // Which instances each view draws (review RA-O01, M5 D3): the main view's unjittered
         // frustum, padded by the jitter too, so the jittered views and the debug views' unjittered
         // one cull alike, and each inset's camera for its own instances.
-        self.cull_views(&camera, size, output, jitter, &wind);
+        self.cull_views(&camera, size, output, jitter, (&wind, cut));
         // Skinning poses only what some view draws this frame (M5 D3).
         let view_cull = &self.view_cull;
         self.skinning.begin_record(&self.device, &self.queue, &self.meshes, |slot| view_cull.drawn(slot));
@@ -3061,6 +3082,7 @@ impl Renderer {
                 hulls: outlines.visible(),
                 materials: material_records,
                 view: view_cull.culled(),
+                levels: Some(view_cull.levels()),
                 instance: |_| true,
             };
             let characters = world.with_instance(listed);
@@ -3084,6 +3106,7 @@ impl Renderer {
             lines: false,
             // Every view's passes read the verdicts; the shadows' take a copy without them.
             view: view_cull.culled(),
+            levels: Some(view_cull.levels()),
             casters: None,
             stands: inset_frame.stands,
             stand: 0,
@@ -3202,7 +3225,8 @@ impl Renderer {
         };
         let (first, stride) = (FIRST_SHADOW_VIEW, view_stride);
         // The shadows cull by their plan, toward the light, not by the views' verdicts.
-        let shadow_draws = MeshDraws { view: None, ..mesh_draws };
+        // A cascade's levels come from its plan; a character map's are 0.
+        let shadow_draws = MeshDraws { view: None, levels: None, ..mesh_draws };
         shadows.record(graph, shadow_draws, counts, view_bind_group, casters, first, stride, labels);
         // Every view's passes skip what its culling left out (review RA-O01, M5 D3): the scene
         // prepass, the main pass, the debug views' replays of it, the character prepass and each
@@ -3955,6 +3979,28 @@ impl Renderer {
     /// What [`Self::set_shed`] sheds.
     pub fn shed(&self) -> OptionalPasses {
         self.shed
+    }
+
+    /// Adds `bias` to the tier's levels of detail's bias ([`RenderSettings::levels`]) from the next
+    /// frame: the thermal ladder's [`Rung::LodBias`](crate::quality::Rung::LodBias), 0 for none. It
+    /// builds nothing, and the main view's levels move through their hysteresis, as a step of the
+    /// camera moves them, rather than all at once (the `levels` module). A bias that isn't finite,
+    /// or that would take the sum past ±[`LevelSettings::MAX_BIAS`], is refused.
+    pub fn set_rung_lod_bias(&mut self, bias: f32) -> Result<(), RenderError> {
+        let total = self.settings.levels.bias + bias;
+        if !(bias.is_finite() && total.abs() <= LevelSettings::MAX_BIAS) {
+            return Err(RenderError::InvalidSettings {
+                field: "rung_lod_bias",
+                problem: "must be finite, and keep the tier's bias with it within -4..=4",
+            });
+        }
+        self.rung_lod_bias = bias;
+        Ok(())
+    }
+
+    /// The levels of detail this frame chooses by: the tier's mode, and its bias with the rung's.
+    fn level_settings(&self) -> LevelSettings {
+        LevelSettings { bias: self.settings.levels.bias + self.rung_lod_bias, ..self.settings.levels }
     }
 
     /// The local lights, for tests that read their buffers back.

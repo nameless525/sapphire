@@ -28,6 +28,7 @@ fn mesh(streams: MeshStreams, submeshes: Vec<SubmeshDraw>) -> MeshRecord {
         dequantize: Dequantize { position_scale: [1.0; 3], ..Dequantize::default() },
         lods: vec![submeshes],
         lod_vertices: vec![4],
+        lod_errors: vec![0.0],
         placement: Placement::default(),
         slots: Vec::new(),
         bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
@@ -88,11 +89,18 @@ fn drawn(
     let commands = &list.commands[format_index(UNORM16)][variant.index()];
     view.group(Source::Static(UNORM16), variant, set)
         .iter()
-        .map(|&index| {
-            let command = &commands[index as usize];
+        .map(|entry| {
+            let command = &commands[entry.at as usize];
             (command.draw_id, command.material.index(), command.mesh.index())
         })
         .collect()
+}
+
+/// What a group of a view's list draws: (record, level) in its order.
+fn levels(view: &ViewList, list: &DrawList, set: DrawSet) -> Vec<(u32, u8)> {
+    let commands = &list.commands[format_index(UNORM16)][environment().index()];
+    let entries = view.group(Source::Static(UNORM16), environment(), set);
+    entries.iter().map(|entry| (commands[entry.at as usize].draw_id, entry.level)).collect()
 }
 
 fn world<'a>(
@@ -100,13 +108,13 @@ fn world<'a>(
     hulls: &'a [bool],
     view: Option<Culled<'a>>,
 ) -> ViewTests<'a, fn(u32) -> bool> {
-    ViewTests { stands, stand: 0, hulls, materials: &[], view, instance: |_| true }
+    ViewTests { stands, stand: 0, hulls, materials: &[], view, levels: None, instance: |_| true }
 }
 
 /// A caster drawn into the cascades of `cascades` and the character map `map`, held by those
-/// cascades alone.
+/// cascades alone, at level 0.
 fn caster(cascades: u8, map: Option<u8>) -> SlotCaster {
-    SlotCaster { cascades, map, held: cascades, far: false }
+    SlotCaster { cascades, map, held: cascades, ..SlotCaster::default() }
 }
 
 /// Three meshes of environment draws, instanced in an order that alternates them.
@@ -230,7 +238,7 @@ fn order_dependent_groups_keep_the_list_order() {
     let deformed: Vec<u32> = main
         .group(Source::Deformed, body, DrawSet::Surfaces)
         .iter()
-        .map(|&index| list.deformed[body.index()][index as usize].draw_id)
+        .map(|entry| list.deformed[body.index()][entry.at as usize].draw_id)
         .collect();
     let skinned: Vec<u32> = list.deformed[body.index()].iter().map(|draw| draw.draw_id).collect();
     assert_eq!(deformed, skinned, "skinned instances in slot order");
@@ -345,7 +353,7 @@ fn a_list_rebuilt_after_the_pool_compacts_draws_the_same() {
     let first_vertices: Vec<u32> = cascade
         .group(Source::Static(UNORM16), environment(), DrawSet::Surfaces)
         .iter()
-        .map(|&index| moved.commands[0][environment().index()][index as usize].first_vertex)
+        .map(|entry| moved.commands[0][environment().index()][entry.at as usize].first_vertex)
         .collect();
     assert_eq!(first_vertices, [0, 0, 0, 0, 2, 2, 5, 5], "by mesh, from the meshes' new places");
 }
@@ -400,9 +408,63 @@ fn district(instances: u32) -> (DrawList, Vec<SlotCull>, Vec<SlotCaster>) {
             map: (slot % 5 == 0).then_some((slot % 8) as u8),
             held: 0b1111,
             far: verdict(slot) == Verdict::Distance,
+            levels: [0, 1, 2, 3].map(|level| ((slot + level) % 3) as u8),
         })
         .collect();
     (list, culled, casters)
+}
+
+/// Each view lists a draw at its level (M5 D4): the main view's family at its culling's, each
+/// cascade at its plan's, a character map at 0; a submesh its level simplified away is left out,
+/// uncounted; and a cascade's group of one mesh at more than one level draws by (mesh, level,
+/// record), as the key says.
+#[test]
+fn each_view_lists_its_levels() {
+    // Mesh 0: two submeshes at level 0, the second simplified away at level 1. Mesh 1: one, at
+    // both.
+    let mut meshes =
+        vec![mesh(slab(0), vec![submesh(0, 10), submesh(3, 11)]), mesh(slab(4), vec![submesh(6, 12)])];
+    meshes[0].lods.push(vec![
+        SubmeshDraw { index_count: 3, ..submesh(9, 10) },
+        SubmeshDraw { index_count: 0, ..submesh(3, 11) },
+    ]);
+    meshes[1].lods.push(vec![submesh(12, 12)]);
+    // Slots 0 to 3: meshes 0, 1, 0, 1. Records: slot 0's 0 and 1, slot 1's 2, slot 2's 3 and 4,
+    // slot 3's 5.
+    let list = built(&meshes, &slots(&[0, 1, 0, 1]));
+    let commands = &list.commands[0][environment().index()];
+    let bits: Vec<u8> = commands.iter().map(|command| command.levels).collect();
+    assert_eq!(bits, [0b11, 0b01, 0b11, 0b11, 0b01, 0b11]);
+    assert_eq!(commands[1].submesh, 1);
+    // The main view draws slots 1 and 2 at level 1.
+    let culled = SlotCull::at_levels(&[0, 1, 1, 0]);
+    let tests = ViewTests { levels: Some(Culled::new(&culled)), ..world(&[], &[], None) };
+    let mut lists = ViewLists::default();
+    for walk in [Walk::Main, Walk::ScenePrepass] {
+        lists.compact_view(walk, &list, &tests);
+        let view = lists.list(walk).expect("listed");
+        assert_eq!(
+            levels(view, &list, DrawSet::Surfaces),
+            [(0, 0), (1, 0), (2, 1), (3, 1), (5, 0)],
+            "{walk:?}: record 4's submesh has no triangles at level 1"
+        );
+        assert_eq!(lists.left_out(walk), PassCounts::default(), "{walk:?}: and isn't counted");
+    }
+    // Cascade 0 draws every caster at level 1 but slot 3 (0); cascade 1 every one at 0.
+    let plan = |slot: u32| SlotCaster {
+        levels: [u8::from(slot != 3), 0, 0, 0],
+        ..caster(0b11, (slot == 0).then_some(0))
+    };
+    let tests = CasterTests { stands: &[], cascades: [true, true, false, false], maps: 1, plan };
+    lists.compact_casters(&list, &tests);
+    let cascade = |index| levels(lists.list(Walk::Cascade(index)).expect("listed"), &list, DrawSet::Surfaces);
+    // Mesh 0's at level 1, slot 0's second and slot 2's second simplified away; mesh 1's slot 3
+    // (record 5) at level 0 first, then slot 1's at level 1.
+    assert_eq!(cascade(0), [(0, 1), (3, 1), (5, 0), (2, 1)], "mesh, level, record");
+    assert_eq!(cascade(1), [(0, 0), (1, 0), (3, 0), (4, 0), (2, 0), (5, 0)]);
+    let map = lists.list(Walk::CharacterMap(0)).expect("listed");
+    assert_eq!(levels(map, &list, DrawSet::Surfaces), [(0, 0), (1, 0)], "a map draws level 0");
+    assert_eq!(lists.left_out(Walk::Cascade(0)), PassCounts::default());
 }
 
 /// The world's views compact in parallel to the very lists, and counts, they compact to one after

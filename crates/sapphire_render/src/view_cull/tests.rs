@@ -5,6 +5,7 @@ use sapphire_assets::mesh::PositionFormat;
 use super::*;
 use crate::characters::CharacterList;
 use crate::gpu_types::Dequantize;
+use crate::levels::LevelsMode;
 use crate::materials::MaterialHandle;
 use crate::mesh_pool::{DeformSource, MeshStreams, Placement, SubmeshDraw, SubmeshMaterial};
 use crate::scene::DrawLimits;
@@ -128,6 +129,7 @@ fn record(foliage: bool, deformed: bool) -> MeshRecord {
             material: SubmeshMaterial { handle: MaterialHandle::from_raw(0), slot: 0 },
         }]],
         lod_vertices: vec![3],
+        lod_errors: vec![0.0],
         placement: Placement::default(),
         slots: Vec::new(),
         bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
@@ -202,8 +204,17 @@ fn cull(
     let widest = reach.iter().map(|reach| reach.pixels).fold(0.0, f32::max);
     let mut views = [None; CULL_VIEWS];
     views[0] = Some(CullView::new(camera, SIZE, SIZE.1, PAD_PIXELS, widest));
-    let inputs =
-        CullInputs { list, slots, meshes, margin: |_: &MeshRecord| margin, reach, stands: &[], views };
+    let inputs = CullInputs {
+        list,
+        slots,
+        meshes,
+        margin: |_: &MeshRecord| margin,
+        reach,
+        stands: &[],
+        views,
+        levels: LevelSettings::ON,
+        cut: false,
+    };
     culling.record(&inputs);
 }
 
@@ -379,7 +390,7 @@ fn who_drew_each_instance_is_published_for_the_next_frame() {
     let mut views = [false; CULL_VIEWS];
     views[0] = true;
     views[1] = true;
-    culling.publish(&stands, &views, |slot| slot == 1 || slot == 3);
+    culling.publish(&stands, &views, |slot| (slot == 1 || slot == 3).then_some(0));
     let drawn: Vec<DrawnBy> = (0..5).map(|slot| culling.drawn_by(slot)).collect();
     assert_eq!(drawn[0], DrawnBy { view: true, ..DrawnBy::default() });
     assert!(drawn[1].only_shadow(), "{:?}", drawn[1]);
@@ -389,7 +400,7 @@ fn who_drew_each_instance_is_published_for_the_next_frame() {
     assert_eq!((0..4).map(|slot| culling.drawn(slot)).collect::<Vec<_>>(), [true, true, false, true]);
     // An inset whose picture is held draws nothing that stands in it.
     views[1] = false;
-    culling.publish(&stands, &views, |_| false);
+    culling.publish(&stands, &views, |_| None);
     assert!(!culling.drawn(3));
 }
 
@@ -434,6 +445,8 @@ fn a_warm_frame_culls_without_allocating() {
         reach: &reach,
         stands: &[],
         views,
+        levels: LevelSettings::ON,
+        cut: false,
     };
     culling.record(&inputs);
     let ((), allocated) = sapphire_core::alloc::count_in_scope(|| {
@@ -448,7 +461,162 @@ fn a_warm_frame_culls_without_allocating() {
             0..0,
         );
         culling.record(&inputs);
-        culling.publish(&[], &[true; CULL_VIEWS], |_| false);
+        culling.publish(&[], &[true; CULL_VIEWS], |_| None);
     });
     assert_eq!(allocated.allocations, 0, "a warm frame's culling allocated: {allocated:?}");
+}
+
+/// The cook's default chain for a mesh 1 m across (spec §5.27): LOD0, then 0.2 cm, 1 cm and 3 cm.
+const CHAIN: [f32; 4] = [0.0, 0.002, 0.01, 0.03];
+
+/// The main view's level of a sphere `stretch` meters across `nearest` meters from `camera` (its
+/// center straight ahead), stretched `stretch` times, rendered at `scale` of `SIZE` onto `SIZE`'s
+/// rows, chosen fresh.
+fn level_at(camera: &CameraData, errors: &[f32], nearest: f32, stretch: f32, scale: f32) -> u8 {
+    let size = ((SIZE.0 as f32 * scale) as u32, (SIZE.1 as f32 * scale) as u32);
+    let view = CullView::new(camera, size, SIZE.1, PAD_PIXELS, 0.0);
+    let ahead = camera.position + Vec3::NEG_Z * (nearest + stretch);
+    let sphere = Sphere { center: ahead, radius: stretch };
+    main_level(LevelSettings::ON, errors, stretch, view.meters_per_pixel(&sphere), None)
+}
+
+#[test]
+fn the_main_view_chooses_by_projected_error_in_output_pixels() {
+    let camera = camera();
+    // 360 rows at 60°: 311.8 pixels a meter covers at a meter. Level 1's 2 mm covers a pixel from
+    // 0.62 m, level 2's 1 cm from 3.12 m, level 3's 3 cm from 9.35 m.
+    let ppm = camera.proj.y_axis.y * SIZE.1 as f32 * 0.5;
+    let from = |error: f32| error * ppm;
+    assert!((from(0.002) - 0.6235).abs() < 1e-3 && (from(0.03) - 9.353).abs() < 1e-2);
+    let at = |nearest: f32| level_at(&camera, &CHAIN, nearest, 1.0, 1.0);
+    assert_eq!([at(0.5), at(0.7), at(3.0), at(3.2), at(9.3), at(9.4), at(200.0)], [0, 1, 1, 2, 2, 3, 3]);
+    // Monotonic in distance, and the same at render scales 0.6 and 1.0: the allowance is the
+    // output's pixels, not the scene's.
+    let mut last = 0;
+    for step in 0..400 {
+        let nearest = step as f32 * 0.05;
+        let level = at(nearest);
+        assert!(level >= last, "{nearest} m: {level} after {last}");
+        assert_eq!(level_at(&camera, &CHAIN, nearest, 1.0, 0.6), level, "{nearest} m at 0.6");
+        last = level;
+    }
+    // Twice as big, its errors are twice as big: each switch twice as far.
+    let scaled = |nearest: f32| level_at(&camera, &CHAIN, nearest, 2.0, 1.0);
+    assert_eq!([scaled(1.2), scaled(1.3), scaled(6.2), scaled(6.3)], [0, 1, 1, 2]);
+    // The camera inside the bounds: the near plane's distance, so LOD0, but for a zero-error chain.
+    let inside = Sphere { center: Vec3::NEG_Z * 0.5, radius: 1.0 };
+    let view = CullView::new(&camera, SIZE, SIZE.1, PAD_PIXELS, 0.0);
+    assert!((view.meters_per_pixel(&inside) - NEAR / ppm).abs() < 1e-9);
+    assert_eq!(main_level(LevelSettings::ON, &CHAIN, 1.0, view.meters_per_pixel(&inside), None), 0);
+    assert_eq!(main_level(LevelSettings::ON, &[0.0; 3], 1.0, view.meters_per_pixel(&inside), None), 2);
+    // One level, and the modes that force one.
+    assert_eq!(level_at(&camera, &[0.0], 200.0, 1.0, 1.0), 0);
+    let fixed = LevelSettings { mode: LevelsMode::Fixed(1), bias: 0.0 };
+    assert_eq!(main_level(fixed, &CHAIN, 1.0, 0.0, None), 1);
+    let off = LevelSettings { mode: LevelsMode::Off, bias: 0.0 };
+    assert_eq!(main_level(off, &CHAIN, 1.0, 1.0, None), 0);
+    // A bias of 1: two pixels' allowance, so each switch at half the distance.
+    let biased = LevelSettings { bias: 1.0, ..LevelSettings::ON };
+    assert_eq!(main_level(biased, &CHAIN, 1.0, 0.0051, None), 2);
+}
+
+#[test]
+fn an_orthographic_view_chooses_by_its_scale_alone() {
+    // 9 m high over 360 rows: 40 pixels a meter, 2.5 cm a pixel, at any distance: level 2.
+    let mut camera = camera();
+    // 16 m by 9 m, reversed depth from 0.1 m (1) to 100 m (0).
+    let depth = 1.0 / (100.0 - 0.1);
+    camera.proj = Mat4::from_cols(
+        Vec4::new(2.0 / 16.0, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 2.0 / 9.0, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, depth, 0.0),
+        Vec4::new(0.0, 0.0, 100.0 * depth, 1.0),
+    );
+    assert_eq!(camera.proj.z_axis.w, 0.0);
+    for nearest in [0.5, 5.0, 50.0] {
+        assert_eq!(level_at(&camera, &CHAIN, nearest, 1.0, 1.0), 2, "{nearest} m");
+    }
+    assert_eq!(level_at(&camera, &CHAIN, 5.0, 4.0, 1.0), 1, "four times as big");
+}
+
+/// Slot 0, a unit sphere 100 m down −z of the world's origin, with `CHAIN`'s levels, culled from
+/// `camera(frame)` for `frames` frames at the bias `bias(frame)`, cut where `cut(frame)`: its level
+/// each frame, and the switches the main view counted.
+fn levels_over(
+    frames: u32,
+    camera: impl Fn(u32) -> CameraData,
+    bias: impl Fn(u32) -> f32,
+    cut: impl Fn(u32) -> bool,
+) -> (Vec<u8>, LevelStats) {
+    let mut meshes = meshes();
+    meshes[0].lod_errors = CHAIN.to_vec();
+    let (slots, list) = scene(&meshes, &[place(0, 0, Mat4::from_translation(Vec3::NEG_Z * 100.0))]);
+    let characters = CharacterList::default();
+    let mut culling = ViewCull::default();
+    let mut levels = Vec::new();
+    let mut total = LevelStats::default();
+    for frame in 0..frames {
+        let camera = camera(frame);
+        let fresh = if frame == 0 { 0..1 } else { 0..0 };
+        let (on, none) = (CullingMode::On, CullingThresholds::NONE);
+        culling.prepare(on, none, Some(&camera), &list, &slots, &meshes, characters.table(), fresh);
+        let mut views = [None; CULL_VIEWS];
+        views[0] = Some(CullView::new(&camera, SIZE, SIZE.1, PAD_PIXELS, 0.0));
+        let inputs = CullInputs {
+            list: &list,
+            slots: &slots,
+            meshes: &meshes,
+            margin: |_: &MeshRecord| 0.0,
+            reach: &[],
+            stands: &[],
+            views,
+            levels: LevelSettings { bias: bias(frame), ..LevelSettings::ON },
+            cut: cut(frame),
+        };
+        culling.record(&inputs);
+        culling.publish(&[], &[true; CULL_VIEWS], |_| None);
+        let stats = culling.level_stats();
+        (total.coarser, total.finer) = (total.coarser + stats.coarser, total.finer + stats.finer);
+        levels.push(culling.levels().level(0));
+        assert_eq!(culling.drawn_by(0).level, culling.levels().level(0));
+    }
+    (levels, total)
+}
+
+/// A camera whose distance to slot 0's nearest point is `nearest`.
+fn nearest(nearest: f32) -> CameraData {
+    camera_at(Vec3::NEG_Z * (99.0 - nearest))
+}
+
+#[test]
+fn a_camera_held_at_a_switch_never_flaps() {
+    // Swaying 5 cm either side of where level 2 becomes good enough (3.12 m), every frame.
+    let switch = 0.01 * camera().proj.y_axis.y * SIZE.1 as f32 * 0.5;
+    let sway = |frame: u32| nearest(switch + if frame.is_multiple_of(2) { 0.05 } else { -0.05 });
+    // Fresh at 2, finer the first frame 2 isn't good enough, then held at 1: going coarser again
+    // takes a quarter more distance.
+    let (levels, stats) = levels_over(120, sway, |_| 0.0, |_| false);
+    assert_eq!(stats, LevelStats { coarser: 0, finer: 1 }, "{levels:?}");
+    assert!(levels[0] == 2 && levels[1..].iter().all(|&level| level == 1), "{levels:?}");
+    // Without the hysteresis it would switch every frame: a cut each frame chooses afresh.
+    let (levels, stats) = levels_over(4, |frame| sway(frame + 1), |_| 0.0, |_| true);
+    assert_eq!((levels, stats), (vec![1, 2, 1, 2], LevelStats::default()), "afresh, uncounted");
+    // Walking out from 0.3 m to 30 m and back, 5 cm a frame: each level once each way, exactly.
+    let walk = |frame: u32| {
+        let step = frame.min(1188 - frame) as f32;
+        nearest(0.3 + step * 0.05)
+    };
+    let (levels, stats) = levels_over(1189, walk, |_| 0.0, |_| false);
+    assert_eq!((levels[0], levels[594], levels[1188]), (0, 3, 0));
+    assert_eq!(stats, LevelStats { coarser: 3, finer: 3 });
+    // A rung's bias on and off mid-hold: one switch each way, never a flap.
+    let rung = |frame: u32| if (40..80).contains(&frame) { 1.0 } else { 0.0 };
+    let (levels, stats) = levels_over(120, |_| nearest(switch * 0.9), rung, |_| false);
+    assert_eq!((levels[0], levels[60], levels[119]), (1, 2, 1));
+    assert_eq!(stats, LevelStats { coarser: 1, finer: 1 });
+    // Inside the band a held level stays; a cut chooses afresh, and counts no switch.
+    let back = |frame: u32| nearest(if frame < 10 { 0.3 } else { switch * 1.1 });
+    let (levels, stats) = levels_over(20, back, |_| 0.0, |frame| frame == 15);
+    assert_eq!((levels[9], levels[12], levels[16]), (0, 1, 2), "held at 1 inside the band, then cut to 2");
+    assert_eq!(stats, LevelStats { coarser: 1, finer: 0 });
 }

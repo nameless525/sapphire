@@ -23,9 +23,13 @@
 //!   walk, beside the world's other views ([`ViewLists::compact_world`]).
 //! - **An entry is a position in its group** of the draw list (`DrawList::commands` or
 //!   `DrawList::deformed`), whose command carries what later work reads: its instance's slot (whose
-//!   bounds `InstanceSlots::world_bounds` gives), its mesh, its material and its record. Every draw
-//!   draws its mesh's level 0 until levels are chosen (m5-plan D4), which the key will then hold
-//!   after the mesh.
+//!   bounds `InstanceSlots::world_bounds` gives), its mesh, its material and its record, **and the
+//!   level of detail the view draws it at** ([`Entry`], M5 D4, the `levels` module): the main
+//!   view's family's from its culling ([`ViewTests::levels`]), each cascade's from its plan
+//!   (`SlotCaster::levels`), 0 for a character map, an inset and anything deformed. A submesh its
+//!   level simplified away is left out unlisted and uncounted, as a draw outside the group's set
+//!   is. The shadow views draw by (mesh, level, record): their order built at level 0, and a
+//!   group whose instances of one mesh draw at more than one level sorted again as it's compacted.
 //!
 //! The filtered walk the passes made before stays reachable behind
 //! [`Renderer::walk_filtered`](crate::Renderer::walk_filtered), for the test that draws scenes both
@@ -63,10 +67,12 @@ const GROUPS: usize = SOURCES * VARIANTS * SETS;
 /// |---|---|---|
 /// | (group) | the pipeline: format or deformed, surface variant, set | held apart, as the list's groups, which a pass walks in its own fixed order |
 /// | `mesh` | the mesh's handle index | each run binds the mesh's streams once; later, a run of one mesh and level is an instanced draw (m5-plan D2) |
+/// | `level` | the level of detail the view draws it at (M5 D4) | a run of one mesh draws one level's index ranges; built at 0, and sorted again where a frame's levels differ ([`Entry`]) |
 /// | `draw` | the draw's record (`DrawCommand::draw_id`) | today's order: unique in its group, so the order is total and the same whatever sorts it |
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct DrawKey {
     pub mesh: u32,
+    pub level: u8,
     pub draw: u32,
 }
 
@@ -197,7 +203,7 @@ impl ViewKind {
     ///   take, and the tests and goldens it moves, is m5-plan D2's to decide, here.
     pub(crate) fn key(self, command: &DrawCommand) -> Option<DrawKey> {
         match self {
-            Self::Casters => Some(DrawKey { mesh: to_u32(command.mesh.index()), draw: command.draw_id }),
+            Self::Casters => Some(caster_key(command, 0)),
             Self::Main | Self::ScenePrepass | Self::CharacterPrepass => None,
         }
     }
@@ -234,12 +240,20 @@ impl ViewKind {
     }
 }
 
+/// The shadow views' key of `command` drawn at `level`.
+fn caster_key(command: &DrawCommand, level: u8) -> DrawKey {
+    DrawKey { mesh: to_u32(command.mesh.index()), level, draw: command.draw_id }
+}
+
 /// A draw the list compacts: a static mesh's command or a deformed instance's.
 trait Listed {
     fn slot(&self) -> u32;
     fn draw_id(&self) -> u32;
     fn material(&self) -> MaterialHandle;
     fn outline(&self) -> bool;
+    /// The level it draws at where its instance's is `level`, or `None` if its submesh has no
+    /// triangles there (M5 D4).
+    fn at_level(&self, level: u8) -> Option<u8>;
 }
 
 impl Listed for DrawCommand {
@@ -254,6 +268,9 @@ impl Listed for DrawCommand {
     }
     fn outline(&self) -> bool {
         self.outline
+    }
+    fn at_level(&self, level: u8) -> Option<u8> {
+        has_level(self.levels, level).then_some(level)
     }
 }
 
@@ -270,6 +287,24 @@ impl Listed for DeformedDraw {
     fn outline(&self) -> bool {
         self.outline
     }
+    /// Skinned and morphed instances draw level 0 alone (m5-plan D5's to change).
+    fn at_level(&self, _: u8) -> Option<u8> {
+        Some(0)
+    }
+}
+
+/// Whether a command whose submesh has triangles at the levels `levels` holds (bit `l`,
+/// `DrawCommand::levels`) has them at `level`.
+pub(crate) fn has_level(levels: u8, level: u8) -> bool {
+    1u8.checked_shl(u32::from(level)).is_some_and(|bit| levels & bit != 0)
+}
+
+/// One draw a view lists (M5 D4): its position in its group of the draw list, and the level of
+/// detail the view draws it at, whose index ranges it draws (`MeshRecord::lods`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Entry {
+    pub at: u32,
+    pub level: u8,
 }
 
 /// What a view's draws are tested by as its list is compacted: the tests its passes made as they
@@ -286,6 +321,10 @@ pub(crate) struct ViewTests<'a, I> {
     /// Per instance slot, whether the view it stands in draws it, or by what test not
     /// (`view_cull`, M5 D3); `None` draws every one.
     pub view: Option<Culled<'a>>,
+    /// Per instance slot, the level of detail the main view's family draws it at (M5 D4,
+    /// [`Culled::level`]), whatever the culling mode: the main view's and the scene prepass's
+    /// lists; `None` draws every one at level 0.
+    pub levels: Option<Culled<'a>>,
     /// The pass's own test of an instance slot (the listed characters).
     pub instance: I,
 }
@@ -300,8 +339,8 @@ enum Pick {
 impl<'a, I> ViewTests<'a, I> {
     /// These tests, with `instance` for the pass's own.
     pub(crate) fn with_instance<J>(&self, instance: J) -> ViewTests<'a, J> {
-        let Self { stands, stand, hulls, materials, view, .. } = *self;
-        ViewTests { stands, stand, hulls, materials, view, instance }
+        let Self { stands, stand, hulls, materials, view, levels, .. } = *self;
+        ViewTests { stands, stand, hulls, materials, view, levels, instance }
     }
 
     fn stands_here(&self, slot: u32) -> bool {
@@ -330,13 +369,17 @@ impl<'a, I> ViewTests<'a, I> {
     fn verdict(&self, slot: u32) -> Verdict {
         self.view.map_or(Verdict::Drawn, |view| view.verdict(slot))
     }
+
+    fn level(&self, slot: u32) -> u8 {
+        self.levels.map_or(0, |levels| levels.level(slot))
+    }
 }
 
 /// One view's draws this frame, group by group, each in its key's order.
 #[derive(Debug, PartialEq)]
 pub(crate) struct ViewList {
-    /// Positions in their groups of the draw list, group after group.
-    draws: Vec<u32>,
+    /// Positions in their groups of the draw list and their levels, group after group.
+    draws: Vec<Entry>,
     /// Per group ([`GROUPS`]), its draws' range in `draws`; empty for one the view doesn't walk.
     ranges: Box<[[u32; 2]; GROUPS]>,
     /// The draws the view's passes look at and don't draw, by the test that left them out: what
@@ -359,8 +402,9 @@ impl ViewList {
         self.left_out = PassCounts::default();
     }
 
-    /// The listed draws of `set` of `variant`'s from `source`: positions in the draw list's group.
-    pub(crate) fn group(&self, source: Source, variant: SurfaceVariant, set: DrawSet) -> &[u32] {
+    /// The listed draws of `set` of `variant`'s from `source`: positions in the draw list's group,
+    /// and their levels.
+    pub(crate) fn group(&self, source: Source, variant: SurfaceVariant, set: DrawSet) -> &[Entry] {
         let [start, end] = self.ranges[group(source, variant, set)];
         &self.draws[start as usize..end as usize]
     }
@@ -443,7 +487,12 @@ impl ViewList {
                 return;
             }
             match tests.verdict(draw.slot()) {
-                Verdict::Drawn => listed.push(index),
+                Verdict::Drawn => {
+                    // A submesh its level simplified away: not drawn, and not looked at (M5 D4).
+                    if let Some(level) = draw.at_level(tests.level(draw.slot())) {
+                        listed.push(Entry { at: index, level });
+                    }
+                }
                 verdict => {
                     left_out.considered += 1;
                     left_out.count_culled(verdict);
@@ -476,7 +525,8 @@ pub(crate) enum Walk {
     InsetCharacters(usize),
 }
 
-/// What a frame's shadow casters are tested by, in one walk for every shadow view.
+/// What a frame's shadow casters are tested by, in one walk for every shadow view: each cascade
+/// lists a caster at its level there (`SlotCaster::levels`), a character map at level 0.
 pub(crate) struct CasterTests<'a, P> {
     pub stands: &'a [u16],
     /// The cascades drawn this frame.
@@ -664,7 +714,8 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
         let starts = cascades.each_ref().map(ViewList::end);
         let map_starts: [u32; MAX_CHARACTER_MAPS] =
             std::array::from_fn(|map| maps.get(map).map_or(0, ViewList::end));
-        let mut take = |slot: u32, index: u32| {
+        // `levels`: the levels its submesh has triangles at (`DrawCommand::levels`).
+        let mut take = |slot: u32, index: u32, levels: u8| {
             if tests.stands.get(slot as usize).copied().unwrap_or(0) != 0 {
                 return;
             }
@@ -675,7 +726,13 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
                     continue;
                 }
                 match caster.left_out(cascade) {
-                    None => list.draws.push(index),
+                    // A submesh simplified away at the cascade's level: not drawn, not looked at.
+                    None => {
+                        let level = caster.levels[cascade];
+                        if has_level(levels, level) {
+                            list.draws.push(Entry { at: index, level });
+                        }
+                    }
                     // Its volume is the cascade's own pick (B4's meaning); distance and size
                     // count as such.
                     Some(Verdict::Drawn | Verdict::Frustum) => {
@@ -694,7 +751,7 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
             // Each map looks at every caster and draws its own character's.
             let skipped = match map.map(usize::from).and_then(|map| maps.get_mut(map)) {
                 Some(list) => {
-                    list.draws.push(index);
+                    list.draws.push(Entry { at: index, level: 0 });
                     others
                 }
                 None => to_u32(drawn_maps),
@@ -707,24 +764,50 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
                 let commands = &list.commands[format_index(format)][variant.index()];
                 let sorted = list.orders.sorted(ViewKind::Casters, format, variant);
                 match sorted.filter(|sorted| sorted.len() == commands.len()) {
-                    Some(sorted) => sorted.iter().for_each(|&at| take(commands[at as usize].slot, at)),
-                    None => commands.iter().zip(0..).for_each(|(command, at)| take(command.slot, at)),
+                    Some(sorted) => {
+                        for &at in sorted {
+                            let command = &commands[at as usize];
+                            take(command.slot, at, command.levels);
+                        }
+                    }
+                    None => commands
+                        .iter()
+                        .zip(0..)
+                        .for_each(|(command, at)| take(command.slot, at, command.levels)),
                 }
             }
             Source::Deformed => {
                 let draws = &list.deformed[variant.index()];
-                draws.iter().zip(0..).for_each(|(draw, at)| take(draw.slot, at));
+                draws.iter().zip(0..).for_each(|(draw, at)| take(draw.slot, at, 1));
             }
         }
         for ((cascade, start), &drawn) in cascades.iter_mut().zip(starts).zip(&tests.cascades) {
             if drawn {
-                cascade.ranges[index] = [start, cascade.end()];
+                let end = cascade.end();
+                cascade.ranges[index] = [start, end];
+                if let Source::Static(format) = source {
+                    let commands = &list.commands[format_index(format)][variant.index()];
+                    sort_by_level(&mut cascade.draws[start as usize..end as usize], commands);
+                }
             }
         }
         for (map, start) in maps.iter_mut().zip(map_starts) {
             map.ranges[index] = [start, map.end()];
         }
     }
+}
+
+/// Puts a cascade's group of static casters, listed in their key's order at level 0, in the key's
+/// order at their levels (M5 D4): only where one mesh's instances draw at more than one level, as
+/// they rarely do (a cascade chooses by its texel alone, so only their stretch tells them apart).
+/// A list built by hand keeps its order.
+fn sort_by_level(entries: &mut [Entry], commands: &[DrawCommand]) {
+    let key = |entry: &Entry| commands.get(entry.at as usize).map(|command| caster_key(command, entry.level));
+    if entries.is_sorted_by_key(key) {
+        return;
+    }
+    // Keys are unique (their records are), so unstable is stable.
+    entries.sort_unstable_by_key(key);
 }
 
 fn kind_index(kind: ViewKind) -> usize {

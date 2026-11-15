@@ -61,6 +61,14 @@
 //!
 //! [`CullingMode`] turns the tests off for comparisons: `FrustumOnly` keeps the exact test, `Off`
 //! draws everything.
+//!
+//! # Levels of detail (M5 D4)
+//!
+//! The main view's verdict comes with the level of detail the main view's family draws the
+//! instance at (the `levels` module: its error projected at its bounds' nearest point, in output
+//! pixels, with hysteresis from the level drawn last frame), worked out in the same chunks.
+//! [`Culled::level`] gives it to the lists; [`DrawnBy`] says what level each view drew, a frame
+//! late.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -71,6 +79,7 @@ use serde::{Deserialize, Serialize};
 use crate::bounds::{Sphere, max_stretch};
 use crate::characters::CharacterTable;
 use crate::inset::MAX_INSETS;
+use crate::levels::{self, LevelSettings, LevelStats};
 use crate::mesh_pool::MeshRecord;
 use crate::scene::{DrawList, InstanceSlots};
 use crate::{CameraData, ShadowRole};
@@ -203,8 +212,8 @@ pub struct ViewCullingStats {
     pub drawn: u32,
 }
 
-/// Which views drew an instance in the last recorded frame (M5 D3), for what animates it to read
-/// in the next: [`Renderer::drawn_by`](crate::Renderer::drawn_by).
+/// Which views drew an instance in the last recorded frame (M5 D3), and at what level of detail
+/// (M5 D4), for what animates it to read in the next: [`Renderer::drawn_by`](crate::Renderer::drawn_by).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DrawnBy {
     /// The main view: the main pass and the prepasses.
@@ -213,6 +222,11 @@ pub struct DrawnBy {
     pub shadow: bool,
     /// The inset it stands in.
     pub inset: bool,
+    /// The level the main view drew it at: 0 if it didn't.
+    pub level: u8,
+    /// The finest level any view drew it at, the main view's, an inset's or a cascade's: what a
+    /// prefix of its vertices must hold for every view (m5-plan D5's skinning). 0 if none drew it.
+    pub finest: u8,
 }
 
 impl DrawnBy {
@@ -253,6 +267,9 @@ pub(crate) struct CullCandidate {
     pub foliage: bool,
     /// Some of its draws are fog cards': camera-facing ones turn about its origin.
     pub fog_card: bool,
+    /// It draws at level 0 in every view (M5 D4, the `levels` module): it is skinned or morphed,
+    /// shades as a character, is foliage or a fog card.
+    pub whole: bool,
 }
 
 /// One view's frustum, as planes facing in: left, right, bottom, top and near. The far plane is at
@@ -312,9 +329,11 @@ pub(crate) struct CullView {
     hulled: Frustum,
     position: Vec3,
     /// Output pixels a sphere one meter across shows at one meter: the projection's vertical focal
-    /// length × half the output's height.
+    /// length × half the output's height. An orthographic view's at any distance.
     pixels_per_meter: f32,
     near: f32,
+    /// The projection is orthographic: sizes don't shrink with distance.
+    orthographic: bool,
 }
 
 impl CullView {
@@ -339,13 +358,27 @@ impl CullView {
             position: camera.position,
             pixels_per_meter: focal * output_height as f32 * 0.5,
             near: camera.proj.w_axis.z.abs().max(1e-4),
+            orthographic: camera.proj.z_axis.w == 0.0,
         }
     }
 
     /// The pixels `sphere` shows across at most, as far as it is.
     fn pixels(&self, sphere: &Sphere) -> f32 {
+        if self.orthographic {
+            return 2.0 * sphere.radius * self.pixels_per_meter;
+        }
         let distance = (sphere.center.distance(self.position) - sphere.radius).max(self.near);
         2.0 * sphere.radius * self.pixels_per_meter / distance
+    }
+
+    /// The meters an output pixel covers at `sphere`'s nearest point, at least the near plane's
+    /// distance away: the least it covers anywhere on the sphere.
+    pub(crate) fn meters_per_pixel(&self, sphere: &Sphere) -> f32 {
+        if self.orthographic {
+            return 1.0 / self.pixels_per_meter;
+        }
+        let distance = (sphere.center.distance(self.position) - sphere.radius).max(self.near);
+        distance / self.pixels_per_meter
     }
 }
 
@@ -366,6 +399,14 @@ pub(crate) struct SlotCull {
     group: u32,
     /// The views that drew it ([`DrawnBy`] as bits).
     drawn_by: u8,
+    /// The level of detail the main view's family draws it at this frame (M5 D4): what it drew
+    /// last frame until the frame's verdicts are worked out, which its hysteresis starts from.
+    level: u8,
+    /// It draws at level 0 in every view (the `levels` module): a character's part, foliage, a fog
+    /// card.
+    whole: bool,
+    /// The finest level any view drew it at last frame ([`DrawnBy::finest`]).
+    finest: u8,
 }
 
 #[cfg(test)]
@@ -379,6 +420,17 @@ impl SlotCull {
             ..SlotCull::default()
         };
         verdicts.iter().map(cull).collect()
+    }
+
+    /// A drawn slot that draws level 0 alone (M5 D4).
+    pub(crate) fn whole() -> SlotCull {
+        SlotCull { whole: true, group: NO_GROUP, ..SlotCull::default() }
+    }
+
+    /// Drawn slots at these levels of detail (M5 D4).
+    pub(crate) fn at_levels(levels: &[u8]) -> Vec<SlotCull> {
+        let cull = |&level| SlotCull { level, group: NO_GROUP, ..SlotCull::default() };
+        levels.iter().map(cull).collect()
     }
 }
 
@@ -436,6 +488,16 @@ impl Culled<'_> {
     pub(crate) fn fresh(&self, slot: u32) -> bool {
         self.slots.get(slot as usize).is_none_or(|cull| cull.fresh)
     }
+
+    /// The level of detail the main view's family draws `slot` at (M5 D4): 0 past the slots.
+    pub(crate) fn level(&self, slot: u32) -> u8 {
+        self.slots.get(slot as usize).map_or(0, |cull| cull.level)
+    }
+
+    /// Whether `slot` draws at level 0 in every view (the `levels` module): true past the slots.
+    pub(crate) fn whole(&self, slot: u32) -> bool {
+        self.slots.get(slot as usize).is_none_or(|cull| cull.whole)
+    }
 }
 
 /// What a frame's verdicts are worked out from.
@@ -451,6 +513,11 @@ pub(crate) struct CullInputs<'a, M> {
     pub stands: &'a [u16],
     /// The main view, then each inset by index; `None` for one the frame doesn't show.
     pub views: [Option<CullView>; CULL_VIEWS],
+    /// The frame's levels of detail (M5 D4): their mode, and the bias with the rung's.
+    pub levels: LevelSettings,
+    /// The camera cut to a new shot this frame (a jump, a zone trip's arrival, a tier change): every
+    /// instance chooses its level afresh.
+    pub cut: bool,
 }
 
 /// Every instance's culling, kept across frames (see the module docs).
@@ -465,6 +532,7 @@ pub(crate) struct ViewCull {
     mode: CullingMode,
     thresholds: CullingThresholds,
     stats: ViewCullingStats,
+    level_stats: LevelStats,
 }
 
 impl ViewCull {
@@ -501,12 +569,13 @@ impl ViewCull {
         // characters join their group. An inset's instances are kept by the record, which knows
         // this frame's insets.
         for cull in &mut self.slots {
-            (cull.kept, cull.group) = (false, NO_GROUP);
+            (cull.kept, cull.group, cull.whole) = (false, NO_GROUP, false);
         }
         for candidate in &list.cullable {
-            if candidate.fog_card {
-                self.slots[candidate.slot as usize].kept = true;
-            }
+            let cull = &mut self.slots[candidate.slot as usize];
+            cull.kept |= candidate.fog_card;
+            // What draws level 0 alone (the `levels` module), and the listed characters, below.
+            cull.whole = candidate.whole;
         }
         self.named.clear();
         self.groups.clear();
@@ -518,6 +587,7 @@ impl ViewCull {
         }));
         for &slot in characters.listed {
             let Some(cull) = self.slots.get_mut(slot as usize) else { continue };
+            cull.whole = true;
             let sphere = slots.world_bounds(slot, meshes);
             let body = characters.body(slot);
             match body.map(|group| (group, characters.bodies[group as usize].role)) {
@@ -584,6 +654,7 @@ impl ViewCull {
         let tested = AtomicU32::new(0);
         let culled = [const { AtomicU32::new(0) }; 3];
         let culled_draws = AtomicU32::new(0);
+        let switched = [const { AtomicU32::new(0) }; 2];
         let candidates = &inputs.list.cullable;
         let least = thresholds.least_pixels;
         let sizing = Sizing { on: mode.thresholds() && least > 0.0, least };
@@ -605,14 +676,18 @@ impl ViewCull {
         sapphire_jobs::par_for_each_chunk_mut(slots, CHUNK, |start, chunk| {
             let first = candidates.partition_point(|candidate| (candidate.slot as usize) < start);
             let end = start + chunk.len();
-            let (mut counts, mut counted_draws, mut seen) = ([0u32; 3], 0, 0);
+            let (mut counts, mut counted_draws, mut seen, mut switches) = ([0u32; 3], 0, 0, [0u32; 2]);
             for cull in chunk.iter_mut() {
                 cull.verdict = Verdict::Drawn;
             }
             let within = candidates[first..].iter().take_while(|candidate| (candidate.slot as usize) < end);
             for candidate in within {
                 let cull = &mut chunk[candidate.slot as usize - start];
-                let Some(verdict) = verdict(inputs, tests, candidate, cull, named, small_groups) else {
+                // The level the main view drew last frame, which the hysteresis holds: none after a
+                // cut, for a new instance, or for one the main view didn't draw.
+                let held = (!inputs.cut && !cull.fresh && cull.drawn_by & BY_VIEW != 0).then_some(cull.level);
+                cull.level = 0;
+                let Some(verdict) = verdict(inputs, tests, candidate, cull, named, small_groups, held) else {
                     continue;
                 };
                 seen += 1;
@@ -621,12 +696,19 @@ impl ViewCull {
                     counts[index] += 1;
                     counted_draws += candidate.draws;
                 }
+                if let Some(held) = held.filter(|_| verdict == Verdict::Drawn) {
+                    switches[0] += u32::from(cull.level > held);
+                    switches[1] += u32::from(cull.level < held);
+                }
             }
             tested.fetch_add(seen, Ordering::Relaxed);
             for (total, count) in culled.iter().zip(counts) {
                 total.fetch_add(count, Ordering::Relaxed);
             }
             culled_draws.fetch_add(counted_draws, Ordering::Relaxed);
+            for (total, count) in switched.iter().zip(switches) {
+                total.fetch_add(count, Ordering::Relaxed);
+            }
         });
         let [frustum, distance, size] = culled.map(AtomicU32::into_inner);
         self.stats = ViewCullingStats {
@@ -636,35 +718,50 @@ impl ViewCull {
             culled_by_size: size,
             drawn: (inputs.list.draws.len() as u32).saturating_sub(culled_draws.into_inner()),
         };
+        let [coarser, finer] = switched.map(AtomicU32::into_inner);
+        self.level_stats = LevelStats { coarser, finer };
     }
 
-    /// Records which views drew each instance this frame: the one it stands in, if its verdict
-    /// draws it and that view drew, and the shadows, by `shadow(slot)`.
+    /// Records which views drew each instance this frame, and the finest level any drew it at: the
+    /// view it stands in, if its verdict draws it and that view drew (at the main view's level, or
+    /// an inset's 0), and the shadows, by `shadow(slot)`: the finest level a cascade or a character
+    /// map drew it at, if any did.
     pub(crate) fn publish(
         &mut self,
         stands: &[u16],
         views: &[bool; CULL_VIEWS],
-        shadow: impl Fn(u32) -> bool,
+        shadow: impl Fn(u32) -> Option<u8>,
     ) {
         for (slot, cull) in (0..).zip(&mut self.slots) {
             let stand = stands.get(slot as usize).copied().unwrap_or(0);
             let drawn =
                 cull.verdict == Verdict::Drawn && views.get(usize::from(stand)).copied().unwrap_or(false);
             let mut bits = 0;
+            let mut finest = None;
             if drawn {
                 bits |= if stand == 0 { BY_VIEW } else { BY_INSET };
+                finest = Some(if stand == 0 { cull.level } else { 0 });
             }
-            if shadow(slot) {
+            if let Some(level) = shadow(slot) {
                 bits |= BY_SHADOW;
+                finest = Some(finest.map_or(level, |finest: u8| finest.min(level)));
             }
             cull.drawn_by = bits;
+            cull.finest = finest.unwrap_or(0);
         }
     }
 
-    /// Which views drew the instance in `slot` in the last recorded frame.
+    /// Which views drew the instance in `slot` in the last recorded frame, and at what levels.
     pub(crate) fn drawn_by(&self, slot: u32) -> DrawnBy {
-        let bits = self.slots.get(slot as usize).map_or(0, |cull| cull.drawn_by);
-        DrawnBy { view: bits & BY_VIEW != 0, shadow: bits & BY_SHADOW != 0, inset: bits & BY_INSET != 0 }
+        let Some(cull) = self.slots.get(slot as usize) else { return DrawnBy::default() };
+        let view = cull.drawn_by & BY_VIEW != 0;
+        DrawnBy {
+            view,
+            shadow: cull.drawn_by & BY_SHADOW != 0,
+            inset: cull.drawn_by & BY_INSET != 0,
+            level: if view { cull.level } else { 0 },
+            finest: cull.finest,
+        }
     }
 
     /// Whether some view drew the instance in `slot` this frame: what skinning poses.
@@ -677,13 +774,25 @@ impl ViewCull {
         self.mode.frustum().then_some(Culled { slots: &self.slots })
     }
 
-    /// The frame's culling for the shadow plan, whatever the mode: its far instances and the kept.
+    /// The frame's culling for the shadow plan, whatever the mode: its far instances, the kept and
+    /// what draws level 0 alone.
     pub(crate) fn casters(&self) -> Culled<'_> {
+        Culled { slots: &self.slots }
+    }
+
+    /// The frame's levels of detail for the main view's family, whatever the culling mode
+    /// ([`Culled::level`]).
+    pub(crate) fn levels(&self) -> Culled<'_> {
         Culled { slots: &self.slots }
     }
 
     pub(crate) fn stats(&self) -> ViewCullingStats {
         self.stats
+    }
+
+    /// The main view's switches of level in the last recorded frame.
+    pub(crate) fn level_stats(&self) -> LevelStats {
+        self.level_stats
     }
 }
 
@@ -706,8 +815,10 @@ impl Sizing {
     }
 }
 
-/// `candidate`'s verdict in the view it stands in, updating its size's hysteresis in `cull`; `None`
-/// where it isn't tested (no view, a projective transform, no bounds).
+/// `candidate`'s verdict in the view it stands in, updating its size's hysteresis in `cull`, and its
+/// level of detail if the main view draws it, from `held`, the level it drew last frame (the
+/// `levels` module); `None` where it isn't tested (no view, a projective transform, no bounds),
+/// which draws level 0.
 fn verdict<M: Fn(&MeshRecord) -> f32>(
     inputs: &CullInputs<'_, M>,
     (frustum, sizing): (bool, Sizing),
@@ -715,6 +826,7 @@ fn verdict<M: Fn(&MeshRecord) -> f32>(
     cull: &mut SlotCull,
     named: &[Sphere],
     small_groups: &[bool],
+    held: Option<u8>,
 ) -> Option<Verdict> {
     let slot = candidate.slot;
     let stand = usize::from(inputs.stands.get(slot as usize).copied().unwrap_or(0));
@@ -726,7 +838,9 @@ fn verdict<M: Fn(&MeshRecord) -> f32>(
         return None;
     }
     let record = inputs.meshes.get(candidate.mesh.index())?;
-    let mut sphere = inputs.slots.world_bounds(slot, inputs.meshes)?;
+    let bounds = inputs.slots.world_bounds(slot, inputs.meshes)?;
+    let stretch = max_stretch(transform);
+    let mut sphere = bounds;
     if candidate.foliage && record.foliage.is_some() {
         sphere.radius += (inputs.margin)(record);
     }
@@ -734,11 +848,11 @@ fn verdict<M: Fn(&MeshRecord) -> f32>(
         // A facing card's vertices turn about the origin, each as far from it as its scaled
         // position: within the largest stretch × the mesh's farthest reach from its origin.
         let reach = record.bounds.center.length() + record.bounds.radius;
-        let facing = Sphere { center: transform.w_axis.truncate(), radius: max_stretch(transform) * reach };
+        let facing = Sphere { center: transform.w_axis.truncate(), radius: stretch * reach };
         sphere = sphere.union(facing);
     }
     let reach = inputs.reach.get(slot as usize).copied().unwrap_or_default();
-    sphere.radius += reach.meters + reach.drift * max_stretch(transform);
+    sphere.radius += reach.meters + reach.drift * stretch;
     // Size carries its hysteresis whatever the frustum says, so a turn of the camera doesn't reset
     // it; only the main view measures it, and a group's part takes its group's.
     cull.small = if cull.kept || stand != 0 || !sizing.on {
@@ -757,7 +871,7 @@ fn verdict<M: Fn(&MeshRecord) -> f32>(
     };
     let outside = frustum
         && if reach.hulled { view.hulled.excludes_beside(&sphere) } else { view.frustum.excludes(&sphere) };
-    Some(if outside {
+    let verdict = if outside {
         Verdict::Frustum
     } else if cull.far && stand == 0 {
         Verdict::Distance
@@ -765,7 +879,35 @@ fn verdict<M: Fn(&MeshRecord) -> f32>(
         Verdict::Size
     } else {
         Verdict::Drawn
-    })
+    };
+    // The main view's family draws one level of it (M5 D4); an inset's instances, characters,
+    // foliage and fog cards level 0.
+    if verdict == Verdict::Drawn && stand == 0 && !cull.whole {
+        let meters_per_pixel = view.meters_per_pixel(&bounds);
+        cull.level = main_level(inputs.levels, &record.lod_errors, stretch, meters_per_pixel, held);
+    }
+    Some(verdict)
+}
+
+/// The main view's level of a mesh whose levels' errors are `errors`, for an instance stretched at
+/// most `stretch` times whose bounds' nearest point an output pixel covers `meters_per_pixel` of,
+/// drawn at `held` last frame if the main view drew it (the `levels` module).
+pub(crate) fn main_level(
+    settings: LevelSettings,
+    errors: &[f32],
+    stretch: f32,
+    meters_per_pixel: f32,
+    held: Option<u8>,
+) -> u8 {
+    if let Some(level) = settings.forced(errors.len()) {
+        return level;
+    }
+    if errors.len() < 2 {
+        return 0;
+    }
+    // The most an error may be in the mesh's own meters to cover the allowance's output pixels.
+    let budget = levels::allowance(settings.bias) * meters_per_pixel / stretch;
+    levels::choose(errors, budget, held)
 }
 
 /// Whether `point` lands on a `size` image or within `pixels` of its edge, in front of the

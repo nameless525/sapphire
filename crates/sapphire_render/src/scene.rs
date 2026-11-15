@@ -649,9 +649,16 @@ pub(crate) struct DrawCommand {
     pub slot: u32,
     pub draw_id: u32,
     pub material: MaterialHandle,
-    /// The instance's mesh, whose level 0 the draw draws a submesh of: the shadow views' key (the
+    /// The instance's mesh, which the draw draws a submesh of: the shadow views' key (the
     /// `draw::lists` module) and what instancing runs are made of (m5-plan D2).
     pub mesh: MeshHandle,
+    /// Which of its mesh's level-0 submeshes it draws: [`Self::indices`] are that submesh's at level
+    /// 0, and a view that draws the instance at another level draws that level's
+    /// (`MeshRecord::lods`, M5 D4, the `levels` module).
+    pub submesh: u16,
+    /// Bit `l`: the submesh has triangles at level `l` (below `levels::MAX_LEVELS`); a level that
+    /// simplified it away draws nothing of it.
+    pub levels: u8,
     /// It draws an outline hull too
     /// ([`Permutation::outlined`](crate::pipelines::Permutation::outlined)).
     pub outline: bool,
@@ -778,9 +785,11 @@ impl DrawList {
                 .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
             let mut foliage = false;
             let mut fog_card = false;
+            // Skinned and morphed instances and characters' parts draw level 0 (M5 D4).
+            let mut whole = matches!(record.streams, MeshStreams::Deformable(_));
             let faded = slots.cut(slot);
             let first_draw = self.draws.len();
-            for submesh in &record.lods[0] {
+            for (index, submesh) in record.lods[0].iter().enumerate() {
                 let handle = submesh.material.handle;
                 let (family, flags) = material_kind(handle);
                 let drawn = mesh_draw(family, flags, skinned, morphed);
@@ -788,6 +797,7 @@ impl DrawList {
                 let Some((mut variant, outline)) = drawn else { continue };
                 foliage |= variant.shading == Shading::Foliage;
                 fog_card |= variant.shading == Shading::FogCard;
+                whole |= matches!(variant.shading, Shading::Character(_));
                 if faded && matches!(variant.shading, Shading::Character(_)) {
                     if variant.coverage == Coverage::Opaque {
                         variant = variant.with_coverage(Coverage::AlphaTest);
@@ -812,6 +822,8 @@ impl DrawList {
                             draw_id,
                             material,
                             mesh,
+                            submesh: u16::try_from(index).expect("a submesh per material slot"),
+                            levels: submesh_levels(record, index),
                             outline,
                             foliage: record.foliage.unwrap_or(0),
                         });
@@ -835,7 +847,8 @@ impl DrawList {
             // Every instance with draws is its view's to cull (review RA-O01, M5 D3, the
             // `view_cull` module).
             if draws > 0 {
-                self.cullable.push(CullCandidate { slot, mesh, draws, foliage, fog_card });
+                let whole = whole || foliage || fog_card;
+                self.cullable.push(CullCandidate { slot, mesh, draws, foliage, fog_card, whole });
             }
         }
         // An eye's shadow, iris and highlight layers each blend over the ones before them,
@@ -865,6 +878,16 @@ impl DrawList {
 
 fn to_u32(len: usize) -> u32 {
     u32::try_from(len).expect("instance and draw counts fit the u32 GPU indices")
+}
+
+/// The levels at which `record`'s level-0 submesh `submesh` has triangles, as bits
+/// ([`DrawCommand::levels`]).
+fn submesh_levels(record: &MeshRecord, submesh: usize) -> u8 {
+    let levels = record.lods.iter().take(crate::levels::MAX_LEVELS);
+    levels.enumerate().fold(0, |bits, (level, draws)| {
+        let drawn = draws.get(submesh).is_some_and(|draw| draw.index_count > 0);
+        if drawn { bits | 1 << level } else { bits }
+    })
 }
 
 /// Whether an instance's character cuts its pixels: it fades or dissolves.
@@ -933,6 +956,7 @@ mod tests {
             dequantize: Dequantize::default(),
             lods: Vec::new(),
             lod_vertices: Vec::new(),
+            lod_errors: Vec::new(),
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: cooked,
@@ -1172,6 +1196,7 @@ mod tests {
             dequantize: identity,
             lods: vec![lod],
             lod_vertices: vec![3],
+            lod_errors: vec![0.0],
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
@@ -1223,6 +1248,7 @@ mod tests {
             dequantize: quantized,
             lods: Vec::new(),
             lod_vertices: Vec::new(),
+            lod_errors: Vec::new(),
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
@@ -1239,6 +1265,7 @@ mod tests {
                     vec![SubmeshDraw { first_index: 6, index_count: 3, material: material(0) }],
                 ],
                 lod_vertices: vec![24, 12],
+                lod_errors: vec![0.0, 0.0],
                 ..record()
             },
             MeshRecord {
@@ -1249,6 +1276,7 @@ mod tests {
                     SubmeshDraw { first_index: 12, index_count: 12, material: material(2) },
                 ]],
                 lod_vertices: vec![8],
+                lod_errors: vec![0.0],
                 ..record()
             },
             MeshRecord {
@@ -1256,6 +1284,7 @@ mod tests {
                 dequantize: identity,
                 lods: vec![vec![SubmeshDraw { first_index: 24, index_count: 3, material: material(3) }]],
                 lod_vertices: vec![3],
+                lod_errors: vec![0.0],
                 ..record()
             },
             MeshRecord {
@@ -1263,6 +1292,7 @@ mod tests {
                 dequantize: identity,
                 lods: vec![vec![SubmeshDraw { first_index: 27, index_count: 6, material: material(4) }]],
                 lod_vertices: vec![4],
+                lod_errors: vec![0.0],
                 ..record()
             },
         ];
@@ -1315,7 +1345,9 @@ mod tests {
         let (unorm16_alpha_test, unorm16_transparent) =
             (&unorm16_variants[alpha_test], &unorm16_variants[transparent]);
         let (float32, float32_transparent) = (&float32_variants[opaque], &float32_variants[transparent]);
-        // Each names its instance's slot and its material (by material slot).
+        // Each names its instance's slot and its material (by material slot), and its level-0
+        // submesh and the levels it has triangles at: material 2 is mesh 1's second submesh, and
+        // mesh 0 (material 0) has two levels.
         let command = |indices, first_vertex, instance, draw_id, slot: u32, outline| DrawCommand {
             indices,
             first_vertex,
@@ -1323,6 +1355,8 @@ mod tests {
             draw_id,
             material: MaterialHandle::from_raw(slot + 10),
             mesh: slots.mesh(instance).expect("live"),
+            submesh: u16::from(slot == 2),
+            levels: if slot == 0 { 0b11 } else { 0b1 },
             outline,
             foliage: 0,
         };
@@ -1382,6 +1416,7 @@ mod tests {
                     submesh(21, 5),
                 ]],
                 lod_vertices: vec![8],
+                lod_errors: vec![0.0],
                 placement: Placement::default(),
                 slots: Vec::new(),
                 bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
@@ -1394,6 +1429,7 @@ mod tests {
                 dequantize: identity,
                 lods: vec![vec![submesh(15, 1), submesh(18, 0)]],
                 lod_vertices: vec![4],
+                lod_errors: vec![0.0],
                 placement: Placement::default(),
                 slots: Vec::new(),
                 bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
@@ -1477,6 +1513,7 @@ mod tests {
             dequantize: identity,
             lods: vec![lod],
             lod_vertices: vec![4],
+            lod_errors: vec![0.0],
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },

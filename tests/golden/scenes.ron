@@ -515,6 +515,7 @@
                 args: ["--plain-post", "--stage", "pillar", "--street-lamp", "--time-of-day", "22",
                        "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
                        "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 3.2, warp: 10.8),
             ),
             // The same on Desktop-Low: a tile of 512 texels, the tent wider on the floor.
             (
@@ -523,6 +524,7 @@
                 args: ["--plain-post", "--stage", "pillar", "--street-lamp", "--time-of-day", "22",
                        "--tier", "desktop-low", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
                        "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.3, warp: 14.2),
             ),
             // A dash's screen effects (M1 P3): the radial blur streaking the frame toward its middle
             // and white speed lines radiating from outside a clear middle, which the character stays

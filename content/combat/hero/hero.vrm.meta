@@ -34,6 +34,17 @@
                     "skirt": "0e0f0a66-bb45-4cb1-8f6d-1655bd22f8b5",
                     "top": "db59f6f9-c422-4ba2-a798-385b2d5af87b",
                 },
+                merge: [
+                    (
+                        name: "body",
+                        slots: [
+                            "skin",
+                            "top",
+                            "gear",
+                        ],
+                        cooks: Every,
+                    ),
+                ],
             ),
             version: Some(V1),
         )),

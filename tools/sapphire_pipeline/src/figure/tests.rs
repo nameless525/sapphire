@@ -281,7 +281,7 @@ fn the_committed_figures_are_generated() {
 /// each coarser level has fewer triangles than the one before.
 #[test]
 fn every_figure_cooks_under_its_budget() {
-    use crate::cook::{Cook, cook_mesh};
+    use crate::cook::{Cook, cook_mesh, cook_mesh_in};
     let content = repo().join("content");
     for path in specs(&specs_dir()).unwrap() {
         let figure = read(&path).unwrap();
@@ -290,7 +290,12 @@ fn every_figure_cooks_under_its_budget() {
         let meta = crate::meta::read(&crate::meta::sidecar_path(&model)).unwrap();
         let settings = meta.importer.mesh().expect("a mesh's sidecar").clone();
         for cook in Cook::ALL {
-            let mesh = cook_mesh(&model, &settings, cook).unwrap();
+            // A model that merges materials (M5 L15) cooks with the tree it's in.
+            let mesh = if settings.merge.is_empty() {
+                cook_mesh(&model, &settings, cook).unwrap()
+            } else {
+                cook_mesh_in(&content.join(&figure.dir), &model, cook).unwrap()
+            };
             let triangles: Vec<u32> = mesh
                 .lods
                 .iter()

@@ -346,8 +346,18 @@ fn vroid_eye(mesh: &ImportedMesh, slot: u32) -> Option<EyeShading> {
 
 /// Imports only a VRM file's rig: [`import`] without its materials and vertex work.
 pub fn import_rig(bytes: &[u8], version: Option<VrmVersion>) -> Result<CharacterRig, VrmImportError> {
+    import_rig_with_slots(bytes, version).map(|(rig, _)| rig)
+}
+
+/// [`import_rig`], with the names of the mesh's material slots its expressions bind by index, in
+/// order: what a merge (M5 L15) renumbers them by.
+pub fn import_rig_with_slots(
+    bytes: &[u8],
+    version: Option<VrmVersion>,
+) -> Result<(CharacterRig, Vec<String>), VrmImportError> {
     let Read { document, data, scene, .. } = read(bytes, version)?;
-    rig::build(&document, &data, &scene)
+    let rig = rig::build(&document, &data, &scene)?;
+    Ok((rig, scene.mesh.materials.iter().map(|material| material.name.clone()).collect()))
 }
 
 /// What both imports start from.

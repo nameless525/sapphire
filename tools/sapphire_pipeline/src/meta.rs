@@ -525,6 +525,11 @@ pub struct MeshSettings {
     /// out only when set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skeleton: Option<AssetId>,
+    /// Groups of slots the cook merges into one, atlasing their maps (M5 L15, [`crate::merge`]):
+    /// `merge: [(name: "body", slots: ["skin", "top", "gear"], cooks: Every)]`. Written out only when
+    /// set, so other sidecars, and what they cook to, stay as they were.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub merge: Vec<crate::merge::MergeGroup>,
 }
 
 /// The sidecar of `source`: its whole file name with `.meta` appended.

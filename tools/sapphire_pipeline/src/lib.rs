@@ -153,6 +153,7 @@ pub mod keypose;
 pub mod loc;
 pub mod lookdev;
 pub mod material;
+pub mod merge;
 pub mod mesh;
 pub mod meta;
 pub mod motion;

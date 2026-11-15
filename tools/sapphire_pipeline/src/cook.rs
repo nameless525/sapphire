@@ -157,7 +157,7 @@ use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
 use sapphire_assets::cue::{CUE_EXTENSION, Cue};
 use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains};
 use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
-use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
+use sapphire_assets::material::{AnyMaterialDocument, MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::motion::{MOTION_EXTENSION, Motion};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
@@ -209,6 +209,7 @@ use crate::import::vrma;
 use crate::keypose::{self, KeyPoseError};
 use crate::loc::{self, FluentFile, FluentFiles, LocCheckError, LocCookError, LocReport};
 use crate::material::{self, MaterialCookError, Referenced, TextureKind};
+use crate::merge::{self, GroupPlan, Layout, MergeError};
 use crate::mesh::ImportedMesh;
 use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
@@ -508,6 +509,26 @@ impl Recipe {
         Self { format: TextureLevel::VERSION, extension: TEXTURE_LEVEL_EXTENSION, ..self }
     }
 
+    /// The recipe of a merge group's atlas beside a mesh (M5 L15).
+    fn merged_map() -> Self {
+        Self {
+            importer: merge::ATLAS_IMPORTER,
+            cooker: texture::COOKER,
+            format: TEXTURE_VERSION,
+            extension: TEXTURE_EXTENSION,
+        }
+    }
+
+    /// The recipe of a merge group's material beside a mesh (M5 L15).
+    fn merged_material() -> Self {
+        Self {
+            importer: merge::MATERIAL_IMPORTER,
+            cooker: material::COOKER,
+            format: Material::VERSION,
+            extension: MATERIAL_EXTENSION,
+        }
+    }
+
     /// The recipe of a zone's merged mesh for a place.
     fn zone_cell() -> Self {
         Self {
@@ -699,6 +720,12 @@ pub enum CookError {
         path: PathBuf,
         #[source]
         source: MeshError,
+    },
+    #[error("failed to merge the materials of {}", path.display())]
+    Merge {
+        path: PathBuf,
+        #[source]
+        source: Box<MergeError>,
     },
     #[error("failed to cook material {}", path.display())]
     Material {
@@ -1134,6 +1161,9 @@ fn cook_dir_through(
             None
         });
     }
+    // What a mesh's merge groups read as they're planned (M5 L15): their members' documents and maps.
+    let merge_sources: HashMap<AssetId, SourceAsset> =
+        cooked_assets.iter().map(|asset| (asset.meta.id, asset.clone())).collect();
     let mut plan = Vec::with_capacity(cooked_assets.len());
     for (asset, output) in cooked_assets.into_iter().zip(own_outputs) {
         // Which sub-assets there are may take reading the file, which could panic in a crate.
@@ -1143,6 +1173,7 @@ fn cook_dir_through(
                 &asset,
                 &planned_from,
                 &prefabs,
+                &merge_sources,
                 &mut zones,
                 cache.as_ref(),
                 options.cook,
@@ -1198,6 +1229,20 @@ fn cook_dir_through(
                     );
                     source_relative.with_file_name(file)
                 }
+                // Beside the mesh, by its group: `hero.merge.body.smat`, `hero.merge.body.control.ktx2`.
+                Part::MergedMap { group, map, .. } => {
+                    let file = format!(
+                        "{}.merge.{group}.{}.{}",
+                        file_stem(&source_relative),
+                        map.name(),
+                        recipe.extension
+                    );
+                    source_relative.with_file_name(file)
+                }
+                Part::MergedMaterial { group } => {
+                    let file = format!("{}.merge.{group}.{}", file_stem(&source_relative), recipe.extension);
+                    source_relative.with_file_name(file)
+                }
                 Part::Own | Part::Rig | Part::Skeleton => recipe.output_path(&source_relative),
             };
             let output = claim(&asset.path, &relative)?;
@@ -1210,6 +1255,7 @@ fn cook_dir_through(
     let extensions = AssetKind::ALL.map(AssetKind::extension);
     let removed = prune(out_root, &|path| outputs.contains_key(path), &extensions)?;
 
+    drop(merge_sources);
     let mut by_id = HashMap::with_capacity(plan.len());
     for (index, planned) in plan.iter().enumerate() {
         // Sidecar IDs are unique (checked by `meta::resolve`) and random; a derived ID equal to
@@ -1559,6 +1605,10 @@ enum Part {
     /// A texture's level above its tail (M5 M3): the texture, the source's own asset, and which level,
     /// from its base.
     Level { texture: AssetId, level: u32 },
+    /// A merge group's atlas of one map (M5 L15): the group, the map, and what it cooks as.
+    MergedMap { group: String, map: merge::AtlasMap, kind: TextureKind },
+    /// A merge group's material (M5 L15).
+    MergedMaterial { group: String },
 }
 
 /// A part of a source, its ID and its recipe.
@@ -1582,10 +1632,13 @@ fn texture_levels(texture: AssetId, above: u32, own: Recipe) -> Vec<PlannedPart>
 /// The sub-assets `asset` cooks to besides its own asset, reading the file where that depends on
 /// what it holds, and saying the hash of what it read in `planned_from`. Its `clips` settings are
 /// checked here, before anything cooks, and a zone's plan is made, from `prefabs`, and left in `zones`.
+/// A mesh's merge groups (M5 L15) are planned against `sources`.
+#[expect(clippy::too_many_arguments, reason = "an asset, the tree it plans against, and the cook")]
 fn sub_assets(
     asset: &SourceAsset,
     planned_from: &Cell<Option<blake3::Hash>>,
     prefabs: &HashMap<AssetId, SourceAsset>,
+    sources: &HashMap<AssetId, SourceAsset>,
     zones: &mut HashMap<PathBuf, ZonePlan>,
     cache: Option<&Cache>,
     cook: Cook,
@@ -1616,7 +1669,9 @@ fn sub_assets(
                 part: Part::Rig,
                 recipe: vrm::RIG.recipe,
             };
-            Ok(vec![rig, skeleton(own)])
+            let mut parts = vec![rig, skeleton(own)];
+            parts.extend(merge_parts(asset, &settings.mesh, cook, sources)?);
+            Ok(parts)
         }
         ImportSettings::Gltf(settings) => {
             let bytes = read()?;
@@ -1633,6 +1688,7 @@ fn sub_assets(
                         .map_err(clip_error)?,
                 );
             }
+            parts.extend(merge_parts(asset, settings, cook, sources)?);
             Ok(parts)
         }
         ImportSettings::Fbx(settings) => {
@@ -1650,6 +1706,7 @@ fn sub_assets(
                         .map_err(clip_error)?,
                 );
             }
+            parts.extend(merge_parts(asset, settings, cook, sources)?);
             Ok(parts)
         }
         ImportSettings::GltfClips(settings) | ImportSettings::Vrma(settings) => {
@@ -1670,6 +1727,9 @@ fn sub_assets(
         ImportSettings::Assembly(settings) => {
             if settings.clips.is_some() || settings.skeleton.is_some() {
                 return Err(unsupported("assembly"));
+            }
+            if !settings.merge.is_empty() {
+                return Err(CookError::Merge { path: path.clone(), source: Box::new(MergeError::Assembly) });
             }
             Ok(Vec::new())
         }
@@ -1765,6 +1825,35 @@ fn sub_assets(
             Ok(parts)
         }
     }
+}
+
+/// A mesh's merge groups' parts on `cook` (M5 L15): an atlas a map and a material for each, planned from
+/// its sidecar and its members' documents, which are checked here, before anything cooks.
+fn merge_parts(
+    asset: &SourceAsset,
+    settings: &MeshSettings,
+    cook: Cook,
+    sources: &HashMap<AssetId, SourceAsset>,
+) -> Result<Vec<PlannedPart>, CookError> {
+    let lookup = |id| sources.get(&id);
+    let plans = merge::plan(settings, cook, &lookup)
+        .map_err(|source| CookError::Merge { path: asset.path.clone(), source: Box::new(source) })?;
+    let mut parts = Vec::new();
+    for plan in plans {
+        for &(map, kind) in &plan.maps {
+            parts.push(PlannedPart {
+                id: merge::atlas_id(asset.meta.id, &plan.name, map),
+                part: Part::MergedMap { group: plan.name.clone(), map, kind },
+                recipe: Recipe::merged_map(),
+            });
+        }
+        parts.push(PlannedPart {
+            id: merge::material_id(asset.meta.id, &plan.name),
+            part: Part::MergedMaterial { group: plan.name },
+            recipe: Recipe::merged_material(),
+        });
+    }
+    Ok(parts)
 }
 
 /// An animation source's parts: its skeleton, unless it shares a rig, and its clips.
@@ -1904,8 +1993,10 @@ struct Planned {
 }
 
 impl Planned {
+    /// Whether it cooks to a material: a material document's, or a merge group's (M5 L15).
     fn is_material(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::Material(_))
+            || matches!(self.part, Part::MergedMaterial { .. })
     }
 
     fn is_probe_grid(&self) -> bool {
@@ -2005,6 +2096,7 @@ impl<'a> PlannedTree<'a> {
             fluent: self.fluent,
             flags: self.flags,
             screens: self.screens,
+            cook: self.cook,
         }
     }
 
@@ -2047,6 +2139,8 @@ struct Assets<'a> {
     fluent: &'a FluentFiles,
     flags: &'a Registry,
     screens: &'a OnceLock<ScreenCharacters>,
+    /// The cook being made: what a merge (M5 L15) plans for.
+    cook: Cook,
 }
 
 /// A source's rig as other assets read it: its cooked skeleton and where its humanoid map comes
@@ -2122,9 +2216,13 @@ impl<'a> Assets<'a> {
     fn referenced(&self, id: AssetId) -> Option<Referenced<'a>> {
         let index = *self.by_id.get(&id)?;
         let planned = &self.plan[index];
+        let class = match &planned.part {
+            Part::MergedMap { kind, .. } => Some(*kind),
+            _ => TextureKind::of(&planned.asset.meta.importer),
+        };
         Some(Referenced {
             source: &planned.asset.path,
-            class: TextureKind::of(&planned.asset.meta.importer),
+            class,
             cooked: self
                 .cooked
                 .get(index)
@@ -2435,7 +2533,7 @@ fn asset_key(
     cook: Cook,
 ) -> Result<CacheKey, CookError> {
     let Planned { asset: SourceAsset { path, meta }, part, skeleton, recipe, .. } = planned;
-    let mut dependencies = dependencies(path, &source.bytes, &meta.importer, part, assets)?;
+    let mut dependencies = dependencies(path, meta.id, &source.bytes, &meta.importer, part, assets)?;
     dependencies.extend(part_dependencies(path, part, *skeleton, &meta.importer));
     // A cell's, a navmesh's or reflection probes' key holds what's in it, rather than the whole document (see `zone`).
     let keyed_source = match part {
@@ -2496,7 +2594,8 @@ fn finish_asset(
         Some(cooked) => (CookStatus::Cached, cooked),
         None => {
             let source = assets.last_source.read_as(path, source)?;
-            let cooked = cook_source(path, &source.bytes, &meta.importer, part, *skeleton, cook, assets)?;
+            let cooked =
+                cook_source(path, meta.id, &source.bytes, &meta.importer, part, *skeleton, cook, assets)?;
             // A cook reads its other files for itself, as long after its key as the assets ahead of it
             // take, and a key mustn't cover what other versions of them cook to. Their keys are made from
             // the files as they stand, so this sees a save from before or during the cook.
@@ -2574,6 +2673,13 @@ fn part_dependencies(
     if let Part::Level { texture, level } = part {
         dependencies.push(marker(format!("#level {level} of {texture}")));
     }
+    // A merge group's parts share their mesh's sidecar and differ by their group and map (M5 L15).
+    if let Part::MergedMap { group, map, .. } = part {
+        dependencies.push(marker(format!("#merged {group} {}", map.name())));
+    }
+    if let Part::MergedMaterial { group } = part {
+        dependencies.push(marker(format!("#merged {group}")));
+    }
     // A key-pose clip takes its name from its file, which a key doesn't otherwise hold.
     if matches!(settings, ImportSettings::KeyPose(_)) {
         dependencies.push(marker(format!("#name {}", keypose::stem(path))));
@@ -2582,8 +2688,10 @@ fn part_dependencies(
 }
 
 /// Imports, bakes and cooks one source, or the sub-asset `part` of it: the bytes of its cooked file.
+#[expect(clippy::too_many_arguments, reason = "a source, its part, and the tree it cooks in")]
 fn cook_source(
     path: &Path,
+    id: AssetId,
     bytes: &[u8],
     settings: &ImportSettings,
     part: &Part,
@@ -2641,6 +2749,14 @@ fn cook_source(
             let input = ClipInput { path, bytes, importer: settings, clips, index: *index, skeleton };
             return cook_clip(&input, target.map(|entry| &clips.retarget[entry]), assets).map_err(clip_error);
         }
+        Part::MergedMap { group, map, .. } => {
+            let mesh = settings.mesh().expect("only meshes merge");
+            return cook_merged_map(path, mesh, group, *map, cook, assets);
+        }
+        Part::MergedMaterial { group } => {
+            let mesh = settings.mesh().expect("only meshes merge");
+            return cook_merged_material(path, id, mesh, group, cook, assets);
+        }
     }
     match settings {
         ImportSettings::Gltf(_)
@@ -2650,15 +2766,25 @@ fn cook_source(
             if *part == Part::Own =>
         {
             let shared = shared_skeleton(settings, assets).map_err(clip_error)?;
+            let mesh_settings = settings.mesh().expect("mesh importers have mesh settings");
+            let lookup = |id| assets.sources.get(&id).copied();
+            let merge = mesh_merge(path, id, mesh_settings, cook, &lookup)?;
             let _held = assets.memory.hold(mesh_memory(path, bytes, settings));
-            let mesh = import_mesh(path, bytes, settings, cook, shared.as_ref(), skeleton)?;
+            let mesh = import_mesh(path, bytes, settings, cook, shared.as_ref(), skeleton, merge.as_ref())?;
             Ok(cooked_bytes(path, &mesh)?.into_vec())
         }
         ImportSettings::Vrm(vrm_settings) => {
             debug_assert_eq!(*part, Part::Rig, "a VRM's other sub-asset is its rig");
             // Reading a rig imports the file's whole scene.
             let _held = assets.memory.hold(mesh_memory(path, bytes, settings));
-            let rig = vrm::import_rig(bytes, vrm_settings.version).map_err(vrm_error(path))?;
+            let (mut rig, slots) =
+                vrm::import_rig_with_slots(bytes, vrm_settings.version).map_err(vrm_error(path))?;
+            // A merge renumbers the slots its expressions bind, by name (M5 L15).
+            if merge::merges(&vrm_settings.mesh, cook) {
+                let lookup = |id| assets.sources.get(&id).copied();
+                let plans = merge::plan(&vrm_settings.mesh, cook, &lookup).map_err(merge_error(path))?;
+                merge::remap_rig(&mut rig, &slots, &plans).map_err(merge_error(path))?;
+            }
             let invalid = |source| CookError::InvalidRig { path: path.to_owned(), source };
             let cooked = rig.to_cooked().map_err(|error| invalid(RigError::Cooked(error)))?;
             // The runtime's checks, so a cook never writes a rig animation would refuse.
@@ -3200,6 +3326,7 @@ fn is_hidden(relative: &Path) -> bool {
 /// referenced asset can change or disappear while the source stays the same.
 fn dependencies(
     path: &Path,
+    id: AssetId,
     bytes: &[u8],
     settings: &ImportSettings,
     part: &Part,
@@ -3207,7 +3334,7 @@ fn dependencies(
 ) -> Result<Vec<Dependency>, CookError> {
     let mut rigs = rig_dependencies(settings, part, assets)
         .map_err(|source| CookError::Clip { path: path.to_owned(), source: Box::new(source) })?;
-    rigs.extend(source_dependencies(path, bytes, settings, part, assets)?);
+    rigs.extend(source_dependencies(path, id, bytes, settings, part, assets)?);
     Ok(rigs)
 }
 
@@ -3236,6 +3363,7 @@ fn rig_dependencies(
 /// What cooking a source reads besides its own bytes and the rigs of [`rig_dependencies`].
 fn source_dependencies(
     path: &Path,
+    id: AssetId,
     bytes: &[u8],
     settings: &ImportSettings,
     part: &Part,
@@ -3253,10 +3381,12 @@ fn source_dependencies(
                     return Err(CookError::NotAMaterial { path: path.to_owned(), slot: slot.clone(), id });
                 }
             }
+            // But a merge's parts read its members' documents and maps (M5 L15).
+            let merged = merge_dependencies(path, id, mesh, part, assets)?;
             if matches!(settings, ImportSettings::Vrm(_) | ImportSettings::Fbx(_)) {
                 // VRM files are GLB, and the FBX importer never opens the files an FBX names:
                 // they read nothing besides themselves.
-                return Ok(Vec::new());
+                return Ok(merged);
             }
             if matches!(settings, ImportSettings::Assembly(_)) {
                 return assembly_dependencies(path, bytes);
@@ -3264,14 +3394,16 @@ fn source_dependencies(
             let files = gltf::external_files(bytes)
                 .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
             let dir = path.parent().unwrap_or(Path::new(""));
-            files
+            let mut dependencies = files
                 .into_iter()
                 .map(|file| {
                     let full = dir.join(&file);
                     let bytes = fs::read(&full).map_err(|source| CookError::Read { path: full, source })?;
                     Ok(Dependency::File { path: file, hash: blake3::hash(&bytes) })
                 })
-                .collect()
+                .collect::<Result<Vec<_>, CookError>>()?;
+            dependencies.extend(merged);
+            Ok(dependencies)
         }
         // Images, procedural textures, collider and encounter documents, timelines and scripts are
         // self-contained.
@@ -3440,6 +3572,122 @@ fn source_dependencies(
         // The importer never opens the files an FBX names.
         ImportSettings::FbxClips(_) => Ok(Vec::new()),
     }
+}
+
+/// What a mesh's part reads for its merge groups on the cook (M5 L15): its own mesh, its rig, and its
+/// groups' atlases and materials read every member's document and maps; a merged material reads its
+/// atlases, ramp and matcap as cooked, as a material document does.
+fn merge_dependencies(
+    path: &Path,
+    id: AssetId,
+    settings: &MeshSettings,
+    part: &Part,
+    assets: &Assets<'_>,
+) -> Result<Vec<Dependency>, CookError> {
+    let reads = matches!(part, Part::Own | Part::Rig | Part::MergedMap { .. } | Part::MergedMaterial { .. });
+    if !reads || !merge::merges(settings, assets.cook) {
+        return Ok(Vec::new());
+    }
+    let lookup = |id| assets.sources.get(&id).copied();
+    let plans = merge::plan(settings, assets.cook, &lookup).map_err(merge_error(path))?;
+    let mut dependencies = Vec::new();
+    for plan in &plans {
+        dependencies.extend(plan.dependencies(&lookup).map_err(merge_error(path))?);
+    }
+    if let Part::MergedMaterial { group } = part {
+        let (plan, layout) = merge_group(path, plans, group, assets.cook, &lookup)?;
+        let document = AnyMaterialDocument::AnimeCharacter(plan.document(id, &layout));
+        let merged = material::dependencies(&document, |id| assets.referenced(id)).map_err(|source| {
+            merge_error(path)(MergeError::Material { group: plan.name, source: Box::new(source) })
+        })?;
+        dependencies.extend(merged);
+    }
+    Ok(dependencies)
+}
+
+fn merge_error(path: &Path) -> impl Fn(MergeError) -> CookError + '_ {
+    |source| CookError::Merge { path: path.to_owned(), source: Box::new(source) }
+}
+
+/// A mesh's merge groups on `cook`, planned and laid out: what its mesh cook merges.
+struct MeshMerge {
+    plans: Vec<GroupPlan>,
+    layouts: Vec<Layout>,
+    /// The mesh's ID, whose sub-assets the merged materials are.
+    mesh: AssetId,
+}
+
+/// The merge `settings` make of the mesh `id` on `cook`, if any.
+fn mesh_merge(
+    path: &Path,
+    id: AssetId,
+    settings: &MeshSettings,
+    cook: Cook,
+    lookup: &merge::Lookup<'_>,
+) -> Result<Option<MeshMerge>, CookError> {
+    if !merge::merges(settings, cook) {
+        return Ok(None);
+    }
+    let plans = merge::plan(settings, cook, lookup).map_err(merge_error(path))?;
+    let layouts = plans
+        .iter()
+        .map(|plan| plan.layout(cook, lookup))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(merge_error(path))?;
+    Ok(Some(MeshMerge { plans, layouts, mesh: id }))
+}
+
+/// The group `group` of `plans`, laid out for `cook`.
+fn merge_group(
+    path: &Path,
+    plans: Vec<GroupPlan>,
+    group: &str,
+    cook: Cook,
+    lookup: &merge::Lookup<'_>,
+) -> Result<(GroupPlan, Layout), CookError> {
+    let plan =
+        plans.into_iter().find(|plan| plan.name == group).expect("its parts are planned from these groups");
+    let layout = plan.layout(cook, lookup).map_err(merge_error(path))?;
+    Ok((plan, layout))
+}
+
+/// A merge group's atlas of `map` (M5 L15), as cooked bytes: one texture, whole.
+fn cook_merged_map(
+    path: &Path,
+    settings: &MeshSettings,
+    group: &str,
+    map: merge::AtlasMap,
+    cook: Cook,
+    assets: &Assets<'_>,
+) -> Result<Vec<u8>, CookError> {
+    let lookup = |id| assets.sources.get(&id).copied();
+    let plans = merge::plan(settings, cook, &lookup).map_err(merge_error(path))?;
+    let (plan, layout) = merge_group(path, plans, group, cook, &lookup)?;
+    let texels = u64::from(layout.size()) * u64::from(layout.size());
+    let _held = assets.memory.hold(texels.saturating_mul(texture::COOK_BYTES_PER_TEXEL));
+    Ok(plan.cook_atlas(map, &layout, cook, &lookup).map_err(merge_error(path))?.to_ktx2())
+}
+
+/// A merge group's material (M5 L15), as cooked bytes: its standing member's document over the atlases,
+/// once every member's ramp and matcap are found to be its.
+fn cook_merged_material(
+    path: &Path,
+    id: AssetId,
+    settings: &MeshSettings,
+    group: &str,
+    cook: Cook,
+    assets: &Assets<'_>,
+) -> Result<Vec<u8>, CookError> {
+    let lookup = |id| assets.sources.get(&id).copied();
+    let plans = merge::plan(settings, cook, &lookup).map_err(merge_error(path))?;
+    let (plan, layout) = merge_group(path, plans, group, cook, &lookup)?;
+    plan.check_shared_maps(&lookup).map_err(merge_error(path))?;
+    let document = AnyMaterialDocument::AnimeCharacter(plan.document(id, &layout));
+    let material_error = |source: MaterialCookError| {
+        merge_error(path)(MergeError::Material { group: group.to_owned(), source: Box::new(source) })
+    };
+    document.validate().map_err(|error| material_error(error.into()))?;
+    material::cook(&document, |id| assets.referenced(id)).map_err(material_error)
 }
 
 /// The clips a move set's document names and their rigs, by their own keys. A document that doesn't
@@ -3738,6 +3986,7 @@ fn import_mesh(
     cook: Cook,
     shared: Option<&Skeleton>,
     skeleton_id: Option<AssetId>,
+    merge: Option<&MeshMerge>,
 ) -> Result<Mesh, CookError> {
     let mut mesh = imported_mesh(path, bytes, importer, cook)?;
     let clip_error =
@@ -3760,8 +4009,19 @@ fn import_mesh(
             .map_err(|source| CookError::Foliage { path: path.to_owned(), source })?;
     }
     optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
+    // After the LOD chain, so geometry, levels and vertex order are what they'd be unmerged (M5 L15).
+    let merged;
+    let bindings = match merge {
+        Some(merge) => {
+            merged =
+                merge::merge_mesh(&mut mesh, &merge.plans, &merge.layouts, &settings.materials, merge.mesh)
+                    .map_err(merge_error(path))?;
+            &merged
+        }
+        None => &settings.materials,
+    };
     let mut packed = mesh
-        .pack(settings.position_format, &settings.materials)
+        .pack(settings.position_format, bindings)
         .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })?;
     packed.authored_geometry = authored_geometry;
     if let Some(skin) = &mut packed.skin {
@@ -3894,10 +4154,38 @@ fn cook_mesh_with_bytes(
         Some(ImportSettings::Assembly(_)) => ImportSettings::Assembly(settings.clone()),
         _ => return Err(CookError::UnsupportedSource { path: source.to_owned() }),
     };
+    if merge::merges(settings, cook) {
+        return Err(merge_error(source)(MergeError::NeedsTree));
+    }
     let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
-    let mesh = guarded(source, || import_mesh(source, &bytes, &importer, cook, None, None))?;
+    let mesh = guarded(source, || import_mesh(source, &bytes, &importer, cook, None, None, None))?;
     let cooked = cooked_bytes(source, &mesh)?;
     Ok((mesh, cooked))
+}
+
+/// Cooks the mesh source at `source` as a cook of the content tree at `source_root` would, its merge
+/// groups (M5 L15) included, without cooking anything else: for measuring a character's slots and draws.
+/// It reads and writes no sidecar, uses no cache, and doesn't share a skeleton.
+pub fn cook_mesh_in(source_root: &Path, source: &Path, cook: Cook) -> Result<Mesh, CookError> {
+    let resolved = resolve_tree(source_root)?;
+    let sources: HashMap<AssetId, &SourceAsset> =
+        resolved.assets.iter().map(|asset| (asset.meta.id, asset)).collect();
+    let unsupported = || CookError::UnsupportedSource { path: source.to_owned() };
+    let asset = resolved.assets.iter().find(|asset| asset.path == source).ok_or_else(unsupported)?;
+    let settings = asset.meta.importer.mesh().ok_or_else(unsupported)?;
+    let lookup = |id| sources.get(&id).copied();
+    let merge = mesh_merge(source, asset.meta.id, settings, cook, &lookup)?;
+    let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
+    guarded(source, || import_mesh(source, &bytes, &asset.meta.importer, cook, None, None, merge.as_ref()))
+}
+
+/// The sources under `source_root` as a locked cook resolves them: every sidecar read, and the images a
+/// map document reads left out.
+pub(crate) fn resolve_tree(source_root: &Path) -> Result<meta::Resolved, CookError> {
+    let mut tree = SourceTree::scan(source_root)?;
+    let inputs = map_inputs(source_root, &tree)?;
+    tree.sources.retain(|path| !inputs.contains(path));
+    Ok(meta::resolve(&tree, true)?)
 }
 
 /// The blake3 hash of the file at `path`, streamed, or `None` if there is none.
@@ -4018,6 +4306,7 @@ mod tests {
                 &writer.to_glb(),
                 &ImportSettings::Gltf(MeshSettings::default()),
                 Cook::Desktop,
+                None,
                 None,
                 None,
             )

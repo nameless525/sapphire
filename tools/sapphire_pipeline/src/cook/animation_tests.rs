@@ -1009,6 +1009,7 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
             &asset,
             &Cell::new(None),
             &HashMap::new(),
+            &HashMap::new(),
             &mut HashMap::new(),
             None,
             Cook::Desktop,

@@ -406,8 +406,8 @@ mobile-high-dusk | cached cascades redrawn | not exercised
 mobile-high-dusk | capsule bits in fullest cluster | p50 26 p95 36 worst 44 total 12525
 mobile-high-dusk | capsule bits set | p50 471 p95 985 worst 1315 total 275762
 mobile-high-dusk | capsule clusters marked | p50 235 p95 489 worst 648 total 136980
-mobile-high-dusk | cascade 0 draws | p50 71 p95 97 worst 107 total 37889
-mobile-high-dusk | cascade 1 draws | p50 0 p95 259 worst 264 total 32053
+mobile-high-dusk | cascade 0 draws | p50 69 p95 95 worst 105 total 36832
+mobile-high-dusk | cascade 1 draws | p50 0 p95 254 worst 259 total 31475
 mobile-high-dusk | cascade 2 draws | not exercised
 mobile-high-dusk | cascade 3 draws | not exercised
 mobile-high-dusk | cascades drawn | p50 1 p95 2 worst 2 total 673
@@ -415,13 +415,13 @@ mobile-high-dusk | character map draws | not exercised
 mobile-high-dusk | character prepass draws | p50 17 p95 28 worst 31 total 9634
 mobile-high-dusk | characters animated | p50 30 p95 30 worst 30 total 15960
 mobile-high-dusk | characters thinned | p50 30 p95 30 worst 30 total 15547
-mobile-high-dusk | culled by a pass | p50 511 p95 812 worst 1026 total 301693
+mobile-high-dusk | culled by a pass | p50 508 p95 807 worst 1019 total 299963
 mobile-high-dusk | culled by distance | not exercised
 mobile-high-dusk | culled by size | not exercised
-mobile-high-dusk | culled by view | p50 806 p95 1072 worst 1187 total 421882
+mobile-high-dusk | culled by view | p50 802 p95 1064 worst 1179 total 419712
 mobile-high-dusk | culled past outline cutoff | not exercised
-mobile-high-dusk | draw calls | p50 621 p95 951 worst 1179 total 335404
-mobile-high-dusk | draw instances | p50 631 p95 1121 worst 1338 total 354109
+mobile-high-dusk | draw calls | p50 613 p95 936 worst 1163 total 330619
+mobile-high-dusk | draw instances | p50 623 p95 1106 worst 1322 total 349324
 mobile-high-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-high-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-high-dusk | entities removed | not exercised
@@ -429,17 +429,17 @@ mobile-high-dusk | frames waiting on a pipeline | not exercised
 mobile-high-dusk | held off screen | p50 22 p95 27 worst 29 total 10798
 mobile-high-dusk | inset draws | not exercised
 mobile-high-dusk | joints | p50 138 p95 391 worst 460 total 86986
-mobile-high-dusk | level switches | p50 0 p95 0 worst 2 total 13
+mobile-high-dusk | level switches | p50 0 p95 0 worst 1 total 12
 mobile-high-dusk | lights | p50 8 p95 8 worst 8 total 4256
 mobile-high-dusk | lights dropped | p50 41 p95 81 worst 95 total 21760
-mobile-high-dusk | lod0 draws | p50 303 p95 681 worst 771 total 195429
-mobile-high-dusk | lod1+ draws | p50 300 p95 518 worst 604 total 152828
+mobile-high-dusk | lod0 draws | p50 300 p95 678 worst 768 total 194022
+mobile-high-dusk | lod1+ draws | p50 292 p95 504 worst 593 total 149450
 mobile-high-dusk | longest run | p50 2 p95 3 worst 3 total 742
-mobile-high-dusk | main draws | p50 234 p95 407 worst 447 total 127116
-mobile-high-dusk | main draws above level 0 | p50 138 p95 249 worst 281 total 70682
-mobile-high-dusk | main triangles | p50 278599 p95 464844 worst 507454 total 154445179
+mobile-high-dusk | main draws | p50 231 p95 403 worst 442 total 125541
+mobile-high-dusk | main draws above level 0 | p50 136 p95 246 worst 277 total 69550
+mobile-high-dusk | main triangles | p50 278593 p95 464804 worst 507420 total 154437779
 mobile-high-dusk | median run | p50 2 p95 3 worst 3 total 609
-mobile-high-dusk | mesh draws considered | p50 1861 p95 2441 worst 2441 total 1071832
+mobile-high-dusk | mesh draws considered | p50 1846 p95 2421 worst 2421 total 1063147
 mobile-high-dusk | mesh pool capacity | p50 48234512 p95 48234512 worst 48234512 total 25660760384
 mobile-high-dusk | mesh pool floor | p50 48234512 p95 48234512 worst 48234512 total 25660760384
 mobile-high-dusk | moving shadow casters | not exercised
@@ -457,10 +457,10 @@ mobile-high-dusk | reads held | not exercised
 mobile-high-dusk | run instances | p50 10 p95 335 worst 395 total 32660
 mobile-high-dusk | runs | p50 5 p95 140 worst 175 total 13955
 mobile-high-dusk | scene instances | p50 142 p95 142 worst 142 total 75544
-mobile-high-dusk | scene prepass draws | p50 227 p95 400 worst 440 total 123392
+mobile-high-dusk | scene prepass draws | p50 224 p95 396 worst 435 total 121817
 mobile-high-dusk | shadow capsules | p50 23 p95 29 worst 31 total 11472
-mobile-high-dusk | shadow draws above level 0 | p50 12 p95 72 worst 76 total 11464
-mobile-high-dusk | shadow triangles | p50 118754 p95 632145 worst 690477 total 115384864
+mobile-high-dusk | shadow draws above level 0 | p50 11 p95 66 worst 70 total 10350
+mobile-high-dusk | shadow triangles | p50 118700 p95 632069 worst 690435 total 115361310
 mobile-high-dusk | skinned instances | p50 6 p95 17 worst 20 total 3782
 mobile-high-dusk | skinned instances above level 0 | not exercised
 mobile-high-dusk | skinned vertices | p50 23331 p95 64765 worst 75404 total 14526215
@@ -480,7 +480,7 @@ mobile-high-dusk | texture lowers waiting | not exercised
 mobile-high-dusk | texture pool bytes | p50 28932504 p95 28932504 worst 28932504 total 15392092128
 mobile-high-dusk | texture tail bytes | p50 3913685 p95 3913685 worst 3913685 total 2082080420
 mobile-high-dusk | textures in debt | not exercised
-mobile-high-dusk | triangles | p50 775755 p95 1351810 worst 1561831 total 443946698
+mobile-high-dusk | triangles | p50 775699 p95 1351646 worst 1561725 total 443908344
 mobile-high-dusk | ui draws | not exercised
 mobile-high-dusk | upscale draws | not exercised
 mobile-high-dusk | worst texture debt frames | not exercised
@@ -501,8 +501,8 @@ mobile-high-night | cached cascades redrawn | not exercised
 mobile-high-night | capsule bits in fullest cluster | p50 25 p95 36 worst 43 total 12416
 mobile-high-night | capsule bits set | p50 469 p95 895 worst 1229 total 265942
 mobile-high-night | capsule clusters marked | p50 236 p95 474 worst 651 total 134561
-mobile-high-night | cascade 0 draws | p50 50 p95 71 worst 80 total 26701
-mobile-high-night | cascade 1 draws | p50 0 p95 264 worst 264 total 31483
+mobile-high-night | cascade 0 draws | p50 48 p95 69 worst 78 total 25629
+mobile-high-night | cascade 1 draws | p50 0 p95 259 worst 259 total 30910
 mobile-high-night | cascade 2 draws | not exercised
 mobile-high-night | cascade 3 draws | not exercised
 mobile-high-night | cascades drawn | p50 1 p95 2 worst 2 total 665
@@ -510,13 +510,13 @@ mobile-high-night | character map draws | not exercised
 mobile-high-night | character prepass draws | p50 17 p95 28 worst 31 total 9634
 mobile-high-night | characters animated | p50 30 p95 30 worst 30 total 15960
 mobile-high-night | characters thinned | p50 30 p95 30 worst 30 total 15616
-mobile-high-night | culled by a pass | p50 536 p95 844 worst 992 total 308856
+mobile-high-night | culled by a pass | p50 533 p95 840 worst 985 total 307176
 mobile-high-night | culled by distance | not exercised
 mobile-high-night | culled by size | not exercised
-mobile-high-night | culled by view | p50 806 p95 1072 worst 1187 total 421882
+mobile-high-night | culled by view | p50 802 p95 1064 worst 1179 total 419712
 mobile-high-night | culled past outline cutoff | not exercised
-mobile-high-night | draw calls | p50 591 p95 934 worst 1193 total 323646
-mobile-high-night | draw instances | p50 601 p95 1129 worst 1383 total 342306
+mobile-high-night | draw calls | p50 581 p95 918 worst 1177 total 318851
+mobile-high-night | draw instances | p50 591 p95 1112 worst 1367 total 337511
 mobile-high-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-high-night | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-high-night | entities removed | not exercised
@@ -524,17 +524,17 @@ mobile-high-night | frames waiting on a pipeline | not exercised
 mobile-high-night | held off screen | p50 22 p95 28 worst 30 total 11042
 mobile-high-night | inset draws | not exercised
 mobile-high-night | joints | p50 138 p95 391 worst 460 total 86986
-mobile-high-night | level switches | p50 0 p95 0 worst 2 total 13
+mobile-high-night | level switches | p50 0 p95 0 worst 1 total 12
 mobile-high-night | lights | p50 8 p95 8 worst 8 total 4256
 mobile-high-night | lights dropped | p50 41 p95 81 worst 95 total 21760
-mobile-high-night | lod0 draws | p50 281 p95 680 worst 795 total 183330
-mobile-high-night | lod1+ draws | p50 300 p95 518 worst 608 total 153124
+mobile-high-night | lod0 draws | p50 277 p95 677 worst 792 total 181941
+mobile-high-night | lod1+ draws | p50 293 p95 504 worst 597 total 149718
 mobile-high-night | longest run | p50 0 p95 3 worst 3 total 501
-mobile-high-night | main draws | p50 234 p95 407 worst 447 total 127116
-mobile-high-night | main draws above level 0 | p50 138 p95 249 worst 281 total 70682
-mobile-high-night | main triangles | p50 278599 p95 464844 worst 507454 total 154445179
+mobile-high-night | main draws | p50 231 p95 403 worst 442 total 125541
+mobile-high-night | main draws above level 0 | p50 136 p95 246 worst 277 total 69550
+mobile-high-night | main triangles | p50 278593 p95 464804 worst 507420 total 154437779
 mobile-high-night | median run | p50 0 p95 2 worst 3 total 378
-mobile-high-night | mesh draws considered | p50 1861 p95 2441 worst 2441 total 1067192
+mobile-high-night | mesh draws considered | p50 1846 p95 2421 worst 2421 total 1058547
 mobile-high-night | mesh pool capacity | p50 48234512 p95 48234512 worst 48234512 total 25660760384
 mobile-high-night | mesh pool floor | p50 48234512 p95 48234512 worst 48234512 total 25660760384
 mobile-high-night | moving shadow casters | not exercised
@@ -552,10 +552,10 @@ mobile-high-night | reads held | not exercised
 mobile-high-night | run instances | p50 0 p95 355 worst 410 total 32760
 mobile-high-night | runs | p50 0 p95 150 worst 175 total 14100
 mobile-high-night | scene instances | p50 142 p95 142 worst 142 total 75544
-mobile-high-night | scene prepass draws | p50 227 p95 400 worst 440 total 123392
+mobile-high-night | scene prepass draws | p50 224 p95 396 worst 435 total 121817
 mobile-high-night | shadow capsules | p50 23 p95 29 worst 31 total 11472
-mobile-high-night | shadow draws above level 0 | p50 12 p95 72 worst 76 total 11760
-mobile-high-night | shadow triangles | p50 93953 p95 629907 worst 681133 total 102578383
+mobile-high-night | shadow draws above level 0 | p50 11 p95 66 worst 70 total 10618
+mobile-high-night | shadow triangles | p50 93986 p95 629909 worst 681013 total 102554225
 mobile-high-night | skinned instances | p50 6 p95 17 worst 20 total 3782
 mobile-high-night | skinned instances above level 0 | not exercised
 mobile-high-night | skinned vertices | p50 23331 p95 64765 worst 75404 total 14526215
@@ -575,7 +575,7 @@ mobile-high-night | texture lowers waiting | not exercised
 mobile-high-night | texture pool bytes | p50 28932504 p95 28932504 worst 28932504 total 15392092128
 mobile-high-night | texture tail bytes | p50 3913685 p95 3913685 worst 3913685 total 2082080420
 mobile-high-night | textures in debt | not exercised
-mobile-high-night | triangles | p50 734492 p95 1357610 worst 1609545 total 431140217
+mobile-high-night | triangles | p50 734336 p95 1357410 worst 1609383 total 431101259
 mobile-high-night | ui draws | not exercised
 mobile-high-night | upscale draws | not exercised
 mobile-high-night | worst texture debt frames | not exercised
@@ -596,8 +596,8 @@ mobile-low-dusk | cached cascades redrawn | not exercised
 mobile-low-dusk | capsule bits in fullest cluster | p50 22 p95 35 worst 40 total 11846
 mobile-low-dusk | capsule bits set | p50 478 p95 960 worst 1304 total 272969
 mobile-low-dusk | capsule clusters marked | p50 243 p95 489 worst 648 total 138586
-mobile-low-dusk | cascade 0 draws | p50 65 p95 84 worst 94 total 34115
-mobile-low-dusk | cascade 1 draws | p50 0 p95 245 worst 255 total 37426
+mobile-low-dusk | cascade 0 draws | p50 63 p95 82 worst 92 total 33094
+mobile-low-dusk | cascade 1 draws | p50 0 p95 240 worst 250 total 36729
 mobile-low-dusk | cascade 2 draws | not exercised
 mobile-low-dusk | cascade 3 draws | not exercised
 mobile-low-dusk | cascades drawn | p50 1 p95 2 worst 2 total 710
@@ -605,13 +605,13 @@ mobile-low-dusk | character map draws | not exercised
 mobile-low-dusk | character prepass draws | p50 17 p95 28 worst 31 total 9639
 mobile-low-dusk | characters animated | p50 30 p95 30 worst 30 total 15960
 mobile-low-dusk | characters thinned | p50 30 p95 30 worst 30 total 15536
-mobile-low-dusk | culled by a pass | p50 519 p95 881 worst 1041 total 323144
+mobile-low-dusk | culled by a pass | p50 516 p95 875 worst 1034 total 321312
 mobile-low-dusk | culled by distance | not exercised
 mobile-low-dusk | culled by size | not exercised
-mobile-low-dusk | culled by view | p50 414 p95 547 worst 608 total 217015
+mobile-low-dusk | culled by view | p50 410 p95 543 worst 604 total 215930
 mobile-low-dusk | culled past outline cutoff | not exercised
-mobile-low-dusk | draw calls | p50 367 p95 635 worst 712 total 212562
-mobile-low-dusk | draw instances | p50 368 p95 761 worst 799 total 229677
+mobile-low-dusk | draw calls | p50 360 p95 624 worst 702 total 209269
+mobile-low-dusk | draw instances | p50 362 p95 750 worst 789 total 226384
 mobile-low-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-low-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-low-dusk | entities removed | not exercised
@@ -619,17 +619,17 @@ mobile-low-dusk | frames waiting on a pipeline | not exercised
 mobile-low-dusk | held off screen | p50 22 p95 29 worst 30 total 10865
 mobile-low-dusk | inset draws | not exercised
 mobile-low-dusk | joints | p50 138 p95 391 worst 460 total 87101
-mobile-low-dusk | level switches | p50 0 p95 0 worst 2 total 10
+mobile-low-dusk | level switches | p50 0 p95 0 worst 2 total 13
 mobile-low-dusk | lights | p50 8 p95 8 worst 8 total 4256
 mobile-low-dusk | lights dropped | p50 41 p95 81 worst 95 total 21760
-mobile-low-dusk | lod0 draws | p50 195 p95 496 worst 563 total 139423
-mobile-low-dusk | lod1+ draws | p50 161 p95 280 worst 328 total 85466
+mobile-low-dusk | lod0 draws | p50 193 p95 494 worst 562 total 138480
+mobile-low-dusk | lod1+ draws | p50 157 p95 271 worst 322 total 83116
 mobile-low-dusk | longest run | p50 2 p95 3 worst 3 total 763
-mobile-low-dusk | main draws | p50 234 p95 407 worst 447 total 127126
-mobile-low-dusk | main draws above level 0 | p50 143 p95 254 worst 286 total 72906
-mobile-low-dusk | main triangles | p50 279050 p95 462322 worst 504196 total 153863852
+mobile-low-dusk | main draws | p50 231 p95 403 worst 442 total 125551
+mobile-low-dusk | main draws above level 0 | p50 140 p95 251 worst 282 total 71768
+mobile-low-dusk | main triangles | p50 279016 p95 462282 worst 504162 total 153856382
 mobile-low-dusk | median run | p50 2 p95 3 worst 3 total 606
-mobile-low-dusk | mesh draws considered | p50 1244 p95 1824 worst 1824 total 765048
+mobile-low-dusk | mesh draws considered | p50 1234 p95 1809 worst 1809 total 758838
 mobile-low-dusk | mesh pool capacity | p50 48234512 p95 48234512 worst 48234512 total 25660760384
 mobile-low-dusk | mesh pool floor | p50 48234512 p95 48234512 worst 48234512 total 25660760384
 mobile-low-dusk | moving shadow casters | not exercised
@@ -649,8 +649,8 @@ mobile-low-dusk | runs | p50 5 p95 105 worst 135 total 13265
 mobile-low-dusk | scene instances | p50 142 p95 142 worst 142 total 75544
 mobile-low-dusk | scene prepass draws | not exercised
 mobile-low-dusk | shadow capsules | p50 19 p95 27 worst 31 total 9398
-mobile-low-dusk | shadow draws above level 0 | p50 12 p95 68 worst 76 total 12560
-mobile-low-dusk | shadow triangles | p50 117034 p95 551428 worst 601494 total 116091257
+mobile-low-dusk | shadow draws above level 0 | p50 11 p95 62 worst 70 total 11348
+mobile-low-dusk | shadow triangles | p50 117024 p95 551308 worst 601446 total 116066519
 mobile-low-dusk | skinned instances | p50 6 p95 17 worst 20 total 3787
 mobile-low-dusk | skinned instances above level 0 | not exercised
 mobile-low-dusk | skinned vertices | p50 23331 p95 64765 worst 76877 total 14562673
@@ -670,7 +670,7 @@ mobile-low-dusk | texture lowers waiting | not exercised
 mobile-low-dusk | texture pool bytes | p50 28932504 p95 28932504 worst 28932504 total 15392092128
 mobile-low-dusk | texture tail bytes | p50 3913685 p95 3913685 worst 3913685 total 2082080420
 mobile-low-dusk | textures in debt | not exercised
-mobile-low-dusk | triangles | p50 481519 p95 921634 worst 980724 total 290196221
+mobile-low-dusk | triangles | p50 481391 p95 921556 worst 980638 total 290164013
 mobile-low-dusk | ui draws | not exercised
 mobile-low-dusk | upscale draws | not exercised
 mobile-low-dusk | worst texture debt frames | not exercised
@@ -691,8 +691,8 @@ mobile-low-night | cached cascades redrawn | not exercised
 mobile-low-night | capsule bits in fullest cluster | p50 22 p95 35 worst 40 total 11745
 mobile-low-night | capsule bits set | p50 469 p95 880 worst 1205 total 261769
 mobile-low-night | capsule clusters marked | p50 236 p95 473 worst 642 total 135324
-mobile-low-night | cascade 0 draws | p50 42 p95 66 worst 80 total 22596
-mobile-low-night | cascade 1 draws | p50 0 p95 251 worst 256 total 34956
+mobile-low-night | cascade 0 draws | p50 41 p95 64 worst 78 total 21703
+mobile-low-night | cascade 1 draws | p50 0 p95 246 worst 251 total 34308
 mobile-low-night | cascade 2 draws | not exercised
 mobile-low-night | cascade 3 draws | not exercised
 mobile-low-night | cascades drawn | p50 1 p95 2 worst 2 total 688
@@ -700,13 +700,13 @@ mobile-low-night | character map draws | not exercised
 mobile-low-night | character prepass draws | p50 17 p95 28 worst 31 total 9639
 mobile-low-night | characters animated | p50 30 p95 30 worst 30 total 15960
 mobile-low-night | characters thinned | p50 30 p95 30 worst 30 total 15605
-mobile-low-night | culled by a pass | p50 545 p95 882 worst 1007 total 325078
+mobile-low-night | culled by a pass | p50 541 p95 876 worst 1000 total 323179
 mobile-low-night | culled by distance | not exercised
 mobile-low-night | culled by size | not exercised
-mobile-low-night | culled by view | p50 414 p95 547 worst 608 total 217015
+mobile-low-night | culled by view | p50 410 p95 543 worst 604 total 215930
 mobile-low-night | culled past outline cutoff | not exercised
-mobile-low-night | draw calls | p50 339 p95 626 worst 726 total 198573
-mobile-low-night | draw instances | p50 339 p95 773 worst 849 total 214983
+mobile-low-night | draw calls | p50 333 p95 617 worst 716 total 195457
+mobile-low-night | draw instances | p50 333 p95 762 worst 838 total 211867
 mobile-low-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-low-night | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-low-night | entities removed | not exercised
@@ -714,17 +714,17 @@ mobile-low-night | frames waiting on a pipeline | not exercised
 mobile-low-night | held off screen | p50 22 p95 29 worst 30 total 11111
 mobile-low-night | inset draws | not exercised
 mobile-low-night | joints | p50 138 p95 391 worst 460 total 87101
-mobile-low-night | level switches | p50 0 p95 0 worst 2 total 10
+mobile-low-night | level switches | p50 0 p95 0 worst 2 total 13
 mobile-low-night | lights | p50 8 p95 8 worst 8 total 4256
 mobile-low-night | lights dropped | p50 41 p95 81 worst 95 total 21760
-mobile-low-night | lod0 draws | p50 171 p95 499 worst 551 total 125413
-mobile-low-night | lod1+ draws | p50 158 p95 280 worst 336 total 84782
+mobile-low-night | lod0 draws | p50 169 p95 497 worst 549 total 124596
+mobile-low-night | lod1+ draws | p50 153 p95 270 worst 328 total 82483
 mobile-low-night | longest run | p50 0 p95 3 worst 3 total 534
-mobile-low-night | main draws | p50 234 p95 407 worst 447 total 127126
-mobile-low-night | main draws above level 0 | p50 143 p95 254 worst 286 total 72906
-mobile-low-night | main triangles | p50 279050 p95 462322 worst 504196 total 153863852
+mobile-low-night | main draws | p50 231 p95 403 worst 442 total 125551
+mobile-low-night | main draws above level 0 | p50 140 p95 251 worst 282 total 71768
+mobile-low-night | main triangles | p50 279016 p95 462282 worst 504162 total 153856382
 mobile-low-night | median run | p50 0 p95 2 worst 3 total 403
-mobile-low-night | mesh draws considered | p50 1244 p95 1824 worst 1824 total 752288
+mobile-low-night | mesh draws considered | p50 1234 p95 1809 worst 1809 total 746188
 mobile-low-night | mesh pool capacity | p50 48234512 p95 48234512 worst 48234512 total 25660760384
 mobile-low-night | mesh pool floor | p50 48234512 p95 48234512 worst 48234512 total 25660760384
 mobile-low-night | moving shadow casters | not exercised
@@ -744,8 +744,8 @@ mobile-low-night | runs | p50 0 p95 115 worst 135 total 12665
 mobile-low-night | scene instances | p50 142 p95 142 worst 142 total 75544
 mobile-low-night | scene prepass draws | not exercised
 mobile-low-night | shadow capsules | p50 19 p95 27 worst 31 total 9398
-mobile-low-night | shadow draws above level 0 | p50 8 p95 72 worst 76 total 11876
-mobile-low-night | shadow triangles | p50 86692 p95 548163 worst 585569 total 97612924
+mobile-low-night | shadow draws above level 0 | p50 7 p95 66 worst 70 total 10715
+mobile-low-night | shadow triangles | p50 86636 p95 548069 worst 585449 total 97593700
 mobile-low-night | skinned instances | p50 6 p95 17 worst 20 total 3787
 mobile-low-night | skinned instances above level 0 | not exercised
 mobile-low-night | skinned vertices | p50 23331 p95 64765 worst 76877 total 14562673
@@ -765,7 +765,7 @@ mobile-low-night | texture lowers waiting | not exercised
 mobile-low-night | texture pool bytes | p50 28932504 p95 28932504 worst 28932504 total 15392092128
 mobile-low-night | texture tail bytes | p50 3913685 p95 3913685 worst 3913685 total 2082080420
 mobile-low-night | textures in debt | not exercised
-mobile-low-night | triangles | p50 430577 p95 937342 worst 1037391 total 271717888
+mobile-low-night | triangles | p50 430631 p95 937182 worst 1037263 total 271691194
 mobile-low-night | ui draws | not exercised
 mobile-low-night | upscale draws | not exercised
 mobile-low-night | worst texture debt frames | not exercised

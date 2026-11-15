@@ -1,0 +1,2 @@
+2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: fight row phase="gpu" row="gpu frame" samples=7600 p50_us=8000.0 p95_us=11000.0 p99_us=12000.0 worst_us=13000.0 worst_tick=0 worst_walked_m="100.0" budget_us=Some(14000) over_p50=false over_worst=false
+2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: fight row phase="gpu" row="gpu main" samples=7600 p50_us=2786.0 p95_us=4905.0 p99_us=6000.0 worst_us=7000.0 worst_tick=0 worst_walked_m="100.0" budget_us=Some(4900) over_p50=false over_worst=false

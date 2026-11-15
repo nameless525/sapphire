@@ -1,0 +1,58 @@
+// A small manifest for the report's and the runner's tests: two tiers, a walk with a running day, a stand-in,
+// a pair and a run of counts alone. The logs beside it are cut down from real ones by hand.
+(
+    type: "sapphire::testkit::ScaleBench",
+    version: 1,
+    data: (
+        preset: "ci",
+        rounds: 2,
+        sitting_seconds: 600,
+        load_bound: 8.0,
+        gaps: ["weather that moves along one walk"],
+        tiers: [
+            (name: "desktop-low", size: "1920x1080", cook: desktop, lap: 7600, frames_a_second: 100, startup_seconds: 10),
+            (name: "mobile-low", size: "1280x590", cook: mobile, lap: 3800, frames_a_second: 100, startup_seconds: 10),
+        ],
+        runs: [
+            (
+                name: "tour",
+                about: "the tour, dusk into night",
+                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--day-length", "935"],
+                frames: Lap,
+                read: [Cpu, Gpu, Counts, Memory, Streaming],
+                trace: true,
+                beside: Some("tour"),
+                serves: [1, 2],
+            ),
+            (
+                name: "cast",
+                about: "the party",
+                args: ["--arena", "--replay", "{replays}/crowd-15.sreplay"],
+                frames: Count(600),
+                tiers: ["desktop-low"],
+                read: [Cast],
+                serves: [1, 5],
+                stands_in: Some("a party of three kinds against twelve enemies at the walk's end"),
+            ),
+            (
+                name: "lods",
+                about: "levels of detail, on against off",
+                args: ["--zone", "district", "--zone-walk", "tour"],
+                frames: Count(600),
+                tiers: ["desktop-low"],
+                read: [Gpu],
+                variants: [(name: "on", args: ["--lods", "on"]), (name: "off", args: ["--lods", "off"])],
+                rows: ["gpu main"],
+            ),
+            (
+                name: "counted",
+                about: "the tour's counts, a frame in seven drawn",
+                args: ["--draw-every", "7", "--zone", "district", "--zone-walk", "tour"],
+                frames: Count(3720),
+                tiers: ["desktop-low"],
+                read: [Counts, Pipelines],
+                timed: false,
+            ),
+        ],
+    ),
+)

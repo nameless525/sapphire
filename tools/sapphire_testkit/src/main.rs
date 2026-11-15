@@ -1,7 +1,8 @@
 //! `sapphire_testkit`: runs test suites that need a built app, as a process, because nothing may
 //! depend on a tool crate (rule R1). `cargo xtask golden` builds the sandbox and this binary,
 //! then runs `golden`, `cargo xtask store-shots` runs `store-shots` and `cargo xtask counts` runs
-//! `counts`. `measure` reads lines and edges from two captures of one shot.
+//! `counts`, and `cargo xtask bench-scale` runs `scale`. `measure` reads lines and edges from two captures of one
+//! shot.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -11,6 +12,7 @@ use sapphire_testkit::counts;
 use sapphire_testkit::flashes::{FlashAnalyser, Verdict};
 use sapphire_testkit::golden::{self, Image, Thresholds};
 use sapphire_testkit::look::{Lines, Region, Spread};
+use sapphire_testkit::scale::{self, manifest::ScaleBench};
 use sapphire_testkit::scenes::{self, DEFAULT_SCENE_TIMEOUT, Mode, Paths, Selection};
 use sapphire_testkit::store_shots;
 
@@ -40,6 +42,19 @@ Usage:
       digest the table names. --walk runs one walk (more than once for more); --update
       rewrites those walks' rows. Each walk's log is <out>/<walk>.log, and what every walk
       counted is <out>/counts.txt, a table (sapphire_testkit::counts).
+  sapphire_testkit scale plan --manifest <file> [--smoke] [--out <dir>]
+  sapphire_testkit scale run --manifest <file> --sandbox <exe> --desktop <dir> --mobile <dir>
+                             --replays <dir> --out <dir> [--smoke] [--sitting <n> | --counts]
+  sapphire_testkit scale report --manifest <file> --out <dir> [--baseline <dir>] [--commit <name>]
+                                [--smoke]
+      The benches at scale (sapphire_testkit::scale, `cargo xtask bench-scale`). `plan` prints the
+      manifest's sittings and their minutes by tier, and with --out what is done. `run` runs one
+      sitting, the next with a unit left unless --sitting names one, skipping complete units, or
+      with --counts every run of counts alone; it takes no gate slot. --desktop and --mobile are
+      each cook's packs with the district's beside them. Each unit writes <out>/<unit>.log and
+      .status (and .csv where its run traces). --smoke runs every run at 200 frames at 320x180.
+      `report` writes <out>/report.md from the logs, beside the baseline's folder of logs named
+      as the runs they stand beside, and fails on counts that moved where they must be exact.
   sapphire_testkit measure <with lines.png> <without lines.png> [--region <x,y,width,height>]
       Measure two captures of one shot, drawn with lines and without (the sandbox's
       --outline-distance 0), over the region or the whole image, in output pixels: the
@@ -81,9 +96,10 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
         Some("compare") => return compare(&args[1..]).map(|()| Vec::new()),
         Some("flashes") => return flashes(&args[1..]),
         Some("counts") => return counts(args.split_off(1)),
+        Some("scale") => return scale(args.split_off(1)),
         _ => {
             return Err(
-                "expected the `golden`, `store-shots`, `counts`, `measure`, `compare` or `flashes` command"
+                "expected the `golden`, `store-shots`, `counts`, `scale`, `measure`, `compare` or `flashes` command"
                     .into(),
             );
         }
@@ -157,6 +173,87 @@ fn counts(mut args: Vec<String>) -> Result<Vec<String>, String> {
         return Err(format!("unexpected argument `{unexpected}`"));
     }
     counts::run(&paths, mode, &walks, timeout)
+}
+
+/// `scale`: the benches at scale's plan, a sitting of them, or their report.
+#[allow(clippy::print_stdout, reason = "the plan and the report's path are the command's output")]
+fn scale(mut args: Vec<String>) -> Result<Vec<String>, String> {
+    if args.is_empty() {
+        return Err("scale expects `plan`, `run` or `report`".into());
+    }
+    let command = args.remove(0);
+    let mut flag = |name: &str| args.iter().position(|arg| arg == name).map(|i| args.remove(i)).is_some();
+    let smoke = flag("--smoke").then_some(scale::manifest::SMOKE);
+    let counts = flag("--counts");
+    let mut value = |name: &str| -> Result<Option<String>, String> {
+        let Some(i) = args.iter().position(|arg| arg == name) else { return Ok(None) };
+        args.remove(i);
+        (i < args.len()).then(|| args.remove(i)).map(Some).ok_or_else(|| format!("{name} needs a value"))
+    };
+    let manifest_path = value("--manifest")?.ok_or("missing --manifest")?;
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("failed to read {manifest_path}: {e}"))?;
+    let manifest = ScaleBench::parse(&text).map_err(|error| format!("{manifest_path}: {error}"))?;
+    let out = value("--out")?.map(PathBuf::from);
+    match command.as_str() {
+        "plan" => {
+            let (sandbox, desktop, mobile, replays) =
+                (PathBuf::new(), PathBuf::new(), PathBuf::new(), PathBuf::new());
+            let paths = out.map(|out| scale::Paths { sandbox, desktop, mobile, replays, out });
+            finish(&args)?;
+            print!("{}", scale::plan(&manifest, smoke, paths.as_ref()));
+            Ok(Vec::new())
+        }
+        "run" => {
+            let mut path =
+                |name: &str| value(name)?.map(PathBuf::from).ok_or_else(|| format!("missing {name}"));
+            let paths = scale::Paths {
+                sandbox: path("--sandbox")?,
+                desktop: path("--desktop")?,
+                mobile: path("--mobile")?,
+                replays: path("--replays")?,
+                out: out.ok_or("missing --out")?,
+            };
+            let sitting = value("--sitting")?;
+            finish(&args)?;
+            let select = match (sitting, counts) {
+                (None, false) => scale::Select::Next,
+                (None, true) => scale::Select::Counts,
+                (Some(number), false) => scale::Select::Sitting(
+                    number
+                        .parse()
+                        .map_err(|_| format!("--sitting expects a number from 1, got {number:?}"))?,
+                ),
+                (Some(_), true) => return Err("--sitting and --counts can't be combined".into()),
+            };
+            scale::run(&manifest, &paths, select, smoke)
+        }
+        "report" => {
+            let out = out.ok_or("missing --out")?;
+            let baseline = value("--baseline")?.map(PathBuf::from);
+            let commit = value("--commit")?.unwrap_or_else(|| out.display().to_string());
+            finish(&args)?;
+            let inputs = scale::report::Inputs {
+                manifest: &manifest,
+                logs: &out,
+                baseline: baseline.as_deref(),
+                commit: &commit,
+                smoke: smoke.is_some(),
+            };
+            let (text, failures) = scale::report::report(&inputs);
+            let written = out.join("report.md");
+            std::fs::write(&written, text)
+                .map_err(|e| format!("failed to write {}: {e}", written.display()))?;
+            println!("{}", written.display());
+            Ok(failures)
+        }
+        other => Err(format!("scale expects `plan`, `run` or `report`, not {other:?}")),
+    }
+}
+
+/// Fails on an argument nothing took.
+fn finish(args: &[String]) -> Result<(), String> {
+    args.first().map_or(Ok(()), |unexpected| Err(format!("unexpected argument `{unexpected}`")))
 }
 
 /// `--scene-timeout`'s value, or the default.

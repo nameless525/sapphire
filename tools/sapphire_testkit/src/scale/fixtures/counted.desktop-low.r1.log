@@ -1,0 +1,3 @@
+2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: count row phase="drawn" row="draw calls" frames=7600 p50=1000 p95=1700 worst=1800 total=100000 worst_tick=0 worst_walked_m="160.0" budget=Some(2500) over_p50=false over_worst=false
+2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: count row phase="drawn" row="triangles" frames=7600 p50=12000 p95=20000 worst=30000 total=1200000 worst_tick=0 worst_walked_m="160.0" budget=None over_p50=false over_worst=false
+2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: count row phase="drawn" row="lights" frames=7600 p50=64 p95=64 worst=64 total=6400 worst_tick=0 worst_walked_m="0.0" budget=Some(64) over_p50=false over_worst=false

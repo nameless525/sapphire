@@ -1,0 +1,608 @@
+//! The batch's manifest, `bench/scale.ron` (M5 Z1): every run the batch makes, as data, and the plan it makes of
+//! them: one unit for each run, tier, variant and round, packed into sittings no longer than a whole-machine hold.
+//! The document's own comments say what each field means to someone adding a run.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use bevy_reflect::TypePath;
+use sapphire_reflect::Versioned;
+use serde::Deserialize;
+
+/// The manifest as written.
+#[derive(Debug, Deserialize, TypePath)]
+#[type_path = "sapphire::testkit"]
+#[serde(deny_unknown_fields)]
+pub struct ScaleBench {
+    /// The benchmark preset the district's runs mount (`cargo xtask bench-content --preset`).
+    pub preset: String,
+    /// Rounds of each run, unless the run says otherwise.
+    pub rounds: u32,
+    /// The longest a sitting may plan, in seconds, by its units' stated lengths: one whole-machine hold.
+    pub sitting_seconds: u32,
+    /// The machine's one-minute load above which a timed reading is marked as read above it.
+    pub load_bound: f32,
+    /// What the batch can't measure yet, each said once at the top of the report: a run that closes one takes
+    /// its line out.
+    #[serde(default)]
+    pub gaps: Vec<String>,
+    /// The tiers, in the order the batch runs them.
+    pub tiers: Vec<Tier>,
+    /// The runs, in the order each tier's sittings run them.
+    pub runs: Vec<Run>,
+}
+
+impl Versioned for ScaleBench {
+    /// 1: M5 Z1.
+    const VERSION: u32 = 1;
+}
+
+/// A tier, as the batch runs it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tier {
+    /// The sandbox's `--tier`.
+    pub name: String,
+    /// The sandbox's `--size`, unless a run gives its own.
+    pub size: String,
+    pub cook: Cook,
+    /// Frames of a whole lap of the district's tour at this tier's steps a frame: what `Frames::Lap` means.
+    pub lap: u32,
+    /// What the bench draws a second on this machine at this tier, for planning only: frames over this give a
+    /// unit's stated length.
+    pub frames_a_second: u32,
+    /// Seconds a unit takes before its first frame: the load and the warm-up.
+    pub startup_seconds: u32,
+}
+
+/// Which cook a tier mounts.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Cook {
+    Desktop,
+    Mobile,
+}
+
+impl Cook {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Mobile => "mobile",
+        }
+    }
+}
+
+/// How many frames a run's bench measures in each phase.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub enum Frames {
+    /// A lap of the tour at the tier's steps a frame ([`Tier::lap`]).
+    Lap,
+    /// This many.
+    Count(u32),
+}
+
+/// What a run's logs are read for: which of the report's tables it fills.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Read {
+    /// §3.2's rows, from the bench's `cpu` phase.
+    Cpu,
+    /// §3.3's rows, from its `gpu` phase.
+    Gpu,
+    /// What a frame submits, against §3.4.
+    Counts,
+    /// The process's memory and the pools through the walk, against §3.1, and the load's time.
+    Memory,
+    /// The texture streamer and admission, exit test 2.
+    Streaming,
+    /// A zone trip's steps and the mesh pool's floor after it.
+    Trips,
+    /// The characters' rows, exit test 5.
+    Cast,
+    /// What the load built and what its frames built: exit test 7, by counts.
+    Pipelines,
+}
+
+/// One variant of a pair: its name and the arguments it adds.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Variant {
+    pub name: String,
+    pub args: Vec<String>,
+}
+
+/// One run of the batch.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Run {
+    /// Its name, lowercase letters, digits and hyphens: its logs' stem.
+    pub name: String,
+    /// What it measures, in the report's words.
+    pub about: String,
+    /// The sandbox's arguments, after `--tier` and `--size`. `{replays}` is the batch's prepared replays'
+    /// folder.
+    pub args: Vec<String>,
+    /// Arguments one tier adds, by its name.
+    #[serde(default)]
+    pub tier_args: BTreeMap<String, Vec<String>>,
+    pub frames: Frames,
+    /// The bench's phases of `frames`: 3 for a walk or a fight (cold, CPU, GPU), 1 for a plain bench.
+    #[serde(default = "three")]
+    pub phases: u32,
+    /// The tiers it runs on: every tier if empty.
+    #[serde(default)]
+    pub tiers: Vec<String>,
+    /// Its own `--size`, in place of the tier's (a package's script that drew at another size).
+    #[serde(default)]
+    pub size: Option<String>,
+    pub read: Vec<Read>,
+    /// A pair's (or more) variants, whose rounds alternate their order; none for a run of one.
+    #[serde(default)]
+    pub variants: Vec<Variant>,
+    /// Whether the unit writes every frame to `<unit>.csv` (`--bench-trace`): the 99th percentiles the bench's
+    /// rows don't log, and a trip's last frames.
+    #[serde(default)]
+    pub trace: bool,
+    /// The rows a pair's table shows, each a bench row, a count row or a plain bench's field.
+    #[serde(default)]
+    pub rows: Vec<String>,
+    /// Its rounds, in place of the manifest's.
+    #[serde(default)]
+    pub rounds: Option<u32>,
+    /// Whether it's timed, and so planned into sittings. A run of counts alone (`--draw-every`) isn't: it runs
+    /// in an ordinary slot (`run --counts`), and its rounds must count the same.
+    #[serde(default = "yes")]
+    pub timed: bool,
+    /// The baseline's run it stands beside, by name, read from the baseline's folder for the same tier.
+    #[serde(default)]
+    pub beside: Option<String>,
+    /// The exit tests (m5-plan §1) it is read for.
+    #[serde(default)]
+    pub serves: Vec<u32>,
+    /// What it stands in for, where the exit test's own run can't be made yet: the report prints its rows as
+    /// "not measured as written", never as a pass.
+    #[serde(default)]
+    pub stands_in: Option<String>,
+}
+
+fn three() -> u32 {
+    3
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// One sandbox run of the batch: a run on a tier, one variant, one round.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unit {
+    /// `<run>.<tier>[.<variant>].r<round>`: its logs' stem.
+    pub name: String,
+    pub run: usize,
+    pub tier: usize,
+    pub variant: Option<usize>,
+    pub round: u32,
+    /// Its stated length, in whole seconds.
+    pub seconds: u32,
+}
+
+/// A sitting: units in order, each tier's alone, their stated lengths within [`ScaleBench::sitting_seconds`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sitting {
+    pub tier: usize,
+    pub units: Vec<Unit>,
+}
+
+impl Sitting {
+    pub fn seconds(&self) -> u32 {
+        self.units.iter().map(|unit| unit.seconds).sum()
+    }
+}
+
+/// Settings a smoke run changes: every run's frames and size, so the whole batch proves it starts in minutes.
+#[derive(Clone, Copy, Debug)]
+pub struct Smoke {
+    pub frames: u32,
+    pub size: &'static str,
+}
+
+/// The smoke run's: 200 frames at 320×180.
+pub const SMOKE: Smoke = Smoke { frames: 200, size: "320x180" };
+
+impl ScaleBench {
+    /// The manifest in `text`, checked whole: the first problem found, as words.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let manifest: Self = sapphire_serialize::from_ron(text).map_err(|error| error.to_string())?;
+        manifest.check()?;
+        Ok(manifest)
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let name_ok = |name: &str| {
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        };
+        if self.rounds == 0 || self.sitting_seconds == 0 || self.load_bound.is_nan() || self.load_bound <= 0.0
+        {
+            return Err("rounds, sitting_seconds and load_bound must be above 0".into());
+        }
+        if self.tiers.is_empty() || self.runs.is_empty() {
+            return Err("the manifest lists no tier or no run".into());
+        }
+        let mut tiers = BTreeSet::new();
+        for tier in &self.tiers {
+            if !tiers.insert(tier.name.as_str()) {
+                return Err(format!("tier {:?} is listed twice", tier.name));
+            }
+            if tier.lap == 0 || tier.frames_a_second == 0 || size(&tier.size).is_none() {
+                return Err(format!(
+                    "tier {:?}: a lap, a rate and a size <width>x<height> are needed",
+                    tier.name
+                ));
+            }
+        }
+        let mut runs = BTreeSet::new();
+        for run in &self.runs {
+            let what = format!("run {:?}", run.name);
+            if !name_ok(&run.name) || !runs.insert(run.name.as_str()) {
+                return Err(format!("{what}: names are lowercase letters, digits and hyphens, each once"));
+            }
+            if let Some(unknown) =
+                run.tiers.iter().chain(run.tier_args.keys()).find(|name| !tiers.contains(name.as_str()))
+            {
+                return Err(format!("{what} names the tier {unknown:?}, which the manifest doesn't list"));
+            }
+            if let Some(owned) = run.args.iter().find(|arg| RUNNER_FLAGS.contains(&arg.as_str())) {
+                return Err(format!("{what}: {owned} is the runner's: the tier, `size` or `frames` give it"));
+            }
+            if run.read.is_empty() {
+                return Err(format!("{what} is read for nothing"));
+            }
+            if run.phases == 0 || run.rounds == Some(0) || run.frames == Frames::Count(0) {
+                return Err(format!("{what}: phases, rounds and frames must be above 0"));
+            }
+            if run.size.as_deref().is_some_and(|text| size(text).is_none()) {
+                return Err(format!("{what}: its size isn't <width>x<height>"));
+            }
+            let mut variants = BTreeSet::new();
+            if run.variants.len() == 1
+                || run
+                    .variants
+                    .iter()
+                    .any(|variant| !name_ok(&variant.name) || !variants.insert(&variant.name))
+            {
+                return Err(format!("{what}: a pair has two variants or more, each named once"));
+            }
+            if !run.rows.is_empty() && run.variants.is_empty() {
+                return Err(format!("{what}: `rows` are a pair's table, and it has no variants"));
+            }
+        }
+        for run in &self.runs {
+            if let Some(beside) = &run.beside
+                && !runs.contains(beside.as_str())
+            {
+                return Err(format!("run {:?} stands beside {beside:?}, which isn't a run", run.name));
+            }
+        }
+        // Each unit fits a sitting.
+        for unit in self.units(None).into_iter().chain(self.counting(None)) {
+            if unit.seconds > self.sitting_seconds {
+                return Err(format!(
+                    "{} states {} s, past a sitting's {} s: give it fewer frames",
+                    unit.name, unit.seconds, self.sitting_seconds
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The tier called `name`.
+    pub fn tier(&self, name: &str) -> Option<&Tier> {
+        self.tiers.iter().find(|tier| tier.name == name)
+    }
+
+    /// The run called `name`.
+    pub fn run(&self, name: &str) -> Option<&Run> {
+        self.runs.iter().find(|run| run.name == name)
+    }
+
+    fn rounds_of(&self, run: &Run) -> u32 {
+        run.rounds.unwrap_or(self.rounds)
+    }
+
+    /// Every timed unit in the order it runs: rounds, then tiers, then runs; a pair's variants in their order on
+    /// odd rounds and the other way on even ones, so neither always goes first.
+    pub fn units(&self, smoke: Option<Smoke>) -> Vec<Unit> {
+        self.ordered(smoke, true)
+    }
+
+    /// Every unit of counts alone, in the same order.
+    pub fn counting(&self, smoke: Option<Smoke>) -> Vec<Unit> {
+        self.ordered(smoke, false)
+    }
+
+    fn ordered(&self, smoke: Option<Smoke>, timed: bool) -> Vec<Unit> {
+        let most = self.runs.iter().map(|run| self.rounds_of(run)).max().unwrap_or(0);
+        let mut units = Vec::new();
+        for round in 1..=most {
+            for (tier_index, tier) in self.tiers.iter().enumerate() {
+                for (run_index, run) in self.runs.iter().enumerate() {
+                    if run.timed != timed || round > self.rounds_of(run) || !run.on(&tier.name) {
+                        continue;
+                    }
+                    let seconds = self.seconds(run, tier, smoke);
+                    let mut variants: Vec<Option<usize>> = if run.variants.is_empty() {
+                        vec![None]
+                    } else {
+                        (0..run.variants.len()).map(Some).collect()
+                    };
+                    if round % 2 == 0 {
+                        variants.reverse();
+                    }
+                    for variant in variants {
+                        units.push(Unit {
+                            name: unit_name(run, tier, variant, round),
+                            run: run_index,
+                            tier: tier_index,
+                            variant,
+                            round,
+                            seconds,
+                        });
+                    }
+                }
+            }
+        }
+        units
+    }
+
+    /// The frames a run's bench measures on `tier`.
+    pub fn frames(&self, run: &Run, tier: &Tier, smoke: Option<Smoke>) -> u32 {
+        let frames = match run.frames {
+            Frames::Lap => tier.lap,
+            Frames::Count(count) => count,
+        };
+        smoke.map_or(frames, |smoke| frames.min(smoke.frames))
+    }
+
+    /// A unit's stated length: its load, then its phases' frames at the tier's rate, in whole seconds.
+    fn seconds(&self, run: &Run, tier: &Tier, smoke: Option<Smoke>) -> u32 {
+        let frames = u64::from(self.frames(run, tier, smoke)) * u64::from(run.phases);
+        let drawing = frames.div_ceil(u64::from(tier.frames_a_second));
+        u32::try_from(u64::from(tier.startup_seconds) + drawing).unwrap_or(u32::MAX)
+    }
+
+    /// The timed units packed into sittings, in order: each sitting one tier's, none past
+    /// [`Self::sitting_seconds`] by its units' stated lengths, and a round's units of a pair in one sitting.
+    pub fn sittings(&self, smoke: Option<Smoke>) -> Vec<Sitting> {
+        let units = self.units(smoke);
+        let mut sittings: Vec<Sitting> = Vec::new();
+        let mut index = 0;
+        while index < units.len() {
+            // A pair's variants for one round go together, so they alternate inside one hold.
+            let unit = &units[index];
+            let group = units[index..]
+                .iter()
+                .take_while(|next| next.run == unit.run && next.tier == unit.tier && next.round == unit.round)
+                .count();
+            let block = &units[index..index + group];
+            let seconds: u32 = block.iter().map(|unit| unit.seconds).sum();
+            let fits = sittings.last().is_some_and(|sitting| {
+                sitting.tier == unit.tier && sitting.seconds() + seconds <= self.sitting_seconds
+            });
+            if fits {
+                sittings.last_mut().expect("a sitting").units.extend_from_slice(block);
+            } else if seconds <= self.sitting_seconds {
+                sittings.push(Sitting { tier: unit.tier, units: block.to_vec() });
+            } else {
+                // A pair too long to share a hold: each variant in a hold of its own, still alternating.
+                for unit in block {
+                    sittings.push(Sitting { tier: unit.tier, units: vec![unit.clone()] });
+                }
+            }
+            index += group;
+        }
+        sittings
+    }
+
+    /// The sandbox's arguments for `unit`: the tier and size, the frames, the trace if the run takes one, then
+    /// the run's, its tier's and its variant's arguments, with `{replays}` filled in.
+    pub fn args(&self, unit: &Unit, smoke: Option<Smoke>, replays: &str, trace: &str) -> Vec<String> {
+        let (run, tier) = (&self.runs[unit.run], &self.tiers[unit.tier]);
+        let size = match smoke {
+            Some(smoke) => smoke.size,
+            None => run.size.as_deref().unwrap_or(&tier.size),
+        };
+        let frames = self.frames(run, tier, smoke).to_string();
+        let mut args: Vec<String> =
+            ["--bench", &frames, "--tier", &tier.name, "--size", size].map(str::to_owned).to_vec();
+        if run.trace {
+            args.extend(["--bench-trace".to_owned(), trace.to_owned()]);
+        }
+        let extra = run.tier_args.get(&tier.name).into_iter().flatten();
+        let variant = unit.variant.map(|index| &run.variants[index].args).into_iter().flatten();
+        for arg in run.args.iter().chain(extra).chain(variant) {
+            args.push(arg.replace("{replays}", replays));
+        }
+        args
+    }
+}
+
+impl Run {
+    /// Whether it runs on the tier called `tier`.
+    pub fn on(&self, tier: &str) -> bool {
+        self.tiers.is_empty() || self.tiers.iter().any(|name| name == tier)
+    }
+
+    /// Whether its counts must read the same in every round: a run of counts alone (`--draw-every`) that sees
+    /// every texture whole. A timed run streams textures as a game does, and a counting run told to stream
+    /// does too, so their streaming rows follow when each read lands.
+    pub fn exact(&self) -> bool {
+        let streams =
+            |args: &[String]| args.windows(2).any(|pair| pair[0] == "--texture-streaming" && pair[1] == "on");
+        !self.timed
+            && !streams(&self.args)
+            && !self.variants.iter().any(|variant| streams(&variant.args))
+            && !self.tier_args.values().any(|args| streams(args))
+    }
+
+    /// Whether it runs a day along its walk (`--day-length`), whose phases must start at one hour.
+    pub fn runs_the_day(&self) -> bool {
+        self.args.iter().any(|arg| arg == "--day-length")
+    }
+}
+
+/// Arguments the runner gives every unit, so a run can't.
+const RUNNER_FLAGS: [&str; 4] = ["--bench", "--tier", "--size", "--bench-trace"];
+
+/// A unit's name: `<run>.<tier>[.<variant>].r<round>`.
+fn unit_name(run: &Run, tier: &Tier, variant: Option<usize>, round: u32) -> String {
+    match variant {
+        Some(index) => format!("{}.{}.{}.r{round}", run.name, tier.name, run.variants[index].name),
+        None => format!("{}.{}.r{round}", run.name, tier.name),
+    }
+}
+
+/// `<width>x<height>`, both above 0.
+fn size(text: &str) -> Option<(u32, u32)> {
+    let (width, height) = text.split_once('x')?;
+    let (width, height) = (width.parse().ok()?, height.parse().ok()?);
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    pub(crate) const SMALL: &str = r#"(
+        type: "sapphire::testkit::ScaleBench",
+        version: 1,
+        data: (
+            preset: "ci",
+            rounds: 2,
+            sitting_seconds: 600,
+            load_bound: 8.0,
+            tiers: [
+                (name: "desktop-low", size: "1920x1080", cook: desktop, lap: 7600, frames_a_second: 100,
+                 startup_seconds: 10),
+                (name: "mobile-low", size: "1280x590", cook: mobile, lap: 3800, frames_a_second: 100,
+                 startup_seconds: 10),
+            ],
+            runs: [
+                (name: "tour", about: "the tour", args: ["--zone", "district", "--zone-walk", "tour"],
+                 frames: Lap, read: [Cpu, Gpu, Counts]),
+                (name: "lods", about: "levels", args: ["--zone", "district", "--zone-walk", "tour"],
+                 frames: Count(600), read: [Counts], tiers: ["desktop-low"],
+                 variants: [(name: "on", args: ["--lods", "on"]), (name: "off", args: ["--lods", "off"])],
+                 rows: ["triangles"], beside: Some("tour")),
+                (name: "counted", about: "counts", args: ["--draw-every", "7", "--bench-trace", "x"],
+                 frames: Count(200), read: [Pipelines], timed: false),
+            ],
+        ),
+    )"#;
+
+    fn small() -> String {
+        // The counting run's `--bench-trace` is the runner's: take it out for the manifest that parses.
+        SMALL.replace(r#", "--bench-trace", "x""#, "")
+    }
+
+    #[test]
+    fn the_manifest_parses_and_refuses_an_unknown_field() {
+        let manifest = ScaleBench::parse(&small()).expect("parses");
+        assert_eq!(manifest.runs.len(), 3);
+        assert_eq!(manifest.tier("mobile-low").map(|tier| tier.lap), Some(3800));
+        let unknown = small().replace("rounds: 2,", "rounds: 2, laps: 3,");
+        assert!(ScaleBench::parse(&unknown).unwrap_err().contains("laps"), "a field it doesn't know");
+        let in_a_run = small().replace("frames: Lap,", "frames: Lap, colour: 3,");
+        assert!(ScaleBench::parse(&in_a_run).is_err(), "nor in a run");
+    }
+
+    #[test]
+    fn the_manifest_refuses_what_the_runner_owns_and_names_that_dont_resolve() {
+        assert!(ScaleBench::parse(SMALL).unwrap_err().contains("--bench-trace"));
+        let tier = small().replace(r#"tiers: ["desktop-low"]"#, r#"tiers: ["desktop-medium"]"#);
+        assert!(ScaleBench::parse(&tier).unwrap_err().contains("desktop-medium"));
+        let beside = small().replace(r#"beside: Some("tour")"#, r#"beside: Some("walk")"#);
+        assert!(ScaleBench::parse(&beside).unwrap_err().contains("walk"));
+        let lone = small().replace(r#", (name: "off", args: ["--lods", "off"])"#, "");
+        assert!(ScaleBench::parse(&lone).unwrap_err().contains("two variants"));
+        let long = small().replace("frames: Count(600)", "frames: Count(60000)");
+        assert!(
+            ScaleBench::parse(&long).unwrap_err().contains("past a sitting"),
+            "a unit longer than a hold"
+        );
+    }
+
+    #[test]
+    fn a_pairs_rounds_alternate_and_each_round_stays_in_one_sitting() {
+        let manifest = ScaleBench::parse(&small()).unwrap();
+        let names: Vec<String> = manifest.units(None).into_iter().map(|unit| unit.name).collect();
+        assert_eq!(
+            names,
+            [
+                "tour.desktop-low.r1",
+                "lods.desktop-low.on.r1",
+                "lods.desktop-low.off.r1",
+                "tour.mobile-low.r1",
+                "tour.desktop-low.r2",
+                "lods.desktop-low.off.r2",
+                "lods.desktop-low.on.r2",
+                "tour.mobile-low.r2",
+            ]
+        );
+        for sitting in manifest.sittings(None) {
+            let on = sitting.units.iter().position(|unit| unit.name.contains(".on."));
+            let off = sitting.units.iter().position(|unit| unit.name.contains(".off."));
+            assert_eq!(on.is_some(), off.is_some(), "a round's pair is held together: {sitting:?}");
+        }
+        assert_eq!(manifest.counting(None).len(), 4, "counts alone run apart, two rounds a tier");
+    }
+
+    #[test]
+    fn no_sitting_plans_past_its_length() {
+        let manifest = ScaleBench::parse(&small()).unwrap();
+        // tour: 10 + 3 × 7600 / 100 = 238 s; lods: 10 + 3 × 600 / 100 = 28 s each.
+        let sittings = manifest.sittings(None);
+        assert!(sittings.iter().all(|sitting| sitting.seconds() <= 600), "{sittings:?}");
+        assert!(sittings.iter().all(|sitting| sitting.units.iter().all(|unit| unit.tier == sitting.tier)));
+        assert_eq!(sittings.iter().map(Sitting::seconds).sum::<u32>(), 2 * (238 + 28 + 28 + 124));
+        let tight =
+            ScaleBench::parse(&small().replace("sitting_seconds: 600", "sitting_seconds: 260")).unwrap();
+        let sittings = tight.sittings(None);
+        assert!(sittings.iter().all(|sitting| sitting.seconds() <= 260), "{sittings:?}");
+        assert!(sittings.len() > 4);
+    }
+
+    #[test]
+    fn a_units_arguments_put_the_runners_first_and_fill_the_folders() {
+        let traced = small().replace(r#"rows: ["triangles"]"#, r#"rows: ["triangles"], trace: true"#);
+        let manifest =
+            ScaleBench::parse(&traced.replace(r#""--lods", "on""#, r#""--lods", "on", "{replays}/a""#))
+                .unwrap();
+        let unit =
+            manifest.units(None).into_iter().find(|unit| unit.name == "lods.desktop-low.on.r1").unwrap();
+        let args = manifest.args(&unit, None, "/r", "/t.csv");
+        assert_eq!(
+            args[..8],
+            ["--bench", "600", "--tier", "desktop-low", "--size", "1920x1080", "--bench-trace", "/t.csv"]
+        );
+        assert!(args.ends_with(&["--lods".to_owned(), "on".to_owned(), "/r/a".to_owned()]));
+        let smoke = manifest.args(&unit, Some(SMOKE), "/r", "/t.csv");
+        assert_eq!(smoke[..6], ["--bench", "200", "--tier", "desktop-low", "--size", "320x180"]);
+    }
+
+    #[test]
+    fn the_committed_manifest_parses_and_plans_every_tier() {
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let sittings = manifest.sittings(None);
+        for tier in 0..manifest.tiers.len() {
+            assert!(
+                sittings.iter().any(|sitting| sitting.tier == tier),
+                "no sitting for {}",
+                manifest.tiers[tier].name
+            );
+        }
+        assert!(sittings.iter().all(|sitting| sitting.seconds() <= manifest.sitting_seconds));
+        // B4's eight walks, each beside itself.
+        let baseline =
+            manifest.runs.iter().filter(|run| run.beside.as_deref() == Some(run.name.as_str())).count();
+        assert_eq!(baseline * manifest.tiers.len(), 8);
+        assert!(!manifest.counting(None).is_empty());
+    }
+}

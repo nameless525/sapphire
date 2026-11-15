@@ -1,0 +1,5 @@
+phase,frame,worst_texture_debt,mesh_pool_capacity,mesh_pool_floor
+first,0,90,10,10
+cpu,0,2,10,10
+cpu,1,41,12,10
+cpu,2,5,10,10

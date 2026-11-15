@@ -804,6 +804,9 @@ mod tests {
                 // A tier as it ships (M4 T0), whose GTAO the thermal ladder's rungs shed; its levels of
                 // detail (M5 D4) too.
                 assert!(scene.has("--tier") && !scene.has("--ao"), "{}", scene.name);
+            } else if scene.name.starts_with("upscale-") {
+                // A phone tier's upscaler (M5 L14), on the tier as it ships, or with AO off under a screen effect.
+                assert!(scene.has("--tier") && !scene.has("--probes"), "{}", scene.name);
             } else {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.has("--probes"), "{}", scene.name);
@@ -835,10 +838,12 @@ mod tests {
             } else if !display_text
                 && !name.starts_with("tier-")
                 && !name.starts_with("lod-")
+                && !name.starts_with("upscale-")
                 && !name.starts_with("zone-district-")
             {
-                // The tier scenes (M4 T0) and the levels' (M5 D4) draw a phone's frame at a phone's shape, and the
-                // benchmark district's (M5 X4) draw small, since lavapipe and WARP draw them on every pull request.
+                // The tier scenes (M4 T0), the levels' (M5 D4) and the upscaler's (M5 L14) draw a phone's frame at a
+                // phone's shape, and the benchmark district's (M5 X4) draw small, since lavapipe and WARP draw them on
+                // every pull request.
                 assert_eq!(size, SIZE, "{name}");
             }
         }

@@ -13,7 +13,8 @@
 //! - **A plain bench of a walk** (`--zone-walk` with `--draw-every <n>`, which `bench.rs` runs) logs the same
 //!   rows over the frames it drew ([`DrawnCounts`], M5 X4): only every `n`th frame runs its graph, and one
 //!   that doesn't submits nothing. They're what CI's scale lane holds on a software GPU (`cargo xtask
-//!   counts`), and they time nothing.
+//!   counts`), and they time nothing. So does a fight's bench under `--draw-every`, over the frames of its one
+//!   phase that drew (M5 B5).
 //! - **Core kinds:** each frame samples which kind of core the main thread was on as its CPU work ended
 //!   (`sapphire_platform::current_core`), and each phase logs its frames' CPU and GPU times split by kind,
 //!   which is what explains a ×2.6–3 spread between runs of one build: a frame on an efficiency core.
@@ -399,6 +400,17 @@ pub(crate) const COUNT_ROWS: [CountRow; 85] = [
 
 /// A frame's counts, the tick it was drawn at and the metres walked by then.
 type Counting<'a> = (&'a Counted, u64, Option<f32>);
+
+/// Logs each count row over the frames of `phase` that ran their graph under `--draw-every <every>`, as a phase
+/// of its own, `drawn`, as [`DrawnCounts`] does a walk's (M5 B5): a fight's bench under it times nothing, and a
+/// frame that runs no graph submits nothing.
+pub(super) fn report_drawn(trace: &[Traced], phase: Phase, every: u32, column: usize) {
+    let frames = || trace.iter().filter(move |frame| frame.phase == phase && frame.frame % every == 0);
+    if frames().next().is_none() {
+        return;
+    }
+    rows(|| frames().map(|frame| (&frame.counted, frame.tick, frame.walked)), "drawn", column);
+}
 
 /// Logs each count row over `phase`'s frames, and its frames' times by the kind of core they ran on.
 pub(super) fn report(trace: &[Traced], phase: Phase, column: usize) {

@@ -494,7 +494,8 @@ pub(crate) struct Options {
     /// says off, which the goldens from before bends pin. Needs `--cues` or `--vfx`. A tier without bends draws
     /// none either way.
     pub distortion: Option<bool>,
-    /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`).
+    /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`), and under
+    /// `--draw-every` its one phase's, a frame that ran no graph counting nothing drawn (M5 B5).
     pub bench_trace: Option<PathBuf>,
     /// `--draw-every <n>`: every frame steps, animates, prepares and records, and only every `n`th runs its
     /// graph, the first among them, losing the rest as a frame whose surface was lost. It's for a long run on a

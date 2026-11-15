@@ -436,9 +436,15 @@ pub(crate) fn run(
     if option.is_none() && run.stage.scene.time_of_day().clock().day_length().is_some() {
         run.walk_hour = Some(run.stage.scene.time_of_day().clock().hours(1.0));
     }
-    if run.draw_every.is_some() {
+    if let Some(every) = run.draw_every {
         run.phase(Phase::First, frames)?;
         zone::report(run.stage, &run.trace, Phase::First);
+        let column = tier_column(run.stage.quality.stats().tier.id);
+        counts::report_drawn(&run.trace, Phase::First, every.get(), column);
+        if let Some(path) = &options.bench_trace {
+            write_trace(path, &run.trace)
+                .map_err(|error| AppInitError::msg(format!("--bench-trace {}: {error}", path.display())))?;
+        }
         stage.lose_frames = false;
         stage.check_gpu()?;
         return stage.show.fight.finish().map_err(AppInitError::msg);

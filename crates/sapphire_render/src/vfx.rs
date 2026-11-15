@@ -964,9 +964,12 @@ impl Vfx {
             + self.distortions.pipelines();
     }
 
-    /// The tier's offsets (M5 L6): off draws no bend, whatever a frame asks.
-    pub(crate) fn distortion(&self) -> DistortionResolution {
-        self.distortions.resolution()
+    /// Whether `frame`'s bends draw (M5 L6): the tier has them (off draws no bend, whatever a frame asks) and one
+    /// of them packs, as [`Self::prepare`] will pack them. Post decides its composite by it before effects
+    /// prepare, so a frame whose bends were all rejected (a transform that isn't finite) draws the plain
+    /// composite, the one post then builds.
+    pub(crate) fn bends_draw(&self, frame: &VfxFrame) -> bool {
+        self.distortions.draw(&frame.distortions)
     }
 
     /// Which parts' pipelines are built, and whether a mask's is: what effects of another tier build before

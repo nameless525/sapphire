@@ -558,6 +558,36 @@ fn nothing_is_built_and_no_pass_added_until_a_bend_draws() {
     }
 }
 
+/// A frame whose bends all fail to pack (each mesh's transform holds a NaN, which effects reject) draws as a
+/// frame without bends, even through a post variant nothing built ahead (the glitch's): post builds and draws
+/// exactly what such a frame does, the variant's plain composite, and not its distorted form.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_frame_whose_bends_were_all_rejected_draws_the_plain_composite() {
+    let mut rejected = edge_bend(STRENGTH);
+    rejected.mesh.position.x = f32::NAN;
+    let mut effects = passthrough().effects;
+    effects.glitch = Glitch { amount: 1.0, bands: 16, share: 1.0, shift: 0.04, split: 0.0, seed: 7 };
+    let glitched = PostParams { effects, ..passthrough() };
+    for (path, settings) in paths() {
+        let mut plain = Harness::sized(settings, (SIDE, SIDE));
+        add_edge(&mut plain, 0.0);
+        draw(&mut plain, 1, glitched, &[]);
+        let mut harness = Harness::sized(settings, (SIDE, SIDE));
+        add_edge(&mut harness, 0.0);
+        draw(&mut harness, 1, glitched, &[rejected]);
+        let (stats, without) = (harness.renderer.stats(), plain.renderer.stats());
+        assert!(!stats.post.distortion, "{path}: the plain composite draws");
+        assert_eq!(stats.vfx.distortions, 0, "{path}: no bend packed");
+        assert!(without.post.first_use_builds > 0, "{path}: the glitch's variant built on its first frame");
+        assert_eq!(
+            (stats.post.pipelines, stats.post.first_use_builds),
+            (without.post.pipelines, without.post.first_use_builds),
+            "{path}: post built what a frame without bends builds"
+        );
+    }
+}
+
 /// Mobile-Low has no bends: with every pipeline declared and a frame full of bends it builds nothing of them,
 /// adds no pass, and draws the frame byte for byte as without them.
 #[test]

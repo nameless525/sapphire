@@ -452,6 +452,12 @@ impl VfxDistortions {
         self.resolution
     }
 
+    /// Whether a frame of `bends` draws any: the tier has them and one packs, by the test [`Self::prepare`]
+    /// packs them by. A frame's are within its budget's cap, far under the buffer's limit.
+    pub(super) fn draw(&self, bends: &[VfxDistortion]) -> bool {
+        self.resolution.any() && bends.iter().any(|bend| GpuVfxDistortion::new(bend).is_some())
+    }
+
     /// Makes what the first bend needs and builds its pipeline, unless made, on a tier with bends.
     pub(super) fn build(&mut self, maker: &VfxMaker, queue: &wgpu::Queue, sources: &ShaderSources) {
         self.asked = true;

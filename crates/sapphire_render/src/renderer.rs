@@ -2831,8 +2831,9 @@ impl Renderer {
         // built ahead builds now, from the current shader sources.
         let camera = packet.main_view().map(|view| view.camera);
         let sun = camera.zip(self.sky.sun_disc()).and_then(|(camera, disc)| SunOnScreen::new(&camera, disc));
-        // Bends (M5 L6) only where the tier has them: elsewhere the frame is drawn as if it had none.
-        let bends = !packet.vfx.distortions.is_empty() && self.vfx.distortion().any();
+        // Bends (M5 L6) only where the tier has them and one packs: elsewhere the frame is drawn as if it had
+        // none, and post builds and draws its plain composite.
+        let bends = self.vfx.bends_draw(&packet.vfx);
         self.checked_build(|renderer| {
             let toward = renderer.sky.sun_disc().map(|disc| disc.toward);
             renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun, toward, bends)

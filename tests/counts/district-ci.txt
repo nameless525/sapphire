@@ -77,6 +77,7 @@ desktop-high-dusk | texture bytes raised | not exercised
 desktop-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
 desktop-high-dusk | triangles | p50 2960059 p95 3350763 worst 3469933 total 1483688787
 desktop-high-dusk | ui draws | not exercised
+desktop-high-dusk | upscale draws | not exercised
 
 desktop-high-night | ambient characters in view | not exercised
 desktop-high-night | ambient characters spawned | not exercised
@@ -145,6 +146,7 @@ desktop-high-night | texture bytes raised | not exercised
 desktop-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
 desktop-high-night | triangles | p50 2860296 p95 3411094 worst 3466148 total 1495370842
 desktop-high-night | ui draws | not exercised
+desktop-high-night | upscale draws | not exercised
 
 desktop-low-dusk | ambient characters in view | not exercised
 desktop-low-dusk | ambient characters spawned | not exercised
@@ -213,6 +215,7 @@ desktop-low-dusk | texture bytes raised | not exercised
 desktop-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
 desktop-low-dusk | triangles | p50 2775759 p95 3165615 worst 3255359 total 1382505977
 desktop-low-dusk | ui draws | not exercised
+desktop-low-dusk | upscale draws | not exercised
 
 desktop-low-night | ambient characters in view | not exercised
 desktop-low-night | ambient characters spawned | not exercised
@@ -281,6 +284,7 @@ desktop-low-night | texture bytes raised | not exercised
 desktop-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
 desktop-low-night | triangles | p50 2595462 p95 3204733 worst 3254577 total 1375898325
 desktop-low-night | ui draws | not exercised
+desktop-low-night | upscale draws | not exercised
 
 mobile-high-dusk | ambient characters in view | not exercised
 mobile-high-dusk | ambient characters spawned | not exercised
@@ -328,7 +332,7 @@ mobile-high-dusk | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 to
 mobile-high-dusk | outline draws | p50 14 p95 14 worst 14 total 7434
 mobile-high-dusk | pipelines built on first use | not exercised
 mobile-high-dusk | pipelines built on the frame's thread | not exercised
-mobile-high-dusk | pipelines prewarmed | p50 67 p95 67 worst 67 total 67
+mobile-high-dusk | pipelines prewarmed | p50 69 p95 69 worst 69 total 69
 mobile-high-dusk | pipelines rebuilt | not exercised
 mobile-high-dusk | pipelines set | p50 25 p95 25 worst 25 total 13275
 mobile-high-dusk | poses evaluated | not exercised
@@ -349,6 +353,7 @@ mobile-high-dusk | texture bytes raised | not exercised
 mobile-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
 mobile-high-dusk | triangles | p50 1779912 p95 2297356 worst 2375093 total 910992383
 mobile-high-dusk | ui draws | not exercised
+mobile-high-dusk | upscale draws | not exercised
 
 mobile-high-night | ambient characters in view | not exercised
 mobile-high-night | ambient characters spawned | not exercised
@@ -396,7 +401,7 @@ mobile-high-night | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 t
 mobile-high-night | outline draws | p50 14 p95 14 worst 14 total 7434
 mobile-high-night | pipelines built on first use | not exercised
 mobile-high-night | pipelines built on the frame's thread | not exercised
-mobile-high-night | pipelines prewarmed | p50 67 p95 67 worst 67 total 67
+mobile-high-night | pipelines prewarmed | p50 69 p95 69 worst 69 total 69
 mobile-high-night | pipelines rebuilt | not exercised
 mobile-high-night | pipelines set | p50 25 p95 25 worst 25 total 13239
 mobile-high-night | poses evaluated | not exercised
@@ -417,6 +422,7 @@ mobile-high-night | texture bytes raised | not exercised
 mobile-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
 mobile-high-night | triangles | p50 1722163 p95 2338027 worst 2440419 total 909609960
 mobile-high-night | ui draws | not exercised
+mobile-high-night | upscale draws | not exercised
 
 mobile-low-dusk | ambient characters in view | not exercised
 mobile-low-dusk | ambient characters spawned | not exercised
@@ -464,7 +470,7 @@ mobile-low-dusk | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 tot
 mobile-low-dusk | outline draws | p50 7 p95 7 worst 7 total 3717
 mobile-low-dusk | pipelines built on first use | not exercised
 mobile-low-dusk | pipelines built on the frame's thread | not exercised
-mobile-low-dusk | pipelines prewarmed | p50 56 p95 56 worst 56 total 56
+mobile-low-dusk | pipelines prewarmed | p50 58 p95 58 worst 58 total 58
 mobile-low-dusk | pipelines rebuilt | not exercised
 mobile-low-dusk | pipelines set | p50 21 p95 21 worst 21 total 11151
 mobile-low-dusk | poses evaluated | not exercised
@@ -485,6 +491,7 @@ mobile-low-dusk | texture bytes raised | not exercised
 mobile-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
 mobile-low-dusk | triangles | p50 1286320 p95 1489557 worst 1568544 total 637645403
 mobile-low-dusk | ui draws | not exercised
+mobile-low-dusk | upscale draws | not exercised
 
 mobile-low-night | ambient characters in view | not exercised
 mobile-low-night | ambient characters spawned | not exercised
@@ -532,7 +539,7 @@ mobile-low-night | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 to
 mobile-low-night | outline draws | p50 7 p95 7 worst 7 total 3717
 mobile-low-night | pipelines built on first use | not exercised
 mobile-low-night | pipelines built on the frame's thread | not exercised
-mobile-low-night | pipelines prewarmed | p50 56 p95 56 worst 56 total 56
+mobile-low-night | pipelines prewarmed | p50 58 p95 58 worst 58 total 58
 mobile-low-night | pipelines rebuilt | not exercised
 mobile-low-night | pipelines set | p50 21 p95 21 worst 21 total 11110
 mobile-low-night | poses evaluated | not exercised
@@ -553,3 +560,4 @@ mobile-low-night | texture bytes raised | not exercised
 mobile-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
 mobile-low-night | triangles | p50 1211302 p95 1552084 worst 1598267 total 632823564
 mobile-low-night | ui draws | not exercised
+mobile-low-night | upscale draws | not exercised

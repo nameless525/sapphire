@@ -63,6 +63,10 @@
 //!   (`sapphire_render::quality`) instead of the one selected for the device. The `r.tier` cvar
 //!   overrides it in `dev` builds, and a change makes a new renderer.
 //! - `--render-scale <0.25..1>`: the player's base render scale instead of the tier's.
+//! - `--upscaler bilinear|edge`: how a phone tier takes a frame below scale 1 to the output (M5 L14):
+//!   `edge`, the tier's own, upscales along edges and sharpens after post's fused pass; `bilinear` reads it
+//!   bilinearly in the fused pass, as the goldens from before the upscaler pin. Changes nothing on a desktop
+//!   tier, whose temporal AA upsamples.
 //! - `--dynamic-resolution`: let dynamic resolution lower the render scale to hold the tier's
 //!   GPU budget (off by default; `r.dynamic_resolution` overrides it).
 //! - `--aa off|msaa|taa`: the antialiasing technique instead of the tier's (temporal AA on the

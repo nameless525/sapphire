@@ -158,7 +158,7 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
 /// culled, the levels drawn (the main view's and the shadows' apart, and the main view's switches, M5
 /// D4), the state the mesh passes changed, the instanced runs, skinning, lights, the asset server's,
 /// animation's, and a zone's crowd's.
-pub(super) const COUNT_ROWS: [CountRow; 61] = [
+pub(super) const COUNT_ROWS: [CountRow; 62] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -181,6 +181,7 @@ pub(super) const COUNT_ROWS: [CountRow; 61] = [
     row("inset draws", |c| c.passes.insets.iter().map(|inset| u64::from(inset.draws)).sum()),
     row("temporal draws", |c| u64::from(c.passes.temporal.draws)),
     row("post draws", |c| u64::from(c.passes.post.draws)),
+    row("upscale draws", |c| u64::from(c.passes.upscale.draws)),
     row("ui draws", |c| u64::from(c.passes.ui.draws)),
     row("ambient dispatches", |c| u64::from(c.ambient_dispatches)),
     row("probe dispatches", |c| u64::from(c.probe_dispatches)),
@@ -379,7 +380,7 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
         passes.main.draws,
         passes.character_prepass.draws + passes.scene_prepass.draws,
         passes.shadows().draws,
-        passes.post.draws + passes.temporal.draws,
+        passes.post.draws + passes.temporal.draws + passes.upscale.draws,
         passes.ui.draws,
         c.skinned,
         c.joints,

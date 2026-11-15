@@ -10,8 +10,8 @@ use sapphire_render::quality::{
 };
 use sapphire_render::{
     ColorVision, CullingMode, CullingThresholds, DebugView, DrawRuns, EffectScale, LevelSettings, LevelsMode,
-    LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Weather,
-    Wind,
+    LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Upscaler,
+    Weather, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -51,6 +51,7 @@ Common options:
   --tier <tier>             desktop-high, desktop-low, mobile-high or mobile-low
   --aa off|msaa|taa         Antialiasing override
   --render-scale <0.25..1>   Render scale override
+  --upscaler bilinear|edge  Phone tiers' upscaler override
   --look-dev <scene>        Select a look-development scene
   --replay <file>           Play a recorded simulation
   --record <file>           Record a simulation
@@ -179,6 +180,10 @@ pub(crate) struct Options {
     pub tier: Option<TierId>,
     /// `--render-scale <0.25..1>`: the player's base render scale instead of the tier's.
     pub render_scale: Option<f32>,
+    /// `--upscaler bilinear|edge` (M5 L14): `bilinear` keeps the fused pass's bilinear read of a frame below
+    /// scale 1 on a phone tier, in place of its edge upscaler and sharpen, as the goldens from before it pin;
+    /// `edge` is the tier's own. A desktop tier has no edge upscaler, so either changes nothing there.
+    pub bilinear_upscale: bool,
     /// `--dynamic-resolution`: let dynamic resolution lower the render scale.
     pub dynamic_resolution: bool,
     /// `--shadows on|off`: the player's shadow setting; the tier's without it.
@@ -756,7 +761,7 @@ impl Options {
 
     /// The renderer settings: the quality tier's, with the options' overrides. `--msaa` wins
     /// over `--aa`'s sample count. Under `--plain-post` no frame draws a compositing layer, so
-    /// post builds none of their variants.
+    /// post builds none of their variants. `--upscaler bilinear` takes the edge upscaler away (M5 L14).
     pub fn render_settings(&self, tier: RenderSettings) -> RenderSettings {
         let (msaa, temporal) = match self.aa {
             None => (tier.msaa, tier.temporal),
@@ -774,6 +779,7 @@ impl Options {
             culling: self.culling.unwrap_or(tier.culling),
             levels: LevelSettings { mode: self.lods.unwrap_or(tier.levels.mode), ..tier.levels },
             draw_runs: self.draw_runs.unwrap_or(tier.draw_runs),
+            upscaler: if self.bilinear_upscale { Upscaler::Bilinear } else { tier.upscaler },
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
                 ..shadows
@@ -862,6 +868,13 @@ impl Options {
                         return Err(format!("--render-scale expects {MIN_RENDER_SCALE} to 1, got {scale}"));
                     }
                     options.render_scale = Some(scale);
+                }
+                "--upscaler" => {
+                    options.bilinear_upscale = match value("--upscaler")?.as_str() {
+                        "bilinear" => true,
+                        "edge" => false,
+                        other => return Err(format!("--upscaler expects bilinear or edge, got {other:?}")),
+                    };
                 }
                 "--dynamic-resolution" => options.dynamic_resolution = true,
                 "--shadows" => {
@@ -3020,6 +3033,25 @@ mod tests {
         assert!(parse(&[&cues[..], &["--decals", "maybe"]].concat()).unwrap_err().contains("on or off"));
         let plain = ["--capture", "x.png", "--replay", "a.sreplay", "--decals", "off"];
         assert!(parse(&plain).unwrap_err().contains("--decals needs --cues"));
+    }
+
+    /// A phone tier upscales along edges unless `--upscaler bilinear` says not (M5 L14); a desktop tier has
+    /// nothing to take away.
+    #[test]
+    fn phones_upscale_along_edges_unless_pinned_bilinear() {
+        use sapphire_render::quality::TierTable;
+        let table = TierTable::shipped();
+        let settings =
+            |args: &[&str], tier| parse(args).unwrap().0.render_settings(table.get(tier).render_settings());
+        let phone = ["--capture", "x.png", "--tier", "mobile-low"];
+        assert!(settings(&phone, TierId::MobileLow).upscaler.edge());
+        let edge = [&phone[..], &["--upscaler", "edge"]].concat();
+        assert!(settings(&edge, TierId::MobileLow).upscaler.edge());
+        let bilinear = [&phone[..], &["--upscaler", "bilinear"]].concat();
+        assert_eq!(settings(&bilinear, TierId::MobileLow).upscaler, Upscaler::Bilinear);
+        let desktop = ["--capture", "x.png", "--upscaler", "bilinear"];
+        assert_eq!(settings(&desktop, TierId::DesktopHigh).upscaler, Upscaler::Bilinear);
+        assert!(parse(&["--upscaler", "sharp"]).unwrap_err().contains("bilinear or edge"));
     }
 
     /// Effects' bends draw unless `--distortion off` says not, which means something with `--cues` or `--vfx`.

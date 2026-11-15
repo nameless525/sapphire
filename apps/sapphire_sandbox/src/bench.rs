@@ -30,8 +30,9 @@
 //! view's passes (`--debug-view`, M1 F5), debug draw's pass (`--debug-draw`, M2 T1), the effects'
 //! pass under temporal AA (`--vfx`, M2 E2, against §3.3's 1.2 ms on Desktop-Low), the effects' bends' offsets
 //! (`--vfx distort-*`, M5 L6, with the effects' pass §3.3's "Particles, distortion"), a 3D inset's
-//! passes (`--ui-game character`, M3 U6: with `--ui-spin` it turns, and so draws, every frame) and the whole
-//! frame.
+//! passes (`--ui-game character`, M3 U6: with `--ui-spin` it turns, and so draws, every frame), a phone tier's
+//! upscale and sharpen below scale 1 (M5 L14: `gpu_upscale_us`, each pass apart, against §3.3's post row with
+//! post's own) and the whole frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
 //!
@@ -476,6 +477,10 @@ fn gpu_times(
     let mut debug_draws = zero;
     let mut effects = zero;
     let mut distortion = zero;
+    // The phone tiers' upscale and sharpen (M5 L14), and each one's exclusive time, in `post::UPSCALE_PASSES`'
+    // order.
+    let mut upscale = zero;
+    let mut upscale_each = [Duration::ZERO; 2];
     let mut ui = zero;
     let mut insets = zero;
     // Depth of field's three passes on the main view, and an inset's soft backdrop (M5 L8).
@@ -506,7 +511,7 @@ fn gpu_times(
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
         // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
         // over the frame (M1 F5): what showing it costs.
-        let groups: [(&[&str], &mut Sums); 17] = [
+        let groups: [(&[&str], &mut Sums); 18] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&[MAIN_PASS], &mut main),
@@ -520,12 +525,16 @@ fn gpu_times(
             (&[debug_draw::PASS], &mut debug_draws),
             (&[vfx::PASS], &mut effects),
             (&[DISTORTION_PASS], &mut distortion),
+            (&post::UPSCALE_PASSES, &mut upscale),
             (&[UI_PASS], &mut ui),
             (&inset::PASSES, &mut insets),
             (&post::FOCUS_PASSES, &mut focus),
             (&[post::FOCUS_BACKDROP_PASS], &mut soft_backdrop),
         ];
         for (sum, name) in focus_each.iter_mut().zip(post::FOCUS_PASSES) {
+            *sum += timings.get(name).map_or(Duration::ZERO, |pass| pass.exclusive);
+        }
+        for (sum, name) in upscale_each.iter_mut().zip(post::UPSCALE_PASSES) {
             *sum += timings.get(name).map_or(Duration::ZERO, |pass| pass.exclusive);
         }
         if let Some(pass) = timings.get(UI_PASS) {
@@ -606,6 +615,11 @@ fn gpu_times(
         gpu_distortion_us = format_args!("{:.1}", micros(distortion.0, distortion.2)),
         gpu_distortion_duration_us = format_args!("{:.1}", micros(distortion.1, distortion.2)),
         distortion_frames = distortion.2,
+        gpu_upscale_us = format_args!("{:.1}", micros(upscale.0, upscale.2)),
+        gpu_upscale_duration_us = format_args!("{:.1}", micros(upscale.1, upscale.2)),
+        gpu_upscale_edge_us = format_args!("{:.1}", micros(upscale_each[0], upscale.2)),
+        gpu_upscale_sharpen_us = format_args!("{:.1}", micros(upscale_each[1], upscale.2)),
+        upscale_frames = upscale.2,
         gpu_ui_us = format_args!("{:.1}", micros(ui.0, ui.2)),
         gpu_ui_duration_us = format_args!("{:.1}", micros(ui.1, ui.2)),
         gpu_ui_us_p50 = format_args!("{:.1}", micros(ui_p50, 1)),

@@ -45,6 +45,7 @@ desktop-high-dusk | draw instances | p50 933 p95 1350 worst 1832 total 494730
 desktop-high-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 desktop-high-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 desktop-high-dusk | entities removed | not exercised
+desktop-high-dusk | frame thread loads | not exercised
 desktop-high-dusk | frames waiting on a pipeline | not exercised
 desktop-high-dusk | held off screen | p50 41 p95 54 worst 57 total 21320
 desktop-high-dusk | inset draws | not exercised
@@ -140,6 +141,7 @@ desktop-high-night | draw instances | p50 844 p95 1397 worst 1896 total 462700
 desktop-high-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 desktop-high-night | entities placed | p50 244 p95 244 worst 244 total 244
 desktop-high-night | entities removed | not exercised
+desktop-high-night | frame thread loads | not exercised
 desktop-high-night | frames waiting on a pipeline | not exercised
 desktop-high-night | held off screen | p50 42 p95 54 worst 57 total 21768
 desktop-high-night | inset draws | not exercised
@@ -235,6 +237,7 @@ desktop-low-dusk | draw instances | p50 874 p95 1530 worst 1777 total 482879
 desktop-low-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 desktop-low-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 desktop-low-dusk | entities removed | not exercised
+desktop-low-dusk | frame thread loads | not exercised
 desktop-low-dusk | frames waiting on a pipeline | not exercised
 desktop-low-dusk | held off screen | p50 40 p95 54 worst 57 total 20903
 desktop-low-dusk | inset draws | not exercised
@@ -330,6 +333,7 @@ desktop-low-night | draw instances | p50 803 p95 1322 worst 1793 total 444726
 desktop-low-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 desktop-low-night | entities placed | p50 244 p95 244 worst 244 total 244
 desktop-low-night | entities removed | not exercised
+desktop-low-night | frame thread loads | not exercised
 desktop-low-night | frames waiting on a pipeline | not exercised
 desktop-low-night | held off screen | p50 41 p95 54 worst 57 total 21359
 desktop-low-night | inset draws | not exercised
@@ -425,6 +429,7 @@ mobile-high-dusk | draw instances | p50 623 p95 1106 worst 1322 total 349324
 mobile-high-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-high-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-high-dusk | entities removed | not exercised
+mobile-high-dusk | frame thread loads | not exercised
 mobile-high-dusk | frames waiting on a pipeline | not exercised
 mobile-high-dusk | held off screen | p50 22 p95 27 worst 29 total 10798
 mobile-high-dusk | inset draws | not exercised
@@ -520,6 +525,7 @@ mobile-high-night | draw instances | p50 591 p95 1112 worst 1367 total 337511
 mobile-high-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-high-night | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-high-night | entities removed | not exercised
+mobile-high-night | frame thread loads | not exercised
 mobile-high-night | frames waiting on a pipeline | not exercised
 mobile-high-night | held off screen | p50 22 p95 28 worst 30 total 11042
 mobile-high-night | inset draws | not exercised
@@ -615,6 +621,7 @@ mobile-low-dusk | draw instances | p50 362 p95 750 worst 789 total 226384
 mobile-low-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-low-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-low-dusk | entities removed | not exercised
+mobile-low-dusk | frame thread loads | not exercised
 mobile-low-dusk | frames waiting on a pipeline | not exercised
 mobile-low-dusk | held off screen | p50 22 p95 29 worst 30 total 10865
 mobile-low-dusk | inset draws | not exercised
@@ -710,6 +717,7 @@ mobile-low-night | draw instances | p50 333 p95 762 worst 838 total 211867
 mobile-low-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-low-night | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-low-night | entities removed | not exercised
+mobile-low-night | frame thread loads | not exercised
 mobile-low-night | frames waiting on a pipeline | not exercised
 mobile-low-night | held off screen | p50 22 p95 29 worst 30 total 11111
 mobile-low-night | inset draws | not exercised

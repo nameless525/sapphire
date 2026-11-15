@@ -14,15 +14,16 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use common::server::Host;
+use common::server::{Host, Served};
 use common::{
-    APP_BUILD, Content, EXPIRES, NOW, ShippedDir, TRUSTED, TestDir, UNTRUSTED, assert_starts_on,
-    first_release, listing, retries, second_release, stage, third_release,
+    APP_BUILD, Content, EXPIRES, Expected, NOW, ShippedDir, TRUSTED, TestDir, UNTRUSTED, assert_staged_whole,
+    assert_starts_on, first_release, is_table_request, listing, retries, second_release, stage,
+    staged_hashes, third_release,
 };
 use sapphire_assets::manifest::ManifestError;
 use sapphire_patch::{
-    Download, HttpTransport, InstallError, InstallOutcome, InstallSteps, Installation, Location, Outcome,
-    Request, Roots, Shipped, ShippedFile, Timeouts,
+    DISK_RESERVE, Download, DownloadError, HttpTransport, InstallError, InstallOutcome, InstallSteps,
+    Installation, Location, Outcome, Request, Roots, Shipped, ShippedFile, Timeouts,
 };
 use sapphire_platform::{OsSteps, ReplaceSteps};
 
@@ -214,6 +215,7 @@ fn what_a_download_stages_installs() {
             now: NOW,
             app_build: APP_BUILD,
             retries: retries(),
+            room: None,
         };
         let transport =
             HttpTransport::new(&host.url(), Roots::Platform, Timeouts::default()).expect("a host");
@@ -228,6 +230,95 @@ fn what_a_download_stages_installs() {
     assert_starts_on(&app.open(), &app.shipped, &second, 2);
     // The next check finds the installed release current, through the patched packs' tables.
     assert_eq!(download(&installation).expect("checks"), Outcome::UpToDate { version: 2 });
+}
+
+/// A disk that says it has `.0` bytes free, to an install's room check; its other steps are the real ones.
+struct Cramped(u64);
+
+impl ReplaceSteps for Cramped {}
+
+impl InstallSteps for Cramped {
+    fn free_space(&mut self, _dir: &Path) -> io::Result<u64> {
+        Ok(self.0)
+    }
+}
+
+/// The requests in `served` that fetch something a release moves: a changed file, or a pack's blocks, so not
+/// the manifest or a pack's tables.
+fn fetches(served: &[Served]) -> Vec<&Served> {
+    served
+        .iter()
+        .filter(|served| {
+            let asked = &served.asked;
+            asked.path.contains("files/")
+                || asked.path.contains("packs/")
+                    && asked.range.as_ref().is_none_or(|range| !is_table_request(range))
+        })
+        .collect()
+}
+
+/// A release that fits the staging but not its install is refused before any of it is fetched (M5 Z3: the boot
+/// asked for room to stage only, so it downloaded what the install then refused, every launch): the download
+/// asks for what's left to stage and what the install will write, with the install's reserve. An install that
+/// finds the room gone since it was staged keeps the staging, and the next launch's download stops at the
+/// same check, fetching nothing, until the disk has room.
+#[test]
+fn a_patch_whose_install_cant_fit_is_refused_before_it_is_fetched() {
+    let dir = TestDir::new("install_no_room");
+    let (first, second) = (first_release(), second_release());
+    let app = App::new(&dir, &first);
+    let host = Host::start(second.host(&second.signed(2, EXPIRES, TRUSTED)));
+    let expected = Expected::between(&first, &second);
+    let to_stage = expected.block_bytes() + expected.file_bytes;
+    let to_install = app.open().bytes_to_install(&second.manifest(2, EXPIRES));
+    assert!(to_stage > 0 && to_install > to_stage, "{to_stage} {to_install}");
+    let download = |free: u64| {
+        let installation = app.open();
+        let request = Request {
+            installed: installation.installed().expect("reads the install"),
+            staging: app.staging.clone(),
+            now: NOW,
+            app_build: APP_BUILD,
+            retries: retries(),
+            room: Some(installation.room().with_free_space(move |_| Ok(free))),
+        };
+        let transport =
+            HttpTransport::new(&host.url(), Roots::Platform, Timeouts::default()).expect("a host");
+        Download::start(request, transport).expect("starts").join()
+    };
+
+    // Room to stage it, with the reserve, but not to install it too.
+    let free = to_stage + DISK_RESERVE + to_install - 1;
+    match download(free) {
+        Err(DownloadError::NoRoom { version: 2, needed, free: found }) => {
+            assert_eq!((needed, found), (to_stage + to_install, free));
+        }
+        other => panic!("refused for room before a block is fetched: {other:?}"),
+    }
+    assert!(fetches(&host.log()).is_empty(), "the manifest and the tables only: {:?}", host.log());
+    assert!(staged_hashes(&app.staging).0.is_empty(), "no block staged");
+    assert_starts_on(&app.open(), &app.shipped, &first, 1);
+
+    // Staged with room, then the room went before the install: refused, and the staging stays.
+    assert!(matches!(download(u64::MAX).expect("downloads"), Outcome::Staged(_)));
+    let short = DISK_RESERVE + to_install - 1;
+    let error = app.open().install_with(&app.staging, NOW, APP_BUILD, &mut Cramped(short)).unwrap_err();
+    assert!(matches!(error, InstallError::NoRoom { version: 2, .. }), "{error}");
+    assert_starts_on(&app.open(), &app.shipped, &first, 1);
+    assert_staged_whole(&app.staging, &first, &second);
+
+    // The next launch's check: nothing left to stage, and still no room to install, so nothing is fetched.
+    let asked = host.log().len();
+    match download(short) {
+        Err(DownloadError::NoRoom { version: 2, needed, .. }) => assert_eq!(needed, to_install),
+        other => panic!("refused for room again: {other:?}"),
+    }
+    assert!(fetches(&host.log()[asked..]).is_empty(), "{:?}", &host.log()[asked..]);
+    assert_staged_whole(&app.staging, &first, &second);
+
+    // Once there's room, what was staged installs.
+    assert_eq!(app.install().expect("installs"), InstallOutcome::Installed { from: 1, to: 2 });
+    assert_starts_on(&app.open(), &app.shipped, &second, 2);
 }
 
 /// How a fault meets a step.

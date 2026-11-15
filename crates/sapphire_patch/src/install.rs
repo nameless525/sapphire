@@ -10,7 +10,7 @@ use sapphire_assets::manifest::{self, Manifest, ManifestError, PublicKey, Releas
 use sapphire_assets::pack::{self, HEADER_LEN, PackHeader, Toc};
 use sapphire_platform::{ContentFs, ContentReader, OsSteps, ReplaceSteps, durable_replace_with};
 
-use crate::download::table;
+use crate::download::{Room, table};
 use crate::plan::{Installed, InstalledError};
 use crate::staging::{Staging, StagingError};
 use crate::{file_path, pack_path};
@@ -267,15 +267,14 @@ impl<S: Shipped> Installation<S> {
     /// Bytes an install of `next` would write beside the current release: each of its packs and files not
     /// shipped and not under the root already.
     pub fn bytes_to_install(&self, next: &Manifest) -> u64 {
-        let packs = next.packs.iter().map(|pack| (self.pack_location(pack), pack.size));
-        let files = next.files.iter().map(|file| (self.file_location(file), file.size));
-        packs
-            .chain(files)
-            .filter_map(|(location, size)| match location {
-                Location::Patched(path) if !path.exists() => Some(size),
-                _ => None,
-            })
-            .sum()
+        bytes_to_install(&self.shipped_release, &self.root, next)
+    }
+
+    /// The room a download over this installation asks the disk for before it fetches a block
+    /// ([`Request::room`](crate::Request::room)): what's left to stage and what the install of the release
+    /// it accepted will write ([`Self::bytes_to_install`]), with [`DISK_RESERVE`] over, as the install asks.
+    pub fn room(&self) -> Room {
+        Room::new(self.shipped_release.clone(), self.root.clone())
     }
 
     /// The current release as a download plans over it (`Request::installed`): every pack's tables, read
@@ -464,20 +463,12 @@ impl<S: Shipped> Installation<S> {
     /// Where any release keeps `pack`: in the shipped content if the app shipped the same pack under the same
     /// name, else under the root by its header hash.
     fn pack_location(&self, pack: &ReleasedPack) -> Location {
-        if self.shipped_release.pack(&pack.name) == Some(pack) {
-            Location::Shipped
-        } else {
-            Location::Patched(self.root.join(pack_path(&pack.header_hash)))
-        }
+        pack_location(&self.shipped_release, &self.root, pack)
     }
 
     /// Where any release keeps `file`: as [`Self::pack_location`], by path and blake3.
     fn file_location(&self, file: &ReleasedFile) -> Location {
-        if self.shipped_release.file(&file.path) == Some(file) {
-            Location::Shipped
-        } else {
-            Location::Patched(self.root.join(file_path(&file.hash)))
-        }
+        file_location(&self.shipped_release, &self.root, file)
     }
 
     /// Holds the root against another installer or a confirmed launch's cleaning, making it if it isn't there.
@@ -503,6 +494,38 @@ impl<S: Shipped> Installation<S> {
             Err(TryLockError::Error(source)) => Err(InstallError::Io { path, source }),
         }
     }
+}
+
+/// Where any release over `shipped_release`, its patches installed under `root`, keeps `pack`: in the shipped
+/// content if the app shipped the same pack under the same name, else under the root by its header hash.
+fn pack_location(shipped_release: &Manifest, root: &Path, pack: &ReleasedPack) -> Location {
+    if shipped_release.pack(&pack.name) == Some(pack) {
+        Location::Shipped
+    } else {
+        Location::Patched(root.join(pack_path(&pack.header_hash)))
+    }
+}
+
+/// Where any release keeps `file`: as [`pack_location`], by path and blake3.
+fn file_location(shipped_release: &Manifest, root: &Path, file: &ReleasedFile) -> Location {
+    if shipped_release.file(&file.path) == Some(file) {
+        Location::Shipped
+    } else {
+        Location::Patched(root.join(file_path(&file.hash)))
+    }
+}
+
+/// [`Installation::bytes_to_install`], for an installation over `shipped_release` under `root`.
+pub(crate) fn bytes_to_install(shipped_release: &Manifest, root: &Path, next: &Manifest) -> u64 {
+    let packs = next.packs.iter().map(|pack| (pack_location(shipped_release, root, pack), pack.size));
+    let files = next.files.iter().map(|file| (file_location(shipped_release, root, file), file.size));
+    packs
+        .chain(files)
+        .filter_map(|(location, size)| match location {
+            Location::Patched(path) if !path.exists() => Some(size),
+            _ => None,
+        })
+        .sum()
 }
 
 /// Clears what was staged once it's installed, or was already. A failure here leaves the install as it is:

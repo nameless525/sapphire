@@ -15,10 +15,11 @@
 //! 2. **Reading:** each pack the install doesn't hold by header hash is a changed pack, and its tables (the
 //!    header and table of contents, the bytes before its data) come by range request, each checked against
 //!    the hash the manifest names.
-//! 3. **Fetching:** each changed file outside the packs, whole, and each block of a changed pack whose hash
-//!    no installed pack holds, once per hash ([`Plan::blocks`]). Blocks that lie next to each other in one
-//!    pack go in one range request of up to 1 MiB, the alignment padding between them included (at most 15
-//!    bytes a block); each block's blake3 is checked before it's written.
+//! 3. **Fetching:** with room for it ([`Request::room`]), each changed file outside the packs, whole, and
+//!    each block of a changed pack whose hash no installed pack holds, once per hash ([`Plan::blocks`]).
+//!    Blocks that lie next to each other in one pack go in one range request of up to 1 MiB, the alignment
+//!    padding between them included (at most 15 bytes a block); each block's blake3 is checked before it's
+//!    written.
 //!
 //! So a patch moves exactly the new manifest, the changed packs' tables, the blocks whose hashes are new
 //! (and the padding between neighbours), and the changed files: exit test 2's count. Every read is capped
@@ -97,6 +98,10 @@
 //!
 //! **Room:** an install asks the disk first ([`InstallSteps::free_space`]) and refuses, with
 //! [`InstallError::NoRoom`], a release whose new packs and files wouldn't fit with [`DISK_RESERVE`] left over.
+//! A download given its installation's [`Room`] ([`Installation::room`]) asks the same before it fetches a block,
+//! for what's left to stage as well, and stops with [`DownloadError::NoRoom`]: so a release that would stage but
+//! not install is never fetched, and one whose install found the room gone keeps its staging, the next check
+//! stopping at the same question until the disk has room.
 //!
 //! **What the game reads:** [`Installation::files_over`] lists the current release's patched packs and files,
 //! and its manifest, by content path, for `sapphire_platform::ContentFs::with_files_over` to place over what
@@ -128,7 +133,7 @@ mod plan;
 mod staging;
 mod transport;
 
-pub use download::{Download, DownloadError, Outcome, Phase, Progress, Request, Retries, Staged};
+pub use download::{Download, DownloadError, Outcome, Phase, Progress, Request, Retries, Room, Staged};
 pub use http::{HttpError, HttpTransport, Roots, Timeouts};
 pub use install::{
     Cleaned, DISK_RESERVE, InstallError, InstallOutcome, InstallSteps, Installation, Location, Shipped,

@@ -1,9 +1,10 @@
 //! The download itself, on the patcher's thread (see the [crate docs](crate)).
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::io;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -12,6 +13,7 @@ use std::time::Duration;
 use sapphire_assets::manifest::{self, Manifest, ManifestError, ReleasedPack};
 use sapphire_assets::pack::{HEADER_LEN, PackHeader, Toc};
 
+use crate::install::{DISK_RESERVE, bytes_to_install};
 use crate::plan::{Installed, Plan, PlanError, PlannedBlock};
 use crate::staging::{Staging, StagingError};
 use crate::transport::{Body, FetchError, Transport};
@@ -35,6 +37,56 @@ pub struct Request {
     /// The app's build number: a release that needs a later one is refused.
     pub app_build: u32,
     pub retries: Retries,
+    /// The room it asks the disk for once it knows what it moves, before it fetches a block
+    /// ([`Installation::room`](crate::Installation::room)): none, and it asks nothing.
+    pub room: Option<Room>,
+}
+
+/// The room a download asks the disk for before it fetches a block (M5 Z3): what's left to stage, and what the
+/// install of the release it accepted will write beside the current one
+/// ([`Installation::bytes_to_install`](crate::Installation::bytes_to_install)), with [`DISK_RESERVE`] over, as
+/// the install asks again before it writes. Asked of the volume that holds the staging, which the game lays
+/// beside the installation's root (`game_flow::update`). Short of it, the download stops with
+/// [`DownloadError::NoRoom`] having fetched no block, so a release that fits the staging but not its install
+/// never downloads only to be refused.
+pub struct Room {
+    shipped_release: Manifest,
+    root: PathBuf,
+    free_space: FreeSpace,
+}
+
+/// Bytes free on the volume holding a directory: `sapphire_platform::free_space`, or a test's.
+type FreeSpace = Box<dyn FnMut(&Path) -> io::Result<u64> + Send>;
+
+impl fmt::Debug for Room {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Room").field("root", &self.root).finish_non_exhaustive()
+    }
+}
+
+impl Room {
+    /// The room for an installation over `shipped_release` under `root`, asking the disk itself.
+    pub(crate) fn new(shipped_release: Manifest, root: PathBuf) -> Self {
+        Self { shipped_release, root, free_space: Box::new(sapphire_platform::free_space) }
+    }
+
+    /// The same room asking `free_space` for the bytes free on the volume holding a directory, as
+    /// [`InstallSteps::free_space`](crate::InstallSteps::free_space) lets a test say what an install finds.
+    #[must_use]
+    pub fn with_free_space(self, free_space: impl FnMut(&Path) -> io::Result<u64> + Send + 'static) -> Self {
+        Self { free_space: Box::new(free_space), ..self }
+    }
+
+    /// Whether the disk holding `staging` has room for `to_stage` bytes more and then the install of `next`.
+    fn check(&mut self, staging: &Path, next: &Manifest, to_stage: u64) -> Result<(), DownloadError> {
+        let needed = to_stage.saturating_add(bytes_to_install(&self.shipped_release, &self.root, next));
+        let free = (self.free_space)(staging)
+            .map_err(|source| StagingError::Io { path: staging.to_owned(), source })?;
+        if needed.saturating_add(DISK_RESERVE) > free {
+            return Err(DownloadError::NoRoom { version: next.version, needed, free });
+        }
+        Ok(())
+    }
 }
 
 /// How often a failed request is tried, and how long it waits between tries.
@@ -132,6 +184,12 @@ pub enum DownloadError {
     NotPatchable(#[from] PlanError),
     #[error("gave up on {path} after {attempts} tries: {last}")]
     Host { path: String, attempts: u32, last: FetchError },
+    #[error(
+        "release {version} needs {needed} bytes more on the disk, to stage and to install, and {free} are free \
+         with {} kept for the device",
+        DISK_RESERVE
+    )]
+    NoRoom { version: u64, needed: u64, free: u64 },
     #[error("the download was cancelled")]
     Cancelled,
     #[error("the patcher's thread panicked")]
@@ -255,7 +313,7 @@ struct Patcher<T> {
 }
 
 impl<T: Transport> Patcher<T> {
-    fn run(&mut self, request: Request) -> Result<Outcome, DownloadError> {
+    fn run(&mut self, mut request: Request) -> Result<Outcome, DownloadError> {
         let staging = Staging::open(&request.staging)?;
         let installed = &request.installed;
         let current = installed.manifest();
@@ -323,6 +381,13 @@ impl<T: Transport> Patcher<T> {
             } else {
                 missing_files.push(file);
             }
+        }
+
+        // Before any block: room to stage the rest and then to install the release, or nothing more is fetched.
+        if let Some(room) = &mut request.room {
+            let to_stage = missing.iter().map(PlannedBlock::stored_len).sum::<u64>()
+                + missing_files.iter().map(|file| file.size).sum::<u64>();
+            room.check(staging.dir(), plan.manifest(), to_stage)?;
         }
 
         shared.set_phase(Phase::Fetching);

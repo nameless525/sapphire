@@ -36,6 +36,7 @@ fn patcher(staging: &Path, url: &str, install: &Path) -> ExitCode {
         now: NOW,
         app_build: APP_BUILD,
         retries: retries(),
+        room: None,
     };
     let transport = HttpTransport::new(url, Roots::Platform, Timeouts::default()).expect("a host");
     match Download::start(request, transport).expect("starts").join() {

@@ -15,7 +15,10 @@
 //! **Nothing here stops the game.** No host, no network, a release the build refuses (older, expired, signed by
 //! a key it doesn't trust, for a later app build), a download that fails or a disk without room: each is
 //! logged, and the game starts on what it has. A kill mid-download leaves what was staged whole, and the next
-//! launch's check fetches only the rest (`sapphire_patch`'s "Staging, and resuming").
+//! launch's check fetches only the rest (`sapphire_patch`'s "Staging, and resuming"). Before it fetches a block
+//! the download asks the disk for room to stage what's left and then to install the release
+//! ([`Installation::room`]), so a release the disk can't hold installed is never fetched; an install that finds
+//! the room gone since keeps what's staged, and the next launch's check stops at the same question.
 //!
 //! # Where patches live
 //!
@@ -150,6 +153,7 @@ impl Patches {
                 now: sapphire_time::calendar_seconds(),
                 app_build: self.setup.app_build,
                 retries: Retries::default(),
+                room: Some(installation.room()),
             };
             let download = Download::start(request, transport).map_err(|error| error.to_string())?;
             let root = self.setup.dir.join(INSTALLED);
@@ -164,7 +168,6 @@ impl Patches {
                 staged: self.setup.dir.join(STAGED),
                 app_build: self.setup.app_build,
                 received: 0,
-                room_checked: false,
             })
         };
         match started() {
@@ -240,8 +243,6 @@ pub struct Update {
     app_build: u32,
     /// Bytes the download received from the host.
     received: u64,
-    /// Whether the disk's room for what's left to stage has been asked once the download knows its size.
-    room_checked: bool,
 }
 
 impl fmt::Debug for Update {
@@ -283,14 +284,6 @@ impl Update {
                     Phase::Checking => return UpdateState::Checking,
                     Phase::Reading | Phase::Fetching => {
                         self.received = progress.received;
-                        if progress.phase == Phase::Fetching && !self.room_checked {
-                            self.room_checked = true;
-                            let left = progress.total.saturating_sub(progress.done);
-                            if let Err(error) = room_for(&self.staging, left) {
-                                tracing::warn!(target: LOG_TARGET, %error, "the update stops; the game starts on what it has");
-                                download.cancel();
-                            }
-                        }
                         let fraction = if progress.total == 0 {
                             0.0
                         } else {
@@ -430,17 +423,4 @@ fn make_patch_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     sapphire_platform::exclude_from_backup(dir)
         .map_err(|error| format!("{} stays in backups: {error}", dir.display()))
-}
-
-/// Whether the disk holding `staging` has room for `bytes` more, with what an install keeps free.
-fn room_for(staging: &Path, bytes: u64) -> Result<(), String> {
-    let free =
-        sapphire_platform::free_space(staging).map_err(|error| format!("{}: {error}", staging.display()))?;
-    if bytes.saturating_add(sapphire_patch::DISK_RESERVE) > free {
-        return Err(format!(
-            "the update needs {bytes} bytes more on the disk, and {free} are free with {} kept for the device",
-            sapphire_patch::DISK_RESERVE
-        ));
-    }
-    Ok(())
 }

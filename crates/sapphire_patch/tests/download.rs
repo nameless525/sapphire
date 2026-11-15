@@ -31,6 +31,7 @@ fn download(host: &Host, staging: &TestDir) -> Download {
         now: NOW,
         app_build: APP_BUILD,
         retries: retries(),
+        room: None,
     };
     let transport = HttpTransport::new(&host.url(), Roots::Platform, timeouts()).expect("a host");
     Download::start(request, transport).expect("starts")

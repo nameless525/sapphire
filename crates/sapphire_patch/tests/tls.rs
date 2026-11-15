@@ -40,6 +40,7 @@ fn download(host: &Host, roots: Roots, dir: &TestDir) -> Result<Outcome, Downloa
         now: NOW,
         app_build: APP_BUILD,
         retries: retries(),
+        room: None,
     };
     let quick = Duration::from_secs(5);
     let timeouts = Timeouts { connect: quick, response: quick, read: quick, ..Timeouts::default() };

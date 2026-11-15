@@ -750,39 +750,173 @@ fn an_exact_tie_between_two_objects_follows_the_records_not_the_handles() {
 }
 
 /// The phones run the main view's buildings (M5 D2, `QualityTier::opaque_runs`; the desktop tiers
-/// don't): at each phone tier a street of one opaque environment mesh, drawn with the tier's runs
-/// and a call a draw, makes fewer calls, and the picture holds to a stated gate: no channel more
-/// than 2 code values off, on at most 64 pixels of the 96 × 96. It can't be exact: on Metal an
-/// instanced call's screen derivatives at triangle edges (the material textures' gradients, and a
-/// little the terminator's width) differ from a call an instance's, which moved the goldens by 1
-/// or 2 code values on up to 51 pixels of 640 × 360, at roof edges. With every derivative of
-/// `environment.wgsl` taken as zero the two matched byte for byte.
+/// don't). At each phone tier, a street of one textured gable roof is seen low and at a grazing
+/// angle, as the district's roofs are. Drawn with the tier's runs and a call a draw, it makes fewer
+/// calls, and the picture holds to a stated gate: no channel more than 2 code values off, on at most
+/// 64 pixels of the 96 × 96.
+///
+/// It can't be exact on every GPU. On this Mac's GPU (as far as is known, not every Metal device:
+/// CI's Metal runner, lavapipe and WARP have disagreed with it on texture levels at narrow and edge
+/// triangles), an instanced call's screen derivatives at triangle edges differ from a call an
+/// instance's. Mostly that is the material texture's gradients, so the mip it samples. That moved 18
+/// goldens by 1 or 2 code values on up to 51 pixels of 640 × 360, at roof edges, and a build with
+/// every derivative of `environment.wgsl` taken as zero drew the two byte for byte. Where nothing
+/// moves the test passes too. On this Mac on 2026-11-15 it measured 0 pixels at both phone tiers
+/// (2 calls from 15), and 0 too with MSAA off, at Desktop-High's settings with TAA, with 16-bit
+/// positions and with each slope one quad: so far the move shows only on the district's buildings.
 #[test]
 #[ignore = "needs a GPU"]
 fn the_phones_run_the_buildings_within_a_stated_gate() {
+    use sapphire_assets::AssetId;
+    use sapphire_assets::texture::{Texture, TextureDesc, TextureFormat};
+    use sapphire_render::texture::GpuTexture;
+
     let gpu = gpu();
-    let texture = target(&gpu, FORMAT, (96, 96));
+    let size = (96, 96);
+    let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
-    let mesh = levels::square_with_levels();
+    // A 64 × 64 texture of fine noise and its six smaller levels, each the mean of the one above, so
+    // which level a pixel samples shows.
+    let mut levels = vec![
+        (0..64 * 64)
+            .flat_map(|at: u32| {
+                let (x, y) = (at % 64, at / 64);
+                let hash =
+                    (x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)).wrapping_mul(2_654_435_761);
+                let value = (hash >> 24) as u8;
+                [value, value / 2 + 64, 255 - value, 255]
+            })
+            .collect::<Vec<u8>>(),
+    ];
+    for side in [32, 16, 8, 4, 2, 1] {
+        let above = levels.last().expect("a level");
+        let level = (0..side * side)
+            .flat_map(|at| {
+                let (x, y) = (at % side, at / side);
+                let texel = |dx, dy| &above[(((2 * y + dy) * 2 * side + 2 * x + dx) * 4) as usize..][..4];
+                let mean = |c: usize| {
+                    ((u32::from(texel(0, 0)[c])
+                        + u32::from(texel(1, 0)[c])
+                        + u32::from(texel(0, 1)[c])
+                        + u32::from(texel(1, 1)[c]))
+                        / 4) as u8
+                };
+                [mean(0), mean(1), mean(2), mean(3)]
+            })
+            .collect();
+        levels.push(level);
+    }
+    let desc = TextureDesc {
+        format: TextureFormat::Rgba8UnormSrgb,
+        width: 64,
+        height: 64,
+        mip_level_count: 7,
+        swizzle: Swizzle::IDENTITY,
+    };
+    let noise = Texture { desc, levels: levels.iter().map(Vec::as_slice).collect() };
+    let noise = GpuTexture::upload(&gpu, &noise, "roof").expect("upload");
+    let id: AssetId = "3d0f6a52-8c1e-4b7d-a9f2-61e5c0b4d8a7".parse().expect("an id");
+    let document = EnvironmentMaterial {
+        base_color: [1.0; 4],
+        base_color_map: Some(id),
+        ..EnvironmentMaterial::default()
+    };
+    let swizzles = vec![Swizzle::IDENTITY; document.textures().len()];
+    let cooked =
+        Material::from_document(&document, &swizzles).expect("a valid material").to_cooked().expect("cook");
+    // A gable roof: two slopes meeting at a ridge, and the two triangles that close its ends.
+    let vertex = |position: [f32; 3], normal: [f32; 3], uv: [f32; 2]| Vertex {
+        position,
+        normal,
+        outline_normal: normal,
+        uv,
+        color: VERTEX_COLOR_NEUTRAL,
+        flags: VertexFlags::NONE,
+    };
+    let slope = 0.6f32.hypot(0.5);
+    // Each slope a grid of 12 × 12 quads, eave to ridge and front to back, so the roof has the
+    // district's many small triangles.
+    const GRID: u32 = 12;
+    let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+    for side in [-1.0f32, 1.0] {
+        let normal = [-side * 0.5 / slope, 0.6 / slope, 0.0];
+        let base = vertices.len() as u32;
+        for j in 0..=GRID {
+            for i in 0..=GRID {
+                let (across, along) = (i as f32 / GRID as f32, j as f32 / GRID as f32);
+                let position = [side * 0.6 * (1.0 - across), 0.5 * across, 0.5 - along];
+                vertices.push(vertex(position, normal, [along, 1.0 - across]));
+            }
+        }
+        for j in 0..GRID {
+            for i in 0..GRID {
+                let at = |i: u32, j: u32| base + j * (GRID + 1) + i;
+                let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                if side < 0.0 {
+                    indices.extend([a, c, b, a, d, c]);
+                } else {
+                    indices.extend([a, b, c, a, c, d]);
+                }
+            }
+        }
+    }
+    let base = vertices.len() as u32;
+    vertices.extend([
+        vertex([-0.6, 0.0, 0.5], [0.0, 0.0, 1.0], [0.0, 1.0]),
+        vertex([0.6, 0.0, 0.5], [0.0, 0.0, 1.0], [1.0, 1.0]),
+        vertex([0.0, 0.5, 0.5], [0.0, 0.0, 1.0], [0.5, 0.0]),
+        vertex([0.6, 0.0, -0.5], [0.0, 0.0, -1.0], [0.0, 1.0]),
+        vertex([-0.6, 0.0, -0.5], [0.0, 0.0, -1.0], [1.0, 1.0]),
+        vertex([0.0, 0.5, -0.5], [0.0, 0.0, -1.0], [0.5, 0.0]),
+    ]);
+    indices.extend((0..6).map(|n| base + n));
+    let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
+    let slots = vec![MaterialSlot::embedded("roof", environment_as([0.8; 3], AlphaMode::Opaque))];
+    let roof = Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Float32);
+    let roof = roof.to_cooked().expect("cook");
     let table = TierTable::shipped();
-    for id in [TierId::MobileHigh, TierId::MobileLow] {
-        let settings = table.get(id).render_settings();
-        assert_eq!(settings.draw_runs, DrawRuns::EveryViewOpaque, "{id}: the tier's");
+    for id_of in [TierId::MobileHigh, TierId::MobileLow] {
+        let settings = table.get(id_of).render_settings();
+        assert_eq!(settings.draw_runs, DrawRuns::EveryViewOpaque, "{id_of}: the tier's");
         let [(runs, run_calls), (calls, call_calls)] =
             [settings.draw_runs, DrawRuns::EveryView].map(|draw_runs| {
                 let settings = RenderSettings { draw_runs, ..settings };
-                let (mut frames, square) = levels::frames_with(&gpu, settings, &mesh);
-                let (instances, camera) = levels::street(&mut frames, square);
+                let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+                frames.sun = DirectionalLight {
+                    direction: Vec3::new(-0.4, -0.7, -0.6).normalize(),
+                    color: Vec3::ONE,
+                    intensity: 1.0,
+                };
+                let lookup = |asked: AssetId| (asked == id).then_some(&noise);
+                let material = Material::read(&cooked).expect("read");
+                let material = frames.renderer.upload_material(material, lookup).expect("upload");
+                let mesh = Mesh::read(&roof).expect("read");
+                let mesh = frames.renderer.upload_mesh(mesh, &[material]).expect("upload");
+                // Roofs along both sides of a street, the eye just above their ridges, looking down it.
+                let instances: Vec<MeshInstance> = (0..14)
+                    .map(|n| {
+                        let at = Vec3::new(if n % 2 == 0 { -0.9 } else { 0.9 }, 0.0, -1.5 - 2.0 * n as f32);
+                        instance(n, mesh, Mat4::from_translation(at) * Mat4::from_rotation_y(0.3 * n as f32))
+                    })
+                    .collect();
+                let camera = CameraData::look_at(
+                    Vec3::new(0.0, 0.55, 0.0),
+                    Vec3::new(0.0, 0.4, -12.0),
+                    Vec3::Y,
+                    50f32.to_radians(),
+                    1.0,
+                    0.05,
+                );
                 assert!(frames.render(&gpu, &view, camera, &instances, &[]).is_none());
                 (read_back(&gpu, &texture), frames.renderer.stats().passes.main.draws)
             });
-        assert!(run_calls < call_calls, "{id}: the buildings run: {run_calls} calls, from {call_calls}");
+        assert!(run_calls < call_calls, "{id_of}: the roofs run: {run_calls} calls, from {call_calls}");
         let worst = runs.iter().zip(&calls).flat_map(|(a, b)| (0..3).map(|c| a[c].abs_diff(b[c]))).max();
         let (_, differing) = difference(&runs, &calls, 0);
         eprintln!(
-            "the_phones_run_the_buildings: {id}: {run_calls} calls from {call_calls}; {differing} pixels \
+            "the_phones_run_the_buildings: {id_of}: {run_calls} calls from {call_calls}; {differing} pixels \
              differ, by at most {worst:?}"
         );
-        assert!(worst <= Some(2) && differing <= 64, "{id}: {differing} pixels, by {worst:?}");
+        assert!(worst <= Some(2) && differing <= 64, "{id_of}: {differing} pixels, by {worst:?}");
     }
 }

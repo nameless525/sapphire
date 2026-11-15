@@ -21,7 +21,7 @@
 //!   were placed or streamed in (`default_runs_and_calls_dont_follow_the_slot_order`). The character
 //!   prepass forms none (it keeps the record's order). **The opaque surfaces draw a call a draw in
 //!   the main view and the insets, and opaque foliage in the scene prepass too**
-//!   ([`calls_alone_in_colour`] has the finding): on Metal an instanced main-pass call of either
+//!   ([`calls_alone_in_colour`] has the finding): on this Mac's GPU an instanced main-pass call of either
 //!   opaque pipeline shades a few pixels differently from the same records drawn instance by
 //!   instance, where the cut-out ones match. So in the main view only the cut-out surfaces run,
 //!   and the scene prepass runs the buildings. `DrawRuns::Shadows` runs the shadow views alone, as
@@ -76,7 +76,7 @@ pub enum DrawRuns {
     #[default]
     EveryView,
     /// As [`Self::EveryView`], and the main view and the insets run the opaque environment
-    /// surfaces (the buildings) too, which on Metal moves a few pixels at triangle edges by a code
+    /// surfaces (the buildings) too, which on this Mac's GPU moves a few pixels at triangle edges by a code
     /// value or two: the phones' (their tiers' `opaque_runs`), whose 700 main-pass calls need it.
     EveryViewOpaque,
 }
@@ -119,7 +119,7 @@ pub(crate) fn runs_in(view: RunView, variant: SurfaceVariant, runs: DrawRuns) ->
 }
 
 /// The pipelines that draw a call a draw in a view that writes colour, whatever [`DrawRuns`] says:
-/// on Metal one instanced call of each shades a few pixels differently from the same records drawn
+/// on this Mac's GPU one instanced call of each shades a few pixels differently from the same records drawn
 /// as one call an instance (M5 D2's probe). Drawing the same run buffer instance by instance
 /// (instances `i..i + 1`) matches the calls byte for byte, so it is the instanced call itself, not
 /// the records, the order, the first instance or a depth tie. It is the fragment stage's screen

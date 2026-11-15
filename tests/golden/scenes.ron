@@ -4089,6 +4089,7 @@
                 ticks: 1000,
                 args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
                        "--tier", "desktop-high", "--mount", "zone_proving_hub", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 19.2, warp: 41.7),
             ),
             // The same on Mobile-High: its 30 nearest, with a crowd's shadows, capsules alone.
             (
@@ -4096,6 +4097,7 @@
                 ticks: 1000,
                 args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
                        "--tier", "mobile-high", "--mount", "zone_proving_hub", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 28.1, warp: 51.4),
             ),
             // Wet surfaces (M5 L4). The proving ground's yard at night after rain: its paving darkened, glossed
             // and standing in puddles that mirror the yard's probe (its lanterns and the shelter) and the night

@@ -28,7 +28,7 @@ use crate::ambient::{
 };
 use crate::buffer;
 use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
-use crate::characters::{CharacterSlots, Characters};
+use crate::characters::Characters;
 use crate::color_vision::{ColorVision, ColorVisionDraw};
 use crate::counts::{Counted, FrameCounts, PassCounters, PassCounts, StateChanges};
 use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
@@ -748,9 +748,6 @@ pub struct Renderer {
     view_lists: Box<ViewLists>,
     /// The frame's run records (M5 D2): each run of more than one draw's records, side by side.
     run_records: RunRecords,
-    /// The passes walk the whole draw list and test each draw, as before view lists
-    /// ([`Self::walk_filtered`]).
-    walk_filtered: bool,
     /// What the last [`Self::record`] took, if it built a graph, until the next [`Self::prepare`]
     /// knows whether that graph ran.
     recorded: Option<RecordedFrame>,
@@ -1108,7 +1105,6 @@ impl Renderer {
             counts: PassCounters::default(),
             view_lists: Box::default(),
             run_records,
-            walk_filtered: false,
             recorded: None,
             pipeline_builds,
             prewarmed_keys: BTreeSet::new(),
@@ -1397,15 +1393,6 @@ impl Renderer {
         if !self.device_lost {
             self.meshes.stage_uploads(&self.queue, ring);
         }
-    }
-
-    /// Records each pass by walking the whole draw list and testing every draw as it goes (`true`),
-    /// as the passes did before each view had its own list (M5 D1, `false`, the default):
-    /// for the test that draws scenes both ways and compares every byte. m5-plan D2 deletes the
-    /// filtered walk, and this with it.
-    #[doc(hidden)]
-    pub fn walk_filtered(&mut self, filtered: bool) {
-        self.walk_filtered = filtered;
     }
 
     /// Whether a compaction asked for isn't over: the last frame prepared left the pool above its floor.
@@ -3037,7 +3024,6 @@ impl Renderer {
             ref mut run_records,
             ref queue,
             ref mut stats,
-            walk_filtered,
             ..
         } = *self;
         // With the colour-vision view on (M4 A5), everything draws into a texture of the target's, which
@@ -3087,10 +3073,7 @@ impl Renderer {
         let inset_frame = insets.split_for_record(first_inset_view, view_stride);
         // Each view's list (M5 D1): what its passes draw, in their order, from the draw list's
         // groups, tested here once rather than by each pass as it records.
-        let lists = if walk_filtered {
-            stats.runs = RunStats::default();
-            None
-        } else {
+        let lists = {
             profiling::scope!("view lists");
             let lists = &mut **view_lists;
             lists.begin_frame(draw_runs);
@@ -3121,28 +3104,25 @@ impl Renderer {
             }
             run_records.reserve(device, queue, lists.records().len());
             stats.runs = lists.run_stats();
-            Some(&**view_lists)
+            &**view_lists
         };
         let run_records = &*run_records;
-        let run_list: &[u32] = lists.map_or(&[], ViewLists::records);
+        let run_list = lists.records();
         let mesh_draws = MeshDraws {
             meshes,
             list: draw_list,
             records,
             skinned: skinning.outputs(),
             materials: material_records,
-            hulls: outlines.visible(),
             lines: false,
-            // Every view's passes read the verdicts; the shadows' take a copy without them.
-            view: view_cull.culled(),
-            levels: Some(view_cull.levels()),
-            casters: None,
             stands: inset_frame.stands,
             stand: 0,
             counter: counts.get(Counted::CharacterPrepass),
             changes: counts.changes(),
             lists,
             walk: Walk::CharacterPrepass,
+            // The ordered draws read the verdicts; the shadows' take a copy without them.
+            view: view_cull.culled(),
             run_records: run_records.buffer(),
             runs: true,
         };
@@ -3258,7 +3238,7 @@ impl Renderer {
         let (first, stride) = (FIRST_SHADOW_VIEW, view_stride);
         // The shadows cull by their plan, toward the light, not by the views' verdicts.
         // A cascade's levels come from its plan; a character map's are 0.
-        let shadow_draws = MeshDraws { view: None, levels: None, ..mesh_draws };
+        let shadow_draws = MeshDraws { view: None, ..mesh_draws };
         shadows.record(graph, shadow_draws, counts, view_bind_group, casters, first, stride, labels);
         // Every view's passes skip what its culling left out (review RA-O01, M5 D3): the scene
         // prepass, the main pass, the debug views' replays of it, the character prepass and each
@@ -3298,7 +3278,7 @@ impl Renderer {
                 // ones (fading characters' among them, which the draw list moves there) through
                 // the masked one (M1 C7), cut out as the main pass cuts them, then the two-sided
                 // ones through theirs, which cull nothing (M1 C8).
-                draw_character_prepass(&mut pass, pipelines, &mesh_draws, character_slots);
+                draw_character_prepass(&mut pass, pipelines, &mesh_draws);
             });
         let mut scene_prepass = graph
             .add_pass(SCENE_PREPASS)
@@ -3560,7 +3540,7 @@ impl Renderer {
                     pass.set_bind_group(1, view_bind_group, &[view_offset]);
                     pass.set_bind_group(2, &scene_bind_groups[0], &[]);
                     pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
-                    draw_character_prepass(&mut pass, pipelines, &draws, character_slots);
+                    draw_character_prepass(&mut pass, pipelines, &draws);
                 });
             let mut inset_main = graph
                 .add_pass(INSET_MAIN_PASS)
@@ -4377,31 +4357,11 @@ fn check_foliage(
     Ok(())
 }
 
-/// Draws the character prepass's surfaces of `draws` of the instances `characters` lists: every part
-/// but hair, then hair, each the opaque, alpha-tested and two-sided surfaces through their pipelines
-/// ([`Renderer::record`] says why). Groups 1 and 2 and the index buffer must be bound.
-fn draw_character_prepass(
-    pass: &mut wgpu::RenderPass<'_>,
-    pipelines: &Pipelines,
-    draws: &MeshDraws<'_>,
-    characters: CharacterSlots<'_>,
-) {
+/// Draws the character prepass's surfaces of `draws`, whose list holds the listed characters' alone:
+/// every part but hair, then hair, each the opaque, alpha-tested and two-sided surfaces through their
+/// pipelines ([`Renderer::record`] says why). Groups 1 and 2 and the index buffer must be bound.
+fn draw_character_prepass(pass: &mut wgpu::RenderPass<'_>, pipelines: &Pipelines, draws: &MeshDraws<'_>) {
     draws.count_left_out();
-    // The view's list holds the listed characters' alone; the filtered walk tests each draw.
-    if draws.lists.is_some() {
-        draw_character_surfaces(pass, pipelines, draws, |_| true);
-    } else {
-        draw_character_surfaces(pass, pipelines, draws, |slot| characters.listed(slot));
-    }
-}
-
-/// Draws [`draw_character_prepass`]'s surfaces of the instances `listed` takes.
-fn draw_character_surfaces(
-    pass: &mut wgpu::RenderPass<'_>,
-    pipelines: &Pipelines,
-    draws: &MeshDraws<'_>,
-    listed: impl Fn(u32) -> bool + Copy,
-) {
     let set = DrawSet::Surfaces;
     for prepass in 0..MeshPipelines::CHARACTER_PREPASSES {
         for format in PositionFormat::ALL {
@@ -4410,7 +4370,7 @@ fn draw_character_surfaces(
             if variants.iter().any(|&variant| draws.has_static(format, variant)) {
                 draws.set_pipeline(pass, pipeline.expect("built with the variants' surfaces"));
                 for &variant in variants {
-                    draws.draw_static_where(pass, kind, format, variant, set, listed);
+                    draws.draw_static(pass, kind, format, variant, set);
                 }
             }
         }
@@ -4419,7 +4379,7 @@ fn draw_character_surfaces(
             if variants.iter().any(|&variant| draws.has_deformed(variant)) {
                 draws.set_pipeline(pass, pipeline.expect("built with the variants' surfaces"));
                 for &variant in variants {
-                    draws.draw_deformed_where(pass, kind, variant, set, listed);
+                    draws.draw_deformed(pass, kind, variant, set);
                 }
             }
         }

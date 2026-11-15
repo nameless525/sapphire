@@ -983,17 +983,14 @@ impl Shadows {
         if !self.plan.active {
             return;
         }
-        let plan = &self.plan.casters;
         let offset = move |index: usize| stride * (first + self.view_index(index));
         for (index, fit) in self.plan.drawn.iter().enumerate() {
             if fit.is_none() {
                 continue;
             }
             let layer = &self.textures.layers[index];
-            let bit = 1u8 << index;
             let counter = counts.get(Counted::Cascade(index));
-            let picks = Some((plan.as_slice(), index));
-            let draws = MeshDraws { counter, walk: Walk::Cascade(index), casters: picks, ..draws };
+            let draws = MeshDraws { counter, walk: Walk::Cascade(index), ..draws };
             graph.add_pass(CASCADE_PASSES[index]).side_effect().weight(pass_weight::MAP).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let mut pass =
@@ -1001,14 +998,8 @@ impl Shadows {
                 pass.set_bind_group(1, view_group, &[offset(index)]);
                 pass.set_index_buffer(draws.meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
                 draws.count_left_out();
-                // The cascade's list holds its casters alone; the filtered walk tests each draw.
-                if draws.lists.is_some() {
-                    draw_casters(&mut pass, pipelines, casters, &draws, |_| true);
-                } else {
-                    draw_casters(&mut pass, pipelines, casters, &draws, |slot| {
-                        plan.get(slot as usize).is_some_and(|caster| caster.cascades & bit != 0)
-                    });
-                }
+                // The cascade's list holds its casters alone.
+                draw_casters(&mut pass, pipelines, casters, &draws);
             });
         }
         if let Some(settings) = self.settings.filter(|_| !self.plan.maps.is_empty()) {
@@ -1027,13 +1018,7 @@ impl Shadows {
                     pass.set_scissor_rect(x, y, tile, tile);
                     pass.set_bind_group(1, view_group, &[offset(MAX_CASCADES + map)]);
                     let draws = MeshDraws { walk: Walk::CharacterMap(map), ..draws };
-                    if draws.lists.is_some() {
-                        draw_casters(&mut pass, pipelines, casters, &draws, |_| true);
-                    } else {
-                        draw_casters(&mut pass, pipelines, casters, &draws, |slot| {
-                            plan.get(slot as usize).is_some_and(|caster| caster.map == Some(map as u8))
-                        });
-                    }
+                    draw_casters(&mut pass, pipelines, casters, &draws);
                 }
             });
         }
@@ -1088,7 +1073,7 @@ pub(crate) struct CasterBindings<'f> {
     pub mesh: &'f Pipelines,
 }
 
-/// Draws the depth-writing surfaces of the instances `include` takes, by slot: static meshes per
+/// Draws the depth-writing surfaces of the casters the pass's list holds: static meshes per
 /// format, then skinned and morphed ones, through the shared caster pipelines, the alpha-tested
 /// anime character variants through the masked caster where it's built (M5 L12), then foliage
 /// through its own.
@@ -1097,7 +1082,6 @@ fn draw_casters(
     pipelines: &ShadowPipelines,
     bindings: CasterBindings<'_>,
     draws: &MeshDraws<'_>,
-    include: impl Fn(u32) -> bool + Copy,
 ) {
     pass.set_bind_group(2, bindings.scene_group, &[]);
     let masked_caster = |format| bindings.mesh.mesh(format).and_then(MeshPipelines::masked_caster);
@@ -1111,21 +1095,14 @@ fn draw_casters(
         if variants.clone().any(|&variant| draws.has_static(format, variant)) {
             draws.set_pipeline(pass, pipeline);
             for &variant in variants {
-                draws.draw_static_where(pass, MeshPass::Shadow, format, variant, DrawSet::Surfaces, include);
+                draws.draw_static(pass, MeshPass::Shadow, format, variant, DrawSet::Surfaces);
             }
         }
         let Some(masked) = masked_caster(format) else { continue };
         if SurfaceVariant::CHARACTER_ALPHA_TEST.iter().any(|&variant| draws.has_static(format, variant)) {
             draws.set_pipeline(pass, masked);
             for variant in SurfaceVariant::CHARACTER_ALPHA_TEST {
-                draws.draw_static_where(
-                    pass,
-                    MeshPass::MaskedShadow,
-                    format,
-                    variant,
-                    DrawSet::Surfaces,
-                    include,
-                );
+                draws.draw_static(pass, MeshPass::MaskedShadow, format, variant, DrawSet::Surfaces);
             }
         }
     }
@@ -1136,7 +1113,7 @@ fn draw_casters(
     {
         draws.set_pipeline(pass, pipeline);
         for &variant in variants {
-            draws.draw_deformed_where(pass, MeshPass::Shadow, variant, DrawSet::Surfaces, include);
+            draws.draw_deformed(pass, MeshPass::Shadow, variant, DrawSet::Surfaces);
         }
     }
     if let Some(masked) = masked_caster(float)
@@ -1144,7 +1121,7 @@ fn draw_casters(
     {
         draws.set_pipeline(pass, masked);
         for variant in SurfaceVariant::CHARACTER_ALPHA_TEST {
-            draws.draw_deformed_where(pass, MeshPass::MaskedShadow, variant, DrawSet::Surfaces, include);
+            draws.draw_deformed(pass, MeshPass::MaskedShadow, variant, DrawSet::Surfaces);
         }
     }
     // Foliage, static meshes only, through its casters per coverage.
@@ -1162,14 +1139,7 @@ fn draw_casters(
                 foliage_bound = true;
             }
             draws.set_pipeline(pass, pipeline);
-            draws.draw_static_where(
-                pass,
-                MeshPass::FoliageShadow,
-                format,
-                variant,
-                DrawSet::Surfaces,
-                include,
-            );
+            draws.draw_static(pass, MeshPass::FoliageShadow, format, variant, DrawSet::Surfaces);
         }
     }
 }

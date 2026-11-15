@@ -14,8 +14,8 @@
 //! instances that cast into the map they draw, or are characters (`*_where`). Fog cards draw in
 //! an order of the frame's own, back to front ([`MeshDraws::draw_ordered`]).
 //!
-//! Every view's passes skip the draws of instances its culling left out (review RA-O01, M5 D3,
-//! [`MeshDraws::view`]); the shadow passes draw from a copy without it, as their plan culls theirs.
+//! Every pass walks its own view's list ([`MeshDraws::lists`], M5 D1), which holds only the
+//! static draws of the instances that view's culling kept (review RA-O01).
 //! Every pass draws one view's instances alone (M3 U6, [`MeshDraws::stand`]): the world's, or an
 //! inset's, whose instances draw nowhere else.
 //!
@@ -30,19 +30,17 @@
 //! not drawn through hair in that group), isn't counted as looked at. The pipelines, materials and
 //! streams the draws set count too ([`StateChanges`]).
 //!
-//! **Each view walks its own list** (M5 D1, the [`lists`] module): with [`MeshDraws::lists`], a
-//! group draws the positions its view's list holds for it, in their view's order, and tests nothing;
-//! what the view left out was counted as its list was compacted, and its pass adds that once
-//! ([`MeshDraws::count_left_out`]). Without, every group walks the whole draw list and tests each
-//! draw as it goes: the filtered walk, kept for the test that compares the two
-//! (`Renderer::walk_filtered`), which m5-plan D2 deletes. The debug views' replays walk the main
-//! view's list and still test the instances they pick.
+//! **Each view walks its own list** (M5 D1, the [`lists`] module, [`MeshDraws::lists`]): a group
+//! draws the positions its view's list holds for it, in their view's order, and tests nothing; what
+//! the view left out was counted as its list was compacted, and its pass adds that once
+//! ([`MeshDraws::count_left_out`]). The debug views' replays walk the main view's list and still
+//! test the instances they pick.
 //!
 //! **A static draw draws its level of detail's indices** (M5 D4, the `levels` module): its list
-//! entry's level, or on the filtered walk its view's ([`MeshDraws::levels`], a cascade's plan),
-//! the index range its mesh's record holds for its submesh at that level, from the same vertex
-//! streams (each level reads a prefix of them). Skinned and morphed instances and fog cards draw
-//! level 0.
+//! entry's level picks the index range its mesh's record holds for its submesh at that level, from
+//! the same vertex streams (each level reads a prefix of them). Skinned and morphed instances and
+//! fog cards draw level 0.
+//!
 //! **Runs draw as one call** (M5 D2, the [`runs`] module): where a view's list formed runs of a
 //! static depth-writing group, each run binds its mesh's streams and material once, its records at
 //! slot 0 from their first, and draws its instances `0..n` ([`MeshDraws::runs`]). The debug views'
@@ -53,11 +51,10 @@ mod runs;
 
 use std::ops::Range;
 
-use sapphire_assets::material::MaterialFlags;
 use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
-pub(crate) use self::lists::{CasterTests, Entry, Orders, Source, ViewLists, ViewTests, Walk, has_level};
+pub(crate) use self::lists::{CasterTests, Entry, Orders, Source, ViewLists, ViewTests, Walk};
 pub(crate) use self::runs::RunRecords;
 pub use self::runs::{DrawRuns, RunStats};
 use crate::buffer::GrowableBuffer;
@@ -67,7 +64,6 @@ use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::mesh_pool::MeshPool;
 use crate::pipelines::{MeshPass, SurfaceVariant, format_index, slot};
 use crate::scene::{DeformedDraw, DrawCommand, DrawList};
-use crate::shadows::plan::SlotCaster;
 use crate::skinning::SkinnedOutputs;
 use crate::view_cull::{Culled, Verdict};
 
@@ -86,24 +82,10 @@ pub(crate) struct MeshDraws<'a> {
     pub skinned: SkinnedOutputs<'a>,
     /// Every uploaded material, by handle: their group 3.
     pub materials: &'a [MaterialRecord],
-    /// Per draw record: whether the frame draws its hull, if it has one (the LOD cutoff,
-    /// `outlines::OutlineCull`).
-    pub hulls: &'a [bool],
     /// Draws index a line list of each triangle's three edges instead of the pool's triangles:
     /// the debug view's line indices, two per triangle index at twice its position
     /// (`debug_view`, the wireframe's replay), bound in its place. Off for every other pass.
     pub lines: bool,
-    /// Per instance slot, whether the view it stands in draws it, or by what test not (review
-    /// RA-O01, M5 D3, the `view_cull` module): for the main pass, both prepasses, the debug views
-    /// and each inset's passes. `None` draws every one, as the shadow views do.
-    pub view: Option<Culled<'a>>,
-    /// Per instance slot, the level of detail the main view's family draws it at (M5 D4,
-    /// [`Culled::level`]), on the filtered walk; `None` draws level 0, as the character maps do
-    /// (a cascade's come from [`Self::casters`]). A view's list holds its draws' levels.
-    pub levels: Option<Culled<'a>>,
-    /// A shadow cascade's casters and its index, on the filtered walk: what its pick left out by
-    /// distance or size counts as such (M5 D3).
-    pub casters: Option<(&'a [SlotCaster], usize)>,
     /// Per instance slot, the view it stands in (M3 U6, `inset`): 0 for the world's, `n` for the
     /// frame's inset `n - 1`. Slots past its end stand in the world.
     pub stands: &'a [u16],
@@ -114,10 +96,13 @@ pub(crate) struct MeshDraws<'a> {
     /// The frame's state changes, which every mesh pass's draws add to.
     pub changes: &'a ChangeCounter,
     /// Each view's list this frame (M5 D1): the pass walks [`Self::walk`]'s and tests nothing.
-    /// `None` walks the whole draw list, testing each draw (the filtered walk m5-plan D2 deletes).
-    pub lists: Option<&'a ViewLists>,
+    pub lists: &'a ViewLists,
     /// Which of [`Self::lists`] this pass walks.
     pub walk: Walk,
+    /// Per instance slot, whether the view it stands in draws it, or by what test not (review
+    /// RA-O01, M5 D3, the `view_cull` module): what the ordered draws ([`Self::draw_ordered`]), which
+    /// no list holds, are tested by. `None` draws every one, as the shadow views do.
+    pub view: Option<Culled<'a>>,
     /// The frame's run records (M5 D2, [`RunRecords`]): a run of more than one draw binds its
     /// records here.
     pub run_records: &'a wgpu::Buffer,
@@ -143,22 +128,21 @@ pub(crate) enum DrawSet {
     /// LOD cutoff.
     Outlines,
     /// The surfaces whose material draws eyes through the character's hair
-    /// ([`MaterialFlags::THROUGH_HAIR`], M1 C5).
+    /// ([`MaterialFlags::THROUGH_HAIR`](sapphire_assets::material::MaterialFlags::THROUGH_HAIR), M1 C5).
     ThroughHair,
 }
 
 impl MeshDraws<'_> {
-    /// The list this pass walks, if the frame walks lists.
+    /// The list this pass walks: none for the character maps' pass as a whole, which draws each
+    /// map's.
     fn listed(&self) -> Option<&lists::ViewList> {
-        self.lists.and_then(|lists| lists.list(self.walk))
+        self.lists.list(self.walk)
     }
 
     /// Adds what the pass's view left out, counted as its list was compacted, to its counts: once a
-    /// pass, by the pass. Nothing on the filtered walk, whose groups count it as they go.
+    /// pass, by the pass.
     pub(crate) fn count_left_out(&self) {
-        if let Some(lists) = self.lists {
-            self.counter.add(&lists.left_out(self.walk));
-        }
+        self.counter.add(&self.lists.left_out(self.walk));
     }
 
     /// Sets `pipeline` for the draws after, counting it.
@@ -172,73 +156,9 @@ impl MeshDraws<'_> {
         self.stands.get(slot as usize).copied().unwrap_or(0) == self.stand
     }
 
-    /// Whether `set` holds draw record `draw_id` of `material`, which has an outline hull or not:
-    /// [`Pick::Out`] if not, and [`Pick::Cutoff`] for a hull past its material's cutoff.
-    fn includes(&self, set: DrawSet, draw_id: u32, material: MaterialHandle, outline: bool) -> Pick {
-        let held = match set {
-            DrawSet::Surfaces => true,
-            DrawSet::Outlines if !outline => false,
-            DrawSet::Outlines => {
-                return if self.hulls.get(draw_id as usize).copied().unwrap_or(false) {
-                    Pick::In
-                } else {
-                    Pick::Cutoff
-                };
-            }
-            DrawSet::ThroughHair => self
-                .materials
-                .get(material.index())
-                .is_some_and(|record| record.flags.contains(MaterialFlags::THROUGH_HAIR)),
-        };
-        if held { Pick::In } else { Pick::Out }
-    }
-
-    /// Whether a draw of the instance in `slot`, standing here, that its set holds as `pick`
-    /// draws, counting it in `counts` as looked at and, if not drawn, by the test that left it out.
-    fn passes(&self, counts: &mut PassCounts, pick: Pick, slot: u32, instance: impl Fn(u32) -> bool) -> bool {
-        match pick {
-            Pick::Out => return false,
-            Pick::Cutoff => {
-                counts.considered += 1;
-                counts.culled_by_cutoff += 1;
-                return false;
-            }
-            Pick::In => counts.considered += 1,
-        }
-        if !instance(slot) {
-            // A cascade's pick: by its volume, or by distance or size (M5 D3).
-            let left_out =
-                self.casters.and_then(|(casters, cascade)| casters.get(slot as usize)?.left_out(cascade));
-            match left_out {
-                Some(verdict @ (Verdict::Distance | Verdict::Size)) => counts.count_culled(verdict),
-                _ => counts.culled_by_pass += 1,
-            }
-            return false;
-        }
-        match self.verdict(slot) {
-            Verdict::Drawn => true,
-            verdict => {
-                counts.count_culled(verdict);
-                false
-            }
-        }
-    }
-
     /// The verdict of the view the instance in `slot` stands in: drawn without culling.
     fn verdict(&self, slot: u32) -> Verdict {
         self.view.map_or(Verdict::Drawn, |view| view.verdict(slot))
-    }
-
-    /// The level the filtered walk draws `command` at: its cascade's, or its view's; `None` if its
-    /// submesh has no triangles there, as its view's list would leave it out.
-    fn filtered_level(&self, command: &DrawCommand) -> Option<u8> {
-        let level = match self.casters {
-            Some((casters, cascade)) => {
-                casters.get(command.slot as usize).map_or(0, |caster| caster.levels[cascade])
-            }
-            None => self.levels.map_or(0, |levels| levels.level(command.slot)),
-        };
-        has_level(command.levels, level).then_some(level)
     }
 
     /// The indices `command` draws at `level`: its submesh's range in its mesh's record at that
@@ -258,32 +178,16 @@ impl MeshDraws<'_> {
     }
 }
 
-/// Whether a draw set holds a draw ([`MeshDraws::includes`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Pick {
-    In,
-    /// Not of the set: not looked at.
-    Out,
-    /// An outline hull past its material's distance cutoff.
-    Cutoff,
-}
-
 impl MeshDraws<'_> {
     /// Whether there are static meshes in `format` of `variant` to draw: in the view's list, of any
-    /// set, or on the filtered walk, in the draw list.
+    /// set.
     pub(crate) fn has_static(&self, format: PositionFormat, variant: SurfaceVariant) -> bool {
-        match self.listed() {
-            Some(list) => list.has(Source::Static(format), variant),
-            None => !self.list.commands[format_index(format)][variant.index()].is_empty(),
-        }
+        self.listed().is_some_and(|list| list.has(Source::Static(format), variant))
     }
 
     /// Whether there are skinned or morphed instances of `variant` to draw, as [`Self::has_static`].
     pub(crate) fn has_deformed(&self, variant: SurfaceVariant) -> bool {
-        match self.listed() {
-            Some(list) => list.has(Source::Deformed, variant),
-            None => !self.list.deformed[variant.index()].is_empty(),
-        }
+        self.listed().is_some_and(|list| list.has(Source::Deformed, variant))
     }
 
     /// Whether there are draws of `variant` at all, static or deformed.
@@ -338,17 +242,16 @@ impl MeshDraws<'_> {
         let mut counts = PassCounts::default();
         let hull = set == DrawSet::Outlines;
         let commands = &self.list.commands[format_index(format)][variant.index()];
-        let runs = match self.listed() {
-            Some(list) if self.runs && pipelines.is_empty() && set == DrawSet::Surfaces => {
-                list.runs(format, variant)
-            }
-            _ => &[],
+        let Some(list) = self.listed() else { return };
+        let listed = list.group(Source::Static(format), variant, set);
+        let runs = if self.runs && pipelines.is_empty() && set == DrawSet::Surfaces {
+            list.runs(format, variant)
+        } else {
+            &[]
         };
         if !runs.is_empty() {
             // The view's runs, which take every draw of its group in order, each run of one level:
             // a pass's list is tested already, and a replay that picks instances draws no runs.
-            let listed =
-                self.listed().map_or(&[][..], |list| list.group(Source::Static(format), variant, set));
             for run in runs {
                 let entries = &listed[run.first as usize..][..run.count as usize];
                 let Entry { at, level } = entries[0];
@@ -385,31 +288,15 @@ impl MeshDraws<'_> {
                 counts.mesh_call(1, count, level, hull);
             }
         };
-        if let Some(list) = self.listed() {
-            // The view's own: listed, in order, and tested already, but for a debug replay's pick
-            // of instances (the passes' take every one).
-            for &Entry { at, level } in list.group(Source::Static(format), variant, set) {
-                let command = &commands[at as usize];
-                counts.considered += 1;
-                if instance(command.slot) {
-                    draw(command, level, &mut bound, &mut counts);
-                } else {
-                    counts.culled_by_pass += 1;
-                }
-            }
-        } else {
-            for command in commands {
-                if !self.stands_here(command.slot) {
-                    continue;
-                }
-                let pick = self.includes(set, command.draw_id, command.material, command.outline);
-                if self.passes(&mut counts, pick, command.slot, &instance) {
-                    match self.filtered_level(command) {
-                        Some(level) => draw(command, level, &mut bound, &mut counts),
-                        // Simplified away at its level: not looked at, as its view's list says.
-                        None => counts.considered -= 1,
-                    }
-                }
+        // The view's own: listed, in order, and tested already, but for a debug replay's pick of
+        // instances (the passes' take every one).
+        for &Entry { at, level } in listed {
+            let command = &commands[at as usize];
+            counts.considered += 1;
+            if instance(command.slot) {
+                draw(command, level, &mut bound, &mut counts);
+            } else {
+                counts.culled_by_pass += 1;
             }
         }
         self.counter.add(&counts);
@@ -523,26 +410,15 @@ impl MeshDraws<'_> {
                 }
             }
         };
-        if let Some(list) = self.listed() {
-            // Level 0 alone (m5-plan D5's to change): their entries' levels are 0.
-            for &Entry { at, .. } in list.group(Source::Deformed, variant, set) {
-                let command = &deformed[at as usize];
-                counts.considered += 1;
-                if instance(command.slot) {
-                    draw(command, &mut bound, &mut counts);
-                } else {
-                    counts.culled_by_pass += 1;
-                }
-            }
-        } else {
-            for command in deformed {
-                if !self.stands_here(command.slot) {
-                    continue;
-                }
-                let pick = self.includes(set, command.draw_id, command.material, command.outline);
-                if self.passes(&mut counts, pick, command.slot, &instance) {
-                    draw(command, &mut bound, &mut counts);
-                }
+        let Some(list) = self.listed() else { return };
+        // Level 0 alone (m5-plan D5's to change): their entries' levels are 0.
+        for &Entry { at, .. } in list.group(Source::Deformed, variant, set) {
+            let command = &deformed[at as usize];
+            counts.considered += 1;
+            if instance(command.slot) {
+                draw(command, &mut bound, &mut counts);
+            } else {
+                counts.culled_by_pass += 1;
             }
         }
         self.counter.add(&counts);

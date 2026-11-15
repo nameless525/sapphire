@@ -5,7 +5,8 @@
 //! sidecar (`sapphire_pipeline::bench`); the pipeline's cook then reads them as it reads `content/`, into
 //! loose files in `target/bench/<preset>/loose/<cook>/` and packs in `target/bench/<preset>/<cook>/`, through
 //! a cache of its own in `target/bench/cache/`. So `rm -rf target/bench` takes all of it, and nothing it
-//! makes is committed.
+//! makes is committed. A sources folder that holds files but not `gen-bench`'s marker, as a tool that prunes
+//! `target/` can leave it, is removed first and generated anew, since `gen-bench` replaces only its own trees.
 //!
 //! **Nothing ships it.** Every app, package and release takes its content from [`crate::content::cook`],
 //! which cooks `content/` alone into `target/content/`: `bench/` is beside `content/`, never in it, and the
@@ -115,6 +116,13 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
             File::lock,
             &format!("to finish generating {}", preset.name()),
         )?;
+        if clear_unmarked(&source)? {
+            eprintln!(
+                "removed {}: it held files but no {MARKER}, so something pruned it (a build cache, a cleaner); \
+                 generating it anew",
+                source.display()
+            );
+        }
         let mut generate = Command::new(&pipeline);
         generate
             .arg("gen-bench")
@@ -144,6 +152,22 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
     lock.unlock()?;
     workspace::wait_for_lock(&lock, File::try_lock_shared, File::lock_shared, &waiting)?;
     Ok(BenchCooked { dir: out, _lock: lock })
+}
+
+/// The file `gen-bench` writes into every tree it generates: `sapphire_pipeline::bench::MARKER`, which xtask
+/// doesn't link (`the_marker_is_the_pipelines`).
+const MARKER: &str = ".bench-source";
+
+/// Removes `dir` if it holds anything but no [`MARKER`], and says whether it did. `gen-bench` refuses to
+/// replace such a folder, rightly for a path a person typed; but this one is xtask's own, under `target/`,
+/// and a tool that prunes `target/` (CI's build cache does) can leave a generated tree without its marker.
+/// A tree with its marker is left to `gen-bench`, which rewrites and prunes it.
+fn clear_unmarked(dir: &Path) -> anyhow::Result<bool> {
+    if !dir.is_dir() || dir.join(MARKER).is_file() || fs::read_dir(dir)?.next().is_none() {
+        return Ok(false);
+    }
+    fs::remove_dir_all(dir)?;
+    Ok(true)
 }
 
 /// The district's pack in a preset's cook: the zone the generated sources are.
@@ -268,6 +292,34 @@ mod tests {
         assert_eq!(fs::read_to_string(to.join("documents/game.ron")).unwrap(), "c");
         assert!(!to.join(MANIFEST).exists());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn only_a_tree_without_its_marker_is_cleared() {
+        let root = std::env::temp_dir().join(format!("xtask_clear_unmarked_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        // Missing, then empty: nothing to do.
+        assert!(!clear_unmarked(&root).unwrap());
+        fs::create_dir_all(&root).unwrap();
+        assert!(!clear_unmarked(&root).unwrap());
+        assert!(root.is_dir());
+        // Files with the marker: a generated tree, left to `gen-bench`.
+        fs::create_dir_all(root.join("district")).unwrap();
+        fs::write(root.join("district/block.ron"), "a").unwrap();
+        fs::write(root.join(MARKER), "b").unwrap();
+        assert!(!clear_unmarked(&root).unwrap());
+        assert!(root.join("district/block.ron").is_file());
+        // The same files without it: removed whole.
+        fs::remove_file(root.join(MARKER)).unwrap();
+        assert!(clear_unmarked(&root).unwrap());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn the_marker_is_the_pipelines() {
+        let source = workspace::root().join("tools/sapphire_pipeline/src/bench.rs");
+        let text = fs::read_to_string(&source).unwrap();
+        assert!(text.contains(&format!("pub const MARKER: &str = \"{MARKER}\";")), "{}", source.display());
     }
 
     #[test]

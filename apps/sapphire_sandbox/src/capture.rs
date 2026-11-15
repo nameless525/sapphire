@@ -63,28 +63,76 @@ fn history_only_requested(value: Option<&std::ffi::OsStr>) -> Result<bool, AppIn
     }
 }
 
+/// What a capture's steps ask of its stage: a seam, so that a test can play a trip whose load takes as long as
+/// it likes.
+trait Steps {
+    /// One step of the stage, and whether a trip or a timeline held it, running no tick of the fight.
+    fn step_held(&mut self) -> bool;
+    /// Whether a zone trip is under way.
+    fn tripping(&self) -> bool;
+    /// Whether the trip under way waits on its load (`FightShow::trip_loading`).
+    fn trip_loading(&self) -> bool;
+    /// A frame prepared and recorded and never run (`Stage::lose_frames`): the content's update, the trip's
+    /// frame and the streaming run, and the renderer takes nothing from it.
+    fn lose_frame(&mut self) -> Result<(), AppInitError>;
+}
+
+/// The capture's stage, and the target its lost frames record into.
+struct Capturing<'a> {
+    stage: &'a mut Stage,
+    view: &'a wgpu::TextureView,
+}
+
+impl Steps for Capturing<'_> {
+    fn step_held(&mut self) -> bool {
+        let held = self.stage.show.fight.held_steps();
+        self.stage.step();
+        self.stage.show.fight.held_steps() != held
+    }
+
+    fn tripping(&self) -> bool {
+        self.stage.show.fight.show.trip_phase().is_some()
+    }
+
+    fn trip_loading(&self) -> bool {
+        self.stage.show.fight.show.trip_loading(&self.stage.scene, &self.stage.content)
+    }
+
+    fn lose_frame(&mut self) -> Result<(), AppInitError> {
+        let stage = &mut *self.stage;
+        stage.lose_frames = true;
+        let lost = stage.render_capture_warmup(self.view, false);
+        stage.lose_frames = false;
+        lost?;
+        stage.scene.end_frame();
+        stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+        Ok(())
+    }
+}
+
 /// A tick of a capture: a stage's step, a frame's worth. A frame a cutscene holds the fight for is a frame,
 /// so `--capture-ticks` counts it; `through`, for a capture of a replay's end or `--capture-through-trips`
-/// (M5 M6), steps on through it, since the end is the replay's last tick (M3 Q3). A zone trip holds the fight
-/// until its zone has loaded, its first cells are in and its wipe has covered and cleared, and only a drawn
-/// frame moves those on (M3 W4): so a step a trip holds draws one into `view`, its output discarded where it
-/// may be. Without it, a capture of `zone-trip`'s end never ended (M3 Z2).
-fn step(
-    stage: &mut Stage,
-    through: bool,
-    view: &wgpu::TextureView,
-    history_only: bool,
-) -> Result<(), AppInitError> {
+/// (M5 M6), steps on through it, since the end is the replay's last tick (M3 Q3).
+///
+/// A zone trip holds the fight until its zone has loaded, its first cells are in and its wipe has covered and
+/// cleared, and only a frame moves those on (M3 W4): without frames, a capture of `zone-trip`'s end never ended
+/// (M3 Z2). So a step a trip holds is followed by a frame, and then by more with no step between for as long
+/// as the trip waits on its load. The wipe goes by the steps' time and the load by nobody's, so the steps a
+/// trip holds, and the scene's clock under its wipe with them, are the same however long the load took. Each of
+/// those frames is lost, so the renderer takes nothing from them, neither the jitter's phase nor a history: the
+/// frames after the trip draw on from where the frames before it left the renderer, as if the trip had cost
+/// none. A capture through a trip is the replay's ticks and the content's, never the load's (the M5 fix: drawn
+/// frames, a step after each, made `zone-trip-hub` follow how long its load took).
+fn step(stage: &mut impl Steps, through: bool) -> Result<(), AppInitError> {
     loop {
-        let held = stage.show.fight.held_steps();
-        stage.step();
-        if !through || stage.show.fight.held_steps() == held {
+        if !stage.step_held() || !through {
             return Ok(());
         }
-        if stage.show.fight.show.trip_phase().is_some() {
-            stage.render_capture_warmup(view, history_only)?;
-            stage.scene.end_frame();
-            stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+        if stage.tripping() {
+            stage.lose_frame()?;
+            while stage.trip_loading() {
+                stage.lose_frame()?;
+            }
         }
     }
 }
@@ -186,19 +234,14 @@ pub(crate) fn run(
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     for _ in 0..first {
-        step(stage, through, &view, history_only)?;
+        step(&mut Capturing { stage, view: &view }, through)?;
     }
     // A capture that streams settles on the streamer's plan for the frame drawn before (M5 M5): one frame
     // here for the views' estimate, prepared and recorded but lost, never run. The renderer takes back what
     // it took from the frames to come (temporal AA's jitter, its fade dither, its history), so the frames
     // that follow run the phases a whole capture's do, from the same fresh history, at the plan.
     if stage.capture_textures == CaptureTextures::Settled {
-        stage.lose_frames = true;
-        let lost = stage.render_capture_warmup(&view, history_only);
-        stage.lose_frames = false;
-        lost?;
-        stage.scene.end_frame();
-        stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+        Capturing { stage, view: &view }.lose_frame()?;
     }
     // Frames before the captured one, `step` ticks apart, ending at `ticks`; with the overlay
     // shown, at least its warm-up, redrawing the same scene state at the end.
@@ -221,7 +264,7 @@ pub(crate) fn run(
             // The frames still to come, the captured one included, each this many ticks later.
             if earlier - frame < frames.count {
                 for _ in 0..frames.step {
-                    step(stage, through, &view, history_only)?;
+                    step(&mut Capturing { stage, view: &view }, through)?;
                 }
             }
         }
@@ -420,6 +463,112 @@ mod tests {
         gpu.device().destroy();
         let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
         assert_eq!(gpu_failure(&gpu), Err("the GPU device was lost".to_owned()));
+    }
+
+    /// Where [`Replay`]'s trip has got.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Phase {
+        Covering,
+        Loading,
+        Arriving,
+        Uncovering,
+    }
+
+    /// A replay whose zone entry is due at tick `due`, whose trip's wipe covers in `cover` steps (the steps'
+    /// time) and whose zone loads in `load` frames (nobody's), arriving on the frame after, as a trip goes.
+    struct Replay {
+        due: u32,
+        cover: u32,
+        load: u32,
+        tick: u32,
+        held: u32,
+        frames: u32,
+        phase: Option<Phase>,
+        covered_for: u32,
+        loaded_for: u32,
+    }
+
+    impl Replay {
+        fn new(load: u32) -> Self {
+            let (due, cover) = (120, 34);
+            Self { due, cover, load, tick: 0, held: 0, frames: 0, phase: None, covered_for: 0, loaded_for: 0 }
+        }
+    }
+
+    impl Steps for Replay {
+        fn step_held(&mut self) -> bool {
+            assert!(!self.trip_loading(), "a step while the trip loads");
+            if self.tick == self.due && self.phase.is_none() {
+                self.phase = Some(Phase::Covering);
+            }
+            match self.phase {
+                Some(Phase::Covering | Phase::Loading | Phase::Arriving) => {
+                    self.held += 1;
+                    self.covered_for += 1;
+                    true
+                }
+                None | Some(Phase::Uncovering) => {
+                    self.tick += 1;
+                    false
+                }
+            }
+        }
+
+        fn tripping(&self) -> bool {
+            self.phase.is_some()
+        }
+
+        fn trip_loading(&self) -> bool {
+            matches!(self.phase, Some(Phase::Loading | Phase::Arriving))
+        }
+
+        fn lose_frame(&mut self) -> Result<(), AppInitError> {
+            self.frames += 1;
+            self.phase = match self.phase {
+                Some(Phase::Covering) if self.covered_for >= self.cover => Some(Phase::Loading),
+                Some(Phase::Loading) if self.loaded_for >= self.load => Some(Phase::Arriving),
+                Some(Phase::Loading) => {
+                    self.loaded_for += 1;
+                    Some(Phase::Loading)
+                }
+                Some(Phase::Arriving) => Some(Phase::Uncovering),
+                phase => phase,
+            };
+            Ok(())
+        }
+    }
+
+    /// A capture through a trip takes no step while the trip's load is owed, so the steps the trip holds, and the
+    /// capture's first frame's tick, are the same however many frames the load takes; and nothing is owed when the
+    /// capture's first frame comes. Before the M5 fix a step followed every frame, and a load that outlasted the
+    /// wipe held a step for each frame it took.
+    #[test]
+    fn a_capture_through_a_trip_holds_the_same_steps_however_long_its_load_takes() {
+        let first = 200;
+        let captured: Vec<(u32, u32, bool)> = [0, 1, 7, 33, 34, 400]
+            .into_iter()
+            .map(|load| {
+                let mut replay = Replay::new(load);
+                for _ in 0..first {
+                    step(&mut replay, true).expect("steps");
+                }
+                assert_eq!(replay.phase, Some(Phase::Uncovering), "arrived, load {load}");
+                assert!(replay.frames > load, "the load's frames were drawn: {}", replay.frames);
+                (replay.tick, replay.held, replay.trip_loading())
+            })
+            .collect();
+        assert!(captured.iter().all(|&shown| shown == (first, captured[0].1, false)), "{captured:?}");
+        assert_eq!(captured[0].1, 34, "the wipe's steps alone");
+    }
+
+    /// Without `through`, a step a trip holds is a tick of the capture, and draws nothing.
+    #[test]
+    fn a_capture_by_steps_draws_nothing_through_a_trip() {
+        let mut replay = Replay::new(7);
+        for _ in 0..200 {
+            step(&mut replay, false).expect("steps");
+        }
+        assert_eq!((replay.tick + replay.held, replay.frames), (200, 0));
     }
 
     #[test]

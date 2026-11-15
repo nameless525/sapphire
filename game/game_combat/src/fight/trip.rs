@@ -190,6 +190,24 @@ impl FightShow {
         self.trips.trip.as_ref().map(|trip| trip.phase)
     }
 
+    /// Whether the trip under way waits on its load, as of the last frame: its zone coming in, or, once it's
+    /// arrived, the zone's first cells, the mesh pool's give-back and a tier change on its way. Those come on the
+    /// asset server's, the GPU's and the warm-up's time, where the rest of a trip goes by its wipe, on the steps'.
+    /// A capture through a trip draws frames and takes no step while this holds, so the steps a trip holds are
+    /// the same however long its load took (the sandbox's `--capture-through-trips`).
+    #[must_use]
+    pub fn trip_loading(&self, scene: &Scene, content: &Content) -> bool {
+        let Some(trip) = &self.trips.trip else { return false };
+        match trip.phase {
+            TripPhase::Covering | TripPhase::Uncovering => false,
+            TripPhase::Swapping => !trip.same && scene.zone_load(trip.target.zone) == ZoneLoad::Waiting,
+            TripPhase::Arriving => {
+                (self.trips.wiped && self.trips.tier_waits)
+                    || (trip.error.is_none() && !scene.zone_arrived(content))
+            }
+        }
+    }
+
     /// What the last trip came to.
     #[must_use]
     pub fn last_trip(&self) -> Option<&TripReport> {

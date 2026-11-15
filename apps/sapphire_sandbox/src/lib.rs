@@ -458,8 +458,10 @@
 //!     one tick per fixed step, and fail if it leaves the recorded checksums beside the file
 //!     (`checksums.<architecture>.txt`) (M2 D2, `combat.rs`). A capture stops at the replay's end
 //!     unless `--capture-ticks` picks an earlier tick. A bench goes on past the end, and says so.
-//!     `--capture-through-trips` counts the replay's ticks rather than the stage's steps, drawing the
-//!     frames a zone trip holds, as a capture of the end does, so a capture lands after a trip (M5 M6).
+//!     `--capture-through-trips` counts the replay's ticks rather than the stage's steps, stepping through
+//!     a zone trip as a capture of the end does, so a capture lands after a trip (M5 M6). The frames a trip
+//!     needs are lost, and none is followed by a step while the trip waits on its load, so the picture is
+//!     the replay's ticks and the content's, never how long the load took (`capture.rs`).
 //!   - `--record <file> --scenario <name> --script <name>`, with `--capture` or `--bench`: run a
 //!     scenario on a script's actions for as many ticks as the mode steps, and write the replay.
 //!     Without those two and without `--script`, in the windowed app, it records whoever's playing,

@@ -505,8 +505,9 @@ pub(crate) struct Options {
     /// bench logs what the frames it drew submitted, as a bench's count rows (M5 X4).
     pub draw_every: Option<NonZeroU32>,
     /// `--capture-through-trips`, with `--replay` and `--capture-ticks` (M5 M6): each tick a capture counts is
-    /// one of the replay's, a step a zone trip holds drawing a frame and stepping again, as a capture of a
-    /// replay's end steps; so a capture can land after a trip, in the zone it brought.
+    /// one of the replay's, a step a zone trip holds losing a frame, and more while the trip waits on its load,
+    /// and stepping again, as a capture of a replay's end steps; so a capture can land after a trip, in the zone
+    /// it brought, the same however long the load took.
     pub capture_through_trips: bool,
     /// `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the character at a spawner of the zone cooked from
     /// `<stem>.zone.ron`, `player_start` unless named, under the zone's day and light rigs.

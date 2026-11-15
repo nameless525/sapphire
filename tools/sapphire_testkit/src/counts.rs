@@ -114,6 +114,11 @@ impl Walk {
             "tour",
             "--time-of-day",
             self.time_of_day,
+            // The crowd the timed walks draw (M5 Z3): the proving hub's mounted, the ambient characters on.
+            "--mount",
+            "zone_proving_hub",
+            "--ambient",
+            "on",
         ]
         .map(str::to_owned)
         .to_vec()
@@ -273,7 +278,7 @@ fn header(digest: Option<&str>) -> Vec<String> {
         ));
     }
     header.push(format!(
-        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour, at each tier's settings"
+        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour --mount zone_proving_hub --ambient on, at each tier's settings"
     ));
     header.push("reported in counts.txt, not held (the order cells arrive in is timing):".to_owned());
     header.extend(REPORTED.iter().map(|(row, why)| format!("  {row}: {why}")));
@@ -481,6 +486,17 @@ mod tests {
                 format!("{}-{}", walk.tier, if walk.time_of_day == "23" { "night" } else { "dusk" })
             );
             assert!(walk.args().windows(2).any(|pair| pair == ["--tier", walk.tier]));
+        }
+    }
+
+    /// The lane's walks count the crowd as the timed walks draw it: the proving hub's crowd mounted, the ambient
+    /// characters on.
+    #[test]
+    fn the_lanes_walks_count_the_crowd() {
+        for walk in WALKS {
+            let args = walk.args();
+            assert!(args.windows(2).any(|pair| pair == ["--mount", "zone_proving_hub"]), "{}", walk.name);
+            assert!(args.windows(2).any(|pair| pair == ["--ambient", "on"]), "{}", walk.name);
         }
     }
 

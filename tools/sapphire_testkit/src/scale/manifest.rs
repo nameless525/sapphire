@@ -627,4 +627,16 @@ mod tests {
             }
         }
     }
+
+    /// Z1's counting walks count the crowd the timed walks draw: the proving hub's crowd mounted, the ambient
+    /// characters on, as `streaming` and the exit walk have them.
+    #[test]
+    fn the_counting_walks_count_the_crowd() {
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        for run in manifest.runs.iter().filter(|run| run.name == "counted" || run.name == "counted-streaming")
+        {
+            assert!(run.args.windows(2).any(|pair| pair == ["--mount", "zone_proving_hub"]), "{}", run.name);
+            assert!(run.args.windows(2).any(|pair| pair == ["--ambient", "on"]), "{}", run.name);
+        }
+    }
 }

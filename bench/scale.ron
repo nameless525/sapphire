@@ -285,7 +285,11 @@
             (
                 name: "counted",
                 about: "the tour's counts, a frame in seven drawn, whole textures",
-                args: ["--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload", "--live-link", "off"],
+                // The crowd the timed walks draw (M5 Z3): the proving hub's mounted, the ambient characters on.
+                args: [
+                    "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                ],
                 frames: Lap,
                 phases: 1,
                 read: [Counts, Pipelines],
@@ -297,7 +301,8 @@
                 about: "the tour's counts, a frame in seven drawn, the streamer binding",
                 args: [
                     "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
-                    "--texture-streaming", "on", "--no-hot-reload", "--live-link", "off",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--texture-streaming", "on", "--no-hot-reload",
+                    "--live-link", "off",
                 ],
                 // `streaming`'s pools, half what each cook's walk holds whole.
                 tier_args: {

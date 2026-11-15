@@ -917,6 +917,7 @@
                 ticks: 90,
                 args: ["--lods", "off", "--look-dev", "sky", "--time-of-day", "23", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 106.4, warp: 150.1),
             ),
             // The street out of the square at night (X1 part 2b): Jinzhou's white walls and charcoal
             // tile roofs under a blue night, its parametric halls, gateway and tower, the paper
@@ -4126,6 +4127,7 @@
                        "--replay", "tests/replays/party-three-kinds.sreplay", "--ui-game", "hud", "--ui-locale", "en",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32", "--distortion", "off"],
+                ci_seconds: (lavapipe: 86.5, warp: 295.1),
             ),
             // Bends (M5 L6), at dusk round the look-dev character: a heavy's landing behind it, its shockwave's
             // band a third of the way out, bending the paving and the buildings past it outward while the
@@ -4391,6 +4393,7 @@
                 args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-ultimate.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32", "--character-shadows", "own"],
+                ci_seconds: (lavapipe: 59.9, warp: 133.2),
             ),
             // The same moment across the whole frame (`--cutins full`): only the HUD over the close-up.
             (
@@ -4410,6 +4413,7 @@
                 args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-ultimate.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32", "--character-shadows", "own"],
+                ci_seconds: (lavapipe: 72.8, warp: 117.9),
             ),
             // On a phone at Mobile-Low, mid-hold: the picture drawn at the tier's smaller cut-in size and scaled
             // up by the interface.
@@ -4420,6 +4424,7 @@
                 args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-ultimate.sreplay",
                        "--time-of-day", "10", "--tier", "mobile-low", "--render-scale", "0.504274",
                        "--blade", "on"],
+                ci_seconds: (lavapipe: 4.4, warp: 34.1),
             ),
             // With flashes reduced, partway through the enter: the band fading in where it holds, its focus
             // lines still.
@@ -4429,6 +4434,7 @@
                 args: ["--cues", "--hud", "live", "--arena", "--replay", "tests/replays/arena-ultimate.sreplay",
                        "--time-of-day", "10", "--tier", "desktop-high", "--ao", "off", "--blade", "on",
                        "--capture-frames", "32", "--character-shadows", "own", "--effect-scale", "reduced:1"],
+                ci_seconds: (lavapipe: 37.0, warp: 132.9),
             ),
         ],
     ),

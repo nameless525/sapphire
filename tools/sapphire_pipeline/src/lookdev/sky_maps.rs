@@ -2,21 +2,28 @@
 //! the card band, which the key light shades (`CloudShading::Lit`), and the night's nebula. Both
 //! are painted here in code, from shapes and noise, never traced from the reference frames.
 //!
-//! - **`sky/cumulus.png`** ([`cumulus_png`], 4096 × 576, linear RGBA): the card band once around
-//!   the horizon at the sandbox band's 11.4 texels a degree, and as tall as the band keeps its
+//! - **`sky/cumulus.png`** ([`cumulus_png`], 8192 × 1152, linear RGBA): the card band once around
+//!   the horizon at 22.8 texels a degree (M5 L17; twice the sandbox band's, so a 1440p frame shows
+//!   about a texel a pixel and no rim steps from texel to texel; its sidecar caps the mobile cook
+//!   at 4096, so phones store the old size), and as tall as the band keeps its
 //!   texels square at the horizon, which reaches 58°. Each cloud ([`CLOUDS`]) is a union of
-//!   masses, each mass a dome of round lobes stacked in rows over a flat base, smaller lobes
-//!   budding from their tops, the upper ones in front, merged smoothly and roughened by noise so
-//!   the outline reads as painted. R and G hold the normal of the front lobe (a sphere facing the
-//!   viewer) across and up, B the distance to the cloud's edge (the sandbox band's field), A how
-//!   open the lobe is to the sky: closed in the crevices around the lobes in front of it and
-//!   under the base. Shapes are laid out in degrees of arc on the sky, so they keep their
-//!   proportions up the band, where its rows grow taller.
+//!   masses, each mass a dome of round lobes stacked in rows over a flat base, the upper ones in
+//!   front, merged smoothly and roughened by noise and a finer grain so the outline reads as
+//!   painted. The outline's lobes bud smaller ones from their upper arcs, and those bud finer
+//!   ones again (M5 L17, from a random stream of their own, so the masses stand where X1 put
+//!   them): the cauliflower edge. R
+//!   and G hold the normal of the front lobe (a sphere facing the viewer) across and up, B the
+//!   distance to the cloud's edge (the sandbox band's field, counted in its texels, so the
+//!   coverage that dissolves it reaches as many degrees in as before), A how open the lobe is to
+//!   the sky: closed in the crevices around the lobes in front of it and under the base. Shapes
+//!   are laid out in degrees of arc on the sky, so they keep their proportions up the band, where
+//!   its rows grow taller.
 //! - **`sky/nebula.png`** ([`nebula_png`], 2048 × 1024, linear RGB): nebulae on the celestial
 //!   sphere, equirectangular as the star and Milky Way maps, along the Milky Way's band (the
 //!   sandbox sky's galactic pole) and wandering off it: R broad billowing clouds of warped
 //!   noise, cut by wide dark rifts of dust; G the glow where the clouds meet the rifts and in a
-//!   few bright hearts; B sparse knots deep in the clouds. Time of day colors each channel.
+//!   few bright hearts; B sparse knots deep in the clouds. Time of day colors each channel, and the
+//!   sky shader's nebula variant crowds a third, finer grid of stars where R and G are (M5 L17).
 //!
 //! Every field is a continuous function of the texel's position (soft lobe fronts, smooth minima,
 //! smoothsteps), so the libm rounding that differs between platforms moves a texel by a code
@@ -32,8 +39,9 @@ use crate::color::unorm8;
 use crate::samples::noise::{NO_PERIOD, Rng, fbm, smoothstep};
 use crate::samples::sky::{CLOUD_DISTANCE_RANGE, GALACTIC_POLE, dissolve_field};
 
-/// The card band's map: once around the horizon, 11.4 texels a degree as the sandbox's band.
-pub const CUMULUS_SIZE: (u32, u32) = (4096, 576);
+/// The card band's map: once around the horizon, 22.8 texels a degree, twice the sandbox band's,
+/// so a 1440p frame shows a texel at about a pixel and a cloud's rim holds its line.
+pub const CUMULUS_SIZE: (u32, u32) = (8192, 1152);
 /// The nebula's map, equirectangular on the celestial sphere: 5.7 texels a degree.
 pub const NEBULA_SIZE: (u32, u32) = (2048, 1024);
 
@@ -41,15 +49,22 @@ pub const NEBULA_SIZE: (u32, u32) = (2048, 1024);
 const BAND_BASE: f32 = -0.035;
 /// Texels of the band a degree of azimuth.
 const TEXELS_PER_DEGREE: f32 = CUMULUS_SIZE.0 as f32 / 360.0;
+/// The texels a degree that B's distance is counted in ([`dissolve_field`]'s range): the sandbox
+/// band's, so B runs as many degrees into a cloud as it did at that resolution, and time of day's
+/// coverage dissolves the clouds to the same cores whatever the map's size.
+const FIELD_TEXELS_PER_DEGREE: f32 = 4096.0 / 360.0;
 /// How far around a cloud its fields reach, in degrees: its distance field fades out half a
 /// distance range outside the edge, and noise moves the edge by up to a degree.
-const CLOUD_MARGIN: f32 = 0.5 * CLOUD_DISTANCE_RANGE / TEXELS_PER_DEGREE + 1.5;
+const CLOUD_MARGIN: f32 = 0.5 * CLOUD_DISTANCE_RANGE / FIELD_TEXELS_PER_DEGREE + 1.5;
 /// How far outside a cloud's edge its lobes' normals reach, in texels, so filtering across the
 /// silhouette blends the rim's normals; further out the map holds the flat normal.
 const NORMAL_REACH: f32 = 3.0;
 /// The soft front's blend between overlapping lobes, in degrees of lobe height: a fraction of a
 /// texel wide, so each lobe's edge stays crisp and the map continuous.
 const FRONT_SOFTNESS: f32 = 0.02;
+/// Finer buds on each of the outline's buds (M5 L17): billows about a fifth of their lobe's size,
+/// which the band's 22.8 texels a degree keep round at 1440p.
+const FINER_BUDS: u32 = 3;
 /// Unit directions on a lobe's upper arc where smaller lobes bud: up, and 30° and 55° either side.
 const BUDS: [Vec2; 5] = [
     Vec2::new(0.0, 1.0),
@@ -153,6 +168,9 @@ struct Shape {
 impl Shape {
     fn new(cloud: Cloud) -> Self {
         let mut rng = Rng(cloud.seed.wrapping_mul(0x2545_f491));
+        // The finer buds draw from a stream of their own, so the masses and their first buds
+        // stand where X1 placed them: the towers framing the square, the sun's gaps open.
+        let mut fine = Rng(cloud.seed.wrapping_mul(0x9e37_79b9) ^ 0x6c17);
         let mut lobes = Vec::new();
         for mass in cloud.masses {
             // Lobes about a third of the mass across: big rounded masses, not a heap of stones.
@@ -178,15 +196,14 @@ impl Shape {
                     };
                     lobes.push(lobe);
                     // The outline's lobes, along the sides and the top rows, bud smaller ones
-                    // from their upper arcs: the cauliflower edge.
+                    // from their upper arcs, and those bud finer ones again: the cauliflower edge.
                     let outline = i == 0 || i + 1 == count || row + 2 >= rows;
                     for _ in 0..if outline { 2 } else { 0 } {
-                        let bud = BUDS[(rng.next() * BUDS.len() as f32) as usize % BUDS.len()];
-                        lobes.push(Lobe {
-                            center: lobe.center + bud * lobe.radius * rng.range(0.75, 0.95),
-                            radius: lobe.radius * rng.range(0.38, 0.52),
-                            depth: lobe.depth + lobe.radius * 0.3,
-                        });
+                        let bud = bud_from(&lobe, &mut rng, (0.75, 0.95), (0.38, 0.52));
+                        lobes.push(bud);
+                        for _ in 0..FINER_BUDS {
+                            lobes.push(bud_from(&bud, &mut fine, (0.7, 0.92), (0.36, 0.5)));
+                        }
                     }
                 }
             }
@@ -226,10 +243,12 @@ impl Shape {
             distance = smooth_min(distance, d, 0.3 * lobe.radius);
             front = front.max(height(lobe));
         }
+        // Ripples along the edge, and a finer grain over them, a brush's.
         let ripple = fbm(p / 1.4, (NO_PERIOD, NO_PERIOD), 2, seed ^ 0x53) - 0.5;
+        let grain = fbm(p / 0.45, (NO_PERIOD, NO_PERIOD), 2, seed ^ 0x55) - 0.5;
         let base = 0.4 * (fbm(Vec2::new(p.x / 3.0, 0.0), (NO_PERIOD, NO_PERIOD), 2, seed ^ 0x54) - 0.5);
         // The flat base: nothing below it.
-        let distance = (distance + ripple * 0.25).max(base - q.y);
+        let distance = (distance + ripple * 0.25 + grain * 0.1).max(base - q.y);
         // The front lobe's normal and depth, blended softly where two fronts meet.
         let (mut normal, mut front_depth, mut weight) = (Vec2::ZERO, 0.0, 0.0);
         for lobe in &self.lobes {
@@ -255,6 +274,17 @@ impl Shape {
         // Under the base, in shade.
         let open = smoothstep(-0.5, 3.0, q.y - base) * (1.0 - occlusion);
         (distance, normal, open)
+    }
+}
+
+/// A smaller lobe budding from `parent`'s upper arc, `out` of its radius from its center (a
+/// range), `size` of its radius (a range), a little in front of it.
+fn bud_from(parent: &Lobe, rng: &mut Rng, out: (f32, f32), size: (f32, f32)) -> Lobe {
+    let direction = BUDS[(rng.next() * BUDS.len() as f32) as usize % BUDS.len()];
+    Lobe {
+        center: parent.center + direction * parent.radius * rng.range(out.0, out.1),
+        radius: parent.radius * rng.range(size.0, size.1),
+        depth: parent.depth + parent.radius * 0.3,
     }
 }
 
@@ -298,13 +328,12 @@ pub fn cumulus_png() -> io::Result<Vec<u8>> {
                 continue;
             }
             let (distance, lobe, open) = shape.sample(Vec2::new(across, up));
-            let distance = distance * TEXELS_PER_DEGREE;
             // A cloud's normals and closure fade into those past its rim's reach, well inside its
             // margin, so clouds apart add up to each one's own.
-            let reach = smoothstep(2.0 * NORMAL_REACH, NORMAL_REACH, distance);
+            let reach = smoothstep(2.0 * NORMAL_REACH, NORMAL_REACH, distance * TEXELS_PER_DEGREE);
             normal += lobe * reach;
             closed += (1.0 - open) * reach;
-            field = field.max(dissolve_field(distance));
+            field = field.max(dissolve_field(distance * FIELD_TEXELS_PER_DEGREE));
         }
         let normal = normal.clamp_length_max(1.0);
         [unorm8(0.5 + 0.5 * normal.x), unorm8(0.5 + 0.5 * normal.y), unorm8(field), unorm8(1.0 - closed)]

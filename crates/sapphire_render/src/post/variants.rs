@@ -9,6 +9,7 @@ use sapphire_rhi::wgpu;
 
 use super::focus::{DepthOfFieldSettings, FocusPass};
 use super::layers::Variant;
+use super::upscale::{self, UpscalePass};
 use super::{
     CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, COMPOSITE_PASS, GpuEffects, LAYERS_CONSTANT,
     LENS_EFFECTS_CONSTANT, Layouts, PostEffectSettings, PostEffects, RADIAL_TAPS_CONSTANT, SHARPEN_CONSTANT,
@@ -132,14 +133,22 @@ pub(super) enum Slot {
     /// `post_distortion.wgsl`): outside [`Self::all`], built where a tier has bends and an inventory declares
     /// them, or a frame first draws one.
     Distorted(usize),
+    /// The upscaler's passes (M5 L14, `upscale`): outside [`Self::all`], built with the renderer on a tier that
+    /// upscales along edges, and on no other.
+    Upscale(UpscalePass),
 }
 
 impl Slot {
     /// How many the frame's variants have.
     const COUNT: usize = 4 + Variant::COMPOSITES;
-    /// How many there are, the inset's resolve, the colour-vision views, depth of field's and the distorted
-    /// composites with them.
-    const SLOTS: usize = Self::COUNT + 1 + Dichromacy::ALL.len() + FocusPass::ALL.len() + Variant::COMPOSITES;
+    /// How many there are, the inset's resolve, the colour-vision views, depth of field's, the distorted
+    /// composites and the upscaler's with them.
+    const SLOTS: usize = Self::COUNT
+        + 1
+        + Dichromacy::ALL.len()
+        + FocusPass::ALL.len()
+        + Variant::COMPOSITES
+        + UpscalePass::ALL.len();
 
     /// The pipelines outside the frame's variants, which something else asks for.
     pub(super) fn others() -> impl Iterator<Item = Self> {
@@ -148,14 +157,22 @@ impl Slot {
             .chain(Dichromacy::ALL.map(Self::ColorVision))
             .chain(FocusPass::ALL.map(Self::Focus))
             .chain((0..Variant::COMPOSITES).map(Self::Distorted))
+            .chain(UpscalePass::ALL.map(Self::Upscale))
     }
 
-    /// Whether a post pass with depth of field's `settings`, and bends or not (`distortion`), can draw with it:
-    /// not depth of field's passes a tier lacks, nor a distorted composite on a tier without bends.
-    pub(super) fn drawable_with(self, settings: DepthOfFieldSettings, distortion: bool) -> bool {
+    /// Whether a post pass with depth of field's `settings`, bends or not (`distortion`) and the edge upscaler or
+    /// not (`upscaler`) can draw with it: not depth of field's passes a tier lacks, a distorted composite on a tier
+    /// without bends, nor the upscaler's passes on a tier without them.
+    pub(super) fn drawable_with(
+        self,
+        settings: DepthOfFieldSettings,
+        distortion: bool,
+        upscaler: bool,
+    ) -> bool {
         match self {
             Self::Focus(pass) => settings.has(pass),
             Self::Distorted(_) => distortion,
+            Self::Upscale(_) => upscaler,
             _ => true,
         }
     }
@@ -185,6 +202,14 @@ impl Slot {
             Self::ColorVision(dichromacy) => Self::COUNT + 1 + dichromacy as usize,
             Self::Focus(pass) => Self::COUNT + 1 + Dichromacy::ALL.len() + pass as usize,
             Self::Distorted(index) => Self::COUNT + 1 + Dichromacy::ALL.len() + FocusPass::ALL.len() + index,
+            Self::Upscale(pass) => {
+                Self::COUNT
+                    + 1
+                    + Dichromacy::ALL.len()
+                    + FocusPass::ALL.len()
+                    + Variant::COMPOSITES
+                    + pass as usize
+            }
         }
     }
 
@@ -202,7 +227,7 @@ impl Slot {
                     PostVariants { layers, sharpening, lens_effects, color_effects, ..PostVariants::NONE };
                 (switches, 0)
             }
-            Self::Inset | Self::ColorVision(_) | Self::Focus(_) => (PostVariants::NONE, 0),
+            Self::Inset | Self::ColorVision(_) | Self::Focus(_) | Self::Upscale(_) => (PostVariants::NONE, 0),
         }
     }
 
@@ -222,7 +247,9 @@ impl Slot {
             Self::Prefilter { characters } => bloom && characters == variant.characters,
             Self::Down | Self::Up => bloom && bloom_levels >= 2,
             Self::Composite(index) => index == composite,
-            Self::Inset | Self::ColorVision(_) | Self::Focus(_) | Self::Distorted(_) => false,
+            Self::Inset | Self::ColorVision(_) | Self::Focus(_) | Self::Distorted(_) | Self::Upscale(_) => {
+                false
+            }
         })
     }
 }
@@ -320,6 +347,24 @@ impl Builder {
                     if pass == FocusPass::Backdrop { PipelineFamily::Inset } else { PipelineFamily::Focus };
                 self.pipeline(module, family, names, layout, SCENE_COLOR_FORMAT, &[])
             }
+            // The upscaler's (M5 L14): its own group 0, its constants alone, and one texture in. The upscale writes
+            // its perceptual values at 10 bits, the sharpen the target.
+            Slot::Upscale(pass) => {
+                let (name, fragment) = pass.names();
+                let format = match pass {
+                    UpscalePass::Edge => upscale::FORMAT,
+                    UpscalePass::Sharpen => self.output_format,
+                };
+                let groups = [&self.layouts.upscale, &self.layouts.one];
+                self.pipeline_in(
+                    groups,
+                    module,
+                    PipelineFamily::Post,
+                    (name, fullscreen, fragment),
+                    format,
+                    &[],
+                )
+            }
         }
     }
 
@@ -329,14 +374,27 @@ impl Builder {
         &self,
         module: &wgpu::ShaderModule,
         family: PipelineFamily,
-        (name, vertex, fragment): (&str, &str, &str),
+        names: (&str, &str, &str),
         layout: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
+        constants: &[(&str, f64)],
+    ) -> wgpu::RenderPipeline {
+        self.pipeline_in([&self.shared_layout, layout], module, family, names, format, constants)
+    }
+
+    /// [`Self::pipeline`] reading `groups` as groups 0 and 1.
+    fn pipeline_in(
+        &self,
+        groups: [&wgpu::BindGroupLayout; 2],
+        module: &wgpu::ShaderModule,
+        family: PipelineFamily,
+        (name, vertex, fragment): (&str, &str, &str),
         format: wgpu::TextureFormat,
         constants: &[(&str, f64)],
     ) -> wgpu::RenderPipeline {
         let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(name),
-            bind_group_layouts: &[Some(&self.shared_layout), Some(layout)],
+            bind_group_layouts: &groups.map(Some),
             immediate_size: 0,
         });
         let compilation_options = wgpu::PipelineCompilationOptions { constants, ..Default::default() };

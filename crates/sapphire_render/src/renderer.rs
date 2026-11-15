@@ -59,7 +59,7 @@ use crate::pipelines::{
 };
 use crate::post::{
     DepthOfFieldSettings, InsetResolve, PostEffectSettings, PostInputs, PostProcess, PostStats, PostVariants,
-    SunOnScreen,
+    SunOnScreen, Upscaler,
 };
 use crate::quality::{OptionalPass, OptionalPasses};
 use crate::retire::FrameFence;
@@ -186,6 +186,10 @@ pub struct RenderSettings {
     /// desktop tiers, a quarter on Mobile-High. Off by default, and on Mobile-Low: no pipeline, target or pass,
     /// whatever a frame's effects ask.
     pub distortion: DistortionResolution,
+    /// How a scene drawn smaller than the target reaches it without temporal AA (M5 L14, `post`'s `upscale`
+    /// module): bilinear in post's fused pass, the default, or the edge-adaptive upscale and sharpen after it,
+    /// the phone tiers'. A renderer with [`Self::temporal`] ignores it, as its resolve upsamples.
+    pub upscaler: Upscaler,
     /// What view culling does (review RA-O01, M5 D3, the `view_cull` module): every view culls the
     /// instances it draws by their bounds, which changes no pixel, and by the tier's distance and
     /// size ([`Self::culling`]). On by default; only tests and the bench set
@@ -248,6 +252,7 @@ impl Default for RenderSettings {
             inset: InsetSettings::default(),
             depth_of_field: DepthOfFieldSettings::OFF,
             distortion: DistortionResolution::Off,
+            upscaler: Upscaler::Bilinear,
             view_culling: CullingMode::On,
             culling: CullingThresholds::NONE,
             levels: LevelSettings::ON,
@@ -270,7 +275,8 @@ impl RenderSettings {
         self.foliage.validate()?;
         self.ambient_occlusion.validate()?;
         self.reflections.validate()?;
-        self.inset.validate()
+        self.inset.validate()?;
+        self.upscaler.validate()
     }
 }
 
@@ -878,6 +884,7 @@ impl Renderer {
                             settings.post_effects,
                             settings.depth_of_field.with_temporal(settings.temporal),
                             settings.distortion.any(),
+                            settings.upscaler.without_temporal(settings.temporal),
                             settings.post_variants,
                             builds,
                             shaders_ref,
@@ -2911,6 +2918,8 @@ impl Renderer {
         // upsamples) writes the target's size.
         let size = scaled_size(output, self.render_scale);
         self.stats.scene_size = size;
+        // The upscaler (M5 L14) follows the size this frame draws at, whatever the scale was at `prepare`.
+        self.stats.post.upscale = self.temporal.is_none() && self.post.upscales(size, output);
         // The character prepass's targets follow the scene's size, and GTAO's (new textures for a
         // new size): group 0 binds both.
         let prepass_resized = self.character_prepass.resize(&self.device, size);
@@ -3127,8 +3136,19 @@ impl Renderer {
             runs: true,
         };
         let InsetFrame { uploads: inset_uploads, draws: inset_draws, shown: inset_shown, .. } = inset_frame;
-        // Temporal AA's resolve writes the target's size, so post upsamples only without it.
-        let (post_uniforms, post_buffer) = post.uniforms(temporal.is_none() && size != output, output);
+        // Temporal AA's resolve writes the target's size, so post upsamples only without it: in its fused pass,
+        // or, where the tier upscales along edges (M5 L14), in the upscale and sharpen after it, the fused pass
+        // then writing the scene's size.
+        let upscales = temporal.is_none() && post.upscales(size, output);
+        let (post_uniforms, post_buffer) = if upscales {
+            post.uniforms(false, size)
+        } else {
+            post.uniforms(temporal.is_none() && size != output, output)
+        };
+        let upscale_upload = post
+            .upscale_uniforms(size, output)
+            .filter(|_| upscales)
+            .map(|(uniforms, buffer)| (uniforms, buffer.clone()));
         // Handles, so `post` and `temporal` can be borrowed mutably for their passes below.
         let post_buffer = post_buffer.clone();
         let temporal_upload = temporal.as_ref().map(|(_, passes)| {
@@ -3179,6 +3199,9 @@ impl Renderer {
                 skinning.upload(uploads, ctx.encoder);
             }
             upload(uploads, ctx.encoder, &post_buffer, bytemuck::bytes_of(&post_uniforms));
+            if let Some((uniforms, buffer)) = &upscale_upload {
+                upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(uniforms));
+            }
             if let Some((uniforms, buffer)) = &temporal_upload {
                 upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(uniforms));
             }
@@ -3644,7 +3667,7 @@ impl Renderer {
         });
         let inputs = PostInputs { input: resolved, scene_color, depth, target, distortion };
         let (insets, counter) = (inset_resolves.into_iter().flatten(), counts.get(Counted::Post));
-        post.record(graph, inputs, effects, insets, labels, counter);
+        post.record(graph, inputs, effects, insets, labels, counter, counts.get(Counted::Upscale));
         // The debug view over the finished frame (M1 F5).
         if let Some(views) = debug_view {
             let frame = DebugFrame {
@@ -3919,7 +3942,8 @@ impl Renderer {
     /// [`MIN_RENDER_SCALE`]..=1, and 1 when it isn't finite.
     ///
     /// At 1 every frame is exactly as without a render scale. Below it, the scene's targets
-    /// shrink to [`scaled_size`] and post's final pass upsamples to the target bilinearly; the
+    /// shrink to [`scaled_size`] and post upsamples to the target: temporal AA's resolve where the tier has it,
+    /// the edge upscaler on a tier with it ([`RenderSettings::upscaler`]), otherwise the fused pass bilinearly; the
     /// pool makes new transients for each new size, so callers should change it in steps
     /// (dynamic resolution moves in 5% steps).
     pub fn set_render_scale(&mut self, scale: f32) {

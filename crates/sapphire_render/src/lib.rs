@@ -952,7 +952,7 @@ pub use post::{
     Diffusion, DrawnEffects, Duotone, EffectCoverage, EffectScale, Flash, Focus, Glitch, GradientBlend,
     GradientLayer, GradientShape, Halftone, Inversion, LensFlare, MAX_BLOOM_LEVELS, MAX_GRADIENT_LAYERS,
     MAX_RADIAL_BLUR_TAPS, PostEffectSettings, PostEffects, PostParams, PostStats, PostVariants, RadialBlur,
-    SpeedLines, ToneCurve, Vignette,
+    SpeedLines, ToneCurve, UPSCALE_PASSES, Upscaler, Vignette,
 };
 // The frame's look, which the packet carries and time of day resolves: plain data of a crate of
 // its own, beneath the renderer and time of day, so tools that light by it link neither.

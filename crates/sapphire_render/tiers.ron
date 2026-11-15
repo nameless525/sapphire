@@ -55,12 +55,18 @@
 //   instances never cull this way; an ambient character's parts cull together. On the `budget`
 //   district's walk none of them removes a draw: its instances are merged blocks, which span 20
 //   pixels and 50 texels at the least (M5 D3's hand-back), so the calls left over are D2's and D4's.
+// - `upscaler` (M5 L14, `sapphire_render::post`'s `upscale` module): how a frame below render scale 1
+//   reaches the output where no temporal AA upsamples it. The phones take `Edge`: post's fused pass writes
+//   the scene's size, then an edge-adaptive upscale and a sharpen (after FSR 1's two passes) take it to the
+//   output's; `sharpen` is the sharpen's strength in percent of its strongest, faded to nothing as the scale
+//   nears 1. Built with the renderer, as a phone draws below scale 1 from its first frame. A tier without it
+//   upscales bilinearly in the fused pass; the desktop tiers' TAA upsamples on its own.
 // - `ladder` (M4 T2, spec §6.3): the rungs the tier gives up when the device runs hot or dynamic
 //   resolution can't hold its budget at its floor, each holding the ones above it, and taken back
 //   after a hold (`sapphire_render::quality::ladder`). They spend what the look can spare first (M4
 //   plan §3, from T0's measures on an M5): desktops lower the scale to 0.85, which TAA rebuilds (14-15%
 //   of Desktop-Low's frame), then shed the sky's face rate, GTAO (12-14%) and a bloom level, then the
-//   scale to the floor; phones, whose bilinear upscale softens the hard two-tone edge and the lines,
+//   scale to the floor; phones, whose upscale softens the hard two-tone edge and the lines,
 //   shed first (a bloom level is 11-13% of Mobile-Low's frame) and lower the scale after. Then
 //   levels of detail one step coarser (`LodBias(1.0)`, M5 D4: twice the allowance, so each switch at
 //   half the distance; what it saves in time is unmeasured, and grows when cells get levels in D6, and
@@ -103,8 +109,8 @@
 //
 // Resolution: TAA also upsamples, so the desktop tiers keep spec §3.1's internal heights:
 // Desktop-High renders at most 1440 rows (1440p native, 4K from 1440), Desktop-Low 1080. Below
-// those heights they render at native height. The mobile tiers' caps upsample in post's final
-// pass, bilinearly, until a spatial upscaler arrives.
+// those heights they render at native height. The mobile tiers' caps upsample in the edge-adaptive
+// upscale and sharpen after post's fused pass (`upscaler`, M5 L14).
 (
     type: "sapphire::render::TierTable",
     version: 1,
@@ -245,6 +251,7 @@
                 depth_of_field: (insets: true),
                 distortion: Quarter,
                 culling: (distance: 5000, least_pixels: 1.5, least_texels: 1.0),
+                upscaler: Edge(sharpen: 50),
                 ladder: [
                     Shed([SkyFaceRate, BloomLevel, Gtao]),
                     Scale(0.85),
@@ -294,6 +301,7 @@
                 reflections: (cube_size: 32),
                 inset: (max_side: 512, supersample: 1),
                 culling: (distance: 4500, least_pixels: 1.5, least_texels: 1.0),
+                upscaler: Edge(sharpen: 50),
                 // No GTAO to shed, no frame rate under its own 30 and no tier below.
                 ladder: [
                     Shed([SkyFaceRate, BloomLevel]),

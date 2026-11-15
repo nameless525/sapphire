@@ -33,6 +33,11 @@
 //! Under temporal AA (M1 R7) post reads the resolved frame instead, which is already at the
 //! target's size, so the whole chain runs there and the fused pass loads it texel for texel.
 //!
+//! On a tier that upscales along edges (M5 L14, the `upscale` module: Mobile-High and Mobile-Low), the
+//! fused pass instead writes the scene's size, loading it texel for texel as at scale 1, and two passes
+//! after it, an edge-adaptive upscale and a sharpen, take the frame to the target's size in place of the
+//! bilinear read. At scale 1 they don't run.
+//!
 //! # Grading
 //!
 //! The tone curve and grade are baked on the CPU into 32³ LUTs (the `lut` module), only when the
@@ -86,9 +91,9 @@
 //!   than black.
 //! - **Sharpening** ([`PostParams::sharpening`], the player's): RCAS (FSR 1's robust
 //!   contrast-adaptive sharpening) on exposed light compressed by its luma, five taps a pixel
-//!   at the output's resolution (bilinear from a smaller scene, which makes it a bilinear
-//!   upscale with sharpening). Off by default: spec §5.12's R7 and P2 notes measure where it
-//!   helps and where it doesn't.
+//!   at the fused pass's resolution (bilinear from a smaller scene, which makes it a bilinear
+//!   upscale with sharpening; the scene's own where the edge upscaler follows). Off by default:
+//!   spec §5.12's R7 and P2 notes measure where it helps and where it doesn't.
 //!
 //! **Variants.** `post.wgsl`'s pipeline-overridable constants pick the fused pass's variant
 //! (`POST_LAYERS`, `POST_SHARPEN`) and the prefilter's (`POST_CHARACTERS`) each frame, from
@@ -273,9 +278,9 @@
 //! - **Mobile-Low:** the chain starts at ½ of the scene, and the tier's render scale (M1 R6)
 //!   already puts the scene at about half the output, so the prefilter covers a sixteenth of
 //!   the output's pixels. Starting at ¼ of the scene as well waits for device measurements.
-//! - **A sharper upsample:** without temporal AA (the mobile tiers), below render scale 1 the
-//!   fused pass upsamples bilinearly, which sharpening can follow. A spatial upscaler (an
-//!   FSR1-style EASU, or MetalFX spatial; spec §5.12) replaces it.
+//! - **The platforms' own spatial upscalers** (MetalFX spatial and the like), in the edge upscaler's
+//!   place where a device has one, once devices can measure them against it (M5 L14 built the edge
+//!   upscaler alone).
 //! - **Bloom at the scene's size under TAA upsampling:** the chain now starts at half the
 //!   output's size; starting it at half the scene's would save the 4K case its biggest levels,
 //!   and keep the bloom's and the diffusion's share of the frame the same at 4K as at 1080p.
@@ -297,6 +302,7 @@ mod effects;
 pub(crate) mod focus;
 pub(crate) mod layers;
 mod lut;
+mod upscale;
 mod variants;
 
 #[cfg(test)]
@@ -329,6 +335,11 @@ pub use sapphire_look::post::{
     EffectCoverage, EffectScale, Flash, Focus, Glitch, GradientBlend, GradientLayer, GradientShape, Halftone,
     Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects, PostParams, RadialBlur, SpeedLines, ToneCurve,
     Vignette,
+};
+use upscale::UpscalePass;
+pub(crate) use upscale::UpscaleUniforms;
+pub use upscale::{
+    EDGE_PASS as UPSCALE_EDGE_PASS, PASSES as UPSCALE_PASSES, SHARPEN_PASS as UPSCALE_SHARPEN_PASS, Upscaler,
 };
 pub use variants::PostVariants;
 use variants::{Builder, Pipelines, Slot};
@@ -496,8 +507,12 @@ pub struct PostStats {
     pub focus: bool,
     /// The fused pass read the frame through effects' bends (M5 L6): its distorted composite drew.
     pub distortion: bool,
+    /// The frame was drawn below render scale 1 on a tier that upscales along edges (M5 L14, [`Upscaler`]): the
+    /// fused pass wrote the scene's size and the upscale and sharpen took it to the target's.
+    pub upscale: bool,
     /// Post's pipelines built so far, of 16 variants and the inset's, color vision's, depth of
-    /// field's (M5 L8) and the distorted composites (M5 L6) beside them: the variants built ahead of the frames
+    /// field's (M5 L8), the distorted composites (M5 L6) and the upscaler's (M5 L14) beside them:
+    /// the variants built ahead of the frames
     /// ([`RenderSettings::post_variants`](crate::RenderSettings::post_variants),
     /// [`Renderer::prewarm_post`](crate::Renderer::prewarm_post)) and those frames built.
     pub pipelines: u32,
@@ -557,6 +572,11 @@ pub(crate) struct PostProcess {
     bends: bool,
     /// The last prepared frame reads the frame through bends: its fused pass draws a distorted composite.
     distorting: bool,
+    /// How a frame smaller than the target reaches it (M5 L14): bilinear in the fused pass, or the upscale and
+    /// sharpen after it.
+    upscaler: Upscaler,
+    /// The upscaler's constants and their group 0: only on a tier that upscales along edges.
+    upscale: Option<UpscaleGroup>,
     /// Levels the thermal ladder sheds in place, from the widest ([`Self::shed_bloom_levels`]).
     shed_levels: u32,
     bind_groups: Box<BindGroups>,
@@ -586,6 +606,13 @@ impl RebuiltPipelines {
     }
 }
 
+/// The upscaler's constants buffer and the group 0 that binds it (M5 L14).
+#[derive(Debug)]
+struct UpscaleGroup {
+    buffer: wgpu::Buffer,
+    shared: wgpu::BindGroup,
+}
+
 /// Post's pipelines with what a warm-up built ([`PostProcess::warm`]).
 #[derive(Debug)]
 pub(crate) struct WarmedPost(Pipelines);
@@ -608,6 +635,9 @@ struct Layouts {
     /// The distorted composites (M5 L6): the composite's six, the bends' offsets at binding 6 and the character
     /// mask the bends keep characters out of at binding 7.
     distorted: wgpu::BindGroupLayout,
+    /// The upscaler's group 0 (M5 L14): its constants and nearest sampler at bindings 2 and 3, past what post's own
+    /// group 0 binds.
+    upscale: wgpu::BindGroupLayout,
 }
 
 /// Where depth of field's passes bind their textures: `focus.wgsl` puts the depth at binding 6, past the
@@ -627,6 +657,8 @@ struct BindGroups {
     focus_prepare: CachedBindGroup,
     focus_gather: CachedBindGroup,
     focus_composite: CachedBindGroup,
+    upscale_edge: CachedBindGroup,
+    upscale_sharpen: CachedBindGroup,
     down: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
     up: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
 }
@@ -690,7 +722,9 @@ struct Fullscreen<'f> {
 impl PostProcess {
     /// Creates post-processing, writing `output_format` (the target's), with `bloom_levels` and
     /// the tier's `effects`, and builds the pipelines of `variants` (the module docs' "Building
-    /// the variants"). `distortion` says the tier has bends (M5 L6). Fails if the device can't filter the
+    /// the variants"). `distortion` says the tier has bends (M5 L6), and `upscaler` how a smaller frame reaches
+    /// the target (M5 L14): the edge upscaler's pipelines build here, where the tier has it. Fails if the device
+    /// can't filter the
     /// grading LUTs' format. The scene-color format is the renderer's to check: it is the main pass's
     /// attachment.
     #[expect(clippy::too_many_arguments, reason = "a tier's post settings, each its own")]
@@ -701,6 +735,7 @@ impl PostProcess {
         effects: PostEffectSettings,
         depth_of_field: DepthOfFieldSettings,
         distortion: bool,
+        upscaler: Upscaler,
         variants: PostVariants,
         builds: &PipelineBuilds,
         sources: &ShaderSources,
@@ -799,6 +834,27 @@ impl PostProcess {
                     texture(7, fragment, flat),
                 ],
             ),
+            upscale: layout(
+                "upscale",
+                &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: fragment,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(size_of::<UpscaleUniforms>() as u64),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: fragment,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                ],
+            ),
         };
 
         let builder = Builder {
@@ -813,8 +869,33 @@ impl PostProcess {
         let module = shaders::module(device, Program::Post, sources);
         let bloom_levels = bloom_levels.min(MAX_BLOOM_LEVELS);
         let mut pipelines = Pipelines::default();
-        let built =
-            pipelines.build_all(&builder, &module, Slot::within(variants, bloom_levels), BuildOn::Jobs);
+        // The upscaler's with the variants: a phone's frames are below scale 1 from the first (`upscale`).
+        let upscaling = UpscalePass::ALL.map(Slot::Upscale).into_iter().filter(|_| upscaler.edge());
+        let slots = Slot::within(variants, bloom_levels).chain(upscaling);
+        let built = pipelines.build_all(&builder, &module, slots, BuildOn::Jobs);
+        let upscale = upscaler.edge().then(|| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("upscale uniforms"),
+                size: size_of::<UpscaleUniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            // Texels read through a nearest sampler at their centers, clamped to the edge, rather than loaded:
+            // the same values, without a load's bounds checks.
+            let nearest = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("upscale nearest clamp"),
+                ..Default::default()
+            });
+            let shared = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("upscale"),
+                layout: &builder.layouts.upscale,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 2, resource: buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&nearest) },
+                ],
+            });
+            UpscaleGroup { buffer, shared }
+        });
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("post uniforms"),
@@ -890,6 +971,8 @@ impl PostProcess {
             distortion,
             bends: false,
             distorting: false,
+            upscaler,
+            upscale,
             shed_levels: 0,
             bind_groups: Box::default(),
             uniforms: PostUniforms::default(),
@@ -984,7 +1067,9 @@ impl PostProcess {
         self.bends |= held.bends;
         // Of the other's first uses, those this pass can draw: a shorter bloom chain draws fewer levels.
         let drawable: Vec<Slot> = Slot::within(PostVariants::ALL, self.bloom_levels)
-            .chain(Slot::others().filter(|slot| slot.drawable_with(self.depth_of_field, self.distortion)))
+            .chain(Slot::others().filter(|slot| {
+                slot.drawable_with(self.depth_of_field, self.distortion, self.upscaler.edge())
+            }))
             .collect();
         let carried = held.slots.iter().copied().filter(|slot| drawable.contains(slot));
         let slots: Vec<Slot> = self.ready_slots(self.ready, self.bends).into_iter().chain(carried).collect();
@@ -1130,6 +1215,8 @@ impl PostProcess {
     /// logged). `camera` is the main view's (the frame's aspect, which round gradients and flare
     /// elements need), `sun` where it sees the sun's disc, for the lens flare, and `bends` whether the frame's
     /// effects bend the picture (M5 L6): on a tier with bends, its fused pass reads the frame through them.
+    /// Whether the upscaler (M5 L14) draws is `record`'s to say, from the sizes it is given: the render scale
+    /// may change between the two.
     pub(crate) fn prepare(
         &mut self,
         queue: &wgpu::Queue,
@@ -1214,6 +1301,7 @@ impl PostProcess {
         self.uniforms = uniforms;
         let focus = if self.focus { self.focus_slots() } else { Vec::new() };
         let distorting = self.distorting;
+        // The upscaler's pipelines (M5 L14) build with the renderer, never here.
         let drawn = Slot::drawn(self.variant, self.bloom, self.drawn_levels())
             .map(move |slot| if distorting { slot.distorted().unwrap_or(slot) } else { slot })
             .chain(focus);
@@ -1246,6 +1334,27 @@ impl PostProcess {
         (uniforms, &self.uniform_buffer)
     }
 
+    /// Whether a frame of a scene `input` texels into a target `output`'s draws the upscaler (M5 L14): on a tier
+    /// that upscales along edges, while the sizes differ, which they do below render scale 1 without temporal AA
+    /// (whose resolve gives post the target's size). Then the fused pass writes `input`'s size, so its constants
+    /// are for that size ([`Self::uniforms`] with `upsample` false and `input`). Decided as the frame records, so
+    /// a frame whose render scale changed after its `prepare` upscales at the scale it draws at.
+    pub(crate) fn upscales(&self, input: (u32, u32), output: (u32, u32)) -> bool {
+        let built = UpscalePass::ALL.iter().all(|&pass| self.pipelines.get(Slot::Upscale(pass)).is_some());
+        self.upscale.is_some() && input != output && built
+    }
+
+    /// The upscaler's constants for a frame [`Self::upscales`] says draws it, and the buffer `record`'s caller
+    /// uploads them to with post's own: `None` on a tier without it.
+    pub(crate) fn upscale_uniforms(
+        &self,
+        input: (u32, u32),
+        output: (u32, u32),
+    ) -> Option<(UpscaleUniforms, &wgpu::Buffer)> {
+        let group = self.upscale.as_ref()?;
+        Some((UpscaleUniforms::new(self.upscaler, input, output), &group.buffer))
+    }
+
     /// The frame's exposure multiplier (2^EV), which temporal AA weights its resolve by.
     pub(crate) fn exposure(&self) -> f32 {
         self.uniforms.composite[0]
@@ -1273,7 +1382,13 @@ impl PostProcess {
     /// `inputs.target` ([`PostInputs`]). Depth of field's passes (M5 L8) come first where the frame has focus,
     /// then `effects`, which takes what post has so far and gives what the rest reads in its place: the
     /// renderer draws the effects that come after temporal AA's resolve there, so they go over the blurred
-    /// frame and are never blurred themselves. Each of post's own passes counts its draw in `counter`.
+    /// frame and are never blurred themselves. Each of post's own passes counts its draw in `counter`, but the
+    /// upscaler's (M5 L14), which count in `upscale_counter`: where [`Self::upscales`] says so, the fused pass
+    /// writes the input's size and they take it to the target's.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the frame's textures, its effects and insets, and its counters"
+    )]
     pub(crate) fn record<'f>(
         &'f mut self,
         graph: &mut FrameGraph<'f>,
@@ -1282,8 +1397,13 @@ impl PostProcess {
         insets: impl IntoIterator<Item = InsetResolve<'f>>,
         labels: bool,
         counter: &'f Counter,
+        upscale_counter: &'f Counter,
     ) {
-        let PostInputs { input, scene_color, depth, target, distortion } = inputs;
+        let PostInputs { input, scene_color, depth, target: output, distortion } = inputs;
+        // The upscaler (M5 L14), at the sizes this frame draws at.
+        let (input_size, output_size) = (graph.size(input), graph.size(output));
+        let upscaling = self.upscales(input_size, output_size);
+        self.stats.upscale = upscaling;
         let Self {
             ref builder,
             ref pipelines,
@@ -1299,9 +1419,10 @@ impl PostProcess {
             stats,
             focus,
             distorting,
+            ref upscale,
             ..
         } = *self;
-        let Builder { ref device, ref layouts, bloom_format, .. } = *builder;
+        let Builder { ref device, ref layouts, bloom_format, output_format, .. } = *builder;
         let BindGroups {
             ref mut composite,
             ref mut distorted,
@@ -1311,6 +1432,8 @@ impl PostProcess {
             ref mut focus_prepare,
             ref mut focus_gather,
             ref mut focus_composite,
+            ref mut upscale_edge,
+            ref mut upscale_sharpen,
         } = **bind_groups;
         let bloom_levels = bloom_levels - shed_levels;
         let pass = |pipeline, layout, cache| Fullscreen {
@@ -1449,6 +1572,22 @@ impl PostProcess {
         // temporal AA, the frame before its resolve): otherwise the input stands in, so the
         // frame's graph is what it was without them.
         let mask = if stats.effects.character_mask { scene_color } else { input };
+        // The upscaler (M5 L14): the fused pass writes the scene's size in the target's own format, which the
+        // upscale and sharpen take to the target. The sizes are `Self::upscales`'s, which the constants followed.
+        let upscale = upscale.as_ref().filter(|_| upscaling);
+        let target = match upscale {
+            Some(_) => {
+                let desc = TransientDesc {
+                    width: input_size.0,
+                    height: input_size.1,
+                    format: output_format,
+                    sample_count: 1,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                };
+                graph.create_texture(COMPOSITE_PASS, desc)
+            }
+            None => output,
+        };
         let composite_slot = Slot::Composite(variant.composite_index());
         match distortion.filter(|_| distorting) {
             // Bends (M5 L6): the variant's distorted form, which reads the offsets, and the character mask apart
@@ -1479,6 +1618,38 @@ impl PostProcess {
                 target,
                 pass(pipeline(composite_slot), &layouts.composite, composite),
             ),
+        }
+        if let Some(UpscaleGroup { shared, .. }) = upscale {
+            let desc = TransientDesc {
+                width: output_size.0,
+                height: output_size.1,
+                format: upscale::FORMAT,
+                sample_count: 1,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            };
+            let upscaled = graph.create_texture(upscale::EDGE_PASS, desc);
+            let draws = [
+                (UpscalePass::Edge, target, upscaled, upscale_edge),
+                (UpscalePass::Sharpen, upscaled, output, upscale_sharpen),
+            ];
+            for (pass, from, into, cache) in draws {
+                add_fullscreen(
+                    graph,
+                    pass.names().0,
+                    [Input::Graph(from)],
+                    into,
+                    Fullscreen {
+                        device,
+                        labels,
+                        pipeline: pipeline(Slot::Upscale(pass)),
+                        shared,
+                        layout: &layouts.one,
+                        cache,
+                        counter: upscale_counter,
+                        bindings: &[],
+                    },
+                );
+            }
         }
         // Insets' resolves (M3 U6): their scene alone, through the composite's layout for the LUTs; first
         // its soft backdrop, where it asks for one (M5 L8).

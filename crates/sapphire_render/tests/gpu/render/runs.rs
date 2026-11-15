@@ -317,6 +317,7 @@ fn without_calls(passes: FrameCounts) -> FrameCounts {
         insets: passes.insets.map(calls),
         temporal: calls(passes.temporal),
         post: calls(passes.post),
+        upscale: calls(passes.upscale),
         ui: calls(passes.ui),
         debug: calls(passes.debug),
     }

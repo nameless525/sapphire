@@ -127,7 +127,7 @@ use crate::{
     AmbientOcclusion, CullingMode, CullingThresholds, DepthOfFieldSettings, DistortionResolution, DrawRuns,
     EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings, LOG_TARGET, LevelSettings, LevelsMode,
     LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, PostVariants,
-    ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
+    ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, Upscaler, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, Pressure, ResolutionBudget, ResolutionSignal,
@@ -298,6 +298,10 @@ pub struct QualityTier {
     /// neither.
     #[serde(default)]
     pub culling: CullingThresholds,
+    /// How a frame below render scale 1 reaches the output without temporal AA (M5 L14,
+    /// [`RenderSettings::upscaler`]). A table without it gets bilinear.
+    #[serde(default)]
+    pub upscaler: Upscaler,
     /// The thermal ladder's rungs, from the top (M4 T2, [`ladder`]). A tier without them answers
     /// neither heat nor dynamic resolution's pressure.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -480,6 +484,7 @@ impl QualityTier {
             inset: self.inset,
             depth_of_field: self.depth_of_field,
             distortion: self.distortion,
+            upscaler: self.upscaler,
             view_culling: CullingMode::On,
             culling: self.culling,
             levels: LevelSettings { mode: LevelsMode::On, bias: self.lod_bias },
@@ -1578,6 +1583,8 @@ mod tests {
             // Bends' offsets at a quarter on Mobile-High, none on Mobile-Low (M5 L6).
             let distortion = if insets { DistortionResolution::Quarter } else { DistortionResolution::Off };
             assert_eq!(settings.distortion, distortion, "{id}");
+            // The edge upscaler and its sharpen (M5 L14): phones only, as no TAA upsamples their frames.
+            assert!(settings.upscaler.edge(), "{id}");
         }
     }
 

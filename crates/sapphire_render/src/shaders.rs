@@ -67,6 +67,8 @@ pub enum ShaderFile {
     Focus,
     /// The fused pass's distorted composites (M5 L6), after depth of field's in post's program.
     PostDistortion,
+    /// The phone tiers' edge-adaptive upscale and sharpen (M5 L14), last in post's program.
+    PostUpscale,
     /// Temporal AA: the responsive mask and the resolve, which binds its own groups.
     Temporal,
     /// The shadow passes: casters and the face pass (the receivers are `frame.wgsl`'s).
@@ -106,7 +108,7 @@ pub enum ShaderFile {
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -121,6 +123,7 @@ impl ShaderFile {
         Self::Post,
         Self::Focus,
         Self::PostDistortion,
+        Self::PostUpscale,
         Self::Temporal,
         Self::Shadows,
         Self::Foliage,
@@ -156,6 +159,7 @@ impl ShaderFile {
             Self::Post => "post.wgsl",
             Self::Focus => "focus.wgsl",
             Self::PostDistortion => "post_distortion.wgsl",
+            Self::PostUpscale => "post_upscale.wgsl",
             Self::Temporal => "temporal.wgsl",
             Self::Shadows => "shadows.wgsl",
             Self::Foliage => "foliage.wgsl",
@@ -197,6 +201,7 @@ impl ShaderFile {
             Self::Post => include_str!("../shaders/post.wgsl"),
             Self::Focus => include_str!("../shaders/focus.wgsl"),
             Self::PostDistortion => include_str!("../shaders/post_distortion.wgsl"),
+            Self::PostUpscale => include_str!("../shaders/post_upscale.wgsl"),
             Self::Temporal => include_str!("../shaders/temporal.wgsl"),
             Self::Shadows => include_str!("../shaders/shadows.wgsl"),
             Self::Foliage => include_str!("../shaders/foliage.wgsl"),
@@ -322,7 +327,7 @@ impl Program {
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
             Self::Skinning => &[F::Skinning],
-            Self::Post => &[F::Post, F::Focus, F::PostDistortion],
+            Self::Post => &[F::Post, F::Focus, F::PostDistortion, F::PostUpscale],
             Self::Temporal => &[F::Temporal],
             Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
             Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Foliage],
@@ -998,7 +1003,9 @@ mod tests {
             "\n",
             include_str!("../shaders/focus.wgsl"),
             "\n",
-            include_str!("../shaders/post_distortion.wgsl")
+            include_str!("../shaders/post_distortion.wgsl"),
+            "\n",
+            include_str!("../shaders/post_upscale.wgsl")
         );
         assert_eq!(sources.program(Program::Post), post);
         // Every file is in a program, and found by its name.
@@ -1269,6 +1276,7 @@ mod tests {
             (Program::Sky, "FrameUniforms", size_of::<FrameUniforms>()),
             (Program::Sky, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::Post, "PostUniforms", size_of::<PostUniforms>()),
+            (Program::Post, "UpscaleUniforms", size_of::<crate::post::UpscaleUniforms>()),
             (Program::AnimeCharacter, "LocalLight", size_of::<GpuLight>()),
             (Program::AnimeCharacter, "CharacterData", size_of::<GpuCharacter>()),
             (Program::AnimeCharacter, "CharacterRig", size_of::<GpuRig>()),
@@ -2098,6 +2106,8 @@ mod tests {
             crt_corner,
         });
         assert_eq!(fields("PostEffects"), owned(effects), "PostEffects: WGSL vs Rust fields");
+        let upscale = offsets!(crate::post::UpscaleUniforms { easu, sharpen, texel });
+        assert_eq!(fields("UpscaleUniforms"), owned(upscale), "UpscaleUniforms: WGSL vs Rust fields");
         assert_eq!(
             fields("GradientLayer"),
             owned(offsets!(GpuGradient { color, geometry, mode, scale, offset }))

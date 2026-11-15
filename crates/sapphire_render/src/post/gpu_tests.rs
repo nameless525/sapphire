@@ -309,6 +309,7 @@ fn disabling_bloom_releases_only_its_dormant_bindings() {
         settings.post_effects,
         settings.depth_of_field,
         settings.distortion.any(),
+        settings.upscaler,
         settings.post_variants,
         &crate::pipeline_builds::PipelineBuilds::new(None),
         &ShaderSources::compiled_in(),

@@ -445,7 +445,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 passes.character_prepass.draws + passes.scene_prepass.draws,
                 passes.shadows().draws,
                 passes.insets.iter().map(|inset| inset.draws).sum::<u32>(),
-                passes.post.draws + passes.temporal.draws,
+                passes.post.draws + passes.temporal.draws + passes.upscale.draws,
                 passes.ui.draws
             ),
         );

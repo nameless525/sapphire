@@ -24,6 +24,7 @@ Third-party bytes live only here. Files extracted byte for byte from a source (a
 | [mplus1](mplus1/) | Body text, Latin and Japanese: a variable face | The M+ FONTS Project Authors | OFL 1.1 | M3 U3 |
 | [oxanium](oxanium/) | Latin display text: a variable face | The Oxanium Project Authors | OFL 1.1 | M3 U3 |
 | [dela_gothic_one](dela_gothic_one/) | Japanese display text | The Dela Gothic Project Authors | OFL 1.1 | M3 U3 |
+| [amd_fsr1](amd_fsr1/) | A method, no file: FidelityFX Super Resolution 1.0's upscale and sharpen, which the renderer's WGSL follows | AMD | MIT | M5 L14, the phone tiers' upscaler; M1 P2's sharpening |
 
 ## Rules
 

@@ -181,6 +181,9 @@ pub struct FrameCounts {
     /// triangles), the bloom chain, the fused composite, the colour-vision view's pass, and insets' resolves with
     /// any soft backdrop's pass before them.
     pub post: PassCounts,
+    /// The phone tiers' upscale and sharpen after post's fused pass (M5 L14, `post`'s `upscale` module): two
+    /// fullscreen triangles in a frame below render scale 1 on a tier that upscales along edges, none otherwise.
+    pub upscale: PassCounts,
     /// The on-screen interface.
     pub ui: PassCounts,
     /// The debug views' replays and passes, and the debug lines.
@@ -189,7 +192,7 @@ pub struct FrameCounts {
 
 impl FrameCounts {
     /// Every pass, with the name a bench's row gives it.
-    pub fn passes(&self) -> [(&'static str, &PassCounts); 8 + MAX_CASCADES + MAX_INSETS] {
+    pub fn passes(&self) -> [(&'static str, &PassCounts); 9 + MAX_CASCADES + MAX_INSETS] {
         let [c0, c1, c2, c3] = &self.cascades;
         let [i0, i1] = &self.insets;
         [
@@ -205,6 +208,7 @@ impl FrameCounts {
             ("inset 1", i1),
             ("temporal", &self.temporal),
             ("post", &self.post),
+            ("upscale", &self.upscale),
             ("ui", &self.ui),
             ("debug", &self.debug),
         ]
@@ -234,12 +238,13 @@ pub(crate) enum Counted {
     Inset(usize),
     Temporal,
     Post,
+    Upscale,
     Ui,
     Debug,
 }
 
 impl Counted {
-    const SLOTS: usize = 8 + MAX_CASCADES + MAX_INSETS;
+    const SLOTS: usize = 9 + MAX_CASCADES + MAX_INSETS;
 
     fn slot(self) -> usize {
         match self {
@@ -251,8 +256,9 @@ impl Counted {
             Self::Inset(index) => 4 + MAX_CASCADES + index.min(MAX_INSETS - 1),
             Self::Temporal => 4 + MAX_CASCADES + MAX_INSETS,
             Self::Post => 5 + MAX_CASCADES + MAX_INSETS,
-            Self::Ui => 6 + MAX_CASCADES + MAX_INSETS,
-            Self::Debug => 7 + MAX_CASCADES + MAX_INSETS,
+            Self::Upscale => 6 + MAX_CASCADES + MAX_INSETS,
+            Self::Ui => 7 + MAX_CASCADES + MAX_INSETS,
+            Self::Debug => 8 + MAX_CASCADES + MAX_INSETS,
         }
     }
 }
@@ -427,6 +433,7 @@ impl PassCounters {
             insets: std::array::from_fn(|index| read(Counted::Inset(index))),
             temporal: read(Counted::Temporal),
             post: read(Counted::Post),
+            upscale: read(Counted::Upscale),
             ui: read(Counted::Ui),
             debug: read(Counted::Debug),
         }
@@ -454,6 +461,7 @@ mod tests {
             Counted::Inset(1),
             Counted::Temporal,
             Counted::Post,
+            Counted::Upscale,
             Counted::Ui,
             Counted::Debug,
         ];

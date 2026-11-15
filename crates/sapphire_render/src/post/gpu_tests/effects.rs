@@ -9,7 +9,7 @@ use crate::quality::{TierId, TierTable};
 use crate::{
     ChromaticAberration, Crt, Desaturation, Duotone, EffectCoverage, Flash, Glitch, Halftone, Inversion,
     Msaa, PostEffectSettings, PostEffects, PostParams, PostVariants, RadialBlur, RenderSettings, SkyGradient,
-    SpeedLines,
+    SpeedLines, Upscaler,
 };
 
 fn grey_sky(value: f32) -> SkyGradient {
@@ -403,7 +403,15 @@ fn mobile_lows_effects_draw_as_desktop_lows_do() {
     let mut frames = Vec::new();
     for id in [TierId::DesktopLow, TierId::MobileLow] {
         let tier = table.get(id);
-        let settings = RenderSettings { msaa: Msaa::X4, temporal: false, ..tier.render_settings() };
+        // Both read the scene bilinearly: a phone's edge upscaler (M5 L14) draws the effects at scene pixels
+        // and sharpens them, which `upscale::` and `upscale-face-mobile-high-floor` prove. This compares
+        // post's variants alone.
+        let settings = RenderSettings {
+            msaa: Msaa::X4,
+            temporal: false,
+            upscaler: Upscaler::Bilinear,
+            ..tier.render_settings()
+        };
         let mut harness = Harness::new(settings, size);
         harness.renderer.set_render_scale(tier.resolution.base_scale(1080));
         harness.sky = SkyGradient {

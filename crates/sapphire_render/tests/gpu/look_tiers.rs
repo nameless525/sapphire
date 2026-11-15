@@ -24,7 +24,8 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::quality::{Ladder, LadderState, OptionalPass, QualityTier, TierId, TierTable};
 use sapphire_render::{
     AmbientLight, BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId,
-    MeshHandle, MeshInstance, PostParams, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
+    MeshHandle, MeshInstance, PostParams, RenderSettings, Renderer, SkyGradient, ToneCurve, Upscaler,
+    ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_testkit::look::{Edge, Lines, darkness, luminance};
@@ -187,7 +188,13 @@ struct Shot {
 
 impl Shot {
     fn new(gpu: &GpuContext, tier: &QualityTier) -> Self {
-        let mut renderer = Renderer::new(gpu, FORMAT, tier.render_settings()).expect("renderer");
+        Self::with(gpu, tier, tier.render_settings())
+    }
+
+    /// The tier's renderer made with `settings` in place of its own (M5 L14: bilinear in a phone's upscaler's
+    /// place).
+    fn with(gpu: &GpuContext, tier: &QualityTier, settings: RenderSettings) -> Self {
+        let mut renderer = Renderer::new(gpu, FORMAT, settings).expect("renderer");
         let bytes = sphere().to_cooked().expect("cook");
         let mesh = Mesh::read(&bytes).expect("a valid mesh");
         let materials = renderer.upload_embedded_materials(mesh).expect("materials");
@@ -328,27 +335,104 @@ impl Look {
     }
 }
 
+/// The mean difference in luminance from `reference` over the windows round the line at the lit side's
+/// silhouette that [`Look::of`] measures: how far a line is from scale 1's.
+fn line_error(pixels: &[[u8; 4]], reference: &[[u8; 4]], (width, height): (u32, u32)) -> f32 {
+    let (cx, cy, radius) = (width as f32 / 2.0, height as f32 / 2.0, radius_px(height));
+    let line_px = LINE_WIDTH * height as f32 / 1080.0;
+    let half = ROWS as i32 / 2;
+    let (mut sum, mut count) = (0.0, 0);
+    for i in -half..=half {
+        let y = (cy + i as f32 * radius / (2 * half) as f32) as u32;
+        let dy = y as f32 + 0.5 - cy;
+        let silhouette = cx + (radius * radius - dy * dy).sqrt();
+        let from = (silhouette - 4.0) as u32;
+        let to = ((silhouette + 2.0 * line_px + 8.0) as u32).min(width - 1);
+        for x in from..to {
+            let at = (y * width + x) as usize;
+            sum += (luminance(pixels[at]) - luminance(reference[at])).abs();
+            count += 1;
+        }
+    }
+    sum / count as f32
+}
+
+/// The phones' edge upscaler against the fused pass's bilinear read (M5 L14), at each phone tier's floor and
+/// its own scale, on the slanted line and the two-tone edge: the upscaler must beat bilinear on every gate the
+/// look test holds, and draw the line closer to scale 1's. Measured on an Apple M5 (Metal), 2026-11-14, in
+/// output pixels (see the hand-back for the table).
+#[test]
+#[ignore = "needs a GPU"]
+fn the_edge_upscaler_beats_bilinear_at_each_phone_floor() {
+    let gpu = gpu();
+    let table = TierTable::shipped();
+    for id in [TierId::MobileHigh, TierId::MobileLow] {
+        let tier = table.get(id);
+        let size = output(id);
+        let settings = tier.render_settings();
+        assert!(settings.upscaler.edge(), "{id} ships the edge upscaler");
+        let mut edge = Shot::new(&gpu, tier);
+        let mut bilinear =
+            Shot::with(&gpu, tier, RenderSettings { upscaler: Upscaler::Bilinear, ..settings });
+        let reference = edge.render(&gpu, 1.0, 2);
+        let at_one = Look::of(&reference, size);
+        for (name, scale) in scales(tier, size.1).into_iter().filter(|(name, _)| *name != "scale 1") {
+            let (sharp_pixels, soft_pixels) = (edge.render(&gpu, scale, 2), bilinear.render(&gpu, scale, 2));
+            let (sharp, soft) = (Look::of(&sharp_pixels, size), Look::of(&soft_pixels, size));
+            let contrast = |look: &Look| look.lines.contrast() / at_one.lines.contrast();
+            let strength = |look: &Look| look.lines.strength / at_one.lines.strength;
+            let (sharp_error, soft_error) =
+                (line_error(&sharp_pixels, &reference, size), line_error(&soft_pixels, &reference, size));
+            eprintln!(
+                "{id} at {name} ({scale:.3}): edge upscaler / bilinear: line strength {:.3} / {:.3}, contrast {:.3} / \
+                 {:.3}, spread {:.2} / {:.2} px, error {sharp_error:.4} / {soft_error:.4}; two-tone edge {:.2} / {:.2} px, \
+                 steepest {:.2} / {:.2}",
+                strength(&sharp),
+                strength(&soft),
+                contrast(&sharp),
+                contrast(&soft),
+                sharp.lines.width() / ROWS as f32,
+                soft.lines.width() / ROWS as f32,
+                sharp.edge_width,
+                soft.edge_width,
+                sharp.edge_steepest,
+                soft.edge_steepest,
+            );
+            let what = format!("{id} at {name}: {sharp:?} against {soft:?}");
+            // Lines keep their width in output pixels, within the look test's gate.
+            assert!((0.95..1.05).contains(&strength(&sharp)), "{what}");
+            // Sharper than bilinear by a clear margin on the line's contrast and the edge's width, and nearer
+            // scale 1's line pixel by pixel.
+            assert!(contrast(&sharp) > contrast(&soft) + 0.03, "{what}: contrast");
+            assert!(sharp.edge_width < 0.85 * soft.edge_width, "{what}: two-tone edge");
+            assert!(sharp_error < 0.9 * soft_error, "{what}: {sharp_error} against {soft_error}");
+        }
+    }
+}
+
 /// Each tier at each of its scales, against itself at scale 1 and at its own scale. Measured on an
-/// Apple M5 (Metal), 2026-11-10, in output pixels, held still (the line is 5.5 px at 1080 rows and
-/// 5.96 at 1170; a row crosses it on a slant, so it covers a little more):
+/// Apple M5 (Metal), 2026-11-10 (the phones' bilinear upscale, in brackets) and 2026-11-14 (their edge
+/// upscaler, M5 L14), in output pixels, held still (the line is 5.5 px at 1080 rows and 5.96 at 1170;
+/// a row crosses it on a slant, so it covers a little more):
 ///
 /// | Tier | Scale | Line covered, spread | Contrast | Two-tone edge (10–90%) |
 /// |---|---|---|---|---|
 /// | Desktop-High, Desktop-Low | 1, 0.85, 0.7 | 6.01, 6.46–6.47 | 1.00 | 1.58, 1.62, 1.65 |
 /// | Mobile-High | 1 | 6.24, 6.61 | 1 | 0.97 |
-/// | | 0.632 (its own, 740 rows) | 6.27, 7.36 | 0.90 | 2.31 |
-/// | | 0.538 (0.85) | 6.34, 7.68 | 0.88 | 2.64 |
-/// | | 0.474 (floor) | 6.33, 7.84 | 0.86 | 2.85 |
+/// | | 0.632 (its own, 740 rows) | 6.37, 6.96 (6.27, 7.36) | 0.97 (0.90) | 1.62 (2.31) |
+/// | | 0.538 (0.85) | 6.41, 7.18 (6.34, 7.68) | 0.95 (0.88) | 1.90 (2.64) |
+/// | | 0.474 (floor) | 6.37, 7.15 (6.33, 7.84) | 0.94 (0.86) | 1.91 (2.85) |
 /// | Mobile-Low | 1 | 6.24, 6.61 | 1 | 0.97 |
-/// | | 0.504 (its own, 590 rows) | 6.33, 7.64 | 0.88 | 3.25 |
-/// | | 0.429 (0.85) | 6.32, 8.01 | 0.84 | 3.16 |
-/// | | 0.378 (floor) | 6.23, 8.42 | 0.79 | 3.58 |
+/// | | 0.504 (its own, 590 rows) | 6.45, 7.25 (6.33, 7.64) | 0.94 (0.88) | 2.27 (3.25) |
+/// | | 0.429 (0.85) | 6.44, 7.38 (6.32, 8.01) | 0.92 (0.84) | 2.42 (3.16) |
+/// | | 0.378 (floor) | 6.33, 7.49 (6.23, 8.42) | 0.90 (0.79) | 2.65 (3.58) |
 ///
 /// Temporal AA rebuilds a still line and edge from its jittered history at the output's size, so
 /// the desktop tiers' floor costs the look nothing here (a turning line is `outline`'s
-/// `upsampled_lines_keep_their_width_in_output_pixels`). The phones' bilinear upscale keeps every
-/// line's width but blurs it, and softens the hard edge to two or three pixels at the tier's own
-/// scale, which its height cap sets; the floor adds 10–25% to that.
+/// `upsampled_lines_keep_their_width_in_output_pixels`). The phones' upscale keeps every line's
+/// width but softens it, and softens the hard edge to two pixels or so at the tier's own scale, which
+/// its height cap sets; the floor adds up to 20% to that. The edge upscaler softens both about a
+/// third less than bilinear did (`the_edge_upscaler_beats_bilinear_at_each_phone_floor`).
 #[test]
 #[ignore = "needs a GPU"]
 fn lines_and_two_tone_edges_hold_at_every_tier_and_scale() {
@@ -386,7 +470,7 @@ fn lines_and_two_tone_edges_hold_at_every_tier_and_scale() {
                 assert!(contrast > 0.97, "{what}: contrast {contrast} of scale 1's");
                 assert!(look.edge_width < 1.8, "{what}");
             } else {
-                // A bilinear upscale blurs both; the floor no more than three tenths again.
+                // The phones' upscale softens both; the floor no more than three tenths again.
                 assert!(contrast > 0.75, "{what}: contrast {contrast} of scale 1's");
                 assert!(look.edge_width < if scale == 1.0 { 1.2 } else { 4.0 }, "{what}");
                 assert!(

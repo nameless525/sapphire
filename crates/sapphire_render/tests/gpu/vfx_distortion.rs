@@ -1,11 +1,11 @@
 //! Effects' bends (M5 L6): a bend moves the picture behind it by its strength, a share of the frame's height,
-//! at any size and render scale and on either path; a character in front of a bend or behind it comes out
-//! exactly as it does without one, and the world beside it unbent only as far as the bend reaches; the bend
-//! fades out at the frame's edge; a flat frame stays flat; depth of field's blurred background bends, and the
-//! glitch and the CRT keep their places; nothing of it is built, and no pass added, until a bend draws on a tier
-//! that has them, and on one without (Mobile-Low) nothing ever is; declared, nothing is built at the first bend
-//! on any tier with them, across a tier change too; and the offsets' pass counts exactly in
-//! post's counts. Run with
+//! at any size and render scale, on either path and through a phone's edge upscaler (M5 L14); a character in
+//! front of a bend or behind it comes out exactly as it does without one, and the world beside it unbent only
+//! as far as the bend reaches; the bend fades out at the frame's edge; a flat frame stays flat; depth of field's
+//! blurred background bends, and the glitch and the CRT keep their places; nothing of it is built, and no pass
+//! added, until a bend draws on a tier that has them, and on one without (Mobile-Low) nothing ever is; declared,
+//! nothing is built at the first bend on any tier with them, across a tier change too; and the offsets' pass
+//! counts exactly in post's counts. Run with
 //! `cargo test -p sapphire_render --test gpu vfx_distortion:: -- --ignored --test-threads=1`.
 //!
 //! The scenes are `vfx`'s: linear values as they are, over a flat grey sky, the camera at the origin looking down
@@ -19,8 +19,8 @@ use sapphire_render::quality::{TierId, TierTable};
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, Crt, DepthOfFieldSettings,
     DirectionalLight, DistortionResolution, Focus, FrameCounts, Glitch, MaterialDrive, MeshInstance, Msaa,
-    PassCounts, PipelineInventory, PostParams, PostVariants, RenderSettings, VfxBend, VfxDistortion, VfxMesh,
-    VfxMeshShape, VfxPattern,
+    PassCounts, PipelineInventory, PostParams, PostVariants, RenderSettings, Upscaler, VfxBend,
+    VfxDistortion, VfxMesh, VfxMeshShape, VfxPattern,
 };
 
 use super::vfx::{Frame, Harness, SIDE, passthrough, wall};
@@ -142,6 +142,16 @@ fn a_bend_moves_the_picture_by_its_strength_at_every_size_and_scale() {
         "a quarter's buffer",
         RenderSettings { distortion: DistortionResolution::Quarter, ..paths[0].1 },
     ));
+    // Mobile-High's (M5 L14): the distorted composite at the scene's size, then the edge upscaler, which takes a
+    // bent frame to the target as it takes a plain one.
+    paths.push((
+        "the edge upscaler",
+        RenderSettings {
+            distortion: DistortionResolution::Quarter,
+            upscaler: Upscaler::Edge { sharpen: 50 },
+            ..paths[0].1
+        },
+    ));
     for (path, settings) in paths {
         for size in [(SIDE, SIDE), (256, 144)] {
             for scale in [1.0, 0.6] {
@@ -164,6 +174,13 @@ fn a_bend_moves_the_picture_by_its_strength_at_every_size_and_scale() {
                     after - before
                 );
                 assert!(harness.renderer.stats().post.distortion, "{what}: the distorted composite drew");
+                let upscaled = settings.upscaler.edge() && scale < 1.0;
+                assert_eq!(harness.renderer.stats().post.upscale, upscaled, "{what}: the upscaler drew");
+                assert_eq!(
+                    harness.renderer.stats().passes.upscale.draws,
+                    if upscaled { 2 } else { 0 },
+                    "{what}"
+                );
             }
         }
     }

@@ -176,6 +176,9 @@ pub(super) struct Harness {
     next_id: u64,
     /// The target's width and height.
     size: (u32, u32),
+    /// A render scale to set between the next frame's `prepare` and its `record`, as the stage sets dynamic
+    /// resolution's (M5 L14).
+    pub(super) scale_after_prepare: Option<f32>,
 }
 
 impl Harness {
@@ -207,6 +210,7 @@ impl Harness {
             added: Vec::new(),
             next_id: 0,
             size,
+            scale_after_prepare: None,
         }
     }
 
@@ -295,6 +299,9 @@ impl Harness {
         fill(packet);
         let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(&self.gpu, self.packets.current());
+        if let Some(scale) = self.scale_after_prepare.take() {
+            self.renderer.set_render_scale(scale);
+        }
         let view = self.target.create_view(&Default::default());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("target", &view);

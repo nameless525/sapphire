@@ -33,6 +33,7 @@ mod shadows;
 mod temporal;
 mod texture;
 mod ui;
+mod upscale;
 mod vfx;
 mod vfx_decal;
 mod vfx_distortion;

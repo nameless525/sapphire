@@ -358,7 +358,7 @@ fn section(
                 count_table(out, failures, run, tier, rounds, beside, beside_name, &rows);
             }
             Read::Streaming => {
-                count_table(out, failures, run, tier, rounds, beside, beside_name, &STREAMING);
+                streaming_table(out, failures, run, tier, rounds, beside, beside_name);
                 streaming_notes(out, rounds);
             }
             Read::Cast => {
@@ -637,25 +637,101 @@ fn memory_table(out: &mut String, rounds: &Rounds, beside: Option<&Rounds>, besi
     let _ = writeln!(out, "| Load, warm (the least of the rounds) | {} | {base} |\n", startup(rounds));
 }
 
+/// The laps a timed walk's streaming and trips are read over (M5 Z3): the cold one, where every surface comes into
+/// view from its tail and every pack is read for the first time, and the warm one after it, which finds resident
+/// what the first raised. Exit test 2 reads the worse.
+const LAPS: [(&str, &str); 2] = [("first", "cold lap"), ("cpu", "warm lap")];
+
+/// Exit test 2's rows: a counting walk's one phase, or a timed walk's two laps side by side, the worse lap's
+/// figure over its budget named.
+#[allow(clippy::too_many_arguments, reason = "one table's inputs, each named")]
+fn streaming_table(
+    out: &mut String,
+    failures: &mut Vec<String>,
+    run: &Run,
+    tier: &Tier,
+    rounds: &Rounds,
+    beside: Option<&Rounds>,
+    beside_name: &str,
+) {
+    if phase_of_counts(rounds) == "drawn" {
+        count_table(out, failures, run, tier, rounds, beside, beside_name, &STREAMING);
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "Streaming on both laps, p50 / p95 / worst @ metres: the cold lap (`first`), where every surface comes \
+         into view from its tail, and the warm lap (`cpu`), after the first raised what it passed. Exit test 2 \
+         reads the worse.\n"
+    );
+    let _ = writeln!(out, "| Row | Cold lap | Warm lap | {beside_name} (warm) | Over (the worse lap) |");
+    let _ = writeln!(out, "|---|---|---|---|---|");
+    for row in STREAMING {
+        let cells = LAPS.map(|(phase, _)| rounds.counted(phase, row));
+        if run.exact() {
+            for cell in &cells {
+                if let CountCell::Differs(_) = cell {
+                    failures.push(format!(
+                        "{} on {}: the count \"{row}\" differs between rounds ({})",
+                        run.name,
+                        tier.name,
+                        count_text(cell).0
+                    ));
+                }
+            }
+        }
+        let [(cold, cold_over), (warm, warm_over)] = [count_text(&cells[0]), count_text(&cells[1])];
+        let (over, lap) = if cell_worst(&cells[0]) >= cell_worst(&cells[1]) {
+            (cold_over, "cold")
+        } else {
+            (warm_over, "warm")
+        };
+        let over = if over.is_empty() { over } else { format!("{over} ({lap})") };
+        let base = beside.map_or_else(
+            || "none".to_owned(),
+            |beside| count_text(&beside.counted(phase_of_counts(beside), row)).0,
+        );
+        let _ = writeln!(out, "| {} | {cold} | {warm} | {base} | {over} |", title(row));
+    }
+    let _ = writeln!(out);
+}
+
+/// A count cell's worst frame, the most of any round's: what makes one lap the worse.
+fn cell_worst(cell: &CountCell) -> u64 {
+    match cell {
+        CountCell::Read(counted) => counted.worst,
+        CountCell::Differs(readings) => readings.iter().map(|(_, counted)| counted.worst).max().unwrap_or(0),
+        CountCell::NotExercised | CountCell::Missing => 0,
+    }
+}
+
 fn streaming_notes(out: &mut String, rounds: &Rounds) {
-    let p99: Vec<f64> = rounds
-        .rounds
+    // Each lap's worst of the rounds' 99th percentiles, then the worse lap.
+    let lap = |phase: &str| {
+        rounds
+            .rounds
+            .iter()
+            .filter_map(|round| {
+                let column = trace_column(round.trace.as_deref()?, phase, "worst_texture_debt")?;
+                percentile(&column, 0.99)
+            })
+            .reduce(f64::max)
+    };
+    let bound = LAPS
         .iter()
-        .filter_map(|round| {
-            let column = trace_column(round.trace.as_deref()?, "cpu", "worst_texture_debt")?;
-            percentile(&column, 0.99)
-        })
-        .collect();
-    let bound = p99.iter().copied().reduce(f64::max);
+        .filter_map(|&(phase, name)| Some((lap(phase)?, name)))
+        .reduce(|worse, other| if other.0 > worse.0 { other } else { worse });
     let _ = writeln!(
         out,
         "- **A surface newly in view at its level within 30 frames (exit test 2, 99th percentile):** {}. A \
          conservative bound, not the row itself: each frame's most frames any texture has been in debt, so a \
          surface's own wait is at most this; a finer counter is built only if the bound fails.",
         match bound {
-            Some(frames) if frames > 30.0 =>
-                format!("**{frames:.0} frames**, over 30 (the worst of the rounds' 99th percentiles)"),
-            Some(frames) => format!("{frames:.0} frames (the worst of the rounds' 99th percentiles)"),
+            Some((frames, lap)) if frames > 30.0 => format!(
+                "**{frames:.0} frames**, over 30 (the worst of the rounds' 99th percentiles, on the {lap}, the worse)"
+            ),
+            Some((frames, lap)) =>
+                format!("{frames:.0} frames (the worst of the rounds' 99th percentiles, on the {lap}, the worse)"),
             None =>
                 "no trace (a counting walk writes none): the worst texture debt frames row's worst bounds it"
                     .to_owned(),
@@ -669,41 +745,53 @@ fn streaming_notes(out: &mut String, rounds: &Rounds) {
 }
 
 fn trips(out: &mut String, rounds: &Rounds) {
-    let _ = writeln!(out, "Trips (cpu phase), frames and ms from the exit:\n");
+    let _ = writeln!(
+        out,
+        "Trips on both laps, frames and ms from the exit: the cold lap reads its packs for the first time, the warm \
+         lap again.\n"
+    );
     let mut any = false;
-    for round in &rounds.rounds {
-        for (index, trip) in round.log.trips.get("cpu").into_iter().flatten().enumerate() {
-            any = true;
-            let steps: Vec<String> = ["covered", "swapped", "first_cells", "clear"]
-                .iter()
-                .map(|step| format!("{step} {}", trip.steps.get(*step).map_or("missing", String::as_str)))
-                .collect();
-            let p99 = trip.frame_p99_us.map_or_else(|| "missing".to_owned(), ms);
-            let _ = writeln!(out, "- r{} trip {index}: {}; frame p99 {p99}", round.round, steps.join(", "));
-        }
-        let floor = round.trace.as_deref().and_then(|trace| {
-            let capacity = trace_column(trace, "cpu", "mesh_pool_capacity")?;
-            let floor = trace_column(trace, "cpu", "mesh_pool_floor")?;
-            Some((*capacity.last()?, *floor.last()?))
-        });
-        match floor {
-            Some((capacity, floor)) => {
-                let back = if capacity <= floor { "back at its floor" } else { "**above its floor**" };
+    for (phase, lap) in LAPS {
+        for round in &rounds.rounds {
+            for (index, trip) in round.log.trips.get(phase).into_iter().flatten().enumerate() {
+                any = true;
+                let steps: Vec<String> = ["covered", "swapped", "first_cells", "clear"]
+                    .iter()
+                    .map(|step| format!("{step} {}", trip.steps.get(*step).map_or("missing", String::as_str)))
+                    .collect();
+                let p99 = trip.frame_p99_us.map_or_else(|| "missing".to_owned(), ms);
                 let _ = writeln!(
                     out,
-                    "- r{}: at the phase's last frame the mesh pool is {back} ({} B against {} B)",
+                    "- {lap} r{} trip {index}: {}; frame p99 {p99}",
                     round.round,
-                    thousands(capacity as u64),
-                    thousands(floor as u64)
+                    steps.join(", ")
                 );
             }
-            None => {
-                let _ = writeln!(out, "- r{}: the mesh pool's floor: missing (no trace)", round.round);
+            let floor = round.trace.as_deref().and_then(|trace| {
+                let capacity = trace_column(trace, phase, "mesh_pool_capacity")?;
+                let floor = trace_column(trace, phase, "mesh_pool_floor")?;
+                Some((*capacity.last()?, *floor.last()?))
+            });
+            match floor {
+                Some((capacity, floor)) => {
+                    let back = if capacity <= floor { "back at its floor" } else { "**above its floor**" };
+                    let _ = writeln!(
+                        out,
+                        "- {lap} r{}: at the lap's last frame the mesh pool is {back} ({} B against {} B)",
+                        round.round,
+                        thousands(capacity as u64),
+                        thousands(floor as u64)
+                    );
+                }
+                None => {
+                    let _ =
+                        writeln!(out, "- {lap} r{}: the mesh pool's floor: missing (no trace)", round.round);
+                }
             }
         }
     }
     if !any {
-        let _ = writeln!(out, "- no trip in the cpu phase: missing");
+        let _ = writeln!(out, "- no trip on either lap: missing");
     }
     let _ = writeln!(out);
 }
@@ -940,6 +1028,34 @@ mod tests {
         assert_eq!(budgeted_counts(&rounds(&[&log])), ["main draws"]);
     }
 
+    /// Exit test 2's rows, the 30-frame line and the trips read a timed walk's cold lap as well as its warm one:
+    /// the cold lap, where every surface comes into view from its tail, was dropped for the warm lap after it.
+    #[test]
+    fn a_timed_walks_streaming_and_trips_read_both_laps() {
+        let manifest = manifest();
+        let (run, tier) = (&manifest.runs[0], &manifest.tiers[0]);
+        assert!(run.read.contains(&Read::Streaming), "the fixture's tour reads streaming");
+        let log = [
+            count_line("first", "worst texture debt frames", [3, 20, 45], None),
+            count_line("cpu", "worst texture debt frames", [0, 1, 2], None),
+            "2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: zone trip, from its exit phase=\"first\" \
+             covered=\"3 frames 40.0 ms\" frame_p99_us=900.0"
+                .to_owned(),
+        ]
+        .join("\n");
+        let mut walk = rounds(&[&log]);
+        walk.rounds[0].trace =
+            Some("phase,frame,worst_texture_debt\nfirst,0,50\nfirst,1,50\ncpu,0,1\ncpu,1,1\n".into());
+        let mut out = String::new();
+        section(&mut out, &mut Vec::new(), &manifest, run, tier, &walk, None);
+        let line = out.lines().find(|line| line.starts_with("| Worst texture debt frames |")).expect(&out);
+        assert!(line.contains("3 / 20 / 45") && line.contains("0 / 1 / 2"), "both laps: {line}");
+        assert!(out.contains("**50 frames**") && out.contains("cold lap"), "the 30-frame line's lap: {out}");
+        let mut trips_text = String::new();
+        trips(&mut trips_text, &walk);
+        assert!(trips_text.contains("cold lap r1 trip 0: covered 3 frames 40.0 ms"), "{trips_text}");
+    }
+
     /// B4's baseline drew the phones at their scenes' size; the report says so once, beside a baseline.
     #[test]
     fn a_baseline_says_the_phones_were_drawn_at_their_scenes_size() {
@@ -1003,7 +1119,9 @@ mod tests {
         );
         assert!(!failures.iter().any(|failure| failure.contains("different hours")), "{failures:?}");
         assert!(text.contains("by construction"), "the frame thread's loads are named as uncounted");
-        assert!(text.contains("41 frames**, over 30"), "the debt bound from the trace: {text}");
+        // The fixture's warm lap reads 41 frames and its cold lap 90: the bound is the cold lap's (M5 Z3, F3).
+        assert!(text.contains("90 frames**, over 30"), "the debt bound from the trace: {text}");
+        assert!(text.contains("on the cold lap, the worse"), "the lap is named: {text}");
     }
 
     #[test]

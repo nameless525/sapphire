@@ -505,6 +505,25 @@
                        "--fog", "off", "--ao", "off"],
                 ci_seconds: (lavapipe: 1.0, warp: 3.2),
             ),
+            // A street lamp at night (M5 L16): a warm spot high in front of the character, flagged to
+            // cast, throws the character's shadow and the pillar's away from it across the floor,
+            // and the pillar's onto the character, from one cached tile of the spot layer, the tent
+            // edge clean and nothing shading itself. Metal only.
+            (
+                name: "shadows-spot-lamp",
+                ticks: 90,
+                args: ["--plain-post", "--stage", "pillar", "--street-lamp", "--time-of-day", "22",
+                       "--tier", "desktop-high", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
+                       "--fog", "off", "--ao", "off"],
+            ),
+            // The same on Desktop-Low: a tile of 512 texels, the tent wider on the floor.
+            (
+                name: "shadows-spot-lamp-low",
+                ticks: 90,
+                args: ["--plain-post", "--stage", "pillar", "--street-lamp", "--time-of-day", "22",
+                       "--tier", "desktop-low", "--aa", "taa", "--capture-frames", "32", "--plain-sky",
+                       "--fog", "off", "--ao", "off"],
+            ),
             // A dash's screen effects (M1 P3): the radial blur streaking the frame toward its middle
             // and white speed lines radiating from outside a clear middle, which the character stays
             // in front of. Through temporal AA, still, on the default day.

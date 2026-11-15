@@ -218,22 +218,19 @@ impl Walk {
 
     /// As [`Self::rooms`], each room dressed by its `looks` entry (M5 M6), with no listed keys.
     fn dressed_rooms(zone: SyntheticZone, looks: &[RoomLook], budgets: AssetBudgets) -> Self {
-        let rooms = looks.len() as u32;
-        let source = Arc::new(MemoryPackSource::new());
+        Self::dressed_rooms_in(Arc::new(MemoryPackSource::new()), zone, looks, budgets)
+    }
+
+    /// As [`Self::dressed_rooms`], its packs in `source`, where a test may write a room's again.
+    fn dressed_rooms_in(
+        source: Arc<MemoryPackSource>,
+        zone: SyntheticZone,
+        looks: &[RoomLook],
+        budgets: AssetBudgets,
+    ) -> Self {
         source.insert(BASE_PACK, write_pack(vec![character()]).expect("a pack"));
-        for (room, look) in (0..rooms).zip(looks) {
-            let next = (room + 1) % rooms;
-            let exit = CookedExit {
-                id: exit_to(next),
-                name: format!("to_room_{next}"),
-                to: SyntheticZone::room_id(next),
-                pack: room_pack(next),
-                arrive: 0,
-                prefetch: true,
-            };
-            let (extra, dress) = look.assets(room);
-            let pack = zone.dressed_room_pack(room, vec![exit], extra, dress).expect("a pack");
-            source.insert(&room_pack(room), pack);
+        for (room, look) in (0..looks.len() as u32).zip(looks) {
+            source.insert(&room_pack(room), dressed_room(zone, room, looks.len() as u32, look));
         }
         Self::standing(source, BASE_PACK, budgets, None)
     }
@@ -466,6 +463,9 @@ struct RoomLook {
 /// The look-dev day, which a room may name as its own.
 const LOOKDEV_DAY: &str = include_str!("../../../../content/lookdev/lookdev_day.ron");
 
+/// The look-dev light rigs, which a room may name as its own.
+const LOOKDEV_RIGS: &str = include_str!("../../../../content/lookdev/lookdev_light_rigs.ron");
+
 impl RoomLook {
     fn grid_id(room: u32) -> AssetId {
         SyntheticZone::room_id(room).sub_asset("probes")
@@ -505,6 +505,22 @@ impl RoomLook {
         };
         (assets, dress)
     }
+}
+
+/// Room `room`'s pack of `rooms`, dressed by `look`, with an exit to the next, the last's to the first, marked
+/// `prefetch`.
+fn dressed_room(zone: SyntheticZone, room: u32, rooms: u32, look: &RoomLook) -> Vec<u8> {
+    let next = (room + 1) % rooms;
+    let exit = CookedExit {
+        id: exit_to(next),
+        name: format!("to_room_{next}"),
+        to: SyntheticZone::room_id(next),
+        pack: room_pack(next),
+        arrive: 0,
+        prefetch: true,
+    };
+    let (extra, dress) = look.assets(room);
+    zone.dressed_room_pack(room, vec![exit], extra, dress).expect("a pack")
 }
 
 /// A one-brick probe grid baked under `hours`, every probe open, its light all the same.
@@ -1210,6 +1226,36 @@ fn a_zone_whose_look_does_not_read_cannot_come() {
     assert_eq!(walk.content.probe_hours(), [6.0], "the grid on stage stays");
     assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "and the day with it");
     assert_eq!(walk.scene.ecs.world().resource::<LightRigLibrary>(), &rigs, "and the rigs");
+}
+
+/// A save of a zone's own day or rigs reaches the stage as the zone recooks (Z3 review F5): the zone on stage, at a
+/// new version, brings its look again. Here the recook leaves its day out, which gives the stage's own back, and
+/// names rigs of its own.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_recooked_zone_on_stage_brings_its_look_again() {
+    let settings = small_settings();
+    let looks = [RoomLook { grid: Some(vec![6.0]), day: true, ..RoomLook::default() }];
+    let source = Arc::new(MemoryPackSource::new());
+    let mut walk = Walk::dressed_rooms_in(source.clone(), SMALL, &looks, no_limits());
+    let stage_day = walk.scene.time_of_day().timeline().clone();
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    walk.trip(0, settings);
+    walk.frame();
+    assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "the zone's day");
+    assert_ne!(walk.scene.ecs.world().resource::<LightRigLibrary>(), &lookdev::light_rigs());
+
+    let recooked = RoomLook { day: false, rigs: Some(LOOKDEV_RIGS), ..looks[0].clone() };
+    source.insert(&room_pack(0), dressed_room(SMALL, 0, 1, &recooked));
+    walk.content.remount(&room_pack(0)).expect("the new pack");
+    let mut frames = 0;
+    while walk.scene.ecs.world().resource::<LightRigLibrary>() != &lookdev::light_rigs() {
+        walk.frame();
+        frames += 1;
+        assert!(frames < 10_000, "the recooked zone's look never came");
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    assert_eq!(walk.scene.time_of_day().timeline(), &stage_day, "a day left out gives the stage's back");
 }
 
 /// A pack that isn't there says so, and what's on stage stays. Asking again tries again.

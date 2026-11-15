@@ -49,6 +49,8 @@ use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary};
 use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer};
 use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline};
+#[cfg(any(test, feature = "dev"))]
+use sapphire_world::tod::{TodError, TodGroups};
 use sapphire_zone::{ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, Zone, ZoneFog};
 
 use super::{Figure, LOG_TARGET, Lamp, Scene};
@@ -399,6 +401,14 @@ impl ZoneLook {
     }
 }
 
+#[cfg(test)]
+impl ZoneLook {
+    /// A look naming `day` and `rigs`, and no air.
+    pub(crate) fn of(day: Option<TodTimeline>, rigs: Option<LightRigLibrary>) -> Self {
+        Self { day, rigs, wind: None, weather: None, fog: None }
+    }
+}
+
 /// Whether a zone's frames may draw wet (M5 L4): its own weather is, or its day keys any. What a load or a trip
 /// declares for it (`PipelineInventory::wet_surfaces`), so its first wet frame builds nothing.
 pub(crate) fn may_be_wet(presentation: &ArchivedZonePresentation) -> bool {
@@ -419,6 +429,14 @@ pub(crate) fn may_be_wet(presentation: &ArchivedZonePresentation) -> bool {
 pub(super) struct ZoneAir {
     /// The stage's own day, rigs and wind, for a zone that names none of them.
     own: Option<StageLook>,
+    /// Whether the day live is the zone's own, and the rigs: a save of the stage's own file then waits in
+    /// [`Self::own`] rather than going live (Z3 review F5, `Scene::take_stage_day` in `dev` builds).
+    zone_day: bool,
+    zone_rigs: bool,
+    /// The zone on stage and the version of it whose look the stage took, for a recook to take its look again
+    /// ([`Scene::follow_zone_look`]).
+    #[cfg(feature = "dev")]
+    look_version: Option<(AssetId, u32)>,
     /// The zone's weather: dry without one.
     pub(super) weather: Weather,
     /// Its fog over the day's.
@@ -806,6 +824,7 @@ impl Scene {
     /// zone's space. Its probe grid and sky are the content's.
     pub fn take_zone_look(&mut self, look: ZoneLook) -> Result<(), String> {
         let ZoneLook { day, rigs, wind, weather, fog } = look;
+        let (zone_day, zone_rigs) = (day.is_some(), rigs.is_some());
         let world = self.ecs.world();
         let own = self.zone_air.own.get_or_insert_with(|| StageLook {
             day: world.resource::<TimeOfDay>().timeline().clone(),
@@ -819,10 +838,72 @@ impl Scene {
         );
         self.time_of_day_mut().set_timeline(day).map_err(|error| error.to_string())?;
         self.ecs.world_mut().insert_resource(rigs);
+        (self.zone_air.zone_day, self.zone_air.zone_rigs) = (zone_day, zone_rigs);
         self.wind = wind;
         self.zone_air.weather = weather.unwrap_or_default();
         self.zone_air.fog = fog;
         Ok(())
+    }
+
+    /// Takes a save of the stage's own day (Z3 review F5): live at once, unless a zone's own day is, when it waits
+    /// in [`ZoneAir::own`] for a zone that names none. Either way a zone naming none gets it from then on, not the
+    /// day the stage had before a zone's first replaced it. A day that isn't complete is refused either way.
+    #[cfg(any(test, feature = "dev"))]
+    pub(super) fn take_stage_day(&mut self, timeline: TodTimeline) -> Result<(), String> {
+        if self.zone_air.zone_day {
+            if let Some(group) = TodGroups::REQUIRED.first_missing_from(timeline.groups()) {
+                return Err(TodError::Incomplete(group).to_string());
+            }
+        } else {
+            self.time_of_day_mut().set_timeline(timeline.clone()).map_err(|error| error.to_string())?;
+        }
+        if let Some(own) = &mut self.zone_air.own {
+            own.day = timeline;
+        }
+        Ok(())
+    }
+
+    /// Takes the look of the zone on stage again as it recooks (hot reload, Z3 review F5): a save of the day or rigs
+    /// file a zone names recooks its `.szone` (the cook's key holds those files' bytes), whose new version this
+    /// reads, as an arrival would. One that doesn't read leaves the look live as it is, logged. Only for a zone whose
+    /// look the stage took, on a stand or an arrival; allocates nothing while nothing changed.
+    #[cfg(feature = "dev")]
+    pub(super) fn follow_zone_look(&mut self, content: &Content) {
+        let Some(zone) = self.zone.as_ref().filter(|_| self.zone_air.own.is_some()) else {
+            self.zone_air.look_version = None;
+            return;
+        };
+        let handle = zone.streamer.zone();
+        let now = (handle.id(), content.version_of(handle));
+        match self.zone_air.look_version {
+            Some(was) if was == now => return,
+            Some(was) if was.0 == now.0 => {}
+            // A zone new on stage: its arrival or stand took the look.
+            _ => {
+                self.zone_air.look_version = Some(now);
+                return;
+            }
+        }
+        let Some(read) = content.read(handle).map(|zone| ZoneLook::read(&zone.presentation)) else { return };
+        self.zone_air.look_version = Some(now);
+        let zone = now.0;
+        match read.and_then(|look| self.take_zone_look(look)) {
+            Ok(()) => tracing::info!(target: LOG_TARGET, %zone, "a recooked zone's look is on"),
+            Err(error) => {
+                tracing::error!(target: LOG_TARGET, %zone, error, "a recooked zone's look didn't take")
+            }
+        }
+    }
+
+    /// Takes a save of the stage's own light rigs, as [`Self::take_stage_day`] takes its day.
+    #[cfg(any(test, feature = "dev"))]
+    pub(super) fn take_stage_light_rigs(&mut self, rigs: LightRigLibrary) {
+        if !self.zone_air.zone_rigs {
+            self.ecs.world_mut().insert_resource(rigs.clone());
+        }
+        if let Some(own) = &mut self.zone_air.own {
+            own.rigs = rigs;
+        }
     }
 
     /// The zone on stage, if there's one.

@@ -20,7 +20,9 @@
 //! - edited presets replace the scene's (the `LightRigLibrary` resource) if they are the file of
 //!   the presets the scene runs on (the shipped ones, or with `--look-dev` the look-dev stage's,
 //!   `content/lookdev/lookdev_light_rigs.ron`; [`Scene::replace_light_rigs`](sapphire_stage::scene::Scene::replace_light_rigs)); characters keep
-//!   their preset IDs;
+//!   their preset IDs. While a zone's own day or presets are live, the stage's wait for a zone
+//!   that names none; a zone's own files reach the stage through its recooked pack, whose zone
+//!   brings its look again (Z3 review F5);
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
 //!   effects playing keep the layers they were pushed with, and the renderer prewarms the post
 //!   variants the new presets draw through, unless they lose a preset a fight's cue table pushes;

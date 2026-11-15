@@ -1079,7 +1079,9 @@ impl Scene {
     /// name), if `origin` is the presets' file for the day the scene runs on
     /// ([`Day::light_rigs_file_name`]: the shipped presets, or the look-dev stage's own), and says
     /// which; otherwise keeps them. Characters keep their preset IDs; one past the new presets' end
-    /// is lit with their default. Hot reload and live link both come through here.
+    /// is lit with their default. Hot reload and live link both come through here. While a zone's
+    /// own presets are live, the stage's wait for a zone that names none (Z3 review F5); a save of
+    /// the zone's own file reaches the stage as the zone recooks ([`Scene::follow_content`]).
     #[cfg(any(test, feature = "dev"))]
     pub fn replace_light_rigs(&mut self, origin: &str, rigs: LightRigLibrary) -> Result<Day, String> {
         let day = self.day();
@@ -1090,7 +1092,7 @@ impl Scene {
                 day.light_rigs_file_name()
             ));
         }
-        self.ecs.world_mut().insert_resource(rigs);
+        self.take_stage_light_rigs(rigs);
         Ok(day)
     }
 
@@ -1431,8 +1433,9 @@ impl Scene {
     /// only some have landed the character may not fit: it keeps the pose it has, which the renderer
     /// ignores if the new mesh's palette is another length, until the others land. The enemy's mesh and
     /// skeleton do the same for it (`Self::replace_enemy`). A studio's pieces stand again for a new
-    /// version of the character it copied (`Content::take_new_studio`). Allocates nothing while nothing
-    /// changed.
+    /// version of the character it copied (`Content::take_new_studio`). In `dev` builds a new version of
+    /// the zone on stage brings its look again, as a save of the day or rigs it names recooks it (Z3
+    /// review F5). Allocates nothing while nothing changed.
     pub fn follow_content(&mut self, content: &mut Content, show: &mut impl SceneShow) {
         self.set_probe_hours(content.probe_hours());
         if self.reflection_hours != content.reflection_hours() {
@@ -1484,6 +1487,8 @@ impl Scene {
         if (self.graph_show.is_some() || self.character_plays_graph) && (character_changed || graph_changed) {
             self.replace_graph(content, character_changed);
         }
+        #[cfg(feature = "dev")]
+        self.follow_zone_look(content);
         self.stream_zone(content);
     }
 
@@ -2930,7 +2935,9 @@ impl Scene {
     /// Replaces the day's timeline with `timeline`, read from `origin` (a path or a file name),
     /// if `origin` is the day's own document ([`Day::file_name`]) and the timeline is complete,
     /// and says which day it replaced; otherwise keeps the day. Hot reload and live link both
-    /// come through here.
+    /// come through here. While a zone's own day is live, the stage's waits for a zone that names
+    /// none (Z3 review F5); a save of the zone's own day reaches the stage as the zone recooks
+    /// ([`Scene::follow_content`]).
     #[cfg(any(test, feature = "dev"))]
     pub fn replace_day(&mut self, origin: &str, timeline: tod::TodTimeline) -> Result<Day, String> {
         let day = self.day();
@@ -2942,7 +2949,7 @@ impl Scene {
                 day.file_name()
             ));
         }
-        self.time_of_day_mut().set_timeline(timeline).map_err(|error| error.to_string())?;
+        self.take_stage_day(timeline)?;
         Ok(day)
     }
 
@@ -4323,6 +4330,44 @@ mod tests {
             scene.animate_clip(Some((clip, 1)), 1.0);
             assert_eq!(scene.anim_stats().evaluated, 1, "the new version");
         }
+    }
+
+    /// Z3 review F5: in a zone whose own day and rigs are live, a save of the stage's day or rigs is the
+    /// stage's own, for a zone that names none: the zone's look stays live, and the next zone that names
+    /// none takes the save, not the day the stage had before.
+    #[test]
+    fn a_save_of_the_stages_day_under_a_zones_own_waits_for_a_zone_naming_none() {
+        let mut scene = scene();
+        assert_eq!(scene.day(), Day::Default);
+        let rigs = |scene: &Scene| scene.ecs.world().resource::<LightRigLibrary>().clone();
+        let (zone_day, zone_rigs) = (lookdev::day(), lookdev::light_rigs());
+        scene.take_zone_look(zone::ZoneLook::of(Some(zone_day.clone()), Some(zone_rigs.clone()))).unwrap();
+        assert_eq!((scene.time_of_day().timeline(), &rigs(&scene)), (&zone_day, &zone_rigs));
+
+        // An edit of the default day and the shipped rigs, standing for a save of either file.
+        let default_day = tod::default_day();
+        let halved = default_day.keys().iter().map(|key| tod::TodKey { time: key.time * 0.5, ..key.clone() });
+        let saved_day = tod::TodTimeline::new(halved.collect()).expect("a day");
+        assert_ne!(saved_day, tod::default_day());
+        let saved_rigs =
+            LightRigLibrary::new(vec![NamedLightRig { name: "saved".to_owned(), rig: LightRig::default() }])
+                .expect("rigs");
+        assert_eq!(
+            scene.replace_day("crates/sapphire_world/default_day.ron", saved_day.clone()),
+            Ok(Day::Default)
+        );
+        let replaced = scene.replace_light_rigs("default_light_rigs.ron", saved_rigs.clone());
+        assert_eq!(replaced, Ok(Day::Default));
+        assert_eq!(scene.time_of_day().timeline(), &zone_day, "the zone's day stays live");
+        assert_eq!(rigs(&scene), zone_rigs, "and its rigs");
+
+        // A zone that names none gives the stage its own back: the saved ones.
+        scene.take_zone_look(zone::ZoneLook::of(None, None)).unwrap();
+        assert_eq!(scene.time_of_day().timeline(), &saved_day, "the save, not the day before it");
+        assert_eq!(rigs(&scene), saved_rigs);
+        // And there, a save is live at once.
+        let replaced = scene.replace_day("default_day.ron", tod::default_day());
+        assert_eq!((replaced, scene.time_of_day().timeline()), (Ok(Day::Default), &tod::default_day()));
     }
 
     #[test]

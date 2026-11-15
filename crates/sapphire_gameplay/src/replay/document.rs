@@ -199,8 +199,9 @@ pub struct CastMember {
     #[serde(default)]
     pub standing_jump: bool,
     /// The playable kind they draw as (M5 C8): its `.playable.ron`'s name, before that suffix, which has to
-    /// play `moves`. Left out, a game draws them as its own default kind. Presentation: no step reads it, and
-    /// no checksum holds it.
+    /// play `moves`. Left out, a game draws them as its own default kind. Presentation: no step reads it or
+    /// anything its document holds, and no checksum holds it (a body a fight binds takes its numbers from the
+    /// fight's own code, M5 Z3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playable: Option<String>,
 }
@@ -284,7 +285,8 @@ pub struct KindOfEnemy {
     pub name: String,
 }
 
-/// A playable kind one of a scenario's cast draws as (M5 C8): presentation, which no step reads.
+/// A playable kind one of a scenario's cast draws as (M5 C8): presentation, which no step reads, nor anything
+/// its document holds (M5 Z3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KindOfPlayable {
     /// Its `.playable.ron`'s ID, which its cook has.

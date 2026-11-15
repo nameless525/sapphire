@@ -929,3 +929,35 @@ fn a_fighter_waits_for_clips_that_land_after_the_new_character() {
         assert_eq!(stats.ignored_poses, 0, "{stats:?}");
     }
 }
+
+/// M5 Z3: the stock arena's simulation binds its player's body by numbers compiled in with the arena's other
+/// numbers, never by the playable kind's document, which is presentation a patch may change. A heroine's kind
+/// with another seed and another rest expression stands the same fight, to the bit of its table hash, and a kind
+/// on another mesh doesn't stand it. Reads the desktop cook (`cargo xtask content`), and stops without one.
+#[test]
+fn the_stock_profile_does_not_move_with_the_heroines_kind() {
+    let packs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/content/desktop");
+    let host = sapphire_platform::Host::with_content_at(&packs);
+    let Ok(mut content) = Content::new(&host, playable::KIND, SKY) else { return };
+    let stock = playable::tests::heroine();
+    let other = PlayableLook {
+        seed: stock.seed + 6,
+        expression: Some((sapphire_assets::rig::ExpressionPreset::Happy, 0.8)),
+        ..stock.clone()
+    };
+    let mut hash = |look: PlayableLook| {
+        let option = CombatOption::Fight { script: None, party: false };
+        let live = FightDocuments::default().live();
+        let combat = Combat::from_live_with_setup(&option, &live, None, |scenario, simulation, cast| {
+            assert_eq!(scenario.name, arena::FIGHT_SCENARIO);
+            stock_arena::StockArenaAssets::load(&mut content, &look)?.install(simulation, cast)
+        })
+        .expect("the stock arena stands");
+        combat.simulation().tables_hash()
+    };
+    let elsewhere = PlayableLook { mesh: playable::KIND, ..stock.clone() };
+    let (stock, other) = (hash(stock), hash(other));
+    assert_eq!(stock, other, "the heroine's kind moved the stock arena's simulation");
+    let refused = stock_arena::StockArenaAssets::load(&mut content, &elsewhere).err();
+    assert!(refused.is_some_and(|error| error.contains("another mesh")), "a kind on other assets stood");
+}

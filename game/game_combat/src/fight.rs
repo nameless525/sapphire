@@ -2295,7 +2295,7 @@ impl Fight {
             let content = content().map_err(|error| error.to_string())?;
             if self.stock_arena.is_none() {
                 let look = playable::look(content, playable::of_scenario(scenario.name)?)?;
-                self.stock_arena = Some(stock_arena::StockArenaAssets::load(content, look)?);
+                self.stock_arena = Some(stock_arena::StockArenaAssets::load(content, &look)?);
             }
             self.stock_arena
                 .as_ref()

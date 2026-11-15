@@ -1,5 +1,9 @@
 // The heroine as a playable kind (M5 C8): the look-dev character, her graph and the sword in her right
-// hand. Her moves are the player's, compiled into the simulation; this is what draws her.
+// hand. Her moves are the player's, compiled into the simulation; this is what draws her. The stock arena's
+// simulation binds her body by numbers of its own (`game_combat`'s `fight::stock_arena`: her mesh, rig and
+// graph, seed, contacts and rest face), never by this document, which a patch may change: so a change to
+// `seed`, `body_contacts` or `expression` here changes only what's drawn, and her mesh, rig and graph must
+// stay the arena's.
 (
     type: "sapphire::moves::PlayableDocument",
     version: 1,
@@ -25,7 +29,8 @@
                 offset: (-0.234, -0.002, 0.417),
                 rotation: (0.5818, -0.5914, -0.3876, 0.4019),
             )),
-            // Where her body meets what it touches, by the VRM's joints.
+            // Where her body meets what it touches, by the VRM's joints. Nothing reads these now: the stock
+            // arena's body touches by its own list, the same joints.
             body_contacts: [
                 "J_Bip_C_Hips",
                 "J_Bip_C_Spine",

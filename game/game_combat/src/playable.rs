@@ -5,7 +5,9 @@
 //!   `PlayableDocument`), cooked beside its moves: its mesh and rig, its graph, the weapon it holds and the
 //!   joint that holds it, the joints its body touches by, the face it rests on, and its name in the game's
 //!   words. [`look`] reads one by its ID, as `enemy::Look::of` reads an enemy's; nothing here names a mesh,
-//!   a rig, a socket or a joint.
+//!   a rig, a socket or a joint. None of it reaches a step: the stock arena binds its player's body by its
+//!   own numbers (`fight::stock_arena`, M5 Z3), and checks only that the kind it draws names that body's
+//!   assets.
 //! - **The heroine** ([`KIND`], `content/combat/player/heroine.playable.ron`) is the kind a player is when
 //!   nothing says otherwise.
 //! - **Who plays what:** a scenario's cast member names the kind she draws as (`playable: "hero"`, the

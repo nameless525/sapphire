@@ -155,8 +155,9 @@ pub struct PlayableLookDocument {
     /// The weapon it holds that isn't skinned in, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldWeaponDocument>,
-    /// The joints where its body meets what it touches, by its skeleton's names: what a simulation binds
-    /// a body to it by, where a fight binds one.
+    /// The joints where its body meets what it touches, by its skeleton's names. Nothing reads them now: a
+    /// fight that binds a body binds it by joints compiled into the fight (M5 Z3), since a step may read
+    /// nothing a patch can change.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub body_contacts: Vec<String>,
     /// The expression its face rests on, if any: a preset its rig knows, by name, and how much of it.

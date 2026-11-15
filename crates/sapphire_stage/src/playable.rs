@@ -37,8 +37,8 @@ pub struct PlayableLook {
     pub seed: u32,
     /// The weapon it holds, if it holds one that isn't skinned in.
     pub held: Option<HeldWeapon>,
-    /// The joints where its body meets what it touches, by its skeleton's names, for the body a fight's
-    /// simulation binds to it.
+    /// The joints where its body meets what it touches, by its skeleton's names. No simulation binds by
+    /// them: the stock arena's body touches by joints compiled into it (M5 Z3).
     pub body_contacts: Vec<String>,
     /// The expression its face rests on, and how much of it, if any.
     pub expression: Option<(ExpressionPreset, f32)>,

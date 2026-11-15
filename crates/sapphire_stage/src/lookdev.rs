@@ -932,13 +932,26 @@ fn body_rest_weights(
     morph_weights
 }
 
-/// Binds the stock arena's player, of the playable kind `look`, before any render driver or IK scene exists,
-/// on `tuning`, the table of the simulation it's for: its seed and the joints its body touches by are the
-/// kind's.
+/// What the simulation binds the stock arena's player's body by, beside its assets (M5 Z3): its graph's seed,
+/// the joints its body touches by, and the expression its body's face rests on. The arena compiles these in
+/// with its other numbers, as everything a step reads is; a playable kind's document, which draws a kind and
+/// which a patch may change, never supplies them.
+#[derive(Clone, Copy, Debug)]
+pub struct ArenaBody<'a> {
+    /// What sets its graph's draws apart.
+    pub seed: u32,
+    /// The joints where it meets what it touches, by its skeleton's names.
+    pub contacts: &'a [&'a str],
+    /// The expression its face rests on, and how much of it, if any.
+    pub rest: Option<(ExpressionPreset, f32)>,
+}
+
+/// Binds the stock arena's player by `body` before any render driver or IK scene exists, on `tuning`, the
+/// table of the simulation it's for.
 pub fn arena_body_profile(
     assets: BodyAssets,
     mesh: &ArchivedMesh,
-    look: &PlayableLook,
+    body: ArenaBody<'_>,
     look_height: f32,
     head_authority: HeadAuthority,
     tuning: BodyTuning,
@@ -953,9 +966,8 @@ pub fn arena_body_profile(
         .morph_targets
         .iter()
         .map(|target| target.name.as_str().to_owned())
-        .zip(body_rest_weights(mesh.morph_targets.len(), assets.rig.view(), look.expression))
+        .zip(body_rest_weights(mesh.morph_targets.len(), assets.rig.view(), body.rest))
         .collect();
-    let contacts: Vec<&str> = look.body_contacts.iter().map(String::as_str).collect();
     BodyProfile::bind(
         assets,
         BodyProfileOptions {
@@ -963,8 +975,8 @@ pub fn arena_body_profile(
             floor: mesh.streams.bounds.to_native().min[1].max(0.0),
             scale: 1.0,
             morphs: &morphs,
-            contact_joints: &contacts,
-            seed: look.seed,
+            contact_joints: body.contacts,
+            seed: body.seed,
             ground_turn: true,
             grounded_gather: true,
             look_height,

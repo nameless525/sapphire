@@ -765,7 +765,7 @@ impl ViewCull {
     /// Chooses the level of each character that chooses its level by error (M5 D5), before the
     /// chunks: one level for all its parts, by the sphere around them, the coarsest every part
     /// with levels is good enough at (each by its own mesh's errors and stretch), held as one by
-    /// the hysteresis from the finest level the main view drew a part at last frame. A part with
+    /// the hysteresis from the coarsest level the main view drew a part at last frame. A part with
     /// one level never holds its character back; each part then draws the coarsest of its own
     /// levels within its character's ([`part_level`]).
     fn choose_character_levels<M>(&mut self, inputs: &CullInputs<'_, M>) {
@@ -826,8 +826,8 @@ impl ViewCull {
 
     /// Records which views drew each instance this frame, and the finest level any drew it at: the
     /// view it stands in, if its verdict draws it and that view drew (at the main view's level, or
-    /// an inset's 0), and the shadows, by `shadow(slot)`: the finest level a cascade or a character
-    /// map drew it at, if any did.
+    /// an inset's 0), and the shadows, by `shadow(slot)`: the finest level a cascade, a character
+    /// map or a spot tile drew it at, if any did.
     pub(crate) fn publish(
         &mut self,
         stands: &[u16],

@@ -1314,8 +1314,8 @@ impl Shadows {
     }
 
     /// The finest level of detail the instance in `slot` casts at into a cascade, a character map or
-    /// a spot tile this frame draws (M5 D4: a map's is 0), or `None` if it casts into none: what
-    /// skinning poses besides what the views draw (M5 D3).
+    /// a spot tile this frame draws (M5 D4; a map's by its texel since M5 D5), or `None` if it casts
+    /// into none: what skinning poses besides what the views draw (M5 D3).
     pub(crate) fn cast_level(&self, slot: u32) -> Option<u8> {
         if self.pipelines.is_none() || !self.plan.active {
             return None;

@@ -1,6 +1,6 @@
 //! Culling for every view (M5 D3): culling by the frustum alone draws what no culling draws, in
 //! every byte of colour and of the prepasses' depth, normals, outlines and character IDs, on every
-//! shipped tier's settings, over the scene D1's lists draw ([`super::lists`]); the tiers'
+//! shipped tier's settings, over the scene D2's runs draw ([`super::runs`]); the tiers'
 //! distance and size tests leave that scene as it is; and a skinned character panned out of view
 //! and back, posed all the while, draws and moves exactly as if it had never left (skinning poses
 //! only what some view draws). Run alone with
@@ -9,7 +9,7 @@
 use sapphire_render::quality::TierTable;
 use sapphire_render::{CullingMode, DrawnBy, RenderStats};
 
-use super::lists::{Side, scene_meshes};
+use super::runs::{Side, scene_meshes};
 use super::sequences::character;
 use super::*;
 
@@ -27,7 +27,7 @@ fn culling_by_the_frustum_alone_draws_what_no_culling_draws_on_every_tier() {
         let modes = [CullingMode::On, CullingMode::FrustumOnly, CullingMode::Off];
         let mut sides = modes.map(|view_culling| {
             let settings = RenderSettings { view_culling, ..tier.render_settings() };
-            Side::new(&gpu, settings, false, &meshes)
+            Side::new(&gpu, settings, settings.draw_runs, &meshes)
         });
         for frame in 0..5 {
             let [on, frustum, off] = &mut sides;
@@ -53,7 +53,7 @@ fn culling_by_the_frustum_alone_draws_what_no_culling_draws_on_every_tier() {
             assert!(stats.view_culling.culled > 0, "{} frame {frame}: the frustum culls", tier.id);
             assert_eq!(off_stats.view_culling.tested, 0, "{} frame {frame}: off tests nothing", tier.id);
             // The same pixels from fewer draws: off draws what the frustum leaves out too.
-            let draws = |stats: &RenderStats| stats.passes.total().mesh_draws();
+            let draws = |stats: &RenderStats| stats.passes.total().mesh_instances();
             assert!(draws(&stats) < draws(&off_stats), "{} frame {frame}", tier.id);
             assert_eq!(draws(&on_stats), draws(&stats), "{} frame {frame}", tier.id);
         }

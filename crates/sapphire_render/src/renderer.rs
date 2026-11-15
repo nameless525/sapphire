@@ -33,7 +33,7 @@ use crate::color_vision::{ColorVision, ColorVisionDraw};
 use crate::counts::{Counted, FrameCounts, PassCounters, PassCounts, StateChanges};
 use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
 use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
-use crate::draw::{DrawRef, DrawSet, MeshDraws, ViewLists, ViewTests, Walk};
+use crate::draw::{DrawRef, DrawRuns, DrawSet, MeshDraws, RunRecords, RunStats, ViewLists, ViewTests, Walk};
 use crate::environment::EnvironmentSettings;
 use crate::fog::{FogAdmission, FogCards, FogStats, GpuFog};
 use crate::foliage::{self, FoliageSettings, FoliageWind};
@@ -201,6 +201,12 @@ pub struct RenderSettings {
     /// [`LevelsMode::Off`](crate::LevelsMode::Off) draws level 0 alone, for older scenes.
     /// [`RenderStats::levels`] counts the main view's switches.
     pub levels: LevelSettings,
+    /// Instanced runs (M5 D2, the `draw::runs` module): equal neighbours in a view's draw list draw
+    /// as one call of several instances. By default the shadow views alone form them, which changes
+    /// no pixel and whose runs don't depend on the order instances were placed in; the prepasses'
+    /// runs and every view's are for the test that compares them and for the bench ([`DrawRuns`]
+    /// says why neither is the default). [`RenderStats::runs`] says what they made.
+    pub draw_runs: DrawRuns,
 }
 
 impl RenderSettings {
@@ -245,6 +251,7 @@ impl Default for RenderSettings {
             view_culling: CullingMode::On,
             culling: CullingThresholds::NONE,
             levels: LevelSettings::ON,
+            draw_runs: DrawRuns::default(),
         }
     }
 }
@@ -548,6 +555,10 @@ pub struct RenderStats {
     /// The pipelines, materials and mesh streams the last frame's mesh passes set (M5 D1): what the
     /// order of each view's draw list decides.
     pub state_changes: StateChanges,
+    /// The runs the last recorded frame's view lists formed (M5 D2, [`RenderSettings::draw_runs`]):
+    /// those of more than one draw, their instances, the longest and the median, and the bytes of
+    /// records written for them.
+    pub runs: RunStats,
 }
 
 /// What new shader sources rebuilt ([`Renderer::request_shader_sources`],
@@ -735,6 +746,8 @@ pub struct Renderer {
     /// Each view's draw list (M5 D1, the `draw::lists` module), compacted at each
     /// [`Self::record`]. Boxed: a few dozen lists.
     view_lists: Box<ViewLists>,
+    /// The frame's run records (M5 D2): each run of more than one draw's records, side by side.
+    run_records: RunRecords,
     /// The passes walk the whole draw list and test each draw, as before view lists
     /// ([`Self::walk_filtered`]).
     walk_filtered: bool,
@@ -1015,6 +1028,7 @@ impl Renderer {
             create_scene_bind_groups(&device, &layouts, &scene, &materials, &fog_cards, &wind);
         let skinning = Skinning::new(&device);
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
+        let run_records = RunRecords::new(&device);
         // A device lost while the pipelines were built (the Android emulator's, building GTAO's
         // on Mobile-High, QA-001) left everything made since invalid.
         if gpu.is_lost() {
@@ -1093,6 +1107,7 @@ impl Renderer {
             frame_ran: AtomicBool::new(false),
             counts: PassCounters::default(),
             view_lists: Box::default(),
+            run_records,
             walk_filtered: false,
             recorded: None,
             pipeline_builds,
@@ -2945,6 +2960,7 @@ impl Renderer {
         let view_cull = &self.view_cull;
         self.skinning.begin_record(&self.device, &self.queue, &self.meshes, |slot| view_cull.drawn(slot));
         self.stats.skinning = self.skinning.stats();
+        let draw_runs = self.settings.draw_runs;
 
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
@@ -3018,6 +3034,9 @@ impl Renderer {
             first_inset_view,
             color_format,
             ref mut view_lists,
+            ref mut run_records,
+            ref queue,
+            ref mut stats,
             walk_filtered,
             ..
         } = *self;
@@ -3069,10 +3088,12 @@ impl Renderer {
         // Each view's list (M5 D1): what its passes draw, in their order, from the draw list's
         // groups, tested here once rather than by each pass as it records.
         let lists = if walk_filtered {
+            stats.runs = RunStats::default();
             None
         } else {
             profiling::scope!("view lists");
             let lists = &mut **view_lists;
+            lists.begin_frame(draw_runs);
             let listed = |slot| character_slots.listed(slot);
             // Every view reads its instances' verdicts (M5 D3): the character prepass and the insets
             // too, each by the camera its instances stand in.
@@ -3094,8 +3115,16 @@ impl Renderer {
                 lists.compact_view(Walk::InsetMain(index), draw_list, &inset);
                 lists.compact_view(Walk::InsetCharacters(index), draw_list, &inset.with_instance(listed));
             }
+            // Run records that don't fit their buffer leave the frame a call a draw (review RA-004).
+            if !run_records.fits(lists.records().len()) {
+                lists.drop_runs();
+            }
+            run_records.reserve(device, queue, lists.records().len());
+            stats.runs = lists.run_stats();
             Some(&**view_lists)
         };
+        let run_records = &*run_records;
+        let run_list: &[u32] = lists.map_or(&[], ViewLists::records);
         let mesh_draws = MeshDraws {
             meshes,
             list: draw_list,
@@ -3114,6 +3143,8 @@ impl Renderer {
             changes: counts.changes(),
             lists,
             walk: Walk::CharacterPrepass,
+            run_records: run_records.buffer(),
+            runs: true,
         };
         let InsetFrame { uploads: inset_uploads, draws: inset_draws, shown: inset_shown, .. } = inset_frame;
         // Temporal AA's resolve writes the target's size, so post upsamples only without it.
@@ -3160,6 +3191,7 @@ impl Renderer {
             upload(uploads, ctx.encoder, sky_buffer, bytemuck::bytes_of(&sky_uniforms));
             upload(uploads, ctx.encoder, wind.buffer(), bytemuck::bytes_of(&wind_uniforms));
             scene_uploads.write(uploads, ctx.encoder);
+            run_records.write(uploads, ctx.encoder, run_list, &draw_list.draws);
             material_uploads.write(uploads, ctx.encoder);
             light_uploads.write(uploads, ctx.encoder);
             character_uploads.write(uploads, ctx.encoder);
@@ -3639,7 +3671,7 @@ impl Renderer {
                 target,
                 size,
                 prepass: targets,
-                draws: MeshDraws { counter: counts.get(Counted::Debug), ..view_draws },
+                draws: MeshDraws { counter: counts.get(Counted::Debug), runs: false, ..view_draws },
                 groups,
                 index_buffer: meshes.index_buffer(),
                 index_end: meshes.index_end(),

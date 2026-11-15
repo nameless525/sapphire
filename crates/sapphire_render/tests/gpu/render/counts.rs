@@ -59,7 +59,9 @@ fn scene(gpu: &GpuContext, settings: RenderSettings) -> (Frames, Vec<MeshInstanc
 }
 
 /// What a pass of the scene's draws counts: the five squares' surfaces looked at, the three in view drawn
-/// and two culled by the frustum where the pass culls by it, and the sphere's surface and hull.
+/// and two culled by the frustum where the pass culls by it, and the sphere's surface and hull, a call
+/// each: by default only the shadow views form instanced runs (M5 D2, `DrawRuns::Shadows`), and this
+/// scene draws none.
 fn scene_pass(frustum: bool) -> PassCounts {
     let squares = if frustum { IN_VIEW } else { IN_VIEW + BEHIND };
     PassCounts {
@@ -74,25 +76,30 @@ fn scene_pass(frustum: bool) -> PassCounts {
     }
 }
 
-/// Every pass's mesh draws are in the levels, LOD0 alone since the scene's meshes have one level (M5 D4's
-/// selection is `render::levels`), and the frame's are the passes' summed.
+/// Every pass's mesh instances are in the levels, LOD0 alone since the scene's meshes have one level (M5 D4's
+/// selection is `render::levels`), and the frame's are the passes' summed. A run draws several in one call
+/// (M5 D2), so they're bound by the instances, not the calls.
 fn assert_levels_add_up(passes: &FrameCounts) {
     for (name, pass) in passes.passes() {
         assert_eq!(pass.levels[1..], [0; MESH_LEVELS - 1], "{name}: one-level meshes draw level 0");
-        assert!(pass.mesh_draws() <= pass.draws, "{name}: {pass:?}");
-        assert_eq!(pass.considered, pass.mesh_draws() + pass.culled(), "{name}: drawn or culled: {pass:?}");
+        assert!(pass.mesh_instances() <= pass.instances, "{name}: {pass:?}");
+        assert_eq!(
+            pass.considered,
+            pass.mesh_instances() + pass.culled(),
+            "{name}: drawn or culled: {pass:?}"
+        );
     }
     let total = passes.total();
-    let mesh_draws: u32 = passes.passes().iter().map(|(_, pass)| pass.mesh_draws()).sum();
-    assert_eq!(total.mesh_draws(), mesh_draws);
-    assert_eq!(total.levels.iter().sum::<u32>(), mesh_draws);
+    let instances: u32 = passes.passes().iter().map(|(_, pass)| pass.mesh_instances()).sum();
+    assert_eq!(total.mesh_instances(), instances);
+    assert_eq!(total.levels.iter().sum::<u32>(), instances);
 }
 
 /// The passes that draw a fullscreen triangle or a few each draw one triangle an instance.
 fn assert_fullscreen(name: &str, pass: &PassCounts) {
     assert!(pass.draws > 0, "{name} ran");
     assert_eq!((pass.instances, pass.triangles), (pass.draws, u64::from(pass.draws)), "{name}: {pass:?}");
-    assert_eq!((pass.considered, pass.mesh_draws()), (0, 0), "{name}: no mesh draws");
+    assert_eq!((pass.considered, pass.mesh_instances()), (0, 0), "{name}: no mesh draws");
 }
 
 #[test]
@@ -182,9 +189,11 @@ fn each_cascade_counts_its_casters_apart() {
         assert!(cascade.draws > 0, "cascade {index} draws the sphere at least: {cascade:?}");
     }
     assert_eq!(drawn, stats.shadows.cascades_drawn, "{passes:#?}");
-    // They agree with the shadows' own counts: every caster draw, and every square culled from a cascade.
+    // They agree with the shadows' own counts: every caster draw, an instance of a run's (M5 D2), and every
+    // square culled from a cascade. A cascade runs the squares it draws: fewer calls than instances.
     let shadows = passes.shadows();
-    assert_eq!(shadows.draws, stats.shadows.caster_draws);
+    assert_eq!(shadows.instances, stats.shadows.caster_draws);
+    assert!(shadows.draws < shadows.instances, "{shadows:?}");
     assert_eq!(shadows.culled_by_pass, stats.shadows.culled_draws);
     // No character listed, so no character maps.
     assert_eq!(passes.character_maps, PassCounts::default());

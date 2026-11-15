@@ -43,8 +43,13 @@
 //! the index range its mesh's record holds for its submesh at that level, from the same vertex
 //! streams (each level reads a prefix of them). Skinned and morphed instances and fog cards draw
 //! level 0.
+//! **Runs draw as one call** (M5 D2, the [`runs`] module): where a view's list formed runs of a
+//! static depth-writing group, each run binds its mesh's streams and material once, its records at
+//! slot 0 from their first, and draws its instances `0..n` ([`MeshDraws::runs`]). The debug views'
+//! replays draw a call a draw.
 
 mod lists;
+mod runs;
 
 use std::ops::Range;
 
@@ -53,6 +58,8 @@ use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, Vertex
 use sapphire_rhi::wgpu;
 
 pub(crate) use self::lists::{CasterTests, Entry, Orders, Source, ViewLists, ViewTests, Walk, has_level};
+pub(crate) use self::runs::RunRecords;
+pub use self::runs::{DrawRuns, RunStats};
 use crate::buffer::GrowableBuffer;
 use crate::counts::{ChangeCounter, Counter, PassCounts, StateChanges};
 use crate::gpu_types::DrawData;
@@ -111,6 +118,12 @@ pub(crate) struct MeshDraws<'a> {
     pub lists: Option<&'a ViewLists>,
     /// Which of [`Self::lists`] this pass walks.
     pub walk: Walk,
+    /// The frame's run records (M5 D2, [`RunRecords`]): a run of more than one draw binds its
+    /// records here.
+    pub run_records: &'a wgpu::Buffer,
+    /// Whether the pass draws its list's runs as one call each: every pass but the debug views'
+    /// replays, which draw a call a draw.
+    pub runs: bool,
 }
 
 /// One of a variant's draws in the draw list: a static mesh's command, by format and position
@@ -325,18 +338,51 @@ impl MeshDraws<'_> {
         let mut counts = PassCounts::default();
         let hull = set == DrawSet::Outlines;
         let commands = &self.list.commands[format_index(format)][variant.index()];
+        let runs = match self.listed() {
+            Some(list) if self.runs && pipelines.is_empty() && set == DrawSet::Surfaces => {
+                list.runs(format, variant)
+            }
+            _ => &[],
+        };
+        if !runs.is_empty() {
+            // The view's runs, which take every draw of its group in order, each run of one level:
+            // a pass's list is tested already, and a replay that picks instances draws no runs.
+            let listed =
+                self.listed().map_or(&[][..], |list| list.group(Source::Static(format), variant, set));
+            for run in runs {
+                let entries = &listed[run.first as usize..][..run.count as usize];
+                let Entry { at, level } = entries[0];
+                let command = &commands[at as usize];
+                debug_assert!(
+                    entries
+                        .iter()
+                        .all(|entry| entry.level == level && instance(commands[entry.at as usize].slot)),
+                    "a run's draws are of one level, and its pass takes every one"
+                );
+                let indices = self.indices(command, level);
+                let count = indices.len() as u32;
+                self.bind_static(pass, kind, format, command, &mut bound);
+                let records = if run.count == 1 { self.records.buffer() } else { self.run_records };
+                self.draw_from(pass, records, run.record, run.count, indices);
+                counts.considered += run.count;
+                counts.mesh_call(run.count, count, level, hull);
+            }
+            self.counter.add(&counts);
+            self.changes.add(&bound.changes);
+            return;
+        }
         let mut draw = |command: &DrawCommand, level: u8, bound: &mut Bound, counts: &mut PassCounts| {
             let indices = self.indices(command, level);
             let count = indices.len() as u32;
             if pipelines.is_empty() {
                 self.draw_command(pass, kind, format, command, indices.clone(), bound);
-                counts.mesh_draw(count, level, hull);
+                counts.mesh_call(1, count, level, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
                 bound.changes.pipelines += 1;
                 self.draw_command(pass, kind, format, command, indices.clone(), bound);
-                counts.mesh_draw(count, level, hull);
+                counts.mesh_call(1, count, level, hull);
             }
         };
         if let Some(list) = self.listed() {
@@ -381,6 +427,20 @@ impl MeshDraws<'_> {
         indices: Range<u32>,
         bound: &mut Bound,
     ) {
+        self.bind_static(pass, kind, format, command, bound);
+        self.draw_from(pass, self.records.buffer(), command.draw_id, 1, indices);
+    }
+
+    /// Binds the streams and material of `command`, a static mesh's in `format`, unless `bound`
+    /// says they are bound already.
+    fn bind_static(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        format: PositionFormat,
+        command: &DrawCommand,
+        bound: &mut Bound,
+    ) {
         self.bind_material(pass, kind, command.material, bound);
         let streams = Streams::Static { format, first_vertex: command.first_vertex };
         if bound.streams != Some(streams) {
@@ -406,7 +466,6 @@ impl MeshDraws<'_> {
             bound.changes.vertex_buffers += streams_bound(kind);
             bound.streams = Some(streams);
         }
-        self.draw(pass, command.draw_id, indices);
     }
 
     /// Draws `set` of the skinned or morphed instances of `variant` with the streams `kind`
@@ -454,13 +513,13 @@ impl MeshDraws<'_> {
         let mut draw = |command: &DeformedDraw, bound: &mut Bound, counts: &mut PassCounts| {
             let indices = command.indices.len() as u32;
             if pipelines.is_empty() && self.draw_deformed_command(pass, kind, command, bound) {
-                counts.mesh_draw(indices, 0, hull);
+                counts.mesh_call(1, indices, 0, hull);
             }
             for pipeline in pipelines {
                 pass.set_pipeline(pipeline);
                 bound.changes.pipelines += 1;
                 if self.draw_deformed_command(pass, kind, command, bound) {
-                    counts.mesh_draw(indices, 0, hull);
+                    counts.mesh_call(1, indices, 0, hull);
                 }
             }
         };
@@ -519,7 +578,7 @@ impl MeshDraws<'_> {
             bound.streams = Some(streams);
         }
         self.bind_material(pass, kind, command.material, bound);
-        self.draw(pass, command.draw_id, command.indices.clone());
+        self.draw_from(pass, self.records.buffer(), command.draw_id, 1, command.indices.clone());
         true
     }
 
@@ -568,7 +627,7 @@ impl MeshDraws<'_> {
                     if let Some(command) = commands.get(index as usize).filter(|c| self.stands_here(c.slot)) {
                         self.draw_command(pass, kind, format, command, command.indices.clone(), &mut bound);
                         counts.considered += 1;
-                        counts.mesh_draw(command.indices.len() as u32, 0, false);
+                        counts.mesh_call(1, command.indices.len() as u32, 0, false);
                     }
                 }
                 DrawRef::Deformed { index } => {
@@ -576,7 +635,7 @@ impl MeshDraws<'_> {
                     if let Some(command) = deformed.get(index as usize).filter(|c| self.stands_here(c.slot)) {
                         counts.considered += 1;
                         if self.draw_deformed_command(pass, kind, command, &mut bound) {
-                            counts.mesh_draw(command.indices.len() as u32, 0, false);
+                            counts.mesh_call(1, command.indices.len() as u32, 0, false);
                         }
                     }
                 }
@@ -601,9 +660,19 @@ impl MeshDraws<'_> {
         }
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, draw_id: u32, indices: Range<u32>) {
-        let record = u64::from(draw_id) * DRAW_STRIDE;
-        pass.set_vertex_buffer(slot::DRAW, self.records.buffer().slice(record..record + DRAW_STRIDE));
+    /// Draws `instances` instances of `indices`, whose records lie side by side in `records` from
+    /// record `first`, bound there at slot 0 (no first instance: ADR 0002).
+    fn draw_from(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        records: &wgpu::Buffer,
+        first: u32,
+        instances: u32,
+        indices: Range<u32>,
+    ) {
+        let start = u64::from(first) * DRAW_STRIDE;
+        let end = start + u64::from(instances) * DRAW_STRIDE;
+        pass.set_vertex_buffer(slot::DRAW, records.slice(start..end));
         // A draw's whole triangles lie at a multiple of 3 (every mesh's index count is one), so
         // its edges' line indices at twice its range.
         let indices = if self.lines {
@@ -612,7 +681,7 @@ impl MeshDraws<'_> {
         } else {
             indices
         };
-        pass.draw_indexed(indices, 0, 0..1);
+        pass.draw_indexed(indices, 0, 0..instances);
     }
 }
 

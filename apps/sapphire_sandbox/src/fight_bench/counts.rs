@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use sapphire_assets::{AssetKind, AssetStats};
 use sapphire_platform::CoreKind;
-use sapphire_render::{FrameCounts, RenderStats, StateChanges};
+use sapphire_render::{FrameCounts, RenderStats, RunStats, StateChanges};
 
 use super::{Phase, Traced, spread};
 use crate::LOG_TARGET;
@@ -38,6 +38,8 @@ pub(super) struct Counted {
     /// (`AmbientStats::dispatches`, `AmbientStats::probe_dispatches`): compute work, which draws nothing.
     pub ambient_dispatches: u32,
     pub probe_dispatches: u32,
+    /// The instanced runs the view lists formed (M5 D2).
+    pub runs: RunStats,
     /// Scene instances, and of the skinned ones those skinned this frame, their joints and vertices.
     pub instances: u32,
     pub skinned: u32,
@@ -115,6 +117,7 @@ impl Counted {
             state_changes: render.state_changes,
             ambient_dispatches: render.ambient.dispatches,
             probe_dispatches: render.ambient.probe_dispatches,
+            runs: render.runs,
             instances: render.instances,
             skinned: render.skinning.skinned,
             joints: render.skinning.joints,
@@ -153,9 +156,9 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
 
 /// What's logged, the frame's whole first, then pass by pass, the ambient pass's dispatches, then what
 /// culled, the levels drawn (the main view's and the shadows' apart, and the main view's switches, M5
-/// D4), the state the mesh passes changed, skinning, lights, the asset server's, animation's, and a
-/// zone's crowd's.
-pub(super) const COUNT_ROWS: [CountRow; 57] = [
+/// D4), the state the mesh passes changed, the instanced runs, skinning, lights, the asset server's,
+/// animation's, and a zone's crowd's.
+pub(super) const COUNT_ROWS: [CountRow; 61] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -187,6 +190,7 @@ pub(super) const COUNT_ROWS: [CountRow; 57] = [
     row("culled past outline cutoff", |c| u64::from(c.passes.total().culled_by_cutoff)),
     row("culled by distance", |c| u64::from(c.passes.total().culled_by_distance)),
     row("culled by size", |c| u64::from(c.passes.total().culled_by_size)),
+    // Mesh instances by level, a run's each (M5 D2).
     row("lod0 draws", |c| u64::from(c.passes.total().levels[0])),
     row("lod1+ draws", |c| c.passes.total().levels[1..].iter().map(|&level| u64::from(level)).sum()),
     row("main draws above level 0", |c| {
@@ -199,6 +203,11 @@ pub(super) const COUNT_ROWS: [CountRow; 57] = [
     row("pipelines set", |c| u64::from(c.state_changes.pipelines)),
     row("materials bound", |c| u64::from(c.state_changes.materials)),
     row("vertex buffers bound", |c| u64::from(c.state_changes.vertex_buffers)),
+    // Runs of more than one draw, every view list's (an undrawn scene prepass's too).
+    row("runs", |c| u64::from(c.runs.runs)),
+    row("run instances", |c| u64::from(c.runs.instances)),
+    row("longest run", |c| u64::from(c.runs.longest)),
+    row("median run", |c| u64::from(c.runs.median)),
     row("scene instances", |c| u64::from(c.instances)),
     row("skinned instances", |c| u64::from(c.skinned)),
     row("joints", |c| u64::from(c.joints)),

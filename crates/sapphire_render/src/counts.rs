@@ -17,10 +17,14 @@
 //!   [`PassCounts::culled_by_cutoff`], and since M5 D3 [`PassCounts::culled_by_distance`] and
 //!   [`PassCounts::culled_by_size`]). Draws of another view (an inset's, the world's) and of another
 //!   set (an outline pass's surfaces without a hull) aren't looked at.
-//! - **Levels of detail:** every mesh draw counts in [`PassCounts::levels`] by the level it drew: a static
-//!   draw's chosen level since M5 D4 (the `levels` module), level 0 for what deforms until m5-plan D5. A
-//!   submesh its level simplified away isn't looked at, so `considered` still sums what was drawn and
-//!   what was culled. The main view's switches of level are `RenderStats::levels`.
+//! - **Levels of detail:** every mesh instance drawn counts in [`PassCounts::levels`] by the level it
+//!   drew: a static draw's chosen level since M5 D4 (the `levels` module), level 0 for what deforms
+//!   until m5-plan D5. A submesh its level simplified away isn't looked at, so `considered` still sums
+//!   what was drawn and what was culled. The main view's switches of level are `RenderStats::levels`.
+//! - **A run is one call** (M5 D2): equal neighbours in a view's list draw as one instanced call, which
+//!   counts one in [`PassCounts::draws`] and its instances in [`PassCounts::instances`],
+//!   [`PassCounts::triangles`], [`PassCounts::considered`] and the levels, as its draws counted one by
+//!   one.
 //! - **State changes** (M5 D1, [`StateChanges`]): the pipelines the mesh passes set, the materials they
 //!   bind and the vertex buffers they bind for meshes' streams, the whole frame's together. What an
 //!   order of each view's draws buys is exact here, where time is noisy.
@@ -41,7 +45,8 @@ pub struct PassCounts {
     /// Draw calls submitted: mesh draws, outline hulls, the sky, the effects' quads, fullscreen
     /// triangles and the interface's batches.
     pub draws: u32,
-    /// Instances those calls drew: one a mesh draw, each sprite or batch of quads its own.
+    /// Instances those calls drew: a mesh draw's (a run's draws, M5 D2), each sprite or batch of quads
+    /// its own.
     pub instances: u32,
     /// Triangles those calls drew, every instance's: a mesh draw's index range over three, a hull's the
     /// same as its surface's.
@@ -70,7 +75,8 @@ pub struct PassCounts {
     /// views (`CullingThresholds::least_pixels`), in a cascade's own texels in it
     /// (`CullingThresholds::least_texels`).
     pub culled_by_size: u32,
-    /// Mesh draws by the level of detail they drew, LOD0 first. They sum to the pass's mesh draws.
+    /// Mesh instances by the level of detail they drew, LOD0 first. They sum to the pass's mesh
+    /// instances.
     pub levels: [u32; MESH_LEVELS],
 }
 
@@ -86,13 +92,14 @@ impl PassCounts {
         Self::call(1, 1)
     }
 
-    /// A mesh draw of one instance of `indices` indices at `level`, an outline hull or not.
-    pub(crate) fn mesh_draw(&mut self, indices: u32, level: u8, outline: bool) {
+    /// A mesh draw call of `instances` instances (a run of draws, M5 D2) of `indices` indices each at
+    /// `level`, an outline hull or not.
+    pub(crate) fn mesh_call(&mut self, instances: u32, indices: u32, level: u8, outline: bool) {
         self.draws += 1;
-        self.instances += 1;
-        self.triangles += u64::from(indices / 3);
+        self.instances += instances;
+        self.triangles += u64::from(instances) * u64::from(indices / 3);
         self.outline_draws += u32::from(outline);
-        self.levels[usize::from(level).min(MESH_LEVELS - 1)] += 1;
+        self.levels[usize::from(level).min(MESH_LEVELS - 1)] += instances;
     }
 
     /// One more mesh draw left out by `verdict`'s test (`view_cull`), or by the pass's own pick
@@ -106,8 +113,8 @@ impl PassCounts {
         }
     }
 
-    /// Mesh draws counted in [`Self::levels`].
-    pub fn mesh_draws(&self) -> u32 {
+    /// Mesh instances drawn, counted in [`Self::levels`]: a call a draw before runs (M5 D2).
+    pub fn mesh_instances(&self) -> u32 {
         self.levels.iter().sum()
     }
 
@@ -464,22 +471,27 @@ mod tests {
         assert_eq!(counters.read(), FrameCounts::default());
     }
 
-    /// A mesh draw counts its triangles, its level (a level past the buckets in the last) and whether
-    /// it's a hull; the levels sum to the mesh draws.
+    /// A mesh call counts its instances' triangles, their level (a level past the buckets in the last)
+    /// and whether it's a hull; the levels sum to the mesh instances, which a run (M5 D2) makes more
+    /// than the calls.
     #[test]
-    fn mesh_draws_count_by_level() {
+    fn mesh_calls_count_by_level() {
         let mut counts = PassCounts::default();
-        counts.mesh_draw(36, 0, false);
-        counts.mesh_draw(36, 0, true);
-        counts.mesh_draw(12, 2, false);
-        counts.mesh_draw(3, 9, false);
+        counts.mesh_call(1, 36, 0, false);
+        counts.mesh_call(1, 36, 0, true);
+        counts.mesh_call(1, 12, 2, false);
+        counts.mesh_call(1, 3, 9, false);
         assert_eq!((counts.draws, counts.instances, counts.triangles, counts.outline_draws), (4, 4, 29, 1));
         assert_eq!(counts.levels, [2, 0, 1, 1]);
-        assert_eq!(counts.mesh_draws(), counts.draws);
+        assert_eq!(counts.mesh_instances(), counts.draws);
         let sky = PassCounts::fullscreen();
         let both = counts.plus(&sky);
-        assert_eq!((both.draws, both.triangles, both.mesh_draws()), (5, 30, 4));
+        assert_eq!((both.draws, both.triangles, both.mesh_instances()), (5, 30, 4));
         assert_eq!(PassCounts::call(5, 2).triangles, 10);
+        // A run of three: one call.
+        counts.mesh_call(3, 12, 0, false);
+        assert_eq!((counts.draws, counts.instances, counts.triangles), (5, 7, 41));
+        assert_eq!((counts.levels, counts.mesh_instances()), ([5, 0, 1, 1], 7));
     }
 
     /// Counting a frame allocates nothing: adding a pass's counts, reading them and starting over.
@@ -488,7 +500,7 @@ mod tests {
         let counters = PassCounters::default();
         let mut counts = PassCounts::default();
         let ((), allocated) = sapphire_core::alloc::count_in_scope(|| {
-            counts.mesh_draw(36, 0, true);
+            counts.mesh_call(1, 36, 0, true);
             counters.get(Counted::Main).add(&counts);
             counters.get(Counted::Cascade(1)).add(&PassCounts::fullscreen());
             counters.changes().add(&StateChanges { pipelines: 1, materials: 2, vertex_buffers: 3 });

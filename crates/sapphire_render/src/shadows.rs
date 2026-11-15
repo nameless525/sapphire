@@ -442,7 +442,8 @@ pub struct ShadowStats {
     /// Other characters' shadows the characters receive this frame (M5 L12): receiver and caster
     /// pairs, at most [`ShadowSettings::others`] a receiver.
     pub received: u32,
-    /// Draws in this frame's shadow passes: every cascade drawn and every character map.
+    /// Mesh draws in this frame's shadow passes, every cascade drawn and every character map: the
+    /// instances they draw, which runs (M5 D2) draw in fewer calls.
     pub caster_draws: u32,
     /// Environment draws culled from the cascades drawn, one for each cascade they missed.
     pub culled_draws: u32,

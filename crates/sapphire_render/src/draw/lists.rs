@@ -5,15 +5,15 @@
 //!   ([`Orders`]). Draws already come grouped by pipeline: per position format (or deformed),
 //!   surface variant and set ([`DrawSet`]), each group drawn through one pipeline in a fixed order
 //!   a pass's code walks. Within a group, the views that write depth alone (each cascade, the
-//!   character maps) draw the static depth-writing surfaces by [`DrawKey`]: mesh, then the draw's
-//!   record, since there an exact tie in depth writes the same depth whichever draws first. **The
-//!   views that write anything else keep the draw list's order (record):** the main view and each
-//!   inset, whose pass clears its own depth and keeps the first-drawn surface at an exact tie, and
-//!   both prepasses, which write normals, the outline mask and the characters' IDs where the same
-//!   ties fall. Reordering one moves those pixels (spec §5.12, 124 of 400 Metal captures under a
-//!   material-first key); m5-plan D2 decides the reorder. Groups whose order shows in any view
-//!   keep it everywhere: transparent surfaces and eyes' layers blend in it, eyes through hair and
-//!   outline hulls draw at depths that tie, and skinned or morphed instances bind by instance.
+//!   character maps) draw the static depth-writing surfaces by [`DrawKey`]: mesh, then the
+//!   submesh's place, then the draw's record, since there an exact tie in depth writes the same
+//!   depth whichever draws first. **The views that write anything else keep the draw list's order
+//!   (record):** the main view and each inset, whose pass clears its own depth and keeps the
+//!   first-drawn surface at an exact tie, and both prepasses, which write normals, the outline mask
+//!   and the characters' IDs where the same ties fall. Reordering one moves those pixels (spec
+//!   §5.12, 124 of 400 Metal captures under a material-first key). Groups whose order shows in any
+//!   view keep it everywhere: transparent surfaces and eyes' layers blend in it, eyes through hair
+//!   and outline hulls draw at depths that tie, and skinned or morphed instances bind by instance.
 //! - **A view's list is compacted each frame** ([`ViewList`]): walking its groups in key order, it
 //!   keeps the draws that stand in the view and pass its tests (its instance's culling verdict, M5
 //!   D3's `view_cull`; an outline hull's cutoff, a cascade's casters, a character map's character,
@@ -21,6 +21,12 @@
 //!   counted them before. The lists
 //!   keep their capacity, so a warm frame allocates nothing; the shadow views are compacted in one
 //!   walk, beside the world's other views ([`ViewLists::compact_world`]).
+//! - **Then it forms its runs** (M5 D2, the `runs` module), if its view runs ([`DrawRuns`]: by
+//!   default the shadow views alone): neighbours in a static depth-writing group that draw the same
+//!   mesh, level, submesh and material draw as one instanced call, their records listed side
+//!   by side in the frame's run records ([`ViewLists::records`]). The world's views form theirs once
+//!   all are compacted, on the calling thread in a fixed order, so the records are the same whether
+//!   the lists compacted in parallel or not.
 //! - **An entry is a position in its group** of the draw list (`DrawList::commands` or
 //!   `DrawList::deformed`), whose command carries what later work reads: its instance's slot (whose
 //!   bounds `InstanceSlots::world_bounds` gives), its mesh, its material and its record, **and the
@@ -28,17 +34,14 @@
 //!   view's family's from its culling ([`ViewTests::levels`]), each cascade's from its plan
 //!   (`SlotCaster::levels`), 0 for a character map, an inset and anything deformed. A submesh its
 //!   level simplified away is left out unlisted and uncounted, as a draw outside the group's set
-//!   is. The shadow views draw by (mesh, level, record): their order built at level 0, and a
-//!   group whose instances of one mesh draw at more than one level sorted again as it's compacted.
-//!
-//! The filtered walk the passes made before stays reachable behind
-//! [`Renderer::walk_filtered`](crate::Renderer::walk_filtered), for the test that draws scenes both
-//! ways and compares every byte; m5-plan D2 deletes it.
+//!   is. The shadow views draw by (mesh, level, submesh, record): their order built at level 0, and
+//!   a group whose instances of one mesh draw at more than one level sorted again as it's compacted.
 
 use sapphire_assets::material::MaterialFlags;
 use sapphire_assets::mesh::PositionFormat;
 
 use super::DrawSet;
+use super::runs::{DrawRuns, Run, RunStats, RunView, Runs};
 use crate::counts::PassCounts;
 use crate::inset::MAX_INSETS;
 use crate::materials::{MaterialHandle, MaterialRecord};
@@ -66,13 +69,15 @@ const GROUPS: usize = SOURCES * VARIANTS * SETS;
 /// | field | what | why |
 /// |---|---|---|
 /// | (group) | the pipeline: format or deformed, surface variant, set | held apart, as the list's groups, which a pass walks in its own fixed order |
-/// | `mesh` | the mesh's handle index | each run binds the mesh's streams once; later, a run of one mesh and level is an instanced draw (m5-plan D2) |
-/// | `level` | the level of detail the view draws it at (M5 D4) | a run of one mesh draws one level's index ranges; built at 0, and sorted again where a frame's levels differ ([`Entry`]) |
-/// | `draw` | the draw's record (`DrawCommand::draw_id`) | today's order: unique in its group, so the order is total and the same whatever sorts it |
+/// | `mesh` | the mesh's handle index | the mesh's streams bind once |
+/// | `level` | the level of detail the view draws it at (M5 D4) | a level is its own index ranges, so its own run (M5 D2); built at 0, and sorted again where a frame's levels differ ([`Entry`]) |
+/// | `submesh` | the submesh's place: its first index at level 0 (`DrawCommand::indices`) | each submesh's draws of a level lie side by side, one instanced call (M5 D2); its material comes with it from the mesh |
+/// | `draw` | the draw's record (`DrawCommand::draw_id`) | unique in its group, so the order is total and the same whatever sorts it |
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct DrawKey {
     pub mesh: u32,
     pub level: u8,
+    pub submesh: u32,
     pub draw: u32,
 }
 
@@ -195,7 +200,8 @@ impl ViewKind {
     /// record. A kind answers alike for every command: all keyed, or none.
     ///
     /// - The shadow views write depth alone, which an exact tie writes the same whichever draws
-    ///   first: mesh, then record ([`DrawKey`]), so each run binds a mesh's streams once.
+    ///   first: mesh, then the submesh's place, then record ([`DrawKey`]), so a mesh's streams
+    ///   bind once and each of its submeshes is one run (M5 D2).
     /// - The main view and each inset keep the record: their pass clears its own depth and keeps
     ///   the first-drawn surface at an exact tie (reverse-Z, `Greater`), so a reorder moves those
     ///   pixels. The scene prepass writes normals and the outline mask, and the character prepass
@@ -242,7 +248,12 @@ impl ViewKind {
 
 /// The shadow views' key of `command` drawn at `level`.
 fn caster_key(command: &DrawCommand, level: u8) -> DrawKey {
-    DrawKey { mesh: to_u32(command.mesh.index()), level, draw: command.draw_id }
+    DrawKey {
+        mesh: to_u32(command.mesh.index()),
+        level,
+        submesh: command.indices.start,
+        draw: command.draw_id,
+    }
 }
 
 /// A draw the list compacts: a static mesh's command or a deformed instance's.
@@ -386,11 +397,19 @@ pub(crate) struct ViewList {
     /// each pass adds to its counts once (`MeshDraws::count_left_out`). Their draws count what
     /// they walk.
     left_out: PassCounts,
+    /// Its static depth-writing surfaces' runs (M5 D2), formed after it's compacted: none while
+    /// runs are off, when every draw is a call.
+    runs: Runs,
 }
 
 impl Default for ViewList {
     fn default() -> Self {
-        Self { draws: Vec::new(), ranges: Box::new([[0; 2]; GROUPS]), left_out: PassCounts::default() }
+        Self {
+            draws: Vec::new(),
+            ranges: Box::new([[0; 2]; GROUPS]),
+            left_out: PassCounts::default(),
+            runs: Runs::default(),
+        }
     }
 }
 
@@ -400,6 +419,31 @@ impl ViewList {
         self.draws.clear();
         self.ranges.fill([0; 2]);
         self.left_out = PassCounts::default();
+        self.runs.clear();
+    }
+
+    /// The runs of `variant`'s static surfaces in `format`, in order: each a call, its draws from
+    /// its first in [`Self::group`]'s. None for a group that formed none (one whose order shows, or
+    /// runs are off), whose draws are calls of one.
+    pub(crate) fn runs(&self, format: PositionFormat, variant: SurfaceVariant) -> &[Run] {
+        self.runs.of(format, variant)
+    }
+
+    /// Forms the runs of its static depth-writing surfaces from `list`, listing their records in
+    /// `records`; a group that `twin` lists alike takes `twin`'s runs, if it formed them this frame.
+    fn form_runs(&mut self, list: &DrawList, records: &mut Vec<u32>, twin: Option<&Self>) {
+        let Self { draws, ranges, runs, .. } = self;
+        let (draws, ranges): (&[Entry], &[[u32; 2]; GROUPS]) = (draws, ranges);
+        let listed = move |format, variant| {
+            let [start, end] = ranges[group(Source::Static(format), variant, DrawSet::Surfaces)];
+            &draws[start as usize..end as usize]
+        };
+        let twin = twin.map(|twin| {
+            (&twin.runs, move |format, variant| {
+                twin.group(Source::Static(format), variant, DrawSet::Surfaces)
+            })
+        });
+        runs.form(listed, twin, list, records);
     }
 
     /// The listed draws of `set` of `variant`'s from `source`: positions in the draw list's group,
@@ -552,6 +596,13 @@ pub(crate) struct ViewLists {
     maps_left_out: PassCounts,
     /// Per inset: its main pass's list and its character prepass's.
     insets: [[ViewList; 2]; MAX_INSETS],
+    /// Which of this frame's lists form runs (M5 D2, `RenderSettings::draw_runs`).
+    runs: DrawRuns,
+    /// The frame's run records: for each run of more than one draw, its draws' records, side by
+    /// side, as the lists formed them.
+    records: Vec<u32>,
+    /// Scratch for [`Self::run_stats`].
+    lengths: Vec<u32>,
 }
 
 impl Default for ViewLists {
@@ -565,11 +616,48 @@ impl Default for ViewLists {
             maps: Default::default(),
             maps_left_out: PassCounts::default(),
             insets: Default::default(),
+            runs: DrawRuns::Off,
+            records: Vec::new(),
+            lengths: Vec::new(),
         }
     }
 }
 
 impl ViewLists {
+    /// Starts a frame's lists: no runs, nor run records, until each list is compacted, when it
+    /// forms its runs if `runs` takes its view (M5 D2).
+    pub(crate) fn begin_frame(&mut self, runs: DrawRuns) {
+        self.runs = runs;
+        self.drop_runs();
+    }
+
+    /// Forgets the frame's runs and their records, so every draw is a call: for a frame whose run
+    /// records don't fit their buffer (review RA-004).
+    pub(crate) fn drop_runs(&mut self) {
+        self.records.clear();
+        self.each_list_mut(|list| list.runs.clear());
+    }
+
+    /// The frame's run records: indices of draw records, a run's side by side.
+    pub(crate) fn records(&self) -> &[u32] {
+        &self.records
+    }
+
+    /// What this frame's lists made of their draws: every list's runs, an undrawn scene prepass's
+    /// too.
+    pub(crate) fn run_stats(&mut self) -> RunStats {
+        let Self { main, scene, characters, cascades, maps, insets, records, lengths, .. } = self;
+        let lists = [&*main, &*scene, &*characters].into_iter().chain(&*cascades).chain(&*maps);
+        let runs = lists.chain(insets.iter().flatten()).flat_map(|list| list.runs.all());
+        RunStats::of(runs, records.len(), lengths)
+    }
+
+    fn each_list_mut(&mut self, mut f: impl FnMut(&mut ViewList)) {
+        let Self { main, scene, characters, cascades, maps, insets, .. } = self;
+        [main, scene, characters].into_iter().for_each(&mut f);
+        cascades.iter_mut().chain(maps).chain(insets.iter_mut().flatten()).for_each(f);
+    }
+
     /// The list `walk` draws from; none for the character maps' pass as a whole.
     pub(crate) fn list(&self, walk: Walk) -> Option<&ViewList> {
         match walk {
@@ -602,17 +690,26 @@ impl ViewLists {
         list: &DrawList,
         tests: &ViewTests<'_, I>,
     ) {
-        let (kind, target) = match walk {
-            Walk::Main => (ViewKind::Main, &mut self.main),
-            Walk::ScenePrepass => (ViewKind::ScenePrepass, &mut self.scene),
-            Walk::CharacterPrepass => (ViewKind::CharacterPrepass, &mut self.characters),
-            Walk::InsetMain(index) => (ViewKind::Main, &mut self.insets[index][0]),
-            Walk::InsetCharacters(index) => (ViewKind::CharacterPrepass, &mut self.insets[index][1]),
+        let Self { groups, main, scene, characters, insets, runs, records, .. } = self;
+        // The scene prepass shares the main view's tests: its runs, where its groups list alike.
+        let (kind, target, twin) = match walk {
+            Walk::Main => (ViewKind::Main, main, None),
+            Walk::ScenePrepass => (ViewKind::ScenePrepass, scene, Some(&*main)),
+            Walk::CharacterPrepass => (ViewKind::CharacterPrepass, characters, None),
+            Walk::InsetMain(index) => (ViewKind::Main, &mut insets[index][0], None),
+            Walk::InsetCharacters(index) => (ViewKind::CharacterPrepass, &mut insets[index][1], None),
             Walk::Cascade(_) | Walk::CharacterMaps | Walk::CharacterMap(_) => {
                 unreachable!("the shadow views compact together, in `compact_casters`")
             }
         };
-        target.compact(kind, &self.groups[kind_index(kind)], list, tests);
+        target.compact(kind, &groups[kind_index(kind)], list, tests);
+        let view = match walk {
+            Walk::ScenePrepass | Walk::CharacterPrepass => RunView::Prepass,
+            _ => RunView::Shown,
+        };
+        if runs.form_in(view) {
+            target.form_runs(list, records, twin);
+        }
     }
 
     /// Compacts the world's views' lists from `list` (M5 D3): the main view's and the scene
@@ -653,19 +750,51 @@ impl ViewLists {
         let scene_groups = &groups[kind_index(ViewKind::ScenePrepass)];
         let character_groups = &groups[kind_index(ViewKind::CharacterPrepass)];
         let caster_groups = &groups[kind_index(ViewKind::Casters)];
-        if !parallel {
+        if parallel {
+            sapphire_jobs::scope(|scope| {
+                scope.spawn(|| main.compact(ViewKind::Main, main_groups, list, world));
+                scope.spawn(|| scene.compact(ViewKind::ScenePrepass, scene_groups, list, world));
+                scope
+                    .spawn(|| listed.compact(ViewKind::CharacterPrepass, character_groups, list, characters));
+                scope.spawn(|| compact_casters(caster_groups, cascades, maps, maps_left_out, list, casters));
+            });
+        } else {
             main.compact(ViewKind::Main, main_groups, list, world);
             scene.compact(ViewKind::ScenePrepass, scene_groups, list, world);
             listed.compact(ViewKind::CharacterPrepass, character_groups, list, characters);
             compact_casters(caster_groups, cascades, maps, maps_left_out, list, casters);
+        }
+        self.form_world_runs(list, &casters.cascades, casters.maps);
+    }
+
+    /// Forms the world's views' runs (M5 D2) once they're compacted, in a fixed order: the main
+    /// view's, the scene prepass's (which takes the main view's where they list alike), the
+    /// character prepass's, then the drawn cascades' and character maps'.
+    fn form_world_runs(&mut self, list: &DrawList, cascades: &[bool; MAX_CASCADES], maps: usize) {
+        let Self { main, scene, characters, runs, records, .. } = self;
+        if runs.form_in(RunView::Shown) {
+            main.form_runs(list, records, None);
+        }
+        if runs.form_in(RunView::Prepass) {
+            scene.form_runs(list, records, Some(&*main));
+            characters.form_runs(list, records, None);
+        }
+        self.form_caster_runs(list, cascades, maps);
+    }
+
+    /// Forms the drawn shadow views' runs (M5 D2), if the shadow views run.
+    fn form_caster_runs(&mut self, list: &DrawList, drawn: &[bool; MAX_CASCADES], maps: usize) {
+        let Self { cascades, maps: map_lists, runs, records, .. } = self;
+        if !runs.form_in(RunView::Shadow) {
             return;
         }
-        sapphire_jobs::scope(|scope| {
-            scope.spawn(|| main.compact(ViewKind::Main, main_groups, list, world));
-            scope.spawn(|| scene.compact(ViewKind::ScenePrepass, scene_groups, list, world));
-            scope.spawn(|| listed.compact(ViewKind::CharacterPrepass, character_groups, list, characters));
-            scope.spawn(|| compact_casters(caster_groups, cascades, maps, maps_left_out, list, casters));
-        });
+        for (cascade, &drawn) in cascades.iter_mut().zip(drawn) {
+            if drawn {
+                cascade.form_runs(list, records, None);
+            }
+        }
+        let maps = maps.min(MAX_CHARACTER_MAPS);
+        map_lists[..maps].iter_mut().for_each(|map| map.form_runs(list, records, None));
     }
 
     /// Compacts every shadow view's list from `list` in one walk of the casters: each cascade
@@ -678,6 +807,7 @@ impl ViewLists {
     ) {
         let Self { groups, cascades, maps, maps_left_out, .. } = self;
         compact_casters(&groups[kind_index(ViewKind::Casters)], cascades, maps, maps_left_out, list, tests);
+        self.form_caster_runs(list, &tests.cascades, tests.maps);
     }
 }
 

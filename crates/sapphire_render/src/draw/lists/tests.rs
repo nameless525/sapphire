@@ -130,8 +130,8 @@ fn mixed() -> (Vec<MeshRecord>, InstanceSlots) {
 
 /// Each kind of view holds its order: the views that write anything but depth (the main view, an
 /// inset, both prepasses) draw a group in the record's order, where an exact tie in depth keeps
-/// the first-drawn surface; the shadow views (each cascade, each character map) by mesh, then
-/// record. m5-plan D2 changes the first, in `ViewKind::key`, and this test with it.
+/// the first-drawn surface; the shadow views (each cascade, each character map) by mesh, then the
+/// submesh's place, then record, so each mesh's submesh is one run (m5-plan D2).
 #[test]
 fn each_kind_of_view_holds_its_order() {
     let (meshes, slots) = mixed();
@@ -176,8 +176,8 @@ fn each_kind_of_view_holds_its_order() {
     let cascade = lists.list(Walk::Cascade(0)).expect("listed");
     assert_eq!(
         drawn(&list, cascade, environment(), DrawSet::Surfaces),
-        [(1, 12, 0), (2, 11, 0), (5, 12, 0), (6, 11, 0), (3, 11, 1), (7, 11, 1), (0, 12, 2), (4, 12, 2)],
-        "depth alone: mesh, then record"
+        [(1, 12, 0), (5, 12, 0), (2, 11, 0), (6, 11, 0), (3, 11, 1), (7, 11, 1), (0, 12, 2), (4, 12, 2)],
+        "depth alone: mesh, then the submesh's place, then record"
     );
     // Map 0 draws slots 0, 2 and 4: records 0 (mesh 2), 3 (mesh 1), 5 and 6 (mesh 0).
     let map = lists.list(Walk::CharacterMap(0)).expect("listed");
@@ -358,13 +358,208 @@ fn a_list_rebuilt_after_the_pool_compacts_draws_the_same() {
     assert_eq!(first_vertices, [0, 0, 0, 0, 2, 2, 5, 5], "by mesh, from the meshes' new places");
 }
 
-/// A warm frame's compaction allocates nothing: every list keeps its capacity.
+/// Each run's records in the frame's run records, or a run of one's own record.
+fn run_records(lists: &ViewLists, runs: &[Run]) -> Vec<Vec<u32>> {
+    runs.iter()
+        .map(|run| match run.count {
+            1 => vec![run.record],
+            count => lists.records()[run.record as usize..][..count as usize].to_vec(),
+        })
+        .collect()
+}
+
+/// A shadow view runs each mesh's submesh (M5 D2): its key puts them side by side, and each run's
+/// records lie side by side in the run records, in the list's order.
+#[test]
+fn a_cascade_runs_each_meshs_submesh() {
+    let (meshes, slots) = mixed();
+    let list = built(&meshes, &slots);
+    let mut lists = ViewLists::default();
+    lists.begin_frame(DrawRuns::Shadows);
+    let casters = CasterTests {
+        stands: &[],
+        cascades: [true, false, false, false],
+        maps: 0,
+        plan: |_| caster(1, None),
+    };
+    lists.compact_casters(&list, &casters);
+    let cascade = lists.list(Walk::Cascade(0)).expect("listed");
+    let runs = cascade.runs(UNORM16, environment());
+    let places: Vec<(u32, u32)> = runs.iter().map(|run| (run.first, run.count)).collect();
+    assert_eq!(places, [(0, 2), (2, 2), (4, 2), (6, 2)], "mesh 0's two submeshes, mesh 1, mesh 2");
+    assert_eq!(run_records(&lists, runs), [[1, 5], [2, 6], [3, 7], [0, 4]]);
+    assert_eq!(lists.records().len(), 8);
+}
+
+/// The views that write colour keep the record's order (M5 D2's first change), so runs form there only
+/// where equal draws are neighbours already; the scene prepass takes the main view's runs and lists no
+/// records of its own; runs off, or dropped, form none; with the prepasses' runs the main view forms
+/// none and the scene prepass forms its own; by default neither forms any.
+#[test]
+fn the_main_view_runs_equal_neighbours_alone() {
+    let (meshes, _) = mixed();
+    // Meshes 1 and 2 have a submesh each, in materials 11 and 12: records 0 to 6 in slot order.
+    let slots = slots(&[1, 1, 2, 1, 2, 2, 2]);
+    let list = built(&meshes, &slots);
+    let mut lists = ViewLists::default();
+    let tests = world(&[], &[], None);
+    lists.begin_frame(DrawRuns::EveryView);
+    lists.compact_view(Walk::Main, &list, &tests);
+    let main = lists.list(Walk::Main).expect("listed").runs(UNORM16, environment()).to_vec();
+    let counts: Vec<u32> = main.iter().map(|run| run.count).collect();
+    assert_eq!(counts, [2, 1, 1, 3]);
+    assert_eq!(run_records(&lists, &main), [vec![0, 1], vec![2], vec![3], vec![4, 5, 6]]);
+    assert_eq!(lists.records(), [0, 1, 4, 5, 6], "runs of one bind their own record");
+    lists.compact_view(Walk::ScenePrepass, &list, &tests);
+    let scene = lists.list(Walk::ScenePrepass).expect("listed").runs(UNORM16, environment());
+    assert_eq!(scene, main, "the main view's runs");
+    assert_eq!(lists.records().len(), 5, "and its records");
+    let stats = lists.run_stats();
+    assert_eq!((stats.runs, stats.instances, stats.longest, stats.median), (4, 10, 3, 2), "{stats:?}");
+    assert_eq!(stats.record_bytes, 5 * 48);
+
+    lists.drop_runs();
+    assert!(lists.list(Walk::Main).expect("listed").runs(UNORM16, environment()).is_empty());
+    assert!(lists.records().is_empty());
+    lists.begin_frame(DrawRuns::Off);
+    lists.compact_view(Walk::Main, &list, &tests);
+    assert!(lists.list(Walk::Main).expect("listed").runs(UNORM16, environment()).is_empty(), "off");
+    assert_eq!(lists.list(Walk::Main).expect("listed").len(), 7, "every draw still listed");
+
+    lists.begin_frame(DrawRuns::ShadowsAndPrepasses);
+    lists.compact_view(Walk::Main, &list, &tests);
+    lists.compact_view(Walk::InsetMain(0), &list, &tests);
+    lists.compact_view(Walk::ScenePrepass, &list, &tests);
+    for walk in [Walk::Main, Walk::InsetMain(0)] {
+        assert!(lists.list(walk).expect("listed").runs(UNORM16, environment()).is_empty(), "{walk:?}");
+    }
+    let scene = lists.list(Walk::ScenePrepass).expect("listed").runs(UNORM16, environment());
+    assert_eq!(scene, main, "the scene prepass's own runs");
+    assert_eq!(lists.records(), [0, 1, 4, 5, 6], "and records");
+
+    lists.begin_frame(DrawRuns::default());
+    for walk in [Walk::Main, Walk::ScenePrepass, Walk::CharacterPrepass] {
+        lists.compact_view(walk, &list, &tests);
+        assert!(lists.list(walk).expect("listed").runs(UNORM16, environment()).is_empty(), "{walk:?}");
+    }
+    assert!(lists.records().is_empty(), "by default, the shadow views alone");
+}
+
+/// A run is of one level of detail (M5 D4): two draws of one mesh's submesh at different levels draw
+/// different index ranges, so they never join, in a view that keeps the record's order or in a shadow
+/// view, whose key puts each level's draws side by side.
+#[test]
+fn a_run_is_of_one_level() {
+    let mut meshes = vec![mesh(slab(0), vec![submesh(0, 10)])];
+    meshes[0].lods.push(vec![submesh(3, 10)]);
+    meshes[0].lod_vertices.push(4);
+    // Four instances of the mesh: records 0 to 3, in slot order.
+    let list = built(&meshes, &slots(&[0, 0, 0, 0]));
+    let mut lists = ViewLists::default();
+    lists.begin_frame(DrawRuns::EveryView);
+    // The main view draws slots 1 and 3 at level 1: no two neighbours of one level.
+    let culled = SlotCull::at_levels(&[0, 1, 0, 1]);
+    let tests = ViewTests { levels: Some(Culled::new(&culled)), ..world(&[], &[], None) };
+    lists.compact_view(Walk::Main, &list, &tests);
+    let main = lists.list(Walk::Main).expect("listed");
+    assert_eq!(levels(main, &list, DrawSet::Surfaces), [(0, 0), (1, 1), (2, 0), (3, 1)]);
+    let counts: Vec<u32> = main.runs(UNORM16, environment()).iter().map(|run| run.count).collect();
+    assert_eq!(counts, [1, 1, 1, 1], "equal neighbours but for their level");
+    // Cascade 0 draws slots 0 and 1 at level 1 and the others at 0: a run of each level.
+    let plan = |slot: u32| SlotCaster { levels: [u8::from(slot < 2), 0, 0, 0], ..caster(1, None) };
+    lists.compact_casters(
+        &list,
+        &CasterTests { stands: &[], cascades: [true, false, false, false], maps: 0, plan },
+    );
+    let cascade = lists.list(Walk::Cascade(0)).expect("listed");
+    assert_eq!(levels(cascade, &list, DrawSet::Surfaces), [(2, 0), (3, 0), (0, 1), (1, 1)], "mesh, level");
+    let runs = cascade.runs(UNORM16, environment());
+    let places: Vec<(u32, u32)> = runs.iter().map(|run| (run.first, run.count)).collect();
+    assert_eq!(places, [(0, 2), (2, 2)], "one run a level");
+    assert_eq!(run_records(&lists, runs), [[2, 3], [0, 1]]);
+}
+
+/// By default (`DrawRuns::Shadows`), the runs and calls of every view don't depend on the order the
+/// instances were placed in, which for a streamed world is the order its cells arrived in: the shadow
+/// views key their draws by mesh, and the views that keep the record's order form no runs. The same
+/// instances in two slot orders make the same run stats, and each view the same calls.
+#[test]
+fn default_runs_and_calls_dont_follow_the_slot_order() {
+    let (meshes, _) = mixed();
+    let calls = |order: &[u32]| {
+        let list = built(&meshes, &slots(order));
+        let mut lists = ViewLists::default();
+        lists.begin_frame(DrawRuns::default());
+        let world = world(&[], &[], None);
+        let casters =
+            CasterTests { stands: &[], cascades: [true; 4], maps: 0, plan: |_| caster(0b1111, None) };
+        lists.compact_world_as(&list, &world, &world, &casters, false);
+        let walks = [Walk::Main, Walk::ScenePrepass, Walk::Cascade(0), Walk::Cascade(3)];
+        let calls = walks.map(|walk| {
+            let view = lists.list(walk).expect("listed");
+            match view.runs(UNORM16, environment()) {
+                [] => view.group(Source::Static(UNORM16), environment(), DrawSet::Surfaces).len(),
+                runs => runs.len(),
+            }
+        });
+        let stats = lists.run_stats();
+        (calls, (stats.runs, stats.instances, stats.longest, stats.median), stats.record_bytes)
+    };
+    let alternating = calls(&[2, 0, 1, 2, 0, 1, 0, 0]);
+    let grouped = calls(&[0, 0, 0, 0, 1, 1, 2, 2]);
+    assert_eq!(alternating, grouped);
+    // Eight instances, twelve draws a view: a cascade's runs are each mesh's submesh, of four, four,
+    // two and two instances.
+    assert_eq!(alternating.0, [12, 12, 4, 4], "{alternating:?}");
+    assert_eq!(alternating.1, (16, 48, 4, 2), "four runs a cascade");
+}
+
+/// Groups whose order shows form no runs, whatever their neighbours: transparent surfaces, outline
+/// hulls (a set apart from the surfaces) and skinned instances draw a call a draw.
+#[test]
+fn only_static_depth_writing_surfaces_run() {
+    let meshes = vec![
+        mesh(slab(0), vec![submesh(0, 30)]),
+        mesh(slab(4), vec![submesh(3, 20)]),
+        mesh(MeshStreams::Deformable(DeformSource::default()), vec![submesh(6, 20)]),
+    ];
+    let list = built(&meshes, &slots(&[0, 0, 1, 1, 2, 2]));
+    let mut lists = ViewLists::default();
+    lists.begin_frame(DrawRuns::EveryView);
+    lists.compact_view(Walk::Main, &list, &world(&[], &[true; 6], None));
+    let main = lists.list(Walk::Main).expect("listed");
+    let transparent = SurfaceVariant::environment(Coverage::Transparent);
+    assert_eq!(main.group(Source::Static(UNORM16), transparent, DrawSet::Surfaces).len(), 2);
+    assert!(main.runs(UNORM16, transparent).is_empty(), "blended draws a call a draw");
+    let body = SurfaceVariant::character(Coverage::Opaque, Part::Body);
+    assert_eq!(main.group(Source::Static(UNORM16), body, DrawSet::Outlines).len(), 2, "two hulls");
+    let bodies: Vec<u32> = main.runs(UNORM16, body).iter().map(|run| run.count).collect();
+    assert_eq!(bodies, [2], "the bodies' surfaces run; their hulls are drawn one by one");
+    assert_eq!(main.group(Source::Deformed, body, DrawSet::Surfaces).len(), 2, "skinned, one by one");
+    assert_eq!(lists.records(), [2, 3], "the bodies' alone");
+}
+
+/// The frame's run stats: of the runs of more than one draw, their count, instances, longest and
+/// median (the lower middle).
+#[test]
+fn run_stats_read_the_runs_of_several() {
+    let run = |count| Run { first: 0, count, record: 0 };
+    let runs = [run(1), run(2), run(3), run(5), run(1), run(4)];
+    let mut lengths = Vec::new();
+    let stats = RunStats::of(runs.iter(), 14, &mut lengths);
+    assert_eq!(stats, RunStats { runs: 4, instances: 14, longest: 5, median: 3, record_bytes: 14 * 48 });
+    assert_eq!(RunStats::of([run(1)].iter(), 0, &mut lengths), RunStats::default());
+}
+
+/// A warm frame's compaction allocates nothing: every list keeps its capacity, its runs' and the run
+/// records' too.
 #[test]
 fn compacting_a_warm_frame_allocates_nothing() {
     let (meshes, slots) = mixed();
     let list = built(&meshes, &slots);
     let mut lists = ViewLists::default();
     let compact = |lists: &mut ViewLists| {
+        lists.begin_frame(DrawRuns::EveryView);
         let tests = world(&[], &[], None);
         lists.compact_view(Walk::Main, &list, &tests);
         lists.compact_view(Walk::ScenePrepass, &list, &tests);
@@ -377,11 +572,13 @@ fn compacting_a_warm_frame_allocates_nothing() {
             plan: |slot| caster(0b1011, Some((slot % 8) as u8)),
         };
         lists.compact_casters(&list, &casters);
+        lists.run_stats()
     };
     compact(&mut lists);
-    let ((), allocated) = sapphire_core::alloc::count_in_scope(|| compact(&mut lists));
+    let (stats, allocated) = sapphire_core::alloc::count_in_scope(|| compact(&mut lists));
     assert_eq!(allocated.allocations, 0, "{allocated:?}");
     assert_eq!(lists.list(Walk::Main).expect("listed").len(), 8);
+    assert!(stats.runs > 0 && !lists.records().is_empty(), "runs formed: {stats:?}");
 }
 
 /// A district's worth of draws: `instances` instances of three meshes of four, one and two
@@ -417,7 +614,7 @@ fn district(instances: u32) -> (DrawList, Vec<SlotCull>, Vec<SlotCaster>) {
 /// Each view lists a draw at its level (M5 D4): the main view's family at its culling's, each
 /// cascade at its plan's, a character map at 0; a submesh its level simplified away is left out,
 /// uncounted; and a cascade's group of one mesh at more than one level draws by (mesh, level,
-/// record), as the key says.
+/// submesh, record), as the key says.
 #[test]
 fn each_view_lists_its_levels() {
     // Mesh 0: two submeshes at level 0, the second simplified away at level 1. Mesh 1: one, at
@@ -461,7 +658,8 @@ fn each_view_lists_its_levels() {
     // Mesh 0's at level 1, slot 0's second and slot 2's second simplified away; mesh 1's slot 3
     // (record 5) at level 0 first, then slot 1's at level 1.
     assert_eq!(cascade(0), [(0, 1), (3, 1), (5, 0), (2, 1)], "mesh, level, record");
-    assert_eq!(cascade(1), [(0, 0), (1, 0), (3, 0), (4, 0), (2, 0), (5, 0)]);
+    // Cascade 1's at level 0: mesh 0's first submeshes, then its second (M5 D2), then mesh 1's.
+    assert_eq!(cascade(1), [(0, 0), (3, 0), (1, 0), (4, 0), (2, 0), (5, 0)], "mesh, level, submesh, record");
     let map = lists.list(Walk::CharacterMap(0)).expect("listed");
     assert_eq!(levels(map, &list, DrawSet::Surfaces), [(0, 0), (1, 0)], "a map draws level 0");
     assert_eq!(lists.left_out(Walk::Cascade(0)), PassCounts::default());

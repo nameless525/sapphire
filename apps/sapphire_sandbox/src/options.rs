@@ -9,7 +9,7 @@ use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
 use sapphire_render::{
-    ColorVision, CullingMode, CullingThresholds, DebugView, EffectScale, LevelSettings, LevelsMode,
+    ColorVision, CullingMode, CullingThresholds, DebugView, DrawRuns, EffectScale, LevelSettings, LevelsMode,
     LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Weather,
     Wind,
 };
@@ -379,6 +379,10 @@ pub(crate) struct Options {
     /// thresholds instead of the tier's (M5 D3), for the walks that choose them: meters (0 for
     /// none), output pixels across and a cascade's texels across.
     pub culling: Option<CullingThresholds>,
+    /// `--draw-runs off|shadows|prepasses|every`: which views form instanced runs (M5 D2), for the
+    /// bench's before and after: none, the tier's (`shadows`: the shadow views alone), the shadow
+    /// views and both prepasses, or every view.
+    pub draw_runs: Option<DrawRuns>,
     /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
     /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
     /// the default.
@@ -769,6 +773,7 @@ impl Options {
             view_culling: self.view_culling.unwrap_or(tier.view_culling),
             culling: self.culling.unwrap_or(tier.culling),
             levels: LevelSettings { mode: self.lods.unwrap_or(tier.levels.mode), ..tier.levels },
+            draw_runs: self.draw_runs.unwrap_or(tier.draw_runs),
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
                 ..shadows
@@ -1365,6 +1370,19 @@ impl Options {
                         .validate()
                         .map_err(|(field, problem)| format!("--cull-thresholds: {field} {problem}"))?;
                     options.culling = Some(thresholds);
+                }
+                "--draw-runs" => {
+                    options.draw_runs = Some(match value("--draw-runs")?.as_str() {
+                        "off" => DrawRuns::Off,
+                        "shadows" => DrawRuns::Shadows,
+                        "prepasses" => DrawRuns::ShadowsAndPrepasses,
+                        "every" => DrawRuns::EveryView,
+                        other => {
+                            return Err(format!(
+                                "--draw-runs expects off, shadows, prepasses or every, got {other:?}"
+                            ));
+                        }
+                    });
                 }
                 "--sharpening" => {
                     let amount: f32 = number(&value("--sharpening")?, "--sharpening")?;
@@ -2925,6 +2943,18 @@ mod tests {
         assert_eq!(thresholds(&["--cull-thresholds", "500,1.5,2"]), tried);
         assert!(parse(&["--cull-thresholds", "500,1.5"]).is_err());
         assert!(parse(&["--cull-thresholds", "-1,0,0"]).is_err());
+    }
+
+    #[test]
+    fn draw_runs_turn_off_for_the_bench() {
+        let tier = RenderSettings::default();
+        let runs = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).draw_runs;
+        assert_eq!(runs(&[]), DrawRuns::Shadows, "the tier's");
+        assert_eq!(runs(&["--draw-runs", "off"]), DrawRuns::Off);
+        assert_eq!(runs(&["--draw-runs=every"]), DrawRuns::EveryView);
+        assert_eq!(runs(&["--draw-runs", "shadows"]), DrawRuns::Shadows);
+        assert_eq!(runs(&["--draw-runs", "prepasses"]), DrawRuns::ShadowsAndPrepasses);
+        assert!(parse(&["--draw-runs", "on"]).is_err());
     }
 
     #[test]

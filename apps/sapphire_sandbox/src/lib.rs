@@ -369,6 +369,11 @@
 //! - `--cull-thresholds <distance>,<pixels>,<texels>`: distance and size culling's thresholds instead of the
 //!   tier's (M5 D3, `RenderSettings::culling`), for the walks that choose them: meters past which nothing is
 //!   drawn (0 for none), the least output pixels and the least cascade texels an instance's bounds must span.
+//! - `--draw-runs off|shadows|prepasses|every`: which views draw equal neighbours in their draw list as
+//!   one instanced call (M5 D2, `RenderSettings::draw_runs`): `shadows`, the shadow views alone, is the
+//!   tiers' and changes no pixel; `off` draws a call a draw, `prepasses` runs both prepasses too (their
+//!   runs follow the order streamed cells arrive in) and `every` the main view and the insets too
+//!   (pixels move on Metal), for benches that compare them.
 //! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
 //! - `--focus <distance>,<sharp>,<near>,<far>,<blur>`: depth of field held at a fixed focus for look-dev (M5

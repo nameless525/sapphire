@@ -4134,7 +4134,7 @@
                 name: "zone-hub-people",
                 ticks: 600,
                 args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
-                       "--capture-frames", "32", "--weather", "dry"],
+                       "--capture-frames", "32", "--weather", "dry", "--character-lods", "off"],
                 ci_seconds: (lavapipe: 12.8, warp: 26.1),
             ),
             // The same square looking east along the lap from its south-west corner, later: walkers coming on
@@ -4143,7 +4143,7 @@
                 name: "zone-hub-people-east",
                 ticks: 1500,
                 args: ["--zone", "proving_hub:-12,0,-12,60", "--tier", "desktop-high", "--ao", "off",
-                       "--capture-frames", "32", "--weather", "dry"],
+                       "--capture-frames", "32", "--weather", "dry", "--character-lods", "off"],
                 ci_seconds: (lavapipe: 9.2, warp: 31.6),
             ),
             // A phone's: Mobile-High draws up to 30 of a zone's people, within 48 m of the focus, with a
@@ -4152,7 +4152,7 @@
                 name: "zone-hub-people-mobile-high",
                 ticks: 600,
                 args: ["--zone", "proving_hub:player_start", "--tier", "mobile-high", "--ao", "off",
-                       "--capture-frames", "32", "--weather", "dry"],
+                       "--capture-frames", "32", "--weather", "dry", "--character-lods", "off"],
                 ci_seconds: (lavapipe: 24.6, warp: 26.7),
             ),
             // Levels of detail for static draws (M5 D4), one scene a tier: the Lantern Ward's street from the
@@ -4191,6 +4191,41 @@
                        "--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
                        "--render-scale", "0.504274", "--lods", "on"],
                 ci_seconds: (lavapipe: 2.4, warp: 14.2),
+            ),
+            // Levels of detail for characters (M5 D5), one scene a tier: the proving hub's square and its
+            // people, each ambient character drawn at one level for all its parts, the coarsest whose error
+            // covers a pixel (2^0.5 on Desktop-Low and Mobile-Low) where it stands, so the near ones whole
+            // and the far ones coarser in one frame, skinned only as far as that level, its lines at its
+            // level. The player's character stays whole. The phones at the tiers' own scale, through their edge
+            // upscaler; their cook leaves the hub's people one level, so nothing there draws coarser.
+            // Metal only.
+            (
+                name: "lod-crowd-desktop-high",
+                ticks: 600,
+                args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
+                       "--lods", "on", "--capture-frames", "32", "--weather", "dry"],
+            ),
+            (
+                name: "lod-crowd-desktop-low",
+                ticks: 600,
+                args: ["--zone", "proving_hub:player_start", "--tier", "desktop-low", "--ao", "off",
+                       "--lods", "on", "--capture-frames", "32", "--weather", "dry"],
+            ),
+            (
+                name: "lod-crowd-mobile-high",
+                size: "1280x592",
+                ticks: 600,
+                args: ["--upscaler", "edge",
+                       "--zone", "proving_hub:player_start", "--tier", "mobile-high", "--ao", "off",
+                       "--render-scale", "0.632479", "--lods", "on", "--weather", "dry"],
+            ),
+            (
+                name: "lod-crowd-mobile-low",
+                size: "1280x592",
+                ticks: 600,
+                args: ["--upscaler", "edge",
+                       "--zone", "proving_hub:player_start", "--tier", "mobile-low", "--ao", "off",
+                       "--render-scale", "0.504274", "--lods", "on", "--weather", "dry"],
             ),
         ],
     ),

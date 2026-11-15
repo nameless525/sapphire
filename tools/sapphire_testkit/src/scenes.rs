@@ -800,6 +800,13 @@ mod tests {
                 // The game as it ships, on the zone's own look, at a tier no device chooses for it.
                 assert!(scene.has("--game"), "{}", scene.name);
                 assert!(pinned("--tier", "desktop-high"), "{}", scene.name);
+            } else if scene.name.starts_with("lod-crowd-") {
+                // A crowd at mixed levels (M5 D5) stands in the hub, as the hub's people scenes do.
+                assert!(
+                    scene.has("--zone") && scene.has("--tier") && pinned("--ao", "off"),
+                    "{}",
+                    scene.name
+                );
             } else if scene.name.starts_with("tier-") || scene.name.starts_with("lod-") {
                 // A tier as it ships (M4 T0), whose GTAO the thermal ladder's rungs shed; its levels of
                 // detail (M5 D4) too.

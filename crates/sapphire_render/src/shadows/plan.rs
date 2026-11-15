@@ -484,7 +484,8 @@ impl ShadowPlan {
     /// the view's fit, and is drawn when that moved; a cached one takes it when it was never drawn,
     /// once the view has moved a quarter of its radius, and on its turn when the view's moved at
     /// all, or held ([`CascadeCache::Held`]) only once the view has moved [`HOLD_SHARE`] of its
-    /// width. [`Self::choose_kept_cascades`] then draws the others whose casters changed, on their
+    /// width across the light or along it (M5 Z3a: along it, the held fit's depth range trails the
+    /// view's). [`Self::choose_kept_cascades`] then draws the others whose casters changed, on their
     /// turns.
     fn fit_kept_cascades(&mut self, settings: &ShadowSettings, camera: &CameraData, light: LightSpace) {
         let cascades = settings.cascades as usize;
@@ -506,8 +507,9 @@ impl ShadowPlan {
                 Some(cached) => {
                     let moved = (cached.center.truncate() - desired.center.truncate()).abs().max_element();
                     let on_turn = turn % period == (index - fresh) as u64;
-                    // Held, only its place is held: a new size or resolution refits it on its
-                    // turn as in turns (a new light forgets every fit).
+                    // Held, only its place is held, along the light as across it, where its
+                    // depth range trails the view's as its square does: a new size or resolution
+                    // refits it on its turn as in turns (a new light forgets every fit).
                     let behind = if settings.cache.holds() {
                         let same = CascadeFit {
                             center: desired.center,
@@ -515,7 +517,8 @@ impl ShadowPlan {
                             far: desired.far,
                             ..cached
                         };
-                        same != desired || moved > HOLD_SHARE * 2.0 * cached.radius
+                        let along = (cached.center.z - desired.center.z).abs();
+                        same != desired || moved.max(along) > HOLD_SHARE * 2.0 * cached.radius
                     } else {
                         cached != desired
                     };
@@ -1948,6 +1951,41 @@ mod tests {
         assert_eq!(plan.cached[3], Some(view_fits(&HELD, &lens(0.75))[3]));
         masks(&mut plan, &HELD, &lens(fov), &mut slots, 2);
         assert_eq!(plan.cached[3], Some(view_fits(&HELD, &lens(fov))[3]), "the wider fit");
+    }
+
+    #[test]
+    fn a_held_cascade_refits_when_the_view_drops_along_the_light() {
+        // The sun overhead: a view that drops straight down moves its cascades along the light
+        // alone, so a held fit's place never trails the view's, but its depth does. Held, a cached
+        // cascade takes the view's fit on its turn once its depth range has left the held one by
+        // the share its place may trail by: else its far plane stays above receivers the view sees,
+        // which read past it, and casters below it are left out (M5 Z3a).
+        let from = |height: f32| {
+            let mut packet = packet(Vec::new());
+            packet.sun.direction = Vec3::NEG_Y;
+            let eye = Vec3::new(0.0, height, 4.0);
+            packet.views[0].camera =
+                CameraData::look_at(eye, eye + Vec3::new(0.0, -0.4, -4.0), Vec3::Y, 0.75, 1.5, 0.05);
+            packet
+        };
+        let mut slots = near_and_far();
+        let mut plan = ShadowPlan::default();
+        masks(&mut plan, &HELD, &from(41.5), &mut slots, 4);
+        let low = from(1.5);
+        masks(&mut plan, &HELD, &low, &mut slots, 4);
+        let fits = view_fits(&HELD, &low);
+        for (index, fit) in fits.iter().enumerate() {
+            let held = plan.cached[index].expect("fitted");
+            assert_eq!(held.center.truncate(), fit.center.truncate(), "cascade {index}: in place");
+            assert!(
+                held.far <= fit.far && held.near >= fit.near,
+                "cascade {index}: held from {} to {} m along the light, the view's from {} to {}",
+                held.far,
+                held.near,
+                fit.far,
+                fit.near
+            );
+        }
     }
 
     /// Whether `fit` holds light-space point `at` for a receiver, as `cascade_lookup` in `frame.wgsl`

@@ -77,7 +77,8 @@
 //!   forgets each cascade it drew, as in turns, so the next frame fits and draws it again: what the
 //!   plan keeps is of what a map holds, never of what a lost frame would have drawn. Held, a cached
 //!   cascade keeps its fit on its turn until the view's has moved a 64th of its width
-//!   ([`HOLD_SHARE`]), inside the eighth it already trailed by before an early refit: a walk
+//!   ([`HOLD_SHARE`]), across the light or along it (M5 Z3a: along it, its depth range trails the
+//!   view's as its square does), inside the eighth it already trailed by before an early refit: a walk
 //!   redraws the far cascades every few metres instead of every other frame, and a sampled view
 //!   shows no receiver the view's fits cover left uncovered by the held ones. `Turns` draws as before, for comparisons and the
 //!   golden scenes from before it that move (the sandbox's `--shadow-cache`).
@@ -428,7 +429,7 @@ pub enum CascadeCache {
     /// having moved, isn't drawn again: the depth it holds is what drawing would write.
     Kept,
     /// Kept, and a cached cascade keeps its fit until the view has moved [`HOLD_SHARE`] of its
-    /// width, rather than taking the view's on each turn.
+    /// width, across the light or along it, rather than taking the view's on each turn.
     Held,
 }
 

@@ -7,10 +7,12 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use common::server::Host;
 use common::{
@@ -20,7 +22,7 @@ use common::{
 use sapphire_assets::manifest::ManifestError;
 use sapphire_patch::{
     Download, HttpTransport, InstallError, InstallOutcome, InstallSteps, Installation, Location, Outcome,
-    Request, Roots, Timeouts,
+    Request, Roots, Shipped, ShippedFile, Timeouts,
 };
 use sapphire_platform::{OsSteps, ReplaceSteps};
 
@@ -127,6 +129,75 @@ fn an_install_switches_releases_and_the_next_good_launch_removes_the_old() {
     stage(&app.staging, &third, &third, 3);
     assert_eq!(app.install().expect("up to date"), InstallOutcome::UpToDate { version: 3 });
     assert_eq!(listing(&app.staging), ["lock"]);
+}
+
+/// What a shipped directory was asked: opens and reads at offsets, by path.
+#[derive(Clone, Default)]
+struct Asked {
+    opens: Arc<Mutex<BTreeMap<String, usize>>>,
+    reads: Arc<Mutex<BTreeMap<String, usize>>>,
+}
+
+/// A shipped directory that counts what it's asked.
+#[derive(Clone)]
+struct Counted {
+    dir: ShippedDir,
+    asked: Asked,
+}
+
+struct CountedFile {
+    file: File,
+    path: String,
+    asked: Asked,
+}
+
+impl Shipped for Counted {
+    type File = CountedFile;
+
+    fn read(&self, path: &str) -> io::Result<Vec<u8>> {
+        self.dir.read(path)
+    }
+
+    fn open(&self, path: &str) -> io::Result<CountedFile> {
+        *self.asked.opens.lock().expect("counts").entry(path.to_owned()).or_default() += 1;
+        Ok(CountedFile { file: self.dir.open(path)?, path: path.to_owned(), asked: self.asked.clone() })
+    }
+}
+
+impl ShippedFile for CountedFile {
+    fn read_at(&mut self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        *self.asked.reads.lock().expect("counts").entry(self.path.clone()).or_default() += 1;
+        self.file.read_at(offset, len)
+    }
+}
+
+/// An install reads a shipped pack's kept blocks one by one, through one open file: once to read its tables for
+/// the plan and once for the blocks, never once a block (M5 M7: opening a 1 GiB pack for each of its 44,842
+/// blocks was a third of its install).
+#[test]
+fn an_install_opens_each_shipped_pack_once_for_its_blocks() {
+    let dir = TestDir::new("install_opens");
+    let (first, second) = (first_release(), second_release());
+    let app = App::new(&dir, &first);
+    stage(&app.staging, &first, &second, 2);
+    let shipped = Counted { dir: ShippedDir(app.shipped.clone()), asked: Asked::default() };
+    let asked = shipped.asked.clone();
+    let mut installation = Installation::open(shipped, &app.root, &[]).expect("opens");
+    assert_eq!(
+        installation.install(&app.staging, NOW, APP_BUILD).expect("installs"),
+        InstallOutcome::Installed { from: 1, to: 2 }
+    );
+    assert_starts_on(&app.open(), &app.shipped, &second, 2);
+
+    let (opens, reads) = (asked.opens.lock().expect("counts"), asked.reads.lock().expect("counts"));
+    // The texture's unedited blocks come from the shipped `shared`, and the sound's from `audio`.
+    for pack in ["shared.spack", "audio.spack"] {
+        assert!(reads[pack] > 4, "{pack}'s tables and its kept blocks: {reads:?}");
+    }
+    assert!(
+        opens.values().all(|&opened| opened <= 2),
+        "each pack opened for its tables and its blocks: {opens:?}"
+    );
 }
 
 /// A download from a localhost host, then the install of what it staged, end to end.

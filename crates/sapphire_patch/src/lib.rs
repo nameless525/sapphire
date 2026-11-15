@@ -132,6 +132,7 @@ pub use download::{Download, DownloadError, Outcome, Phase, Progress, Request, R
 pub use http::{HttpError, HttpTransport, Roots, Timeouts};
 pub use install::{
     Cleaned, DISK_RESERVE, InstallError, InstallOutcome, InstallSteps, Installation, Location, Shipped,
+    ShippedFile,
 };
 pub use keys::TEST_KEY;
 pub use plan::{Installed, InstalledBlock, InstalledError, Plan, PlanError, PlannedBlock};

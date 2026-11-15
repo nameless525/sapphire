@@ -1,13 +1,14 @@
 //! Installing a staged release, and which release an app starts on (see the [crate docs](crate)).
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::manifest::{self, Manifest, ManifestError, PublicKey, ReleasedFile, ReleasedPack};
 use sapphire_assets::pack::{self, HEADER_LEN, PackHeader, Toc};
-use sapphire_platform::{ContentFs, OsSteps, ReplaceSteps, durable_replace_with};
+use sapphire_platform::{ContentFs, ContentReader, OsSteps, ReplaceSteps, durable_replace_with};
 
 use crate::download::table;
 use crate::plan::{Installed, InstalledError};
@@ -18,25 +19,49 @@ use crate::{file_path, pack_path};
 /// assets on Android. Paths are from the content's root, `/`-separated: `release.smanifest`, `shared.spack`,
 /// `documents/game.flow.ron`.
 pub trait Shipped {
+    /// A shipped file opened for reads at offsets.
+    type File: ShippedFile;
+
     /// The whole file at `path`.
     fn read(&self, path: &str) -> io::Result<Vec<u8>>;
 
-    /// `len` bytes of the file at `path`, from `offset`: fewer only where the file ends.
-    fn read_at(&self, path: &str, offset: u64, len: usize) -> io::Result<Vec<u8>>;
+    /// Opens the file at `path` for reads at offsets. An install reads a pack's blocks one by one and opens each
+    /// pack once for them: opening one for each block was a third of a 1 GiB pack's install (M5 M7).
+    fn open(&self, path: &str) -> io::Result<Self::File>;
+}
+
+/// A file of the content an app shipped, open for reads at offsets ([`Shipped::open`]).
+pub trait ShippedFile {
+    /// `len` bytes from `offset`: fewer only where the file ends.
+    fn read_at(&mut self, offset: u64, len: usize) -> io::Result<Vec<u8>>;
 }
 
 /// An app's own content, as the platform reads it: its bundle's directory, or its APK's assets.
 impl Shipped for ContentFs {
+    type File = ContentReader;
+
     fn read(&self, path: &str) -> io::Result<Vec<u8>> {
         ContentFs::read(self, path).map_err(io::Error::other)
     }
 
-    fn read_at(&self, path: &str, offset: u64, len: usize) -> io::Result<Vec<u8>> {
-        let mut reader = self.open_reader(path).map_err(io::Error::other)?;
-        let len = len.min(usize::try_from(reader.len().saturating_sub(offset)).unwrap_or(usize::MAX));
+    fn open(&self, path: &str) -> io::Result<ContentReader> {
+        self.open_reader(path).map_err(io::Error::other)
+    }
+}
+
+impl ShippedFile for ContentReader {
+    fn read_at(&mut self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        let len = len.min(usize::try_from(self.len().saturating_sub(offset)).unwrap_or(usize::MAX));
         let mut bytes = vec![0; len];
-        reader.read_exact_at(offset, &mut bytes)?;
+        self.read_exact_at(offset, &mut bytes)?;
         Ok(bytes)
+    }
+}
+
+/// A plain file, as a shipped directory's.
+impl ShippedFile for File {
+    fn read_at(&mut self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        read_at(self, offset, len)
     }
 }
 
@@ -488,15 +513,22 @@ fn clear(staging: &Staging, steps: &mut impl InstallSteps) {
     }
 }
 
-/// Open packs installed under the root, so reading a pack's blocks one by one doesn't open it each time.
-#[derive(Default)]
-struct PackReaders {
-    open: HashMap<PathBuf, File>,
+/// Open packs, shipped and installed under the root, so reading a pack's blocks one by one doesn't open it each
+/// time.
+struct PackReaders<S: Shipped> {
+    shipped: HashMap<String, S::File>,
+    patched: HashMap<PathBuf, File>,
 }
 
-impl PackReaders {
+impl<S: Shipped> Default for PackReaders<S> {
+    fn default() -> Self {
+        Self { shipped: HashMap::new(), patched: HashMap::new() }
+    }
+}
+
+impl<S: Shipped> PackReaders<S> {
     /// `len` bytes of `pack` from `offset`, wherever `location` says it is: fewer only where it ends.
-    fn read_at<S: Shipped>(
+    fn read_at(
         &mut self,
         installation: &Installation<S>,
         location: &Location,
@@ -505,11 +537,19 @@ impl PackReaders {
         len: usize,
     ) -> io::Result<Vec<u8>> {
         match location {
-            Location::Shipped => installation.shipped.read_at(&pack::file_name(&pack.name), offset, len),
+            Location::Shipped => {
+                let file = match self.shipped.entry(pack.name.clone()) {
+                    Entry::Occupied(open) => open.into_mut(),
+                    Entry::Vacant(vacant) => {
+                        vacant.insert(installation.shipped.open(&pack::file_name(&pack.name))?)
+                    }
+                };
+                file.read_at(offset, len)
+            }
             Location::Patched(path) => {
-                let file = match self.open.entry(path.clone()) {
-                    std::collections::hash_map::Entry::Occupied(open) => open.into_mut(),
-                    std::collections::hash_map::Entry::Vacant(vacant) => vacant.insert(File::open(path)?),
+                let file = match self.patched.entry(path.clone()) {
+                    Entry::Occupied(open) => open.into_mut(),
+                    Entry::Vacant(vacant) => vacant.insert(File::open(path)?),
                 };
                 read_at(file, offset, len)
             }
@@ -526,11 +566,11 @@ fn read_at(file: &mut File, offset: u64, len: usize) -> io::Result<Vec<u8>> {
 }
 
 /// What an install assembles a release's packs and files from: the current release's, and what's staged.
-struct Assembler<'a, S> {
+struct Assembler<'a, S: Shipped> {
     installation: &'a Installation<S>,
     installed: &'a Installed,
     staging: &'a Staging,
-    readers: PackReaders,
+    readers: PackReaders<S>,
 }
 
 impl<S: Shipped> Assembler<'_, S> {

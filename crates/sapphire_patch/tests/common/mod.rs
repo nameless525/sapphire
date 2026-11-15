@@ -8,7 +8,7 @@ pub mod server;
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -236,16 +236,14 @@ impl Content {
 pub struct ShippedDir(pub PathBuf);
 
 impl Shipped for ShippedDir {
+    type File = fs::File;
+
     fn read(&self, path: &str) -> io::Result<Vec<u8>> {
         fs::read(self.0.join(path))
     }
 
-    fn read_at(&self, path: &str, offset: u64, len: usize) -> io::Result<Vec<u8>> {
-        let mut file = fs::File::open(self.0.join(path))?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = Vec::with_capacity(len);
-        file.take(len as u64).read_to_end(&mut bytes)?;
-        Ok(bytes)
+    fn open(&self, path: &str) -> io::Result<fs::File> {
+        fs::File::open(self.0.join(path))
     }
 }
 

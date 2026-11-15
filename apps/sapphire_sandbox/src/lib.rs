@@ -397,6 +397,11 @@
 //!   and captures the next once every texture is at the streamer's plan, unbudgeted
 //!   (`sapphire_stage::CaptureTextures::Settled`): what a player sees once streaming settles, the pool
 //!   binding where it does. `--texture-pool <MiB>` sets the pool instead of the tier's `texture_pool_mib`.
+//! - `--main-depth own|prepass`: where the main pass takes its depth from (M5 D10,
+//!   `RenderSettings::main_depth`): `own`, the tiers', draws its own depth, as before; `prepass` loads the
+//!   scene prepass's and tests `Equal`, so it shades each opaque pixel once, for benches that compare them
+//!   (it moves a few pixels where triangles of one draw tie exactly). It holds only with temporal AA and one
+//!   sample: elsewhere `prepass` is `own`, and the log says so once.
 //! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
 //! - `--focus <distance>,<sharp>,<near>,<far>,<blur>`: depth of field held at a fixed focus for look-dev (M5

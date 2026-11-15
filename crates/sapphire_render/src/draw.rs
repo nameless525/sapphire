@@ -246,6 +246,35 @@ impl MeshDraws<'_> {
         self.draw_static_through_where(pass, kind, format, variant, set, instance, &[]);
     }
 
+    /// Draws `set` of the static meshes in `format` of `variant`, as [`Self::draw_static`], but in the
+    /// reverse of their order, a call a draw: the main pass's walk where it tests `Equal` against the
+    /// scene prepass's depth (M5 D10, [`MainDepth::FromPrepass`](crate::MainDepth)), where the last of
+    /// the draws at a pixel's depth keeps it, as the first does where each tests `Greater`.
+    pub(crate) fn draw_static_reversed(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        format: PositionFormat,
+        variant: SurfaceVariant,
+        set: DrawSet,
+    ) {
+        let mut bound = Bound::default();
+        let mut counts = PassCounts::default();
+        let hull = set == DrawSet::Outlines;
+        let commands = &self.list.commands[format_index(format)][variant.index()];
+        let Some(list) = self.listed() else { return };
+        for &Entry { at, level } in list.group(Source::Static(format), variant, set).iter().rev() {
+            let command = &commands[at as usize];
+            let indices = self.indices(command, level);
+            let count = indices.len() as u32;
+            self.draw_command(pass, kind, format, command, indices, &mut bound);
+            counts.considered += 1;
+            counts.mesh_call(1, count, level, hull);
+        }
+        self.counter.add(&counts);
+        self.changes.add(&bound.changes);
+    }
+
     /// As [`Self::draw_static_where`], but each draw once through each of `pipelines` in turn,
     /// set before it (none: once, through the pipeline already set): a debug view's replay that
     /// counts a draw's fragments and then writes its depth (`debug_view`).
@@ -401,6 +430,34 @@ impl MeshDraws<'_> {
         instance: impl Fn(u32) -> bool,
     ) {
         self.draw_deformed_through_where(pass, kind, variant, set, instance, &[]);
+    }
+
+    /// Draws `set` of the skinned or morphed instances of `variant` in the reverse of their order, as
+    /// [`Self::draw_static_reversed`].
+    pub(crate) fn draw_deformed_reversed(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        variant: SurfaceVariant,
+        set: DrawSet,
+    ) {
+        let mut bound = Bound::default();
+        let mut counts = PassCounts::default();
+        let hull = set == DrawSet::Outlines;
+        let deformed = &self.list.deformed[variant.index()];
+        let Some(list) = self.listed() else { return };
+        // Each at its entry's level, as the forward draw's (M5 D5).
+        for &Entry { at, level } in list.group(Source::Deformed, variant, set).iter().rev() {
+            let command = &deformed[at as usize];
+            let indices = self.deformed_indices(command, level);
+            let count = indices.len() as u32;
+            counts.considered += 1;
+            if self.draw_deformed_command(pass, kind, command, indices, &mut bound) {
+                counts.mesh_call(1, count, level, hull);
+            }
+        }
+        self.counter.add(&counts);
+        self.changes.add(&bound.changes);
     }
 
     /// As [`Self::draw_deformed_where`], but each draw once through each of `pipelines` in turn,

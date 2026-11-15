@@ -34,7 +34,9 @@ use crate::counts::{Counted, FrameCounts, PassCounters, PassCounts, StateChanges
 use crate::coverage::{CoverageEstimate, CoverageInputs, CoverageViews, Footprint, TextureCoverageFrame};
 use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
 use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
-use crate::draw::{DrawRef, DrawRuns, DrawSet, MeshDraws, RunRecords, RunStats, ViewLists, ViewTests, Walk};
+use crate::draw::{
+    DrawRef, DrawRuns, DrawSet, MeshDraws, RunRecords, RunStats, Source, ViewLists, ViewTests, Walk,
+};
 use crate::environment::EnvironmentSettings;
 use crate::fog::{FogAdmission, FogCards, FogStats, GpuFog};
 use crate::foliage::{self, FoliageSettings, FoliageWind};
@@ -122,6 +124,37 @@ impl Msaa {
             Self::X8 => 8,
         }
     }
+}
+
+/// Where the main pass's depth comes from (M5 D10, [`RenderSettings::main_depth`]).
+///
+/// The scene prepass already writes the depth of every surface the main pass draws that writes
+/// depth, bit for bit as the main pass would (each pass's clip position is invariant and built by
+/// the same expression). Under [`Self::FromPrepass`] the main pass loads that depth, read-only,
+/// instead of clearing its own: each such surface and outline hull tests `Equal` and writes
+/// nothing, so it shades only the pixels it owns, and everything else tests as before against
+/// the same values. Ties between draws keep today's winner: the main pass draws those surfaces,
+/// and then those hulls, in the reverse of [`Self::Own`]'s order, so where two tie exactly the
+/// one [`Self::Own`] draws first draws last. Ties between triangles of one draw can't be walked
+/// in reverse, so there the later triangle keeps the pixel where the earlier did: shipped content
+/// has such ties, and they move pixels by a few code values, so no tier takes it yet (the crate
+/// docs' "A depth-equal main pass").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum MainDepth {
+    /// The main pass clears its own depth and resolves visibility itself, keeping the first-drawn
+    /// surface where two tie exactly: the pass as it was before M5 D10, pipeline for pipeline.
+    /// The default, and every tier's.
+    #[default]
+    Own,
+    /// The main pass loads the scene prepass's depth and tests `Equal` against it, where the frame
+    /// can: on a renderer with temporal AA and one sample (the desktop tiers), on every frame
+    /// whose main view draws no surface the prepass doesn't draw as the main pass keeps it (an
+    /// environment surface that alpha-tests, which the prepass draws uncut) and forms no main-view
+    /// runs ([`DrawRuns::EveryView`]). Any other frame draws as [`Self::Own`] does, byte for byte
+    /// ([`RenderStats::main_depth`] says which a frame took). Asked for alone (the sandbox's
+    /// `--main-depth prepass`).
+    FromPrepass,
 }
 
 /// What a renderer is created with, fixed for its lifetime: the parts of a quality tier that
@@ -224,9 +257,23 @@ pub struct RenderSettings {
     /// 64 capsules instead of 16. It draws the same bytes as the plain loops with the same capsules.
     /// On by default; only tests and the bench turn it off, for comparisons.
     pub capsule_bins: bool,
+    /// Where the main pass's depth comes from (M5 D10): [`MainDepth::Own`], every tier's, keeps the
+    /// pass as it was; [`MainDepth::FromPrepass`], which a renderer takes only with temporal AA and
+    /// one sample ([`Self::main_depth_from_prepass`]) and a frame only where it can, tests `Equal`
+    /// against the scene prepass's.
+    pub main_depth: MainDepth,
 }
 
 impl RenderSettings {
+    /// Whether the main pass may load the scene prepass's depth (M5 D10): asked for, and the prepass
+    /// is single-sampled at the scene's size as the main pass is, and runs on every frame, which
+    /// temporal AA reads. A renderer that may builds each depth-writing surface's and hull's main
+    /// pass pipeline twice, the second testing `Equal` and writing nothing; one that may not builds
+    /// what it did before.
+    pub fn main_depth_from_prepass(&self) -> bool {
+        self.main_depth == MainDepth::FromPrepass && self.temporal && self.msaa.sample_count() == 1
+    }
+
     /// Whether the scene prepass writes velocity: temporal AA reads it, and nothing else in the
     /// frame does, so Mobile-High's GTAO goes without.
     pub(crate) fn writes_velocity(&self) -> bool {
@@ -272,6 +319,7 @@ impl Default for RenderSettings {
             levels: LevelSettings::ON,
             draw_runs: DrawRuns::default(),
             capsule_bins: true,
+            main_depth: MainDepth::default(),
         }
     }
 }
@@ -522,6 +570,10 @@ pub struct RenderStats {
     /// The size the last recorded frame's scene rendered at: its target's size at the render
     /// scale ([`scaled_size`]).
     pub scene_size: (u32, u32),
+    /// Where the last recorded frame's main pass took its depth from (M5 D10,
+    /// [`RenderSettings::main_depth`]): [`MainDepth::FromPrepass`] where it tested `Equal` against the
+    /// scene prepass's, else [`MainDepth::Own`].
+    pub main_depth: MainDepth,
     /// The static instances the last recorded frame's main view tested and culled, and the
     /// surface draws its main pass drew ([`RenderSettings::view_culling`]).
     pub view_culling: ViewCullingStats,
@@ -926,7 +978,12 @@ impl Renderer {
                             builds,
                             shaders_ref,
                             settings.shadows.as_ref(),
-                            (settings.temporal, settings.writes_velocity(), settings.reads_scene_prepass()),
+                            (
+                                settings.temporal,
+                                settings.writes_velocity(),
+                                settings.reads_scene_prepass(),
+                                settings.main_depth_from_prepass(),
+                            ),
                             crate::ambient::constants(&settings.ambient_occlusion, None, None),
                         )
                     },
@@ -3050,6 +3107,7 @@ impl Renderer {
         self.skinning.begin_record(&self.device, &self.queue, &self.meshes, |slot| view_cull.drawn(slot));
         self.stats.skinning = self.skinning.stats();
         let draw_runs = self.settings.draw_runs;
+        let wants_prepass_depth = self.settings.main_depth_from_prepass();
 
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
@@ -3141,7 +3199,6 @@ impl Renderer {
         // it imports along with its history. The main pass's depth stays in tile memory.
         let temporal = temporal.as_deref_mut().map(Temporal::split_for_record);
         let temporal_targets = temporal.as_ref().map(|(textures, _)| textures.import(graph, temporal_reset));
-        let depth = graph.create_texture("depth", depth_desc);
         let (character_depth, character_ids) = character_prepass.import(graph);
         let targets = PrepassTargets {
             character_depth,
@@ -3158,8 +3215,9 @@ impl Renderer {
             responsive: temporal
                 .is_some()
                 .then(|| graph.create_texture("responsive mask", temporal::responsive_desc(size))),
+            // Set below, once the frame knows where the main pass's depth comes from.
             #[cfg(test)]
-            main_depth: depth,
+            main_depth: character_depth,
         };
         // The buffers fog cards' depth group binds, by handle: the splits below borrow their owners.
         let card_buffers =
@@ -3223,6 +3281,34 @@ impl Renderer {
             map_texels,
             maps,
         });
+        // Where the main pass takes its depth from (M5 D10, the crate docs' "A depth-equal main pass"):
+        // the scene prepass's, testing `Equal` against it, where the settings take it, the prepass's depth
+        // is temporal AA's (one sample, the scene's size, the same jittered view), the main view draws a
+        // call a draw (a run's instances can't be walked in reverse) and nothing in its list is uncut in
+        // the prepass (the environment's alpha-tested surfaces); else its own, as before.
+        let uncut = lists.list(Walk::Main).is_some_and(|list| {
+            let variant = SurfaceVariant::UNCUT_IN_PREPASS;
+            list.has(Source::Deformed, variant)
+                || PositionFormat::ALL.into_iter().any(|format| list.has(Source::Static(format), variant))
+        });
+        let main_depth = if wants_prepass_depth
+            && temporal_targets.is_some()
+            && pipelines.equal_depth()
+            && draw_runs != DrawRuns::EveryView
+            && !uncut
+        {
+            MainDepth::FromPrepass
+        } else {
+            MainDepth::Own
+        };
+        if wants_prepass_depth && stats.main_depth != main_depth {
+            tracing::debug!(target: LOG_TARGET, ?main_depth, uncut, "the main pass's depth changed");
+        }
+        stats.main_depth = main_depth;
+        // The main pass's own depth, under `MainDepth::Own` alone.
+        let depth = (main_depth == MainDepth::Own).then(|| graph.create_texture("depth", depth_desc));
+        #[cfg(test)]
+        let targets = PrepassTargets { main_depth: depth.unwrap_or(targets.depth), ..targets };
         let mesh_draws = MeshDraws {
             meshes,
             list: draw_list,
@@ -3543,12 +3629,17 @@ impl Renderer {
             .weight(pass_weight::SCENE)
             .read(targets.character_depth)
             .read(targets.character_ids)
-            .write(scene_color)
-            .write(depth);
+            .write(scene_color);
+        // Its own depth, or the scene prepass's, which it reads: fog cards sample it in the same pass, so
+        // the pass loads it read-only and nothing in it writes depth (M5 D10).
+        main = match depth {
+            Some(depth) => main.write(depth),
+            None => main.read(targets.depth),
+        };
         if let Some(msaa_color) = msaa_color {
             main = main.write(msaa_color);
         }
-        if let Some(card_depth) = card_depth {
+        if let Some(card_depth) = card_depth.filter(|_| depth.is_some()) {
             main = main.read(card_depth);
         }
         main.record(move |ctx| {
@@ -3579,10 +3670,21 @@ impl Renderer {
                     // load on tilers.
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store },
                 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: ctx.view(depth),
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: depth_store }),
-                    stencil_ops: None,
+                depth_stencil_attachment: Some(match depth {
+                    Some(depth) => wgpu::RenderPassDepthStencilAttachment {
+                        view: ctx.view(depth),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: depth_store,
+                        }),
+                        stencil_ops: None,
+                    },
+                    // Read-only: the scene prepass's, as it wrote it.
+                    None => wgpu::RenderPassDepthStencilAttachment {
+                        view: ctx.view(targets.depth),
+                        depth_ops: None,
+                        stencil_ops: None,
+                    },
                 }),
                 timestamp_writes: ctx.timestamp_writes(),
                 ..Default::default()
@@ -3590,7 +3692,7 @@ impl Renderer {
             bind(&mut pass);
             view_draws.count_left_out();
             let pipeline = |format, variant, set| {
-                main_pass_pipeline(pipelines, format, variant, set).map(DrawThrough::One)
+                main_pass_pipeline(pipelines, format, variant, set, main_depth).map(DrawThrough::One)
             };
             // Fog cards' scene group holds the depth they fade against.
             let cards = Some((card_group, card_draws));
@@ -3608,7 +3710,7 @@ impl Renderer {
             let decals = decals.as_ref().map(|draw| draw as &dyn Fn(&mut wgpu::RenderPass<'_>));
             draw_main_pass_with_decals(
                 &mut pass,
-                &pipeline,
+                (&pipeline, main_depth),
                 &view_draws,
                 groups,
                 Some(&sky),
@@ -3717,7 +3819,7 @@ impl Renderer {
                 pass.set_bind_group(1, view_bind_group, &[view_offset]);
                 pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
                 let pipeline = |format, variant, set| {
-                    main_pass_pipeline(pipelines, format, variant, set).map(DrawThrough::One)
+                    main_pass_pipeline(pipelines, format, variant, set, MainDepth::Own).map(DrawThrough::One)
                 };
                 let groups = MeshGroups { frame: frame_groups, scene: scene_bind_groups };
                 main_draws.count_left_out();
@@ -4323,17 +4425,25 @@ pub(crate) fn draw_main_pass<'p>(
     cards: Option<(&wgpu::BindGroup, &[DrawRef])>,
     instance: impl Fn(u32) -> bool + Copy,
 ) {
-    draw_main_pass_with_decals(pass, pipeline, draws, groups, sky, None, cards, instance);
+    draw_main_pass_with_decals(pass, (pipeline, MainDepth::Own), draws, groups, sky, None, cards, instance);
 }
 
 /// [`draw_main_pass`], with the frame's ground decals (M5 L7) drawn through `decals` right after the
 /// opaque and alpha-tested surfaces, when every depth they test against is written, and before the
 /// characters' outlines and everything after (the `vfx::decal` module's docs). `decals` binds its own
 /// groups 0 and 2; what follows binds its own again.
+///
+/// Under [`MainDepth::FromPrepass`] (M5 D10), where `pipeline` gives the surfaces' and hulls' `Equal`
+/// twins and the pass loads the scene prepass's depth, the depth-writing surfaces and then the hulls draw
+/// in the reverse of their order: variants, then the skinned and morphed draws before each format's
+/// static ones, formats last to first, each group's draws last to first. Where draws tie at a pixel's
+/// depth the last that passes `Equal` keeps its color, as the first that passed `Greater` did, so each
+/// pixel keeps the surface it kept before. Decals, eyes through hair, the sky, transparent surfaces and
+/// fog cards, which write no depth, draw as before. The pass's own (`instance` takes every slot).
 #[expect(clippy::too_many_arguments, reason = "the pass's shared state, then what draws in it")]
 pub(crate) fn draw_main_pass_with_decals<'p>(
     pass: &mut wgpu::RenderPass<'_>,
-    pipeline: &MainPassPipeline<'p>,
+    (pipeline, depth): (&MainPassPipeline<'p>, MainDepth),
     draws: &MeshDraws<'_>,
     groups: MeshGroups<'_>,
     sky: Option<&dyn Fn(&mut wgpu::RenderPass<'_>)>,
@@ -4342,19 +4452,31 @@ pub(crate) fn draw_main_pass_with_decals<'p>(
     instance: impl Fn(u32) -> bool + Copy,
 ) {
     let mut bound = Bound::default();
-    for variant in SurfaceVariant::DEPTH_WRITING {
-        draw_main(pass, pipeline, draws, groups, &mut bound, variant, DrawSet::Surfaces, instance);
+    let reversed = depth == MainDepth::FromPrepass;
+    if reversed {
+        for variant in SurfaceVariant::DEPTH_WRITING.into_iter().rev() {
+            draw_main_reversed(pass, pipeline, draws, groups, &mut bound, variant, DrawSet::Surfaces);
+        }
+    } else {
+        for variant in SurfaceVariant::DEPTH_WRITING {
+            draw_main(pass, pipeline, draws, groups, &mut bound, variant, DrawSet::Surfaces, instance);
+        }
     }
     if let Some(decals) = decals {
         decals(pass);
         bound = Bound::default();
     }
-    let sets = SurfaceVariant::OUTLINED
-        .map(|variant| (variant, DrawSet::Outlines))
-        .into_iter()
-        .chain(SurfaceVariant::DRAWS_THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
-    for (variant, set) in sets {
-        draw_main(pass, pipeline, draws, groups, &mut bound, variant, set, instance);
+    if reversed {
+        for variant in SurfaceVariant::OUTLINED.into_iter().rev() {
+            draw_main_reversed(pass, pipeline, draws, groups, &mut bound, variant, DrawSet::Outlines);
+        }
+    } else {
+        for variant in SurfaceVariant::OUTLINED {
+            draw_main(pass, pipeline, draws, groups, &mut bound, variant, DrawSet::Outlines, instance);
+        }
+    }
+    for variant in SurfaceVariant::DRAWS_THROUGH_HAIR {
+        draw_main(pass, pipeline, draws, groups, &mut bound, variant, DrawSet::ThroughHair, instance);
     }
     if let Some(sky) = sky {
         bound.frame(pass, groups, FrameGroup::of(MaterialFamily::Sky));
@@ -4380,21 +4502,23 @@ pub(crate) fn draw_main_pass_with_decals<'p>(
 }
 
 /// The main pass's own pipeline for `set` of `variant`'s draws in `format`, built when the draws
-/// were added. Eyes through hair are only for the draws whose material draws through: a face or
-/// eye variant with none has no pipeline for it, and nothing to draw.
+/// were added: for `depth`, its surfaces' and hulls' `Equal` twins under [`MainDepth::FromPrepass`]
+/// (M5 D10). Eyes through hair are only for the draws whose material draws through: a face or eye
+/// variant with none has no pipeline for it, and nothing to draw.
 fn main_pass_pipeline(
     pipelines: &Pipelines,
     format: PositionFormat,
     variant: SurfaceVariant,
     set: DrawSet,
+    depth: MainDepth,
 ) -> Option<&wgpu::RenderPipeline> {
     let mesh = pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
     match set {
         DrawSet::Surfaces => {
-            Some(mesh.surface(variant).expect("built when a draw of this variant was added"))
+            Some(mesh.surface_at(variant, depth).expect("built when a draw of this variant was added"))
         }
         DrawSet::Outlines => {
-            Some(mesh.outline(variant).expect("built when a draw of this variant was added"))
+            Some(mesh.outline_at(variant, depth).expect("built when a draw of this variant was added"))
         }
         DrawSet::ThroughHair => mesh.through_hair(variant),
     }
@@ -4447,6 +4571,43 @@ fn draw_main<'p>(
             DrawThrough::Both(pipelines) => {
                 draws.draw_deformed_through_where(pass, kind, variant, set, instance, &pipelines);
             }
+        }
+    }
+}
+
+/// [`draw_main`] of every draw in the reverse of its order (see [`draw_main_pass_with_decals`]): the
+/// skinned and morphed instances first, then the static meshes per format, last format first, each
+/// group's draws last to first, a call a draw.
+fn draw_main_reversed<'p>(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipeline: &MainPassPipeline<'p>,
+    draws: &MeshDraws<'_>,
+    groups: MeshGroups<'_>,
+    bound: &mut Bound,
+    variant: SurfaceVariant,
+    set: DrawSet,
+) {
+    if !draws.has_any(variant) {
+        return;
+    }
+    bound.family(pass, groups, variant.shading);
+    let kind = variant.shading.main_pass();
+    let one = |through| match through {
+        DrawThrough::One(pipeline) => pipeline,
+        DrawThrough::Both(_) => unreachable!("the main pass draws each draw once"),
+    };
+    if draws.has_deformed(variant)
+        && let Some(through) = pipeline(PositionFormat::Float32, variant, set)
+    {
+        draws.set_pipeline(pass, one(through));
+        draws.draw_deformed_reversed(pass, kind, variant, set);
+    }
+    for format in PositionFormat::ALL.into_iter().rev() {
+        if draws.has_static(format, variant)
+            && let Some(through) = pipeline(format, variant, set)
+        {
+            draws.set_pipeline(pass, one(through));
+            draws.draw_static_reversed(pass, kind, format, variant, set);
         }
     }
 }

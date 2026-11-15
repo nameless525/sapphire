@@ -13,6 +13,7 @@ use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, Vertex
 use sapphire_rhi::wgpu;
 
 use crate::LOG_TARGET;
+use crate::MainDepth;
 use crate::ambient;
 use crate::character_prepass;
 use crate::characters::GpuCharacter;
@@ -766,6 +767,16 @@ impl SurfaceVariant {
         }
         variants
     };
+    /// The environment's alpha-tested surfaces, which the scene prepass draws through its plain
+    /// pipeline, uncut (the crate docs' "Later milestones"): the one depth-writing variant whose
+    /// prepass depth isn't the main pass's where it cuts, so a frame that draws it keeps its own depth
+    /// (M5 D10, [`MainDepth`]).
+    pub(crate) const UNCUT_IN_PREPASS: Self = Self {
+        coverage: Coverage::AlphaTest,
+        shading: Shading::Environment,
+        layers: false,
+        two_sided: false,
+    };
     /// Fog cards (M1 W3).
     pub(crate) const FOG_CARD: Self =
         Self { coverage: Coverage::Transparent, shading: Shading::FogCard, layers: false, two_sided: false };
@@ -802,6 +813,13 @@ impl SurfaceVariant {
     pub(crate) const EYE_LAYERS: Self = Self::character(Coverage::Transparent, Part::Eye);
     /// Opaque anime character bodies: what a material with no permutation bits draws with.
     pub(crate) const OPAQUE: Self = Self::character(Coverage::Opaque, Part::Body);
+
+    /// Whether its surfaces have a twin in the scene prepass whose depth is the main pass's, so the
+    /// main pass can test them `Equal` against it (M5 D10): every depth-writing variant but
+    /// [`Self::UNCUT_IN_PREPASS`].
+    pub(crate) fn shares_prepass_depth(self) -> bool {
+        self != Self::UNCUT_IN_PREPASS && Self::DEPTH_WRITING.contains(&self)
+    }
 
     /// The anime character variant of `coverage` and `part` without the layers, but an eye's,
     /// which always has them, one-sided.
@@ -1272,6 +1290,12 @@ pub(crate) struct MeshPipelines {
     /// The anime characters' outline hulls, per [`Coverage::DEPTH_WRITING`] entry: every part's
     /// outline is the same.
     outline: [Option<wgpu::RenderPipeline>; Coverage::DEPTH_WRITING.len()],
+    /// The same surfaces, per [`SurfaceVariant::DEPTH_WRITING`] entry, and hulls, testing `Equal` against
+    /// the scene prepass's depth and writing none (M5 D10, [`MainDepth::FromPrepass`]): each built with
+    /// its [`MainDepth::Own`] pipeline on a renderer that may load that depth, for the variants
+    /// [`SurfaceVariant::shares_prepass_depth`] takes.
+    equal_surfaces: [Option<wgpu::RenderPipeline>; SurfaceVariant::DEPTH_WRITING.len()],
+    equal_outline: [Option<wgpu::RenderPipeline>; Coverage::DEPTH_WRITING.len()],
     /// Depth, world normals and velocity of every opaque instance (`prepass.wgsl`), whatever its
     /// family, once something reads the scene prepass ([`Pipelines::keep_scene_prepass`], as every
     /// pipeline of that pass here).
@@ -1384,6 +1408,9 @@ enum Piece {
     },
     Surface(SurfaceVariant),
     Outline(Coverage),
+    /// A surface's and a coverage's hulls' main pass pipeline testing `Equal` (M5 D10).
+    EqualSurface(SurfaceVariant),
+    EqualOutline(Coverage),
     OutlinePrepass,
     Masked,
     MaskedScenePrepass,
@@ -1429,8 +1456,16 @@ impl Piece {
             Self::CharacterPrepass { hair } => {
                 build_character_prepass(device, target, modules, format, false, hair, one)
             }
-            Self::Surface(variant) => build_surface(device, target, modules, format, variant),
-            Self::Outline(coverage) => build_outline(device, target, modules, format, coverage),
+            Self::Surface(variant) => build_surface(device, target, modules, format, variant, MainDepth::Own),
+            Self::Outline(coverage) => {
+                build_outline(device, target, modules, format, coverage, MainDepth::Own)
+            }
+            Self::EqualSurface(variant) => {
+                build_surface(device, target, modules, format, variant, MainDepth::FromPrepass)
+            }
+            Self::EqualOutline(coverage) => {
+                build_outline(device, target, modules, format, coverage, MainDepth::FromPrepass)
+            }
             Self::OutlinePrepass => build_outline_prepass(device, target, modules, format, false),
             Self::Masked => {
                 return BuiltPiece::Masked(MaskedPrepasses::build(device, target, modules, format));
@@ -1513,8 +1548,14 @@ impl TwoSidedPrepasses {
 impl MeshPipelines {
     /// Adds what `draw` draws through that isn't built, and isn't in `pieces` already, to `pieces`.
     /// `casters`: shadows are on, so foliage draws into them. `scene_prepass`: something reads that
-    /// pass, so `draw` draws into it too.
-    fn missing(&self, draw: Drawn, casters: bool, scene_prepass: bool, pieces: &mut Vec<Piece>) {
+    /// pass, so `draw` draws into it too. `equal`: the main pass may load the prepass's depth (M5
+    /// D10), so a surface that shares it, and its hull, has its `Equal` twin.
+    fn missing(
+        &self,
+        draw: Drawn,
+        (casters, scene_prepass, equal): (bool, bool, bool),
+        pieces: &mut Vec<Piece>,
+    ) {
         let add = |pieces: &mut Vec<Piece>, piece| {
             if !pieces.contains(&piece) {
                 pieces.push(piece);
@@ -1551,6 +1592,16 @@ impl MeshPipelines {
             }
             if scene_prepass {
                 self.missing_scene_prepass(variant, pieces);
+            }
+        }
+        if surface && equal && variant.shares_prepass_depth() {
+            if self.equal_surfaces[variant.index()].is_none() {
+                add(pieces, Piece::EqualSurface(variant));
+            }
+            if SurfaceVariant::OUTLINED.contains(&variant)
+                && self.equal_outline[variant.coverage.index()].is_none()
+            {
+                add(pieces, Piece::EqualOutline(variant.coverage));
             }
         }
         if through_hair
@@ -1593,11 +1644,18 @@ impl MeshPipelines {
             .filter(|variant| self.surfaces[variant.index()].is_some())
             .map(Piece::Surface)
             .collect();
+        pieces.extend(
+            SurfaceVariant::DEPTH_WRITING
+                .into_iter()
+                .filter(|variant| self.equal_surfaces[variant.index()].is_some())
+                .map(Piece::EqualSurface),
+        );
         for coverage in Coverage::DEPTH_WRITING {
             let index = coverage.index();
             let two_sided = &self.two_sided[index];
             let built = [
                 (self.outline[index].is_some(), Piece::Outline(coverage)),
+                (self.equal_outline[index].is_some(), Piece::EqualOutline(coverage)),
                 (self.foliage_prepass[index].is_some(), Piece::FoliagePrepass(coverage)),
                 (self.foliage_casters[index].is_some(), Piece::FoliageCaster(coverage)),
                 (two_sided.character.is_some(), Piece::TwoSidedCharacterPrepass { coverage, hair: false }),
@@ -1642,6 +1700,8 @@ impl MeshPipelines {
             Piece::ScenePrepass => self.scene_prepass = built,
             Piece::Surface(variant) => self.surfaces[variant.index()] = built,
             Piece::Outline(coverage) => self.outline[coverage.index()] = built,
+            Piece::EqualSurface(variant) => self.equal_surfaces[variant.index()] = built,
+            Piece::EqualOutline(coverage) => self.equal_outline[coverage.index()] = built,
             Piece::OutlinePrepass => self.outline_prepass = built,
             Piece::MaskedScenePrepass => self.masked_scene = built,
             Piece::MaskedOutlinePrepass => self.masked_outline = built,
@@ -1740,6 +1800,36 @@ impl MeshPipelines {
         self.surfaces[variant.index()].as_ref()
     }
 
+    /// The main pass's surface pipeline of `variant` for `depth` (M5 D10): its own, or under
+    /// [`MainDepth::FromPrepass`] its `Equal` twin where it has one, once prepared.
+    pub(crate) fn surface_at(
+        &self,
+        variant: SurfaceVariant,
+        depth: MainDepth,
+    ) -> Option<&wgpu::RenderPipeline> {
+        match depth {
+            MainDepth::FromPrepass if variant.shares_prepass_depth() => {
+                self.equal_surfaces[variant.index()].as_ref()
+            }
+            _ => self.surface(variant),
+        }
+    }
+
+    /// The main pass's outline pipeline of `variant`'s coverage for `depth`, as [`Self::surface_at`].
+    pub(crate) fn outline_at(
+        &self,
+        variant: SurfaceVariant,
+        depth: MainDepth,
+    ) -> Option<&wgpu::RenderPipeline> {
+        match depth {
+            MainDepth::Own => self.outline(variant),
+            MainDepth::FromPrepass => {
+                self.outline(variant)?;
+                self.equal_outline.get(variant.coverage.index())?.as_ref()
+            }
+        }
+    }
+
     /// The outline pipeline of `variant`'s coverage, once it was prepared; transparent surfaces,
     /// the environment and foliage have none.
     pub(crate) fn outline(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
@@ -1766,6 +1856,27 @@ impl MeshPipelines {
         self.masked_caster.as_ref()
     }
 
+    /// Where the surface pipeline of `variant` for `depth` is kept: `None` for an `Equal` twin of a
+    /// variant that has none.
+    fn surface_slot(
+        &mut self,
+        variant: SurfaceVariant,
+        depth: MainDepth,
+    ) -> Option<&mut Option<wgpu::RenderPipeline>> {
+        match depth {
+            MainDepth::Own => self.surfaces.get_mut(variant.index()),
+            MainDepth::FromPrepass => self.equal_surfaces.get_mut(variant.index()),
+        }
+    }
+
+    /// Whether the surface pipeline of `variant` for `depth` is built.
+    fn surface_built(&self, variant: SurfaceVariant, depth: MainDepth) -> bool {
+        match depth {
+            MainDepth::Own => self.surface(variant).is_some(),
+            MainDepth::FromPrepass => self.equal_surfaces.get(variant.index()).is_some_and(Option::is_some),
+        }
+    }
+
     /// The eyes-through-hair pipeline of `variant`, once it was prepared.
     pub(crate) fn through_hair(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
         self.through_hair[variant.through_hair_index()?].as_ref()
@@ -1778,6 +1889,12 @@ impl MeshPipelines {
             .iter()
             .filter(|variant| variant.shading.family() == family && self.surface(**variant).is_some())
             .count();
+        let equal_surfaces = SurfaceVariant::DEPTH_WRITING
+            .iter()
+            .filter(|variant| {
+                variant.shading.family() == family && self.equal_surfaces[variant.index()].is_some()
+            })
+            .count();
         let own = match family {
             MaterialFamily::AnimeCharacter => {
                 let masked = if self.masked.is_some() { 2 } else { 0 };
@@ -1786,6 +1903,7 @@ impl MeshPipelines {
                 let masked_caster = usize::from(self.masked_caster.is_some());
                 let two_sided: usize = self.two_sided.iter().map(TwoSidedPrepasses::count).sum();
                 self.outline.iter().flatten().count()
+                    + self.equal_outline.iter().flatten().count()
                     + self.through_hair.iter().flatten().count()
                     + masked
                     + masked_scene
@@ -1798,7 +1916,7 @@ impl MeshPipelines {
             }
             _ => 0,
         };
-        (surfaces + own) as u32
+        (surfaces + equal_surfaces + own) as u32
     }
 }
 
@@ -1988,13 +2106,14 @@ struct OtherWeather {
     /// built has its twin here, so the frame's weather changes without building any
     /// ([`Pipelines::keep_wet_surfaces`]).
     kept: bool,
-    /// Per position format and surface variant.
-    twins: Vec<(PositionFormat, SurfaceVariant, wgpu::RenderPipeline)>,
+    /// Per position format, surface variant and the main pass's depth (M5 D10: a surface's `Equal`
+    /// twin has its twin for the other weather too).
+    twins: Vec<(PositionFormat, SurfaceVariant, MainDepth, wgpu::RenderPipeline)>,
 }
 
 impl OtherWeather {
-    fn has(&self, format: PositionFormat, variant: SurfaceVariant) -> bool {
-        self.twins.iter().any(|&(of, is, _)| of == format && is == variant)
+    fn has(&self, format: PositionFormat, variant: SurfaceVariant, depth: MainDepth) -> bool {
+        self.twins.iter().any(|&(of, is, at, _)| of == format && is == variant && at == depth)
     }
 }
 
@@ -2123,6 +2242,10 @@ struct PipelineTarget {
     /// The environment shader's ambient constants (M1 W5, `ambient::constants`): only those on,
     /// so without a probe grid or ambient occlusion it is the shader as it was without them.
     ambient: Vec<(&'static str, f64)>,
+    /// The main pass may load the scene prepass's depth (M5 D10,
+    /// `RenderSettings::main_depth_from_prepass`): each surface that shares it, and its hull, is built
+    /// twice, the second testing `Equal`.
+    equal_depth: bool,
     /// The environment's surfaces are built for a wet frame (M5 L4, `environment::WET_CONSTANT`):
     /// off, they are the shader as it was without weather.
     wet: bool,
@@ -2151,6 +2274,12 @@ impl Pipelines {
         self.target.velocity
     }
 
+    /// Whether the main pass may load the scene prepass's depth (M5 D10): its surfaces that share it,
+    /// and their hulls, have their `Equal` twins.
+    pub(crate) fn equal_depth(&self) -> bool {
+        self.target.equal_depth
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the device's targets and the tier's shader settings, each read once"
@@ -2165,7 +2294,7 @@ impl Pipelines {
         builds: &PipelineBuilds,
         sources: &ShaderSources,
         shadows: Option<&ShadowSettings>,
-        (card_depth_fade, velocity, scene_prepass): (bool, bool, bool),
+        (card_depth_fade, velocity, scene_prepass, equal_depth): (bool, bool, bool, bool),
         ambient: Vec<(&'static str, f64)>,
     ) -> Self {
         let characters = layouts.frame(FrameGroup::Characters);
@@ -2230,6 +2359,7 @@ impl Pipelines {
             card_depth_fade,
             velocity,
             ambient,
+            equal_depth,
             wet: false,
             replay: None,
         };
@@ -2322,7 +2452,7 @@ impl Pipelines {
                 draws.extend(fade_draws(mesh));
             }
             for draw in draws {
-                mesh.missing(draw, casters, self.scene_prepass, &mut pieces);
+                mesh.missing(draw, (casters, self.scene_prepass, self.target.equal_depth), &mut pieces);
             }
             if !pieces.is_empty() {
                 return true;
@@ -2470,6 +2600,8 @@ impl Pipelines {
             let mut pipelines = MeshPipelines {
                 surfaces: std::array::from_fn(|_| None),
                 outline: Default::default(),
+                equal_surfaces: Default::default(),
+                equal_outline: Default::default(),
                 scene_prepass,
                 outline_prepass,
                 character_prepass,
@@ -2493,10 +2625,15 @@ impl Pipelines {
                 }
             }
             for variant in SurfaceVariant::ALL {
+                let (_, program) = modules.surface(variant.shading);
                 if let Some(old) = old.surface(variant) {
-                    let (_, program) = modules.surface(variant.shading);
                     pipelines.surfaces[variant.index()] = Some(rebuild(program, old, &|| {
-                        build_surface(device, target, &modules, format, variant)
+                        build_surface(device, target, &modules, format, variant, MainDepth::Own)
+                    }));
+                }
+                if let Some(old) = old.equal_surfaces.get(variant.index()).and_then(Option::as_ref) {
+                    pipelines.equal_surfaces[variant.index()] = Some(rebuild(program, old, &|| {
+                        build_surface(device, target, &modules, format, variant, MainDepth::FromPrepass)
                     }));
                 }
             }
@@ -2504,7 +2641,12 @@ impl Pipelines {
                 let index = coverage.index();
                 if let Some(old) = &old.outline[index] {
                     pipelines.outline[index] = Some(rebuild(Program::Outline, old, &|| {
-                        build_outline(device, target, &modules, format, coverage)
+                        build_outline(device, target, &modules, format, coverage, MainDepth::Own)
+                    }));
+                }
+                if let Some(old) = &old.equal_outline[index] {
+                    pipelines.equal_outline[index] = Some(rebuild(Program::Outline, old, &|| {
+                        build_outline(device, target, &modules, format, coverage, MainDepth::FromPrepass)
                     }));
                 }
                 if let Some(old) = &old.foliage_prepass[index] {
@@ -2522,11 +2664,11 @@ impl Pipelines {
         }
         // The other weather's surfaces (M5 L4), from the same new module.
         let other = PipelineTarget { wet: !target.wet, ..target.clone() };
-        let twins = self.other_weather.twins.iter().map(|(format, variant, old)| {
+        let twins = self.other_weather.twins.iter().map(|(format, variant, depth, old)| {
             let pipeline = rebuild(Program::Environment, old, &|| {
-                build_surface(device, &other, &modules, *format, *variant)
+                build_surface(device, &other, &modules, *format, *variant, *depth)
             });
-            (*format, *variant, pipeline)
+            (*format, *variant, *depth, pipeline)
         });
         let other_weather = OtherWeather { kept: self.other_weather.kept, twins: twins.collect() };
         // Copies of the main pass's pipelines are stale once any of them is built again.
@@ -2555,6 +2697,9 @@ impl Pipelines {
         if self.scene_prepass {
             pieces.extend([Piece::ScenePrepass, Piece::OutlinePrepass]);
         }
+        if self.target.equal_depth {
+            pieces.extend([Piece::EqualSurface(opaque), Piece::EqualOutline(opaque.coverage)]);
+        }
         let (target, modules) = (&self.target, &self.modules);
         let builds =
             pieces.iter().map(|&piece| move || piece.build(device, target, modules, format)).collect();
@@ -2564,6 +2709,8 @@ impl Pipelines {
         let mut mesh = MeshPipelines {
             surfaces: std::array::from_fn(|_| None),
             outline: Default::default(),
+            equal_surfaces: Default::default(),
+            equal_outline: Default::default(),
             scene_prepass: None,
             outline_prepass: None,
             character_prepass: character_prepass.pipeline(),
@@ -2654,7 +2801,7 @@ impl Pipelines {
         let mut pieces = Vec::new();
         let casters = self.target.foliage_caster_layout.is_some();
         for draw in draws {
-            mesh.missing(*draw, casters, self.scene_prepass, &mut pieces);
+            mesh.missing(*draw, (casters, self.scene_prepass, self.target.equal_depth), &mut pieces);
         }
         let (target, modules) = (&self.target, &self.modules);
         let builds =
@@ -2688,8 +2835,15 @@ impl Pipelines {
                 |v: &SurfaceVariant| matches!(v.shading, Shading::Environment | Shading::Foliage);
             for variant in SurfaceVariant::ALL.into_iter().filter(lit_by_ambient) {
                 if mesh.surfaces[variant.index()].is_some() {
-                    let pipeline = build_surface(device, &self.target, &self.modules, format, variant);
+                    let depth = MainDepth::Own;
+                    let pipeline = build_surface(device, &self.target, &self.modules, format, variant, depth);
                     mesh.surfaces[variant.index()] = Some(pipeline);
+                    built += 1;
+                }
+                if mesh.equal_surfaces.get(variant.index()).is_some_and(Option::is_some) {
+                    let depth = MainDepth::FromPrepass;
+                    let pipeline = build_surface(device, &self.target, &self.modules, format, variant, depth);
+                    mesh.equal_surfaces[variant.index()] = Some(pipeline);
                     built += 1;
                 }
             }
@@ -2722,17 +2876,22 @@ impl Pipelines {
         let (mut kept, mut built) = (Vec::with_capacity(twins.len()), 0);
         for format in PositionFormat::ALL {
             let Some(mesh) = self.mesh[format_index(format)].as_mut() else { continue };
-            for variant in environment_variants() {
-                let Some(old) = mesh.surfaces[variant.index()].take() else { continue };
-                let twin = match twins.iter().position(|&(of, is, _)| of == format && is == variant) {
-                    Some(at) => twins.swap_remove(at).2,
+            for (variant, depth) in environment_variants()
+                .flat_map(|variant| [MainDepth::Own, MainDepth::FromPrepass].map(|depth| (variant, depth)))
+            {
+                let Some(slot) = mesh.surface_slot(variant, depth) else { continue };
+                let Some(old) = slot.take() else { continue };
+                let found =
+                    twins.iter().position(|&(of, is, at, _)| of == format && is == variant && at == depth);
+                let twin = match found {
+                    Some(at) => twins.swap_remove(at).3,
                     None => {
                         built += 1;
-                        build_surface(device, &self.target, &self.modules, format, variant)
+                        build_surface(device, &self.target, &self.modules, format, variant, depth)
                     }
                 };
-                mesh.surfaces[variant.index()] = Some(twin);
-                kept.push((format, variant, old));
+                *slot = Some(twin);
+                kept.push((format, variant, depth, old));
             }
         }
         self.other_weather.twins = kept;
@@ -2756,10 +2915,12 @@ impl Pipelines {
         let mut wanted = Vec::new();
         for format in PositionFormat::ALL {
             let Some(mesh) = self.mesh(format) else { continue };
-            let lacking = |variant: &SurfaceVariant| {
-                mesh.surface(*variant).is_some() && !self.other_weather.has(format, *variant)
-            };
-            wanted.extend(environment_variants().filter(lacking).map(|variant| (format, variant)));
+            for depth in [MainDepth::Own, MainDepth::FromPrepass] {
+                let lacking = |variant: &SurfaceVariant| {
+                    mesh.surface_built(*variant, depth) && !self.other_weather.has(format, *variant, depth)
+                };
+                wanted.extend(environment_variants().filter(lacking).map(|variant| (format, variant, depth)));
+            }
         }
         if wanted.is_empty() {
             return 0;
@@ -2768,12 +2929,16 @@ impl Pipelines {
         let (target, modules) = (&other, &self.modules);
         let builds: Vec<_> = wanted
             .iter()
-            .map(|&(format, variant)| move || build_surface(device, target, modules, format, variant))
+            .map(|&(format, variant, depth)| {
+                move || build_surface(device, target, modules, format, variant, depth)
+            })
             .collect();
         let built = on.run(builds);
         let count = built.len() as u32;
-        let twins =
-            wanted.into_iter().zip(built).map(|((format, variant), pipeline)| (format, variant, pipeline));
+        let twins = wanted
+            .into_iter()
+            .zip(built)
+            .map(|((format, variant, depth), pipeline)| (format, variant, depth, pipeline));
         self.other_weather.twins.extend(twins);
         count
     }
@@ -2822,9 +2987,11 @@ impl Pipelines {
     ) -> wgpu::RenderPipeline {
         let target = self.target.replayed(replay);
         match pipeline {
-            MainPipeline::Surface(variant) => build_surface(device, &target, &self.modules, format, variant),
+            MainPipeline::Surface(variant) => {
+                build_surface(device, &target, &self.modules, format, variant, MainDepth::Own)
+            }
             MainPipeline::Outline(coverage) => {
-                build_outline(device, &target, &self.modules, format, coverage)
+                build_outline(device, &target, &self.modules, format, coverage, MainDepth::Own)
             }
             MainPipeline::ThroughHair(variant) => {
                 build_through_hair(device, &target, &self.modules, format, variant)
@@ -2836,14 +3003,19 @@ impl Pipelines {
 /// The surface pipeline of `variant` for meshes in `format`: the anime character, environment,
 /// foliage or fog card shader, on its family's layout, with the variant's permutation constants
 /// (and the tier's specular model for the environment, its foliage settings for foliage, the
-/// depth fade for fog cards).
+/// depth fade for fog cards). Under [`MainDepth::FromPrepass`] (a variant that shares the scene
+/// prepass's depth, M5 D10) it tests `Equal` against that depth and writes none; the shaders, constants
+/// and everything else are the same.
 fn build_surface(
     device: &wgpu::Device,
     target: &PipelineTarget,
     modules: &MeshModules,
     format: PositionFormat,
     variant: SurfaceVariant,
+    depth: MainDepth,
 ) -> wgpu::RenderPipeline {
+    let equal = depth == MainDepth::FromPrepass;
+    debug_assert!(!equal || variant.shares_prepass_depth(), "{variant:?} has no twin in the scene prepass");
     let transparent = variant.coverage == Coverage::Transparent;
     let (module, _) = modules.surface(variant.shading);
     // The permutation's constants, then the shadows' (M1 R4), which fog cards don't receive.
@@ -2908,9 +3080,11 @@ fn build_surface(
             // Transparent surfaces are depth-tested against the opaque frame but don't hide
             // what lies behind them. Eye layers may lie on their eye (M1 C6): their mask, not
             // depth, keeps them to it.
-            depth_write: !transparent,
+            depth_write: !transparent && !equal,
             depth_compare: if variant == SurfaceVariant::EYE_LAYERS {
                 wgpu::CompareFunction::GreaterEqual
+            } else if equal {
+                wgpu::CompareFunction::Equal
             } else {
                 wgpu::CompareFunction::Greater
             },
@@ -2923,14 +3097,18 @@ fn build_surface(
     )
 }
 
-/// The outline hull pipeline of `coverage`, one that writes depth, for meshes in `format`.
+/// The outline hull pipeline of `coverage`, one that writes depth, for meshes in `format`; under
+/// [`MainDepth::FromPrepass`] one that tests `Equal` against the scene prepass's depth, which holds the
+/// hulls too, and writes none (M5 D10).
 fn build_outline(
     device: &wgpu::Device,
     target: &PipelineTarget,
     modules: &MeshModules,
     format: PositionFormat,
     coverage: Coverage,
+    depth: MainDepth,
 ) -> wgpu::RenderPipeline {
+    let equal = depth == MainDepth::FromPrepass;
     // The coverage's constants, then the shadows' (M1 R4): lit lines receive them. Under MSAA a
     // fading character's lines cover its surfaces' samples (M1 C7).
     let mut constants = coverage.constants().to_vec();
@@ -2947,8 +3125,8 @@ fn build_outline(
             module: &modules.outline,
             vertex_buffers: &MeshPass::Main.buffers(format),
             cull: Some(wgpu::Face::Front),
-            depth_write: true,
-            depth_compare: wgpu::CompareFunction::Greater,
+            depth_write: !equal,
+            depth_compare: if equal { wgpu::CompareFunction::Equal } else { wgpu::CompareFunction::Greater },
             shader_depth: false,
             blend: None,
             constants: &constants,

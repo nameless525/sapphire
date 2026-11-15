@@ -965,7 +965,7 @@ pub use post::{
 pub use levels::{LevelSettings, LevelStats, LevelsMode};
 pub use mip_streaming::{DEFAULT_MIP_BUDGET, MipStreamingStats};
 pub use renderer::{
-    CHARACTER_PREPASS, MAIN_PASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError,
+    CHARACTER_PREPASS, MAIN_PASS, MIN_RENDER_SCALE, MainDepth, Msaa, PREPASSES, PrepassTargets, RenderError,
     RenderSettings, RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, TierBuild, TierRefused, scaled_size,
 };
 pub use sapphire_look::{

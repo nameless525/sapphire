@@ -10,8 +10,8 @@ use sapphire_render::quality::{
 };
 use sapphire_render::{
     ColorVision, CullingMode, CullingThresholds, DebugView, DrawRuns, EffectScale, LevelSettings, LevelsMode,
-    LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Upscaler,
-    Weather, Wind,
+    LightPath, MIN_RENDER_SCALE, MainDepth, MaterialDrive, Msaa, PostVariants, RenderSettings,
+    ShadowSettings, Upscaler, Weather, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -413,6 +413,11 @@ pub(crate) struct Options {
     /// `RenderSettings::capsule_bins`), on by default; off walks the plain loops with 16 capsules
     /// a list, for comparisons.
     pub capsule_bins: Option<bool>,
+    /// `--main-depth own|prepass`: where the main pass takes its depth from (M5 D10,
+    /// `RenderSettings::main_depth`): its own, as before and the tiers', or the scene prepass's, testing
+    /// `Equal`. `prepass` holds only with temporal AA and one sample (the desktop tiers); elsewhere it is
+    /// `own`, and the log says so once.
+    pub main_depth: Option<MainDepth>,
     /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
     /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
     /// the default.
@@ -794,6 +799,21 @@ impl Options {
     /// over `--aa`'s sample count. Under `--plain-post` no frame draws a compositing layer, so
     /// post builds none of their variants. `--upscaler bilinear` takes the edge upscaler away (M5 L14).
     pub fn render_settings(&self, tier: RenderSettings) -> RenderSettings {
+        let settings = self.render_settings_quietly(tier);
+        if self.main_depth == Some(MainDepth::FromPrepass) && !settings.main_depth_from_prepass() {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    target: crate::LOG_TARGET,
+                    "--main-depth prepass needs temporal AA and one sample: the main pass keeps its own depth"
+                );
+            });
+        }
+        settings
+    }
+
+    /// [`Self::render_settings`], saying nothing.
+    fn render_settings_quietly(&self, tier: RenderSettings) -> RenderSettings {
         let (msaa, temporal) = match self.aa {
             None => (tier.msaa, tier.temporal),
             Some(Antialiasing::Off) => (Msaa::Off, false),
@@ -810,6 +830,7 @@ impl Options {
             culling: self.culling.unwrap_or(tier.culling),
             levels: LevelSettings { mode: self.lods.unwrap_or(tier.levels.mode), ..tier.levels },
             draw_runs: self.draw_runs.unwrap_or(tier.draw_runs),
+            main_depth: self.main_depth.unwrap_or(tier.main_depth),
             upscaler: if self.bilinear_upscale { Upscaler::Bilinear } else { tier.upscaler },
             capsule_bins: self.capsule_bins.unwrap_or(tier.capsule_bins),
             shafts: tier.shafts && self.shafts != Some(Switch::Off),
@@ -1450,6 +1471,13 @@ impl Options {
                         .validate()
                         .map_err(|(field, problem)| format!("--cull-thresholds: {field} {problem}"))?;
                     options.culling = Some(thresholds);
+                }
+                "--main-depth" => {
+                    options.main_depth = Some(match value("--main-depth")?.as_str() {
+                        "own" => MainDepth::Own,
+                        "prepass" => MainDepth::FromPrepass,
+                        other => return Err(format!("--main-depth expects own or prepass, got {other:?}")),
+                    });
                 }
                 "--draw-runs" => {
                     options.draw_runs = Some(match value("--draw-runs")?.as_str() {
@@ -3096,6 +3124,22 @@ mod tests {
         assert_eq!(thresholds(&["--cull-thresholds", "500,1.5,2"]), tried);
         assert!(parse(&["--cull-thresholds", "500,1.5"]).is_err());
         assert!(parse(&["--cull-thresholds", "-1,0,0"]).is_err());
+    }
+
+    #[test]
+    fn the_main_depth_is_the_tiers_unless_asked() {
+        let tiers = sapphire_render::quality::TierTable::shipped();
+        let desktop = tiers.get(TierId::DesktopHigh).render_settings();
+        let phone = tiers.get(TierId::MobileLow).render_settings();
+        let settings = |args: &[&str], tier| parse(args).unwrap().0.render_settings(tier);
+        assert_eq!(settings(&[], desktop).main_depth, MainDepth::Own, "the tier's");
+        assert!(!settings(&[], desktop).main_depth_from_prepass());
+        assert!(!settings(&["--main-depth", "own"], desktop).main_depth_from_prepass());
+        assert!(settings(&["--main-depth=prepass"], desktop).main_depth_from_prepass());
+        // A phone (no temporal AA) and a desktop under MSAA keep their own, whatever is asked.
+        assert!(!settings(&["--main-depth", "prepass"], phone).main_depth_from_prepass());
+        assert!(!settings(&["--main-depth", "prepass", "--aa", "msaa"], desktop).main_depth_from_prepass());
+        assert!(parse(&["--main-depth", "equal"]).is_err());
     }
 
     #[test]

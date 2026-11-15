@@ -18,7 +18,8 @@ use crate::buffer::{GrowableBuffer, RangeAllocator};
 
 /// The most bytes of new buffers one frame's compaction makes and copies into before it stops for the
 /// frame: a trip's heavy work goes a bounded part a frame, as a load screen's frames are held to twice
-/// the tier's interval. A part is never split, so a frame compacts one part at least.
+/// the tier's interval. A part is never split: a frame stops before a part that would take it past this,
+/// so it makes at most this much, or one larger part alone.
 const BYTES_PER_FRAME: u64 = 64 << 20;
 
 impl MeshPool {
@@ -53,8 +54,8 @@ impl MeshPool {
         self.retired_buffers.iter().map(wgpu::Buffer::size).sum()
     }
 
-    /// The frame's part of a compaction asked for: compacts the parts above their floor, in order, until
-    /// the frame has made [`BYTES_PER_FRAME`], and stops being asked once the pool is at its floor.
+    /// The frame's part of a compaction asked for: compacts the parts above their floor, in order, within
+    /// [`BYTES_PER_FRAME`] ([`parts_for_frame`]), and stops being asked once the pool is at its floor.
     /// `last_read` is the last frame that may read the buffers it replaces: the one before the frame
     /// being prepared. Call it in `prepare`, after what's freed has retired and before anything reads a
     /// record. Returns what it moved, if it moved anything: the draw list rebuilds, and bind groups of the
@@ -70,14 +71,11 @@ impl MeshPool {
         }
         let mut moves: Option<PoolMoves> = None;
         let mut encoder = None;
+        let floors =
+            std::array::from_fn(|part| (!self.part_at_floor(part)).then(|| self.part_floor_bytes(part)));
+        let parts = parts_for_frame(floors);
         let mut made = 0;
-        for part in 0..PARTS {
-            if made >= BYTES_PER_FRAME {
-                break;
-            }
-            if self.part_at_floor(part) {
-                continue;
-            }
+        for part in (0..PARTS).filter(|&part| parts[part]) {
             let encoder = encoder.get_or_insert_with(|| {
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("mesh pool compaction"),
@@ -106,6 +104,12 @@ impl MeshPool {
     /// Parts compacted since the pool was created.
     pub(crate) fn compactions(&self) -> u32 {
         self.layouts.iter().sum()
+    }
+
+    /// Bytes `part`'s buffers hold at their floor: what compacting it makes.
+    fn part_floor_bytes(&self, part: usize) -> u64 {
+        let live = self.live[part];
+        self.buffers(part).iter().map(|(buffer, stride)| buffer.floor(live * stride)).sum()
     }
 
     fn part_at_floor(&self, part: usize) -> bool {
@@ -205,6 +209,23 @@ impl MeshPool {
     }
 }
 
+/// Which parts one frame's compaction takes, from the bytes each part above its floor makes at its floor
+/// (`None` for one at its floor): in order, while the frame's new buffers stay within [`BYTES_PER_FRAME`],
+/// and the first alone when it's larger.
+fn parts_for_frame(floors: [Option<u64>; PARTS]) -> [bool; PARTS] {
+    let mut parts = [false; PARTS];
+    let mut made = 0;
+    for (part, floor) in floors.into_iter().enumerate() {
+        let Some(floor) = floor else { continue };
+        if made > 0 && made + floor > BYTES_PER_FRAME {
+            break;
+        }
+        parts[part] = true;
+        made += floor;
+    }
+    parts
+}
+
 impl MeshRecord {
     /// Moves its range of `part` to start at `start`, rewriting everything that says where it is.
     fn move_to(&mut self, part: usize, start: u32) {
@@ -282,6 +303,22 @@ mod tests {
             morph_reach: Vec::new(),
             foliage: (placement.foliage.1 > 0).then_some(placement.foliage.0),
         }
+    }
+
+    /// Z3 review F3: a frame's compaction makes no more than [`BYTES_PER_FRAME`] of new buffers, unless one part
+    /// alone is larger, which then goes alone; the parts it leaves go on later frames, in order.
+    #[test]
+    fn a_frames_compaction_keeps_to_its_bytes() {
+        const MIB: u64 = 1 << 20;
+        let first = [Some(40 * MIB), Some(60 * MIB), None, Some(MIB), None];
+        assert_eq!(parts_for_frame(first), [true, false, false, false, false], "40 and 60 MiB make 100");
+        let next = [None, Some(60 * MIB), None, Some(MIB), None];
+        assert_eq!(parts_for_frame(next), [false, true, false, true, false]);
+        let large = [Some(100 * MIB), Some(MIB), None, None, None];
+        assert_eq!(parts_for_frame(large), [true, false, false, false, false], "a larger part goes alone");
+        let within = [Some(10 * MIB), Some(20 * MIB), Some(34 * MIB), None, None];
+        assert_eq!(parts_for_frame(within), [true, true, true, false, false], "64 MiB is within");
+        assert_eq!(parts_for_frame([None; PARTS]), [false; PARTS]);
     }
 
     #[test]

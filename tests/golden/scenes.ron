@@ -3959,6 +3959,7 @@
                 ticks: 1600,
                 args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
                        "--tier", "desktop-high", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 27.6, warp: 45.7),
             ),
             // The plaza at night from where the player arrives in it: the lanterns at the light cap, the
             // windows lit.
@@ -3968,6 +3969,7 @@
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "23", "--tier", "desktop-high",
                        "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 18.1, warp: 51.1),
             ),
             // The same place at dusk on Mobile-High, at a phone's aspect: two cascades, eight lights, the
             // phone's post.
@@ -3977,6 +3979,7 @@
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "mobile-high",
                        "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 36.5, warp: 45.4),
             ),
         ],
     ),

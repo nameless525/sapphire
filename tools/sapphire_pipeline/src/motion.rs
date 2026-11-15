@@ -152,7 +152,8 @@ mod tests {
             motion.check_rig(rig).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
             fitted.push(path.file_name().expect("a name").to_string_lossy().into_owned());
         }
-        assert_eq!(fitted, ["hero.playable.ron"], "Aster names hers");
+        // Whatever the documents say (M5 C12): a new kind with a motion of its own needs no change here.
+        assert!(!fitted.is_empty(), "no shipped kind names a motion of its own");
     }
 
     #[test]

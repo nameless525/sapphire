@@ -95,13 +95,28 @@ mod tests {
         assert_eq!(RIG_SUB_ASSET, crate::import::vrm::RIG.name);
     }
 
-    /// The shipped kinds cook, and what they cook reads back.
+    /// Every shipped kind under `content/combat/` cooks, and what it cooks reads back: whatever kinds the
+    /// documents hold, so a new one needs no change here (M5 C12).
     #[test]
     fn the_shipped_kinds_cook() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat");
-        for kind in ["player/heroine.playable.ron", "hero/hero.playable.ron"] {
-            let bytes = std::fs::read(root.join(kind)).expect("shipped");
-            let cooked = cook(&bytes).unwrap_or_else(|error| panic!("{kind}: {error}"));
+        let mut kinds = Vec::new();
+        let mut folders = vec![root];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).expect("readable") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if is_source(&path) {
+                    kinds.push(path);
+                }
+            }
+        }
+        kinds.sort();
+        assert!(kinds.len() >= 3, "the heroine, Aster and the third kind at least: {kinds:?}");
+        for kind in &kinds {
+            let bytes = std::fs::read(kind).expect("shipped");
+            let cooked = cook(&bytes).unwrap_or_else(|error| panic!("{}: {error}", kind.display()));
             let mut aligned = sapphire_serialize::cooked::AlignedVec::<16>::new();
             aligned.extend_from_slice(&cooked);
             Playable::from_cooked(&aligned).expect("reads");

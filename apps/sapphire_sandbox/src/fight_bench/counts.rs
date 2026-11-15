@@ -78,6 +78,8 @@ pub(super) struct Counted {
     /// its shadow shows.
     pub ambient_spawned: u32,
     pub ambient_in_view: u32,
+    /// Instances the main view drew last frame at another level of detail (M5 D4, `LevelStats`).
+    pub level_switches: u32,
 }
 
 impl Counted {
@@ -131,6 +133,7 @@ impl Counted {
             mesh_pool_floor: render.mesh_pool.floor,
             raised: render.mip_streaming.bytes_written,
             given_back: assets.given_back.saturating_sub(before.given_back),
+            level_switches: render.levels.switches(),
             ..Self::default()
         }
     }
@@ -149,9 +152,10 @@ const fn row(name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
 }
 
 /// What's logged, the frame's whole first, then pass by pass, the ambient pass's dispatches, then what
-/// culled, the levels drawn, the state the mesh passes changed, skinning, lights, the asset server's,
-/// animation's, and a zone's crowd's.
-pub(super) const COUNT_ROWS: [CountRow; 54] = [
+/// culled, the levels drawn (the main view's and the shadows' apart, and the main view's switches, M5
+/// D4), the state the mesh passes changed, skinning, lights, the asset server's, animation's, and a
+/// zone's crowd's.
+pub(super) const COUNT_ROWS: [CountRow; 57] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -185,6 +189,13 @@ pub(super) const COUNT_ROWS: [CountRow; 54] = [
     row("culled by size", |c| u64::from(c.passes.total().culled_by_size)),
     row("lod0 draws", |c| u64::from(c.passes.total().levels[0])),
     row("lod1+ draws", |c| c.passes.total().levels[1..].iter().map(|&level| u64::from(level)).sum()),
+    row("main draws above level 0", |c| {
+        c.passes.main.levels[1..].iter().map(|&level| u64::from(level)).sum()
+    }),
+    row("shadow draws above level 0", |c| {
+        c.passes.shadows().levels[1..].iter().map(|&level| u64::from(level)).sum()
+    }),
+    row("level switches", |c| u64::from(c.level_switches)),
     row("pipelines set", |c| u64::from(c.state_changes.pipelines)),
     row("materials bound", |c| u64::from(c.state_changes.materials)),
     row("vertex buffers bound", |c| u64::from(c.state_changes.vertex_buffers)),

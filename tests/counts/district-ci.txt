@@ -40,12 +40,14 @@ desktop-high-dusk | frames waiting on a pipeline | not exercised
 desktop-high-dusk | held off screen | not exercised
 desktop-high-dusk | inset draws | not exercised
 desktop-high-dusk | joints | not exercised
+desktop-high-dusk | level switches | p50 0 p95 0 worst 1 total 11
 desktop-high-dusk | lights | p50 47 p95 64 worst 64 total 23931
 desktop-high-dusk | lights dropped | p50 0 p95 24 worst 29 total 1534
-desktop-high-dusk | lod0 draws | p50 1436 p95 1661 worst 1746 total 714107
-desktop-high-dusk | lod1+ draws | not exercised
+desktop-high-dusk | lod0 draws | p50 688 p95 821 worst 855 total 356482
+desktop-high-dusk | lod1+ draws | p50 695 p95 1005 worst 1085 total 357625
 desktop-high-dusk | main draws | p50 226 p95 377 worst 402 total 117573
-desktop-high-dusk | main triangles | p50 534258 p95 855786 worst 931157 total 280839639
+desktop-high-dusk | main draws above level 0 | p50 160 p95 280 worst 320 total 83455
+desktop-high-dusk | main triangles | p50 409913 p95 640209 worst 678313 total 216171638
 desktop-high-dusk | mesh draws considered | p50 3881 p95 3881 worst 3881 total 2060811
 desktop-high-dusk | mesh pool capacity | p50 69206032 p95 69206032 worst 69206032 total 36748402992
 desktop-high-dusk | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 total 36748402992
@@ -62,13 +64,14 @@ desktop-high-dusk | probe dispatches | not exercised
 desktop-high-dusk | reads held | not exercised
 desktop-high-dusk | scene instances | p50 112 p95 112 worst 112 total 59472
 desktop-high-dusk | scene prepass draws | p50 219 p95 370 worst 395 total 113856
-desktop-high-dusk | shadow triangles | p50 2202359 p95 2575301 worst 2749561 total 1118481490
+desktop-high-dusk | shadow draws above level 0 | p50 370 p95 445 worst 445 total 190715
+desktop-high-dusk | shadow triangles | p50 2028511 p95 2375572 worst 2549832 total 1032752015
 desktop-high-dusk | skinned instances | not exercised
 desktop-high-dusk | skinned vertices | not exercised
 desktop-high-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-high-dusk | texture bytes raised | not exercised
 desktop-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
-desktop-high-dusk | triangles | p50 3393886 p95 3939651 worst 4005448 total 1698754264
+desktop-high-dusk | triangles | p50 2960059 p95 3350763 worst 3469933 total 1483688787
 desktop-high-dusk | ui draws | not exercised
 
 desktop-high-night | ambient characters in view | not exercised
@@ -101,12 +104,14 @@ desktop-high-night | frames waiting on a pipeline | not exercised
 desktop-high-night | held off screen | not exercised
 desktop-high-night | inset draws | not exercised
 desktop-high-night | joints | not exercised
+desktop-high-night | level switches | p50 0 p95 0 worst 1 total 11
 desktop-high-night | lights | p50 47 p95 64 worst 64 total 23931
 desktop-high-night | lights dropped | p50 0 p95 24 worst 29 total 1534
-desktop-high-night | lod0 draws | p50 1388 p95 1709 worst 1779 total 718546
-desktop-high-night | lod1+ draws | not exercised
+desktop-high-night | lod0 draws | p50 653 p95 756 worst 792 total 343186
+desktop-high-night | lod1+ draws | p50 730 p95 1005 worst 1085 total 375360
 desktop-high-night | main draws | p50 226 p95 377 worst 402 total 117573
-desktop-high-night | main triangles | p50 534258 p95 855786 worst 931157 total 280839639
+desktop-high-night | main draws above level 0 | p50 160 p95 280 worst 320 total 83455
+desktop-high-night | main triangles | p50 409913 p95 640209 worst 678313 total 216171638
 desktop-high-night | mesh draws considered | p50 3881 p95 3881 worst 3881 total 2060811
 desktop-high-night | mesh pool capacity | p50 69206032 p95 69206032 worst 69206032 total 36748402992
 desktop-high-night | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 total 36748402992
@@ -123,13 +128,14 @@ desktop-high-night | probe dispatches | not exercised
 desktop-high-night | reads held | not exercised
 desktop-high-night | scene instances | p50 112 p95 112 worst 112 total 59472
 desktop-high-night | scene prepass draws | p50 219 p95 370 worst 395 total 113856
-desktop-high-night | shadow triangles | p50 2220109 p95 2450048 worst 2507315 total 1137991106
+desktop-high-night | shadow draws above level 0 | p50 430 p95 445 worst 445 total 208450
+desktop-high-night | shadow triangles | p50 2027372 p95 2250319 worst 2307586 total 1044434070
 desktop-high-night | skinned instances | not exercised
 desktop-high-night | skinned vertices | not exercised
 desktop-high-night | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-high-night | texture bytes raised | not exercised
 desktop-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
-desktop-high-night | triangles | p50 3297578 p95 4016773 worst 4102451 total 1718263880
+desktop-high-night | triangles | p50 2860296 p95 3411094 worst 3466148 total 1495370842
 desktop-high-night | ui draws | not exercised
 
 desktop-low-dusk | ambient characters in view | not exercised
@@ -162,12 +168,14 @@ desktop-low-dusk | frames waiting on a pipeline | not exercised
 desktop-low-dusk | held off screen | not exercised
 desktop-low-dusk | inset draws | not exercised
 desktop-low-dusk | joints | not exercised
+desktop-low-dusk | level switches | p50 0 p95 0 worst 2 total 11
 desktop-low-dusk | lights | p50 47 p95 64 worst 64 total 23931
 desktop-low-dusk | lights dropped | p50 0 p95 24 worst 29 total 1534
-desktop-low-dusk | lod0 draws | p50 1359 p95 1603 worst 1683 total 675597
-desktop-low-dusk | lod1+ draws | not exercised
+desktop-low-dusk | lod0 draws | p50 523 p95 600 worst 662 total 270247
+desktop-low-dusk | lod1+ draws | p50 795 p95 1105 worst 1185 total 405350
 desktop-low-dusk | main draws | p50 226 p95 377 worst 402 total 117573
-desktop-low-dusk | main triangles | p50 534258 p95 855786 worst 931157 total 280839639
+desktop-low-dusk | main draws above level 0 | p50 160 p95 280 worst 320 total 83820
+desktop-low-dusk | main triangles | p50 408800 p95 636729 worst 671531 total 214974416
 desktop-low-dusk | mesh draws considered | p50 3881 p95 3881 worst 3881 total 2060811
 desktop-low-dusk | mesh pool capacity | p50 69206032 p95 69206032 worst 69206032 total 36748402992
 desktop-low-dusk | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 total 36748402992
@@ -184,13 +192,14 @@ desktop-low-dusk | probe dispatches | not exercised
 desktop-low-dusk | reads held | not exercised
 desktop-low-dusk | scene instances | p50 112 p95 112 worst 112 total 59472
 desktop-low-dusk | scene prepass draws | p50 219 p95 370 worst 395 total 113856
-desktop-low-dusk | shadow triangles | p50 2035606 p95 2419617 worst 2544638 total 1032336749
+desktop-low-dusk | shadow draws above level 0 | p50 460 p95 600 worst 610 total 237710
+desktop-low-dusk | shadow triangles | p50 1848406 p95 2169907 worst 2295287 total 933963649
 desktop-low-dusk | skinned instances | not exercised
 desktop-low-dusk | skinned vertices | not exercised
 desktop-low-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-low-dusk | texture bytes raised | not exercised
 desktop-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
-desktop-low-dusk | triangles | p50 3229858 p95 3791364 worst 3884794 total 1612609523
+desktop-low-dusk | triangles | p50 2775759 p95 3165615 worst 3255359 total 1382505977
 desktop-low-dusk | ui draws | not exercised
 
 desktop-low-night | ambient characters in view | not exercised
@@ -223,12 +232,14 @@ desktop-low-night | frames waiting on a pipeline | not exercised
 desktop-low-night | held off screen | not exercised
 desktop-low-night | inset draws | not exercised
 desktop-low-night | joints | not exercised
+desktop-low-night | level switches | p50 0 p95 0 worst 2 total 11
 desktop-low-night | lights | p50 47 p95 64 worst 64 total 23931
 desktop-low-night | lights dropped | p50 0 p95 24 worst 29 total 1534
-desktop-low-night | lod0 draws | p50 1280 p95 1639 worst 1716 total 671573
-desktop-low-night | lod1+ draws | not exercised
+desktop-low-night | lod0 draws | p50 468 p95 557 worst 588 total 248303
+desktop-low-night | lod1+ draws | p50 820 p95 1125 worst 1190 total 423270
 desktop-low-night | main draws | p50 226 p95 377 worst 402 total 117573
-desktop-low-night | main triangles | p50 534258 p95 855786 worst 931157 total 280839639
+desktop-low-night | main draws above level 0 | p50 160 p95 280 worst 320 total 83820
+desktop-low-night | main triangles | p50 408800 p95 636729 worst 671531 total 214974416
 desktop-low-night | mesh draws considered | p50 3881 p95 3881 worst 3881 total 2060811
 desktop-low-night | mesh pool capacity | p50 69206032 p95 69206032 worst 69206032 total 36748402992
 desktop-low-night | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 total 36748402992
@@ -245,13 +256,14 @@ desktop-low-night | probe dispatches | not exercised
 desktop-low-night | reads held | not exercised
 desktop-low-night | scene instances | p50 112 p95 112 worst 112 total 59472
 desktop-low-night | scene prepass draws | p50 219 p95 370 worst 395 total 113856
-desktop-low-night | shadow triangles | p50 1989776 p95 2248329 worst 2327277 total 1033762208
+desktop-low-night | shadow draws above level 0 | p50 520 p95 590 worst 605 total 255630
+desktop-low-night | shadow triangles | p50 1778562 p95 2002997 worst 2078325 total 927355997
 desktop-low-night | skinned instances | not exercised
 desktop-low-night | skinned vertices | not exercised
 desktop-low-night | temporal draws | p50 1 p95 1 worst 1 total 531
 desktop-low-night | texture bytes raised | not exercised
 desktop-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
-desktop-low-night | triangles | p50 3051760 p95 3865135 worst 3958119 total 1614034982
+desktop-low-night | triangles | p50 2595462 p95 3204733 worst 3254577 total 1375898325
 desktop-low-night | ui draws | not exercised
 
 mobile-high-dusk | ambient characters in view | not exercised
@@ -284,12 +296,14 @@ mobile-high-dusk | frames waiting on a pipeline | not exercised
 mobile-high-dusk | held off screen | not exercised
 mobile-high-dusk | inset draws | not exercised
 mobile-high-dusk | joints | not exercised
+mobile-high-dusk | level switches | p50 0 p95 0 worst 1 total 11
 mobile-high-dusk | lights | p50 8 p95 8 worst 8 total 4248
 mobile-high-dusk | lights dropped | p50 39 p95 80 worst 85 total 21217
-mobile-high-dusk | lod0 draws | p50 893 p95 1209 worst 1271 total 459715
-mobile-high-dusk | lod1+ draws | not exercised
+mobile-high-dusk | lod0 draws | p50 299 p95 353 worst 379 total 152120
+mobile-high-dusk | lod1+ draws | p50 610 p95 880 worst 955 total 307595
 mobile-high-dusk | main draws | p50 226 p95 376 worst 402 total 117509
-mobile-high-dusk | main triangles | p50 534258 p95 855786 worst 931157 total 280730035
+mobile-high-dusk | main draws above level 0 | p50 160 p95 280 worst 320 total 83395
+mobile-high-dusk | main triangles | p50 409913 p95 640209 worst 678313 total 216101166
 mobile-high-dusk | mesh draws considered | p50 2231 p95 2231 worst 2231 total 1184661
 mobile-high-dusk | mesh pool capacity | p50 69206032 p95 69206032 worst 69206032 total 36748402992
 mobile-high-dusk | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 total 36748402992
@@ -306,13 +320,14 @@ mobile-high-dusk | probe dispatches | not exercised
 mobile-high-dusk | reads held | not exercised
 mobile-high-dusk | scene instances | p50 112 p95 112 worst 112 total 59472
 mobile-high-dusk | scene prepass draws | p50 219 p95 369 worst 395 total 113792
-mobile-high-dusk | shadow triangles | p50 1009199 p95 1262870 worst 1312219 total 521451065
+mobile-high-dusk | shadow draws above level 0 | p50 300 p95 360 worst 375 total 140805
+mobile-high-dusk | shadow triangles | p50 890955 p95 1111139 worst 1158626 total 460197086
 mobile-high-dusk | skinned instances | not exercised
 mobile-high-dusk | skinned vertices | not exercised
 mobile-high-dusk | temporal draws | not exercised
 mobile-high-dusk | texture bytes raised | not exercised
 mobile-high-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
-mobile-high-dusk | triangles | p50 2155040 p95 2869439 worst 2953453 total 1101504100
+mobile-high-dusk | triangles | p50 1779912 p95 2297356 worst 2375093 total 910992383
 mobile-high-dusk | ui draws | not exercised
 
 mobile-high-night | ambient characters in view | not exercised
@@ -345,12 +360,14 @@ mobile-high-night | frames waiting on a pipeline | not exercised
 mobile-high-night | held off screen | not exercised
 mobile-high-night | inset draws | not exercised
 mobile-high-night | joints | not exercised
+mobile-high-night | level switches | p50 0 p95 0 worst 1 total 11
 mobile-high-night | lights | p50 8 p95 8 worst 8 total 4248
 mobile-high-night | lights dropped | p50 39 p95 80 worst 85 total 21217
-mobile-high-night | lod0 draws | p50 886 p95 1243 worst 1311 total 460100
-mobile-high-night | lod1+ draws | not exercised
+mobile-high-night | lod0 draws | p50 270 p95 353 worst 373 total 142345
+mobile-high-night | lod1+ draws | p50 620 p95 905 worst 990 total 317755
 mobile-high-night | main draws | p50 226 p95 376 worst 402 total 117509
-mobile-high-night | main triangles | p50 534258 p95 855786 worst 931157 total 280730035
+mobile-high-night | main draws above level 0 | p50 160 p95 280 worst 320 total 83395
+mobile-high-night | main triangles | p50 409913 p95 640209 worst 678313 total 216101166
 mobile-high-night | mesh draws considered | p50 2231 p95 2231 worst 2231 total 1184661
 mobile-high-night | mesh pool capacity | p50 69206032 p95 69206032 worst 69206032 total 36748402992
 mobile-high-night | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 total 36748402992
@@ -367,13 +384,14 @@ mobile-high-night | probe dispatches | not exercised
 mobile-high-night | reads held | not exercised
 mobile-high-night | scene instances | p50 112 p95 112 worst 112 total 59472
 mobile-high-night | scene prepass draws | p50 219 p95 369 worst 395 total 113792
-mobile-high-night | shadow triangles | p50 1012767 p95 1275558 worst 1306908 total 524613470
+mobile-high-night | shadow draws above level 0 | p50 310 p95 385 worst 390 total 150965
+mobile-high-night | shadow triangles | p50 887084 p95 1113456 worst 1138875 total 458814663
 mobile-high-night | skinned instances | not exercised
 mobile-high-night | skinned vertices | not exercised
 mobile-high-night | temporal draws | not exercised
 mobile-high-night | texture bytes raised | not exercised
 mobile-high-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
-mobile-high-night | triangles | p50 2106283 p95 2923483 worst 3035197 total 1104666505
+mobile-high-night | triangles | p50 1722163 p95 2338027 worst 2440419 total 909609960
 mobile-high-night | ui draws | not exercised
 
 mobile-low-dusk | ambient characters in view | not exercised
@@ -406,12 +424,14 @@ mobile-low-dusk | frames waiting on a pipeline | not exercised
 mobile-low-dusk | held off screen | not exercised
 mobile-low-dusk | inset draws | not exercised
 mobile-low-dusk | joints | not exercised
+mobile-low-dusk | level switches | p50 0 p95 0 worst 2 total 11
 mobile-low-dusk | lights | p50 8 p95 8 worst 8 total 4248
 mobile-low-dusk | lights dropped | p50 39 p95 80 worst 85 total 21217
-mobile-low-dusk | lod0 draws | p50 638 p95 750 worst 775 total 316947
-mobile-low-dusk | lod1+ draws | not exercised
+mobile-low-dusk | lod0 draws | p50 211 p95 242 worst 270 total 108927
+mobile-low-dusk | lod1+ draws | p50 425 p95 520 worst 560 total 208020
 mobile-low-dusk | main draws | p50 226 p95 376 worst 402 total 117509
-mobile-low-dusk | main triangles | p50 534258 p95 855786 worst 931157 total 280730035
+mobile-low-dusk | main draws above level 0 | p50 160 p95 280 worst 320 total 83760
+mobile-low-dusk | main triangles | p50 408800 p95 636729 worst 671531 total 214903944
 mobile-low-dusk | mesh draws considered | p50 1674 p95 1674 worst 1674 total 888894
 mobile-low-dusk | mesh pool capacity | p50 69206032 p95 69206032 worst 69206032 total 36748402992
 mobile-low-dusk | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 total 36748402992
@@ -428,13 +448,14 @@ mobile-low-dusk | probe dispatches | not exercised
 mobile-low-dusk | reads held | not exercised
 mobile-low-dusk | scene instances | p50 112 p95 112 worst 112 total 59472
 mobile-low-dusk | scene prepass draws | not exercised
-mobile-low-dusk | shadow triangles | p50 919536 p95 1085143 worst 1136845 total 459301439
+mobile-low-dusk | shadow draws above level 0 | p50 255 p95 315 worst 325 total 124260
+mobile-low-dusk | shadow triangles | p50 794951 p95 946040 worst 994669 total 403601033
 mobile-low-dusk | skinned instances | not exercised
 mobile-low-dusk | skinned vertices | not exercised
 mobile-low-dusk | temporal draws | not exercised
 mobile-low-dusk | texture bytes raised | not exercised
 mobile-low-dusk | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
-mobile-low-dusk | triangles | p50 1526500 p95 1801429 worst 1870888 total 759171900
+mobile-low-dusk | triangles | p50 1286320 p95 1489557 worst 1568544 total 637645403
 mobile-low-dusk | ui draws | not exercised
 
 mobile-low-night | ambient characters in view | not exercised
@@ -467,12 +488,14 @@ mobile-low-night | frames waiting on a pipeline | not exercised
 mobile-low-night | held off screen | not exercised
 mobile-low-night | inset draws | not exercised
 mobile-low-night | joints | not exercised
+mobile-low-night | level switches | p50 0 p95 0 worst 2 total 11
 mobile-low-night | lights | p50 8 p95 8 worst 8 total 4248
 mobile-low-night | lights dropped | p50 39 p95 80 worst 85 total 21217
-mobile-low-night | lod0 draws | p50 625 p95 794 worst 810 total 316921
-mobile-low-night | lod1+ draws | not exercised
+mobile-low-night | lod0 draws | p50 184 p95 235 worst 250 total 98326
+mobile-low-night | lod1+ draws | p50 435 p95 560 worst 585 total 218595
 mobile-low-night | main draws | p50 226 p95 376 worst 402 total 117509
-mobile-low-night | main triangles | p50 534258 p95 855786 worst 931157 total 280730035
+mobile-low-night | main draws above level 0 | p50 160 p95 280 worst 320 total 83760
+mobile-low-night | main triangles | p50 408800 p95 636729 worst 671531 total 214903944
 mobile-low-night | mesh draws considered | p50 1674 p95 1674 worst 1674 total 888894
 mobile-low-night | mesh pool capacity | p50 69206032 p95 69206032 worst 69206032 total 36748402992
 mobile-low-night | mesh pool floor | p50 69206032 p95 69206032 worst 69206032 total 36748402992
@@ -489,11 +512,12 @@ mobile-low-night | probe dispatches | not exercised
 mobile-low-night | reads held | not exercised
 mobile-low-night | scene instances | p50 112 p95 112 worst 112 total 59472
 mobile-low-night | scene prepass draws | not exercised
-mobile-low-night | shadow triangles | p50 898833 p95 1097454 worst 1128225 total 459232392
+mobile-low-night | shadow draws above level 0 | p50 270 p95 330 worst 345 total 134835
+mobile-low-night | shadow triangles | p50 780961 p95 957895 worst 981237 total 398779194
 mobile-low-night | skinned instances | not exercised
 mobile-low-night | skinned vertices | not exercised
 mobile-low-night | temporal draws | not exercised
 mobile-low-night | texture bytes raised | not exercised
 mobile-low-night | texture pool bytes | p50 37401800 p95 37401800 worst 37401800 total 19860355800
-mobile-low-night | triangles | p50 1469299 p95 1884874 worst 1939258 total 759102853
+mobile-low-night | triangles | p50 1211302 p95 1552084 worst 1598267 total 632823564
 mobile-low-night | ui draws | not exercised

@@ -362,6 +362,10 @@
 //!   `RenderSettings::view_culling`), on by default. `frustum` drops the tier's distance and
 //!   size tests; off draws them all, the same pixels as `frustum`, for
 //!   benches that compare the two.
+//! - `--lods on|off|<level>`: how static draws choose their levels of detail (M5 D4,
+//!   `RenderSettings::levels`), on by default at the tier's bias. `off` draws every one at level 0, the
+//!   pictures from before levels were chosen, which older golden scenes pin; a level holds every one
+//!   that may change level there (or at its mesh's coarsest), the two sides of a switch for comparing.
 //! - `--cull-thresholds <distance>,<pixels>,<texels>`: distance and size culling's thresholds instead of the
 //!   tier's (M5 D3, `RenderSettings::culling`), for the walks that choose them: meters past which nothing is
 //!   drawn (0 for none), the least output pixels and the least cascade texels an instance's bounds must span.

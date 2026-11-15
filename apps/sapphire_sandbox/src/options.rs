@@ -9,8 +9,9 @@ use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
 use sapphire_render::{
-    ColorVision, CullingMode, CullingThresholds, DebugView, EffectScale, LightPath, MIN_RENDER_SCALE,
-    MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Weather, Wind,
+    ColorVision, CullingMode, CullingThresholds, DebugView, EffectScale, LevelSettings, LevelsMode,
+    LightPath, MIN_RENDER_SCALE, MaterialDrive, Msaa, PostVariants, RenderSettings, ShadowSettings, Weather,
+    Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -369,6 +370,11 @@ pub(crate) struct Options {
     /// comparisons. `frustum` keeps the frustum and drops the tier's distance and size tests;
     /// `off` culls nothing. Unset, the tier's (`on`).
     pub view_culling: Option<CullingMode>,
+    /// `--lods on|off|<level>`: how static draws choose their levels of detail (M5 D4), for
+    /// comparisons. `off` draws every one at level 0, as before levels were chosen; a number holds
+    /// every one that may change level at that level (or its mesh's coarsest). Unset, `on` at the
+    /// tier's bias.
+    pub lods: Option<LevelsMode>,
     /// `--cull-thresholds <distance>,<pixels>,<texels>`: the distance and size culling's
     /// thresholds instead of the tier's (M5 D3), for the walks that choose them: meters (0 for
     /// none), output pixels across and a cascade's texels across.
@@ -762,6 +768,7 @@ impl Options {
             post_variants: if self.plain_post { PostVariants::NONE } else { tier.post_variants },
             view_culling: self.view_culling.unwrap_or(tier.view_culling),
             culling: self.culling.unwrap_or(tier.culling),
+            levels: LevelSettings { mode: self.lods.unwrap_or(tier.levels.mode), ..tier.levels },
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
                 ..shadows
@@ -1328,6 +1335,20 @@ impl Options {
                         other => {
                             return Err(format!("--view-culling expects on, frustum or off, got {other:?}"));
                         }
+                    });
+                }
+                "--lods" => {
+                    options.lods = Some(match value("--lods")?.as_str() {
+                        "on" => LevelsMode::On,
+                        "off" => LevelsMode::Off,
+                        other => match other.parse::<u8>() {
+                            Ok(level) if level <= LevelsMode::MAX_LEVEL => LevelsMode::Fixed(level),
+                            _ => {
+                                return Err(format!(
+                                    "--lods expects on, off or a level 0..=7, got {other:?}"
+                                ));
+                            }
+                        },
                     });
                 }
                 "--cull-thresholds" => {
@@ -2889,6 +2910,14 @@ mod tests {
         assert_eq!(culling(&["--view-culling", "frustum"]), CullingMode::FrustumOnly);
         assert_eq!(culling(&["--view-culling=on"]), CullingMode::On);
         assert!(parse(&["--view-culling", "some"]).is_err());
+        // Levels of detail, at the tier's bias whatever the mode.
+        let biased = RenderSettings { levels: LevelSettings { bias: 0.5, ..LevelSettings::ON }, ..tier };
+        let lods = |args: &[&str]| parse(args).unwrap().0.render_settings(biased).levels;
+        assert_eq!(lods(&[]), biased.levels, "the tier's");
+        assert_eq!(lods(&["--lods", "off"]), LevelSettings { mode: LevelsMode::Off, bias: 0.5 });
+        assert_eq!(lods(&["--lods=2"]).mode, LevelsMode::Fixed(2));
+        assert_eq!(lods(&["--lods", "on"]).mode, LevelsMode::On);
+        assert!(parse(&["--lods", "8"]).is_err() && parse(&["--lods", "some"]).is_err());
         // The thresholds a walk tries instead of the tier's.
         let thresholds = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).culling;
         assert_eq!(thresholds(&[]), tier.culling);

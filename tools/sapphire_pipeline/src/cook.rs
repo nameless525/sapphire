@@ -2544,10 +2544,17 @@ fn asset_key(
         Part::Ambient => assets.zones[path].ambient_recipe(),
         _ => source.hash,
     };
+    // A navmesh and ambient characters read nothing of how a zone's meshes cook (its cells' levels and
+    // outlines, M5 D6), so a save to those leaves them alone.
+    let unread = ImportSettings::Zone(zone::ZoneSettings::default());
+    let settings = match part {
+        Part::Navigation | Part::Ambient => &unread,
+        _ => &meta.importer,
+    };
     Ok(CacheKey::new(&KeyInputs {
         source: keyed_source,
         recipe,
-        settings: &meta.importer,
+        settings,
         cook,
         dependencies: &dependencies,
     }))
@@ -2879,7 +2886,8 @@ fn cook_cell(
     let plan = &assets.zones[path];
     let _held = assets.memory.hold(plan.source_bytes_in(place) * MESH_MEMORY_PER_SOURCE_BYTE);
     let (mesh, bindings) = plan.merge(place, assembly_detail(cook)).map_err(zone_error(path))?;
-    zone_mesh(path, mesh, &bindings, settings, cook)
+    let grid = matches!(place, Place::Cell(_)).then_some(plan.document().grid);
+    zone_mesh(path, mesh, &bindings, settings, grid, cook)
 }
 
 /// A zone's mesh of `shape`, as cooked bytes: cooked as a cell's is, so it looks as the cells do.
@@ -2893,20 +2901,22 @@ fn cook_shape(
     let plan = &assets.zones[path];
     let _held = assets.memory.hold(plan.shape_source_bytes(shape) * MESH_MEMORY_PER_SOURCE_BYTE);
     let (mesh, bindings) = plan.merge_shape(shape, assembly_detail(cook)).map_err(zone_error(path))?;
-    zone_mesh(path, mesh, &bindings, settings, cook)
+    zone_mesh(path, mesh, &bindings, settings, None, cook)
 }
 
-/// A zone's merged `mesh`, baked, optimized and packed by its `settings`.
+/// A zone's merged `mesh`, baked, optimized and packed by its `settings`, a cell's with its zone's
+/// `grid` ([`zone::optimize_place`]).
 fn zone_mesh(
     path: &Path,
     mut mesh: ImportedMesh,
     bindings: &BTreeMap<String, AssetId>,
     settings: &zone::ZoneSettings,
+    grid: Option<sapphire_zone::grid::Grid>,
     cook: Cook,
 ) -> Result<Vec<u8>, CookError> {
     validate_mesh_inputs(path, &mesh)?;
     bake::outline_normals(&mut mesh, &settings.outline);
-    optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
+    zone::optimize_place(&mut mesh, settings, grid, cook);
     let packed = mesh
         .pack(settings.position_format, bindings)
         .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })?;

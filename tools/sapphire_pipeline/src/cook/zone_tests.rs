@@ -30,6 +30,7 @@ const WOOD: AssetId = AssetId::from_bytes([0x23; 16]);
 const STONE: AssetId = AssetId::from_bytes([0x24; 16]);
 const COLLIDERS: AssetId = AssetId::from_bytes([0x25; 16]);
 const LAMP: AssetId = AssetId::from_bytes([0x26; 16]);
+const GROUND: AssetId = AssetId::from_bytes([0x2f; 16]);
 
 /// A square of two triangles, a unit wide.
 fn piece_glb(height: f32) -> Vec<u8> {
@@ -1091,6 +1092,46 @@ fn what_doesnt_touch_a_navmesh_doesnt_bake_it() {
     write_zone(&tree, &moved.replace("(1.0, 0.0, 1.0)", "(1.0, 0.0, 2.0)"));
     let report = tree.cook();
     assert_eq!(by_id(&report, navigation_id()).status, CookStatus::Cooked, "a moved spawner");
+}
+
+/// A cell's levels (M5 D6) are in its key, and in nothing the simulation reads: the `.szone`, its colliders
+/// and its navmesh come out the same bytes, and the navmesh doesn't even bake again.
+#[test]
+fn asking_for_levels_recooks_the_cells_and_moves_nothing_the_simulation_reads() {
+    // A ground under cell (0, 0), in 2 m quads, which simplifies; the crate and the block don't.
+    let ground = r##"(piece: "#quad", scale: (16.0, 1.0, 16.0), slot: Some("stone"))"##;
+    let placements = placements()
+        .replace("placements: [", &format!(r##"placements: [(prefab: "{GROUND}", at: (8.0, 0.0, 8.0)),"##));
+    let data = format!("{} {NAV_SPAWNERS}", nav_zone(&placements));
+    let (tree, _) = nav_tree("zone-levels", &data);
+    prefab(&tree, "ground", GROUND, &["stone"], ground, &[("stone", STONE)]);
+    let before = tree.cook();
+    let read = |report: &CookReport, id: AssetId| fs::read(&by_id(report, id).output).unwrap();
+    let path = tree.content().join("town.zone.ron");
+    let levels = |lods: optimize::LodSettings| {
+        tree.sidecar(&path, ZONE, ImportSettings::Zone(zone::ZoneSettings { lods, ..Default::default() }));
+    };
+
+    levels(optimize::LodSettings::default());
+    let after = tree.cook();
+    for place in [cell(-1, -1), cell(0, 0), cell(1, 0), Place::Backdrop] {
+        assert_eq!(by_id(&after, cell_id(place)).status, CookStatus::Cooked, "{place:?}");
+    }
+    let leveled = Mesh::read(&read_aligned(&by_id(&after, cell_id(cell(0, 0))).output)).unwrap().lods.len();
+    assert!(leveled > 1, "the ground simplifies: {leveled} levels");
+    assert_eq!(by_id(&after, navigation_id()).status, CookStatus::UpToDate, "it reads no mesh setting");
+    assert_eq!(by_id(&after, COLLIDERS).status, CookStatus::UpToDate);
+    for id in [ZONE, navigation_id(), COLLIDERS] {
+        assert_eq!(read(&after, id), read(&before, id), "{id}: the same bytes, so the same digest");
+    }
+    assert_eq!(tree.cook().count(CookStatus::Cooked), 0, "the same settings again cook nothing");
+
+    // Other levels move the cells' keys again, and none asked for is the cells' bytes before.
+    levels(optimize::LodSettings::new(Vec::new(), 0).unwrap().lock_border(true));
+    let none = tree.cook();
+    for place in [cell(-1, -1), cell(0, 0), cell(1, 0), Place::Backdrop] {
+        assert_eq!(read(&none, cell_id(place)), read(&before, cell_id(place)), "{place:?}");
+    }
 }
 
 #[test]

@@ -20,7 +20,9 @@
 //!      at rest. Vertices that two submeshes share (a material seam) are locked, so simplifying
 //!      the submeshes independently can't open cracks between them. A sidecar's `lock_border`
 //!      locks the mesh's open border as well, for a mesh cut from a larger surface whose edges
-//!      must meet its neighbors' at every level (X1's far mountains, cut into sectors).
+//!      must meet its neighbors' at every level (X1's far mountains, cut into sectors), and a
+//!      caller can pin vertices of its own ([`optimize_pinned`]): a zone's cells lock every vertex
+//!      on a line of their grid, where a piece of the next cell meets them (`zone`, M5 D6).
 //!    - **Seams** where a vertex is split (hard normals, texture seams, material IDs) collapse
 //!      only along themselves, so both sides stay sealed: meshoptimizer's own rule.
 //!
@@ -225,12 +227,25 @@ impl Level {
 /// [module docs](self) describe. `seam_tolerance` is the distance within which vertices of two
 /// submeshes count as one seam (the outline weld tolerance).
 pub fn optimize(mesh: &mut ImportedMesh, settings: &LodSettings, seam_tolerance: f32, cook: Cook) {
+    optimize_pinned(mesh, settings, seam_tolerance, &[], cook);
+}
+
+/// [`optimize`], with every vertex `pinned` marks (one flag a vertex, or none at all) locked at every
+/// level, as a seam's are: it stays where it is, bit for bit, in every level that keeps its triangles.
+pub fn optimize_pinned(
+    mesh: &mut ImportedMesh,
+    settings: &LodSettings,
+    seam_tolerance: f32,
+    pinned: &[bool],
+    cook: Cook,
+) {
     debug_assert_eq!(mesh.lods.len(), 1, "optimize builds the LOD chain from LOD0 alone");
+    debug_assert!(pinned.is_empty() || pinned.len() == mesh.vertices.len(), "a flag a vertex, or none");
     merge_by_material(mesh);
     let positions: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
     let adapter = VertexDataAdapter::new(bytemuck::cast_slice(&positions), size_of::<[f32; 3]>(), 0)
         .expect("tightly packed positions");
-    let mut chain = lod_chain(mesh, settings, seam_tolerance, &adapter);
+    let mut chain = lod_chain(mesh, settings, seam_tolerance, pinned, &adapter);
     let skip = match cook {
         Cook::Desktop => 0,
         Cook::Mobile => settings.mobile_skip as usize,
@@ -270,6 +285,7 @@ fn lod_chain(
     mesh: &ImportedMesh,
     settings: &LodSettings,
     seam_tolerance: f32,
+    pinned: &[bool],
     adapter: &VertexDataAdapter<'_>,
 ) -> Vec<Level> {
     let scale = meshopt::simplify_scale(adapter);
@@ -303,7 +319,7 @@ fn lod_chain(
         return chain;
     }
     let attributes = simplifier_attributes(mesh, scale);
-    let locks = locks(mesh, seam_tolerance);
+    let locks = locks(mesh, seam_tolerance, pinned);
     let options = if settings.lock_border { SimplifyOptions::LockBorder } else { SimplifyOptions::None };
     for level in &settings.levels {
         let last = chain.last().expect("LOD0 is always there");
@@ -466,9 +482,10 @@ fn posed_positions(mesh: &ImportedMesh, skin: &ImportedSkin, axis: Vec3, angle: 
 }
 
 /// Per vertex: whether it must not move. That is a vertex on a seam between two submeshes
-/// (within `tolerance` of a vertex another submesh uses), and a vertex a morph target moves or
-/// that shares a triangle with one (by position, so a split vertex's copies count as one).
-fn locks(mesh: &ImportedMesh, tolerance: f32) -> Vec<bool> {
+/// (within `tolerance` of a vertex another submesh uses), a vertex a morph target moves or
+/// that shares a triangle with one, and a vertex the caller pinned (each by position, so a split
+/// vertex's copies count as one).
+fn locks(mesh: &ImportedMesh, tolerance: f32, pinned: &[bool]) -> Vec<bool> {
     let (group_of, group_count) = bake::weld(&mesh.vertices, tolerance);
     // Per weld group: the first submesh that uses it, and whether a second one does.
     let mut owner: Vec<Option<usize>> = vec![None; group_count];
@@ -484,6 +501,9 @@ fn locks(mesh: &ImportedMesh, tolerance: f32) -> Vec<bool> {
                 Some(_) => {}
             }
         }
+    }
+    for (&group, _) in group_of.iter().zip(pinned).filter(|(_, pinned)| **pinned) {
+        locked[group] = true;
     }
     let mut moved = vec![false; group_count];
     for delta in mesh.morph_targets.iter().flat_map(|target| &target.deltas) {

@@ -28,8 +28,38 @@
 //! Each material used is a submesh, however many prefabs use it: draws are per material, and the
 //! material a slot is bound to is what decides. Positions default to `Float32`, so pieces abutting
 //! across a cell's edge meet exactly, as quantizing each across its own bounds wouldn't have them (the
-//! town's sidecar says the same), and there are no LODs by default, as the town has none (a cell's
-//! sized for its whole distance).
+//! town's sidecar says the same).
+//!
+//! # Levels of detail
+//!
+//! A zone's sidecar asks for its cells' levels (`lods`, the mesh cook's [`LodSettings`], measured as
+//! every mesh's are: meters of error, the shading normals' folded in, relative to the cell's extent),
+//! and by default asks for none, so a zone that doesn't ask cooks the bytes it always did: the town, the
+//! ward, the hub and the proving ground keep one level (their cells are small and near). The benchmark's
+//! district asks (M5 D6). A cell is a static instance like any other, so a renderer chooses its level by
+//! that error projected to pixels, as it does an instance's.
+//!
+//! Each level simplifies the last one material by material ([`crate::optimize`]), and a material whose
+//! triangles all go drops out of that level's submeshes. What a level may not move, so that no crack
+//! opens between two cells at any two levels, or between a cell and what stands on it:
+//!
+//! - **The mesh's open border,** always (meshoptimizer's `LockBorder`, whatever the sidecar says): a
+//!   cell's ground ends at its square's edge, where the next cell's begins, and a piece's own open
+//!   edge (an awning, a sign, a wall with no foot) stays where it was.
+//! - **Every vertex on a line of the grid** (within [`GRID_LINE_TOLERANCE`]), whichever cell's line it
+//!   is: closed pieces abutting across a cell's edge (a wall cut where the cells meet) keep their end
+//!   faces where the neighbour's are. It needs nothing of the neighbour, so each cell still cooks alone,
+//!   and every line rather than the cell's own four, since a piece may reach a cell past its square.
+//! - **Material seams and hard edges,** as in any mesh: a vertex two submeshes share is locked, and
+//!   one where normals or texture coordinates split collapses only along the split, so a piece's foot
+//!   (a hard edge against its base) slides along its own outline and never lifts off a floor.
+//!
+//! So a cell's border at every level is its level 0's, vertex for vertex and edge for edge, and two
+//! cells at any two levels meet as they do at level 0. A flat floor simplifies within its plane, so
+//! what stands on it stays on it; on uneven ground, what stands on it stays within the level's error
+//! of it, which is under the allowance wherever that level draws. Instances aren't in a cell's mesh and
+//! stand on its surfaces, never on its vertices. The zone's simulation half reads none of it: the
+//! `.szone`, its colliders and its navmesh are the same bytes with levels or without.
 //!
 //! # Keys
 //!
@@ -123,6 +153,7 @@ use sapphire_nav::{NavGraph, PathSearch, Reach, RouteEnd};
 use sapphire_navmesh::NavMesh;
 use sapphire_serialize::postcard;
 use sapphire_tod::TodTimeline;
+use sapphire_zone::grid::Grid;
 use sapphire_zone::{Bounds, Place, Zone, ZoneDocument, ZoneError, ZoneGeometry};
 use serde::{Deserialize, Serialize};
 
@@ -130,12 +161,15 @@ use crate::assembly::{self, Assembly, AssemblyError, Detail, matches_pattern};
 use crate::bake::OutlineSettings;
 use crate::cache::{Cache, CacheError, CacheKey, Stage};
 use crate::character_maps;
+use crate::cook::Cook;
 use crate::mesh::{ImportedMaterial, ImportedMesh};
 use crate::meta::{ImportSettings, SourceAsset};
 use crate::nav::{self, BakeSettings, NavBakeError, Seed};
-use crate::optimize::LodSettings;
+use crate::optimize::{self, LodSettings};
 
 pub mod claims;
+#[cfg(test)]
+mod levels_tests;
 
 /// Reads and checks the document, its prefabs' too. Bump the version whenever that changes output for
 /// the same document.
@@ -144,9 +178,14 @@ pub const IMPORTER: Stage = Stage { name: "zone document", version: 1 };
 /// The `.szone` writer. Bump the version whenever it changes output for the same document and cells.
 pub const COOKER: Stage = Stage { name: "szone", version: 1 };
 
-/// What merges a cell's placed prefabs into one mesh: carries the assembly importer's version, as that
-/// makes the triangles. Bump the top whenever merging changes output for the same pieces.
-pub const CELL_IMPORTER: Stage = Stage { name: "zone cell", version: (1 << 28) | assembly::IMPORTER.version };
+/// What merges a cell's placed prefabs into one mesh and simplifies its levels: carries the assembly
+/// importer's version, as that makes the triangles. Bump the top whenever merging or a cell's levels
+/// change output for the same pieces (2: a cell's levels lock its border and the grid's lines, M5 D6).
+pub const CELL_IMPORTER: Stage = Stage { name: "zone cell", version: (2 << 28) | assembly::IMPORTER.version };
+
+/// How near a line of the grid a vertex of a cell's mesh is locked at every level, in metres: well
+/// above a coordinate's rounding at the district's scale, and well below a piece's own detail.
+pub const GRID_LINE_TOLERANCE: f32 = 1e-3;
 
 /// What a zone source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".zone.ron";
@@ -164,6 +203,8 @@ const SKY_MATERIAL: &str = "sapphire::render::SkyMaterial";
 #[serde(default)]
 pub struct ZoneSettings {
     pub outline: OutlineSettings,
+    /// Each cell's levels of detail: none by default. A cell's levels always lock its open border,
+    /// whatever `lock_border` says (see the [module docs](self#levels-of-detail)).
     pub lods: LodSettings,
     pub position_format: PositionFormat,
 }
@@ -176,6 +217,29 @@ impl Default for ZoneSettings {
             position_format: PositionFormat::Float32,
         }
     }
+}
+
+/// Builds the levels of a place's merged and baked `mesh` by `settings`, and orders it for the GPU, as
+/// the mesh cook's [`crate::optimize`] does any mesh's, with its open border locked and, given its zone's
+/// `grid` (a cell's, not the backdrop's or a shape's), every vertex on the grid's lines too (see the
+/// [module docs](self#levels-of-detail)).
+pub fn optimize_place(mesh: &mut ImportedMesh, settings: &ZoneSettings, grid: Option<Grid>, cook: Cook) {
+    let lods = settings.lods.clone().lock_border(true);
+    let pinned = match grid {
+        Some(grid) if !lods.levels().is_empty() => grid_line_pins(mesh, grid),
+        _ => Vec::new(),
+    };
+    optimize::optimize_pinned(mesh, &lods, settings.outline.weld_tolerance(), &pinned, cook);
+}
+
+/// Per vertex of `mesh`, whether it lies on a line of `grid`: within [`GRID_LINE_TOLERANCE`] of a
+/// multiple of its cell's side in X or in Z.
+pub fn grid_line_pins(mesh: &ImportedMesh, grid: Grid) -> Vec<bool> {
+    let on_line = |value: f32| {
+        let line = (value / grid.cell_size).round() * grid.cell_size;
+        (value - line).abs() <= GRID_LINE_TOLERANCE
+    };
+    mesh.vertices.iter().map(|vertex| on_line(vertex.position[0]) || on_line(vertex.position[2])).collect()
 }
 
 /// A zone document that can't cook.

@@ -4073,12 +4073,14 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-high",
                        "--lods", "on", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 17.1, warp: 41.9),
             ),
             (
                 name: "lod-desktop-low",
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "desktop-low",
                        "--lods", "on", "--capture-frames", "12"],
+                ci_seconds: (lavapipe: 10.8, warp: 36.7),
             ),
             (
                 name: "lod-mobile-high",
@@ -4086,6 +4088,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-high",
                        "--render-scale", "0.632479", "--lods", "on"],
+                ci_seconds: (lavapipe: 4.6, warp: 15.7),
             ),
             (
                 name: "lod-mobile-low",
@@ -4093,6 +4096,7 @@
                 ticks: 90,
                 args: ["--zone", "lantern_ward:player_start", "--time-of-day", "14", "--tier", "mobile-low",
                        "--render-scale", "0.504274", "--lods", "on"],
+                ci_seconds: (lavapipe: 2.4, warp: 14.2),
             ),
         ],
     ),

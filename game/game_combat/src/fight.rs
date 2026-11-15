@@ -34,7 +34,9 @@ use sapphire_moves::Enemy;
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
 use sapphire_render::quality::TierId;
-use sapphire_render::{EffectScale, Focus, MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame};
+use sapphire_render::{
+    CharacterDetail, EffectScale, Focus, MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame,
+};
 use sapphire_rhi::GpuContext;
 use sapphire_sequencer::{FocusFollow, Origin, Playing, TimelinePlayer};
 use sapphire_time::{SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
@@ -72,8 +74,8 @@ use crate::faces::DialogueFaces;
 use crate::party_looks::{Drawn, PartyLooks};
 use crate::timeline::{self, TimelineShow};
 use sapphire_stage::scene::{
-    DEFAULT_TIME_OF_DAY, Fade, Figure, LookDev, NearFade, Scene, ZoneShow, ZoneStanding, ZoneTarget,
-    stream_settings,
+    CharacterLevels, DEFAULT_TIME_OF_DAY, Fade, Figure, LookDev, NearFade, Scene, ZoneShow, ZoneStanding,
+    ZoneTarget, stream_settings,
 };
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
@@ -254,6 +256,7 @@ type GraphPlayers = QueryState<(
     &'static mut Figure,
     &'static mut CharacterLightRig,
     &'static RenderTransform,
+    Option<&'static mut CharacterLevels>,
 )>;
 
 /// A kind of enemy as a fight has loaded it: its cooked document, and what its look names, held for as long
@@ -1254,9 +1257,12 @@ impl FightShow {
             self.frame_focus = self.focus.follow(None, weight, 0.0, |_| None);
             scene.stream_ahead([]);
             scene.keep_textures_whole([]);
+            scene.set_close_up(false);
             return;
         };
         let shown = show.present(alpha, self.arena.as_mut().and_then(|arena| arena.director_mut()));
+        // A shot of a cutscene or a move's cinematic is a close-up: everyone draws whole (M5 D5).
+        scene.set_close_up(show.player().shot().is_some());
         // Its focus (M5 L8), on a role's head where the fighters are drawn this frame.
         let drawn_at = if self.draws_latest { 1.0 } else { alpha };
         let arena = self.arena.as_deref();
@@ -1956,6 +1962,8 @@ fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held, kin
             held.figure,
             held.pose.clone(),
             NearFade::Reach { radius: held.sizes.framed_radius, range: FIGHTER_FADE },
+            // An enemy draws as coarse as its size on screen allows, until something names it (M5 D5).
+            CharacterLevels(CharacterDetail::ByError),
         ))
         .id();
     let carried = meshes.blade.zip(held.grip).zip(enemy::blade_figure(held));

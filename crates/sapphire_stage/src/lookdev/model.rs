@@ -22,13 +22,13 @@ use sapphire_assets::{AssetId, Handle};
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
-use sapphire_render::{FaceExpression, MeshHandle, Renderer};
+use sapphire_render::{CharacterDetail, FaceExpression, MeshHandle, Renderer};
 use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 
 use crate::content::Content;
 use crate::extract::{RenderMesh, RenderPose, RenderTransform};
-use crate::scene::{Figure, Scene};
+use crate::scene::{CharacterLevels, Figure, Scene};
 
 /// Where a model stands: where the enemy shot's warrior does, facing the character
 /// ([`super::Shot::Enemy`]).
@@ -198,6 +198,8 @@ pub fn spawn(scene: &mut Scene, model: HeldModel) {
         model.figure,
         model.pose,
         model.assets,
+        // A new enemy, drawn as a fight would draw it (M5 D5).
+        CharacterLevels(CharacterDetail::ByError),
     ));
 }
 

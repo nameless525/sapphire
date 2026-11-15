@@ -111,9 +111,9 @@ use sapphire_physics::PhysicsWorld;
 use sapphire_render::color_vision::COLOR_VISION;
 use sapphire_render::quality::TierId;
 use sapphire_render::{
-    CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis,
-    MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, ShadowRole,
-    SkyLayers, ViewData, Weather, Wind,
+    CharacterBody, CharacterDetail, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket,
+    HeadBasis, MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer,
+    ShadowRole, SkyLayers, ViewData, Weather, Wind,
 };
 #[cfg(feature = "samples")]
 use sapphire_render::{LightKind, LocalLight};
@@ -189,6 +189,7 @@ type Characters = Query<
         Option<&'static Figure>,
         Option<&'static NearFade>,
         Option<&'static AmbientPerson>,
+        Option<&'static CharacterLevels>,
     ),
     With<RenderMesh>,
 >;
@@ -267,6 +268,41 @@ pub struct SceneActions {
 /// World slow motion, while it is toggled on.
 #[derive(Resource, Debug, Default)]
 struct SlowMotion(Option<ScaleHandle>);
+
+/// Whether a character may draw at a coarser level of detail (M5 D5, the renderer's
+/// [`CharacterDetail`]): a component on a character that says so, set by whoever stands it (a
+/// fight's enemies choose by error, and stay whole while a timeline or a conversation names them).
+/// A character without one stays whole, but for a zone's ambient characters, which choose by error;
+/// and every character stays whole in a frame [`Scene::set_close_up`] marks.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CharacterLevels(pub CharacterDetail);
+
+impl CharacterLevels {
+    /// What the frame lists a character with: whole in a close-up, else `levels`, else by error
+    /// for an ambient character and whole for anyone else.
+    pub fn resolve(levels: Option<&Self>, ambient: bool, close_up: bool) -> CharacterDetail {
+        match levels {
+            _ if close_up => CharacterDetail::Whole,
+            Some(levels) => levels.0,
+            None if ambient => CharacterDetail::ByError,
+            None => CharacterDetail::Whole,
+        }
+    }
+}
+
+/// Who the frame lets draw coarser (M5 D5; the sandbox's `--character-lods`), for comparing: the
+/// stage's marks ([`CharacterLevels`]), no character at all, or the scene's own character too.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CharacterLods {
+    /// As the stage marks them: the default.
+    #[default]
+    On,
+    /// Every character whole, as before characters chose levels, while static draws still do.
+    Off,
+    /// As marked, and the scene's own character by error too: the hero's model drawn as a crowd's
+    /// or a fight's would be.
+    Hero,
+}
 
 /// Where the character's light rig finds its head and body, in the character's own space. A
 /// component on a character whose pose moves, which follows its skeleton every frame (M2 N2), and on
@@ -589,6 +625,10 @@ pub struct Scene {
     /// What the characters' materials are driven by (`--dissolve`, `--emission-scale`,
     /// `--flash`; M5 L11).
     drive: MaterialDrive,
+    /// The frame is a cutscene's or a cut-in's shot: every character draws whole (M5 D5).
+    close_up: bool,
+    /// Who may draw coarser, for comparing (`--character-lods`, M5 D5).
+    character_lods: CharacterLods,
     /// The post variants of the presets [`Self::push_effect`] pushed (`--post-effect`).
     pushed_effects: PostVariants,
     /// The effects `--vfx` plays (M2 E2).
@@ -739,6 +779,8 @@ impl Scene {
             soft_backdrop: None,
             fade: Fade::Off,
             drive: MaterialDrive::NONE,
+            close_up: false,
+            character_lods: CharacterLods::On,
             pushed_effects: PostVariants::NONE,
             vfx: None,
             view_aspect: 16.0 / 9.0,
@@ -895,6 +937,19 @@ impl Scene {
     /// they have dissolved, their emission's scale and a flash.
     pub fn set_material_drive(&mut self, drive: MaterialDrive) {
         self.drive = drive;
+    }
+
+    /// Marks the frames from now on as a cutscene's or a cut-in's shot, or not (M5 D5): in one,
+    /// every character draws at its meshes' first level, whatever its [`CharacterLevels`], as the
+    /// reference games' close-ups do. The fight sets it each frame from its timeline's shot.
+    pub fn set_close_up(&mut self, close_up: bool) {
+        self.close_up = close_up;
+    }
+
+    /// Sets who may draw coarser (M5 D5): the sandbox's `--character-lods`, to count what the
+    /// characters' levels save, or to look at the hero's model as a crowd's would draw it.
+    pub fn set_character_lods(&mut self, lods: CharacterLods) {
+        self.character_lods = lods;
     }
 
     /// Pushes the screen effect preset called `name` onto the effect stack (M1 P3): playing from
@@ -2482,7 +2537,8 @@ impl Scene {
         self.follow_showcases();
         self.ecs.extract();
         let scene_figure = self.figure;
-        let (fade, drive) = (self.fade, self.drive);
+        let (fade, drive, close_up) = (self.fade, self.drive, self.close_up);
+        let (character_lods, scene_character) = (self.character_lods, self.character);
         #[cfg(feature = "samples")]
         let face_layout = self.face_layout;
         let (mut extract, time_of_day, rigs, characters, heads) = self
@@ -2496,7 +2552,7 @@ impl Scene {
         if let Some(camera) = packet.main_view().map(|view| view.camera) {
             let frame = time_of_day.frame();
             let listed = packet.characters.len();
-            for (entity, character, transform, key, figure, near, ambient) in &characters {
+            for (entity, character, transform, key, figure, near, ambient, levels) in &characters {
                 let figure = figure.copied().unwrap_or(scene_figure);
                 let head = transform.0.transform_point3(character.head);
                 let mut lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
@@ -2524,6 +2580,15 @@ impl Scene {
                 .transformed(transform.0);
                 // A zone's crowd casts its capsule alone and takes no other character's shadow (M5 C10).
                 let body = if ambient.is_some() { body.with_role(ShadowRole::Ambient) } else { body };
+                // Who may draw coarser (M5 D5): resolved here, never guessed by the renderer.
+                let detail = match character_lods {
+                    CharacterLods::Off => CharacterDetail::Whole,
+                    CharacterLods::Hero if entity == scene_character && !close_up => CharacterDetail::ByError,
+                    CharacterLods::On | CharacterLods::Hero => {
+                        CharacterLevels::resolve(levels, ambient.is_some(), close_up)
+                    }
+                };
+                let body = body.with_detail(detail);
                 let opacity = fade.opacity(camera.position, &body, near);
                 packet.characters.push(CharacterInstance {
                     id: extract::instance_id(entity),
@@ -2538,7 +2603,7 @@ impl Scene {
             // query lists them in the same order again, so nothing is gathered.
             if matches!(fade, Fade::Proximity(_)) {
                 let listed = listed..packet.characters.len();
-                for (at, (.., near, _)) in listed.clone().zip(&characters) {
+                for (at, (.., near, _, _)) in listed.clone().zip(&characters) {
                     let Some(&NearFade::With(holder)) = near else { continue };
                     let holder = extract::instance_id(holder);
                     let held = packet.characters[listed.clone()].iter().find(|listed| listed.id == holder);
@@ -2811,6 +2876,24 @@ mod tests {
 
     fn scene() -> Scene {
         Scene::new(BOUNDS, false)
+    }
+
+    #[test]
+    fn only_who_the_stage_names_draws_coarser() {
+        use CharacterDetail::{ByError, Whole};
+        let resolve = CharacterLevels::resolve;
+        // Unmarked: the hero, its party, what they hold and anyone else stay whole; a zone's
+        // ambient characters choose by error.
+        assert_eq!(resolve(None, false, false), Whole);
+        assert_eq!(resolve(None, true, false), ByError);
+        // A mark wins: an enemy chooses by error until a fight pins it, and an ambient
+        // character can be kept whole.
+        let (by_error, whole) = (CharacterLevels(ByError), CharacterLevels(Whole));
+        assert_eq!(resolve(Some(&by_error), false, false), ByError);
+        assert_eq!(resolve(Some(&whole), true, false), Whole);
+        // A cutscene's or a cut-in's shot draws everyone whole.
+        assert_eq!(resolve(Some(&by_error), false, true), Whole);
+        assert_eq!(resolve(None, true, true), Whole);
     }
 
     /// A scene moves by value through the app's startup on the main thread, which has 1 MiB on iOS,

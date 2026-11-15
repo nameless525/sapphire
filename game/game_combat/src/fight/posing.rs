@@ -23,13 +23,14 @@ use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::Simulation;
 use sapphire_math::Mat4;
+use sapphire_render::CharacterDetail;
 use sapphire_sequencer::CharacterCue;
 use sapphire_stage::RenderPose;
 use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
 use sapphire_stage::anim_levels::{AnimPace, LevelClock};
 use sapphire_stage::animate::{SpringKey, SpringView};
 use sapphire_stage::content::Content;
-use sapphire_stage::scene::{Figure, Scene};
+use sapphire_stage::scene::{CharacterLevels, Figure, Scene};
 use sapphire_time::Stopwatch;
 use sapphire_world::light_rig::CharacterLightRig;
 
@@ -48,6 +49,8 @@ pub(super) struct Gathered<'f> {
     render: Mut<'f, RenderPose>,
     figure: Mut<'f, Figure>,
     rig: Mut<'f, CharacterLightRig>,
+    /// Whether it may draw coarser (M5 D5): an enemy's, which stays whole while it is pinned.
+    levels: Option<Mut<'f, CharacterLevels>>,
     /// Whether it can play into its pose: not for a moment while a new version of its mesh lands.
     fits: bool,
     /// What its role's track says, if a timeline's names it.
@@ -147,7 +150,7 @@ impl FightShow {
         let world = scene.world_mut();
 
         let mut gathered: Vec<Gathered<'_>> = reuse_list(std::mem::take(posing));
-        for (entity, driver, render, figure, rig, _) in graph_players.iter_mut(world) {
+        for (entity, driver, render, figure, rig, _, levels) in graph_players.iter_mut(world) {
             let Some(index) = (0..arena.fighter_count()).find(|&index| arena.entity(index) == entity) else {
                 continue;
             };
@@ -158,6 +161,7 @@ impl FightShow {
                 render,
                 figure,
                 rig,
+                levels,
                 fits,
                 cue: None,
                 pace: AnimPace::FULL,
@@ -174,6 +178,12 @@ impl FightShow {
                 || dialogue_faces.held().any(|(role, _)| names(arena, role, index));
             let fixed = fixed_fighters.get(index).is_some_and(Option::is_some);
             let pinned = index == 0 || fixed || fighter.cue.is_some() || speaks;
+            // Whoever is never thinned also never draws coarser (M5 D5); the others by their size on
+            // screen. Written only on a change, so a still fight marks nothing changed.
+            if let Some(levels) = &mut fighter.levels {
+                let detail = if pinned { CharacterDetail::Whole } else { CharacterDetail::ByError };
+                levels.set_if_neq(CharacterLevels(detail));
+            }
             fighter.pace = match arena.clock_ticks(index) {
                 Some(ticks) if !pinned => {
                     let clock = LevelClock {
@@ -205,7 +215,7 @@ impl FightShow {
         let mut fixed_slots = fixed_fighters.each_mut().map(Option::as_mut);
         let mut work: Vec<FighterJob<'_>> = reuse_list(std::mem::take(fighter_jobs));
         for fighter in gathered.drain(..) {
-            let Gathered { index, mut driver, render, figure, rig, fits, cue, pace } = fighter;
+            let Gathered { index, mut driver, render, figure, rig, fits, cue, pace, .. } = fighter;
             if !fits {
                 continue;
             }

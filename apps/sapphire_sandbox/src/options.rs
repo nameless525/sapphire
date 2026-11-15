@@ -30,7 +30,7 @@ use sapphire_stage::faces::{FaceLayout, MaterialOverrides};
 use sapphire_stage::foliage::{DEFAULT_WIND, FoliageView};
 use sapphire_stage::lookdev::{self, Shot};
 use sapphire_stage::rims::RimLayout;
-use sapphire_stage::scene::{self, Fade, Scene};
+use sapphire_stage::scene::{self, CharacterLods, Fade, Scene};
 use sapphire_stage::studio::StudioLayout;
 use sapphire_stage::vfx::VfxShow;
 
@@ -375,11 +375,15 @@ pub(crate) struct Options {
     /// comparisons. `frustum` keeps the frustum and drops the tier's distance and size tests;
     /// `off` culls nothing. Unset, the tier's (`on`).
     pub view_culling: Option<CullingMode>,
-    /// `--lods on|off|<level>`: how static draws choose their levels of detail (M5 D4), for
-    /// comparisons. `off` draws every one at level 0, as before levels were chosen; a number holds
-    /// every one that may change level at that level (or its mesh's coarsest). Unset, `on` at the
-    /// tier's bias.
+    /// `--lods on|off|<level>`: how static draws and the characters that may draw coarser choose
+    /// their levels of detail (M5 D4, D5), for comparisons. `off` draws every one at level 0, as
+    /// before levels were chosen; a number holds every one that may change level at that level (or
+    /// its mesh's coarsest). Unset, `on` at the tier's bias.
     pub lods: Option<LevelsMode>,
+    /// `--character-lods on|off|hero`: who may draw coarser (M5 D5): as the stage marks them (the
+    /// default), no character (to count what characters' levels save while static draws keep
+    /// theirs), or the scene's own character too (the hero's model as a crowd's would draw).
+    pub character_lods: CharacterLods,
     /// `--cull-thresholds <distance>,<pixels>,<texels>`: the distance and size culling's
     /// thresholds instead of the tier's (M5 D3), for the walks that choose them: meters (0 for
     /// none), output pixels across and a cascade's texels across.
@@ -613,6 +617,7 @@ impl Options {
             scene.set_fade(self.fade());
         }
         scene.set_material_drive(self.drive);
+        scene.set_character_lods(self.character_lods);
         if let Some((yaw, pitch)) = self.view {
             scene.camera_mut().look_from(yaw.to_radians(), pitch.to_radians());
         }
@@ -1375,6 +1380,16 @@ impl Options {
                             }
                         },
                     });
+                }
+                "--character-lods" => {
+                    options.character_lods = match value("--character-lods")?.as_str() {
+                        "on" => CharacterLods::On,
+                        "off" => CharacterLods::Off,
+                        "hero" => CharacterLods::Hero,
+                        other => {
+                            return Err(format!("--character-lods expects on, off or hero, got {other:?}"));
+                        }
+                    };
                 }
                 "--cull-thresholds" => {
                     let raw = value("--cull-thresholds")?;
@@ -2970,6 +2985,12 @@ mod tests {
         assert_eq!(lods(&["--lods=2"]).mode, LevelsMode::Fixed(2));
         assert_eq!(lods(&["--lods", "on"]).mode, LevelsMode::On);
         assert!(parse(&["--lods", "8"]).is_err() && parse(&["--lods", "some"]).is_err());
+        // Who may draw coarser (M5 D5).
+        let lods = |args: &[&str]| parse(args).unwrap().0.character_lods;
+        assert_eq!(lods(&[]), CharacterLods::On);
+        assert_eq!(lods(&["--character-lods", "off"]), CharacterLods::Off);
+        assert_eq!(lods(&["--character-lods=hero"]), CharacterLods::Hero);
+        assert!(parse(&["--character-lods", "some"]).is_err());
         // The thresholds a walk tries instead of the tier's.
         let thresholds = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).culling;
         assert_eq!(thresholds(&[]), tier.culling);

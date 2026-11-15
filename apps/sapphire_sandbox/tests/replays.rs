@@ -1303,7 +1303,7 @@ fn district_content() -> PathBuf {
     assert!(
         dir.join("zone_district.spack").is_file(),
         "the `ci` district isn't cooked beside the content in {}: run `cargo xtask bench-content --preset ci \
-         --with-content`",
+         --with-content` (CI's app tests lay it out from their bundle: `app_tests_bundle.py unpack`)",
         dir.display()
     );
     dir

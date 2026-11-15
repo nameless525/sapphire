@@ -44,6 +44,10 @@ class AppTestsBundleTests(unittest.TestCase):
             "target/debug/deps/replays-4567ef01": b"replays test bytes",
             "target/content/desktop/shared.spack": b"shared pack bytes",
             "target/content/desktop/zones/ward.spack": b"zone pack bytes",
+            "target/content/desktop/release.smanifest": b"the cook's manifest",
+            # The district's folder: the cook's files but its manifest, the district's pack and a manifest of both.
+            "target/bench/ci/with-content/desktop/release.smanifest": b"the cook and the district's manifest",
+            "target/bench/ci/with-content/desktop/zone_district.spack": b"district pack bytes",
             # Neither the loose cook nor another build's output goes along.
             "target/content/loose/desktop/mesh.smesh": b"loose bytes",
             "target/debug/deps/libsapphire_core-89ab.rlib": b"library bytes",
@@ -52,6 +56,11 @@ class AppTestsBundleTests(unittest.TestCase):
             path = self.workspace / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
+        for name in ("shared.spack", "zones/ward.spack"):
+            path = self.workspace / app_tests_bundle.DISTRICT / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.unlink(missing_ok=True)
+            os.link(self.workspace / app_tests_bundle.CONTENT / name, path)
         for package in ("game/game_app", "apps/sapphire_sandbox"):
             (self.workspace / package).mkdir(parents=True, exist_ok=True)
             (self.consumer / package).mkdir(parents=True, exist_ok=True)
@@ -109,6 +118,18 @@ class AppTestsBundleTests(unittest.TestCase):
         self.assertEqual(actual["files"]["target/debug/deps/replays-4567ef01"]["mode"], 0o755)
         self.assertEqual(actual["files"]["target/content/desktop/shared.spack"]["mode"], 0o644)
         self.assertFalse((self.consumer / "target/content/loose").exists())
+        # The district's folder travels as its own two files; the cook is laid out in it again on unpack.
+        district = self.consumer / app_tests_bundle.DISTRICT
+        self.assertEqual(
+            {name for name in actual["files"] if name.startswith(app_tests_bundle.DISTRICT + "/")},
+            app_tests_bundle.district_members(),
+        )
+        self.assertEqual(
+            sorted(path.relative_to(district).as_posix() for path in district.rglob("*") if path.is_file()),
+            ["release.smanifest", "shared.spack", "zone_district.spack", "zones/ward.spack"],
+        )
+        self.assertEqual((district / "zones/ward.spack").read_bytes(), b"zone pack bytes")
+        self.assertEqual((district / "release.smanifest").read_bytes(), b"the cook and the district's manifest")
         self.assertFalse((self.consumer / "target/debug/deps/libsapphire_core-89ab.rlib").exists())
         self.assertTrue((self.consumer / app_tests_bundle.TMPDIR).is_dir())
 
@@ -206,6 +227,57 @@ class AppTestsBundleTests(unittest.TestCase):
         (self.workspace / "target/debug/sapphire_livelink").unlink()
         with self.assertRaisesRegex(ValueError, "Missing"):
             app_tests_bundle.create(self.workspace, self.archive, self.commit, [self.messages])
+
+    def test_a_district_folder_that_isnt_the_cook_with_the_district_beside_it_cannot_be_packaged(self):
+        district = self.workspace / app_tests_bundle.DISTRICT
+        cases = (
+            ("no district pack", lambda: (district / "zone_district.spack").unlink(), "must hold zone_district.spack"),
+            ("a cook file changed", lambda: self.replace(district / "shared.spack", b"other bytes"), "isn't the desktop cook's"),
+            ("a file the cook lacks", lambda: (district / "extra.spack").write_bytes(b"extra"), "isn't the desktop cook's"),
+            ("a cook file missing", lambda: (district / "zones/ward.spack").unlink(), "lacks the desktop cook's"),
+        )
+        for case, spoil, message in cases:
+            with self.subTest(case=case):
+                self.fixture()
+                spoil()
+                with self.assertRaisesRegex(ValueError, message):
+                    app_tests_bundle.create(self.workspace, self.archive, self.commit, [self.messages])
+                (district / "extra.spack").unlink(missing_ok=True)
+
+    def replace(self, path, data):
+        path.unlink()
+        path.write_bytes(data)
+
+    def test_the_district_folder_takes_only_its_own_files_and_needs_them(self):
+        for name in ("target/bench/ci/with-content/desktop/shared.spack",
+                     "target/bench/ci/with-content/desktop/other.spack",
+                     "target/bench/ci/with-content/mobile/zone_district.spack"):
+            with self.subTest(name=name):
+                self.fixture()
+                def mutate(entries):
+                    metadata, encoded = entries[0]
+                    manifest = json.loads(encoded)
+                    data = b"extra"
+                    manifest["files"][name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "mode": 0o644}
+                    return [(metadata, json.dumps(manifest).encode())] + entries[1:] + [(tarfile.TarInfo(name), data)]
+                self.rewrite(mutate)
+                self.assert_refused()
+        for name in sorted(app_tests_bundle.district_members()):
+            with self.subTest(missing=name):
+                self.fixture()
+                def drop(entries):
+                    metadata, encoded = entries[0]
+                    manifest = json.loads(encoded)
+                    del manifest["files"][name]
+                    kept = [item for item in entries[1:] if item[0].name != name]
+                    return [(metadata, json.dumps(manifest).encode())] + kept
+                self.rewrite(drop)
+                self.assert_refused()
+
+    def test_tests_only_lays_out_no_district(self):
+        self.fixture_tests_only()
+        app_tests_bundle.unpack(self.consumer, self.archive, self.commit)
+        self.assertFalse((self.consumer / "target/bench").exists())
 
     def test_other_commit_never_extracts(self):
         self.fixture()

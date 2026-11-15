@@ -648,7 +648,9 @@ jobs:
   # 16 and 20) and the sandbox's replays 31, a wave's bench 23 of them. The lanes are the walk's two
   # tiers, the bench, and the rest, each 12 to 23 minutes of tests on the runners of M3's last runs.
   # `app_tests_bundle.py` carries the build: every test executable, the dev sandbox, the live-link tool
-  # and the cook, each put back where Cargo built it, so the paths the tests were compiled with hold.
+  # and the cook, each put back where Cargo built it, so the paths the tests were compiled with hold, and
+  # the benchmark's `ci` district beside the cook, which the district's play mounts (M5 B5): the bundle
+  # carries the district's pack and its folder's manifest, and the lanes lay the cook out beside them.
   app-tests-build:
     name: Prepare app tests (vulkan-lavapipe)
     runs-on: ubuntu-24.04
@@ -689,8 +691,10 @@ jobs:
           tests --package sapphire_sandbox --features dev --test flashes
           tests --package sapphire_editor --test preview --test sandbox_push --test viewport_stage
           cargo build --package sapphire_sandbox --package sapphire_livelink --features sapphire_sandbox/dev --locked
-      - name: Cook the desktop content
-        run: cargo --locked xtask --locked content
+      # The desktop cook (`target/content/desktop`) and the `ci` district beside it, as the golden producers
+      # cook them.
+      - name: Cook the desktop content and the district
+        run: cargo --locked xtask --locked bench-content --with-content
       - name: Package exact-commit app test inputs
         run: |
           python3 .github/scripts/app_tests_bundle.py create --archive "$RUNNER_TEMP/app-tests.tar.gz" \
@@ -710,7 +714,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [walk-desktop-low, walk-mobile-low, walk-mobile-high, wave-bench, the-rest]
+        lane: [walk-desktop-low, walk-mobile-low, walk-mobile-high, wave-bench, district-play, the-rest]
     runs-on: ubuntu-24.04
     # Each lane's tests took 12 to 23 minutes on M3's last runs, and a lane adds about 2 to set up. On M4's
     # line the Desktop-Low walk began 21 minutes in and needs about 17 more.
@@ -720,6 +724,8 @@ jobs:
       SAPPHIRE_GPU_DEBUG: none
       # The sandbox's slowest replay test, a lane of its own; `the-rest` skips it by the same name.
       WAVE_BENCH: a_wave_comes_on_in_a_bench_with_no_heap_in_its_steps
+      # The district's play, a lane of its own too, by the same rule.
+      DISTRICT_PLAY: the_district_encounter_plays_with_no_hitch_cold_and_warm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # No compiler: the lanes run the producer's executables. The app links ALSA's library.
@@ -790,6 +796,18 @@ jobs:
       - name: A wave's bench in the app (dev sandbox, offscreen)
         if: matrix.lane == 'wave-bench'
         run: python3 .github/scripts/app_tests_bundle.py run replays -- --ignored --test-threads=1 --exact "$WAVE_BENCH"
+      # Exit test 7's proof on the benchmark district (M5 B5): the district's encounter, the party of three kinds
+      # up the avenue into twelve Ember Lancers with the hub's people about, played by the dev sandbox's fight
+      # bench a frame in 25 drawn, on Desktop-High and Mobile-Low, cold and then warm, and once with the people
+      # off: every run reaches the replay's checksums with no first use, no pipeline built on the frame's thread
+      # and no frame waiting, and every drawn frame with the twelve standing skins at least 13 and draws the HUD.
+      # Five plays of 1,600 ticks, each building its pipelines first. The test took 27 s on an M5's Metal under
+      # other agents' builds (2026-11-15), so an estimated 8 to 11 minutes here at the 18 to 24 times the other
+      # lanes' tests took, which nothing has timed on CI yet. It reads the cook and the district beside it from
+      # `target/bench/ci/with-content/desktop`, which `app_tests_bundle.py unpack` lays out.
+      - name: The district's play in the app (dev sandbox, offscreen)
+        if: matrix.lane == 'district-play'
+        run: python3 .github/scripts/app_tests_bundle.py run replays -- --ignored --test-threads=1 --exact "$DISTRICT_PLAY"
       # What a game or the editor does with a stage: make it, step it, and read a frame back, with
       # only its public surface (m3-plan S1).
       - name: A stage from outside its crate
@@ -833,10 +851,11 @@ jobs:
         if: matrix.lane == 'the-rest'
         run: python3 .github/scripts/app_tests_bundle.py run draws_a_marked_tick -- --ignored
       # The simulation beside the renderer must reach what it reaches alone (m2-plan D2). The app
-      # compares, tick by tick, with what a headless run in the test wrote. The wave's bench has its lane.
+      # compares, tick by tick, with what a headless run in the test wrote. The wave's bench and the district's
+      # play have their lanes.
       - name: Replays in the app (dev sandbox, offscreen)
         if: matrix.lane == 'the-rest'
-        run: python3 .github/scripts/app_tests_bundle.py run replays -- --ignored --test-threads=1 --skip "$WAVE_BENCH"
+        run: python3 .github/scripts/app_tests_bundle.py run replays -- --ignored --test-threads=1 --skip "$WAVE_BENCH" --skip "$DISTRICT_PLAY"
       # An edit of a move reaches a running fight's next attempt, over live link and through hot
       # reload, and a bad one changes nothing (m2-plan T2, exit test 2).
       - name: Live tuning (dev sandbox, offscreen)

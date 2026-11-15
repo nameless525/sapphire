@@ -2,9 +2,15 @@
 """Package the App tests' build once, then verify the same bytes on each lane's runner and run them there.
 
 The producer builds every test executable the lanes run, the dev sandbox and the live-link tool, and cooks
-the desktop content. A lane restores each file where Cargo put it, so the absolute paths the tests were
+the desktop content with the benchmark's `ci` district beside it (`cargo xtask bench-content --with-content`).
+A lane restores each file where Cargo put it, so the absolute paths the tests were
 compiled with (`CARGO_BIN_EXE_*`, `CARGO_MANIFEST_DIR`, `CARGO_TARGET_TMPDIR`) hold on any runner with the
 same checkout path, and runs a test executable from its package's directory, as `cargo test` does.
+
+The district's folder, `target/bench/ci/with-content/desktop`, is the desktop cook (hard-linked there) with
+the district's pack and a manifest naming both, which the sandbox's district play mounts. The bundle carries
+only those two files of it: `create` refuses a folder whose other files aren't the cook's bytes, and `unpack`
+lays the cook's files out in it again, linked, so the cook travels once.
 
 `create --tests-only` packages the test executables alone, with no sandbox, tool or cook: the WARP GPU
 tests' shards run them that way (`gpu_test_shards.py`).
@@ -14,6 +20,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -23,12 +30,17 @@ import tarfile
 
 from golden_bundle import digest, verify_checkout
 
-FORMAT = 2
+FORMAT = 3
 # What the lanes run beside the tests: the sandbox the tests start (`CARGO_BIN_EXE_sapphire_sandbox`, the
 # editor's tests and the live-link smoke) and the live-link tool.
 BINARIES = ("target/debug/sapphire_sandbox", "target/debug/sapphire_livelink")
 CONTENT = "target/content/desktop"
 TESTS = "target/debug/deps"
+# The desktop cook with the `ci` district beside it (M5 B5), and the files of it that aren't the cook's: the
+# district's pack and the folder's own release manifest. The cook's own manifest isn't laid out in it.
+DISTRICT = "target/bench/ci/with-content/desktop"
+DISTRICT_OWN = ("release.smanifest", "zone_district.spack")
+COOK_MANIFEST = "release.smanifest"
 # Written by `unpack` for `run`; `target/tmp` is `CARGO_TARGET_TMPDIR`, which Cargo makes as it builds.
 MANIFEST = "target/app-tests.json"
 TMPDIR = "target/tmp"
@@ -71,6 +83,52 @@ def tests_from_messages(workspace: Path, messages: list[Path]) -> dict:
     return tests
 
 
+def district_members() -> set[str]:
+    return {f"{DISTRICT}/{name}" for name in DISTRICT_OWN}
+
+
+def district_files(workspace: Path) -> dict:
+    """The district folder's own files, after checking that every other file in it is the desktop cook's, byte
+    for byte, and that it holds every file of the cook but the cook's manifest: what `unpack` lays out again."""
+    content, district = workspace / CONTENT, workspace / DISTRICT
+    own = {}
+    for name in DISTRICT_OWN:
+        if not (district / name).is_file() or (district / name).is_symlink():
+            raise ValueError(f"The district's folder must hold {name}: run `cargo xtask bench-content --with-content`")
+        own[f"{DISTRICT}/{name}"] = district / name
+    laid = set()
+    for path in sorted(district.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"Symbolic links are not app test inputs: {path}")
+        name = path.relative_to(district).as_posix()
+        if not path.is_file() or name in DISTRICT_OWN:
+            continue
+        cooked = content / name
+        if name == COOK_MANIFEST or not cooked.is_file() or digest(cooked) != digest(path):
+            raise ValueError(f"The district's folder holds {name}, which isn't the desktop cook's")
+        laid.add(name)
+    cook = {path.relative_to(content).as_posix() for path in content.rglob("*") if path.is_file()}
+    if cook - {COOK_MANIFEST} != laid:
+        raise ValueError(f"The district's folder lacks the desktop cook's {sorted(cook - {COOK_MANIFEST} - laid)}")
+    return own
+
+
+def lay_out_district(workspace: Path, records: dict) -> None:
+    """Puts every file of the unpacked desktop cook but its manifest in the district's folder, linked (or copied
+    where links can't be made), beside the district's own files, as `bench-content --with-content` made it."""
+    for name in sorted(records):
+        if not name.startswith(CONTENT + "/") or name == f"{CONTENT}/{COOK_MANIFEST}":
+            continue
+        source = workspace / name
+        path = workspace / DISTRICT / name[len(CONTENT) + 1:]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(source, path)
+        except OSError:
+            with source.open("rb") as src, path.open("xb") as dst:
+                shutil.copyfileobj(src, dst)
+
+
 def binaries(tests_only: bool) -> set[str]:
     return set() if tests_only else set(BINARIES)
 
@@ -89,6 +147,7 @@ def create(workspace: Path, archive: Path, commit: str, messages: list[Path], te
                 raise ValueError(f"Symbolic links are not app test inputs: {path}")
             if path.is_file():
                 files[path.relative_to(workspace).as_posix()] = path
+        files.update(district_files(workspace))
     executables = binaries(tests_only) | {test["path"] for test in tests.values()}
     records = {}
     for name, path in files.items():
@@ -122,10 +181,11 @@ def create(workspace: Path, archive: Path, commit: str, messages: list[Path], te
 
 
 def allowed(name: str, test_paths: set[str], tests_only: bool) -> bool:
-    """Only the binaries, the cook and the tests, each where the build put it; only the tests if tests only."""
+    """Only the binaries, the cook, the district's own files and the tests, each where the build put it; only the
+    tests if tests only."""
     if name in binaries(tests_only) or name in test_paths:
         return True
-    return not tests_only and name.startswith(CONTENT + "/")
+    return not tests_only and (name.startswith(CONTENT + "/") or name in district_members())
 
 
 def unpack(workspace: Path, archive: Path, commit: str) -> dict:
@@ -168,7 +228,7 @@ def unpack(workspace: Path, archive: Path, commit: str) -> dict:
                 raise ValueError(f"Invalid app test entry: {name}")
             test_paths.add(test["path"])
         executables = binaries(tests_only) | test_paths
-        required = executables if tests_only else executables | {CONTENT + "/shared.spack"}
+        required = executables if tests_only else executables | {CONTENT + "/shared.spack"} | district_members()
         if not required.issubset(records):
             raise ValueError("Required app test inputs are missing")
         folded = [name.casefold() for name in records]
@@ -200,6 +260,8 @@ def unpack(workspace: Path, archive: Path, commit: str) -> dict:
                 if digest(path) != record["sha256"]:
                     raise ValueError(f"App test input checksum mismatch: {member.name}")
                 path.chmod(record["mode"])
+            if not tests_only:
+                lay_out_district(workspace, records)
             (workspace / TMPDIR).mkdir(parents=True)
             (workspace / MANIFEST).write_bytes(encoded)
         except BaseException:

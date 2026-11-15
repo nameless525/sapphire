@@ -227,7 +227,7 @@ M3's systems are as [m4-handoff.md](m4-handoff.md)'s "What M4 builds on" has the
 
 ### CI
 
-Pull requests run Lint, Test on three OSes, Replays, five App tests lanes (`walk-desktop-low`, `walk-mobile-low`, `walk-mobile-high` since H9, `wave-bench` and `the-rest`), the goldens on Metal, lavapipe and WARP, and the mobile builds (I1). `zero_hitches` runs in each of the three walk lanes (H4, H9), and `follows_the_ladder` and `draws_a_marked_tick` in `the-rest` (X5). Only `main` writes caches, and CI also runs nightly on `main`, where the scripted fight's flash test runs too, one job a setting (`app-tests-flashes`, X5). H3's settings walk has 40 minutes a tier on lavapipe.
+Pull requests run Lint, Test on three OSes, Replays, six App tests lanes (`walk-desktop-low`, `walk-mobile-low`, `walk-mobile-high` since H9, `wave-bench`, `district-play` since M5 B5, which plays the district's encounter on the `ci` district the bundle carries, and `the-rest`), the goldens on Metal, lavapipe and WARP, and the mobile builds (I1). `zero_hitches` runs in each of the three walk lanes (H4, H9), and `follows_the_ladder` and `draws_a_marked_tick` in `the-rest` (X5). Only `main` writes caches, and CI also runs nightly on `main`, where the scripted fight's flash test runs too, one job a setting (`app-tests-flashes`, X5). H3's settings walk has 40 minutes a tier on lavapipe.
 
 ## How to add
 

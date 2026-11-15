@@ -32,6 +32,7 @@ mod render_scale;
 mod rim_hair;
 mod scene_prepass;
 mod shadows;
+mod shafts;
 mod temporal;
 mod texture;
 mod texture_coverage;

@@ -4038,6 +4038,7 @@
                 ticks: 600,
                 args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--weather", "dry"],
+                ci_seconds: (lavapipe: 12.8, warp: 26.1),
             ),
             // The same square looking east along the lap from its south-west corner, later: walkers coming on
             // and going away, mid-stride, and the one watching the door's road.
@@ -4046,6 +4047,7 @@
                 ticks: 1500,
                 args: ["--zone", "proving_hub:-12,0,-12,60", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "32", "--weather", "dry"],
+                ci_seconds: (lavapipe: 9.2, warp: 31.6),
             ),
             // A phone's: Mobile-High draws up to 30 of a zone's people, within 48 m of the focus, with a
             // crowd's shadows, capsules alone.
@@ -4054,6 +4056,7 @@
                 ticks: 600,
                 args: ["--zone", "proving_hub:player_start", "--tier", "mobile-high", "--ao", "off",
                        "--capture-frames", "32", "--weather", "dry"],
+                ci_seconds: (lavapipe: 24.6, warp: 26.7),
             ),
         ],
     ),

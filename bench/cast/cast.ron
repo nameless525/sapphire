@@ -19,6 +19,9 @@
                         (triangle_ratio: 0.06, max_error: 0.05),
                     ],
                 )),
+                // The mobile cook merges skin, jacket and gear into one slot (M5 L15), bringing her to the
+                // mobile row's 4 materials; the desktop cook keeps the six of its row.
+                merge: [(name: "body", slots: ["skin", "top", "gear"], cooks: Mobile)],
                 presets: (
                     ci: Some((copies: 1)),
                     budget: Some((copies: 3, detail: Some(4), maps: Some(2048), triangles: Some(80000))),

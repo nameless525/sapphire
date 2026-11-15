@@ -4,7 +4,7 @@
 # Rewrite it with `cargo xtask counts --update` when a count moves on purpose, and say why in the change.
 #
 # preset: ci
-# sources: 1cae9537e87f462c (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
+# sources: b541a33692856c45 (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
 # walks: --bench 3720 --draw-every 7 --size 320x180 --zone district --zone-walk tour, at each tier's settings
 # reported in counts.txt, not held (the order cells arrive in is timing):
 #   materials bound: bound when the next draw's material differs, so it follows the draws' order

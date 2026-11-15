@@ -37,6 +37,7 @@ use crate::character_maps::MapKind;
 use crate::figure::{self, Figure, FigureFile, FileKind, MaterialGroup, Surface};
 use crate::import::vrm::{VrmSettings, VrmVersion};
 use crate::material::MaterialSettings;
+use crate::merge::MergeGroup;
 use crate::meta::{ImportSettings, MeshSettings};
 use crate::optimize::LodSettings;
 use crate::texture::{ColorSettings, MaskChannels, MaskSettings, MaxSize, TextureClass, TextureSettings};
@@ -69,6 +70,9 @@ pub struct CastFigure {
     /// Its model's levels of detail, if not the importer's default chain.
     #[serde(default)]
     pub lods: Option<LodSettings>,
+    /// The slots its model's cook merges into one, and on which cooks (M5 L15, [`crate::merge`]).
+    #[serde(default)]
+    pub merge: Vec<MergeGroup>,
     /// What each preset makes of it: none leaves it out.
     pub presets: Presets<Option<FigureScale>>,
 }
@@ -262,6 +266,7 @@ fn figure_sources(
             .collect(),
         lods: entry.lods.clone().unwrap_or_default(),
         skeleton,
+        merge: entry.merge.clone(),
         ..MeshSettings::default()
     };
     let mut masks: Vec<Vec<(f32, String)>> = vec![Vec::new(); groups.len()];
@@ -533,6 +538,26 @@ mod tests {
         }
     }
 
+    /// `member`'s first copy's sources under `root`, each with its sidecar as `bench::generate`
+    /// writes it: its model's path.
+    fn write_member(root: &Path, member: &CastMember) -> std::path::PathBuf {
+        let figure = member.copy(0);
+        let files = figure::figure_files(&figure).unwrap();
+        let mut sources = Vec::new();
+        figure_sources(&figure, files, &member.entry, member.skeleton, &member.spec, &mut sources).unwrap();
+        for source in sources {
+            let path = root.join(&source.path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            if let Some((importer, cook)) = source.sidecar {
+                let meta = crate::meta::AssetMeta { id: asset_id(PART, &source.path), importer, cook };
+                let text = sapphire_serialize::to_ron(&meta).unwrap();
+                std::fs::write(crate::meta::sidecar_path(&path), text).unwrap();
+            }
+            std::fs::write(&path, &source.bytes).unwrap();
+        }
+        root.join(model_path(&figure, &figure.dir))
+    }
+
     /// A PNG's width and height, from its header.
     fn png_size(bytes: &[u8]) -> (u32, u32) {
         let word = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
@@ -542,8 +567,9 @@ mod tests {
     /// Every figure of the `budget` cast cooks at spec §3.4's row: the hero exactly on the desktop
     /// (80,000 triangles, 200 joints, 6 materials, 2K maps, the 18 expressions), and its mobile LOD0 within
     /// 30,000; an enemy at 8,000 on 24 joints; an ambient figure within 3,200 on the same 24, one material.
-    /// What the mobile cook can't yet meet (joints, materials) is held as it is, and named in the
-    /// spec's §3.4.
+    /// The hero's mobile cook merges skin, jacket and gear (M5 L15), so it meets the mobile row's 4
+    /// materials, by its own sidecar in a tree of its sources. What the mobile cook can't yet meet (joints)
+    /// is held as it is, and named in the spec's §3.4.
     #[test]
     fn every_budget_figure_cooks_at_its_row() {
         use crate::cook::Cook;
@@ -576,6 +602,17 @@ mod tests {
                     assert!((29_000..=30_000).contains(&mobile.triangles), "{row}");
                     assert_eq!((mobile.joints, mobile.slots, mobile.morphs), (200, 6, 18), "{row}");
                     assert_eq!(maps, [(2048, 2048); 6], "{row}");
+                    // By its sidecar, which merges on the mobile cook only: 6 on desktop, 4 on mobile, every
+                    // triangle kept.
+                    let model = write_member(&dir.path().join("tree"), &member);
+                    let in_tree = |cook| {
+                        let mesh = crate::cook::cook_mesh_in(&dir.path().join("tree"), &model, cook).unwrap();
+                        let triangles: u32 =
+                            mesh.lods[0].submeshes.iter().map(|submesh| submesh.index_count / 3).sum();
+                        (triangles, mesh.materials.len())
+                    };
+                    assert_eq!(in_tree(Cook::Desktop), (desktop.triangles, 6), "{row}");
+                    assert_eq!(in_tree(Cook::Mobile), (mobile.triangles, 4), "{row}");
                 }
                 "enemy" => {
                     assert_eq!(
@@ -595,6 +632,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The hero's merge is the mobile cook's alone (M5 L15): its desktop cook writes every file byte for byte
+    /// as it does without the sidecar section, and its mobile cook writes the same bytes twice, with the
+    /// merged slot's material and maps.
+    #[test]
+    fn the_hero_s_merge_leaves_its_desktop_cook_as_it_was() {
+        use crate::cook::{Cook, CookOptions, cook_dir};
+        let dir = crate::test_util::TempDir::new("cast_hero_merge");
+        let merged = member(Preset::Ci, "hero");
+        assert_eq!(merged.entry.merge.len(), 1);
+        let mut plain = merged.clone();
+        plain.entry.merge.clear();
+        // Each cooked file by its path under the output, with the hash of its bytes.
+        let cook = |name: &str, member: &CastMember, cook: Cook| {
+            let root = dir.path().join(name);
+            write_member(&root.join("source"), member);
+            let options = CookOptions { cook, cache: None, locked: true, editor: false };
+            let out = root.join("out");
+            let report = cook_dir(&root.join("source"), &out, &options).unwrap();
+            let files: Vec<(String, blake3::Hash)> = report
+                .assets
+                .iter()
+                .map(|asset| {
+                    let path = asset.output.strip_prefix(&out).unwrap().to_string_lossy().replace('\\', "/");
+                    (path, asset.output_hash)
+                })
+                .collect();
+            files
+        };
+        let desktop = cook("plain_desktop", &plain, Cook::Desktop);
+        assert!(desktop.iter().all(|(path, _)| !path.contains(".merge.")), "{desktop:#?}");
+        assert_eq!(cook("merged_desktop", &merged, Cook::Desktop), desktop);
+
+        let mobile = cook("merged_mobile", &merged, Cook::Mobile);
+        assert_eq!(cook("merged_mobile_again", &merged, Cook::Mobile), mobile);
+        let merge_files: Vec<&str> =
+            mobile.iter().map(|(path, _)| path.as_str()).filter(|path| path.contains(".merge.")).collect();
+        assert_eq!(
+            merge_files,
+            [
+                "hero_00/hero.merge.body.base_color.ktx2",
+                "hero_00/hero.merge.body.control.ktx2",
+                "hero_00/hero.merge.body.mask.ktx2",
+                "hero_00/hero.merge.body.smat",
+            ],
+            "{mobile:#?}"
+        );
+        let plain_mobile = cook("plain_mobile", &plain, Cook::Mobile);
+        // The members' own materials and maps still cook (a look may draw them), and nothing else moves
+        // but the model.
+        let differs: Vec<&str> = plain_mobile
+            .iter()
+            .filter(|file| !mobile.contains(file))
+            .map(|(path, _)| path.as_str())
+            .collect();
+        assert!(differs.iter().all(|path| path.starts_with("hero_00/hero.")), "{differs:?}");
     }
 
     /// Every map of the `budget` cast cooks within spec §3.4's part budget on each cook (M5 M1): the hero's

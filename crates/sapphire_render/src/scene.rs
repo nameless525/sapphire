@@ -578,6 +578,20 @@ impl InstanceSlots {
             .map(|_| Mat4::from_cols_array_2d(&self.data[slot as usize].world_from_object))
     }
 
+    /// Whether the live instance in `slot` moved since the last frame drawn: its transform isn't the
+    /// one it was last drawn with.
+    pub(crate) fn moved(&self, slot: u32) -> bool {
+        let live = self.slots.get(slot as usize).is_some_and(|entry| entry.id.is_some());
+        live && self.data[slot as usize].previous_world_from_object
+            != self.data[slot as usize].world_from_object
+    }
+
+    /// Settles every slot as a frame drawn does, writing nothing: for tests of what follows it.
+    #[cfg(test)]
+    pub(crate) fn settle_drawn(&mut self) {
+        self.flush(u32::MAX, |_, _| {});
+    }
+
     /// Live slots with their meshes and transforms, in slot order.
     pub(crate) fn live_transforms(&self) -> impl Iterator<Item = (u32, MeshHandle, Mat4)> + '_ {
         self.live().map(|(slot, mesh)| {

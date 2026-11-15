@@ -1324,7 +1324,7 @@ impl Renderer {
         let (family, flags, layer, reflects) = (record.family, record.flags, record.layer, record.reflects);
         // A held inset picture showing it shows the old payload, and a spot tile its old cutout.
         self.insets.redraw();
-        self.shadows.forget_spots();
+        self.shadows.forget_maps();
         // An eye that moves to another layer keeps its pipelines, but its draws move among the
         // variant's (M1 C6). A material that starts or stops reflecting changes whether the
         // ambient pass prefilters the reflection cube, which the draw list's rebuild decides
@@ -1497,6 +1497,17 @@ impl Renderer {
         }
     }
 
+    /// Each shadow cascade as the last frame left it (M5 D8): what its receivers read of its fit
+    /// (its square in light space and its depth range, as `area` then `depth` of WGSL's
+    /// `ShadowCascade`) and its map's depth, texel by texel, read back once the GPU is done with
+    /// the work submitted. For tests that compare kept cascades with cascades drawn in turns.
+    #[doc(hidden)]
+    pub fn shadow_cascades(&self) -> Vec<([f32; 8], Vec<f32>)> {
+        let cascades = self.shadows.read_cascades(&self.device, &self.queue);
+        let fit = |cascade: &crate::shadows::GpuCascade| bytemuck::cast([cascade.area, cascade.depth]);
+        cascades.into_iter().map(|(cascade, depth)| (fit(&cascade), depth)).collect()
+    }
+
     /// How finely the last estimated frame's views read each streamed texture (M5 M5, the `coverage`
     /// module): what the stage's streamer wants of each texture's levels. Its `frame` counts the
     /// estimates ([`Self::estimate_texture_coverage`]).
@@ -1602,6 +1613,8 @@ impl Renderer {
         // it are submitted by the next at the latest.
         let last_read = self.fence.frame() + 1;
         self.mip_streaming.replaced(old, last_read, written, copied, rebinds);
+        // A caster reading it casts through other levels now (M5 D8).
+        self.shadows.textures_changed();
     }
 
     /// Writes `level` over `texture`'s, as hot reload hands a changed level: one of the levels it holds
@@ -1614,6 +1627,7 @@ impl Renderer {
     ) -> Result<(), RenderError> {
         self.mip_streaming.submit(&self.queue);
         texture.write_level(&self.queue, level)?;
+        self.shadows.textures_changed();
         Ok(())
     }
 
@@ -1627,6 +1641,7 @@ impl Renderer {
     ) -> Result<(), RenderError> {
         self.mip_streaming.submit(&self.queue);
         texture.write_tail(&self.queue, tail)?;
+        self.shadows.textures_changed();
         Ok(())
     }
 
@@ -1879,7 +1894,7 @@ impl Renderer {
         }
         self.prepare_mesh(handle, &materials, moves);
         self.lights.mesh_replaced();
-        self.shadows.forget_spots();
+        self.shadows.forget_maps();
         self.scene.mesh_replaced(handle);
         self.insets.redraw();
         self.update_pool_stats();
@@ -1911,7 +1926,7 @@ impl Renderer {
         }
         if !replacements.is_empty() {
             self.lights.mesh_replaced();
-            self.shadows.forget_spots();
+            self.shadows.forget_maps();
             self.insets.redraw();
             self.update_pool_stats();
         }
@@ -2230,7 +2245,7 @@ impl Renderer {
         self.stats.shader_rebuilds += 1;
         // Held inset pictures and spot tiles were drawn by the pipelines just replaced.
         self.insets.redraw();
-        self.shadows.forget_spots();
+        self.shadows.forget_maps();
         tracing::info!(target: LOG_TARGET, programs = update.programs, pipelines = update.pipelines, "shaders rebuilt");
         update
     }
@@ -2763,7 +2778,7 @@ impl Renderer {
             self.scene.slots(),
             self.meshes.records(),
             &margin,
-            self.scene.draw_list(),
+            (self.scene.draw_list(), self.scene.draw_list_builds()),
             self.characters.table(),
             CasterCull {
                 culled: self.view_cull.casters(),

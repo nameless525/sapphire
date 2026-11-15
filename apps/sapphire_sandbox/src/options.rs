@@ -10,9 +10,9 @@ use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
 use sapphire_render::{
-    ColorVision, CullPose, CullingMode, CullingThresholds, DebugView, DrawRuns, EffectScale, LevelSettings,
-    LevelsMode, LightPath, MIN_RENDER_SCALE, MainDepth, MaterialDrive, Msaa, PostVariants, RenderSettings,
-    ShadowSettings, Upscaler, Weather, Wind,
+    CascadeCache, ColorVision, CullPose, CullingMode, CullingThresholds, DebugView, DrawRuns, EffectScale,
+    LevelSettings, LevelsMode, LightPath, MIN_RENDER_SCALE, MainDepth, MaterialDrive, Msaa, PostVariants,
+    RenderSettings, ShadowSettings, Upscaler, Weather, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -427,6 +427,10 @@ pub(crate) struct Options {
     /// the shaders compile their local lights' loops as before spot shadows. `on`, the tier's, is
     /// the default.
     pub no_spot_shadows: bool,
+    /// `--shadow-cache turns|kept|held`: how the cascades are kept from frame to frame (M5 D8,
+    /// `ShadowSettings::cache`) instead of the tier's; `turns` draws each on its turn whatever it
+    /// holds, as before, for the bench's before and the golden scenes from before it that move.
+    pub shadow_cache: Option<CascadeCache>,
     /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
     pub sharpening: Option<f32>,
     /// `--focus <distance>,<sharp>,<near>,<far>,<blur>`: depth of field held at a fixed focus for look-dev (M5 L8),
@@ -855,6 +859,7 @@ impl Options {
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
                 spots: if self.no_spot_shadows { 0 } else { shadows.spots },
+                cache: self.shadow_cache.unwrap_or(shadows.cache),
                 ..shadows
             }),
             ..tier
@@ -1436,6 +1441,16 @@ impl Options {
                         "off" => true,
                         other => return Err(format!("--spot-shadows expects on or off, got {other:?}")),
                     };
+                }
+                "--shadow-cache" => {
+                    options.shadow_cache = Some(match value("--shadow-cache")?.as_str() {
+                        "turns" => CascadeCache::Turns,
+                        "kept" => CascadeCache::Kept,
+                        "held" => CascadeCache::Held,
+                        other => {
+                            return Err(format!("--shadow-cache expects turns, kept or held, got {other:?}"));
+                        }
+                    });
                 }
                 "--view-culling" => {
                     options.view_culling = Some(match value("--view-culling")?.as_str() {
@@ -3266,6 +3281,21 @@ mod tests {
         assert_eq!(spots(&["--spot-shadows", "off"]), Some(0));
         assert_eq!(spots(&["--spot-shadows=on"]), Some(ShadowSettings::default().spots));
         assert!(parse(&["--spot-shadows", "some"]).is_err());
+    }
+
+    #[test]
+    fn the_cascades_are_kept_as_the_tier_says_unless_told() {
+        let shadows = ShadowSettings { cache: CascadeCache::Kept, ..ShadowSettings::default() };
+        let tier = RenderSettings { shadows: Some(shadows), ..RenderSettings::default() };
+        let cache = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).shadows.map(|s| s.cache);
+        assert_eq!(cache(&[]), Some(CascadeCache::Kept), "the tier's");
+        assert_eq!(cache(&["--shadow-cache", "turns"]), Some(CascadeCache::Turns));
+        assert_eq!(cache(&["--shadow-cache=held"]), Some(CascadeCache::Held));
+        assert!(parse(&["--shadow-cache", "layered"]).is_err());
+        // The game's own scene takes it too (`capture::game`, `GameCapture::shadow_cache`): a golden from
+        // before kept cascades pins drawing in turns there as anywhere.
+        let game = parse(&["--capture", "x.png", "--game", "title", "--shadow-cache", "turns"]).unwrap().0;
+        assert_eq!((game.game, game.shadow_cache), (Some(GameStart::Title), Some(CascadeCache::Turns)));
     }
 
     /// A phone's app runs from nowhere it can write: a path of its own stands, and any other goes under

@@ -44,6 +44,7 @@ fn draw(platform: &Platform, at_tick: u64, frames: u32) -> Result<Vec<u64>, AppI
         draw_from: 0,
         boot: false,
         display: OffscreenDisplay::default(),
+        shadow_cache: None,
     };
     let mut ticks = Vec::new();
     capture_with(platform.host(), show, &first, &capture, None, |stage| ticks.extend(run_tick(stage)))?;

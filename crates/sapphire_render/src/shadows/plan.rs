@@ -9,9 +9,9 @@ use glam::Vec3;
 use super::fit::{self, CascadeFit, Frustum, LightSpace};
 use super::spots::{self, ChosenSpot, Signature, SpotTile};
 use super::{
-    ATLAS_COLUMNS, GpuCapsule, GpuCascade, GpuCharacterMap, GpuSpotShadow, MAX_CAPSULES, MAX_CASCADES,
-    MAX_CHARACTER_MAPS, MAX_OTHERS, MAX_SPOT_SHADOWS, SPOT_COLUMNS, ShadowSettings, ShadowStats,
-    ShadowUniforms,
+    ATLAS_COLUMNS, CascadeCache, GpuCapsule, GpuCascade, GpuCharacterMap, GpuSpotShadow, HOLD_SHARE,
+    MAX_CAPSULES, MAX_CASCADES, MAX_CHARACTER_MAPS, MAX_OTHERS, MAX_SPOT_SHADOWS, SPOT_COLUMNS,
+    ShadowSettings, ShadowStats, ShadowUniforms,
 };
 use crate::bounds::{Sphere, max_stretch};
 use crate::characters::{CharacterTable, GpuReceived, RECEIVED_CAPSULE};
@@ -65,6 +65,15 @@ pub(crate) struct SlotCaster {
     /// Per spot tile: the level it draws the instance at, by the tile's texel where it stands, as a
     /// cascade's; 0 where it doesn't draw it.
     pub spot_levels: [u8; MAX_SPOT_SHADOWS],
+}
+
+/// What the cascades' maps hold of one instance slot, as they were last drawn (M5 D8): what a
+/// cascade that keeps compares the frame's casters with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct KeptCaster {
+    /// Bit `i`: cascade `i`'s map holds it, at `levels[i]`.
+    maps: u8,
+    levels: [u8; MAX_CASCADES],
 }
 
 impl SlotCaster {
@@ -150,6 +159,31 @@ pub(crate) struct ShadowPlan {
     turn: u64,
     /// Per cascade: drawn this frame.
     pub drawn: [Option<CascadeFit>; MAX_CASCADES],
+    /// Per cascade: the fit its casters are tested in this frame, drawn or not. Drawing in turns,
+    /// only those drawn have one; a cache that keeps tests every cascade's, to see what changed.
+    fits: [Option<CascadeFit>; MAX_CASCADES],
+    /// Per cascade (M5 D8, a cache that keeps): what its map holds is no longer what its casters
+    /// would draw, since something in it moved, came, left or changed its level after it drew.
+    stale: [bool; MAX_CASCADES],
+    /// Per cascade: its fit before this frame planned, which a lost frame leaves its map under.
+    before: [Option<CascadeFit>; MAX_CASCADES],
+    /// The draw list's build the maps were last checked against: a new one leaves every map stale.
+    list_build: Option<u32>,
+    /// Per instance slot: what the maps hold of it.
+    kept: Vec<KeptCaster>,
+    /// Per instance slot, this frame: it changes its depth without the plan seeing it (skinned or
+    /// morphed, moved this frame, or reading a texture on a frame a texture changed).
+    moving: Vec<bool>,
+    /// The cache the last frame planned with.
+    cache: CascadeCache,
+    /// A texture was raised, lowered or rewritten since the last frame planned: what reads one as it
+    /// casts may cast other depth.
+    textures_changed: bool,
+    /// Bit `i`: cached cascade `i` is drawn this frame under the fit it already had.
+    redrawn: u8,
+    /// Per instance slot, for the draw list's build in `list_build`: it casts through a pipeline that
+    /// reads a texture (alpha-tested foliage, masked anime character variants), whose levels stream.
+    cutout: Vec<bool>,
     /// This frame's character maps, by index.
     pub maps: Vec<CascadeFit>,
     /// Per instance slot: what it casts into.
@@ -229,12 +263,68 @@ impl ShadowPlan {
             self.cached = [None; MAX_CASCADES];
             self.toward = Some(toward);
         }
-        self.plan_cascades(settings, camera, light);
+        if self.cache != settings.cache {
+            // What the maps hold was never kept drawing in turns (M5 D8).
+            self.forget_kept();
+            self.cache = settings.cache;
+        }
+        let keeps = settings.cache.keeps();
+        if keeps {
+            self.fit_kept_cascades(settings, camera, light);
+        } else {
+            self.plan_cascades(settings, camera, light);
+        }
         self.classify(characters, slots, (meshes, wind_margin), settings, camera, light, cull, capsules);
+        if keeps {
+            self.choose_kept_cascades(settings, slots);
+        }
         self.receive(settings, light);
         self.skip_empty(list);
+        if keeps {
+            self.settle_kept_cascades(slots);
+        }
+        self.textures_changed = false;
         self.uniforms = self.pack(settings, camera, light, characters.count, atlas);
         self.count_draws(list, settings);
+    }
+
+    /// Follows the draw list (M5 D8): after a build other than the last one seen (`build`, the
+    /// scene's count of them), instances may have come, gone, changed mesh or material or moved to
+    /// other slots, so every cascade's map is stale; and which slots cast
+    /// through a pipeline that reads a texture is listed again from `list`.
+    pub(crate) fn follow_list(&mut self, build: u32, list: &DrawList) {
+        if self.list_build == Some(build) {
+            return;
+        }
+        self.list_build = Some(build);
+        self.forget_kept();
+        self.cutout.iter_mut().for_each(|cutout| *cutout = false);
+        let cut = SurfaceVariant::CHARACTER_ALPHA_TEST
+            .into_iter()
+            .chain([SurfaceVariant::foliage(crate::pipelines::Coverage::AlphaTest)]);
+        for variant in cut {
+            let slots = list.commands.iter().flat_map(|commands| &commands[variant.index()]).map(|c| c.slot);
+            for slot in slots.chain(list.deformed[variant.index()].iter().map(|draw| draw.slot)) {
+                let slot = slot as usize;
+                if self.cutout.len() <= slot {
+                    self.cutout.resize(slot + 1, false);
+                }
+                self.cutout[slot] = true;
+            }
+        }
+    }
+
+    /// Forgets what every cascade's map holds (M5 D8), so each is drawn again on its next turn: a
+    /// mesh or material was replaced in place, or the shaders were rebuilt, which the plan can't see
+    /// in its casters.
+    pub(crate) fn forget_kept(&mut self) {
+        self.stale = [true; MAX_CASCADES];
+    }
+
+    /// Notes that a texture was raised, lowered or rewritten (M5 D8): the casters that read one as
+    /// they cast leave their cascades stale on the next frame planned.
+    pub(crate) fn textures_changed(&mut self) {
+        self.textures_changed = true;
     }
 
     /// Chooses the frame's spot lights from `packet` (M5 L16; the `spots` module): at most
@@ -290,9 +380,17 @@ impl ShadowPlan {
     /// keep what earlier frames that ran drew.
     pub(crate) fn not_drawn(&mut self) {
         for (index, drawn) in self.drawn.iter().enumerate() {
-            if drawn.is_some() {
+            if drawn.is_none() {
+                continue;
+            }
+            self.empty[index] = false;
+            if self.cache.keeps() {
+                // Its map holds what it held under the fit it had before (M5 D8), not what the
+                // plan said it drew: it's drawn again on its next turn.
+                self.cached[index] = self.before[index];
+                self.stale[index] = true;
+            } else {
                 self.cached[index] = None;
-                self.empty[index] = false;
             }
         }
         // The spot tiles it drew hold what they held, and a cleared layer what it held before.
@@ -316,11 +414,15 @@ impl ShadowPlan {
         let period = u64::from(settings.cached_cascades).max(2);
         let turn = self.turn;
         self.turn += 1;
+        self.redrawn = 0;
         let mut from = frustum.near;
         for (index, &to) in splits.iter().enumerate().take(cascades) {
             let sphere = fit::slice_sphere(camera, &frustum, from, to);
             from = to;
             let desired = CascadeFit::new(light, sphere, settings.resolution);
+            if index >= fresh && self.cached[index] == Some(desired) {
+                self.redrawn |= 1 << index;
+            }
             let draw = match self.cached[index] {
                 None => true,
                 Some(_) if index < fresh => true,
@@ -332,6 +434,116 @@ impl ShadowPlan {
             if draw {
                 self.cached[index] = Some(desired);
                 self.drawn[index] = Some(desired);
+            }
+        }
+        // Drawing in turns, a cascade's casters are tested only where it is drawn.
+        self.fits = self.drawn;
+    }
+
+    /// Fits the cascades for `camera` with a cache that keeps (M5 D8): each one's fit this frame,
+    /// which its casters are tested in, and those drawn whatever they hold. A fresh cascade takes
+    /// the view's fit, and is drawn when that moved; a cached one takes it when it was never drawn,
+    /// once the view has moved a quarter of its radius, and on its turn when the view's moved at
+    /// all, or held ([`CascadeCache::Held`]) only once the view has moved [`HOLD_SHARE`] of its
+    /// width. [`Self::choose_kept_cascades`] then draws the others whose casters changed, on their
+    /// turns.
+    fn fit_kept_cascades(&mut self, settings: &ShadowSettings, camera: &CameraData, light: LightSpace) {
+        let cascades = settings.cascades as usize;
+        let frustum = Frustum::of(camera);
+        let splits = fit::split_distances(frustum.near, settings.distance as f32, cascades);
+        let fresh = cascades - settings.cached_cascades as usize;
+        let period = u64::from(settings.cached_cascades).max(2);
+        let turn = self.turn;
+        self.turn += 1;
+        self.before = self.cached;
+        self.fits = [None; MAX_CASCADES];
+        let mut from = frustum.near;
+        for (index, &to) in splits.iter().enumerate().take(cascades) {
+            let sphere = fit::slice_sphere(camera, &frustum, from, to);
+            from = to;
+            let desired = CascadeFit::new(light, sphere, settings.resolution);
+            let refit = match self.cached[index] {
+                None => true,
+                Some(cached) if index < fresh => cached != desired,
+                Some(cached) => {
+                    let moved = (cached.center.truncate() - desired.center.truncate()).abs().max_element();
+                    let on_turn = turn % period == (index - fresh) as u64;
+                    let behind = if settings.cache.holds() {
+                        moved > HOLD_SHARE * 2.0 * cached.radius
+                    } else {
+                        cached != desired
+                    };
+                    moved > 0.25 * cached.radius || (on_turn && behind)
+                }
+            };
+            if refit {
+                self.cached[index] = Some(desired);
+                self.drawn[index] = Some(desired);
+            }
+            self.fits[index] = self.cached[index];
+        }
+    }
+
+    /// With a cache that keeps (M5 D8), once the casters are classified: marks each cascade's map
+    /// stale whose casters changed since it drew (one came or left, changed level, or changes its
+    /// depth by itself), and draws, beside the cascades refitted, the fresh ones and the cached one
+    /// whose turn it is that are stale.
+    fn choose_kept_cascades(&mut self, settings: &ShadowSettings, slots: &InstanceSlots) {
+        let cascades = settings.cascades as usize;
+        let fresh = cascades - settings.cached_cascades as usize;
+        let period = u64::from(settings.cached_cascades).max(2);
+        // `turn` moved on in `fit_kept_cascades`: this frame's is the one before.
+        let turn = self.turn.wrapping_sub(1);
+        self.kept.resize(slots.len(), KeptCaster::default());
+        let mut changed = 0u8;
+        for (slot, _) in slots.live() {
+            let slot = slot as usize;
+            let (caster, kept) = (&self.casters[slot], &self.kept[slot]);
+            let mut differs = caster.cascades ^ kept.maps;
+            for index in 0..cascades {
+                let bit = 1 << index;
+                if caster.cascades & kept.maps & bit != 0 && caster.levels[index] != kept.levels[index] {
+                    differs |= bit;
+                }
+            }
+            let moved = if self.moving[slot] { caster.cascades | kept.maps } else { 0 };
+            changed |= differs | moved;
+        }
+        self.redrawn = 0;
+        for index in 0..cascades {
+            self.stale[index] |= changed & (1 << index) != 0;
+            let on_turn = index < fresh || turn % period == (index - fresh) as u64;
+            if self.drawn[index].is_none() && self.stale[index] && on_turn {
+                self.drawn[index] = self.cached[index];
+                if index >= fresh {
+                    self.redrawn |= 1 << index;
+                }
+            }
+        }
+    }
+
+    /// With a cache that keeps (M5 D8), once the cascades drawn are final: what each one drawn now
+    /// holds of every slot.
+    fn settle_kept_cascades(&mut self, slots: &InstanceSlots) {
+        let drawn = self.drawn_mask();
+        self.redrawn &= drawn;
+        if drawn == 0 {
+            return;
+        }
+        for (index, stale) in self.stale.iter_mut().enumerate() {
+            if drawn & (1 << index) != 0 {
+                *stale = false;
+            }
+        }
+        for (slot, _) in slots.live() {
+            let slot = slot as usize;
+            let caster = &self.casters[slot];
+            let kept = &mut self.kept[slot];
+            kept.maps = (kept.maps & !drawn) | (caster.cascades & drawn);
+            for index in 0..MAX_CASCADES {
+                if drawn & (1 << index) != 0 {
+                    kept.levels[index] = caster.levels[index];
+                }
             }
         }
     }
@@ -356,6 +568,9 @@ impl ShadowPlan {
         self.small.resize(slots.len(), 0);
         self.characters.clear();
         self.characters.resize(slots.len(), SlotCharacter::Environment);
+        self.moving.clear();
+        self.moving.resize(slots.len(), false);
+        self.cutout.resize(slots.len(), false);
         // Characters: the instances with an entry in the character buffer, grouped by the body
         // their entry casts with (M1 review RS-005), so each casts as the character, or the
         // world, it shades as. Its bodies come each once, in entry order.
@@ -441,13 +656,14 @@ impl ShadowPlan {
                             levels::cascade_level(errors, max_stretch(transform), texel, cull.levels.bias)
                         });
                     }
+                    self.moving[slot as usize] = true;
                     if !self.spots.is_empty() {
                         spot_caster =
                             slots.world_bounds(slot, meshes).map(|sphere| (sphere, true, None, 1.0));
                     }
                 }
                 SlotCharacter::Environment => {
-                    let mut windy = false;
+                    let (mut windy, mut deformed) = (false, false);
                     let sphere = match meshes.get(mesh.index()) {
                         Some(record) if matches!(record.streams, MeshStreams::Slab { .. }) => {
                             // Foliage reaches past its cooked bounds by as far as the wind
@@ -461,7 +677,7 @@ impl ShadowPlan {
                         // A skinned or morphed instance that isn't a character: its posed bounds
                         // (M5 D3), which hold its pending pose and its last drawn one.
                         Some(_) => {
-                            windy = true;
+                            (windy, deformed) = (true, true);
                             slots.world_bounds(slot, meshes)
                         }
                         None => None,
@@ -474,7 +690,12 @@ impl ShadowPlan {
                         .filter(|record| record.lod_errors.len() > 1 && !cull.culled.whole(slot))
                         .map(|record| record.lod_errors.as_slice());
                     let stretch = max_stretch(transform);
-                    for (index, fit) in self.drawn.iter().enumerate() {
+                    // What changes its depth without the plan seeing it (M5 D8). Not foliage in
+                    // the wind: its flutter is under the cached cascades' texels (the module docs).
+                    self.moving[slot as usize] = deformed
+                        || slots.moved(slot)
+                        || (self.textures_changed && self.cutout[slot as usize]);
+                    for (index, fit) in self.fits.iter().enumerate() {
                         let Some(fit) = fit else { continue };
                         if !sphere.is_none_or(|sphere| fit.holds(&sphere)) {
                             continue;
@@ -721,6 +942,8 @@ impl ShadowPlan {
             spot_draws,
             spot_clear: self.spot_clear,
             // A loaded layer is read whole; a depth texel is 4 bytes.
+            cached_redrawn: (self.redrawn & drawn).count_ones(),
+            moving_casters: self.moving_casters(),
             spot_load_bytes: if spots != 0 && !self.spot_clear {
                 u64::from(settings.resolution).pow(2) * 4
             } else {
@@ -728,6 +951,13 @@ impl ShadowPlan {
             },
             ..self.stats
         };
+    }
+
+    /// Casters with a cascade to cast into this frame that change its depth without the plan seeing
+    /// it (M5 D8, [`ShadowStats::moving_casters`]).
+    fn moving_casters(&self) -> u32 {
+        let casters = self.casters.iter().zip(&self.moving);
+        casters.filter(|(caster, moving)| **moving && caster.cascades != 0).count() as u32
     }
 
     /// Bit `i`: cascade `i` is drawn this frame.
@@ -847,6 +1077,7 @@ mod tests {
         filter: super::super::ShadowFilter::Tent5,
         others: 4,
         spots: 4,
+        cache: CascadeCache::Turns,
     };
 
     /// A static unit cube (mesh 0) and a deformable one (mesh 1).
@@ -1339,6 +1570,181 @@ mod tests {
         assert_eq!(plan.drawn_mask(), 0b1111, "the step again");
         update(&mut plan, &SETTINGS, &packet, &mut slots);
         assert_eq!(plan.drawn_mask().count_ones(), 3, "then in turns");
+    }
+
+    const KEPT: ShadowSettings = ShadowSettings { cache: CascadeCache::Kept, ..SETTINGS };
+
+    /// A cube by the camera and one far off, in the far cascades (M5 D8's fixtures).
+    fn near_and_far() -> InstanceSlots {
+        slots(&[instance(1, 0, Vec3::ZERO), instance(2, 0, Vec3::new(0.0, 0.0, -80.0))])
+    }
+
+    /// Plans `frames` frames, each drawn (its slots settled after), and gives each one's mask.
+    fn masks(
+        plan: &mut ShadowPlan,
+        settings: &ShadowSettings,
+        packet: &FramePacket,
+        slots: &mut InstanceSlots,
+        frames: usize,
+    ) -> Vec<u8> {
+        (0..frames)
+            .map(|_| {
+                update(plan, settings, packet, slots);
+                slots.settle_drawn();
+                plan.drawn_mask()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_kept_cascade_is_drawn_again_only_once_something_in_it_changes() {
+        let packet = packet(Vec::new());
+        let mut slots = near_and_far();
+        let mut plan = ShadowPlan::default();
+        assert_eq!(masks(&mut plan, &KEPT, &packet, &mut slots, 1), [0b1111], "the first frame draws all");
+        assert!(plan.casters[1].cascades & 0b1000 != 0, "the far cube is in the last cascade");
+        assert_eq!(masks(&mut plan, &KEPT, &packet, &mut slots, 4), [0; 4], "nothing changed: nothing drawn");
+        assert_eq!(plan.stats.cascades_cached, 4);
+        // The far cube moves: the cascades it was in or is in now are drawn again, the fresh ones
+        // at once and the cached ones on their turns, once each.
+        let far = plan.casters[1].cascades;
+        let moved = instance(2, 0, Vec3::new(1.0, 0.0, -80.0));
+        slots.apply(&InstanceDeltas { changed: vec![moved], removed: Vec::new() });
+        update(&mut plan, &KEPT, &packet, &mut slots);
+        assert_eq!(plan.stats.moving_casters, 1);
+        let far = far | plan.casters[1].cascades;
+        let mut drawn = plan.drawn_mask();
+        slots.settle_drawn();
+        let after = masks(&mut plan, &KEPT, &packet, &mut slots, 4);
+        assert_eq!(plan.stats.moving_casters, 0, "at rest");
+        for mask in &after[..1] {
+            assert_eq!(drawn & mask, 0, "each once: {drawn:#b} then {after:?}");
+            drawn |= mask;
+        }
+        assert_eq!(drawn, far, "{after:?}");
+        assert_eq!(after[1..], [0; 3]);
+    }
+
+    #[test]
+    fn what_moves_by_itself_keeps_every_cascade_it_is_in_drawn_as_in_turns() {
+        // A deformable instance reaching into every cascade changes its depth every frame without
+        // the plan seeing it, so kept draws as in turns.
+        let packet = packet(Vec::new());
+        let (mut turns, mut kept) = (ShadowPlan::default(), ShadowPlan::default());
+        let expected = masks(&mut turns, &SETTINGS, &packet, &mut everywhere(), 6);
+        assert_eq!(masks(&mut kept, &KEPT, &packet, &mut everywhere(), 6), expected);
+        assert_eq!(kept.stats.moving_casters, 1);
+        assert_eq!(kept.stats.cached_redrawn, 1, "the cached cascade on its turn, its fit as it was");
+    }
+
+    #[test]
+    fn foliage_in_the_wind_rests_in_a_kept_cascade() {
+        // Its flutter is under the cached cascades' texels (the module docs): wind alone draws
+        // nothing again.
+        let slots = near_and_far();
+        let mut plan = ShadowPlan::default();
+        let frame = |plan: &mut ShadowPlan| {
+            plan.update(
+                &KEPT,
+                &packet(Vec::new()),
+                &slots,
+                &meshes(),
+                &|_| 1.0,
+                &DrawList::default(),
+                CharacterList::default().table(),
+                (4096, 2048),
+                CasterCull::NONE,
+                MAX_CAPSULES,
+            );
+            plan.drawn_mask()
+        };
+        assert_eq!(frame(&mut plan), 0b1111);
+        assert_eq!((frame(&mut plan), frame(&mut plan), plan.stats.moving_casters), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_lost_frame_leaves_a_kept_cascade_as_it_held_and_drawn_again_on_its_turn() {
+        // The view moves a little each frame: the fresh cascades take its fits, the cached ones
+        // theirs on their turns. A lost frame's maps hold what they held under the fits they had,
+        // which the receivers read until each is drawn again.
+        let mut packet = packet(Vec::new());
+        let mut slots = near_and_far();
+        let mut plan = ShadowPlan::default();
+        let walk = |packet: &mut FramePacket, step: f32| {
+            let eye = Vec3::new(step, 1.5, 4.0);
+            packet.views[0].camera =
+                CameraData::look_at(eye, eye - Vec3::new(0.0, 0.5, 4.0), Vec3::Y, 0.75, 1.5, 0.05);
+        };
+        masks(&mut plan, &KEPT, &packet, &mut slots, 2);
+        walk(&mut packet, 0.5);
+        update(&mut plan, &KEPT, &packet, &mut slots);
+        let lost = plan.drawn_mask();
+        assert_eq!(lost & 0b0011, 0b0011, "the fresh two refit");
+        let before = plan.before;
+        plan.not_drawn();
+        for (index, fit) in before.iter().enumerate().filter(|(index, _)| lost & 1 << index != 0) {
+            assert_eq!(plan.cached[index], *fit, "the fit cascade {index}'s map holds");
+        }
+        assert!(plan.stale.iter().enumerate().all(|(index, &stale)| stale == (lost & 1 << index != 0)));
+        // Drawn again: the fresh ones next frame, a cached one lost on its turn, its fit held for
+        // the receivers until then.
+        update(&mut plan, &KEPT, &packet, &mut slots);
+        slots.settle_drawn();
+        assert_eq!(plan.drawn_mask() & 0b0011, 0b0011);
+        let mut redrawn = plan.drawn_mask() & lost;
+        for (index, fit) in before.iter().enumerate() {
+            if redrawn & 1 << index == 0 && lost & 1 << index != 0 {
+                assert_eq!(plan.cached[index], *fit, "cascade {index} held as it was");
+            }
+        }
+        redrawn |= masks(&mut plan, &KEPT, &packet, &mut slots, 1)[0];
+        assert_eq!(redrawn & lost, lost, "every cascade the lost frame drew is drawn again");
+        assert!(plan.stale.iter().all(|&stale| !stale));
+    }
+
+    #[test]
+    fn a_new_draw_list_or_a_changed_texture_draws_kept_cascades_again() {
+        let packet = packet(Vec::new());
+        let mut slots = near_and_far();
+        let mut plan = ShadowPlan::default();
+        // The far cube casts through an alpha-tested foliage pipeline.
+        let mut list = DrawList::default();
+        let cutout = SurfaceVariant::foliage(crate::pipelines::Coverage::AlphaTest);
+        list.commands[0][cutout.index()].push(crate::scene::DrawCommand {
+            indices: 0..3,
+            first_vertex: 0,
+            slot: 1,
+            draw_id: 0,
+            material: crate::materials::MaterialHandle::from_raw(0),
+            mesh: MeshHandle::from_raw(0),
+            submesh: 0,
+            levels: 1,
+            outline: false,
+            foliage: 0,
+        });
+        plan.follow_list(0, &list);
+        masks(&mut plan, &KEPT, &packet, &mut slots, 2);
+        plan.follow_list(0, &list);
+        assert_eq!(masks(&mut plan, &KEPT, &packet, &mut slots, 1), [0], "the same build");
+        // A new build: every cascade that holds something (an empty one stays as it was cleared).
+        let holding = plan.casters[0].cascades | plan.casters[1].cascades;
+        plan.follow_list(1, &list);
+        assert_eq!(
+            masks(&mut plan, &KEPT, &packet, &mut slots, 2).iter().fold(0, |all, mask| all | mask),
+            holding
+        );
+        // A texture changed: the cascades the cutout cube is in, and no others.
+        let far = plan.casters[1].cascades;
+        plan.textures_changed();
+        let drawn = masks(&mut plan, &KEPT, &packet, &mut slots, 3).iter().fold(0, |all, mask| all | mask);
+        assert_eq!(drawn, far);
+        assert_eq!(masks(&mut plan, &KEPT, &packet, &mut slots, 2), [0, 0]);
+        // A mesh or material replaced in place, or the shaders rebuilt: all of them.
+        plan.forget_kept();
+        assert_eq!(
+            masks(&mut plan, &KEPT, &packet, &mut slots, 2).iter().fold(0, |all, mask| all | mask),
+            holding
+        );
     }
 
     /// `count` instances in a row, each listed as a character with a body of its own.

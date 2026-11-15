@@ -22,6 +22,7 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 mod character_levels;
 mod counts;
 mod culling;
+mod cutins;
 mod depth_equal;
 mod insets;
 mod killed_fragments;

@@ -438,6 +438,21 @@ pub(crate) struct PostUniforms {
     /// x: the largest blur, as a fraction of the picture's height (0: none); y: the camera's near plane;
     /// z: an inset's soft backdrop's blur, as a fraction of its scene's height (0: none).
     pub focus_blur: [f32; 4],
+    /// A cut-in's backdrop (M5 L10), which only an inset's resolve reads: zeros for the frame's and a
+    /// showcase's.
+    pub cutin: GpuCutIn,
+}
+
+/// A cut-in's backdrop as its resolve reads it (M5 L10, WGSL `InsetCutIn`): a gradient over what no character
+/// covers, added in linear light before the inset's exposure.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub(crate) struct GpuCutIn {
+    /// rgb: the far side's light less the near side's (the main pass's clear), linear.
+    pub far: [f32; 4],
+    /// xy: from the near side to the far, in texture coordinates over the picture's extent along it; z: 1 for a
+    /// gradient, 0 for none.
+    pub toward: [f32; 4],
 }
 
 impl PostUniforms {
@@ -474,6 +489,7 @@ impl PostUniforms {
             effects,
             focus: [0.0; 4],
             focus_blur: [0.0; 4],
+            cutin: GpuCutIn::default(),
         }
     }
 }
@@ -597,8 +613,8 @@ pub(crate) struct PostProcess {
     /// Levels the thermal ladder sheds in place, from the widest ([`Self::shed_bloom_levels`]).
     shed_levels: u32,
     bind_groups: Box<BindGroups>,
-    /// What the last `prepare` decided.
-    uniforms: PostUniforms,
+    /// What the last `prepare` decided: boxed, as it's over a kilobyte and a renderer is moved whole.
+    uniforms: Box<PostUniforms>,
     variant: Variant,
     /// The LUT slots grades A and B read.
     bound: [usize; 2],
@@ -1059,7 +1075,7 @@ impl PostProcess {
             shed_shafts: false,
             shed_levels: 0,
             bind_groups: Box::default(),
-            uniforms: PostUniforms::default(),
+            uniforms: Box::default(),
             variant: Variant::default(),
             bound: [0, 0],
             bloom: false,
@@ -1251,12 +1267,44 @@ impl PostProcess {
     /// positive number), and its `soft_backdrop`'s blur where the tier has soft backdrops (M5 L8), none of the
     /// main view's focus.
     pub(crate) fn inset_uniforms(&self, exposure: f32, soft_backdrop: f32) -> PostUniforms {
-        let mut uniforms = self.uniforms;
+        let mut uniforms = *self.uniforms;
         uniforms.composite[0] = if exposure.is_finite() && exposure > 0.0 { exposure } else { 1.0 };
         uniforms.composite[3] = 0.0;
         let blur = if self.depth_of_field.insets { focus::backdrop_blur(soft_backdrop) } else { 0.0 };
         uniforms.focus = [0.0; 4];
         uniforms.focus_blur = [0.0, 0.0, blur, 0.0];
+        // The frame's screen effects aren't an inset's: only a cut-in's own lines draw in one.
+        uniforms.effects = GpuEffects::new(&PostEffects::NONE).0;
+        uniforms.cutin = GpuCutIn::default();
+        uniforms
+    }
+
+    /// A cut-in's constants this frame (M5 L10): [`Self::inset_uniforms`], with `cutin`'s backdrop gradient and
+    /// its speed lines over the backdrop alone, for a picture of `size` pixels whose backdrop's near side is
+    /// `near`. The frame's own effects aren't a cut-in's: it draws only its own lines, and no soft backdrop, whose
+    /// pass would draw in place of its gradient.
+    pub(crate) fn cutin_uniforms(
+        &self,
+        exposure: f32,
+        cutin: &crate::InsetCutIn,
+        near: Vec3,
+        size: (u32, u32),
+    ) -> PostUniforms {
+        let mut uniforms = self.inset_uniforms(exposure, 0.0);
+        let finite = |value: Vec3| if value.is_finite() { value.max(Vec3::ZERO) } else { near };
+        let effects = PostEffects {
+            speed_lines: SpeedLines { coverage: EffectCoverage::WORLD, ..cutin.lines },
+            ..PostEffects::NONE
+        };
+        uniforms.effects = GpuEffects::new(&effects).0;
+        let (width, height) = (size.0.max(1) as f32, size.1.max(1) as f32);
+        uniforms.frame = [width / height, 1.0 / width, 1.0 / height, uniforms.frame[3]];
+        let toward = if cutin.toward.is_finite() { cutin.toward } else { glam::Vec2::ZERO };
+        let on = toward != glam::Vec2::ZERO;
+        uniforms.cutin = GpuCutIn {
+            far: (finite(cutin.backdrop_far) - near).extend(0.0).to_array(),
+            toward: [toward.x, toward.y, if on { 1.0 } else { 0.0 }, 0.0],
+        };
         uniforms
     }
 
@@ -1404,7 +1452,7 @@ impl PostProcess {
         if !self.distorting {
             self.bind_groups.distorted = CachedBindGroup::default();
         }
-        self.uniforms = uniforms;
+        *self.uniforms = uniforms;
         let focus = if self.focus { self.focus_slots() } else { Vec::new() };
         let distorting = self.distorting;
         // The upscaler's pipelines (M5 L14) build with the renderer, never here.
@@ -1433,7 +1481,7 @@ impl PostProcess {
         upsample: bool,
         (width, height): (u32, u32),
     ) -> (PostUniforms, &wgpu::Buffer) {
-        let mut uniforms = self.uniforms;
+        let mut uniforms = *self.uniforms;
         uniforms.composite[3] = if upsample { 1.0 } else { 0.0 };
         uniforms.frame[1] = 1.0 / width.max(1) as f32;
         uniforms.frame[2] = 1.0 / height.max(1) as f32;

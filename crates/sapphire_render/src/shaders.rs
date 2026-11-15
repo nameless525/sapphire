@@ -1610,6 +1610,7 @@ mod tests {
                 slice,
                 flags,
                 padding,
+                edges,
             }),
         )];
         let modules = structs
@@ -2095,6 +2096,7 @@ mod tests {
             effects,
             focus,
             focus_blur,
+            cutin,
         });
         assert_eq!(fields("PostUniforms"), owned(uniforms), "PostUniforms: WGSL vs Rust fields");
         let effects = offsets!(GpuEffects {

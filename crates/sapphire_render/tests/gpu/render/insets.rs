@@ -106,9 +106,9 @@ fn a_held_picture_draws_again_after_a_reload() {
 
     // A shader reload: the inset's resolve swaps red and blue.
     let sources = ShaderSources::compiled_in();
-    let line = "let color = textureSampleLevel(texture0, linear_clamp, in.uv, 0.0).rgb * post.composite.x;";
+    let line = "var light = scene.rgb;";
     let text = sources.get(ShaderFile::Post);
-    assert_eq!(text.matches(line).count(), 1, "fs_inset's first line");
+    assert_eq!(text.matches(line).count(), 1, "fs_inset's picture");
     let mut swapped = sources.clone();
     swapped.set(ShaderFile::Post, text.replace(line, &line.replace(".rgb", ".bgr")));
     showcase.frames.renderer.set_shader_sources(&swapped).expect("a valid edit");

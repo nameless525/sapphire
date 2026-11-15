@@ -73,6 +73,17 @@ struct PostUniforms {
     // x: the largest blur, as a fraction of the picture's height (0: none); y: the camera's near plane;
     // z: an inset's soft backdrop's blur, as a fraction of its scene's height (0: none).
     focus_blur: vec4<f32>,
+    // A cut-in's backdrop (M5 L10), appended: only an inset's resolve reads it.
+    cutin: InsetCutIn,
+}
+
+// Mirrors `post::GpuCutIn`.
+struct InsetCutIn {
+    // rgb: the backdrop's far side less its near side (the main pass's clear), linear.
+    far: vec4<f32>,
+    // xy: from the near side to the far, in texture coordinates over the picture's extent along it; z: 1 for a
+    // gradient.
+    toward: vec4<f32>,
 }
 
 // Mirrors `post::effects::GpuEffects`. Effects with no amount, strength or opacity are off.
@@ -406,10 +417,26 @@ fn fs_post(in: FullscreenVaryings) -> @location(0) vec4<f32> {
 // group 0's `composite.x`) and graded through the frame's LUTs, into its picture, which encodes on
 // write. No bloom, vignette or effects. The picture is as large as the scene or half as wide and
 // tall, so a bilinear tap at each pixel's center is the scene's texel or the box of four under it.
+//
+// A cut-in's (M5 L10) adds its backdrop's gradient and draws speed lines over it, both weighted by the scene's
+// alpha, which is the frame's character mask: 1 where the clear shows, 0 on a character but for its glow, as
+// the frame's screen effects weigh the world. Both are uniform branches a showcase skips, drawing as before.
 @fragment
 fn fs_inset(in: FullscreenVaryings) -> @location(0) vec4<f32> {
-    let color = textureSampleLevel(texture0, linear_clamp, in.uv, 0.0).rgb * post.composite.x;
-    return vec4<f32>(srgb_to_linear(graded(color)), 1.0);
+    let scene = textureSampleLevel(texture0, linear_clamp, in.uv, 0.0);
+    let backdrop = saturate(scene.a);
+    var light = scene.rgb;
+    if post.cutin.toward.z > 0.0 {
+        let along = saturate(dot(in.uv - vec2<f32>(0.5), post.cutin.toward.xy) + 0.5);
+        light += post.cutin.far.rgb * (along * backdrop);
+    }
+    var display = graded(light * post.composite.x);
+    let lines = post.effects.lines;
+    if lines.x > 0.0 {
+        let cover = lines.x * speed_line(in.uv) * mix(lines.z, lines.y, backdrop);
+        display = mix(display, post.effects.lines_color.rgb, cover);
+    }
+    return vec4<f32>(srgb_to_linear(display), 1.0);
 }
 
 struct CompositeVaryings {

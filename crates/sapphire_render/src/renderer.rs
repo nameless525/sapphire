@@ -3332,7 +3332,7 @@ impl Renderer {
             &**view_lists
         };
         if let Some(views) = debug_views.as_deref_mut() {
-            views.classify(lists, draw_list, view_cull);
+            views.classify(lists, draw_list, view_cull, |slot| shadows.holds(slot));
         }
         let run_records = &*run_records;
         let run_list = lists.records();

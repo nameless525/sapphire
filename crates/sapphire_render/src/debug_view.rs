@@ -482,7 +482,8 @@ pub const TEXTURES_LEGEND: [ScaleCell; 7] = [
 ];
 
 /// The culling view's tags: drawn by the main view and a shadow view (a cascade, a character map or
-/// a spot tile), by the main view alone, by a shadow view alone (the main view culled it), and by none, by the test that culled it from the
+/// a spot tile, or held in a cascade's map drawn on an earlier frame, M5 D8), by the main view alone,
+/// by a shadow view alone (the main view culled it), and by none, by the test that culled it from the
 /// main view: its frustum, the tier's distance, or its size.
 pub const CULLING_LEGEND: [ScaleCell; 6] = [
     cell("the main view and a shadow", SCALE_NEUTRAL),
@@ -524,6 +525,9 @@ pub struct SlotScale {
     pub whole: bool,
     /// A shadow view (a cascade, a character map or a spot light's tile) drew it this frame.
     pub shadow: bool,
+    /// A cascade not drawn this frame holds it in its map, from the frame that drew it (M5 D8): the
+    /// culling view counts it a shadow's, the runs view (this frame's calls) doesn't.
+    pub held: bool,
     /// The longest run a view drew it in: 0 for none, 1 for alone in a group of runs.
     pub run: u32,
 }
@@ -647,7 +651,7 @@ pub fn texture_tag(state: MaterialTextures, slot: SlotScale) -> u32 {
 
 /// The culling view's tag ([`CULLING_LEGEND`]) of the instance `slot`.
 pub fn culling_tag(slot: SlotScale) -> u32 {
-    match (slot.culled, slot.shadow) {
+    match (slot.culled, slot.shadow || slot.held) {
         (None, true) => 1,
         (None, false) => 2,
         (Some(_), true) => 3,
@@ -1444,9 +1448,15 @@ impl DebugViews {
 
     /// Works out what the scale views tag each instance by, once the frame's views are culled and
     /// their lists compacted (`lists`, of `list`): why the main view culled it, whether it draws
-    /// level 0 by rule, whether a shadow view drew it, and the longest run one drew it in. Nothing
-    /// unless a scale view shows.
-    pub(crate) fn classify(&mut self, lists: &ViewLists, list: &DrawList, view_cull: &ViewCull) {
+    /// level 0 by rule, whether a shadow view drew it or a held cascade's map holds it (`held`, M5
+    /// D8), and the longest run one drew it in. Nothing unless a scale view shows.
+    pub(crate) fn classify(
+        &mut self,
+        lists: &ViewLists,
+        list: &DrawList,
+        view_cull: &ViewCull,
+        held: impl Fn(u32) -> bool,
+    ) {
         let Some(plan) = self.plan.filter(|plan| plan.scale()) else { return };
         let (culled, levels) = (view_cull.culled(), view_cull.levels());
         self.slots.clear();
@@ -1459,6 +1469,7 @@ impl DebugViews {
             },
             whole: levels.whole(slot),
             shadow: view_cull.drawn_by(slot).shadow,
+            held: held(slot),
             run: 0,
         }));
         if plan == Plan::Runs {
@@ -2192,6 +2203,12 @@ mod tests {
         assert_eq!(name(&CULLING_LEGEND, culling_tag(culled(CullReason::Frustum))), "culled by the frustum");
         assert_eq!(name(&CULLING_LEGEND, culling_tag(culled(CullReason::Distance))), "culled by distance");
         assert_eq!(name(&CULLING_LEGEND, culling_tag(culled(CullReason::Size))), "culled by size");
+        // Held in a cascade's map from an earlier frame (M5 D8): a shadow's in the culling view, and
+        // in the runs view, which shows this frame's calls, no shadow's.
+        let held = SlotScale { held: true, ..culled(CullReason::Frustum) };
+        assert_eq!(name(&CULLING_LEGEND, culling_tag(held)), "a shadow alone");
+        assert_eq!(name(&RUNS_LEGEND, run_tag(held)), "culled");
+        assert_eq!(name(&RUNS_LEGEND, run_tag(SlotScale { held: true, ..drawn })), "no shadow");
         // Runs: the longest run a view drew it in, else alone, no shadow or culled.
         let run = |run| name(&RUNS_LEGEND, run_tag(SlotScale { run, ..shadowed }));
         assert_eq!(

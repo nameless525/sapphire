@@ -215,6 +215,49 @@ fn a_cull_pose_culls_in_the_cameras_place_while_the_passes_draw_from_the_camera(
 
 #[test]
 #[ignore = "needs a GPU"]
+fn the_culling_view_tags_what_a_held_cascade_holds_as_a_shadow() {
+    // Held cascades (M5 D8, every tier's): a still view draws no cascade after its first frame, and
+    // their maps hold what they drew. The square outside the cull pose's view casts into a cascade:
+    // the culling view tags it "a shadow alone" on every frame, not only on those that draw a
+    // cascade (M5 Z3a). The runs view's tags stay this frame's, as its legend says.
+    use sapphire_render::{CascadeCache, ShadowSettings};
+
+    let gpu = gpu();
+    let texture = target(&gpu, FORMAT, SIZE);
+    let shadows = ShadowSettings { resolution: 256, cache: CascadeCache::Held, ..ShadowSettings::default() };
+    let settings = RenderSettings { shadows: Some(shadows), ..RenderSettings::default() };
+    let (mut frames, square) = frames_with(&gpu, settings, &square_with_levels());
+    frames.sun = DirectionalLight {
+        direction: Vec3::new(-0.4, -0.7, -0.6).normalize(),
+        color: Vec3::ONE,
+        intensity: 1.0,
+    };
+    let (instances, camera, pose, [_, right]) = pair(square);
+    frames.renderer.set_cull_pose(Some(pose));
+    let scene = (camera, &instances[..]);
+    let alone = cell_bytes(&CULLING_LEGEND, "a shadow alone");
+    let (mut drawn, mut tagged) = (Vec::new(), Vec::new());
+    for frame in 0..4 {
+        let pixels = shown(&gpu, &texture, &mut frames, scene, DebugView::Culling, frame);
+        drawn.push(frames.renderer.stats().shadows.cascades_drawn);
+        tagged.push(close(at(&pixels, right), alone));
+    }
+    // The first frame draws the cascades and a still view none after it: the case, or the test
+    // proves nothing.
+    assert!(drawn[0] > 0 && drawn[2..].iter().all(|&count| count == 0), "cascades drawn {drawn:?}");
+    assert!(tagged[0], "the frame that draws the cascades tags the square a shadow alone");
+    assert!(tagged.iter().all(|&tag| tag), "a shadow alone on {tagged:?}, cascades drawn {drawn:?}");
+    // The runs view: no shadow view drew it this frame.
+    let pixels = shown(&gpu, &texture, &mut frames, scene, DebugView::Runs, 4);
+    assert!(
+        striped(at(&pixels, right), SCALE_CULLED),
+        "the runs view: culled with no shadow drawing it this frame: {:?}",
+        at(&pixels, right)
+    );
+}
+
+#[test]
+#[ignore = "needs a GPU"]
 fn the_runs_view_shows_equal_props_a_cascade_draws_in_one_call() {
     let gpu = gpu();
     let texture = target(&gpu, FORMAT, SIZE);

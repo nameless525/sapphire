@@ -1331,6 +1331,14 @@ impl Shadows {
         cascades.chain(map).chain(spot_levels).min()
     }
 
+    /// Whether a cascade the frame holds, drawn on an earlier frame and not this one (M5 D8), holds
+    /// the instance in `slot` in its map: what the culling view tags a shadow by besides
+    /// [`Self::cast_level`], which is this frame's draws alone (what skinning poses).
+    pub(crate) fn holds(&self, slot: u32) -> bool {
+        let held = if self.pipelines.is_some() && self.plan.active { self.plan.held_mask() } else { 0 };
+        held != 0 && self.plan.kept().get(slot as usize).is_some_and(|kept| kept.maps & held != 0)
+    }
+
     /// One texel, in meters, of each cascade the frame draws or holds (M5 D8) and of each character
     /// map, as [`Self::caster_tests`] lists them: what a masked caster's or a foliage card's texture
     /// is read by in a shadow view (the `coverage` module, M5 M5). With them, bit `i` set where

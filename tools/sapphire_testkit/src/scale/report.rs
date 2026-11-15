@@ -350,7 +350,10 @@ fn section(
     for read in &run.read {
         match read {
             Read::Cpu => timed_table(out, rounds, beside, beside_name, "cpu", |row| !row.starts_with("gpu ")),
-            Read::Gpu => timed_table(out, rounds, beside, beside_name, "gpu", |row| row.starts_with("gpu ")),
+            Read::Gpu => {
+                timed_table(out, rounds, beside, beside_name, "gpu", |row| row.starts_with("gpu "));
+                copies_note(out, rounds);
+            }
             Read::Counts => {
                 let budgeted = budgeted_counts(rounds);
                 let rows: Vec<&str> = budgeted
@@ -729,6 +732,41 @@ fn cell_worst(cell: &CountCell) -> u64 {
         CountCell::Differs(readings) => readings.iter().map(|(_, counted)| counted.worst).max().unwrap_or(0),
         CountCell::NotExercised | CountCell::Missing => 0,
     }
+}
+
+/// The GPU frame's timestamps are its passes', so the streamer's copies, submitted before the frame's first
+/// pass, aren't in it. What a copy costs shows, if anywhere, in the wait past the GPU frame: this prints it on the
+/// `gpu` lap's frames that raised a texture level against those that raised none, the rounds pooled, from the
+/// trace (none on a counting walk).
+fn copies_note(out: &mut String, rounds: &Rounds) {
+    let (mut raised, mut none) = (Vec::new(), Vec::new());
+    for trace in rounds.rounds.iter().filter_map(|round| round.trace.as_deref()) {
+        let (Some(wait), Some(span), Some(levels)) = (
+            trace_column(trace, "gpu", "wait"),
+            trace_column(trace, "gpu", "gpu_span"),
+            trace_column(trace, "gpu", "levels_raised"),
+        ) else {
+            continue;
+        };
+        if wait.len() != span.len() || wait.len() != levels.len() {
+            continue;
+        }
+        for ((wait, span), levels) in wait.iter().zip(&span).zip(&levels) {
+            if *levels > 0.0 { &mut raised } else { &mut none }.push(wait - span);
+        }
+    }
+    let spread = |gaps: &[f64]| match (percentile(gaps, 0.5), percentile(gaps, 0.95)) {
+        (Some(p50), Some(p95)) => format!("p50 {p50:.0} / p95 {p95:.0} µs ({} frames)", gaps.len()),
+        _ => "no frames".to_owned(),
+    };
+    let _ = writeln!(
+        out,
+        "- **The GPU frame leaves out the streamer's copies:** they are submitted before the frame's first pass, \
+         outside its timestamps. The wait past the GPU frame (the `gpu` lap, the rounds pooled), where a copy's \
+         cost would show: on frames that raised a level: {}; on frames that raised none: {}.\n",
+        if raised.is_empty() && none.is_empty() { "no trace".to_owned() } else { spread(&raised) },
+        if raised.is_empty() && none.is_empty() { "no trace".to_owned() } else { spread(&none) },
+    );
 }
 
 fn streaming_notes(out: &mut String, rounds: &Rounds) {
@@ -1126,6 +1164,27 @@ mod tests {
         let (header, _) = generate(false);
         assert!(!header.contains("each count the same in every round"), "{header}");
         assert!(header.contains("a counting run's counts the same in every round"), "{header}");
+    }
+
+    /// The GPU frame's timestamps leave out the streamer's copies; the report says so and prints the wait past
+    /// the GPU frame on frames that raised a level against frames that raised none, which is where a copy's cost
+    /// would show.
+    #[test]
+    fn the_gpu_table_says_it_leaves_out_the_streamers_copies() {
+        let manifest = manifest();
+        let (run, tier) = (&manifest.runs[0], &manifest.tiers[0]);
+        assert!(run.read.contains(&Read::Gpu), "the fixture's tour reads the GPU");
+        let mut walk = rounds(&[""]);
+        walk.rounds[0].trace = Some(
+            "phase,frame,wait,gpu_span,levels_raised\ngpu,0,1000,400,2\ngpu,1,1000,400,1\ngpu,2,1100,400,1\n\
+             gpu,3,900,400,0\ngpu,4,900,400,0\ngpu,5,950,400,0\ncpu,0,5000,0,9\n"
+                .into(),
+        );
+        let mut out = String::new();
+        section(&mut out, &mut Vec::new(), &manifest, run, tier, &walk, None);
+        let line = out.lines().find(|line| line.contains("streamer's copies")).expect(&out);
+        assert!(line.contains("raised a level: p50 600 / p95 700 µs (3 frames)"), "{line}");
+        assert!(line.contains("raised none: p50 500 / p95 550 µs (3 frames)"), "{line}");
     }
 
     /// B4's baseline drew the phones at their scenes' size; the report says so once, beside a baseline.

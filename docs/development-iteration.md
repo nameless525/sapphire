@@ -317,7 +317,9 @@ streaming landed when and may differ, each round's shown and any round over its 
 a row the log doesn't have reads "missing", never zero. With `--baseline` (a folder of B4's logs named
 `<run>.<tier>.r<n>.log`), each row stands beside its baseline reading. A stand-in's rows say what they stand in
 for and are never read as a pass, and the gaps the batch can't measure yet are listed at the top. Metal's
-passes overlap, so of its GPU rows only the frame's is exact. The Mac is none of §3.1's devices: its readings
+passes overlap, so of its GPU rows only the frame's is exact. The GPU frame is its passes' timestamps and
+leaves out the streamer's copies, so beside it the report prints the wait past the GPU frame on frames that
+raised a texture level against frames that raised none, where a copy's cost would show. The Mac is none of §3.1's devices: its readings
 compare commits and tiers, not a phone's budget.
 
 ## Measurements

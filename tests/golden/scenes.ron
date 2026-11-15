@@ -4238,12 +4238,14 @@
                 name: "crowd-hub-grounded",
                 ticks: 600,
                 args: ["--zone", "proving_hub:player_start", "--tier", "desktop-high", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 7.4, warp: 30.1),
             ),
             // The same on Mobile-High: up to 30 of the crowd, capsules alone, its AO capsules and GTAO.
             (
                 name: "crowd-hub-grounded-mobile-high",
                 ticks: 600,
                 args: ["--zone", "proving_hub:player_start", "--tier", "mobile-high", "--capture-frames", "32"],
+                ci_seconds: (lavapipe: 14.1, warp: 28.9),
             ),
         ],
     ),

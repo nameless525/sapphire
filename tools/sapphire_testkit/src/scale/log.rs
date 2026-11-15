@@ -152,6 +152,18 @@ impl Log {
                     }
                 }
                 log.trips.entry(phase.to_owned()).or_default().push(trip);
+            } else if has(line, "zone walk") {
+                // A plain bench's walk (a counting walk's): its pipelines over the whole run, under the phase its
+                // count rows took, as a fight's bench logs each phase's.
+                log.pipelines.insert(
+                    "drawn".to_owned(),
+                    Pipelines {
+                        first_use: int("first_use").unwrap_or(0),
+                        frame_thread: int("frame_thread").unwrap_or(0),
+                        frame_waits: int("frame_waits").unwrap_or(0),
+                        first_hour: None,
+                    },
+                );
             } else if has(line, "fight pipelines") {
                 let Some(phase) = field("phase") else { continue };
                 log.pipelines.insert(
@@ -249,6 +261,17 @@ mod tests {
     use super::*;
 
     const WALK: &str = include_str!("fixtures/tour.desktop-low.r1.log");
+
+    /// A counting walk logs its pipelines on its `zone walk` line, not a phase line: read them there, under the
+    /// phase its count rows took, so the report's pipelines table shows them rather than assuming none.
+    #[test]
+    fn a_counting_walks_pipelines_are_read_from_its_walk_line() {
+        let line = "2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: zone walk frames=7660 \
+                    streaming_us_p50=0.0 prewarmed=812 first_use=0 rebuilt=0 warmed_off_frame=812 frame_thread=0 \
+                    frame_waits=3";
+        let log = Log::parse(line);
+        assert_eq!(log.pipelines.get("drawn").map(|built| built.frame_waits), Some(3), "{log:?}");
+    }
 
     #[test]
     fn a_walks_log_reads_its_rows_counts_memory_and_pipelines() {

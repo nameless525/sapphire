@@ -886,11 +886,8 @@ fn pipelines(out: &mut String, failures: &mut Vec<String>, run: &Run, tier: &Tie
     }
     let _ = writeln!(out, "Pipelines built after the load (exit test 7, by counts):\n");
     if lines.is_empty() {
-        // A counting bench fails its own run on any build after the load, and logs no phase line.
-        let _ = writeln!(
-            out,
-            "- no phase line: a counting bench exits non-zero on any pipeline built after its load, so a complete unit built none\n"
-        );
+        // A fight's bench logs a phase line and a counting walk its `zone walk` line; neither is missing.
+        let _ = writeln!(out, "- missing: no round logged its pipelines\n");
     } else {
         for line in lines {
             let _ = writeln!(out, "- {line}");

@@ -38,7 +38,8 @@
 //!
 //! A fight is measured whole, by phases: `crate::fight_bench`, and so is a zone stage's walk (`--zone
 //! --zone-walk`, M5 B4) but with `--draw-every`. A zone stage (`--zone`, M3 C1) adds what walking a zone costs,
-//! from its first frame on ([`ZoneWalk`]), and fails if a frame had to build a pipeline, as a fight's bench does.
+//! from its first frame on ([`ZoneWalk`]), and fails if a frame had to build a pipeline, as a fight's bench does;
+//! a walk fails too if a frame waited on the pipelines' warm-up ([`check_no_waits`], M5 Z3).
 //! A walk under `--draw-every` logs the count rows of the frames it drew too, as the fight's bench logs them
 //! (`fight_bench::DrawnCounts`, M5 X4): what CI's scale lane holds. So does a zone stage standing still under
 //! `--draw-every` (M5 C11): a view held, such as a crowd's densest.
@@ -151,6 +152,17 @@ pub(crate) fn check_first_uses(stage: &Stage) -> Result<(), AppInitError> {
         return Err(AppInitError::msg(format!("a frame built pipelines the warm-up should have: {report}")));
     }
     Err(AppInitError::msg(format!("the load's pipeline inventory missed: {report}")))
+}
+
+/// Exit test 1 for a zone walk (M5 Z3): a frame that waited on the pipelines' warm-up stalled as surely as one
+/// that built, so a walk fails on any wait, as a fight's bench report does.
+pub(crate) fn check_no_waits(builds: sapphire_render::PipelineStats) -> Result<(), String> {
+    match builds.frame_waits {
+        0 => Ok(()),
+        waits => {
+            Err(format!("the walk's frames waited on the pipelines' warm-up {waits} time(s) after its first"))
+        }
+    }
 }
 
 /// With `--debug-overlay` the bench measures the overlay shown; otherwise, in `dev` builds,
@@ -285,6 +297,9 @@ pub(crate) fn run(
     }
     if options.zone.is_some() {
         check_first_uses(&stage)?;
+    }
+    if options.zone_walk.is_some() {
+        check_no_waits(stage.renderer.stats().pipelines).map_err(AppInitError::msg)?;
     }
     // What the loads held before the GPU took them, and the texture pool's most, against their budgets (M5 M2).
     let assets = stage.content.stats();
@@ -649,4 +664,20 @@ fn gpu_times(
         "bench gpu",
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use sapphire_render::PipelineStats;
+
+    use super::check_no_waits;
+
+    /// A frame of a zone walk that waited on the warm-up stalled as surely as one that built: the walk fails.
+    #[test]
+    fn a_zone_walk_whose_frame_waited_on_the_warm_up_fails() {
+        let warmed = PipelineStats { prewarmed: 812, warmed_off_frame: 812, ..PipelineStats::default() };
+        assert!(check_no_waits(warmed).is_ok());
+        let waited = check_no_waits(PipelineStats { frame_waits: 3, ..PipelineStats::default() });
+        assert!(waited.is_err_and(|error| error.contains("3 time(s)")), "a wait fails, saying how many");
+    }
 }

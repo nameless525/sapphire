@@ -57,10 +57,15 @@
 //   instances never cull this way; an ambient character's parts cull together. On the `budget`
 //   district's walk none of them removes a draw: its instances are merged blocks, which span 20
 //   pixels and 50 texels at the least (M5 D3's hand-back), so the calls left over were D2's and D4's.
-//   Since D2's second change every tier forms runs in every view (`DrawRuns::EveryView`,
-//   `RenderSettings`'s default, not a row here), but the main view draws opaque surfaces a call a
-//   draw (a Metal finding): the scene prepass's calls on the walk fall by a third and the main
-//   pass's don't move, the buildings and the props (m5-plan's D2 row has the counts).
+//   Since D2's second change every tier forms runs in every view (`DrawRuns::EveryView`), but the
+//   main view draws opaque surfaces a call a draw (a Metal finding): the scene prepass's calls on
+//   the walk fall by a third and the main pass's don't move, the buildings and the props.
+// - `opaque_runs` (M5 D2): the main view runs the opaque surfaces too (`DrawRuns::EveryViewOpaque`).
+//   The phones' alone: with B6's four materials a cell it takes the phones' main pass on the walk
+//   from 821 / 1,497 / 1,761 (Mobile-High) and 782 / 1,546 / 1,766 (Mobile-Low) to 392 / 529 /
+//   561 and 412 / 526 / 551, under 700. On Metal an instanced call's texture gradients differ at
+//   triangle edges from a call an instance's, which moves a few pixels by a code value or two
+//   (m5-plan's D2 row); the desktop tiers, within their 2,500, stay byte-identical to runs off.
 // - `upscaler` (M5 L14, `sapphire_render::post`'s `upscale` module): how a frame below render scale 1
 //   reaches the output where no temporal AA upsamples it. The phones take `Edge`: post's fused pass writes
 //   the scene's size, then an edge-adaptive upscale and a sharpen (after FSR 1's two passes) take it to the
@@ -285,6 +290,7 @@
                 distortion: Quarter,
                 culling: (distance: 5000, least_pixels: 1.5, least_texels: 1.0),
                 upscaler: Edge(sharpen: 50),
+                opaque_runs: true,
                 shafts: true,
                 ladder: [
                     Shed([SkyFaceRate, Shafts, BloomLevel, Gtao]),
@@ -338,6 +344,7 @@
                 inset: (max_side: 512, supersample: 1, cutin_side: 960),
                 culling: (distance: 4500, least_pixels: 1.5, least_texels: 1.0),
                 upscaler: Edge(sharpen: 50),
+                opaque_runs: true,
                 // No GTAO to shed, no frame rate under its own 30 and no tier below.
                 ladder: [
                     Shed([SkyFaceRate, BloomLevel]),

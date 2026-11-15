@@ -23,7 +23,7 @@ use sapphire_assets::material::{
     AlphaMode, CharacterSurface, EnvironmentMaterial, EyeLayer, EyeShading, HairShading, HighlightMotion,
     MaterialDocument, ThroughHair,
 };
-use sapphire_render::quality::TierTable;
+use sapphire_render::quality::{TierId, TierTable};
 use sapphire_render::{
     DebugView, DrawRuns, FrameCounts, InsetView, PassCounts, RenderStats, UiDrawList, UiQuad,
 };
@@ -425,7 +425,11 @@ fn runs_draw_what_their_draws_drew_one_by_one_on_every_tier() {
         let texture = target(&gpu, FORMAT, SIZE);
         let view = texture.create_view(&Default::default());
         let settings = tier.render_settings();
-        assert_eq!(settings.draw_runs, DrawRuns::EveryView, "{}: every view's runs, the tiers'", tier.id);
+        // Every view's runs, the tiers'; the phones' main view runs the buildings too, which can't be
+        // exact (`the_phones_run_the_buildings_within_a_stated_gate`), so here every tier draws
+        // `EveryView`, which is.
+        let tiers = if tier.opaque_runs { DrawRuns::EveryViewOpaque } else { DrawRuns::EveryView };
+        assert_eq!(settings.draw_runs, tiers, "{}: every view's runs, the tiers'", tier.id);
         // The shadow views' alone, and every view's, the default, each against off.
         let modes = [DrawRuns::Shadows, DrawRuns::EveryView];
         let mut sides =
@@ -742,5 +746,43 @@ fn an_exact_tie_between_two_objects_follows_the_records_not_the_handles() {
         let (_, differing) = difference(&runs, &off, 0);
         assert_eq!(differing, 0, "{order:?}: runs draw what a call a draw drew");
         assert_eq!((off_calls, run_calls), (3 + 1, 2 + 1), "{order:?}: the red pair is one call");
+    }
+}
+
+/// The phones run the main view's buildings (M5 D2, `QualityTier::opaque_runs`; the desktop tiers
+/// don't): at each phone tier a street of one opaque environment mesh, drawn with the tier's runs
+/// and a call a draw, makes fewer calls, and the picture holds to a stated gate: no channel more
+/// than 2 code values off, on at most 64 pixels of the 96 × 96. It can't be exact: on Metal an
+/// instanced call's screen derivatives at triangle edges (the material textures' gradients, and a
+/// little the terminator's width) differ from a call an instance's, which moved the goldens by 1
+/// or 2 code values on up to 51 pixels of 640 × 360, at roof edges. With every derivative of
+/// `environment.wgsl` taken as zero the two matched byte for byte.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_phones_run_the_buildings_within_a_stated_gate() {
+    let gpu = gpu();
+    let texture = target(&gpu, FORMAT, (96, 96));
+    let view = texture.create_view(&Default::default());
+    let mesh = levels::square_with_levels();
+    let table = TierTable::shipped();
+    for id in [TierId::MobileHigh, TierId::MobileLow] {
+        let settings = table.get(id).render_settings();
+        assert_eq!(settings.draw_runs, DrawRuns::EveryViewOpaque, "{id}: the tier's");
+        let [(runs, run_calls), (calls, call_calls)] =
+            [settings.draw_runs, DrawRuns::EveryView].map(|draw_runs| {
+                let settings = RenderSettings { draw_runs, ..settings };
+                let (mut frames, square) = levels::frames_with(&gpu, settings, &mesh);
+                let (instances, camera) = levels::street(&mut frames, square);
+                assert!(frames.render(&gpu, &view, camera, &instances, &[]).is_none());
+                (read_back(&gpu, &texture), frames.renderer.stats().passes.main.draws)
+            });
+        assert!(run_calls < call_calls, "{id}: the buildings run: {run_calls} calls, from {call_calls}");
+        let worst = runs.iter().zip(&calls).flat_map(|(a, b)| (0..3).map(|c| a[c].abs_diff(b[c]))).max();
+        let (_, differing) = difference(&runs, &calls, 0);
+        eprintln!(
+            "the_phones_run_the_buildings: {id}: {run_calls} calls from {call_calls}; {differing} pixels \
+             differ, by at most {worst:?}"
+        );
+        assert!(worst <= Some(2) && differing <= 64, "{id}: {differing} pixels, by {worst:?}");
     }
 }

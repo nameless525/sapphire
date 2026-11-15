@@ -76,8 +76,8 @@ pub enum DrawRuns {
     #[default]
     EveryView,
     /// As [`Self::EveryView`], and the main view and the insets run the opaque environment
-    /// surfaces (the buildings) too, which on Metal moves a few pixels: for counting what those
-    /// runs would save, never a tier's.
+    /// surfaces (the buildings) too, which on Metal moves a few pixels at triangle edges by a code
+    /// value or two: the phones' (their tiers' `opaque_runs`), whose 700 main-pass calls need it.
     EveryViewOpaque,
 }
 
@@ -122,9 +122,11 @@ pub(crate) fn runs_in(view: RunView, variant: SurfaceVariant, runs: DrawRuns) ->
 /// on Metal one instanced call of each shades a few pixels differently from the same records drawn
 /// as one call an instance (M5 D2's probe). Drawing the same run buffer instance by instance
 /// (instances `i..i + 1`) matches the calls byte for byte, so it is the instanced call itself, not
-/// the records, the order, the first instance or a depth tie; the cause inside the driver isn't
-/// confirmed (both shaders take screen derivatives of position and normal, where pixel quads shared
-/// between the instances of one call would show, a guess).
+/// the records, the order, the first instance or a depth tie. It is the fragment stage's screen
+/// derivatives at triangle edges: with every derivative of `environment.wgsl` taken as zero the
+/// buildings' runs draw what their calls draw, byte for byte, and with only the material
+/// textures' gradients zero all but a pixel in two scenes do, so a 2 × 2 quad's helper pixels at
+/// an edge take other values in an instanced call (why inside the driver isn't known).
 ///
 /// - **Opaque environment surfaces in the main view and the insets** (the buildings): 1 or 2 code
 ///   values on up to 51 pixels, at roof edges, of 18 golden scenes (`lod-desktop-high`, the
@@ -135,8 +137,8 @@ pub(crate) fn runs_in(view: RunView, variant: SurfaceVariant, runs: DrawRuns) ->
 ///   byte-identical there.
 ///
 /// Cut-out surfaces, the environment's and foliage's, run in both, byte for byte.
-/// [`DrawRuns::EveryViewOpaque`] runs the main view's opaque environment surfaces anyway, to count
-/// them.
+/// [`DrawRuns::EveryViewOpaque`], the phones', runs the main view's opaque environment surfaces
+/// anyway.
 pub(crate) fn calls_alone_in_colour(view: RunView, variant: SurfaceVariant, runs: DrawRuns) -> bool {
     variant.coverage == Coverage::Opaque
         && match variant.shading {

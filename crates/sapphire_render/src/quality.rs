@@ -307,6 +307,14 @@ pub struct QualityTier {
     /// [`RenderSettings::upscaler`]). A table without it gets bilinear.
     #[serde(default)]
     pub upscaler: Upscaler,
+    /// Whether the main view and the insets draw the world's opaque surfaces in instanced runs too
+    /// (M5 D2, [`DrawRuns::EveryViewOpaque`] in [`RenderSettings::draw_runs`]): the phones', whose
+    /// 700 main-pass calls need it. On Metal it moves a few pixels at triangle edges by a code
+    /// value or two, since an instanced call's derivatives there differ from a call an instance's;
+    /// the desktop tiers leave it off and draw what `DrawRuns::Off` draws, byte for byte. A table
+    /// without it leaves it off.
+    #[serde(default)]
+    pub opaque_runs: bool,
     /// Light shafts from a low sun (M5 L13, [`RenderSettings::shafts`]). A table without it draws none.
     #[serde(default)]
     pub shafts: bool,
@@ -497,7 +505,7 @@ impl QualityTier {
             view_culling: CullingMode::On,
             culling: self.culling,
             levels: LevelSettings { mode: LevelsMode::On, bias: self.lod_bias },
-            draw_runs: DrawRuns::default(),
+            draw_runs: if self.opaque_runs { DrawRuns::EveryViewOpaque } else { DrawRuns::EveryView },
             capsule_bins: true,
             // Its own: an `Equal` test against the prepass's flips ties between triangles of one draw,
             // which shipped content has (M5 D10, the crate docs' "A depth-equal main pass").
@@ -1591,6 +1599,9 @@ mod tests {
         for id in [TierId::MobileHigh, TierId::MobileLow] {
             let settings = table.get(id).render_settings();
             assert_eq!((settings.msaa, settings.temporal), (Msaa::X4, false), "{id}");
+            // The phones' main view runs the buildings too (M5 D2, `QualityTier::opaque_runs`); the
+            // desktops' draws them a call a draw, as the default does (above).
+            assert_eq!(settings.draw_runs, DrawRuns::EveryViewOpaque, "{id}");
             assert_eq!(
                 (settings.light_path, settings.max_lights),
                 (LightPath::PerObject, 8),

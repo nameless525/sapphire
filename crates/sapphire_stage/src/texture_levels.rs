@@ -72,7 +72,7 @@ use sapphire_assets::{
     AssetId, AssetServer, AssetSlot, CpuResident, Handle, LoadPriority, LoadState, Upload, UploadError,
 };
 use sapphire_render::texture::GpuTexture;
-use sapphire_render::{DEFAULT_MIP_BUDGET, Renderer};
+use sapphire_render::{DEFAULT_MIP_BUDGET, Renderer, StreamedTops};
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
@@ -389,6 +389,22 @@ impl TextureLevels {
                 },
             ))
         })
+    }
+
+    /// The streamed textures' tops for the renderer's texture view (M5 X1): while the streamer is on,
+    /// each texture it streams this frame (not held whole, with levels above its tail, bound in a slot
+    /// that streams), the top its views want and the one on the GPU; nothing with streaming off.
+    pub(crate) fn streamed_tops<'a>(
+        &'a self,
+        textures: &'a HashMap<AssetId, Held<GpuTexture>>,
+    ) -> impl Iterator<Item = (AssetId, StreamedTops)> + 'a {
+        // As `update` holds a texture whole: any user that needs it whole, or a cut.
+        let streams = |wanted: &Wanted| wanted.users > 0 && wanted.whole_users == 0 && !wanted.whole_now;
+        self.states(textures)
+            .filter(move |(id, state)| {
+                self.streaming.is_some() && state.tail > 0 && self.textures.get(id).is_some_and(streams)
+            })
+            .map(|(id, state)| (id, StreamedTops { wanted: state.wanted, resident: state.resident }))
     }
 
     /// Asks for `texture` at `top`, or with `None` gives it back to the stage's choice.

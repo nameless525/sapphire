@@ -5,12 +5,13 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 use sapphire_assets::rig::ExpressionPreset;
+use sapphire_math::Vec3;
 use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
 use sapphire_render::{
-    ColorVision, CullingMode, CullingThresholds, DebugView, DrawRuns, EffectScale, LevelSettings, LevelsMode,
-    LightPath, MIN_RENDER_SCALE, MainDepth, MaterialDrive, Msaa, PostVariants, RenderSettings,
+    ColorVision, CullPose, CullingMode, CullingThresholds, DebugView, DrawRuns, EffectScale, LevelSettings,
+    LevelsMode, LightPath, MIN_RENDER_SCALE, MainDepth, MaterialDrive, Msaa, PostVariants, RenderSettings,
     ShadowSettings, Upscaler, Weather, Wind,
 };
 use sapphire_ui::Insets;
@@ -469,6 +470,10 @@ pub(crate) struct Options {
     pub rung: Option<usize>,
     /// `--debug-view <view>`: the renderer's debug view (`r.debug_view`, M1 F5) instead of off.
     pub debug_view: Option<DebugView>,
+    /// `--debug-cull-from <x>,<y>,<z>,<yaw>,<pitch>`: a scale debug view's cull pose (M5 X1), meters and
+    /// degrees: the frame culls, chooses its levels and fits its shadows from there while the passes
+    /// draw from the camera. Only with a scale view.
+    pub debug_cull_from: Option<CullPose>,
     /// `--color-vision <dichromacy>`: the colour-vision debug view (`r.color_vision`, M4 A5) instead of
     /// off.
     pub color_vision: Option<ColorVision>,
@@ -673,6 +678,10 @@ impl Options {
             && let Err(error) = sapphire_render::color_vision::COLOR_VISION.set(vision)
         {
             tracing::warn!(target: crate::LOG_TARGET, %error, "--color-vision");
+        }
+        // A cull pose is outlined in debug draw's lines (M5 X1).
+        if self.debug_cull_from.is_some() {
+            sapphire_core::debug_draw::set_enabled(true);
         }
         match self.debug_draw {
             Some(DebugDraw::Demo(demo)) => scene.set_debug_draw_demo(demo),
@@ -1050,7 +1059,7 @@ impl Options {
                     if ![r, g, b].iter().all(|c| c.is_finite() && *c >= 0.0) {
                         return Err(format!("--flash expects linear R,G,B, none negative, got {raw:?}"));
                     }
-                    options.drive.flash = sapphire_math::Vec3::new(r, g, b);
+                    options.drive.flash = Vec3::new(r, g, b);
                 }
                 "--glass" => options.glass = true,
                 "--faces" => faces = true,
@@ -1362,6 +1371,9 @@ impl Options {
                         format!("--debug-view expects one of {}, got {name:?}", names.join(", "))
                     })?;
                     options.debug_view = Some(view);
+                }
+                "--debug-cull-from" => {
+                    options.debug_cull_from = Some(parse_cull_pose(&value("--debug-cull-from")?)?);
                 }
                 "--color-vision" => {
                     let name = value("--color-vision")?;
@@ -2048,6 +2060,16 @@ impl Options {
             }
             _ => {}
         }
+        if options.debug_cull_from.is_some() && !options.debug_view.is_some_and(DebugView::is_scale) {
+            let names: Vec<&str> = DebugView::SCALE.iter().map(|view| view.name()).collect();
+            return Err(format!(
+                "--debug-cull-from needs --debug-view {}: only the scale views cull from a pose",
+                names.join(", ")
+            ));
+        }
+        if options.debug_cull_from.is_some() && mode.is_none() {
+            return Err(format!("--debug-cull-from needs {CAPTURE_FLAG}, {BENCH_FLAG} or {OFFSCREEN_FLAG}"));
+        }
         for (given, flag) in [
             (capture_ticks.is_some(), "--capture-ticks"),
             (capture_frames.is_some(), "--capture-frames"),
@@ -2197,6 +2219,26 @@ fn parse_view(raw: &str) -> Result<(f32, f32), String> {
     Ok((yaw, pitch))
 }
 
+/// `--debug-cull-from`'s `<x>,<y>,<z>,<yaw>,<pitch>`: a position in meters, then a yaw (0 looks along
+/// −Z, positive turns toward +X) and a pitch (positive looks up, within ±89) in degrees (M5 X1).
+fn parse_cull_pose(raw: &str) -> Result<CullPose, String> {
+    let invalid = || {
+        format!(
+            "--debug-cull-from expects X,Y,Z,YAW,PITCH in meters and degrees, pitch within -89..=89, got {raw:?}"
+        )
+    };
+    let values: Vec<f32> = raw
+        .split(',')
+        .map(|value| value.trim().parse::<f32>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| invalid())?;
+    let [x, y, z, yaw, pitch] = values[..] else { return Err(invalid()) };
+    if !values.iter().all(|value| value.is_finite()) || !(-89.0..=89.0).contains(&pitch) {
+        return Err(invalid());
+    }
+    Ok(CullPose { position: Vec3::new(x, y, z), yaw: yaw.to_radians(), pitch: pitch.to_radians() })
+}
+
 /// `--weather`'s `<wetness>,<puddles>`, each a share from 0 to 1, or `dry` (M5 L4).
 fn parse_weather(raw: &str) -> Result<Weather, String> {
     let invalid = || format!("--weather expects <wetness>,<puddles>, each 0 to 1, or dry, got {raw:?}");
@@ -2248,8 +2290,8 @@ fn parse_shafts(raw: &str) -> Result<sapphire_render::LightShafts, String> {
         .collect::<Result<_, _>>()
         .map_err(|_| invalid())?;
     let (strength, length, tint) = match values[..] {
-        [strength, length] => (strength, length, sapphire_math::Vec3::ONE),
-        [strength, length, r, g, b] => (strength, length, sapphire_math::Vec3::new(r, g, b)),
+        [strength, length] => (strength, length, Vec3::ONE),
+        [strength, length, r, g, b] => (strength, length, Vec3::new(r, g, b)),
         _ => return Err(invalid()),
     };
     let good = strength.is_finite()
@@ -2638,7 +2680,7 @@ mod tests {
             parse(&on_a_slope).unwrap().0.ik,
             Some(sapphire_stage::ik::IkOptions {
                 ground: sapphire_stage::ik::IkGround::Slope,
-                look: Some(sapphire_stage::ik::IkLook::Point(sapphire_math::Vec3::new(1.0, 1.5, 2.0))),
+                look: Some(sapphire_stage::ik::IkLook::Point(Vec3::new(1.0, 1.5, 2.0))),
             })
         );
         assert!(parse(&["--look-dev", "hero", "--ik", "on"]).unwrap_err().contains("--clip"));
@@ -2856,8 +2898,7 @@ mod tests {
         let (options, unknown) =
             parse(&["--dissolve", "0.4", "--emission-scale", "2", "--flash", "1,0.5,0", "--glass"]).unwrap();
         assert!(unknown.is_empty());
-        let drive =
-            MaterialDrive { dissolve: 0.4, emission: 2.0, flash: sapphire_math::Vec3::new(1.0, 0.5, 0.0) };
+        let drive = MaterialDrive { dissolve: 0.4, emission: 2.0, flash: Vec3::new(1.0, 0.5, 0.0) };
         assert_eq!(options.drive, drive);
         assert!(options.glass);
         assert_eq!(Options::default().drive, MaterialDrive::NONE);
@@ -3039,12 +3080,9 @@ mod tests {
         assert!(!options(&["--shafts", "on"]).render_settings(RenderSettings::default()).shafts);
         assert!(parse(&["--shafts", "maybe"]).unwrap_err().contains("on or off"));
         let look = options(&["--shafts-look", "0.5,0.6,1,0.7,0.4"]).shafts_look.expect("a look");
-        assert_eq!(look.tint, sapphire_math::Vec3::new(1.0, 0.7, 0.4));
+        assert_eq!(look.tint, Vec3::new(1.0, 0.7, 0.4));
         assert_eq!((look.strength, look.length), (0.5, 0.6));
-        assert_eq!(
-            options(&["--shafts-look", "0.5,0.6"]).shafts_look.expect("a look").tint,
-            sapphire_math::Vec3::ONE
-        );
+        assert_eq!(options(&["--shafts-look", "0.5,0.6"]).shafts_look.expect("a look").tint, Vec3::ONE);
         for bad in ["0,0.5", "0.5,0", "0.5,1.5", "0.5", "0.5,0.5,1,1", "0.5,0.5,-1,1,1", "a,b", "NaN,0.5"] {
             assert!(parse(&["--shafts-look", bad]).is_err(), "{bad:?}");
         }
@@ -3508,6 +3546,38 @@ mod tests {
         let (options, _) = parse(&["--capture", "x", "--replay", "a", "--debug-draw", "combat"]).unwrap();
         assert!(matches!(options.debug_draw, Some(DebugDraw::Views(_))));
         assert!(parse(&["--record", "a", "--scenario", "s", "--debug-draw", "colliders"]).is_ok());
+    }
+
+    #[test]
+    fn a_cull_pose_needs_a_scale_view_a_capture_and_five_numbers() {
+        let with = |args: &[&str]| {
+            let args: Vec<&str> = ["--capture", "x.png"].into_iter().chain(args.iter().copied()).collect();
+            parse(&args)
+        };
+        let (options, _) = with(&["--debug-view", "culling", "--debug-cull-from", "1, 2,-3,90,-10"]).unwrap();
+        let pose = options.debug_cull_from.expect("a pose");
+        assert_eq!(pose.position, Vec3::new(1.0, 2.0, -3.0));
+        assert!(
+            (pose.yaw - 90f32.to_radians()).abs() < 1e-6 && (pose.pitch + 10f32.to_radians()).abs() < 1e-6
+        );
+        for view in DebugView::SCALE {
+            assert!(with(&["--debug-view", view.name(), "--debug-cull-from=0,0,0,0,0"]).is_ok(), "{view:?}");
+        }
+        for args in [
+            &["--debug-cull-from", "0,0,0,0,0"][..],
+            &["--debug-view", "overdraw", "--debug-cull-from", "0,0,0,0,0"],
+            &["--debug-view", "off", "--debug-cull-from", "0,0,0,0,0"],
+        ] {
+            let error = with(args).unwrap_err();
+            assert!(error.contains("needs --debug-view levels, textures, culling, runs"), "{error}");
+        }
+        let error = parse(&["--debug-view", "levels", "--debug-cull-from", "0,0,0,0,0"]).unwrap_err();
+        assert!(error.contains("needs --capture"), "no window: {error}");
+        for raw in ["0,0,0,0", "0,0,0,0,0,0", "0,0,x,0,0", "0,0,0,0,90", "0,0,inf,0,0"] {
+            let error = with(&["--debug-view", "levels", "--debug-cull-from", raw]).unwrap_err();
+            assert!(error.contains("expects X,Y,Z,YAW,PITCH"), "{raw}: {error}");
+        }
+        assert_eq!(Options::default().debug_cull_from, None);
     }
 
     #[test]

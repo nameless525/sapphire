@@ -21,7 +21,9 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::{
     DeviceProfile, FrameTiming, GpuTable, Quality, QualitySettings, TierId, TierTable,
 };
-use sapphire_render::{MeshHandle, PipelineWarmup, RenderSettings, Renderer, TierBuild, TierRefused};
+use sapphire_render::{
+    CullPose, MeshHandle, PipelineWarmup, RenderSettings, Renderer, TierBuild, TierRefused,
+};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 use sapphire_time::Stopwatch;
 
@@ -241,6 +243,9 @@ pub enum CaptureTextures {
     Settled,
 }
 
+/// How far ahead the cull pose's outline cuts its frustum, meters ([`Stage::cull_pose`], M5 X1).
+pub const CULL_POSE_OUTLINE: f32 = 60.0;
+
 pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     // Drop order: everything on the device before the context.
     /// What the caller adds to its frames.
@@ -264,6 +269,9 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     /// brought whole before each frame draws, as a capture's are; or brought to what the streamer plans
     /// before each frame draws, as a capture that streams is ([`CaptureTextures`]).
     pub capture_textures: CaptureTextures,
+    /// The pose the renderer's scale debug views cull from in the camera's place (M5 X1, the sandbox's
+    /// `--debug-cull-from`), passed on every frame: `None` culls from the camera.
+    pub cull_pose: Option<CullPose>,
     /// Prepare and record the next frames but run none of it, as a frame whose surface was lost (M3 K1). A
     /// load's inventory is checked this way where drawing is what costs: everything but the graph's passes runs.
     pub lose_frames: bool,
@@ -381,6 +389,7 @@ impl Stage {
             character,
             measure_gpu: false,
             history_only_capture: false,
+            cull_pose: None,
             capture_textures: CaptureTextures::Stream,
             lose_frames: false,
             laps: FrameLaps::default(),
@@ -417,6 +426,7 @@ impl Stage {
             tier_change,
             load_warmup,
             format,
+            cull_pose,
         } = self;
         Stage {
             hooks: (),
@@ -439,6 +449,7 @@ impl Stage {
             tier_change,
             load_warmup,
             format,
+            cull_pose,
         }
     }
 }
@@ -481,6 +492,7 @@ impl<S: SceneShow> Stage<S> {
             tier_change,
             load_warmup,
             format,
+            cull_pose,
         } = self;
         Stage {
             hooks,
@@ -503,11 +515,25 @@ impl<S: SceneShow> Stage<S> {
             tier_change,
             load_warmup,
             format,
+            cull_pose,
         }
     }
 }
 
 impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
+    /// Outlines the scale debug views' cull pose (M5 X1, [`Self::cull_pose`]) while one shows: its frustum
+    /// through the scene camera's projection at a target of `size`, cut [`CULL_POSE_OUTLINE`] meters ahead,
+    /// in debug draw's lines over everything. Debug draw must be on.
+    fn outline_cull_pose(&self, (width, height): (u32, u32)) {
+        let scale = sapphire_render::debug_view::DEBUG_VIEW.get().is_scale();
+        let Some(pose) = self.cull_pose.filter(|_| scale) else { return };
+        let proj = self.scene.camera().camera_data(width as f32 / height.max(1) as f32).proj;
+        let style = sapphire_core::debug_draw::Style::new(sapphire_core::debug_draw::Color::MAGENTA).on_top();
+        for (from, to) in pose.frustum_lines(proj, CULL_POSE_OUTLINE) {
+            sapphire_core::debug_draw::line(from, to, style);
+        }
+    }
+
     /// One fixed step and the end of a frame's: each step here is a frame's worth, as it is on any tier
     /// that draws every tick.
     pub fn step(&mut self) {
@@ -776,18 +802,25 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.laps.animation += laps.lap();
         self.laps.animation_allocations = next_scope(&mut scope);
         self.show.begin_interface(self.renderer.ui_page_state());
+        self.outline_cull_pose((width, height));
         let packet = self.scene.frame_packet(alpha, Some((width, height)), &mut self.show);
         self.laps.packet += laps.lap();
         self.laps.packet_allocations = next_scope(&mut scope);
         let extract = stopwatch.as_mut().map(Stopwatch::lap).unwrap_or_default();
         // Before `prepare`, which culls hulls by it, and readies the debug view.
         self.renderer.set_outline_distance(self.quality.outline_distance());
-        self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
+        let debug_view = sapphire_render::debug_view::DEBUG_VIEW.get();
+        self.renderer.set_debug_view(debug_view);
+        self.renderer.set_cull_pose(self.cull_pose);
         self.renderer.set_color_vision(sapphire_render::color_vision::COLOR_VISION.get());
         if self.capture_textures != CaptureTextures::Stream {
             self.content.finish_texture_levels(&mut self.renderer, &self.gpu);
             // And every reflection probe composed whole, not one a frame (M5 L3).
             self.renderer.finish_reflection_probes();
+        }
+        // The texture view's states (M5 X1), gathered only while it shows.
+        if debug_view == DebugView::Textures {
+            self.renderer.set_texture_tops(self.content.streamed_tops());
         }
         self.renderer.prepare(&self.gpu, packet);
         self.laps.prepare += laps.lap();

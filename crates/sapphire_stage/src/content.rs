@@ -123,8 +123,8 @@ use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, ReadEr
 use sapphire_render::quality::QualityTier;
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
-    MaterialHandle, MeshHandle, PipelineInventory, ReflectionProbesHandle, Renderer, WarmUpProgress,
-    WarmUpRequest, texture_streams,
+    MaterialHandle, MeshHandle, PipelineInventory, ReflectionProbesHandle, Renderer, StreamedTops,
+    WarmUpProgress, WarmUpRequest, texture_streams,
 };
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
@@ -1524,6 +1524,13 @@ impl Content {
     /// views show (m5-plan X1).
     pub fn texture_levels(&self) -> impl Iterator<Item = (AssetId, TextureLevelState)> + '_ {
         self.gpu.levels.states(&self.gpu.textures)
+    }
+
+    /// The streamed textures' tops, for the renderer's texture view (M5 X1,
+    /// [`Renderer::set_texture_tops`]): each texture the streamer streams this frame, the top wanted
+    /// and the one on the GPU; none with streaming off, where every texture is whole.
+    pub fn streamed_tops(&self) -> impl Iterator<Item = (AssetId, StreamedTops)> + '_ {
+        self.gpu.levels.streamed_tops(&self.gpu.textures)
     }
 
     /// Brings every texture on `renderer` to the top wanted of it before a frame draws, loading and

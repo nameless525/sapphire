@@ -50,16 +50,17 @@ pub(crate) fn panel(ui: &mut Ui, rows: &[CountRowView]) {
     }
     let over = rows.iter().filter(|row| row.over()).count();
     ui.weak(format!("Count rows against spec §3.4's budgets: {over} over"));
+    // One grid for every group, so the columns line up down the panel.
     egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-        for (group, rows) in groups(rows) {
-            let shown: Vec<&CountRowView> =
-                rows.iter().filter(|row| row.value > 0 || row.budget.is_some()).collect();
-            if shown.is_empty() {
-                continue;
-            }
-            ui.separator();
-            ui.strong(group);
-            egui::Grid::new(group).num_columns(4).striped(true).show(ui, |ui| {
+        egui::Grid::new("count rows").num_columns(4).show(ui, |ui| {
+            for (group, rows) in groups(rows) {
+                let shown: Vec<&CountRowView> =
+                    rows.iter().filter(|row| row.value > 0 || row.budget.is_some()).collect();
+                if shown.is_empty() {
+                    continue;
+                }
+                ui.strong(group);
+                ui.end_row();
                 for row in shown {
                     ui.label(row.name);
                     let value = RichText::new(row.value.to_string()).monospace();
@@ -76,8 +77,8 @@ pub(crate) fn panel(ui: &mut Ui, rows: &[CountRowView]) {
                     }
                     ui.end_row();
                 }
-            });
-        }
+            }
+        });
     });
 }
 

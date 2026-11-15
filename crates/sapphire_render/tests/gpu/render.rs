@@ -28,6 +28,7 @@ mod killed_fragments;
 mod levels;
 mod lost_frames;
 mod runs;
+mod scale_views;
 mod sequences;
 mod uploads;
 

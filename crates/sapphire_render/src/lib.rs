@@ -107,7 +107,8 @@
 //!   upsamples it to the target (see "Render scale" below).
 //! - Debug views ([`debug_view`], M1 F5): the frame drawn as a wireframe, as overdraw, as the
 //!   local lights each pixel walks, or as the anime characters' material IDs, ramp rows or
-//!   outline widths, picked per frame ([`Renderer::set_debug_view`], the `r.debug_view` cvar).
+//!   outline widths, or each instance by its level, its textures' streaming, its culling or its
+//!   instanced run (M5 X1's scale views), picked per frame ([`Renderer::set_debug_view`], the `r.debug_view` cvar).
 //!   Each replays the main pass through copies of its own pipelines into a depth and stencil (or
 //!   the characters' values) it reads, and draws over the frame after post. Off, the default,
 //!   builds and draws nothing.
@@ -977,7 +978,7 @@ pub use color_vision::ColorVision;
 pub use counts::{FrameCounts, MESH_LEVELS, PassCounts, StateChanges};
 pub use coverage::{TextureCoverage, TextureCoverageFrame, texture_streams};
 pub use debug_draw::DebugDrawPassStats;
-pub use debug_view::{DebugView, DebugViewStats};
+pub use debug_view::{CullPose, DebugView, DebugViewStats, StreamedTops};
 pub use draw::{DrawRuns, RunStats};
 pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};
 pub use fog::FogStats;

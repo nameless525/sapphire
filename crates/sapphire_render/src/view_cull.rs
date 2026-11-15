@@ -872,6 +872,11 @@ impl ViewCull {
         self.slots.get(slot as usize).filter(|cull| cull.drawn_by != 0).map(|cull| cull.finest)
     }
 
+    /// The instance slots it holds a culling for: the scene's.
+    pub(crate) fn len(&self) -> usize {
+        self.slots.len()
+    }
+
     /// The frame's verdicts, for the passes; `None` with culling off.
     pub(crate) fn culled(&self) -> Option<Culled<'_>> {
         self.mode.frustum().then_some(Culled { slots: &self.slots })

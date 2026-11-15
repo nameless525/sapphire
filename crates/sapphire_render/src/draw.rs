@@ -138,6 +138,23 @@ pub(crate) enum DrawSet {
     ThroughHair,
 }
 
+/// One draw of a view's list, as a pass that draws some of them picks it (`*_where`): its
+/// instance's slot, its material, and the level of detail its list draws it at. The debug views'
+/// replays pick by all three (the per-object light lists by slot, M5 X1's scale views by level
+/// and material too); every other pass takes every draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Pick {
+    pub slot: u32,
+    pub material: MaterialHandle,
+    pub level: u8,
+}
+
+impl Pick {
+    fn of(command: &DrawCommand, level: u8) -> Self {
+        Self { slot: command.slot, material: command.material, level }
+    }
+}
+
 impl MeshDraws<'_> {
     /// The list this pass walks: none for the character maps' pass as a whole, which draws each
     /// map's.
@@ -231,9 +248,8 @@ impl MeshDraws<'_> {
         self.draw_static_where(pass, kind, format, variant, set, |_| true);
     }
 
-    /// Draws `set` of the static meshes in `format` of `variant` whose instance slot `instance`
-    /// takes, with the streams `kind` reads, through the pipeline already set. The index buffer
-    /// must be bound.
+    /// Draws `set` of the static meshes in `format` of `variant` that `instance` picks, with the
+    /// streams `kind` reads, through the pipeline already set. The index buffer must be bound.
     pub(crate) fn draw_static_where(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -241,7 +257,7 @@ impl MeshDraws<'_> {
         format: PositionFormat,
         variant: SurfaceVariant,
         set: DrawSet,
-        instance: impl Fn(u32) -> bool,
+        instance: impl Fn(Pick) -> bool,
     ) {
         self.draw_static_through_where(pass, kind, format, variant, set, instance, &[]);
     }
@@ -286,7 +302,7 @@ impl MeshDraws<'_> {
         format: PositionFormat,
         variant: SurfaceVariant,
         set: DrawSet,
-        instance: impl Fn(u32) -> bool,
+        instance: impl Fn(Pick) -> bool,
         pipelines: &[&wgpu::RenderPipeline],
     ) {
         let mut bound = Bound::default();
@@ -308,9 +324,8 @@ impl MeshDraws<'_> {
                 let Entry { at, level } = entries[0];
                 let command = &commands[at as usize];
                 debug_assert!(
-                    entries
-                        .iter()
-                        .all(|entry| entry.level == level && instance(commands[entry.at as usize].slot)),
+                    entries.iter().all(|entry| entry.level == level
+                        && instance(Pick::of(&commands[entry.at as usize], level))),
                     "a run's draws are of one level, and its pass takes every one"
                 );
                 let indices = self.indices(command, level);
@@ -344,7 +359,7 @@ impl MeshDraws<'_> {
         for &Entry { at, level } in listed {
             let command = &commands[at as usize];
             counts.considered += 1;
-            if instance(command.slot) {
+            if instance(Pick::of(command, level)) {
                 draw(command, level, &mut bound, &mut counts);
             } else {
                 counts.culled_by_pass += 1;
@@ -418,16 +433,16 @@ impl MeshDraws<'_> {
         self.draw_deformed_where(pass, kind, variant, set, |_| true);
     }
 
-    /// Draws `set` of the skinned or morphed instances of `variant` whose instance slot
-    /// `instance` takes, with the streams `kind` reads, through the f32 pipeline already set. The
-    /// index buffer must be bound.
+    /// Draws `set` of the skinned or morphed instances of `variant` that `instance` picks, with
+    /// the streams `kind` reads, through the f32 pipeline already set. The index buffer must be
+    /// bound.
     pub(crate) fn draw_deformed_where(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         kind: MeshPass,
         variant: SurfaceVariant,
         set: DrawSet,
-        instance: impl Fn(u32) -> bool,
+        instance: impl Fn(Pick) -> bool,
     ) {
         self.draw_deformed_through_where(pass, kind, variant, set, instance, &[]);
     }
@@ -468,7 +483,7 @@ impl MeshDraws<'_> {
         kind: MeshPass,
         variant: SurfaceVariant,
         set: DrawSet,
-        instance: impl Fn(u32) -> bool,
+        instance: impl Fn(Pick) -> bool,
         pipelines: &[&wgpu::RenderPipeline],
     ) {
         debug_assert!(!kind.reads_foliage(), "foliage draws on static meshes alone");
@@ -496,7 +511,7 @@ impl MeshDraws<'_> {
         for &Entry { at, level } in list.group(Source::Deformed, variant, set) {
             let command = &deformed[at as usize];
             counts.considered += 1;
-            if instance(command.slot) {
+            if instance(Pick { slot: command.slot, material: command.material, level }) {
                 draw(command, level, &mut bound, &mut counts);
             } else {
                 counts.culled_by_pass += 1;

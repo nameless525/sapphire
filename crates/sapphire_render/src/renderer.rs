@@ -5,7 +5,7 @@
 //! character's light rig (or, for the world, the sun) under the frame's shadows, ambient light,
 //! local lights and fog, then post-processing into the target, and the on-screen interface over it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -33,9 +33,11 @@ use crate::color_vision::{ColorVision, ColorVisionDraw};
 use crate::counts::{Counted, FrameCounts, PassCounters, PassCounts, StateChanges};
 use crate::coverage::{CoverageEstimate, CoverageInputs, CoverageViews, Footprint, TextureCoverageFrame};
 use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
-use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
+use crate::debug_view::{
+    CullPose, DebugFrame, DebugView, DebugViewStats, DebugViews, ScaleInputs, StreamedTops,
+};
 use crate::draw::{
-    DrawRef, DrawRuns, DrawSet, MeshDraws, RunRecords, RunStats, Source, ViewLists, ViewTests, Walk,
+    DrawRef, DrawRuns, DrawSet, MeshDraws, Pick, RunRecords, RunStats, Source, ViewLists, ViewTests, Walk,
 };
 use crate::environment::EnvironmentSettings;
 use crate::fog::{FogAdmission, FogCards, FogStats, GpuFog};
@@ -728,6 +730,11 @@ pub struct Renderer {
     outline_distance: f32,
     /// The debug view asked for ([`Self::set_debug_view`]).
     debug_view: DebugView,
+    /// The pose the scale views cull from, if not the camera ([`Self::set_cull_pose`], M5 X1).
+    cull_pose: Option<CullPose>,
+    /// The streamed textures' tops the app last sent for the texture view
+    /// ([`Self::set_texture_tops`], M5 X1): empty unless it shows.
+    texture_tops: HashMap<AssetId, StreamedTops>,
     /// Optional passes shed in place ([`Self::set_shed`]).
     shed: OptionalPasses,
     /// What the thermal ladder's rung adds to the levels of detail's bias ([`Self::set_rung_lod_bias`]).
@@ -1151,6 +1158,8 @@ impl Renderer {
             render_scale: 1.0,
             outline_distance: 1.0,
             debug_view: DebugView::Off,
+            cull_pose: None,
+            texture_tops: HashMap::new(),
             shed: OptionalPasses::NONE,
             rung_lod_bias: 0.0,
             debug_views: None,
@@ -2733,10 +2742,12 @@ impl Renderer {
         // distance or size (M5 D3): the shadow plan leaves the far out of its cascades too.
         let slots = self.scene.slots();
         let fresh = slots.freed().iter().chain(slots.meshed()).copied();
+        // A scale view's cull pose (M5 X1) stands in for the camera in what culls and fits.
+        let pose = packet.main_view().and_then(|view| self.cull_camera(&view.camera));
         self.view_cull.prepare(
             self.settings.view_culling,
             self.settings.culling,
-            packet.main_view().map(|view| &view.camera),
+            pose.as_ref().or(packet.main_view().map(|view| &view.camera)),
             self.scene.draw_list(),
             slots,
             self.meshes.records(),
@@ -2754,7 +2765,12 @@ impl Renderer {
             &margin,
             self.scene.draw_list(),
             self.characters.table(),
-            CasterCull { culled: self.view_cull.casters(), least_texels, levels: self.level_settings() },
+            CasterCull {
+                culled: self.view_cull.casters(),
+                least_texels,
+                levels: self.level_settings(),
+                pose: pose.as_ref(),
+            },
             capsules,
         );
         // The other characters' shadows each character receives go into its entry (M5 L12).
@@ -2974,10 +2990,11 @@ impl Renderer {
                 DebugViews::new(&self.device, &self.layouts, self.color_format, &self.shaders, builds);
             self.debug_views = Some(Box::new(views));
         }
+        let main = (self.settings.light_path, self.meshes.index_end());
         let views = self.debug_views.as_mut().expect("made above");
-        let (list, path, indices) =
-            (self.scene.draw_list(), self.settings.light_path, self.meshes.index_end());
-        views.prepare(self.debug_view, &self.pipelines, list, &self.lights, (path, indices));
+        let list = self.scene.draw_list();
+        let scale = ScaleInputs { materials: self.materials.records(), tops: &self.texture_tops };
+        views.prepare(self.debug_view, &self.pipelines, list, &self.lights, main, scale);
     }
 
     /// Readies the frame's debug lines, making the pass's state with the first frame that has any.
@@ -3099,7 +3116,9 @@ impl Renderer {
         // Which instances each view draws (review RA-O01, M5 D3): the main view's unjittered
         // frustum, padded by the jitter too, so the jittered views and the debug views' unjittered
         // one cull alike, and each inset's camera for its own instances.
-        self.cull_views(&camera, size, output, jitter, (&wind, cut));
+        // A scale view's cull pose (M5 X1) culls in the camera's place; the passes draw from the camera.
+        let cull_camera = self.cull_camera(&camera).unwrap_or(camera);
+        self.cull_views(&cull_camera, size, output, jitter, (&wind, cut));
         // The characters' capsules by cluster (M5 L18), for the main view as it is drawn.
         constants.capsule_bins = u32::from(self.bin_capsules(&camera, size, jitter));
         // Skinning poses only what some view draws this frame (M5 D3).
@@ -3171,7 +3190,7 @@ impl Renderer {
             ref mut post,
             ref mut temporal,
             ref mut uploads,
-            ref debug_views,
+            ref mut debug_views,
             ref debug_draw,
             ref color_vision_draw,
             ref frame_ran,
@@ -3261,6 +3280,10 @@ impl Renderer {
                 lists.compact_view(Walk::InsetMain(index), draw_list, &inset);
                 lists.compact_view(Walk::InsetCharacters(index), draw_list, &inset.with_instance(listed));
             }
+            // A scale view (M5 X1) replays the main view's draws with what it culled.
+            if debug_views.as_deref().is_some_and(DebugViews::walks_unculled) {
+                lists.compact_view(Walk::Unculled, draw_list, &ViewTests { view: None, ..world });
+            }
             // Run records that don't fit their buffer leave the frame a call a draw (review RA-004).
             if !run_records.fits(lists.records().len()) {
                 lists.drop_runs();
@@ -3269,6 +3292,9 @@ impl Renderer {
             stats.runs = lists.run_stats();
             &**view_lists
         };
+        if let Some(views) = debug_views.as_deref_mut() {
+            views.classify(lists, draw_list, view_cull);
+        }
         let run_records = &*run_records;
         let run_list = lists.records();
         // The views, for the estimate of how finely they read each streamed texture (M5 M5) that the
@@ -3899,6 +3925,7 @@ impl Renderer {
                 index_end: meshes.index_end(),
                 cards: card_draws,
                 labels,
+                main_depth,
             };
             views.record(graph, frame);
         }
@@ -4188,6 +4215,42 @@ impl Renderer {
         self.debug_view = view;
     }
 
+    /// Culls the frame, chooses its levels of detail and fits its shadow cascades from `pose`
+    /// instead of the camera while a scale view shows (M5 X1, the sandbox's `--debug-cull-from`):
+    /// the passes still draw from the camera, so what the pose culls shows in the view's culled
+    /// colours; `None` culls from the camera. With no scale view shown it changes nothing. Apps
+    /// pass it on every frame, beside the debug view.
+    pub fn set_cull_pose(&mut self, pose: Option<CullPose>) {
+        if pose != self.cull_pose
+            && let Some(pose) = pose
+        {
+            tracing::info!(
+                target: LOG_TARGET,
+                position = ?pose.position,
+                yaw = pose.yaw.to_degrees(),
+                pitch = pose.pitch.to_degrees(),
+                "while a scale view shows, the frame's culling, levels of detail and shadow fit are the cull pose's, not the camera's"
+            );
+        }
+        self.cull_pose = pose;
+    }
+
+    /// The streamed textures' tops for the texture view (M5 X1): for each texture the app streams
+    /// that isn't held whole, the top its views want and the one on the GPU, replacing what was
+    /// sent before. The app sends them only while that view shows, and nothing with streaming
+    /// off, where every texture reads as not streamed.
+    pub fn set_texture_tops(&mut self, tops: impl IntoIterator<Item = (AssetId, StreamedTops)>) {
+        self.texture_tops.clear();
+        self.texture_tops.extend(tops);
+    }
+
+    /// The camera the frame culls, chooses levels and fits its shadows from (M5 X1): the cull
+    /// pose's, with `camera`'s projection, while a scale view shows and a pose is set; `None` for
+    /// `camera` itself.
+    fn cull_camera(&self, camera: &CameraData) -> Option<CameraData> {
+        self.cull_pose.filter(|_| self.debug_view.is_scale()).map(|pose| pose.camera(camera))
+    }
+
     /// Shows the frame as `vision` from the next [`Self::prepare`] (M4 A5, the
     /// [`color_vision`](crate::color_vision) module): as a dichromat sees it, the interface included,
     /// or as it is. The hook for the `r.color_vision` cvar, which apps pass on every frame as they pass
@@ -4414,7 +4477,7 @@ impl Bound {
 ///
 /// Group 1 and the index buffer must be bound. A debug view replays the pass through it
 /// (`debug_view`) with copies of the pipelines, of a subset (`pipeline` gives `None` for what it
-/// leaves out) or of the instance slots `instance` takes; it draws no ground decals, which
+/// leaves out) or of the draws `instance` picks; it draws no ground decals, which
 /// [`draw_main_pass_with_decals`] adds.
 pub(crate) fn draw_main_pass<'p>(
     pass: &mut wgpu::RenderPass<'_>,
@@ -4423,7 +4486,7 @@ pub(crate) fn draw_main_pass<'p>(
     groups: MeshGroups<'_>,
     sky: Option<&dyn Fn(&mut wgpu::RenderPass<'_>)>,
     cards: Option<(&wgpu::BindGroup, &[DrawRef])>,
-    instance: impl Fn(u32) -> bool + Copy,
+    instance: impl Fn(Pick) -> bool + Copy,
 ) {
     draw_main_pass_with_decals(pass, (pipeline, MainDepth::Own), draws, groups, sky, None, cards, instance);
 }
@@ -4449,7 +4512,7 @@ pub(crate) fn draw_main_pass_with_decals<'p>(
     sky: Option<&dyn Fn(&mut wgpu::RenderPass<'_>)>,
     decals: Option<&dyn Fn(&mut wgpu::RenderPass<'_>)>,
     cards: Option<(&wgpu::BindGroup, &[DrawRef])>,
-    instance: impl Fn(u32) -> bool + Copy,
+    instance: impl Fn(Pick) -> bool + Copy,
 ) {
     let mut bound = Bound::default();
     let reversed = depth == MainDepth::FromPrepass;
@@ -4524,7 +4587,7 @@ fn main_pass_pipeline(
     }
 }
 
-/// Draws `set` of the main pass's draws of `variant` whose instance slot `instance` takes, static
+/// Draws `set` of the main pass's draws of `variant` that `instance` picks, static
 /// meshes per format and then the skinned and morphed ones, each group through the pipeline
 /// `pipeline` gives, if any. Binds the variant's family's frame and scene groups first unless
 /// `bound` says they are bound already, and only if the variant has draws.
@@ -4537,7 +4600,7 @@ fn draw_main<'p>(
     bound: &mut Bound,
     variant: SurfaceVariant,
     set: DrawSet,
-    instance: impl Fn(u32) -> bool + Copy,
+    instance: impl Fn(Pick) -> bool + Copy,
 ) {
     if !draws.has_any(variant) {
         return;

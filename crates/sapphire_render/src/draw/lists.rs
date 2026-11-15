@@ -571,6 +571,10 @@ pub(crate) enum Walk {
     InsetMain(usize),
     /// An inset's character prepass.
     InsetCharacters(usize),
+    /// The main view's draws with no culling verdict, at the levels the main view chose (M5 X1): what
+    /// the debug views' scale views replay, so what the main view culled shows too. Compacted only
+    /// on a frame that shows one.
+    Unculled,
 }
 
 /// What a frame's shadow casters are tested by, in one walk for every shadow view: each cascade
@@ -607,6 +611,14 @@ pub(crate) struct ViewLists {
     spots_left_out: PassCounts,
     /// Per inset: its main pass's list and its character prepass's.
     insets: [[ViewList; 2]; MAX_INSETS],
+    /// The main view's draws unculled ([`Walk::Unculled`]): compacted only on a frame that shows a
+    /// scale view.
+    unculled: ViewList,
+    /// The cascades compacted this frame: the others' lists are a cached cascade's, from the frame
+    /// that drew it.
+    cascades_drawn: [bool; MAX_CASCADES],
+    /// The spot tiles compacted this frame (M5 L16), likewise.
+    spots_drawn: [bool; MAX_SPOT_SHADOWS],
     /// Which of this frame's lists form runs (M5 D2, `RenderSettings::draw_runs`).
     runs: DrawRuns,
     /// The frame's run records: for each run of more than one draw, its draws' records, side by
@@ -629,6 +641,9 @@ impl Default for ViewLists {
             spots: Default::default(),
             spots_left_out: PassCounts::default(),
             insets: Default::default(),
+            unculled: ViewList::default(),
+            cascades_drawn: [false; MAX_CASCADES],
+            spots_drawn: [false; MAX_SPOT_SHADOWS],
             runs: DrawRuns::Off,
             records: Vec::new(),
             lengths: Vec::new(),
@@ -667,8 +682,8 @@ impl ViewLists {
     }
 
     fn each_list_mut(&mut self, mut f: impl FnMut(&mut ViewList)) {
-        let Self { main, scene, characters, cascades, maps, spots, insets, .. } = self;
-        [main, scene, characters].into_iter().for_each(&mut f);
+        let Self { main, scene, characters, cascades, maps, spots, insets, unculled, .. } = self;
+        [main, scene, characters, unculled].into_iter().for_each(&mut f);
         cascades.iter_mut().chain(maps).chain(spots).chain(insets.iter_mut().flatten()).for_each(f);
     }
 
@@ -685,6 +700,7 @@ impl ViewLists {
             Walk::Spot(tile) => self.spots.get(tile),
             Walk::InsetMain(index) => self.insets.get(index).map(|[main, _]| main),
             Walk::InsetCharacters(index) => self.insets.get(index).map(|[_, characters]| characters),
+            Walk::Unculled => Some(&self.unculled),
         }
     }
 
@@ -708,10 +724,15 @@ impl ViewLists {
         list: &DrawList,
         tests: &ViewTests<'_, I>,
     ) {
-        let Self { groups, main, scene, characters, insets, runs, records, .. } = self;
+        let Self { groups, main, scene, characters, insets, unculled, runs, records, .. } = self;
         // The scene prepass shares the main view's tests: its runs, where its groups list alike.
         let (kind, target, twin) = match walk {
             Walk::Main => (ViewKind::Main, main, None),
+            // A replay draws a call a draw: no runs.
+            Walk::Unculled => {
+                unculled.compact(ViewKind::Main, &groups[kind_index(ViewKind::Main)], list, tests);
+                return;
+            }
             Walk::ScenePrepass => (ViewKind::ScenePrepass, scene, Some(&*main)),
             Walk::CharacterPrepass => (ViewKind::CharacterPrepass, characters, None),
             Walk::InsetMain(index) => (ViewKind::Main, &mut insets[index][0], None),
@@ -796,7 +817,38 @@ impl ViewLists {
             listed.compact(ViewKind::CharacterPrepass, character_groups, list, characters);
             compact_casters(caster_groups, cascades, maps, maps_left_out, spot_lists, list, casters);
         }
+        (self.cascades_drawn, self.spots_drawn) = (casters.cascades, casters.spots);
         self.form_world_runs(list, &casters.cascades, casters.maps, &casters.spots);
+    }
+
+    /// Visits each draw of every run the main view's list and the cascades and spot tiles drawn this
+    /// frame formed (M5 D2), with its instance's slot and the run's length (1 for a draw alone in its group of
+    /// runs): what the runs view (M5 X1, `debug_view`) tags instances by. Groups that formed no
+    /// runs (runs off, or a group whose order shows) aren't visited.
+    pub(crate) fn each_run_draw(&self, list: &DrawList, mut visit: impl FnMut(u32, u32)) {
+        let drawn = self
+            .cascades
+            .iter()
+            .zip(self.cascades_drawn)
+            .filter_map(|(cascade, drawn)| drawn.then_some(cascade));
+        let spots = self.spots.iter().zip(self.spots_drawn).filter_map(|(spot, drawn)| drawn.then_some(spot));
+        for view in std::iter::once(&self.main).chain(drawn).chain(spots) {
+            for format in PositionFormat::ALL {
+                for variant in SurfaceVariant::DEPTH_WRITING {
+                    let commands = &list.commands[format_index(format)][variant.index()];
+                    let listed = view.group(Source::Static(format), variant, DrawSet::Surfaces);
+                    for run in view.runs(format, variant) {
+                        let entries =
+                            listed.get(run.first as usize..(run.first + run.count) as usize).unwrap_or(&[]);
+                        for entry in entries {
+                            if let Some(command) = commands.get(entry.at as usize) {
+                                visit(command.slot, run.count);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Forms the world's views' runs (M5 D2) once they're compacted, in a fixed order: the main

@@ -23,7 +23,7 @@ const ERROR: f32 = 0.05;
 /// A square 1 m across facing +z around its origin. Level 0 is its two triangles over its four
 /// vertices; level 1, at [`ERROR`], the lower-right triangle alone, over the first three vertices (a
 /// prefix of the streams) and an index range of its own after level 0's.
-fn square_with_levels() -> Mesh {
+pub(super) fn square_with_levels() -> Mesh {
     let corner = |x: f32, y: f32| Vertex {
         position: [x, y, 0.0],
         normal: [0.0, 0.0, 1.0],
@@ -43,7 +43,7 @@ fn square_with_levels() -> Mesh {
 }
 
 /// A renderer of `settings` with `mesh` uploaded under an opaque red environment material.
-fn frames_with(gpu: &GpuContext, settings: RenderSettings, mesh: &Mesh) -> (Frames, MeshHandle) {
+pub(super) fn frames_with(gpu: &GpuContext, settings: RenderSettings, mesh: &Mesh) -> (Frames, MeshHandle) {
     let mut frames = Frames::with_settings(gpu, FORMAT, settings).expect("renderer");
     let environment =
         EnvironmentMaterial { base_color: [0.9, 0.1, 0.1, 1.0], ..EnvironmentMaterial::default() };
@@ -57,11 +57,11 @@ fn frames_with(gpu: &GpuContext, settings: RenderSettings, mesh: &Mesh) -> (Fram
     (frames, handle)
 }
 
-fn with_levels(mode: LevelsMode, settings: RenderSettings) -> RenderSettings {
+pub(super) fn with_levels(mode: LevelsMode, settings: RenderSettings) -> RenderSettings {
     RenderSettings { levels: LevelSettings { mode, ..settings.levels }, ..settings }
 }
 
-fn camera_at(eye: Vec3, target: Vec3) -> CameraData {
+pub(super) fn camera_at(eye: Vec3, target: Vec3) -> CameraData {
     CameraData::look_at(eye, target, Vec3::Y, FOV, SIZE.0 as f32 / SIZE.1 as f32, 0.05)
 }
 
@@ -93,7 +93,7 @@ fn a_level_draws_its_own_triangles_from_a_prefix_of_the_vertices() {
 }
 
 /// Squares from 1 m to 40 m down the view, with shadows on and the sun from the side.
-fn street(frames: &mut Frames, square: MeshHandle) -> (Vec<MeshInstance>, CameraData) {
+pub(super) fn street(frames: &mut Frames, square: MeshHandle) -> (Vec<MeshInstance>, CameraData) {
     frames.sun = DirectionalLight {
         direction: Vec3::new(-0.4, -0.7, -0.6).normalize(),
         color: Vec3::ONE,
@@ -111,7 +111,7 @@ fn street(frames: &mut Frames, square: MeshHandle) -> (Vec<MeshInstance>, Camera
 
 /// Shadows with coarse maps, 256 texels a cascade, none cached so each draws every frame: the
 /// farthest cascade's quarter texel passes [`ERROR`], and the nearest's doesn't.
-fn shadowed() -> RenderSettings {
+pub(super) fn shadowed() -> RenderSettings {
     let shadows = ShadowSettings { resolution: 256, cached_cascades: 0, ..ShadowSettings::default() };
     RenderSettings { shadows: Some(shadows), ..RenderSettings::default() }
 }

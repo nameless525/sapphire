@@ -120,6 +120,18 @@
 //!     pixels at 1080 rows, white beyond, over the characters in one grey ([`CHARACTER_TONE`]).
 //!
 //!   Where no character drew, the frame shows, dimmed.
+//! - **The scale views** (M5 X1: [`DebugView::SCALE`]) color each instance by what the frame
+//!   did with it at scale, with one tag replay (`Replay::Tag`) per
+//!   cell of the view's legend, each drawing only the draws of that cell (`scale_tag`): the
+//!   level the main view drew it at ([`LEVELS_LEGEND`]), its material's worst streamed texture
+//!   against the top wanted ([`TEXTURES_LEGEND`], from the tops the app sends through
+//!   [`Renderer::set_texture_tops`](crate::Renderer::set_texture_tops)), which views drew it or
+//!   which test culled it ([`CULLING_LEGEND`]), and the instanced run a shadow view drew it in
+//!   ([`RUNS_LEGEND`]). They walk the main view's draws unculled (`Walk::Unculled`, compacted
+//!   only while one shows), so what the main view culled draws too, in diagonal stripes. A
+//!   [`CullPose`] ([`Renderer::set_cull_pose`](crate::Renderer::set_cull_pose)) culls, picks
+//!   levels and fits the shadow plan in the camera's place while one shows; the passes still
+//!   draw from the camera.
 //!
 //! # Later milestones
 //!
@@ -130,26 +142,32 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
+use glam::camera::rh::view::look_to_mat4;
+use glam::{Mat4, Vec3};
+
+use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::{MATERIAL_IDS, ramp};
 use sapphire_assets::mesh::PositionFormat;
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarKind, CvarType, CvarValue};
 use sapphire_rhi::{TransientDesc, wgpu};
 
-use crate::LOG_TARGET;
 use crate::counts::PassCounts;
-use crate::draw::{DrawRef, DrawSet, MeshDraws};
+use crate::draw::{DrawRef, DrawSet, MeshDraws, Pick, ViewLists, Walk};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::{FrameGraph, TextureId};
 use crate::lights::{LightPath, Lights};
+use crate::materials::MaterialRecord;
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{
     Coverage, FrameGroup, Layouts, MainPipeline, Pipelines, REPLAY_COLOR_FORMAT, Replay, ReplayTarget,
     Shading, SurfaceVariant, VALUES_FORMAT, format_index, replay_depth_format,
 };
-use crate::renderer::{DrawThrough, MeshGroups, PrepassTargets, draw_main_pass};
+use crate::renderer::{DrawThrough, MainDepth, MeshGroups, PrepassTargets, draw_main_pass};
 use crate::scene::DrawList;
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
+use crate::view_cull::{Verdict, ViewCull};
+use crate::{CameraData, LOG_TARGET};
 
 /// A way to draw the frame other than as it looks (see the [module docs](self)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Hash)]
@@ -173,14 +191,34 @@ pub enum DebugView {
     /// The anime characters' outline widths, in pixels on a 1080-row target, from 0 to
     /// [`OUTLINE_WIDTH_SCALE`] and beyond.
     OutlineWidths,
+    /// Each instance in the color of the level of detail the main view drew it at (M5 X1,
+    /// [`LEVELS_LEGEND`]).
+    Levels,
+    /// Each surface by its material's textures' streaming state (M5 X1, [`TEXTURES_LEGEND`]).
+    Textures,
+    /// Each instance by which views drew it (M5 X1, [`CULLING_LEGEND`]).
+    Culling,
+    /// Each instance by the instanced runs the shadow views drew it in (M5 X1, [`RUNS_LEGEND`]).
+    Runs,
 }
 
 /// The views' names, as the cvar and the sandbox's `--debug-view` spell them.
-const NAMES: [&str; 7] =
-    ["off", "wireframe", "overdraw", "lights", "material-ids", "ramp-rows", "outline-widths"];
+const NAMES: [&str; 11] = [
+    "off",
+    "wireframe",
+    "overdraw",
+    "lights",
+    "material-ids",
+    "ramp-rows",
+    "outline-widths",
+    "levels",
+    "textures",
+    "culling",
+    "runs",
+];
 
 impl DebugView {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 11] = [
         Self::Off,
         Self::Wireframe,
         Self::Overdraw,
@@ -188,7 +226,32 @@ impl DebugView {
         Self::MaterialIds,
         Self::RampRows,
         Self::OutlineWidths,
+        Self::Levels,
+        Self::Textures,
+        Self::Culling,
+        Self::Runs,
     ];
+
+    /// The scale views (M5 X1): those that tag instances by what the frame's scale features did
+    /// with them, and draw what the main view culled too. `--debug-cull-from` serves only these.
+    pub const SCALE: [Self; 4] = [Self::Levels, Self::Textures, Self::Culling, Self::Runs];
+
+    /// Whether it is one of the [scale views](Self::SCALE).
+    pub fn is_scale(self) -> bool {
+        Self::SCALE.contains(&self)
+    }
+
+    /// A scale view's legend: each tag's name and display color, in tag order (tag 1 first); empty
+    /// for every other view.
+    pub fn legend(self) -> &'static [ScaleCell] {
+        match self {
+            Self::Levels => &LEVELS_LEGEND,
+            Self::Textures => &TEXTURES_LEGEND,
+            Self::Culling => &CULLING_LEGEND,
+            Self::Runs => &RUNS_LEGEND,
+            _ => &[],
+        }
+    }
 
     /// How the cvar and the command line spell it: `overdraw`.
     pub fn name(self) -> &'static str {
@@ -234,8 +297,9 @@ pub static DEBUG_VIEW: Cvar<DebugView> = Cvar::new(
     "r.debug_view",
     DebugView::Off,
     "Debug view (spec §5.12): wireframe, overdraw (fragments shaded per pixel), lights (the lights each pixel walks, \
-     per cluster or per object), or the anime characters' material-ids, ramp-rows or outline-widths, drawn over the \
-     frame after post. Off builds and draws nothing.",
+     per cluster or per object), the anime characters' material-ids, ramp-rows or outline-widths, or the scale views: \
+     levels (of detail drawn), textures (streamed levels against wanted), culling (which views drew) and runs (instanced \
+     shadow draws), drawn over the frame after post. Off builds and draws nothing.",
 );
 
 /// This module's cvars, for the app's registry.
@@ -359,6 +423,252 @@ pub fn overdraw_position(fragments: u32) -> f32 {
     (fragments.max(1) as f32).log2() / (OVERDRAW_SCALE as f32).log2()
 }
 
+/// One cell of a scale view's legend (M5 X1): what its tag means and its display (sRGB-encoded)
+/// color. A striped cell is something the main view didn't draw, which the view shows in diagonal
+/// stripes of its color and black, so it never reads as a drawn surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScaleCell {
+    pub name: &'static str,
+    pub color: [f32; 3],
+    pub striped: bool,
+}
+
+const fn cell(name: &'static str, color: [f32; 3]) -> ScaleCell {
+    ScaleCell { name, color, striped: false }
+}
+
+const fn culled(name: &'static str, color: [f32; 3]) -> ScaleCell {
+    ScaleCell { name, color, striped: true }
+}
+
+/// The scale views' neutral: what reads as "as it should be" (level 0, a texture as wanted, drawn
+/// by the main view and a shadow, a draw alone).
+pub const SCALE_NEUTRAL: [f32; 3] = [0.62, 0.62, 0.62];
+const GREEN: [f32; 3] = [0.35, 0.78, 0.35];
+const YELLOW: [f32; 3] = [0.95, 0.85, 0.25];
+const ORANGE: [f32; 3] = [0.95, 0.55, 0.15];
+const RED: [f32; 3] = [0.9, 0.18, 0.15];
+const BLUE: [f32; 3] = [0.3, 0.55, 0.95];
+const SKY: [f32; 3] = [0.3, 0.75, 0.95];
+const VIOLET: [f32; 3] = [0.6, 0.45, 0.9];
+const SLATE: [f32; 3] = [0.3, 0.32, 0.42];
+/// The color of what the main view culled, striped, in every scale view.
+pub const SCALE_CULLED: [f32; 3] = [0.95, 0.25, 0.8];
+
+/// The levels view's tags: the level the main view drew a draw at (its list entry's: a character's
+/// part its own), level 3 and coarser as one; held at level 0 by rule (the `levels` module's "Level
+/// 0 always": a character the stage doesn't let draw coarser, foliage, fog cards, anything else
+/// skinned or morphed); and culled.
+pub const LEVELS_LEGEND: [ScaleCell; 6] = [
+    cell("level 0", SCALE_NEUTRAL),
+    cell("level 1", GREEN),
+    cell("level 2", YELLOW),
+    cell("level 3 and coarser", RED),
+    cell("held at level 0", BLUE),
+    culled("culled", SCALE_CULLED),
+];
+
+/// The texture view's tags, by a material's worst texture: every streamed texture at the top the
+/// views want of it; one finer than wanted (memory to give back); one coarser by one, two, or three
+/// levels or more (the debt); none streamed (tails only, held whole, or streaming off); and culled.
+pub const TEXTURES_LEGEND: [ScaleCell; 7] = [
+    cell("as wanted", SCALE_NEUTRAL),
+    cell("finer than wanted", SKY),
+    cell("a level coarse", YELLOW),
+    cell("two levels coarse", ORANGE),
+    cell("three levels coarse or more", RED),
+    cell("not streamed", VIOLET),
+    culled("culled", SCALE_CULLED),
+];
+
+/// The culling view's tags: drawn by the main view and a shadow view (a cascade, a character map or
+/// a spot tile), by the main view alone, by a shadow view alone (the main view culled it), and by none, by the test that culled it from the
+/// main view: its frustum, the tier's distance, or its size.
+pub const CULLING_LEGEND: [ScaleCell; 6] = [
+    cell("the main view and a shadow", SCALE_NEUTRAL),
+    cell("the main view alone", GREEN),
+    cell("a shadow alone", ORANGE),
+    culled("culled by the frustum", SCALE_CULLED),
+    culled("culled by distance", BLUE),
+    culled("culled by size", YELLOW),
+];
+
+/// The runs view's tags: in a run of two, of three to eight, or of more (the longest run a cascade
+/// or a spot tile drawn this frame, or the main view under `DrawRuns::Every`, drew it in; a
+/// character map's runs aren't walked); drawn by a shadow view alone in its
+/// call; drawn by no shadow view; and culled with no shadow drawing it.
+pub const RUNS_LEGEND: [ScaleCell; 6] = [
+    cell("a run of 2", GREEN),
+    cell("a run of 3 to 8", YELLOW),
+    cell("a run of 9 or more", RED),
+    cell("alone", SCALE_NEUTRAL),
+    cell("no shadow", SLATE),
+    culled("culled", SCALE_CULLED),
+];
+
+/// Why the main view didn't draw an instance, for the scale views.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CullReason {
+    Frustum,
+    Distance,
+    Size,
+}
+
+/// What the scale views know of an instance slot this frame, worked out as the frame records
+/// (`DebugViews::classify`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlotScale {
+    /// Why the main view didn't draw it, if it didn't.
+    pub culled: Option<CullReason>,
+    /// It draws at level 0 in every view, by rule.
+    pub whole: bool,
+    /// A shadow view (a cascade, a character map or a spot light's tile) drew it this frame.
+    pub shadow: bool,
+    /// The longest run a view drew it in: 0 for none, 1 for alone in a group of runs.
+    pub run: u32,
+}
+
+/// A material's textures' streaming state, by its worst texture (the texture view's).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MaterialTextures {
+    /// None of its textures streams: tails only, held whole, or streaming off.
+    #[default]
+    NotStreamed,
+    /// Every streamed texture at the top the views want.
+    AsWanted,
+    /// One finer than wanted, none coarser.
+    Finer,
+    /// The coarsest is this many levels coarser than wanted.
+    Coarse(u32),
+}
+
+impl MaterialTextures {
+    /// The state of a material binding textures at these tops, `None` for one that doesn't stream:
+    /// its worst texture's.
+    pub fn of(textures: impl IntoIterator<Item = Option<StreamedTops>>) -> Self {
+        let mut state = Self::NotStreamed;
+        for tops in textures.into_iter().flatten() {
+            let next = match tops.resident.cmp(&tops.wanted) {
+                std::cmp::Ordering::Greater => Self::Coarse(tops.resident - tops.wanted),
+                std::cmp::Ordering::Less => Self::Finer,
+                std::cmp::Ordering::Equal => Self::AsWanted,
+            };
+            if next.rank() > state.rank() {
+                state = next;
+            }
+        }
+        state
+    }
+
+    /// How bad it is: a coarser texture is worse than a finer one, which is worse than one as wanted.
+    fn rank(self) -> u32 {
+        match self {
+            Self::NotStreamed => 0,
+            Self::AsWanted => 1,
+            Self::Finer => 2,
+            Self::Coarse(levels) => 2 + levels,
+        }
+    }
+}
+
+/// A streamed texture's tops this frame, as the app's streamer holds them (M5 X1's texture view,
+/// [`Renderer::set_texture_tops`](crate::Renderer::set_texture_tops)): the top the views want (0 is
+/// the whole texture) and the one on the GPU.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamedTops {
+    pub wanted: u32,
+    pub resident: u32,
+}
+
+/// A pose the scale views cull from in the camera's place (M5 X1,
+/// [`Renderer::set_cull_pose`](crate::Renderer::set_cull_pose), the sandbox's `--debug-cull-from`):
+/// a position, and a yaw and pitch in radians. Yaw 0 looks along −Z and a positive yaw turns
+/// toward +X; a positive pitch looks up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CullPose {
+    pub position: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl CullPose {
+    /// The direction it looks in.
+    pub fn forward(self) -> Vec3 {
+        let (yaw, pitch) = (self.yaw, self.pitch);
+        Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos())
+    }
+
+    /// The camera at this pose with `frame`'s projection.
+    pub(crate) fn camera(self, frame: &CameraData) -> CameraData {
+        CameraData { view: self.view(), proj: frame.proj, position: self.position }
+    }
+
+    fn view(self) -> Mat4 {
+        look_to_mat4(self.position, self.forward(), Vec3::Y)
+    }
+
+    /// The edges of its frustum through `proj` (a perspective projection), cut `depth` meters
+    /// ahead, as world-space segments: from the eye to each far corner, then around them. What an
+    /// app outlines the pose with.
+    pub fn frustum_lines(self, proj: Mat4, depth: f32) -> [(Vec3, Vec3); 8] {
+        let world = self.view().inverse();
+        let (x, y) = (depth / proj.x_axis.x, depth / proj.y_axis.y);
+        let corners = [(-x, -y), (x, -y), (x, y), (-x, y)]
+            .map(|(x, y)| world.transform_point3(Vec3::new(x, y, -depth)));
+        std::array::from_fn(|index| match index {
+            0..4 => (self.position, corners[index]),
+            _ => (corners[index - 4], corners[(index - 3) % 4]),
+        })
+    }
+}
+
+/// The levels view's tag (1-based, [`LEVELS_LEGEND`]) of a draw at `level` of the instance `slot`.
+pub fn level_tag(level: u8, slot: SlotScale) -> u32 {
+    match slot {
+        SlotScale { culled: Some(_), .. } => 6,
+        SlotScale { whole: true, .. } => 5,
+        _ => 1 + u32::from(level.min(3)),
+    }
+}
+
+/// The texture view's tag ([`TEXTURES_LEGEND`]) of a draw whose material is in `state`, of the
+/// instance `slot`.
+pub fn texture_tag(state: MaterialTextures, slot: SlotScale) -> u32 {
+    if slot.culled.is_some() {
+        return 7;
+    }
+    match state {
+        MaterialTextures::AsWanted => 1,
+        MaterialTextures::Finer => 2,
+        MaterialTextures::Coarse(levels) => 2 + levels.clamp(1, 3),
+        MaterialTextures::NotStreamed => 6,
+    }
+}
+
+/// The culling view's tag ([`CULLING_LEGEND`]) of the instance `slot`.
+pub fn culling_tag(slot: SlotScale) -> u32 {
+    match (slot.culled, slot.shadow) {
+        (None, true) => 1,
+        (None, false) => 2,
+        (Some(_), true) => 3,
+        (Some(CullReason::Frustum), false) => 4,
+        (Some(CullReason::Distance), false) => 5,
+        (Some(CullReason::Size), false) => 6,
+    }
+}
+
+/// The runs view's tag ([`RUNS_LEGEND`]) of the instance `slot`.
+pub fn run_tag(slot: SlotScale) -> u32 {
+    match slot {
+        SlotScale { run: 9.., .. } => 3,
+        SlotScale { run: 3..=8, .. } => 2,
+        SlotScale { run: 2, .. } => 1,
+        SlotScale { shadow: true, .. } => 4,
+        SlotScale { culled: Some(_), .. } => 6,
+        _ => 5,
+    }
+}
+
 /// The debug views' counters (rule R9), in [`RenderStats::debug_view`](crate::RenderStats).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DebugViewStats {
@@ -408,10 +718,16 @@ enum Plan {
     RampRows,
     /// The same, shown as their lines' widths.
     OutlineWidths,
+    /// The scale views (M5 X1): the surfaces of every instance the main view's list holds, culled or
+    /// not, tagged by what the frame's scale features did with them.
+    Levels,
+    Textures,
+    Culling,
+    Runs,
 }
 
 impl Plan {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 11] = [
         Self::Wireframe,
         Self::Overdraw,
         Self::ClusterLights,
@@ -419,6 +735,10 @@ impl Plan {
         Self::MaterialIds,
         Self::RampRows,
         Self::OutlineWidths,
+        Self::Levels,
+        Self::Textures,
+        Self::Culling,
+        Self::Runs,
     ];
 
     /// `view`'s, on `light_path`; none for `Off`.
@@ -434,6 +754,10 @@ impl Plan {
             DebugView::MaterialIds => Some(Self::MaterialIds),
             DebugView::RampRows => Some(Self::RampRows),
             DebugView::OutlineWidths => Some(Self::OutlineWidths),
+            DebugView::Levels => Some(Self::Levels),
+            DebugView::Textures => Some(Self::Textures),
+            DebugView::Culling => Some(Self::Culling),
+            DebugView::Runs => Some(Self::Runs),
         }
     }
 
@@ -441,6 +765,24 @@ impl Plan {
     /// frame reads with the depth.
     fn values(self) -> bool {
         matches!(self, Self::MaterialIds | Self::RampRows | Self::OutlineWidths)
+    }
+
+    /// Whether it is a scale view's (M5 X1), which replays the main view's draws unculled
+    /// ([`Walk::Unculled`]) and tags them by [`scale_tag`].
+    fn scale(self) -> bool {
+        matches!(self, Self::Levels | Self::Textures | Self::Culling | Self::Runs)
+    }
+
+    /// A scale view's tags (1 to this), its legend's cells.
+    fn tags(self) -> u32 {
+        let legend = match self {
+            Self::Levels => &LEVELS_LEGEND[..],
+            Self::Textures => &TEXTURES_LEGEND,
+            Self::Culling => &CULLING_LEGEND,
+            Self::Runs => &RUNS_LEGEND,
+            _ => &[],
+        };
+        legend.len() as u32
     }
 
     fn index(self) -> usize {
@@ -453,7 +795,7 @@ impl Plan {
             Self::Wireframe => &[Replay::Hide, Replay::Edges],
             Self::Overdraw => &[Replay::Count, Replay::Invocations, Replay::Depth],
             Self::ClusterLights => &[Replay::Depth],
-            Self::ObjectLights => &[Replay::Tag],
+            Self::ObjectLights | Self::Levels | Self::Textures | Self::Culling | Self::Runs => &[Replay::Tag],
             Self::MaterialIds | Self::RampRows | Self::OutlineWidths => &[Replay::Values],
         }
     }
@@ -462,9 +804,10 @@ impl Plan {
     /// [module docs](self)): the wireframe hides behind the surfaces that write depth and draws
     /// every surface's edges; overdraw counts every pipeline, opaque ones as they keep fragments
     /// and the rest (which may discard) as they run, and writes the depth of those that write it
-    /// after counting; the light lists take every surface but fog cards, which walk no list; the
-    /// material views take every anime character pipeline, which writes its values, and the
-    /// depth of every other surface that writes depth, which hides them.
+    /// after counting; the light lists and the scale views take every surface but fog cards, which
+    /// walk no list and are no object's; the material views take every anime character pipeline,
+    /// which writes its values, and the depth of every other surface that writes depth, which hides
+    /// them.
     fn copies(self, replay: Replay, pipeline: MainPipeline) -> bool {
         use MainPipeline::{Outline, Surface, ThroughHair};
         let card = |variant: SurfaceVariant| variant == SurfaceVariant::FOG_CARD;
@@ -477,6 +820,9 @@ impl Plan {
                 Outline(_) | ThroughHair(_) => true,
             };
         }
+        if (self.scale() || self == Self::ObjectLights) && replay == Replay::Tag {
+            return matches!(pipeline, Surface(variant) if !card(variant));
+        }
         match (self, replay, pipeline) {
             (Self::Wireframe, Replay::Hide, Surface(variant)) => variant.coverage != Coverage::Transparent,
             (Self::Wireframe, Replay::Edges, Surface(_)) => true,
@@ -487,8 +833,7 @@ impl Plan {
             (Self::Overdraw, Replay::Invocations, ThroughHair(_)) => true,
             (Self::Overdraw, Replay::Depth, Surface(variant)) => variant.coverage == Coverage::AlphaTest,
             (Self::Overdraw, Replay::Depth, Outline(coverage)) => coverage == Coverage::AlphaTest,
-            (Self::ClusterLights, Replay::Depth, Surface(variant))
-            | (Self::ObjectLights, Replay::Tag, Surface(variant)) => !card(variant),
+            (Self::ClusterLights, Replay::Depth, Surface(variant)) => !card(variant),
             _ => false,
         }
     }
@@ -502,15 +847,19 @@ impl Plan {
             Self::MaterialIds => "fs_debug_material_ids",
             Self::RampRows => "fs_debug_ramp_rows",
             Self::OutlineWidths => "fs_debug_outline_widths",
+            Self::Levels => "fs_debug_levels",
+            Self::Textures => "fs_debug_textures",
+            Self::Culling => "fs_debug_culling",
+            Self::Runs => "fs_debug_runs",
         }
     }
 
     /// The store ops of its replay's depth and stencil: what its pass over the frame reads is
-    /// kept (the light lists' and material views' depth for their silhouettes, and the cluster
-    /// lookup; the other views' stencil).
+    /// kept (the light lists', material views' and scale views' depth for their silhouettes, and
+    /// the cluster lookup; the other views' stencil).
     fn stores(self) -> (wgpu::StoreOp, wgpu::StoreOp) {
         let keep = |kept: bool| if kept { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard };
-        let depth = matches!(self, Self::ClusterLights | Self::ObjectLights) || self.values();
+        let depth = matches!(self, Self::ClusterLights | Self::ObjectLights) || self.values() || self.scale();
         let stencil = !matches!(self, Self::ClusterLights) && !self.values();
         (keep(depth), keep(stencil))
     }
@@ -943,6 +1292,19 @@ pub(crate) struct DebugViews {
     object_counts: Vec<u32>,
     /// The most lights a list holds in the last prepared frame.
     list_capacity: u32,
+    /// Per instance slot, what the scale views know of it this frame (M5 X1, [`Self::classify`]).
+    slots: Vec<SlotScale>,
+    /// Per material (by its handle's index), its textures' streaming state, which the texture view
+    /// tags its draws by; empty unless that view shows.
+    textures: Vec<MaterialTextures>,
+}
+
+/// What the scale views read as a frame is prepared (M5 X1): the uploaded materials, by handle
+/// index, and the streamed textures' tops the app sent ([`Renderer::set_texture_tops`](crate::Renderer::set_texture_tops)).
+#[derive(Clone, Copy)]
+pub(crate) struct ScaleInputs<'a> {
+    pub materials: &'a [MaterialRecord],
+    pub tops: &'a HashMap<AssetId, StreamedTops>,
 }
 
 impl DebugViews {
@@ -999,13 +1361,15 @@ impl DebugViews {
             index_end: 0,
             object_counts: Vec::new(),
             list_capacity: 0,
+            slots: Vec::new(),
+            textures: Vec::new(),
         }
     }
 
     /// Readies `view` for the frame just prepared: builds the pipelines it needs that aren't
     /// built (copies of `pipelines`' for what `list` draws), sizes the wireframe's line indices
-    /// for the pool's first `index_end` indices, and takes the frame's per-object light lists
-    /// from `lights`.
+    /// for the pool's first `index_end` indices, takes the frame's per-object light lists
+    /// from `lights`, and for the texture view each material's state from `scale`.
     pub(crate) fn prepare(
         &mut self,
         view: DebugView,
@@ -1013,6 +1377,7 @@ impl DebugViews {
         list: &DrawList,
         lights: &Lights,
         (light_path, index_end): (LightPath, u32),
+        scale: ScaleInputs<'_>,
     ) {
         profiling::scope!("DebugViews::prepare");
         let plan = Plan::of(view, light_path);
@@ -1061,6 +1426,49 @@ impl DebugViews {
             self.object_counts.clear();
             self.object_counts.extend(lights.object_counts());
         }
+        if plan == Plan::Textures {
+            self.textures.clear();
+            self.textures.extend(scale.materials.iter().map(|material| {
+                MaterialTextures::of(
+                    material.textures().map(|(_, texture)| scale.tops.get(&texture).copied()),
+                )
+            }));
+        }
+    }
+
+    /// Whether the last prepared frame shows a scale view (M5 X1), which replays the main view's
+    /// draws unculled: the frame compacts [`Walk::Unculled`] only then.
+    pub(crate) fn walks_unculled(&self) -> bool {
+        self.plan.is_some_and(Plan::scale)
+    }
+
+    /// Works out what the scale views tag each instance by, once the frame's views are culled and
+    /// their lists compacted (`lists`, of `list`): why the main view culled it, whether it draws
+    /// level 0 by rule, whether a shadow view drew it, and the longest run one drew it in. Nothing
+    /// unless a scale view shows.
+    pub(crate) fn classify(&mut self, lists: &ViewLists, list: &DrawList, view_cull: &ViewCull) {
+        let Some(plan) = self.plan.filter(|plan| plan.scale()) else { return };
+        let (culled, levels) = (view_cull.culled(), view_cull.levels());
+        self.slots.clear();
+        self.slots.extend((0..view_cull.len() as u32).map(|slot| SlotScale {
+            culled: match culled.map_or(Verdict::Drawn, |culled| culled.verdict(slot)) {
+                Verdict::Drawn => None,
+                Verdict::Frustum => Some(CullReason::Frustum),
+                Verdict::Distance => Some(CullReason::Distance),
+                Verdict::Size => Some(CullReason::Size),
+            },
+            whole: levels.whole(slot),
+            shadow: view_cull.drawn_by(slot).shadow,
+            run: 0,
+        }));
+        if plan == Plan::Runs {
+            let slots = &mut self.slots;
+            lists.each_run_draw(list, |slot, count| {
+                if let Some(scale) = slots.get_mut(slot as usize) {
+                    scale.run = scale.run.max(count);
+                }
+            });
+        }
     }
 
     /// Shows no view from this frame on, keeping what the views built.
@@ -1080,6 +1488,7 @@ impl DebugViews {
             Some(Plan::MaterialIds) => u32::from(MATERIAL_IDS),
             Some(Plan::RampRows) => ramp::ROWS,
             Some(Plan::OutlineWidths) => OUTLINE_WIDTH_SCALE,
+            Some(plan @ (Plan::Levels | Plan::Textures | Plan::Culling | Plan::Runs)) => plan.tags(),
             Some(Plan::Wireframe) | None => 0,
         };
         let copies: usize = self.replays.iter().map(|replay| replay.copies.len()).sum();
@@ -1202,8 +1611,9 @@ impl DebugViews {
         let replays = &self.replays;
         let sky = self.pipelines.sky.as_ref();
         let (object_counts, capacity) = (&self.object_counts[..], self.list_capacity);
+        let (slots, textures) = (&self.slots[..], &self.textures[..]);
         let view_bind_group = &self.view_bind_group;
-        let DebugFrame { draws, groups, index_buffer, cards, labels, .. } = *frame;
+        let DebugFrame { draws, groups, index_buffer, cards, labels, main_depth, .. } = *frame;
         pass.record(move |ctx| {
             let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: labels.then_some(REPLAY_PASS),
@@ -1245,6 +1655,15 @@ impl DebugViews {
             let everything = |_| true;
             match plan {
                 Plan::Overdraw => {
+                    // The depth the frame's main pass took (M5 D10, `RenderStats::main_depth`).
+                    // The replay draws its own depth through copies of the `Own` pipelines either
+                    // way, so it counts what a main pass on its own depth keeps: under
+                    // `FromPrepass`, whose `Equal` twins shade each opaque pixel once, an opaque
+                    // pixel reads that count, not 1. A new kind of main depth stops this compiling
+                    // until the replay says what it counts under it.
+                    match main_depth {
+                        MainDepth::Own | MainDepth::FromPrepass => {}
+                    }
                     // Opaque draws count what they keep; the others every fragment they run for,
                     // then, if they write depth, write it as the main pass does.
                     let through = |format, variant, set| {
@@ -1294,8 +1713,20 @@ impl DebugViews {
                     let through = one(Replay::Tag);
                     for count in 0..=capacity {
                         let tagged =
-                            |slot: u32| object_counts.get(slot as usize).copied().unwrap_or(0) == count;
+                            |pick: Pick| object_counts.get(pick.slot as usize).copied().unwrap_or(0) == count;
                         pass.set_stencil_reference(count + 1);
+                        draw_main_pass(&mut pass, &through, &draws, groups, None, None, tagged);
+                    }
+                }
+                Plan::Levels | Plan::Textures | Plan::Culling | Plan::Runs => {
+                    // One run of the main view's draws unculled per tag (M5 X1), each instance's
+                    // pixels tagged by what the frame did with it; each writes depth, so each pixel
+                    // keeps the nearest surface's. The ordered draws skip no verdict either.
+                    let (through, draws) =
+                        (one(Replay::Tag), MeshDraws { walk: Walk::Unculled, view: None, ..draws });
+                    for tag in 1..=plan.tags() {
+                        let tagged = |pick: Pick| scale_tag(plan, pick, slots, textures) == tag;
+                        pass.set_stencil_reference(tag);
                         draw_main_pass(&mut pass, &through, &draws, groups, None, None, tagged);
                     }
                 }
@@ -1392,6 +1823,19 @@ impl DebugViews {
     }
 }
 
+/// A scale view's tag of the draw `pick` (M5 X1): by its instance's slot in `slots` and, for the
+/// texture view, its material's state in `textures`; 0 (no tag) for another view.
+fn scale_tag(plan: Plan, pick: Pick, slots: &[SlotScale], textures: &[MaterialTextures]) -> u32 {
+    let slot = slots.get(pick.slot as usize).copied().unwrap_or_default();
+    match plan {
+        Plan::Levels => level_tag(pick.level, slot),
+        Plan::Textures => texture_tag(textures.get(pick.material.index()).copied().unwrap_or_default(), slot),
+        Plan::Culling => culling_tag(slot),
+        Plan::Runs => run_tag(slot),
+        _ => 0,
+    }
+}
+
 /// What a view's replay gathered: its depth and stencil, and the material views' values.
 #[derive(Clone, Copy)]
 struct Replayed {
@@ -1418,6 +1862,9 @@ pub(crate) struct DebugFrame<'f> {
     /// The fog cards' draws, back to front.
     pub cards: &'f [DrawRef],
     pub labels: bool,
+    /// The depth the frame's main pass took ([`RenderStats::main_depth`](crate::RenderStats)), which
+    /// the overdraw view's replay answers to.
+    pub main_depth: MainDepth,
 }
 
 #[cfg(test)]
@@ -1464,7 +1911,7 @@ mod tests {
             // What each pass reads is kept: the stencil, the depth, or the depth and the values.
             let (depth, stencil) = plan.stores();
             let lights = matches!(plan, Plan::ClusterLights | Plan::ObjectLights);
-            assert_eq!(depth == wgpu::StoreOp::Store, lights || plan.values(), "{plan:?}");
+            assert_eq!(depth == wgpu::StoreOp::Store, lights || plan.values() || plan.scale(), "{plan:?}");
             let stencil_read = !matches!(plan, Plan::ClusterLights) && !plan.values();
             assert_eq!(stencil == wgpu::StoreOp::Store, stencil_read, "{plan:?}");
             let writes_values = plan.replays().iter().any(|replay| replay.color_format() == VALUES_FORMAT);
@@ -1536,6 +1983,10 @@ mod tests {
         let lit = [opaque, tested, blended, world, tested_world, glass, leaves];
         assert_eq!(copied(Plan::ClusterLights, Replay::Depth), lit);
         assert_eq!(copied(Plan::ObjectLights, Replay::Tag), lit);
+        // The scale views tag every instance's surfaces, as the per-object light lists do.
+        for plan in [Plan::Levels, Plan::Textures, Plan::Culling, Plan::Runs] {
+            assert_eq!(copied(plan, Replay::Tag), lit, "{plan:?}");
+        }
         // The material views write every anime character pipeline's values, behind every other
         // surface that writes depth; glass and fog cards hide no character.
         for plan in [Plan::MaterialIds, Plan::RampRows, Plan::OutlineWidths] {
@@ -1658,6 +2109,186 @@ mod tests {
         }
         assert!(NO_LIGHTS.iter().all(|&channel| channel == NO_LIGHTS[0]), "a grey");
         assert!(CHARACTER_TONE.iter().all(|&channel| channel == CHARACTER_TONE[0]), "a grey");
+    }
+
+    #[test]
+    fn scale_views_replay_tags_one_per_legend_cell() {
+        for (view, plan, legend) in [
+            (DebugView::Levels, Plan::Levels, &LEVELS_LEGEND[..]),
+            (DebugView::Textures, Plan::Textures, &TEXTURES_LEGEND),
+            (DebugView::Culling, Plan::Culling, &CULLING_LEGEND),
+            (DebugView::Runs, Plan::Runs, &RUNS_LEGEND),
+        ] {
+            assert!(view.is_scale() && DebugView::SCALE.contains(&view));
+            assert_eq!(view.legend(), legend);
+            for path in [LightPath::Clustered, LightPath::PerObject] {
+                assert_eq!(Plan::of(view, path), Some(plan), "whatever the light path");
+            }
+            assert!(plan.scale() && !plan.values());
+            assert_eq!(plan.replays(), [Replay::Tag]);
+            assert_eq!(plan.tags() as usize, legend.len());
+            // Each cell reads apart from the others; only what the main view didn't draw is striped.
+            for (index, cell) in legend.iter().enumerate() {
+                let same = legend[..index]
+                    .iter()
+                    .any(|other| other.color == cell.color && other.striped == cell.striped);
+                assert!(!same, "{view:?}'s {} is its own", cell.name);
+                assert_eq!(cell.striped, cell.name.starts_with("culled"), "{view:?}'s {}", cell.name);
+            }
+        }
+        for view in DebugView::ALL {
+            assert_eq!(view.is_scale(), DebugView::SCALE.contains(&view));
+            assert_eq!(view.legend().is_empty(), !view.is_scale(), "{view:?}");
+        }
+    }
+
+    #[test]
+    fn scale_tags_pick_their_legend_cells() {
+        let drawn = SlotScale::default();
+        let culled = |reason| SlotScale { culled: Some(reason), ..drawn };
+        let name = |legend: &[ScaleCell], tag: u32| legend[tag as usize - 1].name;
+        // Levels: the level drawn, 3 and coarser as one, then held at 0 by rule, then culled.
+        let levels: Vec<_> = (0..6).map(|level| name(&LEVELS_LEGEND, level_tag(level, drawn))).collect();
+        assert_eq!(
+            levels,
+            [
+                "level 0",
+                "level 1",
+                "level 2",
+                "level 3 and coarser",
+                "level 3 and coarser",
+                "level 3 and coarser"
+            ]
+        );
+        assert_eq!(name(&LEVELS_LEGEND, level_tag(0, SlotScale { whole: true, ..drawn })), "held at level 0");
+        assert_eq!(name(&LEVELS_LEGEND, level_tag(2, culled(CullReason::Size))), "culled");
+        // Textures: by the worst streamed texture; one not streamed doesn't count.
+        let tops = |wanted, resident| Some(StreamedTops { wanted, resident });
+        assert_eq!(MaterialTextures::of([]), MaterialTextures::NotStreamed);
+        assert_eq!(MaterialTextures::of([None, None]), MaterialTextures::NotStreamed);
+        assert_eq!(MaterialTextures::of([None, tops(1, 1)]), MaterialTextures::AsWanted);
+        assert_eq!(MaterialTextures::of([tops(2, 1), tops(1, 1)]), MaterialTextures::Finer);
+        assert_eq!(MaterialTextures::of([tops(0, 2), tops(2, 1)]), MaterialTextures::Coarse(2));
+        assert_eq!(MaterialTextures::of([tops(0, 1), tops(0, 3)]), MaterialTextures::Coarse(3));
+        let textures = |state| name(&TEXTURES_LEGEND, texture_tag(state, drawn));
+        assert_eq!(textures(MaterialTextures::AsWanted), "as wanted");
+        assert_eq!(textures(MaterialTextures::Finer), "finer than wanted");
+        assert_eq!(textures(MaterialTextures::Coarse(1)), "a level coarse");
+        assert_eq!(textures(MaterialTextures::Coarse(2)), "two levels coarse");
+        assert_eq!(textures(MaterialTextures::Coarse(5)), "three levels coarse or more");
+        assert_eq!(textures(MaterialTextures::NotStreamed), "not streamed");
+        assert_eq!(
+            name(&TEXTURES_LEGEND, texture_tag(MaterialTextures::AsWanted, culled(CullReason::Frustum))),
+            "culled"
+        );
+        // Culling: who drew it, else what culled it.
+        let shadowed = SlotScale { shadow: true, ..drawn };
+        assert_eq!(name(&CULLING_LEGEND, culling_tag(shadowed)), "the main view and a shadow");
+        assert_eq!(name(&CULLING_LEGEND, culling_tag(drawn)), "the main view alone");
+        assert_eq!(
+            name(&CULLING_LEGEND, culling_tag(SlotScale { culled: Some(CullReason::Distance), ..shadowed })),
+            "a shadow alone"
+        );
+        assert_eq!(name(&CULLING_LEGEND, culling_tag(culled(CullReason::Frustum))), "culled by the frustum");
+        assert_eq!(name(&CULLING_LEGEND, culling_tag(culled(CullReason::Distance))), "culled by distance");
+        assert_eq!(name(&CULLING_LEGEND, culling_tag(culled(CullReason::Size))), "culled by size");
+        // Runs: the longest run a view drew it in, else alone, no shadow or culled.
+        let run = |run| name(&RUNS_LEGEND, run_tag(SlotScale { run, ..shadowed }));
+        assert_eq!(
+            [run(2), run(3), run(8), run(9), run(40)],
+            ["a run of 2", "a run of 3 to 8", "a run of 3 to 8", "a run of 9 or more", "a run of 9 or more"]
+        );
+        assert_eq!(run(1), "alone");
+        assert_eq!(run(0), "alone");
+        assert_eq!(name(&RUNS_LEGEND, run_tag(drawn)), "no shadow");
+        assert_eq!(name(&RUNS_LEGEND, run_tag(culled(CullReason::Frustum))), "culled");
+        // Every tag of every view is one of its legend's cells.
+        let slots =
+            [drawn, shadowed, culled(CullReason::Frustum), SlotScale { whole: true, run: 4, ..shadowed }];
+        for slot in slots {
+            for level in 0..8 {
+                assert!((1..=6).contains(&level_tag(level, slot)));
+            }
+            for state in [
+                MaterialTextures::NotStreamed,
+                MaterialTextures::AsWanted,
+                MaterialTextures::Finer,
+                MaterialTextures::Coarse(9),
+            ] {
+                assert!((1..=7).contains(&texture_tag(state, slot)));
+            }
+            assert!((1..=6).contains(&culling_tag(slot)) && (1..=6).contains(&run_tag(slot)));
+        }
+    }
+
+    #[test]
+    fn a_cull_pose_looks_along_its_yaw_and_pitch() {
+        let close = |a: Vec3, b: Vec3| (a - b).length() < 1e-5;
+        let pose = |yaw: f32, pitch: f32| CullPose {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            yaw: yaw.to_radians(),
+            pitch: pitch.to_radians(),
+        };
+        assert!(close(pose(0.0, 0.0).forward(), Vec3::NEG_Z));
+        assert!(close(pose(90.0, 0.0).forward(), Vec3::X), "a positive yaw turns toward +X");
+        assert!(close(pose(0.0, 90.0).forward(), Vec3::Y), "a positive pitch looks up");
+        let frame = CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 1.0, 1.5, 0.1);
+        let camera = pose(90.0, 0.0).camera(&frame);
+        assert_eq!(
+            (camera.proj, camera.position),
+            (frame.proj, Vec3::new(1.0, 2.0, 3.0)),
+            "the frame's projection"
+        );
+        assert!(close(camera.view.transform_point3(Vec3::new(1.0, 2.0, 3.0)), Vec3::ZERO));
+        assert!(
+            close(camera.view.transform_point3(Vec3::new(6.0, 2.0, 3.0)), Vec3::new(0.0, 0.0, -5.0)),
+            "ahead"
+        );
+        // Its frustum, cut 10 m ahead: four edges from the eye, then four around the far corners,
+        // which the projection puts on the screen's corners.
+        let lines = pose(0.0, 0.0).frustum_lines(frame.proj, 10.0);
+        let clip_from_world = frame.proj * pose(0.0, 0.0).camera(&frame).view;
+        for (index, &(from, to)) in lines.iter().enumerate() {
+            if index < 4 {
+                assert!(close(from, Vec3::new(1.0, 2.0, 3.0)), "from the eye");
+            }
+            let clip = clip_from_world * to.extend(1.0);
+            let ndc = clip.truncate() / clip.w;
+            assert!((ndc.x.abs() - 1.0).abs() < 1e-4 && (ndc.y.abs() - 1.0).abs() < 1e-4, "{ndc}");
+            assert!((to.z - (3.0 - 10.0)).abs() < 1e-4, "10 m ahead");
+        }
+        assert_eq!(lines[4].1, lines[5].0, "around the corners");
+        assert_eq!(lines[7].1, lines[4].0);
+    }
+
+    /// The `vec4<f32>(…)` rows of `source`'s fragment stage `entry`'s cells.
+    fn wgsl_cells(source: &str, entry: &str, rows: usize) -> Vec<ScaleCell> {
+        let start = format!("fn {entry}(");
+        source
+            .lines()
+            .skip_while(|line| !line.contains(&start))
+            .skip(2)
+            .take(rows)
+            .map(|line| {
+                let values = line.trim().trim_start_matches("vec4<f32>(").trim_end_matches("),");
+                let parsed: Vec<f32> =
+                    values.split(',').map(|value| value.trim().parse().expect("a number")).collect();
+                ScaleCell { name: "", color: [parsed[0], parsed[1], parsed[2]], striped: parsed[3] == 1.0 }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_shader_mirrors_the_scale_legends() {
+        let source = Program::DebugView.files().last().expect("its own file last").compiled_in();
+        for view in DebugView::SCALE {
+            let plan = Plan::of(view, LightPath::Clustered).expect("a plan");
+            let unnamed: Vec<_> = view.legend().iter().map(|&cell| ScaleCell { name: "", ..cell }).collect();
+            let n = unnamed.len();
+            assert!(source.contains(&format!("var cells = array<vec4<f32>, {n}>(")), "{view:?}");
+            assert_eq!(wgsl_cells(source, plan.entry_point(), n), unnamed, "{view:?}");
+            assert!(source.contains(&format!("let legend = debug_legend_cell(in.uv, fwidth(in.uv), {n}u);")));
+        }
     }
 
     #[test]

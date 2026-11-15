@@ -88,19 +88,21 @@ impl SlotCaster {
 /// What the shadow plan culls casters by beyond each cascade's volume (M5 D3, `view_cull`): the
 /// frame's far and kept instances, and the least size in a cascade's texels (0 for none); and what
 /// it chooses their levels of detail by (M5 D4): the frame's settings, and what draws level 0
-/// alone ([`Culled::whole`]).
+/// alone ([`Culled::whole`]); and a scale debug view's cull pose (M5 X1), which the cascades fit
+/// and cull by in the main view's camera's place.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CasterCull<'a> {
     pub culled: Culled<'a>,
     pub least_texels: f32,
     pub levels: LevelSettings,
+    pub pose: Option<&'a CameraData>,
 }
 
 impl CasterCull<'_> {
     /// No culling beyond the cascades' volumes, and every caster at level 0.
     #[cfg(test)]
     pub(crate) const NONE: CasterCull<'static> =
-        CasterCull { culled: Culled::NONE, least_texels: 0.0, levels: LevelSettings::ON };
+        CasterCull { culled: Culled::NONE, least_texels: 0.0, levels: LevelSettings::ON, pose: None };
 }
 
 /// Whether an instance slot is a character this frame (it has an entry in the character
@@ -217,7 +219,7 @@ impl ShadowPlan {
             return;
         };
         self.active = true;
-        let camera = &view.camera;
+        let camera = cull.pose.unwrap_or(&view.camera);
         let toward = fit::quantize(-packet.sun.direction);
         let light = LightSpace::new(toward);
         if self.toward != Some(toward) || view.cut {
@@ -1638,7 +1640,7 @@ mod tests {
         culled[1] = crate::view_cull::SlotCull::whole();
         let plan_with = |meshes: &[MeshRecord], levels: LevelSettings| {
             let mut plan = ShadowPlan::default();
-            let cull = CasterCull { culled: Culled::new(&culled), least_texels: 0.0, levels };
+            let cull = CasterCull { culled: Culled::new(&culled), least_texels: 0.0, levels, pose: None };
             let table = characters.table();
             plan.update(
                 &SETTINGS,

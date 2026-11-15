@@ -35,6 +35,11 @@
 //   or the ramp rows it reads, flat but for silhouettes, creases and the borders between
 //   materials, and each outline pixel's the same, darker, or its width. Where no character is, the
 //   frame shows, dimmed.
+// - The scale views (`fs_debug_levels`, `fs_debug_textures`, `fs_debug_culling`, `fs_debug_runs`,
+//   M5 X1): the main view's draws replayed with what it culled, each instance's pixels tagged by
+//   the level it drew at, its material's worst streamed texture, the views that drew it, or the
+//   runs a shadow drew it in; flat colors but for silhouettes and creases, what the main view
+//   didn't draw striped, and where nothing drew the frame shows, dimmed.
 //
 // Fragment stages here have one exit each (WARP's shader compiler crashes on an early return
 // under a per-pixel condition).
@@ -365,6 +370,120 @@ fn fs_debug_outline_widths(in: DebugVaryings) -> @location(0) vec4<f32> {
     let tone = select(surface, debug_width_color(values.w), line);
     let cell = debug_width_color(f32(max(legend, 0)) + 0.5);
     return debug_values_color(legend, cell, values.x > 0.0, tone);
+}
+
+// The scale views (M5 X1): the main view's draws replayed unculled (`Walk::Unculled`), each
+// instance's pixels tagged in the stencil by what the frame did with it, 1 to the legend's cells; 0
+// where nothing drew. A cell's w is 1 where it is striped: what the main view didn't draw, shown in
+// diagonal stripes of its color and black so it never reads as a drawn surface.
+fn debug_striped(cell: vec4<f32>, position: vec2<f32>) -> vec3<f32> {
+    let black = cell.w > 0.5 && fract((position.x + position.y) / DEBUG_STRIPES) >= 0.5;
+    return select(cell.rgb, vec3<f32>(0.0), black);
+}
+
+// A scale view's color: the legend's cell or its frame (`cell` its cell's), else the pixel's
+// `tagged` cell shaded `shade` (`debug_edge_shade`) where a surface drew (`tag` > 0), else the frame
+// dimmed.
+fn debug_scale_color(
+    legend: i32,
+    cell: vec4<f32>,
+    tag: u32,
+    tagged: vec4<f32>,
+    shade: f32,
+    position: vec2<f32>,
+) -> vec4<f32> {
+    var color = vec4<f32>(0.0, 0.0, 0.0, 0.75);
+    if tag > 0u {
+        color = vec4<f32>(debug_linear(debug_striped(tagged, position) * shade), 1.0);
+    }
+    if legend >= 0 {
+        color = vec4<f32>(debug_linear(debug_striped(cell, position)), 1.0);
+    }
+    if legend == -1 {
+        color = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    return color;
+}
+
+// Cells of the levels view's (`debug_view::LEVELS_LEGEND`): level 0, 1, 2, 3 and coarser, held at level 0 by
+// rule, culled.
+@fragment
+fn fs_debug_levels(in: DebugVaryings) -> @location(0) vec4<f32> {
+    var cells = array<vec4<f32>, 6>(
+        vec4<f32>(0.62, 0.62, 0.62, 0.0),
+        vec4<f32>(0.35, 0.78, 0.35, 0.0),
+        vec4<f32>(0.95, 0.85, 0.25, 0.0),
+        vec4<f32>(0.9, 0.18, 0.15, 0.0),
+        vec4<f32>(0.3, 0.55, 0.95, 0.0),
+        vec4<f32>(0.95, 0.25, 0.8, 1.0),
+    );
+    let legend = debug_legend_cell(in.uv, fwidth(in.uv), 6u);
+    let texel = debug_texel(in.uv, textureDimensions(view_stencil));
+    let tag = textureLoad(view_stencil, texel, 0).r;
+    let shade = debug_edge_shade(texel, textureLoad(view_depth, texel, 0));
+    let tagged = cells[min(max(tag, 1u), 6u) - 1u];
+    return debug_scale_color(legend, cells[u32(max(legend, 0))], tag, tagged, shade, in.position.xy);
+}
+
+// Cells of the texture view's (`debug_view::TEXTURES_LEGEND`), by a material's worst streamed texture: as
+// wanted, finer than wanted, one, two, three or more levels coarse, not streamed, culled.
+@fragment
+fn fs_debug_textures(in: DebugVaryings) -> @location(0) vec4<f32> {
+    var cells = array<vec4<f32>, 7>(
+        vec4<f32>(0.62, 0.62, 0.62, 0.0),
+        vec4<f32>(0.3, 0.75, 0.95, 0.0),
+        vec4<f32>(0.95, 0.85, 0.25, 0.0),
+        vec4<f32>(0.95, 0.55, 0.15, 0.0),
+        vec4<f32>(0.9, 0.18, 0.15, 0.0),
+        vec4<f32>(0.6, 0.45, 0.9, 0.0),
+        vec4<f32>(0.95, 0.25, 0.8, 1.0),
+    );
+    let legend = debug_legend_cell(in.uv, fwidth(in.uv), 7u);
+    let texel = debug_texel(in.uv, textureDimensions(view_stencil));
+    let tag = textureLoad(view_stencil, texel, 0).r;
+    let shade = debug_edge_shade(texel, textureLoad(view_depth, texel, 0));
+    let tagged = cells[min(max(tag, 1u), 7u) - 1u];
+    return debug_scale_color(legend, cells[u32(max(legend, 0))], tag, tagged, shade, in.position.xy);
+}
+
+// Cells of the culling view's (`debug_view::CULLING_LEGEND`): drawn by the main view and a shadow, the
+// main view alone, a shadow alone; culled by the frustum, distance or size.
+@fragment
+fn fs_debug_culling(in: DebugVaryings) -> @location(0) vec4<f32> {
+    var cells = array<vec4<f32>, 6>(
+        vec4<f32>(0.62, 0.62, 0.62, 0.0),
+        vec4<f32>(0.35, 0.78, 0.35, 0.0),
+        vec4<f32>(0.95, 0.55, 0.15, 0.0),
+        vec4<f32>(0.95, 0.25, 0.8, 1.0),
+        vec4<f32>(0.3, 0.55, 0.95, 1.0),
+        vec4<f32>(0.95, 0.85, 0.25, 1.0),
+    );
+    let legend = debug_legend_cell(in.uv, fwidth(in.uv), 6u);
+    let texel = debug_texel(in.uv, textureDimensions(view_stencil));
+    let tag = textureLoad(view_stencil, texel, 0).r;
+    let shade = debug_edge_shade(texel, textureLoad(view_depth, texel, 0));
+    let tagged = cells[min(max(tag, 1u), 6u) - 1u];
+    return debug_scale_color(legend, cells[u32(max(legend, 0))], tag, tagged, shade, in.position.xy);
+}
+
+// Cells of the runs view's (`debug_view::RUNS_LEGEND`): in a run of 2, of 3 to 8, of 9 or more; alone in
+// its call, no shadow, culled.
+@fragment
+fn fs_debug_runs(in: DebugVaryings) -> @location(0) vec4<f32> {
+    var cells = array<vec4<f32>, 6>(
+        vec4<f32>(0.35, 0.78, 0.35, 0.0),
+        vec4<f32>(0.95, 0.85, 0.25, 0.0),
+        vec4<f32>(0.9, 0.18, 0.15, 0.0),
+        vec4<f32>(0.62, 0.62, 0.62, 0.0),
+        vec4<f32>(0.3, 0.32, 0.42, 0.0),
+        vec4<f32>(0.95, 0.25, 0.8, 1.0),
+    );
+    let legend = debug_legend_cell(in.uv, fwidth(in.uv), 6u);
+    let texel = debug_texel(in.uv, textureDimensions(view_stencil));
+    let tag = textureLoad(view_stencil, texel, 0).r;
+    let shade = debug_edge_shade(texel, textureLoad(view_depth, texel, 0));
+    let tagged = cells[min(max(tag, 1u), 6u) - 1u];
+    return debug_scale_color(legend, cells[u32(max(legend, 0))], tag, tagged, shade, in.position.xy);
 }
 
 // The wireframe's line indices (`debug_view::LineIndices`): the mesh pool's indices in use,

@@ -1062,6 +1062,55 @@
                        "--debug-view", "outline-widths"],
                 ci_seconds: (lavapipe: 2.6, warp: 12.4),
             ),
+            // The scale views (M5 X1) on the benchmark district's `ci` preset, from where the player
+            // arrives in the plaza at dusk. The levels view: each draw in its level of detail's color,
+            // the near props whole, the far ones coarser, the district's cells at theirs.
+            (
+                name: "debug-levels-district",
+                ticks: 90,
+                args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
+                       "--ao", "off", "--debug-view", "levels"],
+            ),
+            // The same on Mobile-High: the phone's nearer level distances, two cascades.
+            (
+                name: "debug-levels-district-mobile-high",
+                ticks: 90,
+                args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "mobile-high",
+                       "--ao", "off", "--debug-view", "levels"],
+            ),
+            // The texture view with the pool held to 32 MiB: each material in its worst streamed
+            // texture's state, the ones held coarse in their debt's color.
+            (
+                name: "debug-textures-district",
+                ticks: 90,
+                args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
+                       "--texture-streaming", "on", "--texture-pool", "32", "--ao", "off",
+                       "--debug-view", "textures"],
+            ),
+            // The culling view from a pose across the plaza, turned to the camera's right, its frustum
+            // outlined: what its view leaves out and a cascade still draws in orange, the rest grey.
+            (
+                name: "debug-culling-district",
+                ticks: 90,
+                args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
+                       "--ao", "off", "--debug-view", "culling", "--debug-cull-from", "0,2,28,60,0"],
+            ),
+            // The runs view: the draws that go in one instanced call with equal props, by the run's
+            // size, and the ones drawn alone.
+            (
+                name: "debug-runs-district",
+                ticks: 90,
+                args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
+                       "--ao", "off", "--debug-view", "runs"],
+            ),
+            // The overdraw view on the district: opaque fragments by what the depth test keeps, the
+            // rest by invocation, the sky as one.
+            (
+                name: "debug-overdraw-district",
+                ticks: 90,
+                args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
+                       "--ao", "off", "--debug-view", "overdraw"],
+            ),
             // Debug draw through its whole path: one of each shape beside the mannequin, in its color;
             // a blue line hidden behind it and a red one over it; a blue one through it on top, and a
             // half-alpha red one; a magenta capsule inside its body, on top, where the green one

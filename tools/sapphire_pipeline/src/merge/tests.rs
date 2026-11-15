@@ -452,6 +452,44 @@ fn control_ids_stay_within_each_member_s_regions() {
     }
 }
 
+/// On a phone a colour map of 6x6 blocks and a control map of 4x4 ones align to both at every exact level, the
+/// least common multiple of the two: a tile on it lays out and cooks to whole blocks of each, and a tile on one
+/// block's alignment alone refuses the group with its reason, never a panic in the cook.
+#[test]
+fn mixed_astc_blocks_align_to_both_or_refuse_the_group() {
+    let block6 =
+        ColorSettings { astc_block: sapphire_assets::texture::AstcBlock::B6x6, ..ColorSettings::default() };
+    let color = TextureSettings::from(TextureClass::Color(block6));
+    let group = |tree: &mut Tree, size: u32| {
+        let ids: Vec<AssetId> = (0..2)
+            .map(|seed| {
+                let document = AnimeCharacterMaterial {
+                    control_map: Some(tree.control(&format!("control{seed}"), size, 0)),
+                    ..body(tree.color(&format!("color{seed}"), size, seed, color), 1)
+                };
+                tree.material(&format!("m{seed}"), &document)
+            })
+            .collect();
+        plan(&settings_of(&ids), Cook::Mobile, &tree.lookup()).unwrap().remove(0)
+    };
+    // 6 x 8 and 4 x 8 a side at the top: 96 aligns both, and 960 is ten of it.
+    let mut tree = Tree::new("merge_mixed_blocks");
+    let mixed = group(&mut tree, 960);
+    let lookup = tree.lookup();
+    let layout = mixed.layout(Cook::Mobile, &lookup).unwrap();
+    assert_eq!((layout.tile, layout.padding), (960, 96));
+    for map in [AtlasMap::BaseColor, AtlasMap::Control] {
+        mixed.cook_atlas(map, &layout, Cook::Mobile, &lookup).unwrap();
+    }
+    // 1008 is on the 6x6 blocks' 48 alone.
+    let mut tree = Tree::new("merge_mixed_blocks_off");
+    let off = group(&mut tree, 1008);
+    assert!(matches!(
+        off.layout(Cook::Mobile, &tree.lookup()),
+        Err(MergeError::Group { why: GroupError::Alignment { tile: 1008, alignment: 96 }, .. })
+    ));
+}
+
 /// A plan of one group over `members` of `regions` regions each, without a control map, laid out for
 /// tiles 64 a side: for the mesh and rig, which read only its members' slots and documents.
 fn mesh_plan(members: &[(&str, usize)]) -> (GroupPlan, Layout) {

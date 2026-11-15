@@ -33,8 +33,9 @@
 //! cells (`ceil(√n)` a side, so the dissolve's noise, laid out in UV units, keeps its cells' size and
 //! shape under one scale). Each tile keeps its texel density (nothing is downscaled) and is padded by
 //! its own content wrapped around, as the material sampler's repeat would read it. The padding and the
-//! tile's place are multiples of the block size times `2^(EXACT_LEVELS + d)`, `d` the levels the
-//! cook's size cap drops: so at every level from the stored top down to [`EXACT_LEVELS`] below it a
+//! tile's place are multiples of each map's block size times `2^(EXACT_LEVELS + d)`, `d` the levels
+//! the cook's size cap drops (their least common multiple, where maps' blocks differ, as a phone's 6x6
+//! colour beside a 4x4 control map): so at every level from the stored top down to [`EXACT_LEVELS`] below it a
 //! tile and its padding are whole blocks, and those levels are assembled from each member's own cooked
 //! chain, block by block: the tile's blocks are its own map's and its padding's its own edge blocks
 //! wrapped around, on every machine, whatever an encoder makes of a block's surroundings (x86-64's BC7
@@ -790,7 +791,8 @@ impl GroupPlan {
             let (stored, _) = texture::cooked_size(&settings, cook, tile, tile).map_err(texture_error)?;
             let levels = (0..32).find(|&level| (tile >> level).max(1) == stored).unwrap_or(0);
             let (width, height) = plan.format.block_dimensions();
-            alignment = alignment.max(width.max(height) << (EXACT_LEVELS + levels));
+            // Every map's blocks: their least common multiple, which is the largest where they're one size.
+            alignment = lcm(alignment, width.max(height) << (EXACT_LEVELS + levels));
             dropped.push((map, levels));
         }
         let group_error = |why| MergeError::Group { group: self.name.clone(), why };
@@ -1022,6 +1024,15 @@ fn place(pixels: &mut [[f32; 4]], size: u32, layout: &Layout, member: usize, ima
             pixels[at] = image.pixels[from + x.rem_euclid(tile) as usize];
         }
     }
+}
+
+/// The least common multiple of `a` and `b`, both above 0.
+fn lcm(a: u32, b: u32) -> u32 {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a / x * b
 }
 
 /// Copies member `member`'s own cooked blocks (`own`, its map cooked alone) into `atlas` at the stored

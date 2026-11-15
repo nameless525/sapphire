@@ -7,6 +7,10 @@
             class: Mask((
                 channels: Four,
             )),
+            max_size: (
+                desktop: None,
+                mobile: Some(4096),
+            ),
         )),
     ),
 )

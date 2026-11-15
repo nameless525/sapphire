@@ -7,6 +7,7 @@
 //! `cargo test -p sapphire_render --test gpu ambient:: -- --ignored --test-threads=1`.
 
 mod ambient;
+mod capsule_bins;
 mod character;
 mod character_shading;
 mod cutouts;

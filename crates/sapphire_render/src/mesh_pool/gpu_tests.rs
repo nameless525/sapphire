@@ -23,10 +23,6 @@ use crate::{
 };
 use sapphire_assets::mesh::quantize_weights;
 
-// The GPU tests' panic counter, for the test that loses its device on purpose.
-#[path = "../../tests/gpu/panics.rs"]
-mod panics;
-
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const SIDE: u32 = 64;
 const RED: Vec3 = Vec3::new(1.0, 0.0, 0.0);
@@ -414,7 +410,7 @@ fn a_freed_handle_names_nothing_even_when_its_index_comes_back() {
 #[ignore = "needs a GPU"]
 fn a_lost_device_leaves_nothing_waiting_and_nothing_for_the_next_renderer_to_trip_on() {
     // A panic on any thread aborts a shipped build, though a job's scope would swallow it.
-    let panics = panics::Panics::count();
+    let panics = crate::panics::Panics::count();
     let mut bench = Bench::new();
     let red = bench.upload(RED, 2);
     let blue = bench.upload(BLUE, 2);

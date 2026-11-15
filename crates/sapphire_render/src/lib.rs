@@ -950,6 +950,10 @@ mod materials;
 mod mesh_pool;
 mod mip_streaming;
 mod outlines;
+// The GPU tests' panic counter, for the lib's tests that lose a device on purpose.
+#[cfg(test)]
+#[path = "../tests/gpu/panics.rs"]
+mod panics;
 mod pipeline_builds;
 mod pipelines;
 pub mod post;

@@ -47,7 +47,7 @@ use sapphire_assets::mesh::PositionFormat;
 use sapphire_rhi::wgpu;
 
 use super::lists::Entry;
-use crate::buffer::GrowableBuffer;
+use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::DrawData;
 use crate::pipelines::{SurfaceVariant, format_index};
 use crate::scene::{DrawCommand, DrawList};
@@ -303,7 +303,7 @@ impl RunRecords {
     }
 
     /// Writes the records `records` names, from the draw list's `draws`, through `belt`, straight into
-    /// the belt's mapped memory.
+    /// the belt's mapped memory. On a lost device it writes nothing ([`buffer::staged`]).
     pub(crate) fn write(
         &self,
         belt: &mut wgpu::util::StagingBelt,
@@ -312,7 +312,7 @@ impl RunRecords {
         draws: &[DrawData],
     ) {
         let Some(size) = wgpu::BufferSize::new(records.len() as u64 * RECORD_BYTES) else { return };
-        let mut view = belt.write_buffer(encoder, self.buffer.buffer(), 0, size);
+        let Some(mut view) = buffer::staged(belt, encoder, self.buffer.buffer(), 0, size) else { return };
         // Mapped memory is written, never read: record by record, through the view's slices.
         let bytes = RECORD_BYTES as usize;
         for (at, &record) in (0..).step_by(bytes).zip(records) {

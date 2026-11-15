@@ -147,7 +147,8 @@ pub(crate) fn filled(
 }
 
 /// Copies `bytes` to `target` at `offset` through the staging belt, as part of `encoder`.
-/// Empty writes are skipped. `offset` and the length must be multiples of 4.
+/// Empty writes are skipped. `offset` and the length must be multiples of 4. On a lost device nothing
+/// is written ([`staged`]).
 pub(crate) fn stage(
     belt: &mut wgpu::util::StagingBelt,
     encoder: &mut wgpu::CommandEncoder,
@@ -155,9 +156,33 @@ pub(crate) fn stage(
     offset: u64,
     bytes: &[u8],
 ) {
-    if let Some(size) = wgpu::BufferSize::new(bytes.len() as u64) {
-        belt.write_buffer(encoder, target, offset, size).copy_from_slice(bytes);
+    let Some(size) = wgpu::BufferSize::new(bytes.len() as u64) else { return };
+    if let Some(mut view) = staged(belt, encoder, target, offset, size) {
+        view.copy_from_slice(bytes);
     }
+}
+
+/// `size` bytes of the staging belt, mapped for the caller to fill, with their copy to `target` at
+/// `offset` recorded by `encoder`: what `StagingBelt::write_buffer` hands out, by the same allocation and
+/// copy, except on a lost device. There the belt's buffers, open, mapped again or made new, are invalid
+/// and can't be mapped, and `write_buffer` panics (which the `shipping` profile makes an abort, so
+/// `clippy.toml` forbids it); this gives `None`, and nothing is written. Allocating doesn't panic there:
+/// a buffer made on a lost device is only invalid. `offset` must be a multiple of 4, as for `write_buffer`.
+pub(crate) fn staged(
+    belt: &mut wgpu::util::StagingBelt,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::Buffer,
+    offset: u64,
+    size: wgpu::BufferSize,
+) -> Option<wgpu::BufferViewMut> {
+    assert!(
+        offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
+        "a staged write's offset {offset} is not whole words"
+    );
+    let alignment = wgpu::BufferSize::new(wgpu::COPY_BUFFER_ALIGNMENT).expect("not 0");
+    let slice = belt.allocate(size, alignment);
+    encoder.copy_buffer_to_buffer(slice.buffer(), slice.offset(), target, offset, size.get());
+    slice.get_mapped_range_mut().ok()
 }
 
 /// Hands out ranges of a buffer, in whatever unit its owner counts in, first fit, and takes them
@@ -298,6 +323,58 @@ mod tests {
         let buffer = GrowableBuffer::new(gpu.device(), "test", wgpu::BufferUsages::STORAGE, 64, 1024);
         assert_eq!([1023, 1024, 1025].map(|needed| buffer.fits(needed)), [true, true, false]);
         assert_eq!([192, 1024, 1025].map(|item| buffer.max_items(item)), [5, 1, 0]);
+    }
+
+    /// A write through the belt on a lost device, whose buffers are all invalid then: into a chunk still
+    /// open, a chunk given back and mapped again, and a chunk made new. None panics, on any thread, nor
+    /// does handing the chunks back after, as a frame's uploads pass does.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_staged_write_on_a_lost_device_panics_nothing() {
+        use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc};
+        // A panic on any thread aborts a shipped build.
+        let panics = crate::panics::Panics::count();
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let device = gpu.device();
+        let usage = wgpu::BufferUsages::COPY_DST;
+        let target = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage,
+            mapped_at_creation: false,
+        });
+        let encoder = || device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let belt = || wgpu::util::StagingBelt::new(device.clone(), 1024);
+        let bytes = [7_u8; 64];
+        let wait = || device.poll(wgpu::PollType::wait_indefinitely());
+        // Open: a chunk written into, not finished.
+        let (mut open, mut open_encoder) = (belt(), encoder());
+        stage(&mut open, &mut open_encoder, &target, 0, &bytes);
+        // Free: a chunk submitted, given back and mapped again, waiting for the next write.
+        let (mut free, mut free_encoder) = (belt(), encoder());
+        stage(&mut free, &mut free_encoder, &target, 0, &bytes);
+        free.finish();
+        gpu.queue().submit([free_encoder.finish()]);
+        free.recall();
+        wait().expect("poll");
+        // Fresh: no chunk yet, so the write makes one.
+        let mut fresh = belt();
+        let open_chunks = |belt: &wgpu::util::StagingBelt| format!("{belt:?}").contains("active_chunks: 1");
+        assert_eq!([open_chunks(&open), open_chunks(&free), open_chunks(&fresh)], [true, false, false]);
+
+        device.destroy();
+        let _ = wait();
+        assert!(gpu.is_lost());
+        for (belt, mut encoder) in
+            [(&mut open, open_encoder), (&mut free, encoder()), (&mut fresh, encoder())]
+        {
+            stage(belt, &mut encoder, &target, 64, &bytes);
+            belt.finish_and_recall_on_submit(&encoder);
+            gpu.queue().submit([encoder.finish()]);
+        }
+        let _ = wait();
+        assert_eq!(panics.so_far(), 0, "a panic on some thread around the lost device");
     }
 
     #[test]

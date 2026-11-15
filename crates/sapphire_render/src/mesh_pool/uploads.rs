@@ -74,7 +74,8 @@ impl Uploads {
         let encoder = self.encoder.get_or_insert_with(|| {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("mesh uploads") })
         });
-        self.belt.write_buffer(encoder, buffer, offset, size).copy_from_slice(bytes);
+        // A device lost since the check above writes nothing (`buffer::staged`).
+        crate::buffer::stage(&mut self.belt, encoder, buffer, offset, bytes);
         self.staged = staged;
     }
 

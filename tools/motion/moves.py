@@ -6,7 +6,9 @@ With no flag it writes nothing, and prints what `Move.check` finds in each move,
 `--write` writes the key-pose documents. `--write-numbers` writes `player.moves.ron` from `frames.py`, and
 refuses to replace a file changed since it last did, unless `--force` says to.
 """
+import contextlib
 import os
+import re
 import sys
 
 sys.dont_write_bytecode = True
@@ -921,10 +923,25 @@ SIDECAR = '''(
         id: "%s",
         importer: KeyPose((
             rig: "6f8a81b6-29c4-485f-b161-847b001d561f",
-        )),
+%s        )),
     ),
 )
 '''
+
+# The other models a sidecar cooks its clip for, as a kind's documents add them (M5 C8, C12): the one line a
+# writer keeps from the sidecar it replaces, so a rewrite never unhooks a kind that borrows the clip.
+ALSO = re.compile(r'^[ \t]*also: \[[^\]]*\],[ \t]*\r?\n', re.MULTILINE)
+
+
+def sidecar(path, id):
+    """The sidecar for the clip with `id`, keeping the `also` line of the one at `path`, if there is one."""
+    also = ''
+    with contextlib.suppress(FileNotFoundError):
+        with open(path, newline='') as file:
+            found = ALSO.search(file.read())
+        if found:
+            also = found.group(0).replace('\r\n', '\n')
+    return SIDECAR % (id, also)
 
 
 def main(args=None, folder=FOLDER, stamp=STAMP):
@@ -954,8 +971,8 @@ def main(args=None, folder=FOLDER, stamp=STAMP):
             if name == 'light_3':
                 document = add_sleeve_keys(move, document)
             frames.write_changed(os.path.join(folder, name + '.keypose.ron'), document.replace('\n', os.linesep))
-            frames.write_changed(os.path.join(folder, name + '.keypose.ron.meta'),
-                                 (SIDECAR % frames.IDS[name]).replace('\n', os.linesep))
+            meta = os.path.join(folder, name + '.keypose.ron.meta')
+            frames.write_changed(meta, sidecar(meta, frames.IDS[name]).replace('\n', os.linesep))
         print(f'wrote the key-pose documents in {folder}')
         note = frames.numbers_note(folder, built)
         if note:

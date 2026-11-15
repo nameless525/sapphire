@@ -12,7 +12,7 @@ from locomotion import (
     RUN_HANDS, RUN_LANDING_TICK, RUN_SPEED, RUN_TICKS, arm_aim, curve, gait, leg_ceiling, running_shoe, soften_limit,
     trunk_in_model_space,
 )
-from moves import HANDS, IDLE_ARMS, LEFT_FLAT, LEFT_OPEN, SIDECAR, finish, idle_feet, start
+from moves import HANDS, IDLE_ARMS, LEFT_FLAT, LEFT_OPEN, finish, idle_feet, sidecar, start
 from pose import (
     EDGE_R, Foot, Move, lerp, norm, polar, qinv, qrot, set_rot, slerp, solve_left_arm, sub, to_euler, turn,
 )
@@ -716,7 +716,8 @@ def main():
         if args.write:
             path = OUT / f'reaction_{name}.keypose.ron'
             write_changed(path, move.ron())
-            write_changed(Path(str(path) + '.meta'), SIDECAR % SOURCES[name])
+            meta = Path(str(path) + '.meta')
+            write_changed(meta, sidecar(meta, SOURCES[name]))
         else:
             move.check()
 

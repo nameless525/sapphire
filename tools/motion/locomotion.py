@@ -8,7 +8,7 @@ from pathlib import Path
 
 from frames import write_changed
 from hem_fold import apply_ground_hem_folds
-from moves import HANDS, IDLE_ARMS, IDLE_BODY, IDLE_HIPS, LEFT_FIST, LEFT_OPEN, SIDECAR, finish, idle_feet, start
+from moves import HANDS, IDLE_ARMS, IDLE_BODY, IDLE_HIPS, LEFT_FIST, LEFT_OPEN, finish, idle_feet, sidecar, start
 from pose import HEEL_FROM_TOE, REST, TOE_HEIGHT, Foot, Move, add, length, lerp, polar, qaxis, qinv, qmul, qrot, sub, to_euler, turn
 from rig import REPO
 
@@ -769,7 +769,8 @@ def main():
             path = folder / f'{m.name}.keypose.ron'
             write_changed(path, m.ron())
             if new_id is not None:
-                write_changed(path.with_suffix('.ron.meta'), SIDECAR % new_id)
+                meta = path.with_suffix('.ron.meta')
+                write_changed(meta, sidecar(meta, new_id))
 
 
 if __name__ == '__main__':

@@ -13,7 +13,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import frames
-from moves import HANDS, IDLE_ARMS, IDLE_BODY, IDLE_HIPS, SIDECAR, idle_feet, sword
+from moves import HANDS, IDLE_ARMS, IDLE_BODY, IDLE_HIPS, idle_feet, sidecar, sword
 from pose import *
 from rig import REPO
 
@@ -82,8 +82,8 @@ def main(args=None, folder=FOLDER):
         if '--write' in args:
             frames.write_changed(os.path.join(folder, move.name + '.keypose.ron'),
                                  move.ron().replace('\n', os.linesep))
-            frames.write_changed(os.path.join(folder, move.name + '.keypose.ron.meta'),
-                                 (SIDECAR % IDS[move.name]).replace('\n', os.linesep))
+            meta = os.path.join(folder, move.name + '.keypose.ron.meta')
+            frames.write_changed(meta, sidecar(meta, IDS[move.name]).replace('\n', os.linesep))
     if '--write' in args:
         print(f'wrote the key-pose documents in {folder}')
 

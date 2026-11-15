@@ -7,6 +7,7 @@ platform's libm, so what's generated can't be held byte for byte across OSes.
 import contextlib
 import io
 import os
+import pathlib
 import sys
 import tempfile
 import types
@@ -17,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cutscene
 import frames
+import hero_reactions
+import locomotion
 import moves
 
 
@@ -42,6 +45,17 @@ class Folder(unittest.TestCase):
         with open(self.numbers, 'a') as f:
             f.write(text)
         return self.read()
+
+    def borrow(self, meta):
+        """Names two more models in the sidecar at `meta`'s `also`, as a kind that borrows its clip does (M5 C8,
+        C12), and gives back what it now holds."""
+        also = '            also: ["2533d8d7-9400-4972-88f3-f99ff9473913", "d24300b3-9034-4deb-8bc9-9b621dc19915"],'
+        plain = self.read(meta)
+        self.assertNotIn('also', plain)
+        rig = '            rig: "6f8a81b6-29c4-485f-b161-847b001d561f",' + os.linesep
+        with open(meta, 'w', newline='') as f:
+            f.write(plain.replace(rig, rig + also + os.linesep))
+        return self.read(meta)
 
     def run_tool(self, *args):
         """`moves.py` on this folder, and what it printed."""
@@ -271,6 +285,18 @@ class TheTool(Folder):
             self.assertIn(argument, str(refused.exception))
             self.assertEqual(os.listdir(self.folder), [])
 
+    def test_a_rewritten_sidecar_keeps_the_models_it_also_cooks_for(self):
+        # A kind that borrows a clip names its model in the clip's sidecar (M5 C8, C12): a rewrite keeps it.
+        self.run_tool('--write')
+        meta = os.path.join(self.folder, 'dodge.keypose.ron.meta')
+        plain = self.read(meta)
+        borrowed = self.borrow(meta)
+        self.run_tool('--write')
+        self.assertEqual(self.read(meta), borrowed)
+        os.remove(meta)
+        self.run_tool('--write')
+        self.assertEqual(self.read(meta), plain, 'with no sidecar to keep from, none')
+
     def test_force_alone_means_nothing(self):
         with self.assertRaises(SystemExit):
             self.run_tool('--force')
@@ -305,6 +331,14 @@ class Cutscenes(Folder):
         self.run_cutscene('--write')
         self.assertTrue(all(os.stat(path).st_mtime_ns == 1000000000 for path in paths))
 
+    def test_a_rewritten_sidecar_keeps_the_models_it_also_cooks_for(self):
+        self.run_cutscene('--write')
+        name = next(iter(cutscene.IDS))
+        meta = os.path.join(self.folder, name + '.keypose.ron.meta')
+        borrowed = self.borrow(meta)
+        self.run_cutscene('--write')
+        self.assertEqual(self.read(meta), borrowed)
+
     def test_with_no_flag_it_writes_nothing_and_refuses_what_it_doesnt_know(self):
         self.run_cutscene()
         self.assertEqual(os.listdir(self.folder), [])
@@ -315,3 +349,37 @@ class Cutscenes(Folder):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OtherWriters(Folder):
+    """`hero_reactions.py` and `locomotion.py` write sidecars as `moves.py` does, and keep a borrowing kind's
+    `also` the same way (M5 C12): Aster's and Wren's reactions and strides are theirs."""
+
+    def run_main(self, tool, *args):
+        argv = sys.argv
+        sys.argv = [tool.__name__ + '.py', *args]
+        self.addCleanup(setattr, sys, 'argv', argv)
+        with contextlib.redirect_stdout(io.StringIO()):
+            tool.main()
+
+    def test_a_reaction_s_rewritten_sidecar_keeps_its_also(self):
+        out = hero_reactions.OUT
+        hero_reactions.OUT = pathlib.Path(self.folder)
+        self.addCleanup(setattr, hero_reactions, 'OUT', out)
+        self.run_main(hero_reactions, '--write', 'flinch')
+        meta = os.path.join(self.folder, 'reaction_flinch.keypose.ron.meta')
+        borrowed = self.borrow(meta)
+        self.run_main(hero_reactions, '--write', 'flinch')
+        self.assertEqual(self.read(meta), borrowed)
+
+    def test_a_stride_s_rewritten_sidecar_keeps_its_also(self):
+        repo = locomotion.REPO
+        locomotion.REPO = self.folder
+        self.addCleanup(setattr, locomotion, 'REPO', repo)
+        folder = os.path.join(self.folder, 'content/lookdev/character')
+        os.makedirs(folder)
+        self.run_main(locomotion, '--write', 'walk')
+        meta = os.path.join(folder, 'walk.keypose.ron.meta')
+        borrowed = self.borrow(meta)
+        self.run_main(locomotion, '--write', 'walk')
+        self.assertEqual(self.read(meta), borrowed)

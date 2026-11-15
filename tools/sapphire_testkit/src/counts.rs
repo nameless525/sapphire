@@ -81,7 +81,10 @@ pub const FRAMES: u32 = 3_720;
 /// software GPU draws 531 of its frames. Seven shares no factor with the renderer's time-sliced work (its
 /// quarters, faces and cascades every second or fourth frame), so the frames drawn see every slice.
 pub const DRAW_EVERY: u32 = 7;
-/// The size the walks draw at: what they count doesn't depend on it, and a software GPU's time does.
+/// The size the walks draw at. The counts follow it: the levels of detail and the cull of small things judge by
+/// a thing's size on screen, and the passes' targets are its size. It is held fixed so the walks compare with
+/// each other and with the table; small, because a software GPU's time follows it too. It isn't a tier's size,
+/// so the counts compare commits, not a tier's budget at its panel.
 pub const SIZE: &str = "320x180";
 
 /// The lane's walks: each tier at dusk and at night.

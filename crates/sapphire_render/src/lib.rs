@@ -985,8 +985,9 @@ pub use fog::FogStats;
 pub use foliage::FoliageSettings;
 pub use frame::{
     CameraData, CharacterBody, CharacterDetail, CharacterFace, CharacterInstance, FaceExpression,
-    FramePacket, FramePacketRing, HeadBasis, InsetView, InstanceDeltas, InstanceId, LightKind, LocalLight,
-    MaterialDrive, MeshInstance, PacketRange, ShadowRole, SkinnedInstance, ViewData, Weather, Wind,
+    FramePacket, FramePacketRing, HeadBasis, InsetCutIn, InsetView, InstanceDeltas, InstanceId, LightKind,
+    LocalLight, MaterialDrive, MeshInstance, PacketRange, ShadowRole, SkinnedInstance, ViewData, Weather,
+    Wind,
 };
 pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use interface_screen::InterfaceScreen;

@@ -141,6 +141,8 @@ pub(crate) const UI_COVERAGE_TEXELS: u32 = 1 << 6;
 pub(crate) const UI_MULTI_TEXELS: u32 = 1 << 7;
 /// Its texels are an inset's picture ([`UI_PICTURE`]).
 pub(crate) const UI_PICTURE_TEXELS: u32 = 1 << 8;
+/// It's a picture cut along straight lines ([`UiQuad::edges`], M5 L10).
+pub(crate) const UI_EDGED: u32 = 1 << 9;
 
 /// A [`UiQuad`] as the shader reads it, worked out once rather than on each of its pixels: its colors
 /// in linear light, and which of its parts it uses. Field by field with `ui.wgsl`'s `UiQuad`.
@@ -161,6 +163,9 @@ pub(crate) struct GpuUiQuad {
     pub(crate) slice: f32,
     pub(crate) flags: u32,
     pub(crate) padding: [u32; 3],
+    /// A picture's lines (M5 L10): each `x`, `y`, `offset` over the quad's local coordinates, in points, and
+    /// in `w` the border's width in points.
+    pub(crate) edges: [[f32; 4]; 2],
 }
 
 impl GpuUiQuad {
@@ -180,6 +185,7 @@ impl GpuUiQuad {
             (quad.texels == UI_COVERAGE, UI_COVERAGE_TEXELS),
             (quad.texels == UI_MULTI_FIELD, UI_MULTI_TEXELS),
             (quad.texels == UI_PICTURE, UI_PICTURE_TEXELS),
+            (quad.texels == UI_PICTURE && quad.edges != [[0.0; 3]; 2], UI_EDGED),
         ] {
             if on {
                 flags |= flag;
@@ -199,6 +205,7 @@ impl GpuUiQuad {
             slice: quad.slice,
             flags,
             padding: [0; 3],
+            edges: quad.edges.map(|[x, y, offset]| [x, y, offset, quad.outline.max(0.0)]),
         }
     }
 
@@ -1188,7 +1195,7 @@ mod tests {
     fn a_gpu_quad_is_whole_rows_of_the_storage_array() {
         // `shaders::tests` holds each field to its place in `ui.wgsl`; here, that the array's stride is
         // the struct's size, a multiple of its 16-byte alignment.
-        assert_eq!(QUAD_BYTES, 144);
+        assert_eq!(QUAD_BYTES, 176);
         assert_eq!(QUAD_BYTES % 16, 0);
         assert_eq!(offset_of!(GpuUiQuad, uv) % 16, 0);
     }
@@ -1236,6 +1243,15 @@ mod tests {
             read.texels = texels;
             assert_eq!(GpuUiQuad::new(&read, &linear).flags, flag, "texels {texels}");
         }
+        // A picture's lines (M5 L10) are a flag of a picture's alone, carrying its outline as the border.
+        let mut edged = quad([0.5; 4]);
+        edged.edges = [[1.0, 2.0, 3.0], [0.0; 3]];
+        edged.outline = 4.0;
+        assert_eq!(GpuUiQuad::new(&edged, &linear).flags & UI_EDGED, 0, "not a picture");
+        edged.texels = UI_PICTURE;
+        let gpu = GpuUiQuad::new(&edged, &linear);
+        assert_eq!(gpu.flags & UI_EDGED, UI_EDGED);
+        assert_eq!(gpu.edges, [[1.0, 2.0, 3.0, 4.0], [0.0, 0.0, 0.0, 4.0]]);
     }
 
     #[test]

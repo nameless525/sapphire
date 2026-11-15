@@ -43,6 +43,8 @@ struct UiQuad {
     slice: f32,
     flags: u32,
     padding: array<u32, 3>,
+    // A picture's lines (M5 L10): xyz the distance inside each in points over `local`, w the border's width.
+    edges: array<vec4<f32>, 2>,
 };
 
 // `ui.rs`'s flags.
@@ -55,6 +57,7 @@ const UI_SWEPT: u32 = 32u;
 const UI_COVERAGE_TEXELS: u32 = 64u;
 const UI_MULTI_TEXELS: u32 = 128u;
 const UI_PICTURE_TEXELS: u32 = 256u;
+const UI_EDGED: u32 = 512u;
 
 @group(1) @binding(0) var<storage, read> ui_quads: array<UiQuad>;
 
@@ -132,6 +135,8 @@ fn fs_ui(in: UiVertex) -> @location(0) vec4<f32> {
     let from_middle = in.local - vec2<f32>(0.5);
     let middle_x = vec2<f32>(dpdx(from_middle.x), dpdy(from_middle.x));
     let middle_y = vec2<f32>(dpdx(from_middle.y), dpdy(from_middle.y));
+    let local_dx = dpdx(in.local);
+    let local_dy = dpdy(in.local);
 
     // The fill's gradient, in linear light. A share of 0 is the near color exactly.
     var color = (*quad).color;
@@ -197,6 +202,24 @@ fn fs_ui(in: UiVertex) -> @location(0) vec4<f32> {
     if (flags & UI_PICTURE_TEXELS) != 0u {
         // A picture is opaque light, premultiplied by its alpha, which the color tints and fades.
         shaded = vec4<f32>(texel.rgb * color.rgb, texel.a) * color.a;
+        if (flags & UI_EDGED) != 0u {
+            // Inside both lines, antialiased over a pixel's worth of their distance; the border is what's
+            // inside the lines but not inside them by its width, in its own color over the picture.
+            var inside = 1.0;
+            var within = 1.0;
+            for (var index = 0u; index < 2u; index += 1u) {
+                let line = (*quad).edges[index];
+                if any(line.xyz != vec3<f32>(0.0)) {
+                    let distance = dot(line.xy, in.local) + line.z;
+                    let pixel = max(length(vec2<f32>(dot(line.xy, local_dx), dot(line.xy, local_dy))), 1e-6);
+                    inside *= clamp(distance / pixel + 0.5, 0.0, 1.0);
+                    within *= clamp((distance - line.w) / pixel + 0.5, 0.0, 1.0);
+                }
+            }
+            let border = (*quad).outline_color;
+            let stroke = max(inside - within, 0.0) * border.a;
+            shaded = shaded * (inside - stroke) + vec4<f32>(border.rgb, 1.0) * stroke * color.a;
+        }
     }
     return shaded * (cut * swept);
 }

@@ -43,7 +43,7 @@
 use std::ops::Range;
 
 use glam::camera::rh::{proj::directx, view};
-use glam::{Affine3A, Mat4, Quat, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_core::debug_draw::DebugDrawList;
 use sapphire_look::{
     AmbientLight, Celestial, CharacterLight, CharacterLighting, DirectionalLight, Fog, PostParams,
@@ -439,6 +439,26 @@ pub struct InsetView {
     /// none. Only where the tier has soft backdrops
     /// ([`DepthOfFieldSettings::insets`](crate::DepthOfFieldSettings::insets)); elsewhere it's ignored.
     pub soft_backdrop: f32,
+    /// A cut-in's (M5 L10): `None` for a showcase. A cut-in's picture is sized by the tier's
+    /// [`InsetSettings::cutin_side`](crate::inset::InsetSettings::cutin_side) and draws every frame, since its
+    /// character moves; its backdrop may run to a second color and carry speed lines. Its backdrop is its own, so
+    /// it ignores [`Self::soft_backdrop`].
+    pub cutin: Option<InsetCutIn>,
+}
+
+/// What a cut-in's view adds to an inset's (M5 L10, [`InsetView::cutin`]): its backdrop's gradient and lines,
+/// which its resolve draws over what no character covers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsetCutIn {
+    /// The linear light the backdrop reaches on its far side, from [`InsetView::backdrop`] on its near side.
+    pub backdrop_far: Vec3,
+    /// From the near side to the far, in the picture's texture coordinates (+y down), over the picture's extent
+    /// along it: the far color is reached at the picture's far corner when this is a unit direction divided by
+    /// the sum of its components' sizes. Zero is a flat backdrop.
+    pub toward: Vec2,
+    /// Speed lines over the backdrop, sized in the picture's heights: opacity 0 draws none. Their coverage is
+    /// the backdrop's, whatever this says.
+    pub lines: crate::post::SpeedLines,
 }
 
 impl InsetView {
@@ -455,6 +475,7 @@ impl InsetView {
             ambient,
             backdrop: Vec3::ZERO,
             soft_backdrop: 0.0,
+            cutin: None,
         }
     }
 }

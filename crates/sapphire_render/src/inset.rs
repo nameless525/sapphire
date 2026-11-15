@@ -82,12 +82,15 @@ pub struct InsetSettings {
     /// The scene's width and height over the picture's, 1 or 2: 2 on desktop, whose main pass has no
     /// MSAA; 1 on phones, which draw insets with MSAA as their main pass.
     pub supersample: u32,
+    /// The longest side of a cut-in's picture in pixels (M5 L10), 64..=4096: desktop draws one at up to 1080p's
+    /// width, phones at less, which the interface scales up. Its scene is [`Self::supersample`] times it.
+    pub cutin_side: u32,
 }
 
 impl Default for InsetSettings {
-    /// The desktop tiers': pictures up to 960 pixels, supersampled.
+    /// The desktop tiers': pictures up to 960 pixels, supersampled, and cut-ins up to 1080p's width.
     fn default() -> Self {
-        Self { max_side: 960, supersample: 2 }
+        Self { max_side: 960, supersample: 2, cutin_side: 1920 }
     }
 }
 
@@ -100,7 +103,19 @@ impl InsetSettings {
         if !(1..=2).contains(&self.supersample) {
             return Err(("inset.supersample", "must be 1 or 2"));
         }
+        if !(64..=4096).contains(&self.cutin_side) {
+            return Err(("inset.cutin_side", "must be within 64..=4096"));
+        }
         Ok(())
+    }
+
+    /// [`Self::sizes`] for `view`: a cut-in's longest side is [`Self::cutin_side`], a showcase's
+    /// [`Self::max_side`].
+    pub fn sizes_of(&self, view: &InsetView) -> Option<((u32, u32), (u32, u32))> {
+        match view.cutin {
+            Some(_) => Self { max_side: self.cutin_side, ..*self }.sizes(view.size),
+            None => self.sizes(view.size),
+        }
     }
 
     /// The picture's size for a node covering `size` pixels, and the scene's: the node's, scaled down
@@ -253,7 +268,7 @@ impl Insets {
         }
         for view in &packet.insets {
             let live = self.targets.iter().filter(|target| target.live).count();
-            let sizes = self.settings.sizes(view.size);
+            let sizes = self.settings.sizes_of(view);
             let taken = self.targets.iter().any(|target| target.live && target.inset == view.inset);
             let (Some((picture, scene)), false, true) = (sizes, taken, live < MAX_INSETS) else {
                 self.stats.over_limit += 1;
@@ -515,7 +530,9 @@ impl InsetTarget {
         let moved =
             deltas.changed.iter().any(|instance| named(&instance.id)) || deltas.removed.iter().any(named);
         let key = InsetView { instances: PacketRange::default(), ..*view };
+        // A cut-in's character moves every frame, and its lines with the clock: it always draws.
         let draw = match self.drawn {
+            _ if view.cutin.is_some() => true,
             None => true,
             Some((drawn, drawn_grade, pose)) => {
                 drawn != key
@@ -543,8 +560,11 @@ impl InsetTarget {
         };
         let camera = view.camera;
         self.view = ViewUniforms::new(&camera, self.scene_size, camera.proj * camera.view, [0.0; 2]);
-        self.post_uniforms = post.inset_uniforms(view.exposure, view.soft_backdrop);
         self.backdrop = if view.backdrop.is_finite() { view.backdrop.max(Vec3::ZERO) } else { Vec3::ZERO };
+        self.post_uniforms = match &view.cutin {
+            Some(cutin) => post.cutin_uniforms(view.exposure, cutin, self.backdrop, self.picture_size),
+            None => post.inset_uniforms(view.exposure, view.soft_backdrop),
+        };
     }
 }
 
@@ -639,7 +659,7 @@ mod tests {
         assert_eq!(desktop.sizes((400, 600)), Some(((400, 600), (800, 1200))));
         // Longer than the tier's side: scaled down, keeping its shape.
         assert_eq!(desktop.sizes((640, 1920)), Some(((320, 960), (640, 1920))));
-        let phone = InsetSettings { max_side: 512, supersample: 1 };
+        let phone = InsetSettings { max_side: 512, supersample: 1, cutin_side: 960 };
         assert_eq!(phone.sizes((1024, 512)), Some(((512, 256), (512, 256))));
         assert_eq!(phone.sizes((0, 512)), None, "an empty node shows nothing");
         assert_eq!(phone.sizes((5000, 1)), Some(((512, 1), (512, 1))), "never below a pixel");
@@ -652,6 +672,25 @@ mod tests {
         assert_eq!(small.validate(), Err(("inset.max_side", "must be within 64..=2048")));
         let thrice = InsetSettings { supersample: 3, ..InsetSettings::default() };
         assert_eq!(thrice.validate(), Err(("inset.supersample", "must be 1 or 2")));
+        let huge = InsetSettings { cutin_side: 8192, ..InsetSettings::default() };
+        assert_eq!(huge.validate(), Err(("inset.cutin_side", "must be within 64..=4096")));
+    }
+
+    #[test]
+    fn a_cut_in_is_sized_by_its_own_side() {
+        let phone = InsetSettings { max_side: 512, supersample: 1, cutin_side: 960 };
+        let camera = CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 1.0, 1.0, 0.1);
+        let ambient = crate::AmbientLight { sky: Vec3::ONE, ground: Vec3::ONE, intensity: 1.0 };
+        let showcase = InsetView::new(0, camera, (1920, 1080), ambient);
+        assert_eq!(phone.sizes_of(&showcase), Some(((512, 288), (512, 288))));
+        let lines = crate::post::SpeedLines::NONE;
+        let cutin = crate::InsetCutIn { backdrop_far: Vec3::ONE, toward: glam::Vec2::X, lines };
+        let cutin = InsetView { cutin: Some(cutin), ..showcase };
+        assert_eq!(phone.sizes_of(&cutin), Some(((960, 540), (960, 540))));
+        // Desktop's is 1080p's, supersampled as a showcase is, and no more on a larger frame.
+        assert_eq!(InsetSettings::default().sizes_of(&cutin), Some(((1920, 1080), (3840, 2160))));
+        let wide = InsetView { size: (3840, 2160), ..cutin };
+        assert_eq!(InsetSettings::default().sizes_of(&wide), Some(((1920, 1080), (3840, 2160))));
     }
 
     #[test]

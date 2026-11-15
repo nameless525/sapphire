@@ -35,7 +35,9 @@
 //   scene, `supersample` times as wide and tall. Desktop tiers have no MSAA and an inset gets no TAA
 //   history, so their scene is twice the picture's, which the resolve box-filters; phones draw it
 //   with their 4x MSAA in tile memory at the picture's size. The sides hold a character screen's
-//   showcase at each tier's height (`sapphire_render::inset`).
+//   showcase at each tier's height (`sapphire_render::inset`). A cut-in's picture (M5 L10) is at most
+//   `cutin_side` on its longest side: 1080p's width on Desktop-High, three quarters of it on
+//   Desktop-Low, and less on phones; the interface scales it up to the band or frame it fills.
 // - `depth_of_field` (M5 L8, `sapphire_render::post`'s `focus` module): the main view's authored focus on the
 //   desktop tiers, a half-size gather after temporal AA's resolve reading the scene prepass's depth, which
 //   only TAA keeps; and the soft backdrop an inset may ask for behind its characters, on the desktop tiers
@@ -169,7 +171,7 @@
                 post_effects: (radial_blur_taps: 16),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 128),
-                inset: (max_side: 960, supersample: 2),
+                inset: (max_side: 960, supersample: 2, cutin_side: 1920),
                 depth_of_field: (view: true, insets: true),
                 distortion: Half,
                 shafts: true,
@@ -218,7 +220,7 @@
                 post_effects: (radial_blur_taps: 12),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 128),
-                inset: (max_side: 720, supersample: 2),
+                inset: (max_side: 720, supersample: 2, cutin_side: 1440),
                 depth_of_field: (view: true, insets: true),
                 distortion: Half,
                 shafts: true,
@@ -266,7 +268,7 @@
                 post_effects: (radial_blur_taps: 8),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
                 reflections: (cube_size: 64),
-                inset: (max_side: 720, supersample: 1),
+                inset: (max_side: 720, supersample: 1, cutin_side: 1280),
                 depth_of_field: (insets: true),
                 distortion: Quarter,
                 culling: (distance: 5000, least_pixels: 1.5, least_texels: 1.0),
@@ -320,7 +322,7 @@
                 post_effects: (radial_blur_taps: 8),
                 foliage: (wind_levels: 2, alpha_to_coverage: true, translucency: false),
                 reflections: (cube_size: 32),
-                inset: (max_side: 512, supersample: 1),
+                inset: (max_side: 512, supersample: 1, cutin_side: 960),
                 culling: (distance: 4500, least_pixels: 1.5, least_texels: 1.0),
                 upscaler: Edge(sharpen: 50),
                 // No GTAO to shed, no frame rate under its own 30 and no tier below.

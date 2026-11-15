@@ -109,6 +109,13 @@ pub struct UiQuad {
     pub gradient: [f32; 3],
     /// What its texels hold: [`UI_FIELD`], [`UI_COVERAGE`], [`UI_MULTI_FIELD`] or [`UI_PICTURE`].
     pub texels: u32,
+    /// A picture's edges (M5 L10): up to two straight lines it's cut along, each `x`, `y`, `offset` so the
+    /// distance inside the line at `local` is `x * local.x + y * local.y + offset` UI points, `local` running
+    /// 0 to 1 along the quad's own axes as [`Self::gradient`]'s does. The cut is antialiased, and a picture
+    /// quad's [`Self::outline`] draws a border that wide in points inside each line, in
+    /// [`Self::outline_color`]. All zeros is no line. Only a picture reads them ([`Self::picture`]): a cut-in's
+    /// band with slanted sides.
+    pub edges: [[f32; 3]; 2],
 }
 
 /// A quad's [`UiQuad::texels`] over a single-channel field ([`UiFieldFormat::Single`]).
@@ -149,6 +156,7 @@ impl UiQuad {
             color_end: [0; 4],
             gradient: [0.0; 3],
             texels: UI_FIELD,
+            edges: [[0.0; 3]; 2],
         }
     }
 
@@ -435,6 +443,65 @@ impl UiDrawList {
         }
     }
 
+    /// Puts `quads`, each showing inset `inset`'s picture, under everything from quad `at` of the list on, which
+    /// draws over them as it did before: a layer under what was drawn after `at`, such as a cut-in under the
+    /// HUD (M5 L10). They draw everywhere, whatever mask was on at `at`, and the masks after them are as they
+    /// were. `at` past the end is the end. Allocates nothing once the vectors have grown.
+    pub fn insert_inset_quads(&mut self, at: u32, inset: u16, quads: &[UiQuad]) {
+        let at = at.min(self.quads.len() as u32);
+        let count = quads.len() as u32;
+        if count == 0 {
+            return;
+        }
+        let index = at as usize;
+        self.quads.splice(index..index, quads.iter().copied());
+        // A run that straddles `at` is split around the new quads, which read neither its page nor its field.
+        if let Some(position) = self.runs.iter().position(|run| run.first < at && run.first + run.count > at)
+        {
+            let run = self.runs[position];
+            let before = at - run.first;
+            self.runs[position].count = before;
+            self.runs
+                .insert(position + 1, UiRun { first: at, count: run.count - before, source: run.source });
+        }
+        for run in &mut self.runs {
+            if run.first >= at {
+                run.first += count;
+            }
+        }
+        if let Some(position) =
+            self.inset_runs.iter().position(|run| run.first < at && run.first + run.count > at)
+        {
+            let run = self.inset_runs[position];
+            let before = at - run.first;
+            self.inset_runs[position].count = before;
+            let after = UiInsetRun { first: at, count: run.count - before, inset: run.inset };
+            self.inset_runs.insert(position + 1, after);
+        }
+        for run in &mut self.inset_runs {
+            if run.first >= at {
+                run.first += count;
+            }
+        }
+        let place = self.inset_runs.partition_point(|run| run.first < at);
+        self.inset_runs.insert(place, UiInsetRun { first: at, count, inset });
+        // The new quads draw unmasked, and what came after `at` keeps the mask it had.
+        let before = self.masks.iter().rev().find(|mask| mask.first < at).and_then(|mask| mask.rect);
+        let starts_there = self.masks.iter().any(|mask| mask.first == at);
+        for mask in &mut self.masks {
+            if mask.first >= at {
+                mask.first += count;
+            }
+        }
+        if before.is_some() {
+            let place = self.masks.partition_point(|mask| mask.first < at);
+            self.masks.insert(place, UiMask { first: at, rect: None });
+            if !starts_there {
+                self.masks.insert(place + 1, UiMask { first: at + count, rect: before });
+            }
+        }
+    }
+
     /// Adds a quad over a glyph page, joining the run before it if that's on the same page.
     pub fn push_page_quad(&mut self, page: u16, quad: UiQuad) {
         self.push_run_quad(UiSource::Page(page), quad);
@@ -485,6 +552,51 @@ mod tests {
         assert_eq!(list.masks[1], UiMask { first: 2, rect: None });
         list.reset();
         assert!(list.masks.is_empty());
+    }
+
+    #[test]
+    fn inset_quads_go_under_what_came_after_and_draw_unmasked() {
+        let quad = UiQuad::glyph([0.0; 2], [1.0; 2], [0.0; 4], [255; 4]);
+        let picture = UiQuad::picture([0.0; 2], [4.0, 0.0], [0.0, 4.0], 255);
+        let rect = Some([0.0, 0.0, 8.0, 8.0]);
+        let mut list = UiDrawList::default();
+        list.quads.push(quad);
+        list.set_mask(rect);
+        list.push_page_quad(0, quad);
+        list.push_page_quad(0, quad);
+        list.push_inset_quad(1, picture);
+        list.insert_inset_quads(2, 7, &[picture, picture]);
+        assert_eq!(list.quads.len(), 6);
+        assert_eq!(list.quads[2], picture);
+        // The page's run of two is split around them, and the inset after them moves on.
+        assert_eq!(
+            list.runs,
+            [
+                UiRun { first: 1, count: 1, source: UiSource::Page(0) },
+                UiRun { first: 4, count: 1, source: UiSource::Page(0) },
+            ]
+        );
+        assert_eq!(
+            list.inset_runs,
+            [UiInsetRun { first: 2, count: 2, inset: 7 }, UiInsetRun { first: 5, count: 1, inset: 1 }]
+        );
+        // Unmasked between, and the mask back after them.
+        assert_eq!(
+            list.masks,
+            [UiMask { first: 1, rect }, UiMask { first: 2, rect: None }, UiMask { first: 4, rect }]
+        );
+        // Under everything, at the start, nothing is masked and nothing splits.
+        let mut list = UiDrawList::default();
+        list.push_page_quad(0, quad);
+        list.insert_inset_quads(0, 3, &[picture]);
+        assert_eq!(list.inset_runs, [UiInsetRun { first: 0, count: 1, inset: 3 }]);
+        assert_eq!(list.runs, [UiRun { first: 1, count: 1, source: UiSource::Page(0) }]);
+        assert!(list.masks.is_empty());
+        // Past the end is the end, and none is nothing.
+        list.insert_inset_quads(99, 3, &[picture]);
+        assert_eq!(list.inset_runs.last(), Some(&UiInsetRun { first: 2, count: 1, inset: 3 }));
+        list.insert_inset_quads(0, 3, &[]);
+        assert_eq!(list.quads.len(), 3);
     }
 
     #[test]

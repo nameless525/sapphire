@@ -5,8 +5,9 @@
 //! report, since nothing may depend on a tool crate (rule R1). This command makes what the testkit runs
 //! against, all under `target/bench-scale/<commit>/`:
 //!
-//! - `content/<preset>/<cook>/`: the shipped cook of `content/` with the preset's district beside it, one for
-//!   each cook ([`bench::put_beside`]);
+//! - `content/<preset>/<cook>/`: the content at the preset with its district beside it, one for each cook
+//!   ([`bench::put_beside`]): the shipped cook of `content/` for `ci`, and past it the shipped content with the
+//!   party's kinds and the wave's at the preset's rows ([`bench::cook_kinds`], M5 C12b);
 //! - `bin/`: the release `dev` sandbox (what B4 walked) and the testkit, copied so a later build can't change
 //!   what a resumed batch runs;
 //! - `replays/`: the crowd scenarios' replays, recorded here since none is committed, and the committed ones the
@@ -40,9 +41,10 @@ const TESTKIT: &str = "sapphire_testkit";
 const CROWDS: [&str; 2] = ["crowd-15", "crowd-60"];
 const CROWD_SCRIPT: &str = "chase-laps";
 
-/// Committed replays the runs play (a stand-in's, and the district's fight), copied beside the crowds' so every
-/// run names `{replays}/…` whatever folder the batch runs from.
-const COMMITTED: [&str; 2] = ["zone-trip", "district-encounter"];
+/// Committed replays the runs play, copied beside the crowds' so every run names `{replays}/…` whatever
+/// folder the batch runs from: a stand-in's trip, the district's fight, and the party of three kinds
+/// against twelve (M5 C12b).
+const COMMITTED: [&str; 3] = ["zone-trip", "district-encounter", "party-three-kinds"];
 
 /// The file `prepare` names its preset in, so `run` mounts what was prepared.
 const PREPARED: &str = "preset";
@@ -106,15 +108,20 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
     }
 }
 
-/// Cooks both cooks of `content/` and of the preset's district, puts each pair together, builds the sandbox
-/// and the testkit into `bin/` and records the crowds' replays.
+/// Cooks both cooks of the content at the preset (with its kinds past `ci`) and of the preset's district, puts
+/// each pair together, builds the sandbox and the testkit into `bin/` and records the crowds' replays.
 fn prepare(folder: &Path, preset: Preset) -> anyhow::Result<()> {
     fs::create_dir_all(folder)?;
     for cook in [Cook::Desktop, Cook::Mobile] {
-        let shipped = content::cook(cook)?;
         let district = bench::cook(preset, cook)?;
         let out = folder.join("content").join(preset.name()).join(cook.name());
-        bench::put_beside(&shipped.dir, &district.dir, &out, cook)?;
+        if bench::has_kinds(preset) {
+            let kinds = bench::cook_kinds(preset, cook)?;
+            bench::put_beside(&kinds.dir, &district.dir, &out, cook)?;
+        } else {
+            let shipped = content::cook(cook)?;
+            bench::put_beside(&shipped.dir, &district.dir, &out, cook)?;
+        }
         eprintln!(
             "put the content and the {} district together for {cook} in {}",
             preset.name(),

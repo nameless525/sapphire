@@ -119,15 +119,7 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     let pipeline = pipeline()?;
 
     let source = workspace::root().join(SOURCE_DIR);
-    fs::create_dir_all(workspace::output_dir().join("content"))?;
-    // Each generator says what it writes, so what's missing is the pipeline's to find. It holds its lock
-    // only while it does: this and the cook's are never nested.
-    let mut generate = Command::new(&pipeline);
-    generate.arg("generate").arg("--source").arg(&source).arg("--lock").arg(generate_lock());
-    if workspace::locked() {
-        generate.arg("--locked");
-    }
-    workspace::run(&mut generate)?;
+    generate(&pipeline)?;
 
     let out = cooked_dir(cook);
     let lock_path = out.with_extension("lock");
@@ -148,6 +140,24 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
         &format!("to finish with the {cook} content"),
     )?;
     Ok(Cooked { dir: out, _lock: lock })
+}
+
+/// Generates whatever sources of `content/` are missing, with `pipeline`: each generator says what it writes,
+/// so what's missing is the pipeline's to find. It holds its lock only while it does: this and a cook's are
+/// never nested. [`cook`] runs it first, and so must whatever copies `content/` to cook ([`cook_copy`]).
+pub fn generate(pipeline: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(workspace::output_dir().join("content"))?;
+    let mut generate = Command::new(pipeline);
+    generate
+        .arg("generate")
+        .arg("--source")
+        .arg(workspace::root().join(SOURCE_DIR))
+        .arg("--lock")
+        .arg(generate_lock());
+    if workspace::locked() {
+        generate.arg("--locked");
+    }
+    workspace::run(&mut generate)
 }
 
 /// Cooks `source`, a copy of `content/` with its generated sources, for `cook` into `loose` and `packs`, through

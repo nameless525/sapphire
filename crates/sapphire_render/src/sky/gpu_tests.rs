@@ -624,6 +624,60 @@ fn the_nebula_glows_in_its_keyed_colors_and_not_by_day() {
     assert!(image.iter().all(|color| *color == Vec3::ZERO));
 }
 
+/// One night frame of `handle`'s sky, its stars at half brightness and its nebula in `nebula`'s
+/// colors, and whether it drew with the nebula's variant.
+fn night_with(harness: &mut Harness, handle: MaterialHandle, nebula: crate::Nebula) -> (Vec<Vec3>, bool) {
+    let image = harness.render(|packet| {
+        packet.sky_material = Some(handle);
+        packet.sky_layers.stars = 0.5;
+        packet.sky_layers.nebula = nebula;
+    });
+    (image, harness.renderer.stats().sky.nebula)
+}
+
+/// The nebula's own grid of stars (M5 L17) crowds into its clouds and wisps and nowhere else: a
+/// nebula map whose R and G are zero draws, bit for bit, the night sky the variant without the
+/// nebula draws, so the grid adds nothing where the nebula isn't; a map full of cloud draws many
+/// more stars, and they keep their light under sub-pixel motion as the other grids' do.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_nebula_stars_crowd_only_where_the_nebula_is() {
+    // Narrow enough that the nebula's grid draws whole: its cells are about 9 pixels wide here.
+    let (size, fov) = ((256, 256), 12.0);
+    let mut harness = Harness::new(RenderSettings::default(), size);
+    let forward = Vec3::new(0.3, 1.0, -0.6).normalize();
+    harness.look(forward, fov);
+    let id = Some(AssetId::from_text("00000000-0000-4000-8000-0000000000c4"));
+    let material = SkyMaterial {
+        stars: sapphire_assets::material::Stars { nebula: id, ..Default::default() },
+        ..SkyMaterial::default()
+    };
+    let empty = harness.texture((64, 32), |_, _| [0.0, 0.0, 0.0, 1.0]);
+    let empty = harness.sky_material(&material, &[(id, &empty)]);
+    let full = harness.texture((64, 32), |_, _| [1.0, 0.0, 0.0, 1.0]);
+    let full = harness.sky_material(&material, &[(id, &full)]);
+    // The accents' color picks the nebula's variant, and the maps' B, zero, draws none of it.
+    let accents = crate::Nebula { accents: Vec3::ONE, ..crate::Nebula::default() };
+    let (plain, variant) = night_with(&mut harness, empty, crate::Nebula::default());
+    assert!(!variant, "no nebula color: the plain night sky's variant");
+    let (bare, variant) = night_with(&mut harness, empty, accents);
+    assert!(variant, "the nebula's variant");
+    assert!(bare == plain, "no cloud or wisp in the map: not a star more, not a bit moved");
+    let (crowded, _) = night_with(&mut harness, full, accents);
+    let (before, after) = (total(&plain), total(&crowded));
+    assert!(after > 1.5 * before, "a crowd in the nebula: {after} against {before}");
+
+    // Turning the camera by quarter pixels moves the crowd between pixels without its light
+    // flickering.
+    let pixel = (fov.to_radians() * 0.5).tan() * 2.0 / size.1 as f32;
+    for step in 1..4 {
+        let turn = Quat::from_rotation_y(step as f32 * 0.25 * pixel);
+        harness.look(turn * forward, fov);
+        let moved = total(&night_with(&mut harness, full, accents).0);
+        assert!((moved / after - 1.0).abs() < 0.01, "{step} quarter pixels: {moved} vs {after}");
+    }
+}
+
 #[test]
 #[ignore = "needs a GPU"]
 fn card_clouds_dissolve_from_their_edges_with_coverage() {

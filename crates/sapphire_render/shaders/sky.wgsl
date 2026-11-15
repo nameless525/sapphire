@@ -110,6 +110,18 @@ const STAR_COARSE_CELLS: f32 = 44.0;
 const STAR_COARSE_CHANCE: f32 = 0.35;
 const STAR_COARSE_FLUX: f32 = 7.0;
 const STAR_COARSE_SIZE: f32 = 0.85;
+// The nebula's own grid (M5 L17), drawn only by the nebula variant: a finer field of stars, most of
+// them faint, crowding into the nebula, its density the nebula map's broad clouds and wisps
+// (R + G, full from a half) where the star is, so a sky without the map, or a map with R and G at
+// zero, draws as before. At 256 cells
+// an edge it fades in as frames grow from about 390 to 780 px tall at the look-dev sky shot's 58°.
+const STAR_NEBULA_CELLS: f32 = 256.0;
+const STAR_NEBULA_CHANCE: f32 = 0.7;
+const STAR_NEBULA_FLUX: f32 = 3.0;
+const STAR_NEBULA_SIZE: f32 = 0.6;
+// Where a grid's stars are dense: the star map (or even, without one), or the nebula map.
+const STAR_DENSITY_STARS: u32 = 0u;
+const STAR_DENSITY_NEBULA: u32 = 1u;
 // Stars sit this far inside their cell's edges, so few reach past it.
 const STAR_MARGIN: f32 = 0.15;
 // Grids fade out while their cells shrink from this many pixels to the next, before they crowd.
@@ -305,8 +317,12 @@ fn night_sky(dir: vec3<f32>, footprint: f32) -> vec3<f32> {
         let celestial = sky.celestial * dir;
         // Both grids share the cube face the direction points through.
         let face = cube_face(celestial);
-        light = star_grid(celestial, face, footprint, STAR_FINE_CELLS, STAR_FINE_CHANCE, STAR_FINE_FLUX, STAR_FINE_SIZE, 0u)
-            + star_grid(celestial, face, footprint, STAR_COARSE_CELLS, STAR_COARSE_CHANCE, STAR_COARSE_FLUX, STAR_COARSE_SIZE, 1u);
+        light = star_grid(celestial, face, footprint, STAR_FINE_CELLS, STAR_FINE_CHANCE, STAR_FINE_FLUX, STAR_FINE_SIZE, 0u, STAR_DENSITY_STARS)
+            + star_grid(celestial, face, footprint, STAR_COARSE_CELLS, STAR_COARSE_CHANCE, STAR_COARSE_FLUX, STAR_COARSE_SIZE, 1u, STAR_DENSITY_STARS);
+        if SKY_NEBULA {
+            // One more grid a night-sky pixel: the cost of a material with a nebula map.
+            light += star_grid(celestial, face, footprint, STAR_NEBULA_CELLS, STAR_NEBULA_CHANCE, STAR_NEBULA_FLUX, STAR_NEBULA_SIZE, 2u, STAR_DENSITY_NEBULA);
+        }
         if material_has_texture(sky.modes, SKY_SLOT_MILKY_WAY) {
             light += dome_texel(milky_way_map, SKY_SLOT_MILKY_WAY, celestial, footprint).rgb;
         }
@@ -351,7 +367,8 @@ fn cube_face(c: vec3<f32>) -> CubeFace {
 
 // One grid of star cells on a cube around the celestial sphere, `cells` per face edge, each cell
 // holding a star with probability `chance` at a hashed spot, brightness, color and twinkle.
-// `face` is the cube face `c` points through.
+// `face` is the cube face `c` points through; `density` says which map scales the chance
+// (`STAR_DENSITY_STARS` or `STAR_DENSITY_NEBULA`).
 //
 // A star is a normalized Gaussian `size` pixels in radius, measured in pixels from the pixel's
 // own angular footprint: its light summed over its pixels stays the same wherever it falls
@@ -360,7 +377,7 @@ fn cube_face(c: vec3<f32>) -> CubeFace {
 // inside it); that clips a little of its rim the same way every frame, which stays stable too.
 //
 // One exit: this runs under per-pixel branches (WARP's compiler, see the outline shader).
-fn star_grid(c: vec3<f32>, face: CubeFace, footprint: f32, cells: f32, chance: f32, flux: f32, size: f32, seed: u32) -> vec3<f32> {
+fn star_grid(c: vec3<f32>, face: CubeFace, footprint: f32, cells: f32, chance: f32, flux: f32, size: f32, seed: u32, density_map: u32) -> vec3<f32> {
     var light = vec3<f32>(0.0);
     let fade = smoothstep(STAR_FADE_PIXELS.x, STAR_FADE_PIXELS.y, 2.0 / (cells * footprint));
     // Where on the face, and in which cell.
@@ -386,7 +403,11 @@ fn star_grid(c: vec3<f32>, face: CubeFace, footprint: f32, cells: f32, chance: f
         let phase = f32((twinkling >> 16u) & 255u) / 255.0;
         var tint = vec3<f32>(1.0);
         var density = 1.0;
-        if material_has_texture(sky.modes, SKY_SLOT_STARS) {
+        if density_map == STAR_DENSITY_NEBULA {
+            // The nebula's broad clouds and wisps where the star is: none outside them.
+            let nebula = dome_texel(nebula_map, SKY_SLOT_NEBULA, star, 2.0 / cells);
+            density = saturate(2.0 * (nebula.r + nebula.g));
+        } else if material_has_texture(sky.modes, SKY_SLOT_STARS) {
             // The star map tints the stars, and its luminance sets where they are dense
             // (0.5 is the grid's own density), read where the star is so every pixel of it
             // agrees.

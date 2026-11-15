@@ -98,7 +98,8 @@ pub struct Stars {
     /// Nebulae (M1 X1 part 2e): linear, R, G and B the densities of three kinds of cloud that
     /// time of day colors (the broad clouds, the bright wisps along them and sparse accents), so
     /// the night can turn their hues. Added under the stars while time of day gives them a color,
-    /// so nothing by day.
+    /// so nothing by day. R and G also crowd a third, finer grid of stars into the nebula (M5
+    /// L17), which costs every night-sky pixel one more star grid wherever a sky has this map.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nebula: Option<AssetId>,
     /// How much stars twinkle, 0 to 1.

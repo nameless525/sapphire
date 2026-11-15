@@ -9,6 +9,11 @@
 // added over it (one, one).
 override VFX_DECAL_DARKEN: bool = false;
 
+// `vfx::decal::PULL`: the share of its own distance a decal is drawn nearer the eye. The view's projection is
+// reverse Z with an infinite far plane, clip z the near plane's distance and w the point's, so scaling clip z by
+// 1 + this moves each point's depth to a distance 1 / (1 + this) of its own, whatever the quad's size.
+override VFX_DECAL_PULL: f32 = 0.0;
+
 // `GpuVfxDecal::kind`.
 const DECAL_DISC: u32 = 0u;
 const DECAL_RING: u32 = 1u;
@@ -76,6 +81,7 @@ fn vs_vfx_decal(@builtin(vertex_index) vertex: u32, @builtin(instance_index) ins
     let world = (decal.world_from_local * vec4<f32>(local.x, 0.0, local.y, 1.0)).xyz;
     var out: VfxDecalVaryings;
     out.clip_position = view.clip_from_world * vec4<f32>(world, 1.0);
+    out.clip_position.z *= 1.0 + VFX_DECAL_PULL;
     out.local = local;
     out.world = world;
     var color = decal.color * vfx_decal.emissive;

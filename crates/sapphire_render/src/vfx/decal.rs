@@ -12,13 +12,17 @@
 //!   draws over it. Unlike sprites they aren't held back till after temporal AA's resolve: a decal lies still
 //!   on still ground, whose velocity of zero is its own, so the history holds it as it holds the ground, and
 //!   gains it the jitter's smoothing.
-//! - **Never over a character's feet:** depth-tested against what the main pass wrote, writing none, with a
-//!   depth bias that pulls a decal toward the eye by far less than a shoe's sole: a foot on the ground covers
-//!   it as the ground would be covered.
-//! - **The bias** ([`DEPTH_BIAS`], [`SLOPE_BIAS`]): a constant in the depth format's units at the decal's own
-//!   depth (relative, since depth is a float), and a slope term for grazing views, so a decal lying where the
+//! - **Never over a character's feet:** depth-tested against what the main pass wrote, writing none, pulled
+//!   toward the eye by far less than a shoe's sole: a foot on the ground covers it as the ground would be
+//!   covered.
+//! - **The pull** ([`PULL`], [`SLOPE_BIAS`]): every point of a decal drawn nearer the eye by a share of its own
+//!   distance, in the vertex stage, and the rasterizer's slope term for grazing views, so a decal lying where the
 //!   ground is never fights it, at near and far ends of the depth range and at grazing angles alike, and never
-//!   visibly floats. `tests/gpu/vfx_decal.rs` reads the margins back.
+//!   visibly floats. `tests/gpu/vfx_decal.rs` reads the margins back. The rasterizer's constant bias isn't used:
+//!   on a float depth buffer Direct3D and Vulkan size it by the largest depth anywhere in the primitive, which
+//!   under reverse Z is the quad's nearest point, so a decal the camera stands over (its quad crossing the near
+//!   plane) took a bias sized for 5 cm away at its far side, and on WARP drew over the ground sunk 4.6e-3 of
+//!   the distance 150 m away at 60°, where Metal, sizing it by each fragment's own depth, read 9.8e-4.
 //! - **Two blends:** light added (`One`, `One`) × 1/exposure, bright enough for bloom; and darkening (`Zero`,
 //!   `Src`), the ground multiplied toward a color. Darkening draws first, then light, so a telegraph over a
 //!   scorch glows over it. Both leave scene color's alpha alone: a decal never marks or unmarks a character.
@@ -41,20 +45,24 @@ use crate::shaders::{self, BuildOn, Program, ShaderSources};
 
 /// The name of the shader's constant: the pipeline darkens rather than adds light.
 const DARKEN_CONSTANT: &str = "VFX_DECAL_DARKEN";
+/// The name of the shader's constant [`PULL`] arrives by.
+const PULL_CONSTANT: &str = "VFX_DECAL_PULL";
 
-/// The depth bias a decal draws with, in units of the depth format's precision at its own depth: toward the
-/// eye under reverse Z. It's what holds ground seen from straight above, where the slope term is nothing. Chosen
-/// from the z-fight test's readbacks (`tests/gpu/vfx_decal.rs`): with no bias at all, a decal lying on the
-/// ground lost 12% to 69% of its pixels to it seen from above, and needed lifting by up to 2.4e-7 of the distance
-/// to show whole; with this one it reaches 5.4e-6 of the distance under the ground on Metal, 22 times that.
-pub(crate) const DEPTH_BIAS: i32 = 64;
+/// The share of its own distance every point of a decal is drawn nearer the eye, in the vertex stage (clip z
+/// scaled by 1 + this, under the view's reverse Z with an infinite far plane): the same at every depth and for a
+/// quad of any size, on every backend. It's what holds ground seen from straight above, where the slope term is
+/// nothing. Chosen from the z-fight test's readbacks (`tests/gpu/vfx_decal.rs`): with nothing at all, a decal
+/// lying on the ground lost 12% to 69% of its pixels to it seen from above, and needed lifting by up to 2.4e-7 of
+/// the distance to show whole; this is 25 times that, as near as Metal's sizing of the old constant bias came
+/// (5.4e-6 to 6.4e-6).
+pub(crate) const PULL: f32 = 6e-6;
 
-/// The depth bias's slope term: by how much of the depth's change across a pixel it pulls toward the eye, for
+/// The rasterizer's slope term: by how much of the depth's change across a pixel it pulls toward the eye, for
 /// ground seen at an angle, where neighbouring pixels' depths differ the most and the rasterizer's rounding of
-/// them with it. With no bias a decal needed lifting by up to 6.1e-5 of the distance at 60° and 4.3e-5 at 85°
-/// under temporal AA's jitter; with this one it reaches 1.0e-3 at 60° and 2.4e-4 at 85° on Metal, 16 and 5.6
-/// times those. That's under a tenth of a pixel's footprint on the ground, at any resolution, since the term is a
-/// share of a pixel's change: a decal never visibly floats over a foot.
+/// them with it. With nothing a decal needed lifting by up to 6.1e-5 of the distance at 60° and 4.3e-5 at 85°
+/// under temporal AA's jitter; with this it reaches 1.0e-3 at 60° and 2.4e-4 at 85°, 16 and 5.6 times those.
+/// That's under a tenth of a pixel's footprint on the ground, at any resolution, since the term is a share of a
+/// pixel's change: a decal never visibly floats over a foot. Every backend sizes it the same way.
 pub(crate) const SLOPE_BIAS: f32 = 0.2;
 
 /// Decals the buffer holds when first made: past every tier's budget, so it never grows in a fight.
@@ -187,10 +195,11 @@ const DARKEN_BLEND: wgpu::BlendState = wgpu::BlendState {
 };
 
 impl DecalBuilder {
-    /// A decal pipeline of the main pass: its samples and depth, testing and never writing it, biased toward
-    /// the eye ([`DEPTH_BIAS`]); a strip of four corners per instance; the color alone written.
+    /// A decal pipeline of the main pass: its samples and depth, testing and never writing it, pulled toward
+    /// the eye ([`PULL`] in the vertex stage, [`SLOPE_BIAS`] in the rasterizer, no constant bias); a strip of
+    /// four corners per instance; the color alone written.
     fn pipeline(&self, module: &wgpu::ShaderModule, darken: bool) -> wgpu::RenderPipeline {
-        let constants = [(DARKEN_CONSTANT, if darken { 1.0 } else { 0.0 })];
+        let constants = [(DARKEN_CONSTANT, if darken { 1.0 } else { 0.0 }), (PULL_CONSTANT, f64::from(PULL))];
         let compilation_options =
             wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
         self.builds.render(
@@ -214,7 +223,7 @@ impl DecalBuilder {
                     depth_write_enabled: Some(false),
                     depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                     stencil: Default::default(),
-                    bias: wgpu::DepthBiasState { constant: DEPTH_BIAS, slope_scale: SLOPE_BIAS, clamp: 0.0 },
+                    bias: wgpu::DepthBiasState { constant: 0, slope_scale: SLOPE_BIAS, clamp: 0.0 },
                 }),
                 multisample: wgpu::MultisampleState { count: self.samples, ..Default::default() },
                 fragment: Some(wgpu::FragmentState {

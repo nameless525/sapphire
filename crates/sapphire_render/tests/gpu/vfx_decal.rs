@@ -12,11 +12,11 @@
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 use sapphire_render::{
-    Fog, FogLayer, FrameCounts, HeightFog, MeshInstance, Msaa, PassCounts, PipelineInventory, RenderSettings,
-    VfxDecal, VfxDecalBlend, VfxDecalShape,
+    Fog, FogLayer, FrameCounts, HeightFog, Msaa, PassCounts, PipelineInventory, RenderSettings, VfxDecal,
+    VfxDecalBlend, VfxDecalShape,
 };
 
-use super::vfx::{GREY, Harness, SIDE, assert_near, flat_settings, temporal_settings};
+use super::vfx::{GREY, Harness, SIDE, TOLERANCE, assert_near, flat_settings, temporal_settings};
 
 /// What the ground glows, linear.
 const GROUND: f32 = 0.2;
@@ -71,10 +71,20 @@ impl View {
     /// A disc of light over the view's middle, `offset` metres along the normal from the ground: above it if
     /// positive.
     fn decal(self, offset: f32) -> VfxDecal {
+        self.decal_of(self.reach(), offset)
+    }
+
+    /// [`Self::decal`] of radius `reach`.
+    fn decal_of(self, reach: f32, offset: f32) -> VfxDecal {
         VfxDecal {
             position: self.middle() + self.normal() * offset,
-            ..decal(VfxDecalShape::Disc { radius: self.reach() }, self.rotation(), LIGHT)
+            ..decal(VfxDecalShape::Disc { radius: reach }, self.rotation(), LIGHT)
         }
+    }
+
+    /// How far the camera stands over the ground.
+    fn height(self) -> f32 {
+        self.normal().dot(-self.middle())
     }
 
     /// Where on the plane pixel `(x, y)`'s middle looks, if it looks at it.
@@ -94,10 +104,13 @@ impl View {
     /// read in metres is one at that distance, and three times the near plane's distance (5 cm) away or more, so
     /// neither the ground nor a decal half way up to the camera is clipped. All well inside the decal.
     fn inside(self) -> Vec<(u32, u32)> {
+        self.inside_of(self.reach())
+    }
+
+    /// [`Self::inside`] for a decal of radius `reach`.
+    fn inside_of(self, reach: f32) -> Vec<(u32, u32)> {
         let inside = |hit: Vec3| {
-            hit.distance(self.middle()) < 0.8 * self.reach()
-                && hit.length() < 2.0 * self.distance
-                && -hit.z > 0.15
+            hit.distance(self.middle()) < 0.8 * reach && hit.length() < 2.0 * self.distance && -hit.z > 0.15
         };
         pixels().filter(|&at| self.hit(at).is_some_and(inside)).collect()
     }
@@ -154,29 +167,29 @@ fn offsets(reach: f32) -> Vec<f32> {
     below.chain([0.0]).chain(above).collect()
 }
 
-/// The least offset of [`offsets`] at which the decal shows whole over `view`'s ground: negative is how far
-/// under the ground a decal can sink and still show, the bias's reach past the depths' own mismatch.
+/// The least offset of [`offsets`]`(top)` at which `decal` (given its offset) shows whole at the pixels `inside`,
+/// and its step in them: negative is how far under the ground a decal can sink and still show, the pull's reach
+/// past the depths' own mismatch. `None` if it doesn't show whole even `top` over the ground.
 fn least_whole_offset(
     harness: &mut Harness,
-    ground: &mut MeshInstance,
-    view: View,
+    decal: impl Fn(f32) -> VfxDecal,
+    top: f32,
     inside: &[(u32, u32)],
     temporal: bool,
-) -> f32 {
-    ground.transform = view.ground(0.0);
-    harness.place(*ground);
-    // Half the way from the plane to the camera, which a decal above it mustn't pass.
-    let offsets = offsets(0.5 * view.normal().dot(-view.middle()));
+) -> Option<(usize, f32)> {
+    let offsets = offsets(top);
     let whole = |harness: &mut Harness, offset: f32| {
-        let frame = settled(harness, temporal, view.decal(offset));
+        let frame = settled(harness, temporal, decal(offset));
         misses(&frame, inside) == 0
     };
     // The decal shows whole that far over the ground; it's hidden as far under it but where the slope term
     // reaches further (far and grazing, where a pixel spans tens of metres of ground). Bisect between.
     let (mut low, mut high) = (0, offsets.len() - 1);
-    assert!(whole(harness, offsets[high]), "{view:?}: shows over the ground");
+    if !whole(harness, offsets[high]) {
+        return None;
+    }
     if whole(harness, offsets[low]) {
-        return offsets[low];
+        return Some((low, offsets[low]));
     }
     while high - low > 1 {
         let mid = (low + high) / 2;
@@ -186,7 +199,174 @@ fn least_whole_offset(
             low = mid;
         }
     }
-    offsets[high]
+    Some((high, offsets[high]))
+}
+
+/// What one view read on one path.
+#[derive(Clone, Debug)]
+struct Reading {
+    path: &'static str,
+    view: View,
+    /// The pixels measured.
+    inside: usize,
+    /// Of those, how many miss the decal lying on the ground...
+    lying_misses: usize,
+    /// ...and of every seventeenth, how many are off its color.
+    lying_off: usize,
+    /// [`least_whole_offset`]'s.
+    least: Option<f32>,
+}
+
+impl Reading {
+    /// What's wrong with it, if anything.
+    fn faults(&self) -> Vec<String> {
+        let mut faults = Vec::new();
+        if self.inside <= 300 {
+            faults.push(format!("the decal fills too little of the view: {} pixels", self.inside));
+        }
+        if self.lying_misses > 0 {
+            faults.push(format!("lying on the ground, {} pixels miss it", self.lying_misses));
+        }
+        if self.lying_off > 0 {
+            faults.push(format!("lying on the ground, {} pixels are off its color", self.lying_off));
+        }
+        match self.least {
+            None => faults.push("it doesn't show whole even over the ground".to_owned()),
+            Some(least) if least >= 0.0 => faults.push(format!("no margin under the ground: {least} m")),
+            Some(least) if least <= -2e-3 * self.view.distance => faults.push(format!("floats {least} m")),
+            Some(_) => {}
+        }
+        faults
+    }
+
+    fn row(&self) -> String {
+        let least = self.least.map_or_else(
+            || "never whole".to_owned(),
+            |least| format!("{least:+.3e} m ({:+.3e} of the distance)", least / self.view.distance),
+        );
+        let faults = self.faults();
+        let verdict =
+            if faults.is_empty() { String::new() } else { format!("  FAILS: {}", faults.join("; ")) };
+        format!(
+            "{:>11}: {:>5} m, {:>2}°: {:>5} px, shows whole down to {least}{verdict}",
+            self.path, self.view.distance, self.view.angle, self.inside
+        )
+    }
+}
+
+/// What one view read on one path with a small decal and with its whole reach, at the small one's pixels.
+#[derive(Clone, Debug)]
+struct SizeReading {
+    path: &'static str,
+    view: View,
+    /// The pixels measured, the small decal's.
+    inside: usize,
+    /// [`least_whole_offset`]'s for the small decal and for the view's whole reach.
+    small: Option<(usize, f32)>,
+    whole: Option<(usize, f32)>,
+}
+
+impl SizeReading {
+    fn faults(&self) -> Vec<String> {
+        let mut faults = Vec::new();
+        if self.inside <= 20 {
+            faults.push(format!("the small decal covers too few pixels: {}", self.inside));
+        }
+        match (self.small, self.whole) {
+            (Some((small, _)), Some((whole, _))) if small.abs_diff(whole) <= 1 => {}
+            (Some(_), Some(_)) => faults.push("their margins differ by more than a step".to_owned()),
+            _ => faults.push("one of them never shows whole".to_owned()),
+        }
+        faults
+    }
+
+    fn row(&self) -> String {
+        let margin = |reading: Option<(usize, f32)>| {
+            reading.map_or_else(|| "never whole".to_owned(), |(_, least)| format!("{least:+.3e} m"))
+        };
+        let faults = self.faults();
+        let verdict =
+            if faults.is_empty() { String::new() } else { format!("  FAILS: {}", faults.join("; ")) };
+        format!(
+            "{:>11}: {:>5} m, {:>2}°: {:>5} px, {SMALL_REACH} m round down to {}, {} m round down to {}{verdict}",
+            self.path,
+            self.view.distance,
+            self.view.angle,
+            self.inside,
+            margin(self.small),
+            self.view.reach(),
+            margin(self.whole),
+        )
+    }
+}
+
+/// The small decal's radius, a telegraph's size or so.
+const SMALL_REACH: f32 = 12.0;
+
+/// The views where a decal of the whole reach crosses the near plane, the camera standing over it, and one of
+/// [`SMALL_REACH`] doesn't come near the camera.
+const SIZE_VIEWS: [View; 2] = [View { distance: 20.0, angle: 60.0 }, View { distance: 150.0, angle: 60.0 }];
+
+/// Every view's reading on every path, none stopping the rest; and at [`SIZE_VIEWS`], a small decal's margin and
+/// the whole reach's at the same pixels.
+fn readings() -> (Vec<Reading>, Vec<SizeReading>) {
+    let mut readings = Vec::new();
+    let mut sizes = Vec::new();
+    for (path, settings) in paths() {
+        let mut harness = Harness::new(settings);
+        let mut ground = harness.add_surface(Mat4::IDENTITY, Vec3::splat(GROUND));
+        harness.render(|_| {});
+        for view in VIEWS {
+            let inside = view.inside();
+            ground.transform = view.ground(0.0);
+            harness.place(ground);
+            let lying = settled(&mut harness, settings.temporal, view.decal(0.0));
+            let expected = Vec3::splat(GROUND) + LIGHT;
+            let lying_off = inside
+                .iter()
+                .step_by(17)
+                .filter(|&&at| (lying.linear(at) - expected).abs().max_element() >= TOLERANCE)
+                .count();
+            readings.push(Reading {
+                path,
+                view,
+                inside: inside.len(),
+                lying_misses: misses(&lying, &inside),
+                lying_off,
+                // Half the way from the plane to the camera, which a decal above it mustn't pass.
+                least: least_whole_offset(
+                    &mut harness,
+                    |offset| view.decal(offset),
+                    0.5 * view.height(),
+                    &inside,
+                    settings.temporal,
+                )
+                .map(|(_, least)| least),
+            });
+        }
+        for view in SIZE_VIEWS {
+            ground.transform = view.ground(0.0);
+            harness.place(ground);
+            let inside = view.inside_of(SMALL_REACH);
+            // Both on the same steps, up to where the small one raised still covers its pixels.
+            let top = (0.5 * view.height()).min(0.1 * SMALL_REACH);
+            let mut least = |reach: f32| {
+                let decal = |offset| view.decal_of(reach, offset);
+                least_whole_offset(&mut harness, decal, top, &inside, settings.temporal)
+            };
+            let small = least(SMALL_REACH);
+            let whole = least(view.reach());
+            sizes.push(SizeReading { path, view, inside: inside.len(), small, whole });
+        }
+    }
+    (readings, sizes)
+}
+
+/// The readings as a table, one row a view and path, with what fails.
+fn table(readings: &[Reading], sizes: &[SizeReading]) -> String {
+    let rows: Vec<String> =
+        readings.iter().map(Reading::row).chain(sizes.iter().map(SizeReading::row)).collect();
+    rows.join("\n")
 }
 
 const VIEWS: [View; 12] = [
@@ -206,48 +386,28 @@ const VIEWS: [View; 12] = [
 
 /// A decal lying exactly where the ground is shows whole over it, at every pixel, from 30 cm to 150 m away and
 /// from straight above to five degrees over the ground's horizon, on every path: no z-fighting. And it draws
-/// whole sunk a little under the ground, by its bias's reach past the depths' own mismatch, which is printed per
-/// view, under two millimetres per metre away everywhere at this test's 128 pixels over 90°, where a pixel is 15
-/// times as wide as at 1080p over 60°: so a decal never visibly floats. The bias's constant and slope terms were
-/// chosen from these readbacks, with none at all to see the mismatch they must cover (the module's docs in
-/// `vfx/decal.rs`).
+/// whole sunk a little under the ground, by its pull's reach past the depths' own mismatch, under two millimetres
+/// per metre away everywhere at this test's 128 pixels over 90°, where a pixel is 15 times as wide as at 1080p
+/// over 60°: so a decal never visibly floats. The decal is as wide as the view's reach (up to 900 m round), so at
+/// 60° and 85° the camera stands over it and its quad crosses the near plane.
+///
+/// And the margin doesn't hang on the decal's size: at 60°, 20 m and 150 m away, a decal of [`SMALL_REACH`] and
+/// one of the whole reach read the same margin at the small one's pixels, a step apart at most. That's what a
+/// rasterizer's constant depth bias lacks on Direct3D and Vulkan, which size it by the quad's nearest depth: WARP
+/// let the large decal sink 4.6e-3 of the distance at 150 m (the module's docs in `vfx/decal.rs`).
+///
+/// Every view is read on every path before anything is judged, and the whole table is printed (`--nocapture`) and
+/// given with any failure. The pull and the slope term were chosen from these readbacks, with nothing at all to
+/// see the mismatch they must cover.
 #[test]
 #[ignore = "needs a GPU"]
 fn a_decal_on_the_ground_never_fights_it_near_or_far_or_grazing() {
-    for (path, settings) in paths() {
-        let mut harness = Harness::new(settings);
-        let mut ground = harness.add_surface(Mat4::IDENTITY, Vec3::splat(GROUND));
-        harness.render(|_| {});
-        for view in VIEWS {
-            let inside = view.inside();
-            assert!(
-                inside.len() > 300,
-                "{path} {view:?}: the decal fills much of the view: {}",
-                inside.len()
-            );
-            ground.transform = view.ground(0.0);
-            harness.place(ground);
-            let lying = settled(&mut harness, settings.temporal, view.decal(0.0));
-            assert_eq!(misses(&lying, &inside), 0, "{path} {view:?}: lying on the ground, it shows whole");
-            for &at in inside.iter().step_by(17) {
-                assert_near(
-                    lying.linear(at),
-                    Vec3::splat(GROUND) + LIGHT,
-                    &format!("{path} {view:?} at {at:?}"),
-                );
-            }
-            let least = least_whole_offset(&mut harness, &mut ground, view, &inside, settings.temporal);
-            eprintln!(
-                "{path}: {:>5} m, {:>2}°: shows whole down to {:+.3e} m ({:+.3e} of the distance)",
-                view.distance,
-                view.angle,
-                least,
-                least / view.distance
-            );
-            assert!(least < 0.0, "{path} {view:?}: some margin under the ground: {least}");
-            assert!(least > -2e-3 * view.distance, "{path} {view:?}: floats {least} m");
-        }
-    }
+    let (readings, sizes) = readings();
+    let table = table(&readings, &sizes);
+    eprintln!("{table}");
+    let failing = readings.iter().filter(|reading| !reading.faults().is_empty()).count()
+        + sizes.iter().filter(|reading| !reading.faults().is_empty()).count();
+    assert_eq!(failing, 0, "{failing} of {} readings fail:\n{table}", readings.len() + sizes.len());
 }
 
 /// A pixel here, radians across: 90° over 128 pixels. And one at 1080p over a 60° view.

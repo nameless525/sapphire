@@ -57,6 +57,26 @@
 //!   dropped, rejected or sized to nothing), so a cascade pass marks that it ran when it
 //!   records, and the cascades a frame planned without that mark are drawn again with the
 //!   next.
+//! - **Keeping the cascades** (M5 D8, [`ShadowSettings::cache`], [`CascadeCache`]; `Held` on every
+//!   tier, since it costs no memory). Kept, a cascade is drawn only when its fit moved or its
+//!   casters changed, on its turn for a cached one: the depth it holds is what drawing it would
+//!   write. The plan keeps per slot what each map holds (its cascade bits and levels as last drawn)
+//!   and compares the frame's casters with it, so nothing is hashed: a caster that came, left,
+//!   changed level or moved by itself leaves the maps it is in or was in stale, and foliage in the
+//!   wind the fresh cascades it is in. Moving by itself means what changes its depth without the
+//!   plan seeing a new caster list: a skinned or morphed environment instance (characters cast into
+//!   maps of their own, never the cascades), an instance moved this frame (its transform isn't the
+//!   one it was last drawn with), and, on a frame a texture was raised, lowered or rewritten, one
+//!   cast through a pipeline that reads a texture.
+//!   The slots' freed and meshed lists say what left, came or changed mesh, whatever slot it
+//!   reuses; a mesh or material replaced in place or rebuilt shaders forget every map. A lost frame
+//!   forgets each cascade it drew, as in turns, so the next frame fits and draws it again: what the
+//!   plan keeps is of what a map holds, never of what a lost frame would have drawn. Held, a cached
+//!   cascade keeps its fit on its turn until the view's has moved a 64th of its width
+//!   ([`HOLD_SHARE`]), inside the eighth it already trailed by before an early refit: a walk
+//!   redraws the far cascades every few metres instead of every other frame, and a sampled view
+//!   shows no receiver the view's fits cover left uncovered by the held ones. `Turns` draws as before, for comparisons and the
+//!   golden scenes from before it that move (the sandbox's `--shadow-cache`).
 //! - **Casters** are the depth-writing surfaces of environment instances (opaque and
 //!   alpha-tested, drawn solid but for the anime character family's, below; transparent ones cast
 //!   nothing, as in the prepasses), culled per
@@ -82,15 +102,18 @@
 //!   world-space geometry, cast as they stand. Culling pads a foliage instance's sphere by as far
 //!   as the frame's wind can carry its vertices (its materials' reach × the wind's strength × its
 //!   strongest gust), so a leaf swaying past its cooked bounds stays in the cascade it shades.
-//!   **Decision: cached cascades stay cached with foliage in them.** Their foliage casters redraw
-//!   on the cascade's turn (every other frame on every tier today), so foliage's shadows there
-//!   lag the leaves by up to a frame and move at half the frame rate. The visible effect is
-//!   small: at the sample tree's breeze, a frame moves a branch tip at most 1.6 cm and a leaf at
-//!   full flutter 3.4 cm (4 and 9 cm at 2.5 times the breeze), against the cached cascades'
-//!   texels of about 2.7 and 9.4 cm on Desktop-High at the sandbox's 43° lens, under a tent of
-//!   five of them, on plants 15 m and more away. In a gale the far dapple steps at half rate.
-//!   Redrawing both cached cascades every frame would bring back all the caster work caching
+//!   **Decision: cached cascades stay cached with foliage in them.** Drawing in turns, their
+//!   foliage casters redraw on the cascade's turn (every other frame on every tier), so foliage's
+//!   shadows there lag the leaves by up to a frame and move at half the frame rate. The visible
+//!   effect is small: at the sample tree's breeze, a frame moves a branch tip at most 1.6 cm and a
+//!   leaf at full flutter 3.4 cm (4 and 9 cm at 2.5 times the breeze), against the cached
+//!   cascades' texels of about 2.7 and 9.4 cm on Desktop-High at the sandbox's 43° lens, under a
+//!   tent of five of them, on plants 15 m and more away. In a gale the far dapple steps at half
+//!   rate. Redrawing both cached cascades every frame would bring back all the caster work caching
 //!   saves (a fourth cascade a frame on Desktop-High), which far foliage's shadows don't earn.
+//!   Kept (M5 D8), the same rule holds in every mode: the wind doesn't leave a cached cascade
+//!   stale, so a foliage shadow in one rests as last drawn until its fit moves or something else in
+//!   it changes, while the fresh cascades a windy plant is in are drawn every frame, as in turns.
 //! - **Billboards and impostors** (M2) face the light in the shadow passes without code of their
 //!   own: their vertex shaders orient cards by the view's axes (`ViewUniforms::view_from_world`),
 //!   never by the main camera, and each shadow view carries the light's axes.

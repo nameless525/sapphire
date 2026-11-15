@@ -165,8 +165,6 @@ pub(crate) struct ShadowPlan {
     /// Per cascade (M5 D8, a cache that keeps): what its map holds is no longer what its casters
     /// would draw, since something in it moved, came, left or changed its level after it drew.
     stale: [bool; MAX_CASCADES],
-    /// Per cascade: its fit before this frame planned, which a lost frame leaves its map under.
-    before: [Option<CascadeFit>; MAX_CASCADES],
     /// The draw list's build the maps were last checked against: a new one leaves every map stale.
     list_build: Option<u32>,
     /// Per instance slot: what the maps hold of it.
@@ -174,6 +172,9 @@ pub(crate) struct ShadowPlan {
     /// Per instance slot, this frame: it changes its depth without the plan seeing it (skinned or
     /// morphed, moved this frame, or reading a texture on a frame a texture changed).
     moving: Vec<bool>,
+    /// Per instance slot, this frame: foliage the wind carries, which the fresh cascades draw again
+    /// every frame and the cached ones leave at rest (the module docs).
+    windy: Vec<bool>,
     /// The cache the last frame planned with.
     cache: CascadeCache,
     /// A texture was raised, lowered or rewritten since the last frame planned: what reads one as it
@@ -383,15 +384,10 @@ impl ShadowPlan {
             if drawn.is_none() {
                 continue;
             }
+            // Kept too (M5 D8): what the plan kept of its map is of what the lost frame would have
+            // drawn, so it's fitted and drawn again, as drawing in turns does.
             self.empty[index] = false;
-            if self.cache.keeps() {
-                // Its map holds what it held under the fit it had before (M5 D8), not what the
-                // plan said it drew: it's drawn again on its next turn.
-                self.cached[index] = self.before[index];
-                self.stale[index] = true;
-            } else {
-                self.cached[index] = None;
-            }
+            self.cached[index] = None;
         }
         // The spot tiles it drew hold what they held, and a cleared layer what it held before.
         if self.spot_clear {
@@ -455,7 +451,6 @@ impl ShadowPlan {
         let period = u64::from(settings.cached_cascades).max(2);
         let turn = self.turn;
         self.turn += 1;
-        self.before = self.cached;
         self.fits = [None; MAX_CASCADES];
         let mut from = frustum.near;
         for (index, &to) in splits.iter().enumerate().take(cascades) {
@@ -468,8 +463,16 @@ impl ShadowPlan {
                 Some(cached) => {
                     let moved = (cached.center.truncate() - desired.center.truncate()).abs().max_element();
                     let on_turn = turn % period == (index - fresh) as u64;
+                    // Held, only its place is held: a new size or resolution refits it on its
+                    // turn as in turns (a new light forgets every fit).
                     let behind = if settings.cache.holds() {
-                        moved > HOLD_SHARE * 2.0 * cached.radius
+                        let same = CascadeFit {
+                            center: desired.center,
+                            near: desired.near,
+                            far: desired.far,
+                            ..cached
+                        };
+                        same != desired || moved > HOLD_SHARE * 2.0 * cached.radius
                     } else {
                         cached != desired
                     };
@@ -494,6 +497,7 @@ impl ShadowPlan {
         let period = u64::from(settings.cached_cascades).max(2);
         // `turn` moved on in `fit_kept_cascades`: this frame's is the one before.
         let turn = self.turn.wrapping_sub(1);
+        let fresh_mask = (1u8 << fresh) - 1;
         self.kept.resize(slots.len(), KeptCaster::default());
         let mut changed = 0u8;
         // What the maps held of an instance that left, and of one that came or changed mesh, in
@@ -516,7 +520,13 @@ impl ShadowPlan {
                     differs |= bit;
                 }
             }
-            let moved = if self.moving[slot] { caster.cascades | kept.maps } else { 0 };
+            let moved = if self.moving[slot] {
+                caster.cascades | kept.maps
+            } else if self.windy[slot] {
+                (caster.cascades | kept.maps) & fresh_mask
+            } else {
+                0
+            };
             changed |= differs | moved;
         }
         self.redrawn = 0;
@@ -580,6 +590,8 @@ impl ShadowPlan {
         self.characters.resize(slots.len(), SlotCharacter::Environment);
         self.moving.clear();
         self.moving.resize(slots.len(), false);
+        self.windy.clear();
+        self.windy.resize(slots.len(), false);
         self.cutout.resize(slots.len(), false);
         // Characters: the instances with an entry in the character buffer, grouped by the body
         // their entry casts with (M1 review RS-005), so each casts as the character, or the
@@ -700,8 +712,10 @@ impl ShadowPlan {
                         .filter(|record| record.lod_errors.len() > 1 && !cull.culled.whole(slot))
                         .map(|record| record.lod_errors.as_slice());
                     let stretch = max_stretch(transform);
-                    // What changes its depth without the plan seeing it (M5 D8). Not foliage in
-                    // the wind: its flutter is under the cached cascades' texels (the module docs).
+                    // What changes its depth without the plan seeing it (M5 D8). Foliage in the
+                    // wind only in the fresh cascades: its flutter is under the cached cascades'
+                    // texels (the module docs).
+                    self.windy[slot as usize] = windy;
                     self.moving[slot as usize] = deformed
                         || slots.moved(slot)
                         || (self.textures_changed && self.cutout[slot as usize]);
@@ -1159,16 +1173,18 @@ mod tests {
         packet: &FramePacket,
         slots: &mut InstanceSlots,
     ) {
-        update_capped(plan, settings, packet, slots, MAX_CAPSULES);
+        update_capped(plan, settings, packet, slots, MAX_CAPSULES, 0.0);
     }
 
-    /// [`update`] giving out at most `capsules` capsules.
+    /// [`update`] giving out at most `capsules` capsules, with every static mesh foliage the wind
+    /// carries `wind` meters.
     fn update_capped(
         plan: &mut ShadowPlan,
         settings: &ShadowSettings,
         packet: &FramePacket,
         slots: &mut InstanceSlots,
         capsules: usize,
+        wind: f32,
     ) {
         let mut list = CharacterList::default();
         list.update(packet, slots, false, None);
@@ -1194,7 +1210,7 @@ mod tests {
             packet,
             slots,
             &meshes,
-            &|_| 0.0,
+            &|_| wind,
             &list_of_draws,
             list.table(),
             (4096, 2048),
@@ -1359,9 +1375,9 @@ mod tests {
             .collect();
         let packet = packet(characters);
         let mut plain = ShadowPlan::default();
-        update_capped(&mut plain, &mobile, &packet, &mut slots(&instances), UNBINNED_CAPSULES);
+        update_capped(&mut plain, &mobile, &packet, &mut slots(&instances), UNBINNED_CAPSULES, 0.0);
         let mut binned = ShadowPlan::default();
-        update_capped(&mut binned, &mobile, &packet, &mut slots(&instances), MAX_CAPSULES);
+        update_capped(&mut binned, &mobile, &packet, &mut slots(&instances), MAX_CAPSULES, 0.0);
         assert_eq!(plain.uniforms.counts[2], UNBINNED_CAPSULES as u32);
         assert_eq!(binned.uniforms.counts[2], MAX_CAPSULES as u32, "70 characters fill the 64");
         assert_eq!(
@@ -1651,68 +1667,62 @@ mod tests {
     }
 
     #[test]
-    fn foliage_in_the_wind_rests_in_a_kept_cascade() {
-        // Its flutter is under the cached cascades' texels (the module docs): wind alone draws
-        // nothing again.
-        let slots = near_and_far();
+    fn foliage_in_the_wind_rests_in_a_kept_cascade_and_flutters_in_a_fresh_one() {
+        // Its flutter is under the cached cascades' texels (the module docs): wind alone draws no
+        // cached cascade again, and the fresh ones it is in every frame, as in turns.
+        let mut slots = near_and_far();
         let mut plan = ShadowPlan::default();
-        let frame = |plan: &mut ShadowPlan| {
-            plan.update(
-                &KEPT,
-                &packet(Vec::new()),
-                &slots,
-                &meshes(),
-                &|_| 1.0,
-                &DrawList::default(),
-                CharacterList::default().table(),
-                (4096, 2048),
-                CasterCull::NONE,
-                MAX_CAPSULES,
-            );
+        let mut frame = |plan: &mut ShadowPlan| {
+            update_capped(plan, &KEPT, &packet(Vec::new()), &mut slots, MAX_CAPSULES, 1.0);
+            slots.settle_drawn();
+            slots.apply(&InstanceDeltas { changed: Vec::new(), removed: Vec::new() });
             plan.drawn_mask()
         };
         assert_eq!(frame(&mut plan), 0b1111);
-        assert_eq!((frame(&mut plan), frame(&mut plan), plan.stats.moving_casters), (0, 0, 0));
+        for _ in 0..3 {
+            let fresh = plan.casters[0].cascades & 0b0011;
+            assert_ne!(fresh, 0, "the near cube is in a fresh cascade");
+            assert_eq!(frame(&mut plan), fresh, "the fresh cascades it is in, alone");
+            assert_eq!(plan.stats.moving_casters, 0);
+        }
     }
 
     #[test]
-    fn a_lost_frame_leaves_a_kept_cascade_as_it_held_and_drawn_again_on_its_turn() {
-        // The view moves a little each frame: the fresh cascades take its fits, the cached ones
-        // theirs on their turns. A lost frame's maps hold what they held under the fits they had,
-        // which the receivers read until each is drawn again.
-        let mut packet = packet(Vec::new());
-        let mut slots = near_and_far();
-        let mut plan = ShadowPlan::default();
-        let walk = |packet: &mut FramePacket, step: f32| {
+    fn the_cascades_a_lost_frame_drew_are_drawn_again_kept_as_in_turns() {
+        // The view moves a little each frame. A lost frame's maps hold what they held, not what it
+        // would have drawn: kept or in turns, every cascade it drew is fitted and drawn again with
+        // the next frame, at the same fits.
+        let walk = |step: f32| {
+            let mut packet = packet(Vec::new());
             let eye = Vec3::new(step, 1.5, 4.0);
             packet.views[0].camera =
                 CameraData::look_at(eye, eye - Vec3::new(0.0, 0.5, 4.0), Vec3::Y, 0.75, 1.5, 0.05);
+            packet
         };
-        masks(&mut plan, &KEPT, &packet, &mut slots, 2);
-        walk(&mut packet, 0.5);
-        update(&mut plan, &KEPT, &packet, &mut slots);
-        let lost = plan.drawn_mask();
-        assert_eq!(lost & 0b0011, 0b0011, "the fresh two refit");
-        let before = plan.before;
-        plan.not_drawn();
-        for (index, fit) in before.iter().enumerate().filter(|(index, _)| lost & 1 << index != 0) {
-            assert_eq!(plan.cached[index], *fit, "the fit cascade {index}'s map holds");
+        let mut plans = [
+            (ShadowPlan::default(), SETTINGS, near_and_far()),
+            (ShadowPlan::default(), KEPT, near_and_far()),
+        ];
+        for (plan, settings, slots) in &mut plans {
+            masks(plan, settings, &walk(0.0), slots, 2);
+            update(plan, settings, &walk(0.5), slots);
+            assert_eq!(plan.drawn_mask() & 0b0011, 0b0011, "{:?}: the fresh two refit", settings.cache);
+            plan.not_drawn();
+            slots.apply(&InstanceDeltas { changed: Vec::new(), removed: Vec::new() });
         }
-        assert!(plan.stale.iter().enumerate().all(|(index, &stale)| stale == (lost & 1 << index != 0)));
-        // Drawn again: the fresh ones next frame, a cached one lost on its turn, its fit held for
-        // the receivers until then.
-        update(&mut plan, &KEPT, &packet, &mut slots);
-        slots.settle_drawn();
-        assert_eq!(plan.drawn_mask() & 0b0011, 0b0011);
-        let mut redrawn = plan.drawn_mask() & lost;
-        for (index, fit) in before.iter().enumerate() {
-            if redrawn & 1 << index == 0 && lost & 1 << index != 0 {
-                assert_eq!(plan.cached[index], *fit, "cascade {index} held as it was");
+        let [(turns, _, turns_slots), (kept, _, kept_slots)] = &mut plans;
+        let lost = kept.drawn_mask();
+        update(turns, &SETTINGS, &walk(0.5), turns_slots);
+        update(kept, &KEPT, &walk(0.5), kept_slots);
+        assert_eq!(kept.drawn_mask() & lost, lost, "every cascade the lost frame drew is drawn again");
+        for index in 0..4 {
+            if lost & 1 << index != 0 {
+                assert_eq!(
+                    kept.cached[index], turns.cached[index],
+                    "cascade {index}: the fit drawing in turns takes"
+                );
             }
         }
-        redrawn |= masks(&mut plan, &KEPT, &packet, &mut slots, 1)[0];
-        assert_eq!(redrawn & lost, lost, "every cascade the lost frame drew is drawn again");
-        assert!(plan.stale.iter().all(|&stale| !stale));
     }
 
     #[test]
@@ -1831,6 +1841,34 @@ mod tests {
         }
         // The farthest cascade, about 85 m across here, takes a new fit every 2.7 m or so.
         assert!(held_fits[3] <= 30_u32.div_ceil(2) + 1, "{held_fits:?}");
+    }
+
+    #[test]
+    fn a_held_cascade_takes_a_new_size_on_its_turn() {
+        // The view stands still and widens its lens a little, so the far cascade grows while its
+        // place barely moves: held, it takes the wider fit on its turn all the same, as in turns,
+        // never keeping one too small for the view. (A step of the light forgets every fit.)
+        let lens = |fov: f32| {
+            let mut packet = packet(Vec::new());
+            let eye = Vec3::new(0.0, 1.5, 4.0);
+            packet.views[0].camera =
+                CameraData::look_at(eye, eye - Vec3::new(0.0, 0.4, 4.0), Vec3::Y, fov, 1.5, 0.05);
+            packet
+        };
+        let fov = (1..400)
+            .map(|step| 0.75 + step as f32 * 0.0005)
+            .find(|&fov| {
+                let (a, b) = (view_fits(&HELD, &lens(0.75))[3], view_fits(&HELD, &lens(fov))[3]);
+                b.radius > a.radius
+                    && (a.center.truncate() - b.center.truncate()).abs().max_element() < HOLD_SHARE * a.radius
+            })
+            .expect("a lens where the far cascade grows in place");
+        let mut slots = near_and_far();
+        let mut plan = ShadowPlan::default();
+        masks(&mut plan, &HELD, &lens(0.75), &mut slots, 4);
+        assert_eq!(plan.cached[3], Some(view_fits(&HELD, &lens(0.75))[3]));
+        masks(&mut plan, &HELD, &lens(fov), &mut slots, 2);
+        assert_eq!(plan.cached[3], Some(view_fits(&HELD, &lens(fov))[3]), "the wider fit");
     }
 
     /// Whether `fit` holds light-space point `at` for a receiver, as `cascade_lookup` in `frame.wgsl`

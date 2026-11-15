@@ -113,26 +113,21 @@ const SCRIPT: [Step; 33] = {
 };
 
 /// Plays [`SCRIPT`] to a renderer drawing in turns and one with `cache`. Wherever the two hold a
-/// cascade under the same fit, their maps agree texel for texel, but for two frames after a lost
-/// frame, while a kept cascade holds what it held, under the fit it held it under, until its turn
-/// (drawing in turns draws every cascade again after a loss). Returns the frames where every
-/// cascade agrees and the cascades each drew.
+/// cascade under the same fit, their maps agree texel for texel, lost frames or not: both draw again
+/// every cascade a lost frame drew. Returns the frames where every cascade agrees and the cascades
+/// each drew.
 fn against_turns(cache: CascadeCache) -> (usize, [u32; 2]) {
     let mut turns = street(cached(CascadeCache::Turns));
     let mut kept = street(cached(cache));
     let (mut agreeing, mut drawn) = (0, [0u32; 2]);
-    let mut since_loss = usize::MAX;
-    let mut before: Vec<([f32; 8], Vec<f32>)> = Vec::new();
     for (frame, step) in SCRIPT.iter().enumerate() {
         if let Step::Lost(loss, inner) = step {
             for street in [&mut turns, &mut kept] {
                 street.apply(inner);
                 street.harness.lose(*loss);
             }
-            since_loss = 0;
             continue;
         }
-        since_loss = since_loss.saturating_add(1);
         let frames = [&mut turns, &mut kept].map(|street| {
             street.apply(step);
             let frame = street.harness.render();
@@ -148,13 +143,12 @@ fn against_turns(cache: CascadeCache) -> (usize, [u32; 2]) {
                 continue;
             }
             agree = false;
-            let as_it_was = before.get(index) == Some(kept_cascade);
             // Held (`CascadeCache::Held`), a cached cascade's fit trails a moving view's.
             let trailing = cache == CascadeCache::Held && *fit != kept_cascade.0;
             assert!(
-                trailing || (since_loss <= 2 && as_it_was),
-                "{cache:?}, frame {frame} ({step:?}), cascade {index}: the maps differ {since_loss} frames after \
-                 a loss (fits equal: {}, as it was: {as_it_was}); turns {:?}, kept {:?}",
+                trailing,
+                "{cache:?}, frame {frame} ({step:?}), cascade {index}: the maps differ (fits equal: {}); \
+                 turns {:?}, kept {:?}",
                 *fit == kept_cascade.0,
                 turns_frame.stats.shadows,
                 kept_frame.stats.shadows,
@@ -168,7 +162,6 @@ fn against_turns(cache: CascadeCache) -> (usize, [u32; 2]) {
                 "{cache:?}, frame {frame} ({step:?}): pixels differ"
             );
         }
-        before.clone_from(kept_maps);
     }
     (agreeing, drawn)
 }
@@ -177,9 +170,8 @@ fn against_turns(cache: CascadeCache) -> (usize, [u32; 2]) {
 #[ignore = "needs a GPU"]
 fn kept_cascades_hold_what_drawing_in_turns_draws_under_the_same_fits() {
     let frames = SCRIPT.iter().filter(|step| !matches!(step, Step::Lost(..))).count();
-    let losses = SCRIPT.len() - frames;
     let (agreeing, drawn) = against_turns(CascadeCache::Kept);
-    assert!(agreeing + 2 * losses >= frames, "{agreeing} of {frames} frames agree");
+    assert_eq!(agreeing, frames, "every frame agrees");
     assert!(drawn[1] * 2 < drawn[0], "kept draws fewer cascades: {drawn:?}");
     // Held, the frames still from the start agree whole; a held fit moves pixels only once the view
     // has moved.

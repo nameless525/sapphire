@@ -8,9 +8,10 @@
 //! number, one identity and the project's icon, staged for each store's own package; `symbolicate` reads its
 //! crashes back with the symbols kept beside it, `symbols` writes their whole Breakpad store, and
 //! `store-shots` draws the stores' screenshots by the goldens' road. `patch` serves a release from this
-//! machine and runs Exit test 2's lane (M4 P4).
+//! machine and runs Exit test 2's lane (M4 P4), and `bench-scale` runs the benches at scale (M5 Z1).
 
 mod bench;
+mod bench_scale;
 mod cli;
 mod content;
 mod counts;
@@ -195,6 +196,19 @@ Commands:
       is read. --update rewrites the table's rows for the walks run, when a count moves on
       purpose; --walk runs one walk (desktop-high-dusk, ..., mobile-low-night), more than once
       for more. Walks' logs and what they counted are in target/counts/.
+  bench-scale prepare|plan|run|report [--preset ci|budget|double] [--smoke] [--sitting <n>]
+      [--counts] [--baseline <dir>]
+      The benches at scale (M5 Z1): every row exit tests 1, 2, 5, 6 and 7 measure, on each tier,
+      run from bench/scale.ron by sapphire_testkit scale, all under target/bench-scale/<commit>/.
+      prepare cooks both cooks of content/ and of the preset's district (the manifest's, budget:
+      check the disk first), puts each pair together, builds the release dev sandbox and records
+      the crowds' replays. plan prints the sittings (each at most ten minutes, a pair's sides
+      alternating), the minutes by tier and what is left. run runs the next sitting not yet done
+      (--sitting <n> that one, --counts the runs that read counts alone) and is resumable: a timed
+      sitting only under `slot --all --load 8` on a quiet machine. report writes report.md, each
+      tier's rows beside their budgets and beside --baseline's logs (B4's), and fails on what is
+      missing or differs between rounds. --smoke runs everything at 200 frames and 320x180 into
+      smoke/, which proves the batch runs and parses and measures nothing.
   store-shots [--scene-timeout <seconds>]
       Draw the stores' screenshots into target/store-shots/<store>/<size>/<language>/, which is
       never committed: golden scenes of the game in play, by the goldens' sandbox capture, at each
@@ -442,6 +456,7 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             args.finish(false)?;
             counts::run(&counts::Counts { update, walks: &walks, walk_timeout })
         }
+        "bench-scale" => bench_scale::run(args),
         "store-shots" => {
             let scene_timeout = args.value::<u64>("--scene-timeout")?;
             args.finish(false)?;

@@ -1,0 +1,275 @@
+// The benches at scale (M5 Z1): every run of the batch that measures what exit tests 1, 2, 5, 6 and 7 ask
+// for (m5-plan §1), on each tier. `cargo xtask bench-scale prepare|plan|run|report` runs it through
+// `sapphire_testkit scale`; docs/development-iteration.md says how to run the batch and read its report.
+//
+// Each run is one line of data. Its fields, as `sapphire_testkit::scale::manifest::Run` takes them:
+//
+// - `name`: its logs' stem, lowercase letters, digits and hyphens; `about`: what it measures, in the report.
+// - `args`: the sandbox's, after the runner's own `--bench <frames> --tier <tier> --size <size>` (and
+//   `--bench-trace` when `trace`); `{replays}` is the prepared replays' folder. `tier_args` adds a tier's own.
+// - `frames`: `Lap` (a lap of the 756 m tour at the tier's steps a frame) or `Count(n)`; `phases`: 3 for a walk
+//   or a fight (cold, CPU, GPU), 1 for a plain bench, which is how long the planner thinks it takes.
+// - `tiers`: the tiers it runs on, all when empty; `size`: its own `--size`, for a package's script that drew
+//   at another; `rounds`: in place of the manifest's.
+// - `read`: the report's tables it fills (Cpu, Gpu, Counts, Memory, Streaming, Trips, Cast, Pipelines).
+// - `variants`: a pair's sides, each a name and the arguments it adds; their order turns each round, and
+//   `rows` are the rows the pair's table shows (a bench row, a count row or a plain bench's field).
+// - `timed: false`: a run of counts alone (`--draw-every`), run in an ordinary slot by `run --counts`, whose
+//   rounds must count the same.
+// - `beside`: the baseline's run it stands beside; `serves`: the exit tests it's read for; `stands_in`: what
+//   it stands in for, where the exit test's own run can't be made yet, which the report never reads as a pass.
+//
+// Planning figures (`frames_a_second`, `startup_seconds`) are B4's walks on the M5 Mac: about 265 s a desktop
+// walk of three phases and 147 s a phone one. They size the sittings and measure nothing.
+(
+    type: "sapphire::testkit::ScaleBench",
+    version: 1,
+    data: (
+        preset: "budget",
+        rounds: 2,
+        sitting_seconds: 600,
+        load_bound: 8.0,
+        gaps: [
+            "Exit test 1: weather that moves along one walk. The night lap held wet stands beside the dry one instead.",
+            "Exit test 1: the encounter at the walk's end, a party of three kinds against twelve budget enemies. The chasers stand in for the enemies, and no run draws a party of kinds, until the district plays it.",
+            "Exit test 2: a trip from the district to another zone and back: the district has no exits, so the ward's zone-trip replay stands in for the mesh pool's floor.",
+            "Exit test 2: the 30-frame p99 of a texture's wait has no counter of its own: the worst texture debt in frames bounds it from above.",
+            "Exit test 2: loads on the frame's thread are excluded by construction and not counted.",
+            "Exit test 6: the cells' levels before and after (D6) need a cook without them, so they aren't in this batch.",
+            "Exit test 7: zero_hitches on the district waits for the district's encounter; the counting walks (no pipeline built after the load, or the bench fails) stand in.",
+        ],
+        tiers: [
+            (name: "desktop-high", size: "2560x1440", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12),
+            (name: "desktop-low", size: "1920x1080", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12),
+            (name: "mobile-high", size: "1600x740", cook: mobile, lap: 7600, frames_a_second: 170, startup_seconds: 12),
+            (name: "mobile-low", size: "1280x590", cook: mobile, lap: 3800, frames_a_second: 85, startup_seconds: 12),
+        ],
+        runs: [
+            // B4's baseline, by its exact flags: the tour at dusk and at night.
+            (
+                name: "tour-dusk",
+                about: "the tour at dusk, as B4 walked it",
+                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75"],
+                frames: Lap,
+                read: [Cpu, Gpu, Counts, Memory],
+                beside: Some("tour-dusk"),
+                serves: [1, 6],
+            ),
+            (
+                name: "tour-night",
+                about: "the tour at night, as B4 walked it",
+                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "23"],
+                frames: Lap,
+                read: [Cpu, Gpu, Counts, Memory],
+                beside: Some("tour-night"),
+                serves: [1, 6],
+            ),
+            // Exit test 1's walk: dusk into night along the lap (3.25 hours over 126.67 s), the crowd about.
+            (
+                name: "exit-walk",
+                about: "exit test 1's walk: dusk into night along the tour, the crowd about",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--day-length", "935",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Lap,
+                read: [Cpu, Gpu, Counts, Memory, Pipelines],
+                trace: true,
+                beside: Some("tour-dusk"),
+                serves: [1, 7],
+            ),
+            (
+                name: "night-weather",
+                about: "the night lap held dry against held wet",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "23", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(3800),
+                read: [Cpu, Gpu],
+                variants: [(name: "dry", args: ["--weather", "dry"]), (name: "wet", args: ["--weather", "0.8,0.4"])],
+                rows: ["cpu frame", "gpu frame", "gpu main", "gpu post", "draw calls"],
+                serves: [1],
+            ),
+            // Exit test 2: the streamer under a binding pool (half the desktops'; the phones' already bind).
+            (
+                name: "streaming",
+                about: "memory and streaming along the tour, the pool binding",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--texture-streaming", "on",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                tier_args: {
+                    "desktop-high": ["--texture-pool", "1280"],
+                    "desktop-low": ["--texture-pool", "1280"],
+                },
+                frames: Lap,
+                read: [Memory, Streaming],
+                trace: true,
+                serves: [2],
+            ),
+            (
+                name: "trip",
+                about: "a zone trip and the mesh pool's floor after it",
+                args: ["--arena", "--replay", "{replays}/zone-trip.sreplay", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(1200),
+                read: [Trips, Memory],
+                trace: true,
+                serves: [2],
+                stands_in: Some("a trip from the district to another zone and back"),
+            ),
+            // The crowd: its densest stretch held still (313.7 m along the tour, heading west), and the tour.
+            (
+                name: "crowd-hold",
+                about: "the crowd's densest stretch of the tour, held still, ambient characters on against off",
+                args: [
+                    "--zone", "district:122.3,0,-64,270", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(1200),
+                phases: 1,
+                read: [Cpu, Gpu],
+                variants: [(name: "on", args: ["--ambient", "on"]), (name: "off", args: ["--ambient", "off"])],
+                rows: ["cpu_us_p50", "cpu_us_p99", "anim_us_p50", "spring_us_p50", "gpu_frame_us", "gpu_main_us", "gpu_skinning_us", "surface_draws"],
+                serves: [5],
+            ),
+            (
+                name: "crowd-tour",
+                about: "the tour with the crowd about, ambient characters on against off",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Cast],
+                variants: [(name: "on", args: ["--ambient", "on"]), (name: "off", args: ["--ambient", "off"])],
+                rows: ["cpu frame", "animation and ik", "secondary motion", "gpu frame", "gpu main", "gpu skinning", "ambient characters in view", "skinned vertices"],
+                serves: [5],
+            ),
+            // Exit test 5's cast, stood in for until the district plays its encounter: the sandbox's `--arena` plays only
+            // code scenarios on the arena, so `party-kinds` (a content scenario) can't draw its party here.
+            (
+                name: "cast-crowd",
+                about: "fifteen chasers on the arena",
+                args: ["--arena", "--replay", "{replays}/crowd-15.sreplay", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(1800),
+                read: [Cpu, Gpu, Counts, Cast],
+                serves: [1, 5],
+                stands_in: Some("twelve budget enemies at the walk's end"),
+            ),
+            // Each package's own on/off pair.
+            (
+                name: "lods",
+                about: "levels of detail (D4, D5), on against off",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [(name: "on", args: ["--lods", "on"]), (name: "off", args: ["--lods", "off"])],
+                rows: ["gpu frame", "gpu main", "gpu shadows", "gpu prepasses", "triangles", "lod1+ draws", "level switches"],
+                serves: [6],
+            ),
+            (
+                name: "character-lods",
+                about: "characters' levels (D5) on the crowd's tour, on against off",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(3800),
+                read: [Gpu, Cast],
+                variants: [(name: "on", args: ["--character-lods", "on"]), (name: "off", args: ["--character-lods", "off"])],
+                rows: ["gpu main", "gpu skinning", "gpu prepasses", "skinned vertices", "skinned instances"],
+                serves: [5, 6],
+            ),
+            (
+                name: "character-lods-crowd",
+                about: "characters' levels (D5) among sixty chasers, on against off",
+                args: ["--arena", "--replay", "{replays}/crowd-60.sreplay", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(1800),
+                read: [Gpu, Cast],
+                variants: [(name: "on", args: ["--character-lods", "on"]), (name: "off", args: ["--character-lods", "off"])],
+                rows: ["gpu main", "gpu skinning", "animation and ik", "skinned vertices", "skinned instances"],
+                serves: [5, 6],
+            ),
+            (
+                name: "draw-runs",
+                about: "instanced runs (D2): a call a draw against the shadow views' runs",
+                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [(name: "off", args: ["--draw-runs", "off"]), (name: "shadows", args: ["--draw-runs", "shadows"])],
+                rows: ["cpu frame", "render", "gpu frame", "gpu shadows", "draw calls", "draw instances"],
+                serves: [6],
+            ),
+            (
+                name: "capsule-bins",
+                about: "the characters' capsules by cluster (L18) on the crowd's tour, on against off",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(3800),
+                read: [Gpu],
+                variants: [(name: "on", args: ["--capsule-bins", "on"]), (name: "off", args: ["--capsule-bins", "off"])],
+                rows: ["gpu frame", "gpu main", "gpu clustering and ao"],
+                serves: [5],
+            ),
+            (
+                name: "capsule-bins-hub",
+                about: "the characters' capsules by cluster (L18) at the proving hub's start, as L18 measured it",
+                args: ["--zone", "proving_hub:player_start", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(1200),
+                phases: 1,
+                read: [Gpu],
+                variants: [(name: "on", args: ["--capsule-bins", "on"]), (name: "off", args: ["--capsule-bins", "off"])],
+                rows: ["gpu_frame_us", "gpu_main_us", "gpu_clustering_ao_us"],
+                serves: [5],
+            ),
+            (
+                name: "upscaler",
+                about: "the phones' upscaler (L14), along edges against bilinear, on the street at L14's size",
+                args: ["--look-dev", "street", "--no-hot-reload", "--live-link", "off"],
+                tiers: ["mobile-high", "mobile-low"],
+                size: Some("2532x1170"),
+                frames: Count(300),
+                phases: 1,
+                read: [Gpu],
+                variants: [(name: "edge", args: ["--upscaler", "edge"]), (name: "bilinear", args: ["--upscaler", "bilinear"])],
+                rows: ["gpu_frame_us", "gpu_upscale_us", "gpu_post_total_us"],
+                serves: [6],
+            ),
+            // Exit test 7 by counts: a frame in seven drawn along the lap fails on any pipeline built after the
+            // load, with whole textures and with the streamer binding, where a frame could wait on a level.
+            (
+                name: "counted",
+                about: "the tour's counts, a frame in seven drawn, whole textures",
+                args: ["--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload", "--live-link", "off"],
+                frames: Lap,
+                phases: 1,
+                read: [Counts, Pipelines],
+                timed: false,
+                serves: [6, 7],
+            ),
+            (
+                name: "counted-streaming",
+                about: "the tour's counts, a frame in seven drawn, the streamer binding",
+                args: [
+                    "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
+                    "--texture-streaming", "on", "--no-hot-reload", "--live-link", "off",
+                ],
+                tier_args: {
+                    "desktop-high": ["--texture-pool", "1280"],
+                    "desktop-low": ["--texture-pool", "1280"],
+                },
+                frames: Lap,
+                phases: 1,
+                read: [Counts, Streaming, Pipelines],
+                timed: false,
+                serves: [2, 7],
+            ),
+        ],
+    ),
+)

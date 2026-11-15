@@ -202,25 +202,32 @@ pub fn with_content(shipped: content::Cooked) -> anyhow::Result<WithContent> {
     let lock = workspace::lock_file(&out.with_extension("lock"))?;
     let waiting = "to finish putting the content and the district together";
     workspace::wait_for_lock(&lock, File::try_lock, File::lock, waiting)?;
-    if out.exists() {
-        fs::remove_dir_all(&out)?;
-    }
-    fs::create_dir_all(&out)?;
-    link_tree(&shipped.dir, &out, &|name| name != MANIFEST)?;
-    let district = bench.dir.join(DISTRICT_PACK);
-    if !district.is_file() {
-        bail!("the {} cook in {} has no {DISTRICT_PACK}", Preset::Ci.name(), bench.dir.display());
-    }
-    link(&district, &out.join(DISTRICT_PACK))?;
-    let mut manifest = Command::new(content::pipeline()?);
-    manifest.arg("manifest").arg("--packs").arg(&out).args(["--cook", Cook::Desktop.name()]);
-    workspace::run(&mut manifest)?;
+    put_beside(&shipped.dir, &bench.dir, &out, Cook::Desktop)?;
     lock.unlock()?;
     workspace::wait_for_lock(&lock, File::try_lock_shared, File::lock_shared, waiting)?;
     Ok(WithContent { dir: out, _lock: lock, _content: shipped, _bench: bench })
 }
 
-/// A cook's release manifest, which [`with_content`] writes anew.
+/// Makes `out` anew: every file of `shipped` (a cook of `content/`) but its manifest, linked, the district's pack
+/// from `bench` (a preset's cook) beside them, and a manifest of the folder from the pipeline, so a shipping build
+/// mounts both and a `dev` one finds both. [`with_content`]'s, and the benches at scale's (M5 Z1) for each cook.
+pub fn put_beside(shipped: &Path, bench: &Path, out: &Path, cook: Cook) -> anyhow::Result<()> {
+    if out.exists() {
+        fs::remove_dir_all(out)?;
+    }
+    fs::create_dir_all(out)?;
+    link_tree(shipped, out, &|name| name != MANIFEST)?;
+    let district = bench.join(DISTRICT_PACK);
+    if !district.is_file() {
+        bail!("the benchmark's cook in {} has no {DISTRICT_PACK}", bench.display());
+    }
+    link(&district, &out.join(DISTRICT_PACK))?;
+    let mut manifest = Command::new(content::pipeline()?);
+    manifest.arg("manifest").arg("--packs").arg(out).args(["--cook", cook.name()]);
+    workspace::run(&mut manifest)
+}
+
+/// A cook's release manifest, which [`put_beside`] writes anew.
 const MANIFEST: &str = "release.smanifest";
 
 /// Links every file under `from` into `to`, keeping the tree, but a top-level entry `keep` refuses.

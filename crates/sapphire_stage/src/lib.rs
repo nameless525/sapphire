@@ -102,6 +102,7 @@ pub mod orbit;
 mod outlines;
 pub mod playable;
 pub mod pose;
+pub mod presentation_hash;
 mod readback;
 pub mod rims;
 pub mod scene;

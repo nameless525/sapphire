@@ -1432,3 +1432,73 @@ fn the_district_encounter_plays_with_no_hitch_cold_and_warm() {
         assert_eq!(most_people > 0, crowd == "on", "{what}: {most_people} people in view at most");
     }
 }
+
+/// A capture of `party-three-kinds`' first second, small, with `extra` arguments and `threads` compute
+/// workers (`SAPPHIRE_COMPUTE_THREADS`): its line of presentation hashes, from `camera=` on. Thirteen fighters,
+/// so their poses are made in jobs.
+fn presentation_hashes(temp: &Temp, name: &str, threads: Option<&str>, extra: &[&str]) -> String {
+    let path = temp.path(name);
+    let replay = workspace().join("tests/replays/party-three-kinds.sreplay");
+    let mut args = vec![
+        "--capture",
+        path.to_str().expect("UTF-8"),
+        "--capture-ticks",
+        "60",
+        "--arena",
+        "--party",
+        "--replay",
+        replay.to_str().expect("UTF-8"),
+    ];
+    args.extend_from_slice(extra);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sapphire_sandbox"));
+    command
+        .args([&args[..], &PINS].concat())
+        .env("SAPPHIRE_LOG", "info")
+        .env_remove("RUST_LOG")
+        .env("SAPPHIRE_CONTENT_DIR", content());
+    match threads {
+        Some(threads) => command.env("SAPPHIRE_COMPUTE_THREADS", threads),
+        None => command.env_remove("SAPPHIRE_COMPUTE_THREADS"),
+    };
+    let output = command.output().expect("the sandbox starts");
+    let log = log_of(&output);
+    assert!(output.status.success(), "{log}");
+    let line = log.lines().find(|line| line.contains("presentation hashes")).expect("a hashes line");
+    let hashes = &line[line.find("camera=").expect("camera's hash")..];
+    assert!(!hashes.contains("characters=0"), "nobody was tapped: {hashes}");
+    hashes.to_owned()
+}
+
+/// The value of `stage` in a line of [`presentation_hashes`].
+fn stage_of<'a>(hashes: &'a str, stage: &str) -> &'a str {
+    let start = hashes.find(&format!("{stage}=")).unwrap_or_else(|| panic!("no {stage} in: {hashes}"));
+    hashes[start..].split_whitespace().next().expect("a value")
+}
+
+/// A capture's presentation hashes (`sapphire_stage::presentation_hash`) don't follow the job system's
+/// thread count: one worker and four make the same line, so a line that differs between two machines says
+/// where their presentation parts, not how many cores they have.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn presentation_hashes_are_the_same_at_any_thread_count() {
+    let temp = Temp::new("presentation-threads");
+    let one = presentation_hashes(&temp, "one.png", Some("1"), &[]);
+    let four = presentation_hashes(&temp, "four.png", Some("4"), &[]);
+    assert_eq!(one, four);
+}
+
+/// Each stage's hash moves with that stage and what follows it, never with what comes before: with the
+/// springs off, the camera, the graph and IK are as they were, and the springs and palettes move.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn presentation_hashes_move_from_the_stage_that_moved() {
+    let temp = Temp::new("presentation-stages");
+    let on = presentation_hashes(&temp, "on.png", None, &[]);
+    let off = presentation_hashes(&temp, "off.png", None, &["--springs", "off"]);
+    for stage in ["camera", "graph", "ik", "characters"] {
+        assert_eq!(stage_of(&on, stage), stage_of(&off, stage), "{stage}: {on} against {off}");
+    }
+    for stage in ["springs", "palettes"] {
+        assert_ne!(stage_of(&on, stage), stage_of(&off, stage), "{stage}: {on} against {off}");
+    }
+}

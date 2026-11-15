@@ -62,6 +62,7 @@ use crate::animate::{SpringKey, SpringView};
 use crate::extract::{RenderPose, RenderTransform};
 use crate::ik::{IkControls, IkDriver};
 use crate::lookdev::FigureJoints;
+use crate::presentation_hash::{PoseTaps, hash_pose};
 use crate::scene::Figure;
 
 /// The moves the scripts play, as the character's graph names them.
@@ -374,6 +375,9 @@ pub struct GraphDriver {
     kind: Option<AssetId>,
     /// Its animation level and what it remembers of it (M5 C1): full unless a crowd's frame thins it.
     level: LevelState,
+    /// Its pose's hashes by stage, while a capture taps them ([`crate::presentation_hash`]); `None`, and
+    /// nothing hashed, otherwise.
+    taps: Option<PoseTaps>,
 }
 
 impl GraphDriver {
@@ -403,6 +407,25 @@ impl GraphDriver {
             posed: false,
             kind: None,
             level: LevelState::default(),
+            taps: None,
+        }
+    }
+
+    /// Hashes its pose by stage from the next frame on, or stops ([`crate::presentation_hash`]): a capture's.
+    pub fn set_taps(&mut self, on: bool) {
+        self.taps = on.then(|| self.taps.unwrap_or_default());
+    }
+
+    /// Its pose's hashes by stage for the frame it last posed, while tapped.
+    pub fn taps(&self) -> Option<PoseTaps> {
+        self.taps
+    }
+
+    /// Records the pose's locals as they are now as its graph's stage, while tapped: its model transforms
+    /// are still the last frame's until IK and `finish`, so they wait for the `ik` stage.
+    pub(crate) fn tap_graph(&mut self) {
+        if let Some(taps) = &mut self.taps {
+            taps.graph = hash_pose(self.player.pose().locals(), &[]);
         }
     }
 
@@ -636,6 +659,31 @@ impl GraphDriver {
         figure: &Figure,
         floor: Option<Mat4>,
     ) -> (SpringWork, Duration) {
+        // A stage that didn't run this frame keeps what it made when it last did: a frame drawn again at the
+        // same tick poses nothing new.
+        if let Some(taps) = &mut self.taps
+            && frame.pose_moved
+        {
+            let pose = self.player.pose();
+            taps.ik = hash_pose(pose.locals(), pose.model());
+        }
+        let result = self.step_springs(frame, grounded, figure, floor);
+        if let Some(taps) = &mut self.taps
+            && (frame.pose_moved || result.0.wrote_pose)
+        {
+            let pose = self.player.pose();
+            taps.springs = hash_pose(pose.locals(), pose.model());
+        }
+        result
+    }
+
+    fn step_springs(
+        &mut self,
+        frame: &SpringFrame,
+        grounded: bool,
+        figure: &Figure,
+        floor: Option<Mat4>,
+    ) -> (SpringWork, Duration) {
         let Some(springs) = &mut self.springs else { return (SpringWork::default(), Duration::ZERO) };
         let started = Stopwatch::start();
         // A waiting frame steps nothing, and a resting one does nothing, so they need no ground.
@@ -675,6 +723,9 @@ impl GraphDriver {
         }
         let support = self.ik.as_ref().and_then(IkDriver::ground_support);
         let evaluated = self.player.evaluate_with_support(input, clips, clips.version(), receiving, support);
+        if evaluated {
+            self.tap_graph();
+        }
         let teleports = self.player.teleports();
         let jumped = teleports != self.teleports;
         if jumped {

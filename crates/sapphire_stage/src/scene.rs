@@ -160,6 +160,7 @@ use crate::lookdev::{self, Shot, TownMeshes};
 use crate::orbit::OrbitCamera;
 #[cfg(feature = "samples")]
 use crate::outlines::{self, ROW};
+use crate::presentation_hash::PresentationHashes;
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
 #[cfg(feature = "samples")]
 use crate::shadow_party::{self, OTHERS};
@@ -1975,6 +1976,68 @@ impl Scene {
             let (motion, rig) = motion_of(driver.kind());
             driver.set_motion(motion, rig);
         }
+    }
+
+    /// Hashes every graph-posed character's pose by stage from the next frame on
+    /// ([`crate::presentation_hash`]): a capture's, so an app's frames pay nothing. Call it again before the
+    /// frame to read, for anyone stood since. Touches nothing a frame draws or extracts.
+    pub fn tap_presentation(&mut self) {
+        let world = self.ecs.world_mut();
+        for mut driver in world.query::<&mut GraphDriver>().iter_mut(world) {
+            if driver.taps().is_none() {
+                driver.bypass_change_detection().set_taps(true);
+            }
+        }
+    }
+
+    /// The last frame's presentation, hashed by stage ([`crate::presentation_hash`]); `held` is its owner's to
+    /// add. Allocates: a capture's, once.
+    pub fn presentation_hashes(&mut self) -> PresentationHashes {
+        use crate::presentation_hash::PresentationHasher;
+        let mut hashes = PresentationHashes::default();
+        let packet = self.packet();
+        let mut camera = PresentationHasher::default();
+        if let Some(view) = packet.views.first() {
+            camera.mat4(&view.camera.view);
+            camera.mat4(&view.camera.proj);
+            camera.f32s(&view.camera.position.to_array());
+        }
+        hashes.camera = camera.finish();
+        let world = self.ecs.world_mut();
+        let mut poses: Vec<_> = world.query::<(Entity, &RenderPose)>().iter(world).collect();
+        poses.sort_unstable_by_key(|&(entity, _)| entity);
+        let [mut palettes, mut morphs] = [PresentationHasher::default(); 2];
+        for (_, pose) in &poses {
+            palettes.affines(&pose.palette);
+            morphs.f32s(&pose.morph_weights);
+        }
+        (hashes.palettes, hashes.morphs) = (palettes.finish(), morphs.finish());
+        let mut taps: Vec<_> = world
+            .query::<(Entity, &GraphDriver)>()
+            .iter(world)
+            .filter_map(|(entity, driver)| driver.taps().map(|taps| (entity, taps)))
+            .collect();
+        taps.sort_unstable_by_key(|&(entity, _)| entity);
+        let [mut graph, mut ik, mut springs] = [PresentationHasher::default(); 3];
+        for (_, taps) in &taps {
+            graph.u64(taps.graph);
+            ik.u64(taps.ik);
+            springs.u64(taps.springs);
+        }
+        (hashes.graph, hashes.ik, hashes.springs) = (graph.finish(), ik.finish(), springs.finish());
+        hashes.characters = u32::try_from(taps.len()).unwrap_or(u32::MAX);
+        let mut placed: Vec<_> = world
+            .query::<(Entity, &RenderTransform)>()
+            .iter(world)
+            .map(|(entity, at)| (entity, at.0))
+            .collect();
+        placed.sort_unstable_by_key(|&(entity, _)| entity);
+        let mut instances = PresentationHasher::default();
+        for (_, at) in &placed {
+            instances.mat4(at);
+        }
+        hashes.instances = instances.finish();
+        hashes
     }
 
     /// Solves the IK of everything standing here by `body` from now on, wherever its feet and gaze have got

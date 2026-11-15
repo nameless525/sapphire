@@ -565,9 +565,19 @@ pub fn startup() {
         let guard = install_crash_capture();
         *CRASH_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = guard;
 
-        let jobs = sapphire_jobs::init(sapphire_jobs::JobConfig::default());
+        let jobs = sapphire_jobs::init(job_config(std::env::var(COMPUTE_THREADS_ENV).ok().as_deref()));
         tracing::info!(target: LOG_TARGET, topology = ?jobs.topology(), config = ?jobs.config(), "job system ready");
     });
+}
+
+/// Holds the job system's compute workers to a count, `SAPPHIRE_COMPUTE_THREADS=<n>`: a capture's run at
+/// another machine's count, such as CI's two, to show a picture doesn't follow it. Read before the options,
+/// since the job system starts first. Anything that isn't a count above zero leaves the default.
+pub const COMPUTE_THREADS_ENV: &str = "SAPPHIRE_COMPUTE_THREADS";
+
+fn job_config(threads: Option<&str>) -> sapphire_jobs::JobConfig {
+    let compute_threads = threads.and_then(|threads| threads.trim().parse::<usize>().ok()).filter(|&n| n > 0);
+    sapphire_jobs::JobConfig { compute_threads, ..sapphire_jobs::JobConfig::default() }
 }
 
 /// Command-line help requested by `--help` or `-h`. The desktop entry point prints this

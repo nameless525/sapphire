@@ -2507,6 +2507,30 @@ impl Fight {
         self.held_steps
     }
 
+    /// What its fighters hold, hashed for a capture ([`sapphire_stage::presentation_hash`]): the character's
+    /// blade's grip and transform, then each fighter's blade's grip and transform in the roster's order. `0`
+    /// with nothing held.
+    #[must_use]
+    pub fn held_hash(&self, scene: &Scene) -> u64 {
+        use sapphire_stage::presentation_hash::PresentationHasher;
+        let world = scene.world();
+        let placed = |entity| world.get::<RenderTransform>(entity).map(|at| at.0);
+        let mut hasher = PresentationHasher::default();
+        let mut any = false;
+        let mut hold = |entity, grip: &Mat4| {
+            any = true;
+            hasher.mat4(grip);
+            hasher.mat4(&placed(entity).unwrap_or(Mat4::ZERO));
+        };
+        if let Some(blade) = &self.show.blade {
+            hold(blade.entity, &blade.held_hand);
+        }
+        for (entity, grip) in self.show.arena.iter().flat_map(|arena| arena.blade_grips()).flatten() {
+            hold(entity, &grip);
+        }
+        if any { hasher.finish() } else { 0 }
+    }
+
     /// One step of the fight with no one playing it, after the scene's: the simulation, then what follows
     /// it. What's frame-rate here is the director's: a step of time is what a frame shows.
     pub fn step_alone(&mut self, scene: &mut Scene, laps: &mut FrameLaps) -> Followed {

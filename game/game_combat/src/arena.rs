@@ -1027,6 +1027,12 @@ impl ArenaActors {
         }
     }
 
+    /// Each fighter's blade, in the roster's order, with where its held pose grips it: what a capture hashes
+    /// as what's held ([`sapphire_stage::presentation_hash`]).
+    pub(crate) fn blade_grips(&self) -> impl Iterator<Item = Option<(Entity, Mat4)>> + '_ {
+        self.fighters.iter().map(|fighter| fighter.blade.map(|(entity, grip)| (entity, grip.at)))
+    }
+
     /// The key of the name of the foe the HUD shows, in the game's words, as its kind of enemy names it
     /// (M4 X2): a boss's is its bar's. Nobody's while it shows none, or one on a set no kind stood by has,
     /// such as a scenario of code's, rather than another kind's name.

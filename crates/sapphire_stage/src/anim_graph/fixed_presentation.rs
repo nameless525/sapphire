@@ -170,6 +170,10 @@ impl FixedBodyRenderer {
             rig.head = figure.head;
         }
         self.last_pose = key;
+        // The simulation solved it: what it publishes is its graph's stage.
+        if pose_moved {
+            driver.tap_graph();
+        }
         let ticks = self.impact_release.map_or_else(|| body_ticks(span), |(_, ticks)| ticks);
         let frame = SpringFrame {
             world_from_model: Affine3A::from_mat4(Mat4::from(root)),

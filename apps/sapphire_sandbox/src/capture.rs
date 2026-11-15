@@ -236,6 +236,8 @@ pub(crate) fn run(
         frames.first_tick(ticks).ok_or_else(|| AppInitError::msg("capture frames start before tick 0"))?;
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    // Each graph-posed character's pose is hashed by stage as it's made, for the line beside the picture.
+    stage.scene.tap_presentation();
     for _ in 0..first {
         step(&mut Capturing { stage, view: &view }, through)?;
     }
@@ -252,6 +254,8 @@ pub(crate) fn run(
     if earlier > 0 {
         let draw_every = draw_every.map(NonZeroU32::get);
         for frame in 0..earlier {
+            // Whoever stood since the last frame (a fight's fighters stand as their actors appear) is tapped too.
+            stage.scene.tap_presentation();
             stage.lose_frames = draw_every.is_some_and(|every| frame % every != 0);
             drawn += u32::from(!stage.lose_frames);
             let drawn = match &sequence {
@@ -274,6 +278,7 @@ pub(crate) fn run(
     }
     // Every step has run: a world that isn't the recorded one doesn't become a picture.
     stage.show.fight.check().map_err(AppInitError::msg)?;
+    stage.scene.tap_presentation();
     let pixels = render(stage, width, height)?;
     write_capture(&stage.gpu, path, (width, height), &pixels)?;
     if let Some(dir) = &sequence {
@@ -296,6 +301,11 @@ pub(crate) fn run(
         first_use = builds.first_use_builds,
         "captured frame"
     );
+    // The captured frame's CPU-side presentation by stage: where two machines' pictures part, if before
+    // the GPU (`sapphire_stage::presentation_hash`).
+    let mut hashes = stage.scene.presentation_hashes();
+    hashes.held = stage.show.fight.held_hash(&stage.scene);
+    tracing::info!(target: LOG_TARGET, %hashes, "presentation hashes");
     Ok(())
 }
 

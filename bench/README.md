@@ -92,7 +92,9 @@ them and a release manifest naming both (`sapphire_pipeline manifest`). The gold
   pack to the same bytes on Linux, Windows and macOS as they hold the shipped packs.
 - **Every night** (and on a dispatch of CI), the scale lane walks the tour at each tier's settings, dusk and
   night, a job each, and holds what each walk counted to `tests/counts/district-ci.txt` (`cargo xtask
-  counts`; `docs/development-iteration.md` says what to run when a count moves).
+  counts`; `docs/development-iteration.md` says what to run when a count moves). The phone tiers' walks read
+  the mobile pair, which `--with-content --cook mobile` puts in `target/bench/ci/with-content/mobile/` and
+  those runs alone cook and bundle (M5 Z3).
 
 The `ci` cook took 19 s on the M5 (cold cache, under a load of about 20): 158 assets into a 10.8 MB
 `zone_district.spack` and a 1.2 MB `shared.spack` of the cast, which no test mounts.

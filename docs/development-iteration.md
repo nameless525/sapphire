@@ -278,7 +278,7 @@ entry there. Everything goes under `target/bench-scale/<commit>/` (with `-dirty`
 which is never committed:
 
 ```sh
-cargo xtask bench-scale prepare            # cook both cooks and the budget district, build, record replays
+cargo xtask bench-scale prepare            # cook both cooks with the kinds, and the budget district; build; replays
 cargo xtask bench-scale plan               # the sittings, the minutes by tier, what is left
 cargo xtask bench-scale run --counts       # the counting walks, in any slot: no time is read
 cargo xtask bench-scale run                # the next timed sitting, with nothing else running
@@ -286,7 +286,12 @@ cargo xtask bench-scale report --baseline <dir>   # report.md beside the logs
 ```
 
 `prepare` takes gigabytes and most of an hour cold (two budget cooks of about 1.1 GB each, beside
-`target/bench/`'s cache): check the disk first. Each sitting plans at most ten minutes by its units' stated
+`target/bench/`'s cache): check the disk first. Past `ci` its content is the kinds part's (M5 C12b,
+[bench/README.md](../bench/README.md)'s "The kinds"): `content/` with the party's kinds and the wave's made
+again at the preset's rows under their shipped IDs, about 20 s a cook beside a warm content cache, and
+0.8 GB of loose files and packs. `cargo xtask bench-content --preset budget --with-content [--cook mobile]`
+makes the same root by itself, in `target/bench/budget/with-content/<cook>/`, for a run outside the batch.
+Each sitting plans at most ten minutes by its units' stated
 lengths, so one quiet stretch of the machine covers it; a pair's two sides run in the same sitting, their order turned
 each round, and the rounds are sittings apart. `run` is resumable: it skips every unit whose status file says
 it finished, and prints the sittings left; `--sitting <n>` runs one again. A timed reading records the load at

@@ -21,6 +21,7 @@ cook `content/` alone; `bench/` sits beside it, never in it.
 |---|---|---|
 | `district/` | M5 B2 | `district.ron`: the streets, building variants, props, lanterns, dressing and look, and each preset's scale. `district_day.ron`: its dusk and night keys. `prefabs/`: the props, from parametric shapes and builtins. `surfaces/`: procedural texture specs (`.ptex.ron`), the families the texture sets are varied from. The plaza's fight is code (`sapphire_synthetic_zone::district`), and so is what a body meets (M5 B5): the ground and a box a block, the same at every preset, which the generator writes as `district.colliders.ron` |
 | `cast/` | M5 B3 | `cast.ron`: each figure and what each preset makes of it. `figures/`: figure specs (the hero, an enemy, six ambient figures), built as `tools/figures/` specs are |
+| `kinds.ron` | M5 C12b | The shipped kinds a preset makes again at spec §3.4's rows, from their specs in `tools/figures/`: see "The kinds", below |
 
 Each folder is a part with a generator of its own in `sapphire_pipeline::bench` (`district.rs`, `cast.rs`),
 which reads only its folder, so the district and the cast grow without touching each other's files. A part
@@ -54,6 +55,30 @@ three up the avenue into the plaza, whose twelve come at it. Only a `dev` build'
 hand the district's builder over, so a `dev` sandbox plays it, with the hub's people about the plaza:
 `SAPPHIRE_CONTENT_DIR=<folder>/ sapphire_sandbox --arena --replay tests/replays/district-encounter.sreplay --party
 --mount zone_proving_hub --bench 1 --draw-every 50 --tier desktop-high --size 64x36`.
+
+## The kinds (M5 C12b)
+
+The party's kinds ship small, which is what the goldens and CI cook: Aster 6,944 triangles, Wren 7,056, maps
+of 256. Exit test 5 asks for them at the hero row, so every preset past `ci` also makes the **kinds part**:
+`sapphire_pipeline gen-kinds` links `content/` into `target/bench/<preset>/kinds/source/`, writes over it the
+figures `kinds.ron` names, made again from their committed specs at the preset's scale (the cast's
+`FigureScale`: detail, maps, exact triangles), and the tree cooks as `content/` does, through its cache, into
+`target/bench/<preset>/kinds/<cook>/`. Only generated files are written over (the model, its maps, the face's
+masks, the matcap), and a map's sidecar where its size takes a cook's cap: every hand-written sidecar and
+document is the shipped one, so every ID stands and the same scenario, replay and documents play at the row.
+Nothing in `content/` changes; a file is unlinked before it's written.
+
+At `budget`: Aster at 80,000 triangles (the row), Wren at 83,808 (her detail 4: 4.8% over the row, since
+detail is a whole step and her spec wasn't shaped to land on it as Aster's was), both with 2K maps that store
+1K on mobile, and the Ember Lancer's maps at 1K (its 8,000 triangles are its row). The heroine's model is
+authored, not generated, and within the row at 36,470: the party is 200,278 triangles against the row's
+240,000 for three. `every_budget_kind_cooks_at_its_row` holds each cell.
+
+`cargo xtask bench-content --preset budget [--cook mobile]` cooks the kinds part after the district, and
+`--with-content` puts the two together in `target/bench/budget/with-content/<cook>/` with a manifest naming
+both: **the one root a run at the preset mounts**, the district's walks, the arena's fight of the party
+(`--arena --party --replay tests/replays/party-three-kinds.sreplay`) and the district's encounter.
+`cargo xtask bench-scale prepare` makes its roots the same way.
 
 ## In CI (M5 X4)
 

@@ -5,6 +5,9 @@ The producer builds every test executable the lanes run, the dev sandbox and the
 the desktop content. A lane restores each file where Cargo put it, so the absolute paths the tests were
 compiled with (`CARGO_BIN_EXE_*`, `CARGO_MANIFEST_DIR`, `CARGO_TARGET_TMPDIR`) hold on any runner with the
 same checkout path, and runs a test executable from its package's directory, as `cargo test` does.
+
+`create --tests-only` packages the test executables alone, with no sandbox, tool or cook: the WARP GPU
+tests' shards run them that way (`gpu_test_shards.py`).
 """
 
 import argparse
@@ -20,7 +23,7 @@ import tarfile
 
 from golden_bundle import digest, verify_checkout
 
-FORMAT = 1
+FORMAT = 2
 # What the lanes run beside the tests: the sandbox the tests start (`CARGO_BIN_EXE_sapphire_sandbox`, the
 # editor's tests and the live-link smoke) and the live-link tool.
 BINARIES = ("target/debug/sapphire_sandbox", "target/debug/sapphire_livelink")
@@ -44,14 +47,15 @@ def safe_relative(name: str) -> bool:
 
 
 def tests_from_messages(workspace: Path, messages: list[Path]) -> dict:
-    """Each integration test executable in Cargo's JSON messages, by target name: where it is and its package."""
+    """Each test executable in Cargo's JSON messages (an integration test's, or a library's unit tests'), by
+    target name: where it is and its package."""
     tests = {}
     for path in messages:
         for line in path.read_text().splitlines():
             if not line.startswith("{"):
                 continue
             message = json.loads(line)
-            if message.get("reason") != "compiler-artifact" or message["target"]["kind"] != ["test"]:
+            if message.get("reason") != "compiler-artifact" or not message["profile"]["test"]:
                 continue
             if not message.get("executable"):
                 continue
@@ -67,20 +71,25 @@ def tests_from_messages(workspace: Path, messages: list[Path]) -> dict:
     return tests
 
 
-def create(workspace: Path, archive: Path, commit: str, messages: list[Path]) -> dict:
+def binaries(tests_only: bool) -> set[str]:
+    return set() if tests_only else set(BINARIES)
+
+
+def create(workspace: Path, archive: Path, commit: str, messages: list[Path], tests_only: bool = False) -> dict:
     tests = tests_from_messages(workspace, messages)
-    files = {name: workspace / name for name in BINARIES}
+    files = {} if tests_only else {name: workspace / name for name in BINARIES}
     for test in tests.values():
         files[test["path"]] = workspace / test["path"]
-    content = workspace / CONTENT
-    if not (content / "shared.spack").is_file():
-        raise ValueError("The completed desktop cook must contain shared.spack")
-    for path in sorted(content.rglob("*")):
-        if path.is_symlink():
-            raise ValueError(f"Symbolic links are not app test inputs: {path}")
-        if path.is_file():
-            files[path.relative_to(workspace).as_posix()] = path
-    executables = set(BINARIES) | {test["path"] for test in tests.values()}
+    if not tests_only:
+        content = workspace / CONTENT
+        if not (content / "shared.spack").is_file():
+            raise ValueError("The completed desktop cook must contain shared.spack")
+        for path in sorted(content.rglob("*")):
+            if path.is_symlink():
+                raise ValueError(f"Symbolic links are not app test inputs: {path}")
+            if path.is_file():
+                files[path.relative_to(workspace).as_posix()] = path
+    executables = binaries(tests_only) | {test["path"] for test in tests.values()}
     records = {}
     for name, path in files.items():
         if not safe_relative(name) or not path.is_file() or path.is_symlink():
@@ -91,7 +100,7 @@ def create(workspace: Path, archive: Path, commit: str, messages: list[Path]) ->
             # Artifact transport loses filesystem modes; the inner tar restores these.
             "mode": 0o755 if name in executables else 0o644,
         }
-    manifest = {"format": FORMAT, "commit": commit, "tests": tests, "files": records}
+    manifest = {"format": FORMAT, "commit": commit, "tests_only": tests_only, "tests": tests, "files": records}
     encoded = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     archive.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "w:gz", compresslevel=1) as target:
@@ -112,11 +121,11 @@ def create(workspace: Path, archive: Path, commit: str, messages: list[Path]) ->
     return manifest
 
 
-def allowed(name: str, test_paths: set[str]) -> bool:
-    """Only the binaries, the cook and the tests, each where the build put it."""
-    if name in BINARIES or name in test_paths:
+def allowed(name: str, test_paths: set[str], tests_only: bool) -> bool:
+    """Only the binaries, the cook and the tests, each where the build put it; only the tests if tests only."""
+    if name in binaries(tests_only) or name in test_paths:
         return True
-    return name.startswith(CONTENT + "/")
+    return not tests_only and name.startswith(CONTENT + "/")
 
 
 def unpack(workspace: Path, archive: Path, commit: str) -> dict:
@@ -137,6 +146,9 @@ def unpack(workspace: Path, archive: Path, commit: str) -> dict:
             raise ValueError("App test inputs belong to a different commit or format")
         records = manifest.get("files")
         tests = manifest.get("tests")
+        tests_only = manifest.get("tests_only")
+        if not isinstance(tests_only, bool):
+            raise ValueError("The app test manifest must say whether it holds the tests only")
         if not isinstance(records, dict) or set(records) != {m.name for m in members if m.name != "manifest.json"}:
             raise ValueError("App test manifest and archive inventory differ")
         if not isinstance(tests, dict) or not tests:
@@ -155,8 +167,8 @@ def unpack(workspace: Path, archive: Path, commit: str) -> dict:
             ):
                 raise ValueError(f"Invalid app test entry: {name}")
             test_paths.add(test["path"])
-        executables = set(BINARIES) | test_paths
-        required = executables | {CONTENT + "/shared.spack"}
+        executables = binaries(tests_only) | test_paths
+        required = executables if tests_only else executables | {CONTENT + "/shared.spack"}
         if not required.issubset(records):
             raise ValueError("Required app test inputs are missing")
         folded = [name.casefold() for name in records]
@@ -169,7 +181,7 @@ def unpack(workspace: Path, archive: Path, commit: str) -> dict:
             if (
                 not isinstance(record, dict)
                 or not safe_relative(member.name)
-                or not allowed(member.name, test_paths)
+                or not allowed(member.name, test_paths, tests_only)
                 or not member.isfile()
                 or member.size != record.get("bytes")
                 or record.get("mode") != (0o755 if member.name in executables else 0o644)
@@ -217,6 +229,7 @@ def main() -> int:
     create_command.add_argument("--archive", required=True, type=Path)
     create_command.add_argument("--commit", required=True)
     create_command.add_argument("--messages", required=True, type=Path, nargs="+")
+    create_command.add_argument("--tests-only", action="store_true", help="the test executables alone")
     unpack_command = commands.add_parser("unpack")
     unpack_command.add_argument("--archive", required=True, type=Path)
     unpack_command.add_argument("--commit", required=True)
@@ -230,7 +243,7 @@ def main() -> int:
         return run(workspace, args.test, arguments)
     verify_checkout(args.commit)
     if args.command == "create":
-        create(workspace, args.archive, args.commit, args.messages)
+        create(workspace, args.archive, args.commit, args.messages, args.tests_only)
     else:
         unpack(workspace, args.archive, args.commit)
     return 0

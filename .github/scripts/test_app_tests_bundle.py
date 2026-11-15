@@ -26,11 +26,13 @@ class AppTestsBundleTests(unittest.TestCase):
         self.commit = "a" * 40
         self.enterContext(redirect_stdout(io.StringIO()))
 
-    def message(self, package, test, executable, kind=("test",)):
+    def message(self, package, test, executable, kind=("test",), test_profile=None):
         return json.dumps({
             "reason": "compiler-artifact",
             "manifest_path": str(self.workspace / package / "Cargo.toml"),
             "target": {"name": test, "kind": list(kind)},
+            # A library built for its unit tests has the test profile and an executable.
+            "profile": {"test": kind == ("test",) if test_profile is None else test_profile},
             "executable": str(self.workspace / executable) if executable else None,
         })
 
@@ -127,6 +129,64 @@ class AppTestsBundleTests(unittest.TestCase):
         self.assertEqual(arguments, ["--ignored", "--exact", "a_test"])
         with self.assertRaisesRegex(ValueError, "No app test named"):
             app_tests_bundle.run(self.consumer, "wins_the_wards", [])
+
+    def fixture_tests_only(self):
+        """The WARP GPU tests' bundle: an integration test and a library's unit tests, with no sandbox or cook."""
+        self.fixture()
+        (self.workspace / "target/debug/deps/sapphire_render-0a1b2c3d").write_bytes(b"unit test bytes")
+        (self.workspace / "crates/sapphire_render").mkdir(parents=True, exist_ok=True)
+        (self.consumer / "crates/sapphire_render").mkdir(parents=True, exist_ok=True)
+        lines = [
+            self.message("apps/sapphire_sandbox", "replays", "target/debug/deps/replays-4567ef01"),
+            self.message("crates/sapphire_render", "sapphire_render", "target/debug/deps/sapphire_render-0a1b2c3d",
+                         kind=("lib",), test_profile=True),
+            self.message("crates/sapphire_core", "sapphire_core", None, kind=("lib",)),
+        ]
+        self.messages.write_text("\n".join(lines) + "\n")
+        return app_tests_bundle.create(self.workspace, self.archive, self.commit, [self.messages], tests_only=True)
+
+    def test_tests_only_carries_unit_and_integration_tests_and_nothing_else(self):
+        expected = self.fixture_tests_only()
+        self.assertTrue(expected["tests_only"])
+        self.assertEqual(
+            expected["tests"],
+            {
+                "replays": {"path": "target/debug/deps/replays-4567ef01", "package": "apps/sapphire_sandbox"},
+                "sapphire_render": {"path": "target/debug/deps/sapphire_render-0a1b2c3d", "package": "crates/sapphire_render"},
+            },
+        )
+        self.assertEqual(set(expected["files"]), {test["path"] for test in expected["tests"].values()})
+        actual = app_tests_bundle.unpack(self.consumer, self.archive, self.commit)
+        self.assertEqual(actual, expected)
+        self.assertEqual((self.consumer / "target/debug/deps/sapphire_render-0a1b2c3d").read_bytes(), b"unit test bytes")
+        self.assertFalse((self.consumer / "target/debug/sapphire_sandbox").exists())
+        self.assertFalse((self.consumer / "target/content").exists())
+
+    def test_tests_only_refuses_the_sandbox_or_the_cook(self):
+        for name in ("target/debug/sapphire_sandbox", "target/content/desktop/shared.spack"):
+            with self.subTest(name=name):
+                self.fixture_tests_only()
+                def mutate(entries):
+                    metadata, encoded = entries[0]
+                    manifest = json.loads(encoded)
+                    data = b"extra"
+                    mode = 0o755 if name in app_tests_bundle.BINARIES else 0o644
+                    manifest["files"][name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "mode": mode}
+                    return [(metadata, json.dumps(manifest).encode())] + entries[1:] + [(tarfile.TarInfo(name), data)]
+                self.rewrite(mutate)
+                self.assert_refused()
+
+    def test_a_manifest_that_does_not_say_whether_it_is_tests_only_is_refused(self):
+        for value in (None, "yes"):
+            with self.subTest(value=value):
+                self.fixture()
+                def change(manifest):
+                    if value is None:
+                        del manifest["tests_only"]
+                    else:
+                        manifest["tests_only"] = value
+                self.rewrite_manifest(change)
+                self.assert_refused()
 
     def test_two_executables_for_one_test_cannot_be_packaged(self):
         other = self.message("game/game_app", "wins_the_ward", "target/debug/deps/wins_the_ward-feedface")

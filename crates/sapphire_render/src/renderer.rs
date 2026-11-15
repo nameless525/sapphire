@@ -705,8 +705,9 @@ pub struct Renderer {
     character_prepass: CharacterPrepassTargets,
     /// Scratch for counting the characters with the bangs' shadow.
     character_scratch: Vec<u32>,
-    /// The key light's shadow maps, their passes and each frame's plan.
-    shadows: Shadows,
+    /// The key light's shadow maps, their passes and each frame's plan. Boxed: with the spot tiles it
+    /// is the largest thing a renderer holds.
+    shadows: Box<Shadows>,
     /// The wind foliage sways in, this frame's and the last drawn one's.
     wind: FoliageWind,
     /// The ambient probe grid, the reflection cube, GTAO and their passes (M1 W5).
@@ -1104,7 +1105,7 @@ impl Renderer {
             characters,
             character_prepass,
             character_scratch: Vec::new(),
-            shadows,
+            shadows: Box::new(shadows),
             wind,
             ambient,
             meshes,

@@ -3,7 +3,7 @@
 // scenario lists is; this is what draws her.
 (
     type: "sapphire::moves::PlayableDocument",
-    version: 2,
+    version: 3,
     data: (
         // Her name's key in the game's words, which the HUD names her by: Aster.
         name: "character-name-aster",
@@ -20,28 +20,6 @@
             seed: 2,
             // She fights with her fists and feet: nothing in her hands.
             held: None,
-            // Where her body meets what it touches, by the figure's joints.
-            body_contacts: [
-                "hips",
-                "spine",
-                "upper_chest",
-                "neck",
-                "head",
-                "upperleg.l",
-                "lowerleg.l",
-                "foot.l",
-                "toes.l",
-                "upperleg.r",
-                "lowerleg.r",
-                "foot.r",
-                "toes.r",
-                "upperarm.l",
-                "lowerarm.l",
-                "hand.l",
-                "upperarm.r",
-                "lowerarm.r",
-                "hand.r",
-            ],
             // A little softer than at rest.
             expression: Some((preset: "relaxed", weight: 0.25)),
             // `hero.motion.ron`: the shared springs' numbers, with her skirt worn as cloth.

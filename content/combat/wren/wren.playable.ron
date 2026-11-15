@@ -4,7 +4,7 @@
 // the kind.
 (
     type: "sapphire::moves::PlayableDocument",
-    version: 2,
+    version: 3,
     data: (
         // The name's key in the game's words, which the HUD names the kind by: Wren.
         name: "character-name-wren",
@@ -21,28 +21,6 @@
             seed: 3,
             // The staff is skinned to `handslot.r`: nothing else in the hands.
             held: None,
-            // Where the body meets what it touches, by the figure's joints: Aster's frame, joint for joint.
-            body_contacts: [
-                "hips",
-                "spine",
-                "upper_chest",
-                "neck",
-                "head",
-                "upperleg.l",
-                "lowerleg.l",
-                "foot.l",
-                "toes.l",
-                "upperleg.r",
-                "lowerleg.r",
-                "foot.r",
-                "toes.r",
-                "upperarm.l",
-                "lowerarm.l",
-                "hand.l",
-                "upperarm.r",
-                "lowerarm.r",
-                "hand.r",
-            ],
             // A little sterner than at rest.
             expression: Some((preset: "angry", weight: 0.15)),
             // `wren.motion.ron`: the shared springs' numbers, with the coat's tails worn as cloth.

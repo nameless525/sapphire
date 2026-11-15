@@ -19,7 +19,6 @@
                 offset: (0.0, 0.0, 0.4),
                 rotation: (0.0, 0.0, 0.0, 1.0),
             )),
-            body_contacts: ["hips", "foot.l", "foot.r"],
             expression: Some((preset: "relaxed", weight: 0.35)),
         ),
     ),

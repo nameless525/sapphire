@@ -3,7 +3,7 @@
 //!
 //! - **What there is:** a playable kind is a document, `<name>.playable.ron` (`sapphire_moves`'s
 //!   `PlayableDocument`), cooked beside its moves: its mesh and rig, its graph, the weapon it holds and the
-//!   joint that holds it, the joints its body touches by, the face it rests on, and its name in the game's
+//!   joint that holds it, the face it rests on, and its name in the game's
 //!   words. [`look`] reads one by its ID, as `enemy::Look::of` reads an enemy's; nothing here names a mesh,
 //!   a rig, a socket or a joint. None of it reaches a step: the stock arena binds its player's body by its
 //!   own numbers (`fight::stock_arena`, M5 Z3), and checks only that the kind it draws names that body's

@@ -3639,7 +3639,6 @@ mod tests {
             graph: GRAPH,
             seed: 1,
             held: None,
-            body_contacts: Vec::new(),
             expression: Some((sapphire_assets::rig::ExpressionPreset::Relaxed, 0.35)),
             motion: None,
         }

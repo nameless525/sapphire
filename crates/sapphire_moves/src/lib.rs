@@ -262,8 +262,8 @@ pub use enemy::{
 };
 pub use movement::{ControllerProfile, MAX_JUMP_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError};
 pub use playable::{
-    ArchivedPlayable, HeldWeapon, HeldWeaponDocument, MAX_BODY_CONTACTS, NAME_PREFIX, PLAYABLE_EXTENSION,
-    Playable, PlayableDocument, PlayableError, PlayableLookDocument, RIG_SUB_ASSET, RestExpression, RestPose,
+    ArchivedPlayable, HeldWeapon, HeldWeaponDocument, NAME_PREFIX, PLAYABLE_EXTENSION, Playable,
+    PlayableDocument, PlayableError, PlayableLookDocument, RIG_SUB_ASSET, RestExpression, RestPose,
 };
 pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,

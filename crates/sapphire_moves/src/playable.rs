@@ -4,7 +4,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::moves::PlayableDocument",
-//!     version: 2,
+//!     version: 3,
 //!     data: (
 //!         // The key of its name in the game's words: what the party's slots on the HUD call it.
 //!         name: "character-name-wanderer",
@@ -13,7 +13,6 @@
 //!         look: (
 //!             mesh: "...", rig: "...", graph: "...", seed: 1,
 //!             held: Some((mesh: "...", joint: "J_Bip_R_Hand", offset: (0.0, 0.0, 0.4), rotation: (0.0, 0.0, 0.0, 1.0))),
-//!             body_contacts: ["J_Bip_C_Hips", "J_Bip_L_Foot", "J_Bip_R_Foot"],
 //!             expression: Some((preset: "relaxed", weight: 0.35)),
 //!             // Its own `.motion.ron`, if it has one (M5 C4): the shared motion document otherwise.
 //!             motion: Some("..."),
@@ -57,9 +56,6 @@ pub const RIG_SUB_ASSET: &str = "rig";
 /// The prefix of every playable kind's name: the HUD reads a character's name under it (`hud.ui.ron`).
 pub const NAME_PREFIX: &str = "character-name-";
 
-/// Most joints a kind's body binds by.
-pub const MAX_BODY_CONTACTS: usize = 32;
-
 /// A playable kind's document, `.playable.ron`, which compiles to a [`Playable`].
 #[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[type_path = "sapphire::moves"]
@@ -75,11 +71,67 @@ pub struct PlayableDocument {
 }
 
 impl Versioned for PlayableDocument {
-    /// 1: M5 C8. 2: M5 C4, `look.motion`; a version 1 document reads as it is, with none.
-    const VERSION: u32 = 2;
+    /// 1: M5 C8. 2: M5 C4, `look.motion`; a version 1 document reads as it is, with none. 3: M5 Z3,
+    /// `look.body_contacts` gone, which nothing read once a fight bound its bodies by its own joints; a
+    /// version 1 or 2 document that writes it reads with it dropped.
+    const VERSION: u32 = 3;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
-        decode_versioned::<v1::PlayableDocument, D>(version, data).map(Into::into)
+        match version {
+            1 => decode_versioned::<v1::PlayableDocument, D>(version, data).map(Into::into),
+            _ => decode_versioned::<v2::PlayableDocument, D>(version, data).map(Into::into),
+        }
+    }
+}
+
+/// The document as M5 C4 wrote it, with the joints a body touched by, which nothing reads.
+mod v2 {
+    use sapphire_reflect::Versioned;
+    use sapphire_serialize::AssetId;
+    use serde::Deserialize;
+
+    use super::{HeldWeaponDocument, RestExpression};
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct PlayableDocument {
+        name: String,
+        moves: AssetId,
+        look: PlayableLookDocument,
+    }
+
+    impl Versioned for PlayableDocument {
+        const VERSION: u32 = 2;
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct PlayableLookDocument {
+        mesh: AssetId,
+        rig: AssetId,
+        graph: AssetId,
+        seed: u32,
+        #[serde(default)]
+        held: Option<HeldWeaponDocument>,
+        #[serde(default)]
+        #[expect(dead_code, reason = "read so an older document parses, and dropped")]
+        body_contacts: Vec<String>,
+        #[serde(default)]
+        expression: Option<RestExpression>,
+        #[serde(default)]
+        motion: Option<AssetId>,
+    }
+
+    impl From<PlayableDocument> for super::PlayableDocument {
+        fn from(old: PlayableDocument) -> Self {
+            let PlayableLookDocument { mesh, rig, graph, seed, held, body_contacts: _, expression, motion } =
+                old.look;
+            Self {
+                name: old.name,
+                moves: old.moves,
+                look: super::PlayableLookDocument { mesh, rig, graph, seed, held, expression, motion },
+            }
+        }
     }
 }
 
@@ -113,6 +165,7 @@ mod v1 {
         #[serde(default)]
         held: Option<HeldWeaponDocument>,
         #[serde(default)]
+        #[expect(dead_code, reason = "read so an older document parses, and dropped")]
         body_contacts: Vec<String>,
         #[serde(default)]
         expression: Option<RestExpression>,
@@ -120,20 +173,12 @@ mod v1 {
 
     impl From<PlayableDocument> for super::PlayableDocument {
         fn from(old: PlayableDocument) -> Self {
-            let PlayableLookDocument { mesh, rig, graph, seed, held, body_contacts, expression } = old.look;
+            let PlayableLookDocument { mesh, rig, graph, seed, held, body_contacts: _, expression } =
+                old.look;
             Self {
                 name: old.name,
                 moves: old.moves,
-                look: super::PlayableLookDocument {
-                    mesh,
-                    rig,
-                    graph,
-                    seed,
-                    held,
-                    body_contacts,
-                    expression,
-                    motion: None,
-                },
+                look: super::PlayableLookDocument { mesh, rig, graph, seed, held, expression, motion: None },
             }
         }
     }
@@ -155,11 +200,6 @@ pub struct PlayableLookDocument {
     /// The weapon it holds that isn't skinned in, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldWeaponDocument>,
-    /// The joints where its body meets what it touches, by its skeleton's names. Nothing reads them now: a
-    /// fight that binds a body binds it by joints compiled into the fight (M5 Z3), since a step may read
-    /// nothing a patch can change.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub body_contacts: Vec<String>,
     /// The expression its face rests on, if any: a preset its rig knows, by name, and how much of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression: Option<RestExpression>,
@@ -245,7 +285,6 @@ impl PlayableDocument {
                 offset: held.offset,
                 rotation: held.rotation,
             }),
-            body_contacts: look.body_contacts.clone(),
             expression: look
                 .expression
                 .as_ref()
@@ -283,14 +322,13 @@ pub struct Playable {
     pub graph: AssetId,
     pub seed: u32,
     pub held: Option<HeldWeapon>,
-    pub body_contacts: Vec<String>,
     pub expression: Option<RestPose>,
     pub motion: Option<AssetId>,
 }
 
 impl Versioned for Playable {
-    /// 1: M5 C8. 2: M5 C4, `motion`.
-    const VERSION: u32 = 2;
+    /// 1: M5 C8. 2: M5 C4, `motion`. 3: M5 Z3, no `body_contacts`.
+    const VERSION: u32 = 3;
 }
 
 impl Playable {
@@ -337,13 +375,6 @@ impl Playable {
             if !(0.98..=1.02).contains(&length) {
                 return Err(invalid("look.held.rotation", "a rotation is a unit quaternion"));
             }
-        }
-        if self.body_contacts.len() > MAX_BODY_CONTACTS {
-            let count = self.body_contacts.len();
-            return Err(invalid("look.body_contacts", format!("{count} joints, past {MAX_BODY_CONTACTS}")));
-        }
-        if self.body_contacts.iter().any(String::is_empty) {
-            return Err(invalid("look.body_contacts", "a name is empty"));
         }
         if let Some(rest) = &self.expression
             && (rest.preset.is_empty() || !(0.0..=1.0).contains(&rest.weight))
@@ -411,6 +442,24 @@ mod tests {
         assert!(error.contains("motion"), "{error}");
     }
 
+    /// The joints a body touched by left the document at version 3 (M5 Z3): a version 1 or 2 document that
+    /// writes them reads with them dropped, and one of version 3 that does is refused, as any field nobody
+    /// knows is.
+    #[test]
+    fn body_contacts_are_dropped_before_version_three_and_refused_from_it() {
+        let contacts = "seed: 3, body_contacts: [\"hips\", \"foot.l\"],";
+        let v1 = KIND.replacen("seed: 3,", contacts, 1);
+        assert_ne!(v1, KIND);
+        assert_eq!(PlayableDocument::parse(&v1).expect("version 1 reads"), document());
+        let v2 = v1.replacen("version: 1", "version: 2", 1);
+        assert_eq!(PlayableDocument::parse(&v2).expect("version 2 reads"), document());
+        let v3 = v1.replacen("version: 1", "version: 3", 1);
+        let error = PlayableDocument::parse(&v3).expect_err("no such field from version 3").to_string();
+        assert!(error.contains("body_contacts"), "{error}");
+        let text = sapphire_serialize::to_ron(&document()).expect("writes");
+        assert!(!text.contains("body_contacts"), "{text}");
+    }
+
     #[test]
     fn a_field_nobody_knows_is_refused() {
         let text = KIND.replacen("seed: 3,", "seed: 3, springs: 2,", 1);
@@ -442,7 +491,6 @@ mod tests {
             ("`look.held.joint`", |d| d.look.held.as_mut().unwrap().joint.clear()),
             ("`look.held`", |d| d.look.held.as_mut().unwrap().offset[1] = f32::NAN),
             ("`look.held.rotation`", |d| d.look.held.as_mut().unwrap().rotation = [0.0; 4]),
-            ("`look.body_contacts`", |d| d.look.body_contacts.push(String::new())),
             ("`look.expression`", |d| d.look.expression.as_mut().unwrap().weight = 2.0),
         ];
         for (field, spoil) in cases {

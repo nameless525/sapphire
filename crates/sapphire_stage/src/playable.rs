@@ -37,9 +37,6 @@ pub struct PlayableLook {
     pub seed: u32,
     /// The weapon it holds, if it holds one that isn't skinned in.
     pub held: Option<HeldWeapon>,
-    /// The joints where its body meets what it touches, by its skeleton's names. No simulation binds by
-    /// them: the stock arena's body touches by joints compiled into it (M5 Z3).
-    pub body_contacts: Vec<String>,
     /// The expression its face rests on, and how much of it, if any.
     pub expression: Option<(ExpressionPreset, f32)>,
     /// Its own character motion (M5 C4): its springs' tuning, IK weights and cloth. None moves by the
@@ -79,7 +76,6 @@ impl PlayableLook {
                     Vec3::from_array(held.offset),
                 ),
             }),
-            body_contacts: playable.body_contacts.clone(),
             expression,
             motion: playable.motion,
         })
@@ -140,7 +136,6 @@ mod tests {
                 offset: [0.0, 0.1, 0.0],
                 rotation: [0.0, 0.0, 0.0, 2.0],
             }),
-            body_contacts: vec!["hips".to_owned()],
             expression: Some(RestPose { preset: "relaxed".to_owned(), weight: 0.35 }),
             motion: Some(AssetId::from_bytes([6; 16])),
         }
@@ -163,7 +158,7 @@ mod tests {
     fn a_look_is_its_documents() {
         let id = AssetId::from_bytes([5; 16]);
         let look = PlayableLook::of(id, &kind()).expect("a look");
-        assert_eq!((look.kind, look.seed, look.body_contacts.len()), (id, 4, 1));
+        assert_eq!((look.kind, look.seed), (id, 4));
         assert_eq!(look.expression, Some((ExpressionPreset::Relaxed, 0.35)));
         assert_eq!(look.motion, Some(AssetId::from_bytes([6; 16])));
         let held = look.held.expect("a weapon");

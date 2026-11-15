@@ -561,6 +561,16 @@ mod tests {
         Game::new(FlowContent { document, registered }, GameSetup::default()).expect("the ward's flow stands")
     }
 
+    /// The game's flow starts from no zone code builds (M5 B5): the benchmark district is a development build's,
+    /// whose builder a game's build doesn't link, and the flow's one scenario is all a player's run starts from.
+    #[test]
+    fn the_games_flow_stands_on_no_built_zone() {
+        let document =
+            FlowDocument::from_ron(include_str!("../../../content/game.flow.ron")).expect("the flow reads");
+        let scenario = sapphire_script::scenarios::document_of(&document.scenario).expect("a document's");
+        assert_eq!(scenario.built, None, "`{}` stands on a zone code builds", document.scenario);
+    }
+
     /// A beat's timeline the run refuses (a fight with no file plays none, and a recording refuses one while
     /// a move's cinematic plays) has ended where the flow looks for it, so its cutscene doesn't wait for
     /// ever, and nothing grows.

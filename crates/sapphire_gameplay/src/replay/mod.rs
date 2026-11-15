@@ -60,9 +60,9 @@ pub use scenario::{
     BAKED_ZONES, BakedZone, CINEMATIC, COURT_GATE_ID, CUTSCENE, FightWorld, GROUND_START, HUB_FROM_GROUND,
     HUB_START, LIGHT_THE_WARD, PARTY_TUNING, PLAYER_MOVES_PATH, PLAYERS, PROVING_GROUND, PROVING_HUB,
     PreparedFight, RIVALS, SCENARIOS, SHELVED_ZONES, Scenario, ScenarioError, ScenarioSetup, WARRIOR_ENEMY,
-    WARRIOR_MOVES, WARRIORS, ZONE_TRIP_SHELF, add_melee_buttons, add_warrior, arena_fight, baked_zone,
-    document_file_name, duel, find_scenario, melee, melee_buttons, party_document, party_moves, player_moves,
-    test_moves, timelines, warrior_enemy, warrior_moves,
+    WARRIOR_MOVES, WARRIORS, ZONE_TRIP_SHELF, ZoneBuilders, add_melee_buttons, add_warrior, arena_fight,
+    baked_zone, document_file_name, duel, find_scenario, melee, melee_buttons, party_document, party_moves,
+    player_moves, test_moves, timelines, warrior_enemy, warrior_moves,
 };
 pub use script::ActionSource;
 pub use tuning::{LiveMoves, LiveSet, compile_document};

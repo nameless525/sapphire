@@ -27,7 +27,7 @@ use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::ScaleSource;
 use sapphire_timeline::{TimelineDocument, TimelineError};
-use sapphire_zone::{Zone, ZoneError};
+use sapphire_zone::{BuildZone, Zone, ZoneError};
 
 use super::cinematics::{Cinematic, cinematics_of};
 use super::document::{KindOfEnemy, KindOfPlayable, ScenarioDocument};
@@ -222,7 +222,15 @@ pub struct Scenario {
     pub documents: &'static [&'static str],
     /// Loads the move sets and spawns the actors.
     pub setup: ScenarioSetup,
+    /// The zones code builds that a document naming one in `built` can stand on (M5 B5), by name: what whoever
+    /// plays it hands over, since a builder lives in a crate no shipped build links. Empty in [`SCENARIOS`], so a
+    /// scenario on a built zone can't start from there, and says so.
+    pub zones: ZoneBuilders,
 }
+
+/// Zones code builds, by the name a scenario's `built` gives each, with its builder (M5 B5): see
+/// [`Scenario::zones`].
+pub type ZoneBuilders = &'static [(&'static str, BuildZone)];
 
 /// How a scenario makes its world.
 #[derive(Clone, Copy, Debug)]
@@ -284,9 +292,9 @@ impl Scenario {
                 field: "zone".to_owned(),
                 problem: format!("scenario `{}` is made by code, which starts in no zone's place", self.name),
             }),
-            (ScenarioSetup::Document(document), _) => document.set_up_from(sim, start),
+            (ScenarioSetup::Document(document), _) => document.set_up_from(sim, start, self.zones),
             (ScenarioSetup::DocumentAnd(document, then), _) => {
-                let cast = document.set_up_from(sim, start)?;
+                let cast = document.set_up_from(sim, start, self.zones)?;
                 then(document, sim)?;
                 Ok(cast)
             }
@@ -312,7 +320,7 @@ impl Scenario {
     /// opens that zone around the fight and stands its ground on the zone's colliders.
     #[must_use]
     pub fn zone(&self) -> Option<&'static str> {
-        ScenarioDocument::zone_stem(self.document()?.stands_in_zone()?).ok()
+        self.document()?.zone_name()
     }
 
     /// The timelines its runs load, by their documents' IDs, and the ID each has there: a document's
@@ -324,7 +332,7 @@ impl Scenario {
     /// The actors a run that meets every fighter its zone's encounters bring needs room for, its cast among
     /// them: a document's [`ScenarioDocument::room_for_everyone`] (M3 G1c). `None` for a scenario of code.
     pub fn room_for_everyone(&self) -> Result<Option<usize>, ScenarioError> {
-        self.document().map(ScenarioDocument::room_for_everyone).transpose()
+        self.document().map(|document| document.room_for_everyone(self.zones)).transpose()
     }
 
     /// The dialogues its runs load, by their documents' IDs, and the ID each has there: a document's
@@ -362,6 +370,7 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH],
         setup: ScenarioSetup::Code(melee),
+        zones: &[],
     },
     Scenario {
         name: "duel",
@@ -375,6 +384,7 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH],
         setup: ScenarioSetup::Code(duel),
+        zones: &[],
     },
     Scenario {
         name: "nav-chase",
@@ -388,6 +398,7 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH, CHASER_MOVES_PATH],
         setup: ScenarioSetup::Code(super::chase::nav_chase),
+        zones: &[],
     },
     Scenario {
         name: "crowd-15",
@@ -401,6 +412,7 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH, CHASER_MOVES_PATH],
         setup: ScenarioSetup::Code(super::chase::crowd_15),
+        zones: &[],
     },
     Scenario {
         name: "crowd-60",
@@ -414,6 +426,7 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH, CHASER_MOVES_PATH],
         setup: ScenarioSetup::Code(super::chase::crowd_60),
+        zones: &[],
     },
     Scenario {
         name: "nav-patrol",
@@ -427,6 +440,7 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
         setup: ScenarioSetup::Code(super::chase::nav_patrol),
+        zones: &[],
     },
     Scenario {
         name: "timelines",
@@ -440,6 +454,7 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH],
         setup: ScenarioSetup::Code(timelines),
+        zones: &[],
     },
     Scenario {
         name: "zone-trip",
@@ -453,6 +468,7 @@ const CODE_SCENARIOS: &[Scenario] = &[
         },
         documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
         setup: ScenarioSetup::Code(zone_trip),
+        zones: &[],
     },
 ];
 
@@ -469,7 +485,8 @@ static DOCUMENT_PATHS: LazyLock<Vec<Vec<&'static str>>> = LazyLock::new(|| {
     DOCUMENTS.iter().map(paths).collect()
 });
 
-/// Every scenario: those that take code, then the documents by name.
+/// Every scenario: those that take code, then the documents by name. None hands a zone code builds its
+/// builder over: a caller that has one maps it in (M5 B5), as the replay runner and a development build's fight do.
 pub static SCENARIOS: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
     let documents = DOCUMENTS.iter().zip(DOCUMENT_PATHS.iter()).map(|((name, document), paths)| Scenario {
         name,
@@ -477,8 +494,19 @@ pub static SCENARIOS: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
         config: document.config(),
         documents: paths,
         setup: ScenarioSetup::Document(document),
+        zones: &[],
     });
     CODE_SCENARIOS.iter().copied().chain(documents).collect()
+});
+
+/// [`SCENARIOS`] with the benchmark district's builder, as the replay runner holds them (M5 B5): what the tests
+/// that set every scenario up walk.
+#[cfg(test)]
+pub(crate) static WITH_ZONES: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
+    SCENARIOS
+        .iter()
+        .map(|scenario| Scenario { zones: sapphire_synthetic_zone::district::ZONES, ..*scenario })
+        .collect()
 });
 
 /// The scenario named `name`, among `scenarios`.
@@ -1097,16 +1125,16 @@ mod tests {
 
     #[test]
     fn every_scenario_has_a_good_unique_name_and_sets_up_from_its_own_config() {
-        for (index, scenario) in SCENARIOS.iter().enumerate() {
+        for (index, scenario) in WITH_ZONES.iter().enumerate() {
             assert!(is_valid_name(scenario.name), "{}", scenario.name);
             assert!(!scenario.about.is_empty(), "{}", scenario.name);
-            let found = find_scenario(&SCENARIOS, scenario.name).expect("listed");
-            assert!(std::ptr::eq(found, &SCENARIOS[index]), "{} is listed twice", scenario.name);
+            let found = find_scenario(&WITH_ZONES, scenario.name).expect("listed");
+            assert!(std::ptr::eq(found, &WITH_ZONES[index]), "{} is listed twice", scenario.name);
             let (sim, cast) = scenario.start(scenario.config).expect("sets up");
             assert_eq!(sim.tick(), 0);
             assert!(!cast.is_empty(), "{} has no one for input to drive", scenario.name);
         }
-        assert!(find_scenario(&SCENARIOS, "no-such-scenario").is_none());
+        assert!(find_scenario(&WITH_ZONES, "no-such-scenario").is_none());
     }
 
     /// A fight stands on the ground: every one of its cast has a capsule, and lands on its first tick where it
@@ -1114,7 +1142,7 @@ mod tests {
     /// the proving ground's platform (M3 B4), or the ward's terrace, 1.2 m up.
     #[test]
     fn the_fights_stand_on_the_ground() {
-        for scenario in SCENARIOS.iter() {
+        for scenario in WITH_ZONES.iter() {
             let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
             let put: Vec<_> = cast.iter().map(|&actor| sim.actor(actor).expect("there").position.y).collect();
             sim.step(&crate::actions::TickActions::NEUTRAL);

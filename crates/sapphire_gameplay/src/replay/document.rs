@@ -67,8 +67,15 @@
 //! **A zone here is what the simulation reads of its document** ([`ZoneDocument::simulation`]) with no
 //! navmesh and no presentation, archived as a cook archives it, so it goes in through the same door as a pack's
 //! `.szone` ([`Simulation::set_zone`]), and `tools/sapphire_pipeline/tests/encounters.rs` holds the two to one
-//! `tables_hash`. A scenario that wants paths on a zone takes its navmesh some other way, which nothing does
-//! yet (P3 uses the arena's): a bake takes the pipeline.
+//! `tables_hash`. A scenario that wants paths on a zone takes its navmesh some other way: a bake takes the
+//! pipeline, so only a zone code builds brings one.
+//!
+//! **A zone code builds** (M5 B5): `built: Some("<name>")` stands the scenario on what that zone's builder
+//! makes ([`sapphire_zone::BuiltZone`]): its simulation half, its encounters, its colliders and its navmesh.
+//! The benchmark district is the one (`sapphire_synthetic_zone::district`), in a crate no shipped build links, so
+//! the builders are a value whoever sets a scenario up hands over ([`super::Scenario::zones`]): the replay runner
+//! and a development build's fight do, and a scenario naming a zone nobody handed over can't start, saying so.
+//! Its encounters' spawners spawn the kinds of enemy `enemies` lists, in turn, so those are the document's names.
 
 use bevy_reflect::Reflect;
 use sapphire_colliders::{ColliderDocument, ColliderSet};
@@ -80,11 +87,11 @@ use sapphire_reflect::Versioned;
 use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_timeline::TimelineDocument;
-use sapphire_zone::{EncounterDocument, Zone, ZoneDocument, ZonePresentation};
+use sapphire_zone::{BuiltZone, EncounterDocument, Zone, ZoneDocument, ZonePresentation, ZoneSimulation};
 use serde::{Deserialize, Serialize};
 
 use super::play::RunStart;
-use super::scenario::ScenarioError;
+use super::scenario::{ScenarioError, ZoneBuilders};
 use crate::actors::{ActorId, ActorSpawn};
 use crate::arena::SpawnPoint;
 use crate::checkpoint::{Place, ZoneStart};
@@ -113,11 +120,17 @@ pub struct ScenarioDocument {
     /// The pool a new recording makes.
     pub max_actors: u32,
     /// Its collision world: a `.colliders.ron`, from the repository's root. If its zone names colliders, these
-    /// must be those.
+    /// must be those. A scenario on a zone code builds names none: the zone brings its own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub colliders: String,
     /// A `.zone.ron`, from the repository's root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
+    /// A zone code builds rather than a document (M5 B5), by the name its builder goes by: see the [module
+    /// docs](self). It brings its own colliders, encounters and navmesh, so the scenario names no `colliders`,
+    /// `zone`, `encounters` or `cleared`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built: Option<String>,
     /// The `.encounter.ron`s the zone lists, from the repository's root.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub encounters: Vec<String>,
@@ -451,6 +464,27 @@ impl ScenarioDocument {
         if self.cast.is_empty() {
             return Err(invalid("cast", "input has to have someone to drive"));
         }
+        match (&self.built, self.colliders.is_empty()) {
+            (Some(_), false) => return Err(invalid("colliders", "a zone code builds brings its own")),
+            (None, true) => {
+                return Err(invalid(
+                    "colliders",
+                    "a fight stands on a `.colliders.ron`, or on a zone code builds",
+                ));
+            }
+            _ => {}
+        }
+        if self.built.is_some() {
+            if self.zone.is_some() || !self.encounters.is_empty() || !self.cleared.is_empty() {
+                let problem = "a zone code builds is the scenario's zone, with its own encounters: name no `zone`, \
+                               `encounters` or `cleared`";
+                return Err(invalid("built", problem));
+            }
+            if self.enemies.is_empty() {
+                let problem = "a zone code builds brings the kinds of enemy this lists, and it lists none";
+                return Err(invalid("enemies", problem));
+            }
+        }
         if self.zone.is_none() && !self.encounters.is_empty() {
             return Err(invalid("encounters", "an encounter stands in a zone, and this has none"));
         }
@@ -473,7 +507,7 @@ impl ScenarioDocument {
                 return Err(invalid(format!("cast[{index}].faction"), "that's no side"));
             }
         }
-        if !self.shelf.is_empty() && self.zone.is_none() {
+        if !self.shelf.is_empty() && self.zone.is_none() && self.built.is_none() {
             return Err(invalid("shelf", "a trip goes from a zone, and this has none"));
         }
         for (index, path) in self.shelf.iter().enumerate() {
@@ -650,6 +684,76 @@ impl ScenarioDocument {
         (self.colliders != crate::arena::COLLIDERS_PATH).then_some(zone)
     }
 
+    /// The name the app's content finds the zone it stands in by, if it stands in one: a document zone's stem,
+    /// or a built zone's name, which is its pack's stem too.
+    pub(super) fn zone_name(&self) -> Option<&str> {
+        match self.built.as_deref() {
+            Some(name) => Some(name),
+            None => Self::zone_stem(self.stands_in_zone()?).ok(),
+        }
+    }
+
+    /// What the builder of the zone it names in `built` makes, from `zones`, its encounters spawning the kinds of
+    /// enemy it lists; `None` for a scenario on no built zone.
+    fn built_zone(&self, zones: ZoneBuilders) -> Result<Option<BuiltZone>, ScenarioError> {
+        let Some(name) = self.built.as_deref() else { return Ok(None) };
+        let (_, build) = zones.iter().find(|(held, _)| *held == name).ok_or_else(|| {
+            invalid(
+                "built",
+                format!(
+                    "this build builds no zone `{name}`: a development build's fight and the replay runner hand \
+                     its builder over"
+                ),
+            )
+        })?;
+        let kinds: Vec<&str> = self.enemies.iter().map(|path| kind_of(path)).collect();
+        build(&kinds).map(Some).map_err(|problem| invalid("built", format!("zone `{name}`: {problem}")))
+    }
+
+    /// Its zone as the simulation reads it, with the collider set it stands on and the encounters the zone lists,
+    /// cooked: its document's, or what its builder in `zones` makes. `None` for no zone, with the colliders alone.
+    fn zone_with_ground(&self, zones: ZoneBuilders) -> Result<ZoneWithGround, ScenarioError> {
+        let spawned = |encounter: &EncounterDocument| -> Vec<String> {
+            encounter.waves.iter().flat_map(|wave| wave.spawners.iter().cloned()).collect()
+        };
+        if let Some(built) = self.built_zone(zones)? {
+            let cooked = archived(built.document.simulation()?, built.document.grid.cell_size)?;
+            let (mut encounters, mut fought) = (Vec::with_capacity(built.encounters.len()), Vec::new());
+            for (id, encounter) in &built.encounters {
+                encounters.push((*id, encounter.cook()?.to_cooked()?));
+                fought.extend(spawned(encounter));
+            }
+            return Ok(ZoneWithGround {
+                zone: Some((built.document, cooked)),
+                colliders: built.colliders,
+                encounters,
+                fought,
+                navmesh: built.navmesh,
+            });
+        }
+        let colliders = ColliderDocument::from_ron(named(&self.colliders)?)?.cook()?.to_cooked()?;
+        let zone = self.zone.as_deref().map(zone_of).transpose()?;
+        let (mut encounters, mut fought) = (Vec::with_capacity(self.encounters.len()), Vec::new());
+        for path in &self.encounters {
+            let encounter = EncounterDocument::from_ron(named(path)?)?;
+            encounters.push((id_of(path)?, encounter.cook()?.to_cooked()?));
+            fought.extend(spawned(&encounter));
+        }
+        if let Some((document, _)) = &zone {
+            if let Some(id) = document.colliders
+                && id_of(&self.colliders)? != id
+            {
+                return Err(invalid("colliders", "that isn't the set the zone names"));
+            }
+            for (path, (id, _)) in self.encounters.iter().zip(&encounters) {
+                if !document.encounters.contains(id) {
+                    return Err(invalid(format!("encounters: {path}"), "the zone doesn't list it"));
+                }
+            }
+        }
+        Ok(ZoneWithGround { zone, colliders, encounters, fought, navmesh: None })
+    }
+
     /// The zone's stem, the name the app's content finds it by: its file's, before `.zone.ron`.
     pub(super) fn zone_stem(zone: &str) -> Result<&str, ScenarioError> {
         let file = super::scenario::document_file_name(zone);
@@ -660,11 +764,11 @@ impl ScenarioDocument {
     /// first of the cast who chooses a target as a player does, and as its other fighter whoever of the rest of
     /// the cast or its encounters' spawners stands nearest, then the next six for its crowd, which are only
     /// where the stage checks for ground. The simulation says where everyone is from its first step.
-    pub(super) fn zone_fight(&'static self) -> Result<super::ZoneFight, ScenarioError> {
-        let path =
-            self.stands_in_zone().ok_or_else(|| invalid("zone", "it doesn't stand in a zone of its own"))?;
-        let stem = Self::zone_stem(path)?;
-        let (document, _) = zone_of(path)?;
+    pub(super) fn zone_fight(&'static self, zones: ZoneBuilders) -> Result<super::ZoneFight, ScenarioError> {
+        let stem =
+            self.zone_name().ok_or_else(|| invalid("zone", "it doesn't stand in a zone of its own"))?;
+        let ZoneWithGround { zone, colliders, fought, .. } = self.zone_with_ground(zones)?;
+        let (document, _) = zone.ok_or_else(|| invalid("zone", "it doesn't stand in a zone of its own"))?;
         let point = |name: &str| {
             let spawner = document.spawners.iter().find(|spawner| spawner.name == name);
             let spawner =
@@ -681,12 +785,8 @@ impl ScenarioDocument {
         for member in self.cast.iter().filter(|member| member.at != player_at) {
             others.push(point(&member.at)?);
         }
-        for path in &self.encounters {
-            for wave in EncounterDocument::from_ron(named(path)?)?.waves {
-                for name in &wave.spawners {
-                    others.push(point(name)?);
-                }
-            }
+        for name in &fought {
+            others.push(point(name)?);
         }
         let away =
             |spawn: &SpawnPoint| Vec3::from_array(spawn.position).distance(Vec3::from_array(player.position));
@@ -695,13 +795,13 @@ impl ScenarioDocument {
         let enemy = others.first().copied().unwrap_or(player);
         let crowd = others.iter().skip(1).copied().collect();
 
-        let colliders = ColliderDocument::from_ron(named(&self.colliders)?)?.cook()?.to_cooked()?;
         Ok(super::ZoneFight {
             stem,
             player_at,
             // A zone's patrols are its own document's (M3 P3), not the arena's.
             spawns: crate::arena::ArenaSpawns { player, enemy, crowd, patrols: Vec::new() },
             colliders,
+            exits: document.exits.len(),
         })
     }
 
@@ -718,25 +818,29 @@ impl ScenarioDocument {
     /// Makes a world of it, the same way every run, and returns who input drives: the cast, without a
     /// party's members past the first. A scenario sets one up through [`Self::set_up_from`].
     #[cfg(test)]
-    pub(super) fn set_up(&self, sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-        self.set_up_from(sim, &RunStart::default())
+    pub(super) fn set_up(
+        &self,
+        sim: &mut Simulation,
+        zones: ZoneBuilders,
+    ) -> Result<Vec<ActorId>, ScenarioError> {
+        self.set_up_from(sim, &RunStart::default(), zones)
     }
 
     /// Makes a world of it, the same way every run, and returns who input drives, as a scenario sets one
     /// up; from a save's place in its zone (M3 G1) rather than its own `cast[0].at` and `cleared`, if
     /// `start` has one: the first of the cast stands at its checkpoint, or the zone's spawner
-    /// for none, and its encounters stay cleared. One with no zone refuses a place in one.
+    /// for none, and its encounters stay cleared. One with no zone refuses a place in one. A zone it names
+    /// in `built` is what its builder in `zones` makes.
     pub(super) fn set_up_from(
         &self,
         sim: &mut Simulation,
         run: &RunStart,
+        zones: ZoneBuilders,
     ) -> Result<Vec<ActorId>, ScenarioError> {
-        if run.zone.is_some() && self.zone.is_none() {
+        if run.zone.is_some() && self.zone.is_none() && self.built.is_none() {
             return Err(invalid("zone", "a save's place needs a zone, and this names none"));
         }
-        let colliders = ColliderDocument::from_ron(named(&self.colliders)?)?.cook()?.to_cooked()?;
-
-        let zone = self.zone.as_deref().map(zone_of).transpose()?;
+        let ZoneWithGround { zone, colliders, encounters, navmesh, .. } = self.zone_with_ground(zones)?;
         let names_colliders = zone.as_ref().is_some_and(|(document, _)| document.colliders.is_some());
         if !names_colliders {
             let set = ColliderSet::read(&colliders)?;
@@ -772,7 +876,10 @@ impl ScenarioDocument {
 
         let mut start = None;
         if let Some((document, cooked)) = &zone {
-            self.give_zone(sim, document, cooked, &colliders, ZoneCast { moves: &sets, controller })?;
+            give_zone(sim, document, cooked, &colliders, encounters, ZoneCast { moves: &sets, controller })?;
+            if let Some(navmesh) = &navmesh {
+                sim.set_navigation(navmesh)?;
+            }
             start = match &run.zone {
                 Some(saved) => sim.start_at(saved)?,
                 None => self.start_zone(sim, document)?,
@@ -856,11 +963,17 @@ impl ScenarioDocument {
     /// smaller than this refuses the last arrivals of a run that walks the whole zone, and an encounter whose
     /// last wave came to nobody is cleared without a fight: the ward's run held 12 for 15, and its flow won
     /// with no boss. A scenario of one room can hold less, since the rest never start.
-    pub fn room_for_everyone(&self) -> Result<usize, ScenarioError> {
+    /// A built zone's encounters are what its builder in `zones` makes.
+    pub fn room_for_everyone(&self, zones: ZoneBuilders) -> Result<usize, ScenarioError> {
         let mut room = self.cast.len();
+        let spawns = |encounter: &EncounterDocument| {
+            encounter.waves.iter().map(|wave| wave.spawners.len()).sum::<usize>()
+        };
+        if let Some(built) = self.built_zone(zones)? {
+            room += built.encounters.iter().map(|(_, encounter)| spawns(encounter)).sum::<usize>();
+        }
         for path in self.encounters.iter().filter(|path| !self.cleared.contains(path)) {
-            let encounter = EncounterDocument::from_ron(named(path)?)?;
-            room += encounter.waves.iter().map(|wave| wave.spawners.len()).sum::<usize>();
+            room += spawns(&EncounterDocument::from_ron(named(path)?)?);
         }
         Ok(room)
     }
@@ -883,42 +996,44 @@ impl ScenarioDocument {
         let start = ZoneStart { checkpoint: checkpoint.map(|checkpoint| checkpoint.name.clone()), cleared };
         Ok(sim.start_at(&start)?)
     }
+}
 
-    /// Hands a simulation the zone: its cooked encounters by ID, and the colliders, as a pack would.
-    fn give_zone(
-        &self,
-        sim: &mut Simulation,
-        document: &ZoneDocument,
-        cooked: &AlignedVec,
-        colliders: &AlignedVec,
-        cast: ZoneCast<'_>,
-    ) -> Result<(), ScenarioError> {
-        let mut bytes: Vec<(AssetId, AlignedVec)> = Vec::with_capacity(self.encounters.len() + 1);
-        if let Some(id) = document.colliders {
-            if id_of(&self.colliders)? != id {
-                return Err(invalid("colliders", "that isn't the set the zone names"));
-            }
-            bytes.push((id, colliders.clone()));
+/// A scenario's zone as its simulation reads it ([`ScenarioDocument::zone_with_ground`]).
+struct ZoneWithGround {
+    /// The zone's document and what the simulation reads of it, archived, if it has one.
+    zone: Option<(ZoneDocument, AlignedVec)>,
+    /// The collider set it stands on, cooked.
+    colliders: AlignedVec,
+    /// Each encounter the zone lists that the scenario brings, by ID, cooked.
+    encounters: Vec<(AssetId, AlignedVec)>,
+    /// Every spawner those encounters' waves name, in order.
+    fought: Vec<String>,
+    /// Its navmesh, cooked, if it brings one: a built zone's.
+    navmesh: Option<AlignedVec>,
+}
+
+/// Hands a simulation the zone: its cooked encounters by ID, and the colliders, as a pack would.
+fn give_zone(
+    sim: &mut Simulation,
+    document: &ZoneDocument,
+    cooked: &AlignedVec,
+    colliders: &AlignedVec,
+    mut bytes: Vec<(AssetId, AlignedVec)>,
+    cast: ZoneCast<'_>,
+) -> Result<(), ScenarioError> {
+    for id in &document.encounters {
+        if !bytes.iter().any(|(held, _)| held == id) {
+            return Err(invalid("encounters", format!("the zone lists {id}, and this doesn't")));
         }
-        for path in &self.encounters {
-            let id = id_of(path)?;
-            if !document.encounters.contains(&id) {
-                return Err(invalid(format!("encounters: {path}"), "the zone doesn't list it"));
-            }
-            let encounter = EncounterDocument::from_ron(named(path)?)?;
-            bytes.push((id, encounter.cook()?.to_cooked()?));
-        }
-        for id in &document.encounters {
-            if !bytes.iter().any(|(held, _)| held == id) {
-                return Err(invalid("encounters", format!("the zone lists {id}, and this doesn't")));
-            }
-        }
-        let zone = Zone::read(cooked)?;
-        sim.set_zone(zone, cast, |id| {
-            bytes.iter().find(|(held, _)| *held == id).map(|(_, bytes)| bytes.as_slice())
-        })?;
-        Ok(())
     }
+    if let Some(id) = document.colliders {
+        bytes.push((id, colliders.clone()));
+    }
+    let zone = Zone::read(cooked)?;
+    sim.set_zone(zone, cast, |id| {
+        bytes.iter().find(|(held, _)| *held == id).map(|(_, bytes)| bytes.as_slice())
+    })?;
+    Ok(())
 }
 
 /// The simulation's copy of the zone at `path`, a `.zone.ron` from the repository's root: a trip's zone is one
@@ -947,7 +1062,12 @@ fn arena_point(name: &str) -> Option<SpawnPoint> {
 /// A zone's document, and what the simulation reads of it archived as a cook archives it.
 fn zone_of(path: &str) -> Result<(ZoneDocument, AlignedVec), ScenarioError> {
     let document = ZoneDocument::from_ron(named(path)?)?;
-    let mut simulation = document.simulation()?;
+    let cooked = archived(document.simulation()?, document.grid.cell_size)?;
+    Ok((document, cooked))
+}
+
+/// What the simulation reads of a zone, archived as a cook archives it, with no presentation.
+fn archived(mut simulation: ZoneSimulation, cell_size: f32) -> Result<AlignedVec, ScenarioError> {
     // An exit's pack is the pack of the zone it leads to, which a cook finds by its ID (M3 W4).
     for exit in &mut simulation.exits {
         let pack = zone_pack(exit.to)?;
@@ -957,7 +1077,7 @@ fn zone_of(path: &str) -> Result<(ZoneDocument, AlignedVec), ScenarioError> {
     let zone = Zone {
         simulation,
         presentation: ZonePresentation {
-            cell_size: document.grid.cell_size,
+            cell_size,
             backdrop: None,
             cells: Vec::new(),
             instances: Vec::new(),
@@ -973,13 +1093,17 @@ fn zone_of(path: &str) -> Result<(ZoneDocument, AlignedVec), ScenarioError> {
             fog: None,
         },
     };
-    let cooked = zone.to_cooked()?;
-    Ok((document, cooked))
+    Ok(zone.to_cooked()?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ActorActions, Buttons, Stick, TickActions};
+    use sapphire_core::Name;
+
+    /// The zones code builds, as the replay runner hands them over: the benchmark district (M5 B5).
+    const ZONES: ZoneBuilders = sapphire_synthetic_zone::district::ZONES;
 
     /// A field's name, and what spoils it.
     type Spoiled = (&'static str, fn(&mut ScenarioDocument));
@@ -993,7 +1117,7 @@ mod tests {
 
     fn cant_start(document: &ScenarioDocument) -> String {
         let mut sim = Simulation::new(document.config());
-        document.set_up(&mut sim).expect_err("it can't").to_string()
+        document.set_up(&mut sim, ZONES).expect_err("it can't").to_string()
     }
 
     /// Each thing that can be wrong says where, and these are what a document's author has to go on.
@@ -1054,7 +1178,7 @@ mod tests {
     fn room_for_everyone_counts_the_cast_and_every_fighter_to_come() {
         let to_come = |document: &ScenarioDocument| -> usize {
             let mut sim = Simulation::new(document.config());
-            document.set_up(&mut sim).expect("sets up");
+            document.set_up(&mut sim, ZONES).expect("sets up");
             let encounters = sim.zone().map_or(&[][..], crate::encounter::SimZone::encounters);
             let waiting = encounters.iter().filter(|held| held.phase() != crate::EncounterPhase::Cleared);
             waiting.map(crate::encounter::SimEncounter::planned).sum()
@@ -1064,7 +1188,7 @@ mod tests {
             .map(|(name, text)| (*name, sapphire_serialize::from_ron(text).expect("reads")))
             .collect();
         for (name, document) in &documents {
-            let room = document.room_for_everyone().unwrap_or_else(|error| panic!("{name}: {error}"));
+            let room = document.room_for_everyone(ZONES).unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(room, document.cast.len() + to_come(document), "{name}: as the zone counts them");
         }
 
@@ -1074,15 +1198,15 @@ mod tests {
             .iter()
             .find(|(_, document)| document.encounters.len() >= 2 && document.cleared.is_empty())
             .expect("a run through a zone of several fights");
-        let whole = run.room_for_everyone().expect("reads");
+        let whole = run.room_for_everyone(ZONES).expect("reads");
         assert!(whole > run.cast.len(), "{name}: its encounters bring someone");
         let mut fought = run.clone();
         fought.cleared = vec![run.encounters[0].clone()];
-        let fewer = fought.room_for_everyone().expect("reads");
+        let fewer = fought.room_for_everyone(ZONES).expect("reads");
         assert!(fewer < whole, "{name}: {fewer} with its first encounter fought, of {whole}");
         assert_eq!(fewer, fought.cast.len() + to_come(&fought), "{name}: as the zone counts them");
         fought.cleared.clone_from(&run.encounters);
-        let room = fought.room_for_everyone().expect("reads");
+        let room = fought.room_for_everyone(ZONES).expect("reads");
         assert_eq!(room, run.cast.len(), "{name}: every encounter fought: its cast alone");
     }
 
@@ -1096,7 +1220,7 @@ mod tests {
         let gate = id_of("content/zones/lantern_ward/court_gate.timeline.ron").expect("a sidecar");
         assert_eq!(ids, [(gate, TimelineId::from_raw(0))]);
         let mut sim = Simulation::new(court.config());
-        court.set_up(&mut sim).expect("sets up");
+        court.set_up(&mut sim, ZONES).expect("sets up");
         let gate = TimelineDocument::from_ron(named(&court.timelines[0]).expect("held")).expect("reads");
         let digest = gate.cook().expect("cooks").simulation.digest();
         assert_eq!(sim.timeline_digest(TimelineId::from_raw(0)), Some(digest));
@@ -1116,7 +1240,7 @@ mod tests {
         let trip = SCENARIO_DOCUMENTS.iter().find(|(name, _)| *name == "ground-trip").expect("held").1;
         let trip: ScenarioDocument = sapphire_serialize::from_ron(trip).expect("reads");
         let mut sim = Simulation::new(trip.config());
-        trip.set_up(&mut sim).expect("sets up");
+        trip.set_up(&mut sim, ZONES).expect("sets up");
         let rows: Vec<&str> = (0..2)
             .map(|row| sim.zone_ground(crate::zone::ZoneId::from_raw(row)).expect("on the shelf").pack())
             .collect();
@@ -1149,7 +1273,9 @@ mod tests {
         for (name, text) in SCENARIO_DOCUMENTS {
             let document: ScenarioDocument = sapphire_serialize::from_ron(text).expect("reads");
             document.check().unwrap_or_else(|error| panic!("{name}: {error}"));
-            for path in document.moves.iter().chain(&document.enemies).chain([&document.colliders]) {
+            // A zone code builds names no colliders (M5 B5).
+            let colliders = (!document.colliders.is_empty()).then_some(&document.colliders);
+            for path in document.moves.iter().chain(&document.enemies).chain(colliders) {
                 assert!(named(path).is_ok(), "{name}: {path}");
             }
         }
@@ -1162,7 +1288,7 @@ mod tests {
         for (name, text) in SCENARIO_DOCUMENTS {
             let document: ScenarioDocument = sapphire_serialize::from_ron(text).expect("reads");
             let mut sim = Simulation::new(document.config());
-            document.set_up(&mut sim).unwrap_or_else(|error| panic!("{name}: {error}"));
+            document.set_up(&mut sim, ZONES).unwrap_or_else(|error| panic!("{name}: {error}"));
             let kinds = document.kinds_of_enemy().unwrap_or_else(|error| panic!("{name}: {error}"));
             let roster = document.roster().expect("it plans");
             assert_eq!(kinds.len(), roster.enemies.len(), "{name}");
@@ -1270,7 +1396,7 @@ mod tests {
             fought.cleared.clone_from(&fought.encounters);
             for document in [&bare, &fought] {
                 let mut sim = Simulation::new(document.config());
-                document.set_up(&mut sim).unwrap_or_else(|error| panic!("{name}: {error}"));
+                document.set_up(&mut sim, ZONES).unwrap_or_else(|error| panic!("{name}: {error}"));
                 assert_eq!(ids(document), expected, "{name}: the kinds it spawns, and its cast's");
                 let roster = document.roster().expect("it plans");
                 let lists: Vec<&str> = document.moves.iter().map(String::as_str).collect();
@@ -1305,11 +1431,84 @@ mod tests {
         let mut document = arena_fight();
         document.enemies.push("content/combat/enemy/captain.enemy.ron".to_owned());
         let mut sim = Simulation::new(document.config());
-        document.set_up(&mut sim).expect("it starts");
+        document.set_up(&mut sim, ZONES).expect("it starts");
         let kinds = document.kinds_of_enemy().expect("it plans");
         let sets: Vec<u32> = kinds.iter().map(|kind| kind.set.0).collect();
         assert_eq!(sets, [1, 2]);
         assert_eq!(sim.move_library().set_count(), 3);
         assert_eq!(sim.move_library().mind(kinds[1].set).and_then(|mind| mind.boss()), Some("boss-captain"));
+    }
+
+    /// The benchmark district's fight, as the replay runner holds it (M5 B5).
+    fn district() -> ScenarioDocument {
+        let text = SCENARIO_DOCUMENTS.iter().find(|(name, _)| *name == "district-encounter").expect("held").1;
+        sapphire_serialize::from_ron(text).expect("reads")
+    }
+
+    /// The district's fight is what its document says: the party of three its cast names standing at the
+    /// avenue's start with the first on the field, the zone the builder makes with the navmesh beside it, and
+    /// one encounter of twelve to come, of the kind it names. With no builder it's refused, saying who hands one
+    /// over, which is what a game's build does (M5 B5).
+    #[test]
+    fn the_district_stands_its_party_and_brings_its_twelve() {
+        use sapphire_synthetic_zone::district::{AVENUE_START, PLAZA_EVENT};
+        let document = district();
+        let mut sim = Simulation::new(document.config());
+        let driven = document.set_up(&mut sim, ZONES).expect("it starts");
+        let cast: Vec<ActorId> = sim.party().slots().map(|slot| slot.actor).collect();
+        assert_eq!(cast.len(), 3);
+        assert_eq!(driven, [cast[0]], "input names the party's first");
+        assert_eq!(sim.party().active(), Some(cast[0]));
+        let zone = sim.zone().expect("in the district");
+        let start =
+            zone.checkpoint("plaza").and_then(|id| zone.checkpoint_place(id)).expect("its checkpoint");
+        assert_eq!(start.position, Vec3::new(0.0, 0.0, 28.0));
+        let lead = sim.actors().find(|actor| actor.id == cast[0]).expect("there");
+        assert_eq!(lead.position, Vec3::new(0.0, 0.0, 60.0), "at `{AVENUE_START}`");
+        assert!(sim.navigation().is_some(), "the builder's navmesh");
+        assert_eq!(zone.encounters().len(), 1);
+        assert_eq!(zone.planned(), 12);
+        assert_eq!(zone.fires(Name::new(PLAZA_EVENT)), 0);
+        assert_eq!(document.room_for_everyone(ZONES).expect("reads"), 15);
+        assert_eq!(document.kinds_of_enemy().expect("it plans").len(), 1, "warriors alone");
+
+        let mut bare = Simulation::new(document.config());
+        let error = document.set_up(&mut bare, &[]).expect_err("no builder").to_string();
+        assert!(error.contains("`built`") && error.contains("builds no zone `district`"), "{error}");
+        assert!(error.contains("hand its builder over"), "{error}");
+    }
+
+    /// A party in a zone (M5 B5): a swap in the plaza's trigger volume starts its encounter once, since the
+    /// trigger watches whoever's on the field and the one coming in stands where the one leaving did; and a return
+    /// to a checkpoint takes whoever's on the field there, not the party's first.
+    #[test]
+    fn a_swap_in_a_trigger_starts_its_encounter_once_and_a_return_takes_whos_on_the_field() {
+        use sapphire_synthetic_zone::district::PLAZA_EVENT;
+        let document = district();
+        let mut sim = Simulation::new(document.config());
+        document.set_up(&mut sim, ZONES).expect("it starts");
+        let cast: Vec<ActorId> = sim.party().slots().map(|slot| slot.actor).collect();
+        // Into the plaza's volume, pressing swap on the step that finds it there.
+        sim.teleport(cast[0], Place { position: Vec3::new(0.0, 0.0, 20.0), yaw: std::f32::consts::PI })
+            .expect("it moves");
+        let mut swap = TickActions::NEUTRAL;
+        swap.set(cast[0], ActorActions { buttons: Buttons::SWAP, stick: Stick::CENTER }).expect("room");
+        sim.step(&swap);
+        assert_eq!(sim.party().active(), Some(cast[1]), "swapped in the volume");
+        for _ in 0..240 {
+            sim.step(&TickActions::NEUTRAL);
+        }
+        let zone = sim.zone().expect("in the district");
+        let stats = zone.stats();
+        assert_eq!((stats.triggers_fired, stats.encounters_started), (1, 1));
+        assert_eq!(zone.fires(Name::new(PLAZA_EVENT)), 1);
+        assert_eq!(zone.encounters()[0].phase(), crate::EncounterPhase::Running);
+        assert_eq!(stats.spawned, 12, "the whole wave");
+
+        let plaza = zone.checkpoint("plaza").expect("its checkpoint");
+        let place = zone.checkpoint_place(plaza).expect("a place");
+        assert_eq!(sim.return_to_checkpoint(plaza).expect("someone's playing"), cast[1]);
+        let back = sim.actors().find(|actor| actor.id == cast[1]).expect("there");
+        assert_eq!(back.position, place.position);
     }
 }

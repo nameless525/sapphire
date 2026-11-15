@@ -8,7 +8,6 @@ use std::path::Path;
 
 use sapphire_gameplay::TickActions;
 use sapphire_gameplay::replay::{Player, Replay, ReplayCommand, SCRIPTS, Script};
-use sapphire_script::scenarios::ALL;
 
 /// The replays no script made: a run of the game's flow, which records its beats' commands itself.
 const NOT_SCRIPTED: &[&str] = &["ward-whole-walk"];
@@ -55,7 +54,8 @@ fn every_scripted_replay_is_its_documents_input() {
         let name = path.file_stem().and_then(|stem| stem.to_str()).expect("a name").to_owned();
         let bytes = fs::read(path).expect("it reads");
         let replay = Replay::decode(&bytes).expect("it decodes");
-        let player = Player::new(Replay::decode(&bytes).expect("it decodes"), &ALL).expect("it starts");
+        let player = Player::new(Replay::decode(&bytes).expect("it decodes"), &sapphire_replay::SCENARIOS)
+            .expect("it starts");
         let actions: Vec<TickActions> = replay.actions().collect();
         if !SCRIPTS.iter().any(|script| made(script, &replay, &actions, player.cast())) {
             unmade.push(name);

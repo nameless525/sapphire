@@ -21,6 +21,8 @@ sapphire_playtest.workspace = true
 # Scenarios with hooks on them (M3 L0). Normal, not a dev-dependency, because that's what a runner will
 # link for L3's scripted replays, and `[simulation]`'s `runners` holds normal trees to the forbidden list.
 sapphire_script.workspace = true
+# The zones code builds (M5 B5): the benchmark district, which a scenario on it stands on.
+sapphire_synthetic_zone.workspace = true
 
 [dev-dependencies]
 # A system for a test's world to allocate in.

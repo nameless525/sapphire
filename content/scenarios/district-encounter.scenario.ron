@@ -1,0 +1,28 @@
+// The benchmark district's fight (M5 B5): exit test 1's walk into an encounter of twelve enemies against a party
+// of three kinds, and exit test 5's cast. The district is a zone code builds (`built`), so this names no
+// colliders, zone or encounters: the builder brings them, and only the replay runner and a development build's
+// fight hand it over. Who fights is named here and nowhere else: the party's kinds in `cast` (`playable`), and
+// the kind of enemy the plaza's twelve spawners bring in `enemies`, each taking the next in turn.
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the benchmark district: a party of three kinds, the heroine, Aster and Wren, walks up the avenue into the plaza, whose twelve Ember Lancers come at it in one wave (M5 B5)",
+        // The party and the plaza's twelve.
+        max_actors: 15,
+        built: Some("district"),
+        moves: [
+            "content/combat/player/player.moves.ron",
+            "content/combat/hero/hero.moves.ron",
+            "content/combat/wren/wren.moves.ron",
+            "content/combat/lancer/lancer.moves.ron",
+        ],
+        enemies: ["content/combat/ember_lancer/ember_lancer.enemy.ron"],
+        cast: [
+            (moves: "player", at: "avenue_start", faction: 1, soft_lock: true, playable: "heroine"),
+            (moves: "hero", at: "avenue_start", faction: 1, soft_lock: true, playable: "hero"),
+            (moves: "wren", at: "avenue_start", faction: 1, soft_lock: true, playable: "wren"),
+        ],
+        party: Some((members: [0, 1, 2], swap_cooldown: 60, rest: 150)),
+    ),
+)

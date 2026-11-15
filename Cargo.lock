@@ -1601,6 +1601,7 @@ dependencies = [
  "sapphire_sequencer",
  "sapphire_serialize",
  "sapphire_stage",
+ "sapphire_synthetic_zone",
  "sapphire_time",
  "sapphire_timeline",
  "sapphire_ui",
@@ -4550,6 +4551,7 @@ dependencies = [
  "sapphire_reflect",
  "sapphire_save",
  "sapphire_serialize",
+ "sapphire_synthetic_zone",
  "sapphire_time",
  "sapphire_timeline",
  "sapphire_zone",
@@ -4864,6 +4866,7 @@ dependencies = [
  "sapphire_gameplay",
  "sapphire_playtest",
  "sapphire_script",
+ "sapphire_synthetic_zone",
 ]
 
 [[package]]

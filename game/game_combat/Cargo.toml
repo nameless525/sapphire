@@ -50,15 +50,20 @@ sapphire_reflect = { workspace = true, optional = true }
 # Live tuning, dev-only (rule R8): linked only by the `dev` feature, which an app's own `dev` turns on.
 sapphire_hot_reload = { workspace = true, optional = true }
 sapphire_livelink = { workspace = true, optional = true }
+# The benchmark district (M5 B5): the zone a development build's `district-encounter` stands on, which code
+# builds. Dev-only, so a game's build refuses that scenario.
+sapphire_synthetic_zone = { workspace = true, optional = true }
 
 [dev-dependencies]
 sapphire_reflect.workspace = true
+# The benchmark district's builder, for the tests that play every committed replay (M5 B5).
+sapphire_synthetic_zone.workspace = true
 # The tests hold allocations to their budgets, so they count them as an app does.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 
 [features]
-# Development builds: live tuning. An app's `dev` forwards it.
-dev = ["dep:sapphire_hot_reload", "dep:sapphire_livelink", "dep:sapphire_reflect", "sapphire_stage/dev"]
+# Development builds: live tuning, and the zones code builds. An app's `dev` forwards it.
+dev = ["dep:sapphire_hot_reload", "dep:sapphire_livelink", "dep:sapphire_reflect", "dep:sapphire_synthetic_zone", "sapphire_stage/dev"]
 
 [lints]
 workspace = true

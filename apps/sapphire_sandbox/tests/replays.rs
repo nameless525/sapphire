@@ -1295,3 +1295,140 @@ fn the_committed_suite_runs_in_the_app() {
     assert!(log.contains(&format!("checksum={:016x}", played.trail.end())), "{log}");
     assert!(log.contains("allocations=0"), "{log}");
 }
+
+/// The shipped desktop cook with the `ci` district's pack beside it (M5 X4), or a failure saying how to make it.
+#[cfg(feature = "dev")]
+fn district_content() -> PathBuf {
+    let dir = workspace().join("target").join("bench").join("ci").join("with-content").join("desktop");
+    assert!(
+        dir.join("zone_district.spack").is_file(),
+        "the `ci` district isn't cooked beside the content in {}: run `cargo xtask bench-content --preset ci \
+         --with-content`",
+        dir.display()
+    );
+    dir
+}
+
+/// Exit test 1's no-hitch rule on the benchmark district's fight (M5 B5), as `zero_hitches` holds the ward's walk:
+/// the party's walk up the avenue into the plaza's twelve, with the hub's people about it, played on the `ci`
+/// district by a fight's bench under `--draw-every`, on Desktop-High and Mobile-Low. Each tier plays it twice,
+/// cold and then warm: the first process builds every pipeline its warm-up names with nothing held from before
+/// (an offscreen GPU keeps no pipeline cache), and the second does it again over the driver's shader cache the
+/// first filled. The bench fails on any frame that builds a pipeline the load didn't (`check_first_uses`), and
+/// the run's row must read no first use, no pipeline built on the frame's thread and no frame that waited for
+/// one. Crowd on and off alike reach the replay's checksums, since the people are presentation alone.
+///
+/// And that it drew the fight, by count, no pixels compared: on every drawn frame from tick 402, when all twelve
+/// stand (`sapphire_replay`'s `tests/district.rs`), the twelve and the party member on the field are skinned
+/// and drawn (13 skinned instances at least) and the HUD draws; each of the party's three kinds, the heroine,
+/// Aster and Wren, is the one on the field for some of those frames (who is, at each tick, read from the same
+/// replay played headless, which the stage's checksum matches); with the crowd on, people stand in view about
+/// the plaza on some of those frames. The game's own lane, `game_app`'s `zero_hitches`, plays the ward and not
+/// this.
+#[cfg(feature = "dev")]
+#[test]
+#[ignore = "needs a GPU and the `ci` district beside the cooked content (`cargo xtask bench-content --preset ci --with-content`)"]
+fn the_district_encounter_plays_with_no_hitch_cold_and_warm() {
+    /// From this tick all twelve stand, to the end.
+    const ALL_STAND: u64 = 402;
+    /// A frame in this many draws: twice the fights' rate, since this one is short (1,600 ticks, which
+    /// Mobile-Low plays in 800 frames).
+    const DRAW_EVERY: &str = "25";
+    let content = district_content();
+    let temp = Temp::new("district");
+    let replay = workspace().join("tests").join("replays").join("district-encounter.sreplay");
+    let bytes = fs::read(&replay).expect("committed");
+    let played = headless(&bytes);
+    // Who's on the field after each tick, by the party's place: the heroine, Aster, Wren.
+    let mut player =
+        Player::new(Replay::decode(&bytes).expect("reads"), &game_combat::combat::SCENARIOS).expect("starts");
+    let party: Vec<ActorId> = player.simulation().party().slots().map(|slot| slot.actor).collect();
+    assert_eq!(party.len(), 3, "a party of three kinds");
+    let mut fielded = vec![0];
+    while player.step() {
+        let active = player.simulation().party().active().expect("formed");
+        fielded.push(party.iter().position(|&member| member == active).expect("a member"));
+    }
+    let runs = [
+        ("desktop-high", "on", "cold"),
+        ("desktop-high", "on", "warm"),
+        ("mobile-low", "on", "cold"),
+        ("mobile-low", "on", "warm"),
+        ("desktop-high", "off", "warm"),
+    ];
+    for (tier, crowd, cache) in runs {
+        let what = format!("{tier}, crowd {crowd}, {cache}");
+        let trace = temp.path(&format!("{tier}-{crowd}-{cache}.csv"));
+        let output = sandbox(
+            &[
+                "--bench",
+                "1",
+                "--draw-every",
+                DRAW_EVERY,
+                "--bench-trace",
+                trace.to_str().expect("UTF-8"),
+                "--arena",
+                "--replay",
+                replay.to_str().expect("UTF-8"),
+                "--party",
+                "--ambient",
+                crowd,
+                "--mount",
+                "zone_proving_hub",
+                "--tier",
+                tier,
+                "--size",
+                "64x36",
+                "--hud",
+                "live",
+                "--no-hot-reload",
+                "--live-link",
+                "off",
+            ],
+            &content,
+        );
+        let log = log_of(&output);
+        assert!(output.status.success(), "{what}: {log}");
+        let end = format!("checksum={:016x}", played.trail.end());
+        assert!(log.lines().any(|line| line.contains(&end)), "{what}: no {end}: {log}");
+        let rows: Vec<&str> = log.lines().filter(|line| line.contains("fight pipelines")).collect();
+        assert!(!rows.is_empty(), "{what}: {log}");
+        for row in rows {
+            for part in ["first_use=0", "frame_thread=0", "frame_waits=0", "rebuilt=0"] {
+                assert!(row.contains(part), "{what}: {row}");
+            }
+        }
+
+        let text = fs::read_to_string(&trace).expect("the bench's trace");
+        let mut lines = text.lines();
+        let header: Vec<&str> = lines.next().expect("a header").split(',').collect();
+        let column = |name: &str| header.iter().position(|held| *held == name).expect("a column");
+        let (frame, tick, skinned, ui, people) = (
+            column("frame"),
+            column("tick"),
+            column("skinned"),
+            column("ui_draws"),
+            column("ambient_in_view"),
+        );
+        let every: u64 = DRAW_EVERY.parse().expect("a number");
+        let (mut drawn, mut most_people, mut by_kind) = (0, 0, [0_u32; 3]);
+        for line in lines {
+            let cells: Vec<&str> = line.split(',').collect();
+            let number = |at: usize| cells[at].parse::<u64>().expect("a count");
+            if number(frame) % every != 0 || number(tick) < ALL_STAND {
+                continue;
+            }
+            drawn += 1;
+            assert!(number(skinned) >= 13, "{what}: tick {}: {line}", number(tick));
+            assert!(number(ui) >= 1, "{what}: tick {}: no HUD: {line}", number(tick));
+            most_people = most_people.max(number(people));
+            by_kind[fielded[(number(tick) as usize).min(fielded.len() - 1)]] += 1;
+        }
+        assert!(drawn > 20, "{what}: {drawn} frames drawn with all twelve standing");
+        assert!(
+            by_kind.iter().all(|&frames| frames >= 3),
+            "{what}: drawn frames by kind on the field: {by_kind:?}"
+        );
+        assert_eq!(most_people > 0, crowd == "on", "{what}: {most_people} people in view at most");
+    }
+}

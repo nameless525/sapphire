@@ -46,9 +46,17 @@
 //! - **The pool is hard.** What the textures hold, tails and levels, on the GPU and on their way, never
 //!   passes the pool ([`TextureStreaming::pool`]). Where the tops held would, the streamer plans coarser
 //!   ones, a level at a time, lowering first what's wanted least: a texture the views stopped reading, the
-//!   longest unseen first; then the one lowered least below its need, so blur spreads a level at a time;
-//!   then the one read most coarsely; then the largest. A texture held whole goes last. What it can't
-//!   afford stays wanted, as debt.
+//!   longest unseen first; then the one lowered least below its top held, so blur spreads a level at a time;
+//!   then, of two alike, the one it lowered last frame; then the one read most coarsely (by its top held,
+//!   never the need, which follows every estimate); then the largest. A texture held whole goes last. What
+//!   it can't afford stays wanted, as debt.
+//! - **The pool's plan remembers.** A texture the pool held coarser than its top stays at that plan: it
+//!   rises only while the pool keeps room for another such level beside the plan, and only once every texture
+//!   it ranks as more wanted has risen (one held whole goes last, also here), or once [`LOWER_AFTER`]
+//!   estimates have passed and it tries its top again, losing ties to those it didn't lower. So a need
+//!   wobbling across a level under a binding pool never swaps two textures' levels from frame to frame. Its
+//!   levels still go back to the server as it lowers: one the server kept would be found ready and never
+//!   handed over again, and keeping it here would take the pool's room as the GPU's level did.
 //! - **A frame's work is bounded.** Each frame starts loading the levels of at most [`MAX_STARTS`]
 //!   textures and the tier's raise budget in bytes ([`TextureStreaming::raise`], within the server's upload
 //!   budget), the widest gap between top and need first, then the nearest; one held whole goes first and at
@@ -67,12 +75,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use sapphire_assets::texture::TextureDesc;
 use sapphire_assets::texture_level::{ArchivedTextureLevel, TextureLevel};
 use sapphire_assets::{
     AssetId, AssetServer, AssetSlot, CpuResident, Handle, LoadPriority, LoadState, Upload, UploadError,
 };
 use sapphire_render::texture::GpuTexture;
-use sapphire_render::{DEFAULT_MIP_BUDGET, Renderer, StreamedTops};
+use sapphire_render::{DEFAULT_MIP_BUDGET, Renderer, StreamedTops, TextureCoverageFrame};
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
@@ -220,6 +229,8 @@ struct Choice {
     unseen: u32,
     /// The top planned within the pool this frame.
     planned: u32,
+    /// The pool's last plan for it, while that was coarser than its target.
+    pool: Option<PoolLowered>,
     /// Frames its top has been coarser than its need.
     debt: u32,
     /// Its missing levels may start loading this frame, and how urgently.
@@ -228,7 +239,21 @@ struct Choice {
     lower: bool,
 }
 
+/// A plan the pool held coarser than a texture's target: where the next frame's plan starts from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PoolLowered {
+    planned: u32,
+    /// Estimates since it last tried its target: at [`LOWER_AFTER`] it tries again.
+    estimates: u32,
+}
+
 impl Choice {
+    /// The top it would plan with the pool's room: its target, under the level `floor` that failed, no deeper
+    /// than `above`.
+    fn base(&self, above: u32, floor: u32) -> u32 {
+        self.target.unwrap_or(above).max(floor).min(above)
+    }
+
     /// Follows a fresh estimate: the finest level the views read the texture at, or `None` if they didn't
     /// read it, with `above` levels above its tail. The need follows at once, and the top held by
     /// hysteresis: at once to a finer need, to a coarser one only after [`LOWER_AFTER`] estimates coarser by
@@ -267,12 +292,31 @@ struct Rank {
     streams: bool,
     /// Estimates the views haven't read it.
     unseen: u32,
-    /// Levels its plan is below its need, reversed: the least lowered first.
+    /// Levels its plan is below its target, reversed: the least lowered first.
     lowered: std::cmp::Reverse<u32>,
-    /// Its need: the most coarsely read first.
-    need: u32,
+    /// The pool lowered it last frame: of two alike, the same one goes again, so they don't take turns.
+    lowered_last: bool,
+    /// The top held for it by hysteresis: the most coarsely read first. Never the need itself, which follows
+    /// each estimate and would turn the order over with a wobble across a level.
+    read: u32,
     /// Bytes its top planned level holds.
     bytes: u64,
+}
+
+/// What the streamer's plan reads of a texture on the renderer ([`TextureLevels::plan`]).
+#[derive(Clone, Copy, Debug)]
+struct Shape {
+    /// The whole texture's shape.
+    whole: TextureDesc,
+    /// Its top on the GPU, and the levels above its tail.
+    top: u32,
+    above: u32,
+}
+
+impl Shape {
+    fn of(texture: &GpuTexture) -> Self {
+        Self { whole: texture.whole(), top: texture.top(), above: texture.above() }
+    }
 }
 
 /// Which version of a level the server handed over.
@@ -288,6 +332,16 @@ struct Arrived {
 }
 
 impl Wanted {
+    /// Held whole: by a slot that never streams, or this frame's [`TextureLevels::hold_whole_now`].
+    fn held_whole(&self) -> bool {
+        self.whole_users > 0 || self.whole_now
+    }
+
+    /// The top it stays under, below the deepest level that failed, no deeper than `above`.
+    fn floor(&self, above: u32) -> u32 {
+        self.failed.map_or(0, |failed| failed + 1).min(above)
+    }
+
     /// Whether a level is held here: asked for, arrived or on the GPU.
     fn holds(&self, index: u32) -> bool {
         self.handles.contains_key(&index)
@@ -588,9 +642,7 @@ impl TextureLevels {
         change
     }
 
-    /// The streamer's half of a frame (see the module docs): each texture's need from the renderer's last
-    /// estimate, the top held by hysteresis, the plan within `streaming`'s pool, and which textures may start
-    /// loading levels, within `start_bytes`.
+    /// The streamer's half of a frame (see the module docs), from the renderer's last estimate: [`Self::plan`].
     fn choose(
         &mut self,
         textures: &HashMap<AssetId, Held<GpuTexture>>,
@@ -598,7 +650,20 @@ impl TextureLevels {
         streaming: TextureStreaming,
         start_bytes: u64,
     ) -> u32 {
-        let coverage = renderer.texture_coverage();
+        let shape = |id: AssetId| textures.get(&id).map(|held| Shape::of(&held.object));
+        self.plan(shape, renderer.texture_coverage(), streaming, start_bytes)
+    }
+
+    /// Each texture's need from `coverage`, the top held by hysteresis, the plan within `streaming`'s pool (with
+    /// what the pool lowered last frame), and which textures may start loading levels, within `start_bytes`.
+    /// `shape` says what each texture on the renderer is. Returns how many textures may start.
+    fn plan(
+        &mut self,
+        shape: impl Fn(AssetId) -> Option<Shape>,
+        coverage: TextureCoverageFrame<'_>,
+        streaming: TextureStreaming,
+        start_bytes: u64,
+    ) -> u32 {
         let fresh = coverage.frame != self.seen;
         self.seen = coverage.frame;
         let mut total = 0u64;
@@ -606,12 +671,12 @@ impl TextureLevels {
         let mut wanted_bytes = 0u64;
         self.order.clear();
         for (&id, wanted) in &mut self.textures {
-            let Some(texture) = textures.get(&id).map(|held| &held.object) else { continue };
-            let (above, whole) = (texture.above(), texture.whole());
-            let floor = wanted.failed.map_or(0, |failed| failed + 1).min(above);
+            let Some(texture) = shape(id) else { continue };
+            let (above, whole) = (texture.above, texture.whole);
+            let floor = wanted.floor(above);
+            let held_whole = wanted.held_whole();
             let choice = &mut wanted.choice;
             (choice.start, choice.lower) = (None, false);
-            let held_whole = wanted.whole_users > 0 || wanted.whole_now;
             if wanted.users == 0 {
                 (choice.need, choice.target, choice.coarser) = (above, Some(above), 0);
             } else if let Some(&top) = self.asked.get(&id) {
@@ -625,12 +690,19 @@ impl TextureLevels {
                 });
                 choice.follow(finest, above);
             }
-            choice.planned = choice.target.unwrap_or(above).max(floor).min(above);
-            total += bytes_from(texture, choice.planned);
-            tails += bytes_from(texture, above);
-            wanted_bytes += bytes_from(texture, choice.need.max(floor).min(above));
+            // One the pool lowered keeps last frame's plan until it may rise (below), or until it tries its
+            // target again. One held whole doesn't: it goes last, so every frame's plan lowers each streamed
+            // texture first, and a plan it kept would hold it down in their place.
+            let base = choice.base(above, floor);
+            choice.planned = match choice.pool {
+                Some(pool) if pool.estimates < LOWER_AFTER && !held_whole => pool.planned.clamp(base, above),
+                _ => base,
+            };
+            total += bytes_from(&whole, choice.planned);
+            tails += bytes_from(&whole, above);
+            wanted_bytes += bytes_from(&whole, choice.need.max(floor).min(above));
             if choice.planned < above {
-                self.order.push((rank(texture, choice, held_whole), id));
+                self.order.push((rank(&texture, choice, held_whole), id));
             }
         }
         // Over the pool: lower plans a level at a time, the greatest rank first.
@@ -639,44 +711,80 @@ impl TextureLevels {
             while total > streaming.pool
                 && let Some((_, id)) = heap.pop()
             {
-                let (Some(wanted), Some(held)) = (self.textures.get_mut(&id), textures.get(&id)) else {
+                let (Some(wanted), Some(texture)) = (self.textures.get_mut(&id), shape(id)) else {
                     continue;
                 };
-                let texture = &held.object;
+                let held_whole = wanted.held_whole();
                 let choice = &mut wanted.choice;
-                total -= texture.whole().level_byte_len(choice.planned);
+                total -= texture.whole.level_byte_len(choice.planned);
                 choice.planned += 1;
-                if choice.planned < texture.above() {
-                    let held_whole = wanted.whole_users > 0 || wanted.whole_now;
-                    heap.push((rank(texture, choice, held_whole), id));
+                if choice.planned < texture.above {
+                    heap.push((rank(&texture, choice, held_whole), id));
                 }
             }
             self.order = heap.into_vec();
+        }
+        // Under it: what the pool lowered rises toward its target, the most wanted first, a level at a time while
+        // the pool keeps room for one more such level beside the plan, so a rise never makes the next frame's
+        // plan lower another texture in its place. One that can't rise holds back every one after it: a less
+        // wanted texture never takes room a more wanted one waits for (one held whole goes last).
+        self.order.clear();
+        for (&id, wanted) in &self.textures {
+            let Some(texture) = shape(id) else { continue };
+            let choice = &wanted.choice;
+            if choice.planned > choice.base(texture.above, wanted.floor(texture.above)) {
+                self.order.push((rank(&texture, choice, wanted.held_whole()), id));
+            }
+        }
+        self.order.sort_unstable();
+        'rise: for &(_, id) in &self.order {
+            let (Some(wanted), Some(texture)) = (self.textures.get_mut(&id), shape(id)) else { continue };
+            let base = wanted.choice.base(texture.above, wanted.floor(texture.above));
+            let choice = &mut wanted.choice;
+            while choice.planned > base {
+                let level = texture.whole.level_byte_len(choice.planned - 1);
+                if total + 2 * level > streaming.pool {
+                    break 'rise;
+                }
+                total += level;
+                choice.planned -= 1;
+            }
+        }
+        // What the pool lowered, for the next frame's plan, with the estimates since it last tried its target.
+        for (&id, wanted) in &mut self.textures {
+            let Some(texture) = shape(id) else { continue };
+            let base = wanted.choice.base(texture.above, wanted.floor(texture.above));
+            let choice = &mut wanted.choice;
+            choice.pool = (choice.planned > base).then(|| {
+                let estimates = match choice.pool {
+                    Some(pool) if pool.estimates < LOWER_AFTER => pool.estimates + u32::from(fresh),
+                    _ => 0,
+                };
+                PoolLowered { planned: choice.planned, estimates }
+            });
         }
         // Which textures lower this frame: the greatest rank first, at most `MAX_LOWERS`. `held` is what the
         // textures hold, on the GPU and on their way, once those lowers are done.
         self.order.clear();
         let mut held = 0u64;
         for (&id, wanted) in &self.textures {
-            let Some(texture) = textures.get(&id).map(|held| &held.object) else { continue };
-            let top = texture.top();
+            let Some(texture) = shape(id) else { continue };
+            let top = texture.top;
             let lowest = (0..top).find(|&index| wanted.holds(index)).unwrap_or(top);
-            held += bytes_from(texture, lowest);
+            held += bytes_from(&texture.whole, lowest);
             if top < wanted.choice.planned {
-                let held_whole = wanted.whole_users > 0 || wanted.whole_now;
-                self.order.push((rank(texture, &wanted.choice, held_whole), id));
+                self.order.push((rank(&texture, &wanted.choice, wanted.held_whole()), id));
             }
         }
         self.order.sort_unstable_by(|a, b| b.cmp(a));
         let lowers = self.order.len().min(MAX_LOWERS);
         for &(_, id) in &self.order[..lowers] {
-            let (Some(wanted), Some(held_texture)) = (self.textures.get_mut(&id), textures.get(&id)) else {
+            let (Some(wanted), Some(texture)) = (self.textures.get_mut(&id), shape(id)) else {
                 continue;
             };
-            let texture = &held_texture.object;
-            let top = texture.top();
+            let top = texture.top;
             let lowest = (0..top).find(|&index| wanted.holds(index)).unwrap_or(top);
-            held -= bytes_from(texture, lowest) - bytes_from(texture, wanted.choice.planned);
+            held -= bytes_from(&texture.whole, lowest) - bytes_from(&texture.whole, wanted.choice.planned);
             wanted.choice.lower = true;
         }
         self.stats.lowers_waiting = (self.order.len() - lowers) as u32;
@@ -684,21 +792,20 @@ impl TextureLevels {
         // each only if its levels fit the pool beside what's held.
         self.order.clear();
         for (&id, wanted) in &self.textures {
-            let Some(texture) = textures.get(&id).map(|held| &held.object) else { continue };
+            let Some(texture) = shape(id) else { continue };
             let planned = wanted.choice.planned;
-            let whole = texture.whole();
-            let missing: u64 = (planned..texture.top())
+            let missing: u64 = (planned..texture.top)
                 .filter(|&index| !wanted.holds(index))
-                .map(|index| whole.level_byte_len(index))
+                .map(|index| texture.whole.level_byte_len(index))
                 .sum();
             if missing > 0 {
-                let held_whole = wanted.whole_users > 0 || wanted.whole_now;
-                let gap = texture.top() - planned;
+                let gap = texture.top - planned;
                 let rank = Rank {
-                    streams: !held_whole,
+                    streams: !wanted.held_whole(),
                     unseen: 0,
                     lowered: std::cmp::Reverse(gap),
-                    need: wanted.choice.need,
+                    lowered_last: false,
+                    read: wanted.choice.target.unwrap_or(texture.above),
                     bytes: missing,
                 };
                 self.order.push((rank, id));
@@ -784,20 +891,21 @@ fn level(finest: f32, above: u32) -> u32 {
     if finest >= 0.0 { (finest.floor() as u32).min(above) } else { 0 }
 }
 
-/// Bytes `texture` holds with its top at `top`.
-fn bytes_from(texture: &GpuTexture, top: u32) -> u64 {
-    let whole = texture.whole();
+/// Bytes a texture of shape `whole` holds with its top at `top`.
+fn bytes_from(whole: &TextureDesc, top: u32) -> u64 {
     (top..whole.mip_level_count).map(|level| whole.level_byte_len(level)).sum()
 }
 
 /// Where a texture with `choice` stands in the order the pool lowers plans in.
-fn rank(texture: &GpuTexture, choice: &Choice, held_whole: bool) -> Rank {
+fn rank(texture: &Shape, choice: &Choice, held_whole: bool) -> Rank {
+    let read = choice.target.unwrap_or(texture.above);
     Rank {
         streams: !held_whole,
         unseen: choice.unseen,
-        lowered: std::cmp::Reverse(choice.planned.saturating_sub(choice.need)),
-        need: choice.need,
-        bytes: texture.whole().level_byte_len(choice.planned),
+        lowered: std::cmp::Reverse(choice.planned.saturating_sub(read)),
+        lowered_last: choice.pool.is_some(),
+        read,
+        bytes: texture.whole.level_byte_len(choice.planned),
     }
 }
 
@@ -828,11 +936,11 @@ fn count(
         let above = texture.above();
         count += 1;
         held_whole += u32::from(wanted.users > 0 && (wanted.whole_users > 0 || wanted.whole_now));
-        tails += bytes_from(texture, above);
+        tails += bytes_from(&texture.whole(), above);
         // On the GPU, and levels on their way down to the top planned.
         let top = texture.top();
         let lowest_held = (0..top).find(|&index| wanted.holds(index)).unwrap_or(top);
-        resident += bytes_from(texture, lowest_held);
+        resident += bytes_from(&texture.whole(), lowest_held);
         let need = match streaming {
             Some(_) => wanted.choice.need.min(above),
             None => wanted_top(asked, id, wanted, above),

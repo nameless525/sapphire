@@ -1,5 +1,7 @@
 //! The streamer's choices that need no GPU: the level a footprint reads, and the hysteresis.
 
+use sapphire_render::TextureCoverage;
+
 use super::*;
 
 /// Follows `reads`, one estimate each (`None` for one the views didn't read), from a fresh choice for a
@@ -101,4 +103,144 @@ fn a_frames_levels_are_the_sum_of_its_passes() {
     assert_eq!((stats.levels_raised, stats.levels_lowered, stats.started), (7, 2, 3));
     add_pass(&mut stats, true, [1, 0, 0]);
     assert_eq!((stats.levels_raised, stats.levels_lowered, stats.started), (1, 0, 0));
+}
+
+/// Two textures alike for [`TextureLevels::plan`]: 128 texels square, RGBA8, five levels above their 4 × 4 tails.
+const A: AssetId = AssetId::from_bytes([0xa0; 16]);
+const B: AssetId = AssetId::from_bytes([0xb0; 16]);
+const ABOVE: u32 = 5;
+
+fn whole() -> TextureDesc {
+    use sapphire_assets::texture::{Swizzle, TextureFormat};
+    let format = TextureFormat::Rgba8UnormSrgb;
+    TextureDesc { format, width: 128, height: 128, mip_level_count: 8, swizzle: Swizzle::default() }
+}
+
+/// What the views read of a 128-texel texture whose finest level is `finest`.
+fn read(texture: AssetId, finest: f32) -> TextureCoverage {
+    TextureCoverage { texture, uv_per_pixel: finest.exp2() / 128.0 }
+}
+
+/// A and B, bound and streaming within a pool with room for one whole and the other a level down, and not for
+/// both whole.
+struct Pair {
+    levels: TextureLevels,
+    tops: [u32; 2],
+    streaming: TextureStreaming,
+    frame: u64,
+}
+
+impl Pair {
+    fn new() -> Self {
+        let mut levels = TextureLevels::default();
+        levels.bind(A, false);
+        levels.bind(B, false);
+        let whole = whole();
+        let pool = bytes_from(&whole, 0) + bytes_from(&whole, 1) + whole.level_byte_len(0) / 2;
+        Self { levels, tops: [ABOVE; 2], streaming: TextureStreaming { pool, raise: u64::MAX }, frame: 0 }
+    }
+
+    /// One frame's plan from an estimate reading A and B at their finest levels, and the renderer's half as
+    /// `follow` does it: a lower to the plan at once, and a rise to it as soon as its levels may start (they
+    /// come at once here). Returns the tops after it.
+    fn frame(&mut self, a: f32, b: f32) -> [u32; 2] {
+        self.frame += 1;
+        let reads = [read(A, a), read(B, b)];
+        let coverage = TextureCoverageFrame { frame: self.frame, textures: &reads };
+        let tops = self.tops;
+        let shape =
+            |id: AssetId| Some(Shape { whole: whole(), top: tops[usize::from(id == B)], above: ABOVE });
+        self.levels.plan(shape, coverage, self.streaming, u64::MAX);
+        for (top, id) in self.tops.iter_mut().zip([A, B]) {
+            let choice = self.levels.textures[&id].choice;
+            if (choice.lower && *top < choice.planned) || (choice.start.is_some() && choice.planned < *top) {
+                *top = choice.planned;
+            }
+        }
+        // What the plan holds stays within the pool.
+        let held: u64 = self.tops.iter().map(|&top| bytes_from(&whole(), top)).sum();
+        assert!(held <= self.streaming.pool, "frame {}: {:?} holds {held}", self.frame, self.tops);
+        self.tops
+    }
+}
+
+/// m5-plan M5's hard pool, held still (Z3 review F2): A and B alike, the pool too small for both whole, and A's
+/// need wobbling across a level every frame (an idle enemy's posed bounds) while B's stays whole. The pool's
+/// plan lowers one of them once, and that one stays lowered: neither swaps its levels with the other each
+/// frame, nor when the lowered one tries its target again after `LOWER_AFTER` estimates.
+#[test]
+fn a_need_wobbling_across_a_level_under_a_binding_pool_swaps_no_levels() {
+    let mut pair = Pair::new();
+    // A's finest level either side of 1 + MARGIN: a need of 0, then of 1. B's, well under: always 0.
+    let wobble = |frame: u32| if frame.is_multiple_of(2) { 1.45 } else { 1.55 };
+    for frame in 0..10 {
+        pair.frame(wobble(frame), 0.2);
+    }
+    let settled = pair.tops;
+    assert!(settled.contains(&0) && settled.contains(&1), "one whole and one a level down: {settled:?}");
+    let tops: Vec<[u32; 2]> =
+        (10..10 + 2 * LOWER_AFTER).map(|frame| pair.frame(wobble(frame), 0.2)).collect();
+    for texture in 0..2 {
+        let changes = tops.windows(2).filter(|pair| pair[0][texture] != pair[1][texture]).count();
+        assert!(changes <= 1, "texture {texture}'s top changed {changes} times: {tops:?}");
+    }
+    // What the memory costs a texture.
+    assert_eq!(size_of::<Option<PoolLowered>>(), 12);
+}
+
+/// What the pool lowered rises again once there's room: here once A leaves the renderer's materials, within
+/// `LOWER_AFTER` estimates, as the memory holding it down lapses.
+#[test]
+fn a_texture_the_pool_lowered_rises_once_the_pool_has_room() {
+    let mut pair = Pair::new();
+    for _ in 0..10 {
+        pair.frame(0.2, 0.2);
+    }
+    let lowered = usize::from(pair.tops[1] == 1);
+    assert_eq!(pair.tops[lowered], 1, "one of them is a level down: {:?}", pair.tops);
+    let other = [A, B][1 - lowered];
+    pair.levels.unbind(other, false);
+    let frames = (0..LOWER_AFTER + 2).position(|_| pair.frame(0.2, 0.2)[lowered] == 0);
+    assert!(frames.is_some(), "it never rose: {:?}", pair.tops);
+    assert_eq!(pair.tops[1 - lowered], ABOVE, "the one let go of is at its tail");
+}
+
+/// A texture held whole goes last, also as the pool's plan gives back what it lowered and remembers it: with a held
+/// texture A that must go a level down and a streamed one B whose every level above its tail fits in the room that
+/// leaves, B stays at its tail while A is down, also when the pool lowered A before B was first read. Before, B rose into that room past A, so the pool held a texture held
+/// whole below its target in place of a streamed one, and the texture view (which shows only streamed
+/// textures) showed no debt at all (`debug-textures-district`).
+#[test]
+fn a_streamed_texture_never_rises_past_one_held_whole_the_pool_lowered() {
+    let mut levels = TextureLevels::default();
+    levels.bind(A, true);
+    levels.bind(B, false);
+    let whole = whole();
+    // A whole beside B at its tail doesn't fit; A a level down leaves room for B whole, twice over.
+    let pool = bytes_from(&whole, 0) + bytes_from(&whole, ABOVE) - 1;
+    let streaming = TextureStreaming { pool, raise: u64::MAX };
+    let mut tops = [ABOVE; 2];
+    for frame in 1..=2 * u64::from(LOWER_AFTER) {
+        // The first estimate reads A alone, so B's plan is its tail and the pool lowers A: a plan it remembered
+        // would keep A down once B is read, in B's place.
+        let reads = [read(A, 0.2), read(B, 0.2)];
+        let coverage = TextureCoverageFrame { frame, textures: &reads[..if frame == 1 { 1 } else { 2 }] };
+        let now = tops;
+        let shape = |id: AssetId| Some(Shape { whole, top: now[usize::from(id == B)], above: ABOVE });
+        levels.plan(shape, coverage, streaming, u64::MAX);
+        for (top, id) in tops.iter_mut().zip([A, B]) {
+            let choice = levels.textures[&id].choice;
+            if (choice.lower && *top < choice.planned) || (choice.start.is_some() && choice.planned < *top) {
+                *top = choice.planned;
+            }
+        }
+        let planned = [A, B].map(|id| levels.textures[&id].choice.planned);
+        if frame > 1 {
+            assert!(planned[0] > 0, "frame {frame}: A can't be whole: {planned:?}");
+            assert_eq!(
+                planned[1], ABOVE,
+                "frame {frame}: B is finer than its tail with A, held whole, lowered: {planned:?}"
+            );
+        }
+    }
 }

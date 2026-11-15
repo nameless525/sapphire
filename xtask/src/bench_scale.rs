@@ -10,7 +10,7 @@
 //! - `bin/`: the release `dev` sandbox (what B4 walked) and the testkit, copied so a later build can't change
 //!   what a resumed batch runs;
 //! - `replays/`: the crowd scenarios' replays, recorded here since none is committed, and the committed ones the
-//!   stand-ins play;
+//!   runs play;
 //! - `logs/` (or `smoke/` for `--smoke`): each run's log, trace and status, and `report.md`.
 //!
 //! It never takes a gate slot itself: run `prepare` and `--smoke` through `q`, and timed sittings through
@@ -40,9 +40,9 @@ const TESTKIT: &str = "sapphire_testkit";
 const CROWDS: [&str; 2] = ["crowd-15", "crowd-60"];
 const CROWD_SCRIPT: &str = "chase-laps";
 
-/// Committed replays the stand-ins play, copied beside the crowds' so every run names `{replays}/…`
-/// whatever folder the batch runs from.
-const COMMITTED: [&str; 1] = ["zone-trip"];
+/// Committed replays the runs play (a stand-in's, and the district's fight), copied beside the crowds' so every
+/// run names `{replays}/…` whatever folder the batch runs from.
+const COMMITTED: [&str; 2] = ["zone-trip", "district-encounter"];
 
 /// The file `prepare` names its preset in, so `run` mounts what was prepared.
 const PREPARED: &str = "preset";

@@ -31,12 +31,11 @@
         load_bound: 8.0,
         gaps: [
             "Exit test 1: weather that moves along one walk. The night lap held wet stands beside the dry one instead.",
-            "Exit test 1: the encounter at the walk's end, a party of three kinds against twelve budget enemies. The chasers stand in for the enemies, and no run draws a party of kinds, until the district plays it.",
             "Exit test 2: a trip from the district to another zone and back: the district has no exits, so the ward's zone-trip replay stands in for the mesh pool's floor.",
             "Exit test 2: the 30-frame p99 of a texture's wait has no counter of its own: the worst texture debt in frames bounds it from above.",
             "Exit test 2: loads on the frame's thread are excluded by construction and not counted.",
             "Exit test 6: the cells' levels before and after (D6) need a cook without them, so they aren't in this batch.",
-            "Exit test 7: zero_hitches on the district waits for the district's encounter; the counting walks (no pipeline built after the load, or the bench fails) stand in.",
+            "Exit test 7: zero_hitches plays the ward, since a shipping build can't stand a zone code builds: the counting walks and the fight's pipeline rows (no pipeline built after the load, or the bench fails) stand in on the district.",
         ],
         tiers: [
             (name: "desktop-high", size: "2560x1440", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12),
@@ -146,16 +145,21 @@
                 rows: ["cpu frame", "animation and ik", "secondary motion", "gpu frame", "gpu main", "gpu skinning", "ambient characters in view", "skinned vertices"],
                 serves: [5],
             ),
-            // Exit test 5's cast, stood in for until the district plays its encounter: the sandbox's `--arena` plays only
-            // code scenarios on the arena, so `party-kinds` (a content scenario) can't draw its party here.
+            // Exit tests 1 and 5 at once: the district's encounter (M5 B5), its party of three kinds up the avenue
+            // into the plaza's twelve Ember Lancers at night, the hub's people about. Its scenario stands on a zone
+            // code builds, which the `dev` sandbox hands over.
             (
-                name: "cast-crowd",
-                about: "fifteen chasers on the arena",
-                args: ["--arena", "--replay", "{replays}/crowd-15.sreplay", "--no-hot-reload", "--live-link", "off"],
-                frames: Count(1800),
-                read: [Cpu, Gpu, Counts, Cast],
-                serves: [1, 5],
-                stands_in: Some("twelve budget enemies at the walk's end"),
+                name: "district-fight",
+                about: "the district's encounter at night: the heroine, Aster and Wren up the avenue into twelve Ember Lancers, the crowd about",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(1600),
+                read: [Cpu, Gpu, Counts, Cast, Pipelines],
+                trace: true,
+                beside: Some("tour-night"),
+                serves: [1, 5, 7],
             ),
             // Each package's own on/off pair.
             (

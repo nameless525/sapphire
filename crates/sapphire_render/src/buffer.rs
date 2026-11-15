@@ -122,6 +122,30 @@ impl GrowableBuffer {
     }
 }
 
+/// A buffer holding `contents` from its making, for what's written once (the effect meshes' shapes, a probe
+/// grid): mapped at creation and filled, as `wgpu::util::DeviceExt::create_buffer_init` fills one, except on a
+/// lost device, whose buffers are invalid and can't be mapped: there it's left unwritten rather than panicking
+/// (that helper unwraps the mapping, and the `shipping` profile aborts on a panic, so `clippy.toml` forbids it).
+/// What's made on a lost device is thrown away with it, as `ui`'s quad indices are (M4 H4). Its size is
+/// `contents`' rounded up to whole words, at least one.
+pub(crate) fn filled(
+    device: &wgpu::Device,
+    label: Option<&str>,
+    contents: &[u8],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    let size = (contents.len() as u64)
+        .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+        .max(wgpu::COPY_BUFFER_ALIGNMENT);
+    let buffer =
+        device.create_buffer(&wgpu::BufferDescriptor { label, size, usage, mapped_at_creation: true });
+    if let Ok(mut mapped) = buffer.slice(..).get_mapped_range_mut() {
+        mapped.slice(..contents.len()).copy_from_slice(contents);
+    }
+    buffer.unmap();
+    buffer
+}
+
 /// Copies `bytes` to `target` at `offset` through the staging belt, as part of `encoder`.
 /// Empty writes are skipped. `offset` and the length must be multiples of 4.
 pub(crate) fn stage(

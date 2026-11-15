@@ -2529,13 +2529,12 @@ impl GpuGrid {
         if word_bytes > limits.max_storage_buffer_binding_size {
             return Err(RenderError::ProbeGridTooLarge { bricks: kept });
         }
-        let words_buffer = wgpu::util::DeviceExt::create_buffer_init(
+        // A grid may arrive on a device already lost: no API that panics on one.
+        let words_buffer = buffer::filled(
             device,
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("probe grid"),
-                contents: bytemuck::cast_slice(&words),
-                usage: wgpu::BufferUsages::STORAGE,
-            },
+            Some("probe grid"),
+            bytemuck::cast_slice(&words),
+            wgpu::BufferUsages::STORAGE,
         );
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("probe atlas"),

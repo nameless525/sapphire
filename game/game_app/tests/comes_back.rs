@@ -17,6 +17,10 @@
 //!   the device reports an error in, falls back to Mobile-Low and stands the game there, with nothing built on a
 //!   frame; Mobile-High isn't asked for again. Refused at Mobile-Low too, the boot fails, naming the lowest tier.
 //!
+//! **No panic, on any thread:** the warm-up's job scope catches a panic and drops the part, so nothing would
+//! fail, but the `shipping` profile aborts on any panic, so for a store build each is a crash. A hook counts
+//! them for the whole run, and any one fails it.
+//!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
 //! `cargo test -p game_app --features dev --test comes_back -- --ignored`. CI's `App tests` job runs it on
@@ -25,6 +29,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use game_app::{GameApp, GameShow, stand_game};
@@ -480,6 +485,9 @@ impl App for OutsideCaller {
     }
 }
 
+/// Panics on any thread since `main` began (the module's docs).
+static PANICS: AtomicUsize = AtomicUsize::new(0);
+
 fn main() -> ExitCode {
     if !std::env::args().any(|argument| argument == "--ignored") {
         eprintln!("comes_back: needs a GPU and cooked content; run it with --ignored");
@@ -491,5 +499,16 @@ fn main() -> ExitCode {
         // SAFETY: nothing else runs yet: the platform's loop and its threads start below.
         unsafe { std::env::set_var("SAPPHIRE_CONTENT_DIR", cook) };
     }
-    run_with::<OutsideCaller>(RunOptions { background: true, headless: true })
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANICS.fetch_add(1, Ordering::SeqCst);
+        previous(info);
+    }));
+    let code = run_with::<OutsideCaller>(RunOptions { background: true, headless: true });
+    let panics = PANICS.load(Ordering::SeqCst);
+    if panics > 0 {
+        eprintln!("comes_back: {panics} panics on the way (each one aborts a shipped build); see above");
+        return ExitCode::FAILURE;
+    }
+    code
 }

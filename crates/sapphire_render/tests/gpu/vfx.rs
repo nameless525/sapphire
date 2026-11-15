@@ -167,7 +167,7 @@ fn flat(corners: &[[f32; 2]], indices: Vec<u32>) -> Mesh {
 }
 
 pub(super) struct Harness {
-    gpu: Arc<GpuContext>,
+    pub(super) gpu: Arc<GpuContext>,
     pub(super) renderer: Renderer,
     pub(super) graph: GraphExecutor,
     packets: FramePacketRing,

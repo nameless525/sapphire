@@ -26,6 +26,7 @@ mod look_tiers;
 mod merge;
 mod mip_copies;
 mod outline;
+mod panics;
 mod reflections;
 mod render;
 mod render_scale;

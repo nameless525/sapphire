@@ -29,7 +29,6 @@ use glam::{Mat4, Vec3};
 use sapphire_look::vfx::mesh::PATTERN_SIZE;
 use sapphire_look::{VfxMesh, VfxMeshShape, VfxMeshVertex, VfxPattern};
 use sapphire_rhi::wgpu;
-use wgpu::util::DeviceExt as _;
 
 use super::{COLOR_BLEND, COLOR_MAX, MASK_BLEND, VfxMaker, sane, sane_color};
 use crate::CameraData;
@@ -260,13 +259,8 @@ impl Shapes {
         if indices.len() % 2 == 1 {
             indices.push(0);
         }
-        let buffer = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents,
-                usage,
-            })
-        };
+        // Made on a warm-up job, where a device may be lost: no API that panics on one.
+        let buffer = |label, contents: &[u8], usage| buffer::filled(device, Some(label), contents, usage);
         Self {
             vertices: buffer("vfx mesh shapes", bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX),
             indices: buffer(

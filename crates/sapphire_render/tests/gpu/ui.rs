@@ -1178,6 +1178,8 @@ fn a_new_renderer_gets_the_glyphs_its_pages_lack() {
 #[test]
 #[ignore = "needs a GPU"]
 fn a_device_lost_on_a_frame_of_new_glyphs_costs_nothing_on_the_next_renderer() {
+    // A panic on any thread aborts a shipped build, though a job's scope would swallow it.
+    let panics = crate::panics::Panics::count();
     let (mut text, mut atlas) = text_stack();
     let mut first = Harness::new((160, 48));
     let ui = text_frame(&first, &mut text, &mut atlas, "Attack");
@@ -1194,6 +1196,7 @@ fn a_device_lost_on_a_frame_of_new_glyphs_costs_nothing_on_the_next_renderer() {
     let mut second = Harness::new((160, 48));
     let ui = text_frame(&second, &mut text, &mut atlas, "Attack");
     assert_eq!(second.draw(Some(&ui)).rgba, drawn.rgba);
+    assert_eq!(panics.so_far(), 0, "a panic on some thread around the lost device");
 }
 
 /// A frame the app built and never prepared took its uploads with it, and the pages don't have them.

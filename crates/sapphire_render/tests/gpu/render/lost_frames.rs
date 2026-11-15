@@ -102,6 +102,8 @@ fn taa() -> RenderSettings {
 #[test]
 #[ignore = "needs a GPU"]
 fn a_device_lost_after_prepare_loses_the_frame_alone() {
+    // A panic on any thread aborts a shipped build, though a job's scope would swallow it.
+    let panics = crate::panics::Panics::count();
     let gpu = gpu();
     let texture = target(&gpu, FORMAT, SIZE);
     let view = texture.create_view(&Default::default());
@@ -123,6 +125,7 @@ fn a_device_lost_after_prepare_loses_the_frame_alone() {
     assert_eq!(frames.graph.frames(), executed, "nothing is recorded on a lost device");
     // The frames after see the loss, and record nothing.
     assert!(!draw_frame(&mut frames, &gpu, &view, camera, &[]));
+    assert_eq!(panics.so_far(), 0, "a panic on some thread around the lost device");
 }
 
 /// RC-2: an invalid graph is still an error on a lost device, and none of its passes run.

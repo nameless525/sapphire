@@ -13,6 +13,7 @@ use sapphire_render::{
 };
 
 use super::vfx::{GREY, Harness, SIDE, assert_near, flat_settings, paths, temporal_settings};
+use crate::panics::Panics;
 
 /// A card a metre in front of the camera, two metres a side, so it fills the 90° view: a pixel's UV is its
 /// middle's place across the frame, `v` down.
@@ -366,4 +367,21 @@ fn an_effect_mesh_counts_in_the_pass_that_draws_it() {
         };
         assert_eq!(others(&with), others(&without), "{path}: no other pass moves");
     }
+}
+
+/// A device lost before the effect meshes warm (M4 S6 loses it at every step of the boot) warms them with no
+/// panic on any thread: the warm-up's job scope would drop the part and go on, but a shipped build aborts on
+/// the panic. Their shapes' buffers are made as every buffer written once is (`buffer::filled`).
+#[test]
+#[ignore = "needs a GPU"]
+fn a_device_lost_before_the_meshes_warm_panics_on_no_thread() {
+    let mut harness = Harness::new(flat_settings());
+    harness.render(|_| {});
+    harness.gpu.device().destroy();
+    // wgpu reports a destroyed device once its queue drains, during a poll.
+    let _ = harness.gpu.device().poll(sapphire_rhi::wgpu::PollType::wait_indefinitely());
+    assert!(harness.gpu.is_lost());
+    let panics = Panics::count();
+    harness.renderer.prewarm(&PipelineInventory { effect_meshes: true, ..PipelineInventory::default() });
+    assert_eq!(panics.so_far(), 0, "a panic while the meshes warmed on a lost device");
 }

@@ -11,6 +11,7 @@ disallowed-methods = [
     # Rule R2, as in the workspace's clippy.toml.
     { path = "std::time::Instant::now", reason = "read time from a sapphire_time clock (rule R2)" },
     { path = "std::time::SystemTime::now", reason = "read time from a sapphire_time clock (rule R2)" },
+    { path = "wgpu::util::DeviceExt::create_buffer_init", reason = "unwraps a mapping that fails on a lost device, and a shipped build aborts on the panic: use sapphire_render's `buffer::filled`" },
 
     # std's transcendentals go through each platform's C math library, whose last bits differ.
     { path = "f32::sin", reason = "use sapphire_math::det::sin: it's pinned (spec §5.4)" },

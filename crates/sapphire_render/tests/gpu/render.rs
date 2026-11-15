@@ -1822,9 +1822,12 @@ fn lost_gpu() -> GpuContext {
 #[test]
 #[ignore = "needs a GPU"]
 fn renderers_report_a_lost_device() {
+    // A panic on any thread aborts a shipped build, though a job's scope would swallow it.
+    let panics = crate::panics::Panics::count();
     let gpu = lost_gpu();
     let error = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect_err("no renderer");
     assert!(matches!(error, RenderError::DeviceLost), "{error}");
+    assert_eq!(panics.so_far(), 0, "a panic on some thread around the lost device");
 }
 
 /// QA-001: a shader build (hot reload, live link) whose device is lost before it is swapped in
@@ -1832,6 +1835,8 @@ fn renderers_report_a_lost_device() {
 #[test]
 #[ignore = "needs a GPU"]
 fn shader_builds_on_a_lost_device_are_answered_with_the_loss() {
+    // A panic on any thread aborts a shipped build, though a job's scope would swallow it.
+    let panics = crate::panics::Panics::count();
     use std::time::Duration;
 
     use sapphire_render::{ShaderError, ShaderFile, ShaderSources};
@@ -1862,6 +1867,7 @@ fn shader_builds_on_a_lost_device_are_answered_with_the_loss() {
     let error = outcome.result.expect_err("nothing built on a lost device is swapped in");
     assert!(matches!(&error, ShaderError::Pipeline { programs, .. } if programs == "post"), "{error}");
     assert_eq!(frames.renderer.stats().shader_rebuilds, 0);
+    assert_eq!(panics.so_far(), 0, "a panic on some thread around the lost device");
 }
 
 /// Prepares one frame seen by `camera` that adds or changes `changed`, records it into `view` and
@@ -1890,6 +1896,8 @@ fn draw_frame(
 #[test]
 #[ignore = "needs a GPU"]
 fn uploads_and_frames_after_a_device_loss_do_not_panic() {
+    // A panic on any thread aborts a shipped build, though a job's scope would swallow it.
+    let panics = crate::panics::Panics::count();
     let gpu = gpu();
     let size = (64, 64);
     let texture = target(&gpu, FORMAT, size);
@@ -1907,6 +1915,7 @@ fn uploads_and_frames_after_a_device_loss_do_not_panic() {
         assert!(!draw_frame(&mut frames, &gpu, &view, camera, &changed), "frame {frame} recorded");
     }
     assert!(gpu.is_lost());
+    assert_eq!(panics.so_far(), 0, "a panic on some thread around the lost device");
 }
 
 /// The material counters [`failed_material_uploads_leave_nothing_behind`] holds still.

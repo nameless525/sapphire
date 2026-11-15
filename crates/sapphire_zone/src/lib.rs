@@ -51,6 +51,7 @@
 //! `[simulation]` in `xtask/layers.toml` holds this crate to the simulation's `clippy.toml`.
 
 pub mod ambient;
+pub mod built;
 pub mod cooked;
 pub mod document;
 pub mod encounter;
@@ -62,6 +63,7 @@ pub use ambient::{
     AMBIENT_EXTENSION, AMBIENT_PART, Ambient, ArchivedAmbient, ArchivedCookedCastMember, ArchivedCookedPost,
     ArchivedCookedWalk, CastMember, CookedCastMember, CookedPost, CookedWalk, Post, Walk, ZoneAmbient,
 };
+pub use built::{BuildZone, BuiltZone};
 pub use cooked::{
     ArchivedCookedCheckpoint, ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight,
     ArchivedCookedLightShape, ArchivedCookedPatrol, ArchivedCookedSpawner, ArchivedCookedSpline,

@@ -234,10 +234,15 @@ fn the_zones_simulation_is_the_codes() {
     for preset in [Preset::Ci, Preset::Budget] {
         let Generated { district, zone, sources, .. } = generated(preset);
         let cells = district.presets.get(preset).cells;
-        let code = simulation::simulation(cells, asset_id(PART, ENCOUNTER));
+        let code = simulation::simulation(cells);
         assert_eq!(zone.simulation().unwrap(), code, "{preset}");
         assert_eq!(sources[ENCOUNTER].bytes, document_bytes(&simulation::encounter()), "{preset}");
+        assert_eq!(sources[COLLIDERS].bytes, document_bytes(&simulation::colliders()), "{preset}");
         assert_eq!(zone.encounters, [asset_id(PART, ENCOUNTER)]);
+        // The IDs the code gives what the generator writes are the generator's.
+        assert_eq!(asset_id(PART, ENCOUNTER), simulation::encounter_id());
+        assert_eq!(zone.colliders, Some(asset_id(PART, COLLIDERS)));
+        assert_eq!(asset_id(PART, COLLIDERS), simulation::colliders_id());
     }
 }
 

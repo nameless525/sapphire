@@ -9,9 +9,18 @@ license.workspace = true
 
 [dependencies]
 sapphire_assets.workspace = true
+# The district's colliders (M5 B5), as a document and cooked.
+sapphire_colliders.workspace = true
+# The district's navmesh (M5 B5), built here and cooked.
+sapphire_navmesh.workspace = true
 sapphire_serialize.workspace = true
 sapphire_zone.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# The district's navmesh read as the simulation reads it: where a point is, and whether a walk goes straight.
+sapphire_math.workspace = true
+sapphire_nav.workspace = true
 
 [lints]
 workspace = true

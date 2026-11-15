@@ -26,8 +26,12 @@
 //! - **Two blends:** light added (`One`, `One`) × 1/exposure, bright enough for bloom; and darkening (`Zero`,
 //!   `Src`), the ground multiplied toward a color. Darkening draws first, then light, so a telegraph over a
 //!   scorch glows over it. Both leave scene color's alpha alone: a decal never marks or unmarks a character.
-//! - **Fog:** a decal takes the fog in front of it, as the ground under it does: light added takes one ray's
-//!   transmittance, a darkening darkens only the share of the pixel that's the ground's.
+//! - **Fog:** a decal takes the fog in front of it: light added takes one ray's transmittance `T`; a darkening
+//!   scales the whole fogged pixel by `1 - opacity * T * (1 - tint)`, as its blend can only scale what forward
+//!   fog wrote. So the mist in front loses `opacity * T * (1 - tint)` of its own light, most at `T = 0.5`,
+//!   nothing where there is no fog or the fog is whole, while the ground's share darkens by `T` of what it
+//!   would unfogged. The exact form (the fog's share added back in a second, additive draw of each darkening
+//!   decal) was weighed and left: the error is small at combat range in ordinary haze.
 //! - **Not in debug views,** which replay the main pass's meshes; decals aren't meshes, as effects aren't.
 
 use bytemuck::{Pod, Zeroable};

@@ -193,8 +193,10 @@ fn decal_opacity(in: VfxDecalVaryings) -> f32 {
     return in.tint.a * (band + inner * (body + (1.0 - body) * filled));
 }
 
-// The fog in front of the pixel, as a sprite's: light added takes one ray's transmittance, and a darkening
-// darkens only the ground behind the fog. Per pixel, not per corner: a decal may be metres across.
+// The fog in front of the pixel, as a sprite's: light added takes one ray's transmittance. A darkening is
+// one multiplying draw, so it scales the whole fogged pixel, the mist in front with the ground behind it: an
+// approximation the module's docs state and a GPU test holds. Per pixel, not per corner: a decal may be
+// metres across.
 fn decal_transmittance(world: vec3<f32>) -> f32 {
     var transmittance = 1.0;
     if fog_on() {

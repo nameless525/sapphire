@@ -683,6 +683,13 @@ fn light_adds_darkening_multiplies_and_fog_takes_its_share() {
         let behind = fogged(&mut harness, &[]);
         let lit = fogged(&mut harness, &[light]);
         assert_near(lit, behind + glow * ray.transmittance, &format!("{path}: light through the fog"));
+        // A darkening scales the whole fogged pixel by 1 - opacity x T x (1 - tint), held on purpose (the module
+        // docs): a black scorch leaves (1 - T) of it, the ground's share and the mist's light in front alike. The
+        // exact form, `behind - ground x T`, would keep the mist's light whole and darken the ground's share fully.
+        let scorch = VfxDecal { color: Vec3::ZERO, ..darken };
+        let scorched = fogged(&mut harness, &[scorch]);
+        let t = ray.transmittance;
+        assert_near(scorched, behind * (1.0 - t), &format!("{path}: darkening through the fog"));
     }
 }
 

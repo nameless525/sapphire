@@ -493,7 +493,7 @@ impl GpuAssets {
             {
                 // A new version of a split texture of the same shape, written in place: the levels above
                 // stay, and are sent again only if they changed. A whole texture is replaced, as ever.
-                renderer.rewrite_texture_tail(&held.object, &tail)?;
+                renderer.rewrite_texture_tail(id, &held.object, &tail)?;
                 held.generation = generation;
                 return Ok(());
             }

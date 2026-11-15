@@ -575,3 +575,70 @@ fn a_held_cascade_keeps_its_casters_textures_wanted() {
         assert!(read.iter().all(|&wanted| wanted), "{cache:?}: the card's texture was wanted on {read:?}");
     }
 }
+
+/// Lowering a texture draws again only the held cascades whose casters read it as they cast (M5 D8,
+/// M5 Z3a): one an opaque surface binds draws none, and the cut-out card's own draws the cascades the
+/// card is in, on their turns, and then none. Before, any texture raised or lowered anywhere drew
+/// every cascade holding a cut-out again, so while the streamer worked no cascade was ever held.
+#[test]
+#[ignore = "needs a GPU"]
+fn lowering_a_texture_draws_again_only_the_held_cascades_whose_casters_read_it() {
+    use sapphire_render::{CascadeCache, ShadowSettings};
+
+    let gpu = gpu();
+    let shadows = ShadowSettings { spots: 0, cache: CascadeCache::Held, ..ShadowSettings::default() };
+    let settings = RenderSettings {
+        msaa: Msaa::Off,
+        temporal: false,
+        shadows: Some(shadows),
+        ..RenderSettings::default()
+    };
+    let mut frames = Frames::with_settings(&gpu, settings);
+    let (ground_id, card_id) = (AssetId::from_bytes([0x71; 16]), AssetId::from_bytes([0x72; 16]));
+    let mut ground_texture = whole_texture(&gpu, &mut frames, ground_id, 2);
+    let mut card_texture = whole_texture(&gpu, &mut frames, card_id, 3);
+
+    // A street of its own texture, opaque, and the card on it in view.
+    let street = EnvironmentMaterial { base_color_map: Some(ground_id), ..EnvironmentMaterial::default() };
+    let street = frames.material(&street, (ground_id, &ground_texture));
+    let plane = rectangle(
+        Vec3::new(-30.0, 0.0, 10.0),
+        Vec3::new(60.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -80.0),
+        [8.0; 2],
+    );
+    frames.show(&mesh(plane), street);
+    let card = FoliageMaterial {
+        base_color: [1.0; 4],
+        base_color_map: Some(card_id),
+        alpha_cutoff: 0.5,
+        wind: WindResponse { sway: 0.0, bend: 0.0, flutter: 0.0, flutter_frequency: 1.0 },
+        ..FoliageMaterial::default()
+    };
+    let card = frames.material(&card, (card_id, &card_texture));
+    let quad = rectangle(Vec3::new(1.0, 0.5, -8.0), Vec3::X * 2.0, Vec3::Y * 2.0, [1.0, 1.0]);
+    let mut card_mesh = mesh(quad);
+    let still = vec![FoliageVertex { gradient: 1.0, ..FoliageVertex::default() }; 4];
+    card_mesh.streams = card_mesh.streams.clone().with_foliage(&still);
+    frames.show(&card_mesh, card);
+
+    let drawn = |frames: &mut Frames, count: usize| -> Vec<u32> {
+        (0..count)
+            .map(|_| {
+                frames.render(&gpu);
+                frames.renderer.stats().shadows.cascades_drawn
+            })
+            .collect()
+    };
+    let settling = drawn(&mut frames, 4);
+    assert!(settling[0] > 0 && settling[2..].iter().all(|&count| count == 0), "settling: {settling:?}");
+    // The street's texture: no caster reads it as it casts.
+    frames.renderer.lower_texture(ground_id, &mut ground_texture, 2).expect("lowered");
+    let after_ground = drawn(&mut frames, 3);
+    assert_eq!(after_ground, [0, 0, 0], "the street's texture lowered draws no cascade again");
+    // The card's: the cascades it's in, the fresh ones at once and the cached ones on their turns.
+    frames.renderer.lower_texture(card_id, &mut card_texture, 2).expect("lowered");
+    let after_card = drawn(&mut frames, 4);
+    assert!(after_card[0] > 0, "the card's texture lowered draws its cascades again: {after_card:?}");
+    assert_eq!(after_card[3], 0, "and settles: {after_card:?}");
+}

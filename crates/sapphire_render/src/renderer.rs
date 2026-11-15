@@ -1619,13 +1619,22 @@ impl Renderer {
     ) {
         let copied = new.bytes() - written.unwrap_or(0);
         let old = std::mem::replace(texture, new);
-        let rebinds = self.materials.rebind(&self.device, &self.layouts.materials, id, texture);
+        // A caster reading it casts through other levels now (M5 D8): the cascades and spot tiles
+        // it's in are drawn again.
+        let shadows = &mut self.shadows;
+        let rebinds = self.materials.rebind(&self.device, &self.layouts.materials, id, texture, |material| {
+            shadows.texture_changed(material);
+        });
         // Frames up to the one being prepared or recorded may draw the old texture, and the copies out of
         // it are submitted by the next at the latest.
         let last_read = self.fence.frame() + 1;
         self.mip_streaming.replaced(old, last_read, written, copied, rebinds);
-        // A caster reading it casts through other levels now (M5 D8).
-        self.shadows.textures_changed();
+    }
+
+    /// Notes that texture `id` changed in place (hot reload): the shadows of what casts reading it.
+    fn texture_rewritten(&mut self, id: AssetId) {
+        let shadows = &mut self.shadows;
+        self.materials.binding(id, |material| shadows.texture_changed(material));
     }
 
     /// Writes `level` over `texture`'s, as hot reload hands a changed level: one of the levels it holds
@@ -1638,21 +1647,23 @@ impl Renderer {
     ) -> Result<(), RenderError> {
         self.mip_streaming.submit(&self.queue);
         texture.write_level(&self.queue, level)?;
-        self.shadows.textures_changed();
+        self.texture_rewritten(level.texture());
         Ok(())
     }
 
     /// Writes `tail`'s levels over `texture`'s tail, as hot reload hands a new version of the same shape:
     /// the levels above stay as they are, and nothing rebinds. A tail of another shape makes a new
     /// texture ([`GpuTexture::upload_tail`]) that the materials binding it are uploaded again with.
+    /// `id` is the texture's, which the materials bind it by.
     pub fn rewrite_texture_tail(
         &mut self,
+        id: AssetId,
         texture: &GpuTexture,
         tail: &TextureTail<'_>,
     ) -> Result<(), RenderError> {
         self.mip_streaming.submit(&self.queue);
         texture.write_tail(&self.queue, tail)?;
-        self.shadows.textures_changed();
+        self.texture_rewritten(id);
         Ok(())
     }
 

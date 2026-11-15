@@ -563,14 +563,15 @@ impl Materials {
 
     /// Makes group 3 again, binding `texture` in every slot that binds texture `id`, for every material that
     /// binds it: what a raise or a lower of the texture asks, which replaces it with another object of the
-    /// same format and swizzle (M5 M4).
-    /// Returns how many groups it made.
+    /// same format and swizzle (M5 M4). Hands `rebound` each material's index it rebinds, and returns
+    /// how many groups it made.
     pub(crate) fn rebind(
         &mut self,
         device: &wgpu::Device,
         layouts: &[wgpu::BindGroupLayout],
         id: AssetId,
         texture: &GpuTexture,
+        mut rebound_material: impl FnMut(u32),
     ) -> u32 {
         let mut rebound = 0;
         for index in 0..self.records.len() {
@@ -594,9 +595,20 @@ impl Materials {
             let bind_group = self.bind_group(device, &layouts[family.index()], family, &slots);
             self.records[index].group = Some(Group3 { bind_group, slots, tops });
             self.write_tops(index);
+            rebound_material(index as u32);
             rebound += 1;
         }
         rebound
+    }
+
+    /// Hands `bound` the index of each material that binds texture `id`.
+    pub(crate) fn binding(&self, id: AssetId, mut bound: impl FnMut(u32)) {
+        let binds = |record: &MaterialRecord| {
+            record.group.as_ref().is_some_and(|group| group.slots.iter().any(|(slot, _)| *slot == Some(id)))
+        };
+        for (index, _) in self.records.iter().enumerate().filter(|(_, record)| binds(record)) {
+            bound(index as u32);
+        }
     }
     /// Where the materials are now, for [`Self::roll_back`].
     pub(crate) fn mark(&self) -> MaterialsMark {

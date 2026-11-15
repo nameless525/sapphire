@@ -66,8 +66,12 @@
 //!   wind the fresh cascades it is in. Moving by itself means what changes its depth without the
 //!   plan seeing a new caster list: a skinned or morphed environment instance (characters cast into
 //!   maps of their own, never the cascades), an instance moved this frame (its transform isn't the
-//!   one it was last drawn with), and, on a frame a texture was raised, lowered or rewritten, one
-//!   cast through a pipeline that reads a texture.
+//!   one it was last drawn with), and one cast through a pipeline that reads a texture (alpha-tested
+//!   foliage, the masked anime character variants) on a frame a texture its material binds was
+//!   raised, lowered or rewritten: only those (M5 Z3a), so the streamer at work leaves held what
+//!   doesn't read what it changed. The renderer hands the plan each material it rebinds or that
+//!   binds a texture rewritten in place, and the plan finds their cut-out casters in a list sorted
+//!   by material that it makes once a draw list build.
 //!   The slots' freed and meshed lists say what left, came or changed mesh, whatever slot it
 //!   reuses; a mesh or material replaced in place or rebuilt shaders forget every map. A lost frame
 //!   forgets each cascade it drew, as in turns, so the next frame fits and draws it again: what the
@@ -217,8 +221,9 @@
 //!   `Walk::Spot` lists, views (after the character maps') and counter (`Counted::Spots`).
 //! - **Cached:** a tile is drawn again only when its spot was just given it or moved, when what
 //!   casts into it changed (a signature of its casters' slots, meshes, levels and transforms), when
-//!   something in it moves by itself (characters, skinned instances, foliage in the wind), or when
-//!   a mesh or material was replaced or shaders rebuilt (`Shadows::forget_spots`). The spot pass
+//!   something in it moves by itself (characters, skinned instances, foliage in the wind) or a
+//!   texture a caster in it reads as it casts changed, as for the cascades (M5 Z3a), or when a mesh
+//!   or material was replaced or shaders rebuilt (`Shadows::forget_spots`). The spot pass
 //!   (`spot shadows`) clears the layer when every tile a spot holds is drawn, else loads it and
 //!   clears each tile it draws with a tiny pipeline of its own (`vs_clear_tile`). A lost frame
 //!   forgets the tiles it drew.
@@ -603,7 +608,7 @@ pub struct ShadowStats {
     pub cached_redrawn: u32,
     /// Casters with a cascade to cast into this frame that change its depth without the plan
     /// seeing a new fit or caster list: skinned or morphed characters, instances moved this frame,
-    /// and those reading a texture as they cast on a frame a texture changed (M5 D8). Foliage in
+    /// and those reading a texture as they cast on a frame that texture changed (M5 D8). Foliage in
     /// the wind isn't one: its flutter is under the cached cascades' texels.
     pub moving_casters: u32,
     /// Times the quantized key light stepped since the renderer was created; each draws every
@@ -1112,10 +1117,14 @@ impl Shadows {
         self.plan.forget_kept();
     }
 
-    /// A texture was raised, lowered or rewritten (M5 D8): the casters that read one as they cast
-    /// may cast other depth, so the cascades they're in are drawn again on their turns.
-    pub(crate) fn textures_changed(&mut self) {
-        self.plan.textures_changed();
+    /// A texture material `material` (its index) binds was raised, lowered or rewritten (M5 D8): the
+    /// casters that read it as they cast may cast other depth, so the cascades they're in are drawn
+    /// again on their turns, and the spot tiles they're in. Nothing while shadows are off, which
+    /// draw every cascade when they're turned on.
+    pub(crate) fn texture_changed(&mut self, material: u32) {
+        if self.settings.is_some() {
+            self.plan.texture_changed(material);
+        }
     }
 
     /// Plans the frame's shadows from `packet` (CPU only; see [`ShadowPlan::update`]): `slots`

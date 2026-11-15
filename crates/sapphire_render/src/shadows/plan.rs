@@ -177,14 +177,20 @@ pub(crate) struct ShadowPlan {
     windy: Vec<bool>,
     /// The cache the last frame planned with.
     cache: CascadeCache,
-    /// A texture was raised, lowered or rewritten since the last frame planned: what reads one as it
-    /// casts may cast other depth.
-    textures_changed: bool,
+    /// Bit `m % 64` of word `m / 64`: a texture material `m` binds was raised, lowered or rewritten
+    /// since the last frame planned, so what casts through it reading a texture may cast other depth.
+    textures_changed: Vec<u64>,
+    /// Some bit of `textures_changed` is set.
+    any_texture_changed: bool,
     /// Bit `i`: cached cascade `i` is drawn this frame under the fit it already had.
     redrawn: u8,
-    /// Per instance slot, for the draw list's build in `list_build`: it casts through a pipeline that
-    /// reads a texture (alpha-tested foliage, masked anime character variants), whose levels stream.
-    cutout: Vec<bool>,
+    /// For the draw list's build in `list_build`: each material and instance slot that casts through
+    /// it by a pipeline that reads a texture (alpha-tested foliage, masked anime character variants),
+    /// whose levels stream, sorted by material, once each.
+    cutout: Vec<(u32, u32)>,
+    /// Per instance slot, this frame: it casts through a pipeline that reads a texture that changed
+    /// (the materials in `textures_changed`).
+    read_changed: Vec<bool>,
     /// This frame's character maps, by index.
     pub maps: Vec<CascadeFit>,
     /// Per instance slot: what it casts into.
@@ -251,9 +257,11 @@ impl ShadowPlan {
             self.cached = [None; MAX_CASCADES];
             self.received.clear();
             self.spots.clear();
+            self.mark_read_changed(slots.len(), false);
             return;
         };
         self.active = true;
+        self.mark_read_changed(slots.len(), true);
         let camera = cull.pose.unwrap_or(&view.camera);
         let toward = fit::quantize(-packet.sun.direction);
         let light = LightSpace::new(toward);
@@ -284,14 +292,14 @@ impl ShadowPlan {
         if keeps {
             self.settle_kept_cascades(slots);
         }
-        self.textures_changed = false;
+        self.mark_read_changed(slots.len(), false);
         self.uniforms = self.pack(settings, camera, light, characters.count, atlas);
         self.count_draws(list, settings);
     }
 
     /// Follows the draw list (M5 D8): after a build other than the last one seen (`build`, the
-    /// scene's count of them), which slots cast through a pipeline that reads a texture is listed
-    /// again from `list`. What came, went or changed mesh the slots say ([`InstanceSlots::freed`],
+    /// scene's count of them), which slots cast through a pipeline that reads a texture, and through
+    /// which material, is listed again from `list`. What came, went or changed mesh the slots say ([`InstanceSlots::freed`],
     /// [`InstanceSlots::meshed`]); a material replaced in place calls [`Self::forget_kept`]; the
     /// rest a build follows (meshes uploaded or moved in the pool, characters' fades) casts the same.
     pub(crate) fn follow_list(&mut self, build: u32, list: &DrawList) {
@@ -299,20 +307,20 @@ impl ShadowPlan {
             return;
         }
         self.list_build = Some(build);
-        self.cutout.iter_mut().for_each(|cutout| *cutout = false);
+        self.cutout.clear();
         let cut = SurfaceVariant::CHARACTER_ALPHA_TEST
             .into_iter()
             .chain([SurfaceVariant::foliage(crate::pipelines::Coverage::AlphaTest)]);
         for variant in cut {
-            let slots = list.commands.iter().flat_map(|commands| &commands[variant.index()]).map(|c| c.slot);
-            for slot in slots.chain(list.deformed[variant.index()].iter().map(|draw| draw.slot)) {
-                let slot = slot as usize;
-                if self.cutout.len() <= slot {
-                    self.cutout.resize(slot + 1, false);
-                }
-                self.cutout[slot] = true;
-            }
+            let commands = list.commands.iter().flat_map(|commands| &commands[variant.index()]);
+            let statics = commands.map(|command| (command.material, command.slot));
+            let deformed = list.deformed[variant.index()].iter().map(|draw| (draw.material, draw.slot));
+            let casters = statics.chain(deformed).map(|(material, slot)| (material.index() as u32, slot));
+            self.cutout.extend(casters);
         }
+        // In place (a stable sort allocates); the pairs are whole keys, so unstable is stable.
+        self.cutout.sort_unstable();
+        self.cutout.dedup();
     }
 
     /// Forgets what every cascade's map holds (M5 D8), so each is drawn again on its next turn: a
@@ -322,10 +330,45 @@ impl ShadowPlan {
         self.stale = [true; MAX_CASCADES];
     }
 
-    /// Notes that a texture was raised, lowered or rewritten (M5 D8): the casters that read one as
-    /// they cast leave their cascades stale on the next frame planned.
-    pub(crate) fn textures_changed(&mut self) {
-        self.textures_changed = true;
+    /// Notes that a texture material `material` (its index) binds was raised, lowered or rewritten
+    /// (M5 D8): the casters that read it as they cast leave their cascades and spot tiles stale on
+    /// the next frame planned, and no others.
+    pub(crate) fn texture_changed(&mut self, material: u32) {
+        let (word, bit) = (material as usize / 64, material % 64);
+        if self.textures_changed.len() <= word {
+            self.textures_changed.resize(word + 1, 0);
+        }
+        self.textures_changed[word] |= 1 << bit;
+        self.any_texture_changed = true;
+    }
+
+    /// Marks (`mark`) the slots that cast through a material whose texture changed, in `read_changed`
+    /// sized for `slots` slots, or unmarks them and forgets the changes: one binary search of
+    /// `cutout` per material changed, and a step per slot casting through it.
+    fn mark_read_changed(&mut self, slots: usize, mark: bool) {
+        if self.read_changed.len() != slots {
+            self.read_changed.resize(slots, false);
+        }
+        if !self.any_texture_changed {
+            return;
+        }
+        for (word, &bits) in self.textures_changed.iter().enumerate() {
+            let mut bits = bits;
+            while bits != 0 {
+                let material = (word * 64) as u32 + bits.trailing_zeros();
+                bits &= bits - 1;
+                let first = self.cutout.partition_point(|&(cut, _)| cut < material);
+                for &(_, slot) in self.cutout[first..].iter().take_while(|&&(cut, _)| cut == material) {
+                    if let Some(read) = self.read_changed.get_mut(slot as usize) {
+                        *read = mark;
+                    }
+                }
+            }
+        }
+        if !mark {
+            self.textures_changed.iter_mut().for_each(|word| *word = 0);
+            self.any_texture_changed = false;
+        }
     }
 
     /// Chooses the frame's spot lights from `packet` (M5 L16; the `spots` module): at most
@@ -592,7 +635,6 @@ impl ShadowPlan {
         self.moving.resize(slots.len(), false);
         self.windy.clear();
         self.windy.resize(slots.len(), false);
-        self.cutout.resize(slots.len(), false);
         // Characters: the instances with an entry in the character buffer, grouped by the body
         // their entry casts with (M1 review RS-005), so each casts as the character, or the
         // world, it shades as. Its bodies come each once, in entry order.
@@ -716,9 +758,8 @@ impl ShadowPlan {
                     // wind only in the fresh cascades: its flutter is under the cached cascades'
                     // texels (the module docs).
                     self.windy[slot as usize] = windy;
-                    self.moving[slot as usize] = deformed
-                        || slots.moved(slot)
-                        || (self.textures_changed && self.cutout[slot as usize]);
+                    self.moving[slot as usize] =
+                        deformed || slots.moved(slot) || self.read_changed[slot as usize];
                     for (index, fit) in self.fits.iter().enumerate() {
                         let Some(fit) = fit else { continue };
                         if !sphere.is_none_or(|sphere| fit.holds(&sphere)) {
@@ -764,7 +805,8 @@ impl ShadowPlan {
                 caster.spots |= 1 << tile;
                 caster.spot_levels[tile] = level;
                 signatures[index].caster(slot, mesh.index() as u32, level, &transform);
-                moving[index] |= moves;
+                // A texture it reads as it casts changed: its tile casts other depth.
+                moving[index] |= moves || self.read_changed[slot as usize];
             }
         }
         self.decide_spots(&signatures, &moving);
@@ -1750,21 +1792,24 @@ mod tests {
         let packet = packet(Vec::new());
         let mut slots = near_and_far();
         let mut plan = ShadowPlan::default();
-        // The far cube casts through an alpha-tested foliage pipeline.
+        // Both cubes cast through an alpha-tested foliage pipeline: the far one through material 0,
+        // the near one through material 1.
         let mut list = DrawList::default();
         let cutout = SurfaceVariant::foliage(crate::pipelines::Coverage::AlphaTest);
-        list.commands[0][cutout.index()].push(crate::scene::DrawCommand {
-            indices: 0..3,
-            first_vertex: 0,
-            slot: 1,
-            draw_id: 0,
-            material: crate::materials::MaterialHandle::from_raw(0),
-            mesh: MeshHandle::from_raw(0),
-            submesh: 0,
-            levels: 1,
-            outline: false,
-            foliage: 0,
-        });
+        for (slot, material) in [(1, 0), (0, 1)] {
+            list.commands[0][cutout.index()].push(crate::scene::DrawCommand {
+                indices: 0..3,
+                first_vertex: 0,
+                slot,
+                draw_id: slot,
+                material: crate::materials::MaterialHandle::from_raw(material),
+                mesh: MeshHandle::from_raw(0),
+                submesh: 0,
+                levels: 1,
+                outline: false,
+                foliage: 0,
+            });
+        }
         plan.follow_list(0, &list);
         masks(&mut plan, &KEPT, &packet, &mut slots, 2);
         plan.follow_list(0, &list);
@@ -1783,12 +1828,26 @@ mod tests {
         assert_eq!(slots.meshed(), [0], "into its slot");
         let came = masks(&mut plan, &KEPT, &packet, &mut slots, 2).iter().fold(0, |all, mask| all | mask);
         assert_eq!(came, near, "drawn with it");
-        // A texture changed: the cascades the cutout cube is in, and no others.
+        // A texture no caster reads as it casts changed (material 5's): none (M5 Z3a). Before, any
+        // texture changed drew every cascade a cut-out caster was in.
+        plan.texture_changed(5);
+        assert_eq!(masks(&mut plan, &KEPT, &packet, &mut slots, 3), [0, 0, 0]);
+        // Material 0's: the cascades the far cube is in, and no others.
         let far = plan.casters[1].cascades;
-        plan.textures_changed();
+        assert_ne!(far, plan.casters[0].cascades, "the cubes are in cascades apart");
+        plan.texture_changed(0);
         let drawn = masks(&mut plan, &KEPT, &packet, &mut slots, 3).iter().fold(0, |all, mask| all | mask);
         assert_eq!(drawn, far);
         assert_eq!(masks(&mut plan, &KEPT, &packet, &mut slots, 2), [0, 0]);
+        // Marking and unmarking what a changed texture leaves stale allocates nothing once warm.
+        plan.texture_changed(1);
+        let ((), allocated) = sapphire_core::alloc::count_in_scope(|| {
+            plan.mark_read_changed(2, true);
+            assert_eq!(plan.read_changed, [true, false], "the near cube, through material 1");
+            plan.mark_read_changed(2, false);
+        });
+        assert_eq!(allocated.allocations, 0, "{allocated:?}");
+        assert!(plan.read_changed.iter().all(|read| !read) && !plan.any_texture_changed);
         // A mesh or material replaced in place, or the shaders rebuilt: all of them.
         plan.forget_kept();
         assert_eq!(

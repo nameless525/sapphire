@@ -435,6 +435,57 @@ fn a_still_street_draws_no_spot_tile_and_a_moved_caster_only_its_own() {
 
 #[test]
 #[ignore = "needs a GPU"]
+fn a_spot_tile_draws_again_when_a_texture_its_masked_caster_reads_changes() {
+    // A masked card under a lamp, and an opaque one under another, each over its own map: the
+    // still street holds both tiles; the opaque card's map rewritten (as hot reload writes a tail in
+    // place) draws neither again, and the masked card's draws its lamp's tile alone (M5 Z3a).
+    const MASKED: &str = "6a0e4f1c-2b3d-4c5e-8f7a-9b0c1d2e3f4a";
+    const OPAQUE: &str = "7b1f5a2d-3c4e-4d6f-9a8b-0c1d2e3f4a5b";
+    let mut harness = night(desktop());
+    env_ground(&mut harness);
+    harness.camera = looking(Vec3::new(0.0, 14.0, 9.0), Vec3::ZERO);
+    let maps = [half_clear(&harness), half_clear(&harness)];
+    let masked = AnimeCharacterMaterial { alpha: AlphaMode::Mask { cutoff: 0.5 }, ..surface(0.0) };
+    for (index, (map, document)) in [(MASKED, masked), (OPAQUE, surface(0.0))].into_iter().enumerate() {
+        let x = if index == 0 { -2.0 } else { 2.0 };
+        let document = AnimeCharacterMaterial { base_color_map: Some(id(map)), ..document };
+        let material = harness.material(&document, &[(map, &maps[index])]);
+        let mesh = harness.mesh(&ground(), material);
+        let place = Mat4::from_scale_rotation_translation(
+            Vec3::new(0.5, 1.0, 0.5),
+            Quat::IDENTITY,
+            Vec3::new(x, 1.0, 0.0),
+        );
+        harness.add_mesh(mesh, place);
+        harness.lights.push(spot(Vec3::new(x, 4.0, 0.0), Vec3::new(x, 0.0, 0.0), 30.0, true));
+    }
+    let first = harness.render().stats.shadows;
+    assert_eq!((first.spot_tiles, first.spot_tiles_drawn), (2, 2));
+    assert_eq!(harness.render().stats.shadows.spot_tiles_drawn, 0, "a still street holds both");
+    let rewrite = |harness: &mut Harness, map: &str, index: usize| {
+        let texels: Vec<[u16; 4]> = (0..16 * 16)
+            .map(|i| {
+                let alpha = if i % 16 < 4 { 0.0 } else { 1.0 };
+                [1.0, 1.0, 1.0, alpha].map(|c: f32| f16::from_f32(c).to_bits())
+            })
+            .collect();
+        let desc = maps[index].desc();
+        let tail = sapphire_assets::texture::TextureTail {
+            texture: Texture { desc, levels: vec![bytemuck::cast_slice(&texels)] },
+            above: 0,
+        };
+        harness.renderer.rewrite_texture_tail(id(map), &maps[index], &tail).expect("rewritten");
+    };
+    rewrite(&mut harness, OPAQUE, 1);
+    assert_eq!(harness.render().stats.shadows.spot_tiles_drawn, 0, "the opaque card's map: no tile");
+    rewrite(&mut harness, MASKED, 0);
+    let stats = harness.render().stats.shadows;
+    assert_eq!((stats.spot_tiles_drawn, stats.spot_tiles_cached), (1, 1), "the masked card's map: its tile");
+    assert_eq!(harness.render().stats.shadows.spot_tiles_drawn, 0, "and settles");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
 fn a_spot_tile_never_reads_its_neighbours() {
     // Four lamps; three are blocked whole by a slab just under each, so their tiles hold near depth
     // edge to edge, and the nearest the camera (tile 0, beside tiles 1 and 2) lights an open floor

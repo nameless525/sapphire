@@ -237,6 +237,12 @@ pub(crate) struct ClusterMasks {
     /// The main view reads the masks this frame.
     read: bool,
     stats: CapsuleBinStats,
+    /// The masks are left empty while the main view still reads them ([`Renderer::blank_capsule_masks`]):
+    /// a test's knob, in debug builds only.
+    ///
+    /// [`Renderer::blank_capsule_masks`]: crate::Renderer::blank_capsule_masks
+    #[cfg(debug_assertions)]
+    blank: bool,
 }
 
 impl ClusterMasks {
@@ -247,6 +253,8 @@ impl ClusterMasks {
             marked: false,
             read: false,
             stats: CapsuleBinStats { enabled, ..CapsuleBinStats::default() },
+            #[cfg(debug_assertions)]
+            blank: false,
         }
     }
 
@@ -272,6 +280,10 @@ impl ClusterMasks {
         self.stats = CapsuleBinStats { enabled: self.enabled, ..CapsuleBinStats::default() };
         if !self.read {
             return false;
+        }
+        #[cfg(debug_assertions)]
+        if self.blank {
+            return true;
         }
         let grid = Grid::new(camera, size, jitter);
         for (index, &(base, top, radius)) in shadows.iter().enumerate() {
@@ -421,6 +433,12 @@ impl CapsuleBins {
 
     pub(crate) fn stats(&self) -> CapsuleBinStats {
         self.cpu.stats
+    }
+
+    /// Leaves the masks empty while the main view still reads them, or bins again (debug builds only).
+    #[cfg(debug_assertions)]
+    pub(crate) fn blank(&mut self, blank: bool) {
+        self.cpu.blank = blank;
     }
 
     /// Group 0's binding of the masks.
@@ -692,6 +710,28 @@ mod tests {
         let mut off = ClusterMasks::new(false);
         assert!(!off.bin(&camera, (1920, 1080), [0.0; 2], (&capsules, toward), &capsules));
         assert_eq!(off.stats, CapsuleBinStats::default());
+    }
+
+    /// What the frame constants say (M5 L18): the main view reads the masks on a frame with a capsule and
+    /// bins on, walks the plain loops otherwise, at the lists' capacity; an inset never reads them and
+    /// walks 16.
+    #[test]
+    fn the_main_view_reads_the_masks_with_a_capsule_and_bins_on_and_an_inset_never() {
+        use crate::gpu_types::FrameUniforms;
+        let camera = CameraData::look_at(Vec3::new(0.0, 1.6, 4.0), Vec3::ZERO, Vec3::Y, 0.9, 16.0 / 9.0, 0.1);
+        let capsule = [(Vec3::new(0.0, 0.2, -2.0), Vec3::new(0.0, 1.6, -2.0), 0.3)];
+        let world: FrameUniforms = bytemuck::Zeroable::zeroed();
+        let none: &[(Vec3, Vec3, f32)] = &[];
+        for (enabled, capsules, reads) in [(true, &capsule[..], 1), (true, none, 0), (false, &capsule[..], 0)]
+        {
+            let mut masks = ClusterMasks::new(enabled);
+            let read = masks.bin(&camera, (640, 360), [0.0; 2], (capsules, Vec3::Y), capsules);
+            let capacity = if enabled { BINNED_CAPSULES } else { UNBINNED_CAPSULES };
+            let frame = world.with_capsules(read, capacity);
+            assert_eq!((frame.capsule_bins, frame.capsules[0]), (reads, capacity as u32), "on {enabled}");
+            let inset = frame.inset_capsules();
+            assert_eq!((inset.capsule_bins, inset.capsules[0]), (0, UNBINNED_CAPSULES as u32));
+        }
     }
 
     #[test]

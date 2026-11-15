@@ -1497,6 +1497,16 @@ impl Renderer {
         }
     }
 
+    /// Leaves the characters' capsule masks empty (M5 L18) while the main view still reads them, so
+    /// no pixel walks a capsule; `false` bins them again. Only a view that reads the masks loses its
+    /// capsules' shadows and occlusion, which the GPU test `the_main_view_reads_the_masks` holds.
+    /// Debug builds only, so a shipping build has no knob to pay for.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn blank_capsule_masks(&mut self, blank: bool) {
+        self.lights.capsule_bins_mut().blank(blank);
+    }
+
     /// Each shadow cascade as the last frame left it (M5 D8): what its receivers read of its fit
     /// (its square in light space and its depth range, as `area` then `depth` of WGSL's
     /// `ShadowCascade`) and its map's depth, texel by texel, read back once the GPU is done with

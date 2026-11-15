@@ -613,3 +613,54 @@ fn an_inset_over_a_crowd_of_sixty_walks_the_plain_loops_sixteen() {
     let differing = binned.iter().zip(&plain).filter(|(a, b)| a != b).count();
     assert_eq!(differing, 0, "the inset draws the same bytes binned and unbinned");
 }
+
+/// The main view reads the masks (M5 L18): with them left empty while it still reads them
+/// (`Renderer::blank_capsule_masks`, debug builds only), a crowd of sixty leaves nothing on the
+/// ground, shadows or occlusion, where with them binned every body marks it. A main view that walked
+/// the plain loops instead would ground them either way, and draw the same bytes as the masks do.
+#[cfg(debug_assertions)]
+#[test]
+#[ignore = "needs a GPU"]
+fn the_main_view_reads_the_masks() {
+    let gpu = gpu();
+    let size = (640, 360);
+    let desktop = TierTable::shipped().get(TierId::DesktopHigh).render_settings();
+    let settings = RenderSettings { msaa: Msaa::X4, temporal: false, capsule_bins: true, ..desktop };
+    let shadows = RenderSettings { ambient_occlusion: AmbientOcclusion::OFF, ..settings };
+    let occlusion = RenderSettings {
+        shadows: None,
+        ambient_occlusion: AmbientOcclusion { capsules: true, gtao: None },
+        ..settings
+    };
+    for (name, settings, scene, offset) in
+        [("shadows", shadows, crowd(1.0, 0.0), 0.0), ("occlusion", occlusion, crowd(0.0, 1.0), 0.1)]
+    {
+        let camera = scene.camera;
+        let open = {
+            let mut empty = Shot::new(&gpu, settings, size, Scene { bodies: Vec::new(), ..scene.clone() });
+            empty.frame(&gpu, 1.0)
+        };
+        for blank in [false, true] {
+            let mut shot = Shot::new(&gpu, settings, size, scene.clone());
+            shot.renderer.blank_capsule_masks(blank);
+            let pixels = shot.frame(&gpu, 1.0);
+            dump(&format!("masks-{name}-{}", if blank { "blank" } else { "binned" }), &pixels, size);
+            let marked = scene
+                .bodies
+                .iter()
+                .filter(|body| {
+                    let middle = (body.base + body.top) * 0.5;
+                    let ground = if offset > 0.0 {
+                        Vec3::new(body.base.x + offset, 0.0, body.base.z)
+                    } else {
+                        middle - scene.toward_light * (middle.y / scene.toward_light.y)
+                    };
+                    let at = pixel_of(&camera, size, ground);
+                    red(&pixels, at) + 8 < red(&open, at)
+                })
+                .count();
+            let expected = if blank { 0 } else { scene.bodies.len() };
+            assert_eq!(marked, expected, "{name}, masks left empty: {blank}");
+        }
+    }
+}

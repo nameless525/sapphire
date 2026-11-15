@@ -49,7 +49,8 @@ struct FrameUniforms {
     // materials' emission by it, but for the share each keeps steady. Never negative.
     emission_scale: f32,
     // 1 when this group's view reads the capsules by cluster (M5 L18, `capsule_bin` below): the
-    // main view on a frame with capsules; 0 walks the plain loops (insets, bins off).
+    // main view on a frame with capsules; 0 walks the plain loops (insets, bins off), at most
+    // `capsules.x` of each list.
     capsule_bins: u32,
     // Ambient light (time of day's `FramePacket::ambient`), color × intensity: rgb from the
     // sky above and from the ground below (see `ambient_light`).
@@ -65,6 +66,9 @@ struct FrameUniforms {
     weather: vec4<f32>,
     // The fog over the world and the sky (M1 W3, `FramePacket::fog`; see "Fog" below).
     fog: FogUniforms,
+    // x: the most of each capsule list the plain loops walk (M5 L18): the main view's lists'
+    // capacity; an inset's 16, since its lists may hold 64 for the main view's masks. yzw: 0.
+    capsules: vec4<u32>,
 }
 
 // The frame's fog (`sapphire_render::fog::GpuFog`).
@@ -1129,8 +1133,9 @@ fn capsule_lookup(index: u32, position: vec3<f32>) -> f32 {
 }
 
 // The key light's visibility at `position` past the characters' capsules: with the capsules by
-// cluster, those its cluster's mask holds, in index order; otherwise every one. A capsule a
-// mask leaves out is exactly 1 at the point, so both multiply the same factors in the same order.
+// cluster, those its cluster's mask holds, in index order; otherwise every one, up to the view's
+// `frame.capsules.x`. A capsule a mask leaves out is exactly 1 at the point, so both multiply the
+// same factors in the same order.
 fn capsule_visibility(position: vec3<f32>) -> f32 {
     var visibility = 1.0;
     if frame.capsule_bins != 0u {
@@ -1145,7 +1150,7 @@ fn capsule_visibility(position: vec3<f32>) -> f32 {
             }
         }
     } else {
-        let count = min(shadows.counts.z, MAX_SHADOW_CAPSULES);
+        let count = min(shadows.counts.z, min(frame.capsules.x, MAX_SHADOW_CAPSULES));
         for (var index = 0u; index < count; index++) {
             visibility *= capsule_lookup(index, position);
         }

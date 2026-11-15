@@ -1551,6 +1551,7 @@ mod tests {
                     shadow_tint,
                     weather,
                     fog,
+                    capsules,
                 }),
             ),
             ("FogUniforms", offsets!(GpuFog { near, far, height, shape, light })),

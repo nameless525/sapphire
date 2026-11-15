@@ -3136,7 +3136,8 @@ impl Renderer {
         let cull_camera = self.cull_camera(&camera).unwrap_or(camera);
         self.cull_views(&cull_camera, size, output, jitter, (&wind, cut));
         // The characters' capsules by cluster (M5 L18), for the main view as it is drawn.
-        constants.capsule_bins = u32::from(self.bin_capsules(&camera, size, jitter));
+        let masks = self.bin_capsules(&camera, size, jitter);
+        constants = constants.with_capsules(masks, self.lights.capsule_bins().capacity());
         // Skinning poses only what some view draws this frame (M5 D3).
         let view_cull = &self.view_cull;
         self.skinning.begin_record(&self.device, &self.queue, &self.meshes, |slot| view_cull.drawn(slot));

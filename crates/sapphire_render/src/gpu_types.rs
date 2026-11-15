@@ -7,6 +7,7 @@ use sapphire_assets::material;
 
 use crate::fog::GpuFog;
 use crate::lights::LightUniforms;
+use crate::lights::capsule_bins::UNBINNED_CAPSULES;
 use crate::{CameraData, FramePacket};
 
 /// Per-frame constants (WGSL `FrameUniforms`, group 0).
@@ -43,7 +44,7 @@ pub(crate) struct FrameUniforms {
     pub emission_scale: f32,
     /// 1 when this group's view reads the capsules by cluster (M5 L18, the `lights` module's
     /// `capsule_bins`): the main view's, on a frame with capsules and bins on. 0 reads the plain
-    /// loops: insets, and any frame without.
+    /// loops: insets, and any frame without. Set by [`Self::with_capsules`].
     pub capsule_bins: u32,
     /// rgb: ambient light from above (`FramePacket::ambient`, sky × intensity).
     pub ambient_sky: [f32; 4],
@@ -56,6 +57,10 @@ pub(crate) struct FrameUniforms {
     pub weather: [f32; 4],
     /// The fog over the world and the sky (`FramePacket::fog`, M1 W3).
     pub fog: GpuFog,
+    /// x: the most of each capsule list the plain loops walk (M5 L18): the main view's lists'
+    /// capacity, and an inset's [`UNBINNED_CAPSULES`] whatever its lists hold, since it reads no
+    /// masks. yzw: 0. Set by [`Self::with_capsules`].
+    pub capsules: [u32; 4],
 }
 
 impl FrameUniforms {
@@ -81,6 +86,7 @@ impl FrameUniforms {
             emission_scale: emission_scale(frame.emission_scale),
             // Set as the frame records, once its capsules are binned.
             capsule_bins: 0,
+            capsules: [UNBINNED_CAPSULES as u32, 0, 0, 0],
             ambient_sky: (frame.ambient.sky * frame.ambient.intensity).extend(0.0).to_array(),
             ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
             shadow_tint: frame.shadow_tint.extend(0.0).to_array(),
@@ -90,6 +96,19 @@ impl FrameUniforms {
             },
             fog,
         }
+    }
+
+    /// These constants as an inset's (M5 L18): the capsules are binned for the main view's clusters,
+    /// so an inset walks the plain loops, at most [`UNBINNED_CAPSULES`] of each list, however many the
+    /// lists hold for the main view's masks.
+    pub(crate) fn inset_capsules(self) -> Self {
+        self.with_capsules(false, UNBINNED_CAPSULES)
+    }
+
+    /// These constants with their view reading the capsules by cluster where `masks` (M5 L18), and
+    /// otherwise walking at most `limit` capsules of each list by the plain loops.
+    pub(crate) fn with_capsules(self, masks: bool, limit: usize) -> Self {
+        Self { capsule_bins: u32::from(masks), capsules: [limit as u32, 0, 0, 0], ..self }
     }
 }
 

@@ -223,8 +223,9 @@ fn capsule_occluder(index: u32, position: vec3<f32>, n: vec3<f32>) -> f32 {
 
 // Capsule AO: how much light from the hemisphere around unit `n` at `position` the characters'
 // bodies leave. With the capsules by cluster (M5 L18, frame.wgsl's `capsule_bin`), the bodies its
-// cluster's mask holds, in index order; otherwise every one. A body a mask leaves out leaves
-// exactly 1 at the point, so both multiply the same factors in the same order.
+// cluster's mask holds, in index order; otherwise every one, up to the view's `frame.capsules.x`.
+// A body a mask leaves out leaves exactly 1 at the point, so both multiply the same factors in the
+// same order.
 fn capsule_occlusion(position: vec3<f32>, n: vec3<f32>) -> f32 {
     var visibility = 1.0;
     if frame.capsule_bins != 0u {
@@ -241,7 +242,7 @@ fn capsule_occlusion(position: vec3<f32>, n: vec3<f32>) -> f32 {
             }
         }
     } else {
-        let count = min(ambient.counts.x, MAX_AMBIENT_CAPSULES);
+        let count = min(ambient.counts.x, min(frame.capsules.x, MAX_AMBIENT_CAPSULES));
         for (var index = 0u; index < count; index++) {
             visibility *= capsule_occluder(index, position, n);
         }

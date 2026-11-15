@@ -22,9 +22,9 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::quality::{TierId, TierTable};
 use sapphire_render::{
     AmbientLight, AmbientOcclusion, BloomParams, CameraData, CharacterBody, CharacterInstance,
-    CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MaterialDrive, MeshHandle,
-    MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer, ShadowRole, SkyGradient,
-    ToneCurve, ViewData, Vignette,
+    CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, InsetView, InstanceId, MaterialDrive,
+    MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer, ShadowRole,
+    SkyGradient, ToneCurve, UiDrawList, UiQuad, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -158,7 +158,12 @@ struct Shot {
     scene: Scene,
     added: Vec<MeshInstance>,
     characters: Vec<CharacterInstance>,
+    /// A floor drawn only in an inset that covers the whole target ([`Self::with_inset_floor`]).
+    inset: Option<(MeshHandle, UiDrawList)>,
 }
+
+/// The inset floor's instance.
+const INSET_FLOOR: InstanceId = InstanceId(500);
 
 impl Shot {
     fn new(gpu: &GpuContext, settings: RenderSettings, size: (u32, u32), scene: Scene) -> Self {
@@ -230,7 +235,28 @@ impl Shot {
             scene,
             added,
             characters,
+            inset: None,
         }
+    }
+
+    /// Shows, over the whole target, an inset from the scene's camera of a floor of the
+    /// characters' material: what the world's capsules leave on it is what the inset's own loops
+    /// walk, its frame constants being its own.
+    fn with_inset_floor(mut self, size: (u32, u32)) -> Self {
+        let bytes = ground(&character_surface()).to_cooked().expect("cook");
+        let mesh = Mesh::read(&bytes).expect("a valid mesh");
+        let materials = self.renderer.upload_embedded_materials(mesh).expect("materials");
+        let floor = self.renderer.upload_mesh(mesh, &materials).expect("upload");
+        self.added.push(MeshInstance {
+            id: INSET_FLOOR,
+            mesh: floor,
+            transform: Mat4::from_scale(Vec3::new(40.0, 1.0, 40.0)),
+        });
+        let (width, height) = (size.0 as f32, size.1 as f32);
+        let mut ui = UiDrawList { viewport: [width, height], ..UiDrawList::default() };
+        ui.push_inset_quad(1, UiQuad::picture([0.0, 0.0], [width, 0.0], [0.0, height], 255));
+        self.inset = Some((floor, ui));
+        self
     }
 
     /// Draws a frame at render `scale` and reads it back.
@@ -250,6 +276,12 @@ impl Shot {
         packet.post = passthrough();
         packet.characters.extend_from_slice(&self.characters);
         packet.instances.changed.append(&mut self.added);
+        if let Some((_, ui)) = &self.inset {
+            let size = (self.texture.width(), self.texture.height());
+            let inset = InsetView::new(1, self.scene.camera, size, packet.ambient);
+            packet.push_inset(inset, [INSET_FLOOR]);
+            packet.ui.clone_from(ui);
+        }
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.set_render_scale(scale);
         self.renderer.prepare(gpu, self.packets.current());
@@ -532,4 +564,52 @@ fn every_body_of_a_crowd_of_sixty_shadows_and_occludes_the_ground() {
             }
         }
     }
+}
+
+/// An inset over a crowd of sixty walks the plain loops' 16 capsules with bins on, as with them off
+/// (M5 L18): the lists hold 64 for the main view's masks, but an inset reads no masks, so its own
+/// frame constants bound its loops. Read in the inset's pixels: a floor only it draws, seen from
+/// above, takes the same 16 shadows binned and unbinned.
+#[test]
+#[ignore = "needs a GPU"]
+fn an_inset_over_a_crowd_of_sixty_walks_the_plain_loops_sixteen() {
+    let gpu = gpu();
+    let size = (640, 360);
+    let desktop = TierTable::shipped().get(TierId::DesktopHigh).render_settings();
+    let settings = RenderSettings {
+        msaa: Msaa::X4,
+        temporal: false,
+        ambient_occlusion: AmbientOcclusion::OFF,
+        ..desktop
+    };
+    let scene = crowd(1.0, 0.0);
+    let camera = scene.camera;
+    let picture = |binned: bool, bodies: bool| {
+        let scene = if bodies { scene.clone() } else { Scene { bodies: Vec::new(), ..scene.clone() } };
+        let settings = RenderSettings { capsule_bins: binned, ..settings };
+        let mut shot = Shot::new(&gpu, settings, size, scene).with_inset_floor(size);
+        let pixels = shot.frame(&gpu, 1.0);
+        assert_eq!(shot.stats().insets.drawn, 1);
+        pixels
+    };
+    let open = picture(false, false);
+    let (binned, plain) = (picture(true, true), picture(false, true));
+    dump("inset-crowd-on", &binned, size);
+    dump("inset-crowd-off", &plain, size);
+    let marked = |pixels: &[[u8; 4]]| {
+        scene
+            .bodies
+            .iter()
+            .filter(|body| {
+                let middle = (body.base + body.top) * 0.5;
+                let ground = middle - scene.toward_light * (middle.y / scene.toward_light.y);
+                let at = pixel_of(&camera, size, ground);
+                red(pixels, at) + 8 < red(&open, at)
+            })
+            .count()
+    };
+    assert_eq!(marked(&plain), 16, "unbinned, the inset's floor takes the plain loops' 16");
+    assert_eq!(marked(&binned), 16, "binned, the inset walks 16 too");
+    let differing = binned.iter().zip(&plain).filter(|(a, b)| a != b).count();
+    assert_eq!(differing, 0, "the inset draws the same bytes binned and unbinned");
 }

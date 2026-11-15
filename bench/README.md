@@ -19,7 +19,7 @@ cook `content/` alone; `bench/` sits beside it, never in it.
 
 | Folder | Whose | What |
 |---|---|---|
-| `district/` | M5 B2 | `district.ron`: the streets, building variants, props, lanterns, dressing and look, and each preset's scale. `district_day.ron`: its dusk and night keys. `prefabs/`: the props, from parametric shapes and builtins. `surfaces/`: procedural texture specs (`.ptex.ron`), the families the texture sets are varied from. The plaza's fight is code (`sapphire_synthetic_zone::district`) |
+| `district/` | M5 B2 | `district.ron`: the streets, building variants, props, lanterns, dressing and look, and each preset's scale. `district_day.ron`: its dusk and night keys. `prefabs/`: the props, from parametric shapes and builtins. `surfaces/`: procedural texture specs (`.ptex.ron`), the families the texture sets are varied from. The plaza's fight is code (`sapphire_synthetic_zone::district`), and so is what a body meets (M5 B5): the ground and a box a block, the same at every preset, which the generator writes as `district.colliders.ron` |
 | `cast/` | M5 B3 | `cast.ron`: each figure and what each preset makes of it. `figures/`: figure specs (the hero, an enemy, six ambient figures), built as `tools/figures/` specs are |
 
 Each folder is a part with a generator of its own in `sapphire_pipeline::bench` (`district.rs`, `cast.rs`),
@@ -48,6 +48,12 @@ tour at run speed is about 7,560 frames, half that on Mobile-Low's two steps a f
 median, p95 and worst with the metres walked at the worst frame, each counter of what the frame drew against
 spec §3.4's budgets (`count row`), and how the frames split between performance and efficiency cores (`frames
 by core`); `--bench-trace <csv>` writes every frame. Spec §3.8 is its first reading.
+
+The district's fight (M5 B5) is `content/scenarios/district-encounter.scenario.ron` and its replay: a party of
+three up the avenue into the plaza, whose twelve come at it. Only a `dev` build's fight and the replay runner
+hand the district's builder over, so a `dev` sandbox plays it, with the hub's people about the plaza:
+`SAPPHIRE_CONTENT_DIR=<folder>/ sapphire_sandbox --arena --replay tests/replays/district-encounter.sreplay --party
+--mount zone_proving_hub --bench 1 --draw-every 50 --tier desktop-high --size 64x36`.
 
 ## In CI (M5 X4)
 

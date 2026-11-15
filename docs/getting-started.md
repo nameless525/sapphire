@@ -83,7 +83,7 @@ The bindings are documents: [`apps/sapphire_sandbox/default_bindings.ron`](../ap
 - **day:** scrubs the time of day.
 - **effects:** the screen effects.
 - **combat:** the fight's state.
-- **counts:** the benchmark's count rows for the frame, grouped, each against its spec §3.4 budget on the tier where it has one (draw calls, lights, the texture pool), past it in the warning color.
+- **counts:** the benchmark's count rows for the frame, grouped, each against its spec §3.4 budget on the tier where it has one (the main view's draw calls, lights, the texture pool), past it in the warning color.
 - **console:** `list` shows every cvar, `<name> <value>` sets one, Tab completes names.
 - **cvars:** every cvar.
 

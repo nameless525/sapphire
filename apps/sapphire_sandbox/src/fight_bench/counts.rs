@@ -7,7 +7,8 @@
 //! - **Counts need no rounds:** the same walk or fight draws the same frames, so a count row's spread is the
 //!   scene's, not the machine's. Each is logged per phase with its 50th and 95th percentile, its worst
 //!   frame, the tick and the metres walked it fell on, its total over the phase's frames, and spec §3.4's
-//!   view budget where it has one (2,500 draws and 64 lights a desktop frame, 700 and 8 a phone's). A row
+//!   view budget where it has one (2,500 of the main view's draw calls and 64 lights a desktop frame, 700 and 8
+//!   a phone's: m5-plan §3 puts the draws on `main draws`, and `draw calls`, every pass's, has none). A row
 //!   every frame read zero of says `not exercised`: nothing on this walk or fight fed it (a fourth cascade
 //!   on a tier of three, say).
 //! - **A plain bench of a walk** (`--zone-walk` with `--draw-every <n>`, which `bench.rs` runs) logs the same
@@ -291,17 +292,19 @@ const GROUPS: [&str; 13] = [
 /// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's and the
 /// characters' capsules by cluster.
 pub(crate) const COUNT_ROWS: [CountRow; 88] = [
-    // §3.4: a desktop frame's 2,500 draws, a phone's 700.
-    CountRow {
-        name: "draw calls",
-        group: FRAME,
-        read: |c| u64::from(c.passes.total().draws),
-        budget: [Some(2_500), Some(2_500), Some(700), Some(700)],
-    },
+    // Every call the frame submitted, across all passes: m5-plan §3's second row, with no budget.
+    row(FRAME, "draw calls", |c| u64::from(c.passes.total().draws)),
     row(FRAME, "triangles", |c| c.passes.total().triangles),
     row(FRAME, "draw instances", |c| u64::from(c.passes.total().instances)),
     row(FRAME, "outline draws", |c| u64::from(c.passes.total().outline_draws)),
-    row(PASSES, "main draws", |c| u64::from(c.passes.main.draws)),
+    // §3.4: a desktop frame's 2,500 draws, a phone's 700, on the main view's calls after culling (m5-plan §3; a
+    // run of equal draws is one call).
+    CountRow {
+        name: "main draws",
+        group: PASSES,
+        read: |c| u64::from(c.passes.main.draws),
+        budget: [Some(2_500), Some(2_500), Some(700), Some(700)],
+    },
     row(PASSES, "main triangles", |c| c.passes.main.triangles),
     row(PASSES, "character prepass draws", |c| u64::from(c.passes.character_prepass.draws)),
     row(PASSES, "scene prepass draws", |c| u64::from(c.passes.scene_prepass.draws)),
@@ -640,7 +643,7 @@ mod tests {
         assert_eq!(
             budgeted,
             [
-                ("draw calls", [Some(2_500), Some(2_500), Some(700), Some(700)]),
+                ("main draws", [Some(2_500), Some(2_500), Some(700), Some(700)]),
                 ("lights", [Some(64), Some(64), Some(8), Some(8)]),
                 ("texture pool bytes", [mib(2_560), mib(2_560), mib(600), mib(400)]),
             ]

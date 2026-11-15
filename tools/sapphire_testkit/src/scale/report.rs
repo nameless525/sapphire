@@ -22,7 +22,8 @@ use super::status::Status;
 
 /// Count rows the report's counts table shows, after every row with a budget (spec §3.4's): draws, lights,
 /// triangles, skinned vertices, materials.
-const COUNTS: [&str; 12] = [
+const COUNTS: [&str; 13] = [
+    "main draws",
     "draw calls",
     "draw instances",
     "triangles",
@@ -199,7 +200,10 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
          is this machine at a tier's settings, size and cook, and each phone figure is still owed to a phone. On \
          Metal passes overlap, so of the GPU rows only the frame is exact; a pass's figure is what it added. A unit \
          started above a load of {} is marked where it is read. Times in ms: p50 / p95 / worst @ metres along the \
-         walk, the budget in brackets; **bold is over**, and the last column says by how much.\n",
+         walk, the budget in brackets; **bold is over**, and the last column says by how much. §3.4's draw \
+         budget is on the main view's draw calls after culling (a run of equal draws is one call), as m5-plan §3 \
+         decided: `main draws`; `draw calls` is every call the frame submitted, every pass's, beside it with no \
+         budget.\n",
         manifest.preset,
         if inputs.smoke {
             " (a smoke run: 200 frames at 320×180, read for its shape, never its numbers)"
@@ -380,15 +384,17 @@ fn load_note(out: &mut String, manifest: &ScaleBench, rounds: &Rounds, what: &st
     }
 }
 
-/// Count rows that came with a budget, in the order the bench logged them.
+/// Count rows that came with a budget, in the order the bench logged them, from the phase the table reads (a
+/// counting walk's `drawn` as a measured walk's `cpu`).
 fn budgeted_counts(rounds: &Rounds) -> Vec<String> {
     let Some(first) = rounds.rounds.first() else { return Vec::new() };
+    let read = phase_of_counts(rounds);
     first
         .log
         .counted
         .iter()
         .filter(|((phase, _), entry)| {
-            phase == "cpu" && matches!(entry, Entry::Read(counted) if counted.budget.is_some())
+            phase == read && matches!(entry, Entry::Read(counted) if counted.budget.is_some())
         })
         .map(|((_, row), _)| row.clone())
         .collect()
@@ -884,6 +890,44 @@ mod tests {
             commit: "fixture",
             smoke: false,
         })
+    }
+
+    /// A run's rounds from each round's log text, the first round 1.
+    fn rounds(logs: &[&str]) -> Rounds {
+        Rounds {
+            rounds: (1..)
+                .zip(logs)
+                .map(|(round, text)| Round { round, log: Log::parse(text), load: None, trace: None })
+                .collect(),
+        }
+    }
+
+    /// A count row's log line in `phase`, as the sandbox writes it.
+    fn count_line(phase: &str, row: &str, [p50, p95, worst]: [u64; 3], budget: Option<u64>) -> String {
+        let budget = budget.map_or_else(|| "None".to_owned(), |budget| format!("Some({budget})"));
+        format!(
+            "2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: count row phase=\"{phase}\" row=\"{row}\" \
+             frames=100 p50={p50} p95={p95} worst={worst} total=1000 worst_tick=0 worst_walked_m=\"1.0\" \
+             budget={budget} over_p50=false over_worst=false"
+        )
+    }
+
+    /// §3.4's draw budget is on the main view's calls after culling (m5-plan §3), and a counting walk's table
+    /// leads with it as a measured walk's does; the frame's calls stand beside it with none.
+    #[test]
+    fn the_draw_budget_is_the_main_views_calls() {
+        let (text, _) = generate(false);
+        assert!(
+            text.contains("the main view's draw calls after culling (a run of equal draws is one call)"),
+            "the header says which row: {text}"
+        );
+        // A phone's counting walk, by the paused batch's main pass on Mobile-High.
+        let log = [
+            count_line("drawn", "draw calls", [2_482, 4_229, 5_400], None),
+            count_line("drawn", "main draws", [1_090, 1_965, 2_299], Some(700)),
+        ]
+        .join("\n");
+        assert_eq!(budgeted_counts(&rounds(&[&log])), ["main draws"]);
     }
 
     #[test]

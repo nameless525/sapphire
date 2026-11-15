@@ -58,7 +58,7 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
         ("cast/ambient_b_00", "a8fc041b56341744077c5846701d8b134ade32a74b08e2cb78072bbbb41294e7"),
         ("cast/enemy_00", "a4d4bf649b5df5e3e778fac27194fa8062a9e8905919a6bb630453de7c7f47d4"),
         ("cast/hero_00", "641bbc8d36b100df33d0d4eec3af37178f3ac55920bdb4df3e7c573a186c4b95"),
-        ("district", "221bccc8cafc7485bd2ae2f7e1829de557b71263e2c93c9afec5220b0127a4b5"),
+        ("district", "9c278df98e569c561aba70a8f63664fb77fa6daf62c8693c95b5dedf713064f3"),
         ("district/buildings", "4ba81538425fc6d90cb7a002164f7b9b40b0a76b3323f104ace974afb131d6e4"),
         ("district/materials", "57aaa0fc00432b725fe541e79abfa9e0b89db350aad58b9d6045af8e407685b0"),
         ("district/prefabs", "fd7f488cd15839048f1ecd7c2dc0f05d588fed511ddaedc1270d2e4b4923476c"),

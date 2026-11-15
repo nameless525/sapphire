@@ -30,9 +30,11 @@
 //! - `prefabs/`: the committed props, a cell's `ground`, and a lane's `closure` wall, which zones place and
 //!   the cook merges into each cell's mesh, each placement drawing from its cell's palette of sets.
 //! - `plaza.encounter.ron`: the plaza's fight, and `district_day.ron`, the day the zone names.
+//! - `district.colliders.ron`: what a fight in the district stands on (M5 B5), the ground and a box a block
+//!   about the plaza, which nothing draws.
 //! - `district.zone.ron`: the zone, whose sidecar asks for its cells' levels of detail (`cell_levels`, M5 D6).
-//!   Its simulation half (spawners, the plaza's volume, a checkpoint and the
-//!   fight) is `sapphire_synthetic_zone::district`'s, written here as its code builds it; its presentation is
+//!   Its simulation half (spawners, the plaza's volume, a checkpoint, the fight and the colliders) is
+//!   `sapphire_synthetic_zone::district`'s, written here as its code builds it; its presentation is
 //!   the cells, buildings, lights, day, wind and fog, the `tour` spline and, for a preset with a crowd, its
 //!   ambient characters.
 //!
@@ -82,6 +84,7 @@ use crate::assembly::{
     Posts, Projection, Roof, RoofKind, Scale, Shape, Side, SlotSpec, SurfaceRule, Wall,
 };
 use crate::character_maps::ramp::SrgbColor;
+use crate::colliders::ColliderSettings;
 use crate::material::MaterialSettings;
 use crate::meta::{ImportSettings, MeshSettings};
 use crate::optimize::LodSettings;
@@ -100,6 +103,8 @@ pub const TOUR: &str = "tour";
 pub const ENCOUNTER: &str = "plaza.encounter.ron";
 /// The day the zone names, in the part's output.
 pub const DAY: &str = "district_day.ron";
+/// The zone's colliders, in the part's output (M5 B5): what a fight there stands on, the simulation half's.
+pub const COLLIDERS: &str = "district.colliders.ron";
 /// A building variant's slots, which its sidecar binds to texture sets.
 pub const BUILDING_SLOTS: [&str; 5] = ["wall", "stone", "roof", "wood", "paper"];
 /// Half the width the tour keeps clear along its legs, in metres.
@@ -399,6 +404,11 @@ pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
         document_bytes(&simulation::encounter()),
         ImportSettings::Encounter(Default::default()),
     ));
+    sources.push(Source::asset(
+        COLLIDERS,
+        document_bytes(&simulation::colliders()),
+        ImportSettings::Colliders(ColliderSettings::default()),
+    ));
     let day = fs::read(dir.join(&district.day))?;
     sources.push(Source::input(DAY, day));
     let zone = ZoneDocument {
@@ -414,7 +424,7 @@ pub fn generate(dir: &Path, preset: Preset) -> Result<Vec<Source>, BenchError> {
         wind: district.wind,
         weather: None,
         fog: district.fog,
-        colliders: None,
+        colliders: Some(asset_id(PART, COLLIDERS)),
         spawners: simulation::spawners(scale.cells),
         triggers: simulation::triggers(),
         checkpoints: simulation::checkpoints(),
@@ -484,6 +494,14 @@ fn check(district: &BenchDistrict, scale: DistrictScale) -> Result<(), String> {
     let Streets { avenue, street, lane, edge } = district.streets;
     if ![avenue, street, lane, edge].iter().all(|width| width.is_finite() && (2.0..=16.0).contains(width)) {
         return Err("`streets` are 2 to 16 m wide".to_owned());
+    }
+    // The colliders and the navmesh a fight stands on are cut by the simulation half's streets (M5 B5).
+    let simulation::Streets { avenue, street, lane, edge } = simulation::STREETS;
+    if district.streets != (Streets { avenue, street, lane, edge }) {
+        return Err(format!(
+            "`streets` are the simulation half's, whose colliders are cut by them: avenue {avenue}, street \
+             {street}, lane {lane}, edge {edge} m"
+        ));
     }
     if !(0.0..=1.0).contains(&district.closures) {
         return Err("`closures` is a share, from 0 to 1".to_owned());

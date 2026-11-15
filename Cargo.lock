@@ -5074,6 +5074,10 @@ name = "sapphire_synthetic_zone"
 version = "0.1.0"
 dependencies = [
  "sapphire_assets",
+ "sapphire_colliders",
+ "sapphire_math",
+ "sapphire_nav",
+ "sapphire_navmesh",
  "sapphire_serialize",
  "sapphire_zone",
  "thiserror 2.0.21",

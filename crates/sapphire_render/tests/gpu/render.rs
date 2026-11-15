@@ -26,6 +26,7 @@ mod cutins;
 mod depth_equal;
 mod insets;
 mod killed_fragments;
+mod level_switches;
 mod levels;
 mod lost_frames;
 mod runs;

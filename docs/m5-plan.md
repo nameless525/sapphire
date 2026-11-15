@@ -41,7 +41,7 @@ Each test says what this run can prove and what it can't. The run has one machin
 3. **The look survives scale (pillar 1).** Sorting, instancing, culling, levels of detail, streaming and the phone's upscaler leave the picture alone:
    - every existing golden stays byte-identical;
    - each optimization has a test that draws the same image with it on and off, or within a stated gate where it can't be exact;
-   - at each switch of a level of detail, outline widths in output pixels and the shading's two-tone edge stay inside the testkit's gates.
+   - at each switch of a level of detail, outline widths in output pixels and the shading's two-tone edge stay inside the testkit's gates. **Standing (M5 Z2):** `render::level_switches`, on every shipped tier, at both distances of every step of the characters' two shipped chains, D4's default chain and D6's district chain (spec §5.12, "As built (M5 D5)").
    - **Proved here:** Metal, lavapipe and WARP.
    - **Owed:** a person's eye on motion, which no golden shows.
 4. **The picture's missing parts (new).** Reflection probes with wet streets, effect meshes with distortion, ground decals, depth of field, the effects pack and cut-ins, dissolves and driven emission, characters shadowing each other, light shafts. Each has goldens on three backends, a stated behaviour on each tier, a budget row it's measured against, a document that authors it, and nothing built or dispatched while it's off.

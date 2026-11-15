@@ -33,26 +33,26 @@ use sapphire_testkit::look::{Edge, Lines, darkness, luminance};
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// Linear 0.5 grey, the test sky's: a surface of this albedo, lit by the unit key and the 6%
 /// ambient, shows the sky's brightness.
-const GREY: [f32; 3] = [0.5 / 1.06; 3];
+pub(crate) const GREY: [f32; 3] = [0.5 / 1.06; 3];
 /// The shadow side's tone, as a share of the lit side's.
-const SHADE: f32 = 0.4;
+pub(crate) const SHADE: f32 = 0.4;
 /// The look-dev character's line, in pixels at 1080 rows.
-const LINE_WIDTH: f32 = 5.5;
+pub(crate) const LINE_WIDTH: f32 = 5.5;
 /// The vertical field of view, in degrees, and the share of the frame's height the sphere spans.
-const FOV: f32 = 45.0;
+pub(crate) const FOV: f32 = 45.0;
 const SPAN: f32 = 0.45;
 /// How far the key light turns from +X toward +Y, in radians, so the terminator slants across the
 /// rows measured and they sample every phase of a scaled scene's pixel grid: a vertical edge would
 /// fall at one phase, which reads a bilinear upscale as anything from sharp to twice its width.
-const TILT: f32 = 0.15;
+pub(crate) const TILT: f32 = 0.15;
 /// Rows measured, through the sphere's middle half.
-const ROWS: u32 = 21;
+pub(crate) const ROWS: u32 = 21;
 /// Frames drawn before the one measured: temporal AA's history settles over a few jitter cycles.
-const TAA_FRAMES: u32 = 24;
+pub(crate) const TAA_FRAMES: u32 = 24;
 
 /// Each class's output: the desktop tiers' 1080 rows, and a phone's 1170 (an iPhone 12 or 13 held
 /// sideways), narrowed to save CPU rasterizers' time: only the height sets what a scale draws.
-fn output(tier: TierId) -> (u32, u32) {
+pub(crate) fn output(tier: TierId) -> (u32, u32) {
     match tier {
         TierId::DesktopHigh | TierId::DesktopLow => (640, 1080),
         TierId::MobileHigh | TierId::MobileLow => (640, 1170),
@@ -94,6 +94,16 @@ fn target(gpu: &GpuContext, (width, height): (u32, u32)) -> wgpu::Texture {
 /// The unit sphere, grey on its lit side and [`SHADE`] of that on its shadow side, split hard,
 /// with a black line [`LINE_WIDTH`] wide at every distance and no rim.
 fn sphere() -> Mesh {
+    let (vertices, indices) = sphere_geometry();
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let material = Material::from_document(&sphere_material(), &swizzles).expect("a valid material");
+    let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
+    let slots = vec![MaterialSlot::embedded("sphere", material)];
+    Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16)
+}
+
+/// The unit sphere's vertices and triangles: 64 rings of 96 segments.
+pub(crate) fn sphere_geometry() -> (Vec<Vertex>, Vec<u32>) {
     const RINGS: u32 = 64;
     const SEGMENTS: u32 = 96;
     let mut vertices = Vec::new();
@@ -121,7 +131,13 @@ fn sphere() -> Mesh {
             indices.extend([a, c, b, c, d, b]);
         }
     }
-    let material = AnimeCharacterMaterial {
+    (vertices, indices)
+}
+
+/// The sphere's material: grey, [`SHADE`] of that on the shadow side, split hard, a black line
+/// [`LINE_WIDTH`] wide at every distance, no rim.
+pub(crate) fn sphere_material() -> AnimeCharacterMaterial {
+    AnimeCharacterMaterial {
         base_color: [GREY[0], GREY[1], GREY[2], 1.0],
         light_split: LightSplit { threshold: 0.0, softness: 0.0 },
         regions: vec![CharacterRegion {
@@ -137,16 +153,11 @@ fn sphere() -> Mesh {
             ..Outline::default()
         },
         ..AnimeCharacterMaterial::default()
-    };
-    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
-    let material = Material::from_document(&material, &swizzles).expect("a valid material");
-    let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
-    let slots = vec![MaterialSlot::embedded("sphere", material)];
-    Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16)
+    }
 }
 
 /// Post that shows linear values below about 0.98 as they are.
-fn passthrough() -> PostParams {
+pub(crate) fn passthrough() -> PostParams {
     PostParams {
         exposure: 0.0,
         bloom: BloomParams { intensity: 0.0, ..BloomParams::default() },

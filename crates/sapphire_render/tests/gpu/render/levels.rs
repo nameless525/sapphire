@@ -266,7 +266,7 @@ fn cell_ground(cx: u32, cz: u32, locked: bool) -> Mesh {
 
 /// Level `level` of `mesh`, as a mesh of that one level: what a draw at that level draws, from level 0's
 /// streams.
-fn one_level(mesh: &Mesh, level: usize) -> Mesh {
+pub(super) fn one_level(mesh: &Mesh, level: usize) -> Mesh {
     let mut one = mesh.clone();
     one.lods = vec![Lod { error: 0.0, vertex_count: mesh.lods[0].vertex_count, ..one.lods[level].clone() }];
     one

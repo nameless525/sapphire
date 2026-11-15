@@ -77,6 +77,9 @@ pub(crate) struct Counted {
     pub thinned: u32,
     pub off_screen: u32,
     pub animation_jobs: u32,
+    /// Characters whose spring bones stepped and wrote their pose (M5 C12, `AnimStats::springs`): a
+    /// party's member on the field and every enemy with chains, against the ambient's none.
+    pub springs_stepped: u32,
     /// A zone's ambient characters (M5 C10, `AmbientStats`): those standing, and of them those a view or
     /// its shadow shows.
     pub ambient_spawned: u32,
@@ -143,6 +146,7 @@ impl Counted {
             thinned: anim.thinned,
             off_screen: anim.off_screen,
             animation_jobs: anim.jobs,
+            springs_stepped: anim.springs,
             ambient_spawned: ambient.spawned,
             ambient_in_view: ambient.in_view,
             ambient_middle_band: ambient.middle_band,
@@ -276,7 +280,7 @@ const GROUPS: [&str; 13] = [
 /// and the main view's switches, M5 D4), the state the mesh passes changed, the instanced runs,
 /// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's and the
 /// characters' capsules by cluster.
-pub(crate) const COUNT_ROWS: [CountRow; 84] = [
+pub(crate) const COUNT_ROWS: [CountRow; 85] = [
     // §3.4: a desktop frame's 2,500 draws, a phone's 700.
     CountRow {
         name: "draw calls",
@@ -369,6 +373,8 @@ pub(crate) const COUNT_ROWS: [CountRow; 84] = [
     row(ANIMATION, "characters thinned", |c| u64::from(c.thinned)),
     row(ANIMATION, "held off screen", |c| u64::from(c.off_screen)),
     row(ANIMATION, "animation jobs", |c| u64::from(c.animation_jobs)),
+    // The characters whose hair and cloth ran this frame (M5 C12).
+    row(ANIMATION, "spring rigs stepped", |c| u64::from(c.springs_stepped)),
     row(CROWD, "ambient characters spawned", |c| u64::from(c.ambient_spawned)),
     row(CROWD, "ambient characters in view", |c| u64::from(c.ambient_in_view)),
     // Of those in view, by animation band, and those holding springs, which none may (M5 C11).

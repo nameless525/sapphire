@@ -85,6 +85,7 @@ desktop-high-dusk | spot draws | not exercised
 desktop-high-dusk | spot load bytes | not exercised
 desktop-high-dusk | spot tiles cached | not exercised
 desktop-high-dusk | spot tiles redrawn | not exercised
+desktop-high-dusk | spring rigs stepped | not exercised
 desktop-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-high-dusk | streamed texture pool | not exercised
 desktop-high-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
@@ -176,6 +177,7 @@ desktop-high-night | spot draws | not exercised
 desktop-high-night | spot load bytes | not exercised
 desktop-high-night | spot tiles cached | not exercised
 desktop-high-night | spot tiles redrawn | not exercised
+desktop-high-night | spring rigs stepped | not exercised
 desktop-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-high-night | streamed texture pool | not exercised
 desktop-high-night | temporal draws | p50 1 p95 1 worst 1 total 531
@@ -267,6 +269,7 @@ desktop-low-dusk | spot draws | not exercised
 desktop-low-dusk | spot load bytes | not exercised
 desktop-low-dusk | spot tiles cached | not exercised
 desktop-low-dusk | spot tiles redrawn | not exercised
+desktop-low-dusk | spring rigs stepped | not exercised
 desktop-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-low-dusk | streamed texture pool | not exercised
 desktop-low-dusk | temporal draws | p50 1 p95 1 worst 1 total 531
@@ -358,6 +361,7 @@ desktop-low-night | spot draws | not exercised
 desktop-low-night | spot load bytes | not exercised
 desktop-low-night | spot tiles cached | not exercised
 desktop-low-night | spot tiles redrawn | not exercised
+desktop-low-night | spring rigs stepped | not exercised
 desktop-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-low-night | streamed texture pool | not exercised
 desktop-low-night | temporal draws | p50 1 p95 1 worst 1 total 531
@@ -449,6 +453,7 @@ mobile-high-dusk | spot draws | not exercised
 mobile-high-dusk | spot load bytes | not exercised
 mobile-high-dusk | spot tiles cached | not exercised
 mobile-high-dusk | spot tiles redrawn | not exercised
+mobile-high-dusk | spring rigs stepped | not exercised
 mobile-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-high-dusk | streamed texture pool | not exercised
 mobile-high-dusk | temporal draws | not exercised
@@ -540,6 +545,7 @@ mobile-high-night | spot draws | not exercised
 mobile-high-night | spot load bytes | not exercised
 mobile-high-night | spot tiles cached | not exercised
 mobile-high-night | spot tiles redrawn | not exercised
+mobile-high-night | spring rigs stepped | not exercised
 mobile-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-high-night | streamed texture pool | not exercised
 mobile-high-night | temporal draws | not exercised
@@ -631,6 +637,7 @@ mobile-low-dusk | spot draws | not exercised
 mobile-low-dusk | spot load bytes | not exercised
 mobile-low-dusk | spot tiles cached | not exercised
 mobile-low-dusk | spot tiles redrawn | not exercised
+mobile-low-dusk | spring rigs stepped | not exercised
 mobile-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-low-dusk | streamed texture pool | not exercised
 mobile-low-dusk | temporal draws | not exercised
@@ -722,6 +729,7 @@ mobile-low-night | spot draws | not exercised
 mobile-low-night | spot load bytes | not exercised
 mobile-low-night | spot tiles cached | not exercised
 mobile-low-night | spot tiles redrawn | not exercised
+mobile-low-night | spring rigs stepped | not exercised
 mobile-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-low-night | streamed texture pool | not exercised
 mobile-low-night | temporal draws | not exercised

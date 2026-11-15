@@ -5,8 +5,9 @@
 //!   and the worst the least of the rounds' worst frames, with the metres walked where it fell, so a point on
 //!   the walk that is the worst in every round keeps its name. A unit read above the manifest's load bound is
 //!   marked, never dropped.
-//! - **Counts** are exact: every round must read the same. A count that differs is shown with each round's,
-//!   and on a run of counts alone that isn't streaming it fails the report, as the scale lane would.
+//! - **Counts** of a counting run are exact: every round must read the same. A count that differs is shown with
+//!   each round's, each marked against its budget, and on a run of counts alone that isn't streaming it fails
+//!   the report, as the scale lane would; a timed walk's may differ, and a round over its budget stays marked.
 //! - **Nothing is zero that wasn't read:** a row a run should have and no round logged says `missing`, and a row
 //!   the bench logged as not exercised says so.
 //! - **Budgets** are the bench's own (spec §3.1 to §3.4, logged beside each row), so nothing is compared with a
@@ -195,8 +196,10 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
     let _ = writeln!(out, "# Benches at scale: {}\n", inputs.commit);
     let _ = writeln!(
         out,
-        "The `{}` district{}, {} round(s) of each run, each time the lesser of the rounds and each count the same \
-         in every round. {done} of {} units complete. **This is a Mac:** none of spec §3.1's devices; every figure \
+        "The `{}` district{}, {} round(s) of each run, each time the lesser of the rounds and a counting run's \
+         counts the same in every round; a timed walk's counts follow what streaming landed when, so they can \
+         differ between rounds, each round's shown and a round over its budget marked. {done} of {} units \
+         complete. **This is a Mac:** none of spec §3.1's devices; every figure \
          is this machine at a tier's settings, size and cook, and each phone figure is still owed to a phone. On \
          Metal passes overlap, so of the GPU rows only the frame is exact; a pass's figure is what it added. A unit \
          started above a load of {} is marked where it is read. Times in ms: p50 / p95 / worst @ metres along the \
@@ -551,22 +554,45 @@ fn count_text(cell: &CountCell) -> (String, String) {
     match cell {
         CountCell::Missing => ("missing".to_owned(), String::new()),
         CountCell::NotExercised => ("not exercised".to_owned(), String::new()),
-        CountCell::Differs(readings) => (
-            format!(
-                "differs between rounds: {}",
+        CountCell::Differs(readings) => {
+            // Each round's figures, marked against the budget as one round's would be, and how far the round
+            // that went furthest over went: a row over in any round stays over.
+            let budget = readings.iter().find_map(|(_, c)| c.budget);
+            let mark = |value: u64| {
+                let text = thousands(value);
+                if budget.is_some_and(|budget| value > budget) { format!("**{text}**") } else { text }
+            };
+            let over = budget.map_or_else(String::new, |budget| {
                 readings
                     .iter()
-                    .map(|(round, c)| format!(
-                        "r{round} {} / {} / {}",
-                        thousands(c.p50),
-                        thousands(c.p95),
-                        thousands(c.worst)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
-            String::new(),
-        ),
+                    .max_by_key(|(_, c)| c.worst)
+                    .map(|(round, c)| {
+                        let note = over_note(
+                            &[("p50", c.p50 as f64), ("p95", c.p95 as f64), ("worst", c.worst as f64)],
+                            budget as f64,
+                        );
+                        if note.is_empty() { note } else { format!("{note} (r{round})") }
+                    })
+                    .unwrap_or_default()
+            });
+            (
+                format!(
+                    "differs between rounds: {}{}",
+                    readings
+                        .iter()
+                        .map(|(round, c)| format!(
+                            "r{round} {} / {} / {}",
+                            mark(c.p50),
+                            mark(c.p95),
+                            mark(c.worst)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    budget.map_or_else(String::new, |budget| format!(" [{}]", thousands(budget)))
+                ),
+                over,
+            )
+        }
         CountCell::Read(counted) => {
             let mark = |value: u64| {
                 let text = thousands(value);
@@ -1084,6 +1110,22 @@ mod tests {
         assert!(line.contains("**60 frames**, over 30"), "the column's worst is the bound: {line}");
         assert!(line.contains("the frames' 99th percentile 5"), "the percentile beside it, named: {line}");
         assert!(line.contains("warm lap"), "the worse lap: {line}");
+    }
+
+    /// A timed walk's counts move between rounds; a row over its budget in any round stays marked, with how far
+    /// in the round that went furthest, and the header doesn't claim every count reads the same.
+    #[test]
+    fn a_count_that_differs_between_rounds_keeps_its_over_budget_mark() {
+        let counted =
+            |p50, worst| Counted { p50, p95: p50, worst, total: None, walked_dm: None, budget: Some(700) };
+        let (text, over) =
+            count_text(&CountCell::Differs(vec![(1, counted(650, 690)), (2, counted(660, 900))]));
+        assert!(text.contains("r2 660 / 660 / **900**"), "the round over is bold: {text}");
+        assert!(text.contains("[700]"), "the budget is shown: {text}");
+        assert_eq!(over, "worst ×1.29 (r2)", "how far, and in which round");
+        let (header, _) = generate(false);
+        assert!(!header.contains("each count the same in every round"), "{header}");
+        assert!(header.contains("a counting run's counts the same in every round"), "{header}");
     }
 
     /// B4's baseline drew the phones at their scenes' size; the report says so once, beside a baseline.

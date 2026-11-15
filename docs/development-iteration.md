@@ -312,7 +312,8 @@ each labelled, and judge the worse: the cold lap is where surfaces come into vie
 line's bound is the trace column's worst frame, since the column is each frame's longest debt and its worst
 bounds every surface's wait; the frames' 99th percentile stands beside it, named as that. A time is the least of the
 rounds at p50 and p95 with the worst and where along the walk it fell; a count must be the same in every round
-of a run that counts exactly, or the report says it differs and fails. A row over its budget says by how much;
+of a run that counts exactly, or the report says it differs and fails; a timed walk's counts follow what
+streaming landed when and may differ, each round's shown and any round over its budget still marked. A row over its budget says by how much;
 a row the log doesn't have reads "missing", never zero. With `--baseline` (a folder of B4's logs named
 `<run>.<tier>.r<n>.log`), each row stands beside its baseline reading. A stand-in's rows say what they stand in
 for and are never read as a pass, and the gaps the batch can't measure yet are listed at the top. Metal's

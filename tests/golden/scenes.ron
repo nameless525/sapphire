@@ -28,7 +28,10 @@
 // and d98cf1a9) where all three had them, and run 43060916318's own times for the 81 only it had.
 //
 // Keep one scene to a block, in the order they were added, each after the ones before it: a scene from before
-// a feature pins it off, so its golden stays byte-identical when the feature lands.
+// a feature pins it off, so its golden stays byte-identical when the feature lands. The 49 from before kept
+// cascades (M5 D8) whose capture moved under them pin drawing in turns (`--shadow-cache turns`): the look-dev
+// stage's foliage casts into the cached cascades, which the tiers now leave at rest in the wind. The rest,
+// the `shadows-*` scenes among them, capture alike either way.
 //
 // Those from before the sky's layers (M1 W2) pin the sky's gradient alone, `--plain-sky` (no discs, glows,
 // stars or clouds): they are about the character, and the sky has scenes of its own. Those from before
@@ -1493,7 +1496,7 @@
             (
                 name: "lookdev-strike-anticipation",
                 ticks: 14,
-                args: ["--lods", "off", "--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 16.5, warp: 42.5),
@@ -1504,7 +1507,7 @@
             (
                 name: "lookdev-strike-fast",
                 ticks: 17,
-                args: ["--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
+                args: ["--shadow-cache", "turns", "--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 17.5, warp: 48.4),
@@ -1513,7 +1516,7 @@
             (
                 name: "lookdev-strike-mark",
                 ticks: 20,
-                args: ["--lods", "off", "--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 23.0, warp: 43.1),
@@ -1522,7 +1525,7 @@
             (
                 name: "lookdev-strike-settle",
                 ticks: 40,
-                args: ["--lods", "off", "--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--clip", "strike", "--springs", "off", "--time-of-day", "18",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 17.5, warp: 40.1),
@@ -1533,7 +1536,7 @@
             (
                 name: "lookdev-strike-face",
                 ticks: 20,
-                args: ["--look-dev", "face", "--clip", "strike", "--clip-in-place", "--springs", "off",
+                args: ["--shadow-cache", "turns", "--look-dev", "face", "--clip", "strike", "--clip-in-place", "--springs", "off",
                        "--time-of-day", "13", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1"],
                 ci_seconds: (lavapipe: 18.8, warp: 45.0),
@@ -1545,7 +1548,7 @@
             (
                 name: "lookdev-ik-slope",
                 ticks: 14,
-                args: ["--lods", "off", "--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
                        "--ik", "on", "--ik-ground", "slope", "--ik-look", "2,1.5,2.5", "--time-of-day", "13",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
@@ -1556,7 +1559,7 @@
             (
                 name: "lookdev-ik-step",
                 ticks: 14,
-                args: ["--lods", "off", "--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
                        "--ik", "on", "--ik-ground", "step", "--ik-look", "-2,1.2,2.5", "--time-of-day", "13",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
@@ -1591,7 +1594,7 @@
             (
                 name: "lookdev-strike-springs-mark",
                 ticks: 20,
-                args: ["--lods", "off", "--look-dev", "hero", "--clip", "strike", "--time-of-day", "18",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--clip", "strike", "--time-of-day", "18",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 23.0, warp: 44.4),
@@ -1601,7 +1604,7 @@
             (
                 name: "lookdev-strike-springs-after",
                 ticks: 26,
-                args: ["--lods", "off", "--look-dev", "hero", "--clip", "strike", "--time-of-day", "18",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--clip", "strike", "--time-of-day", "18",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 23.1, warp: 43.4),
@@ -1609,7 +1612,7 @@
             (
                 name: "lookdev-clip-idle",
                 ticks: 70,
-                args: ["--lods", "off", "--springs", "off", "--look-dev", "hero", "--clip", "idle", "--time-of-day", "10",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--springs", "off", "--look-dev", "hero", "--clip", "idle", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 15.8, warp: 37.3),
@@ -1617,7 +1620,7 @@
             (
                 name: "lookdev-clip-run",
                 ticks: 31,
-                args: ["--lods", "off", "--springs", "off", "--look-dev", "hero", "--clip", "Running_B", "--time-of-day", "10",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--springs", "off", "--look-dev", "hero", "--clip", "Running_B", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 15.9, warp: 38.1),
@@ -1625,7 +1628,7 @@
             (
                 name: "lookdev-clip-hit",
                 ticks: 15,
-                args: ["--lods", "off", "--springs", "off", "--look-dev", "hero", "--clip", "Hit_B", "--time-of-day", "10",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--springs", "off", "--look-dev", "hero", "--clip", "Hit_B", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 20.8, warp: 38.6),
@@ -1635,7 +1638,7 @@
             (
                 name: "lookdev-clip-run-springs",
                 ticks: 31,
-                args: ["--lods", "off", "--look-dev", "hero", "--clip", "Running_B", "--time-of-day", "10",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--clip", "Running_B", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "15",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 21.0, warp: 37.7),
@@ -1646,7 +1649,7 @@
             (
                 name: "lookdev-graph-run",
                 ticks: 30,
-                args: ["--lods", "off", "--look-dev", "hero", "--graph", "run", "--time-of-day", "10",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--graph", "run", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "30",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 29.8, warp: 64.1),
@@ -1656,7 +1659,7 @@
             (
                 name: "lookdev-graph-cancel",
                 ticks: 28,
-                args: ["--lods", "off", "--look-dev", "hero", "--graph", "cancel", "--time-of-day", "10",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--graph", "cancel", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--capture-frames", "16",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 21.9, warp: 40.1),
@@ -1787,7 +1790,7 @@
             (
                 name: "lookdev-move-coil",
                 ticks: 8,
-                args: ["--lods", "off", "--look-dev", "body", "--clip", "skill", "--clip-in-place", "--springs", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "body", "--clip", "skill", "--clip-in-place", "--springs", "off",
                        "--view", "60,4", "--blade", "on", "--time-of-day", "10", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "9", "--capture-step", "1"],
                 ci_seconds: (lavapipe: 13.8, warp: 33.2),
@@ -1878,14 +1881,14 @@
             (
                 name: "vfx-arc-noon",
                 ticks: 66,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "arc"],
                 ci_seconds: (lavapipe: 21.9, warp: 38.6),
             ),
             (
                 name: "vfx-arc-night",
                 ticks: 66,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "23", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "23", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "arc"],
                 ci_seconds: (lavapipe: 29.8, warp: 50.1),
             ),
@@ -1894,7 +1897,7 @@
             (
                 name: "vfx-hit-sunset",
                 ticks: 74,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "hit"],
                 ci_seconds: (lavapipe: 17.4, warp: 46.0),
             ),
@@ -1902,7 +1905,7 @@
             (
                 name: "vfx-duel-noon",
                 ticks: 120,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "duel"],
                 ci_seconds: (lavapipe: 16.7, warp: 34.7),
             ),
@@ -1911,7 +1914,7 @@
             (
                 name: "vfx-duel-mobile-low",
                 ticks: 120,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "23", "--tier", "mobile-low", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "23", "--tier", "mobile-low", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "duel"],
                 ci_seconds: (lavapipe: 18.2, warp: 36.4),
             ),
@@ -1930,7 +1933,7 @@
             (
                 name: "hit-medium-noon",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1",
                        "--replay", "tests/replays/fight.sreplay", "--cues", "--decals", "off",
                        "--distortion", "off"],
@@ -1939,7 +1942,7 @@
             (
                 name: "hit-break-noon",
                 ticks: 132,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1",
                        "--replay", "tests/replays/fight.sreplay", "--cues", "--decals", "off",
                        "--distortion", "off"],
@@ -2571,14 +2574,14 @@
                 name: "game-ward-title",
                 size: "640x360",
                 ticks: 30,
-                args: ["--tier", "desktop-high", "--game", "title", "--ui-version", "v0.1.0 (1234)"],
+                args: ["--shadow-cache", "turns", "--tier", "desktop-high", "--game", "title", "--ui-version", "v0.1.0 (1234)"],
                 ci_seconds: (lavapipe: 52.6, warp: 116.9),
             ),
             (
                 name: "game-ward-checkpoint",
                 size: "640x360",
                 ticks: 90,
-                args: ["--tier", "desktop-high", "--game", "continue",
+                args: ["--shadow-cache", "turns", "--tier", "desktop-high", "--game", "continue",
                        "--progress", "tests/saves/ward-court.progress.ron"],
                 ci_seconds: (lavapipe: 114.0, warp: 193.7),
             ),
@@ -2590,7 +2593,7 @@
                 size: "640x480",
                 ticks: 251,
                 base: "ward-gate",
-                args: ["--game-language", "en", "--game-draw-from", "161"],
+                args: ["--shadow-cache", "turns", "--game-language", "en", "--game-draw-from", "161"],
                 ci_seconds: (lavapipe: 209.8, warp: 353.9),
             ),
             (
@@ -2598,7 +2601,7 @@
                 size: "640x480",
                 ticks: 251,
                 base: "ward-gate",
-                args: ["--game-language", "ja", "--game-draw-from", "161"],
+                args: ["--shadow-cache", "turns", "--game-language", "ja", "--game-draw-from", "161"],
                 ci_seconds: (lavapipe: 187.1, warp: 257.9),
             ),
             (
@@ -2606,7 +2609,7 @@
                 size: "854x480",
                 ticks: 251,
                 base: "ward-gate",
-                args: ["--game-language", "en", "--game-draw-from", "161"],
+                args: ["--shadow-cache", "turns", "--game-language", "en", "--game-draw-from", "161"],
                 ci_seconds: (lavapipe: 236.3, warp: 339.8),
             ),
             (
@@ -2614,7 +2617,7 @@
                 size: "854x480",
                 ticks: 251,
                 base: "ward-gate",
-                args: ["--game-language", "ja", "--game-draw-from", "161"],
+                args: ["--shadow-cache", "turns", "--game-language", "ja", "--game-draw-from", "161"],
                 ci_seconds: (lavapipe: 209.8, warp: 395.3),
             ),
             (
@@ -2622,7 +2625,7 @@
                 size: "1120x480",
                 ticks: 251,
                 base: "ward-gate",
-                args: ["--game-language", "en", "--game-draw-from", "161"],
+                args: ["--shadow-cache", "turns", "--game-language", "en", "--game-draw-from", "161"],
                 ci_seconds: (lavapipe: 296.6, warp: 415.9),
             ),
             (
@@ -2630,7 +2633,7 @@
                 size: "1120x480",
                 ticks: 251,
                 base: "ward-gate",
-                args: ["--game-language", "ja", "--game-draw-from", "161"],
+                args: ["--shadow-cache", "turns", "--game-language", "ja", "--game-draw-from", "161"],
                 ci_seconds: (lavapipe: 263.2, warp: 453.4),
             ),
             // The character screen's inset (M3 U6) on a phone's 19.5:9 at twice the points, on Mobile-Low, a
@@ -3253,7 +3256,7 @@
             (
                 name: "tier-hit-desktop-low",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--capture-frames", "12", "--capture-step", "1"],
                 ci_seconds: (lavapipe: 13.2, warp: 31.6),
             ),
@@ -3385,7 +3388,7 @@
             (
                 name: "tier-hit-desktop-low-rung-three",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--rung", "3", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 8.3, warp: 27.7),
@@ -3537,14 +3540,14 @@
             (
                 name: "tier-hit-desktop-high",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--capture-frames", "12", "--capture-step", "1"],
                 ci_seconds: (lavapipe: 9.5, warp: 39.8),
             ),
             (
                 name: "tier-hit-desktop-high-floor",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--render-scale", "0.7", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 9.8, warp: 23.3),
@@ -3552,7 +3555,7 @@
             (
                 name: "tier-hit-desktop-high-rung-one",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--rung", "1", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 8.7, warp: 26.0),
@@ -3560,7 +3563,7 @@
             (
                 name: "tier-hit-desktop-high-rung-two",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--rung", "2", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 8.8, warp: 36.3),
@@ -3568,7 +3571,7 @@
             (
                 name: "tier-hit-desktop-high-rung-three",
                 ticks: 71,
-                args: ["--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-high", "--rung", "3", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 9.1, warp: 34.3),
@@ -3576,7 +3579,7 @@
             (
                 name: "tier-hit-desktop-low-floor",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--render-scale", "0.7", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 5.9, warp: 27.6),
@@ -3584,7 +3587,7 @@
             (
                 name: "tier-hit-desktop-low-rung-one",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--rung", "1", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 6.2, warp: 32.7),
@@ -3592,7 +3595,7 @@
             (
                 name: "tier-hit-desktop-low-rung-two",
                 ticks: 71,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "12", "--replay", "tests/replays/fight.sreplay",
                        "--cues", "--decals", "off", "--distortion", "off", "--tier", "desktop-low", "--rung", "2", "--capture-frames", "12",
                        "--capture-step", "1"],
                 ci_seconds: (lavapipe: 6.6, warp: 21.9),
@@ -3923,21 +3926,21 @@
             (
                 name: "vfxmesh-scroll",
                 ticks: 76,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-scroll"],
                 ci_seconds: (lavapipe: 20.3, warp: 44.3),
             ),
             (
                 name: "vfxmesh-erosion",
                 ticks: 80,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-erosion"],
                 ci_seconds: (lavapipe: 13.8, warp: 45.5),
             ),
             (
                 name: "vfxmesh-flipbook",
                 ticks: 72,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-low", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-low", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "mesh-flipbook"],
                 ci_seconds: (lavapipe: 15.5, warp: 35.7),
             ),
@@ -3948,7 +3951,7 @@
             (
                 name: "vfxmesh-skill-hit",
                 ticks: 184,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1",
                        "--replay", "tests/replays/dodge-dash.sreplay", "--cues", "--decals", "off",
                        "--distortion", "off"],
@@ -4027,7 +4030,7 @@
             (
                 name: "decal-slope",
                 ticks: 40,
-                args: ["--lods", "off", "--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--springs", "off", "--look-dev", "full", "--clip", "strike", "--clip-in-place",
                        "--ik", "on", "--ik-ground", "slope", "--time-of-day", "13", "--tier", "desktop-high",
                        "--ao", "off", "--capture-frames", "16", "--capture-step", "1", "--vfx", "decal-slope",
                        "--distortion", "off"],
@@ -4121,21 +4124,21 @@
             (
                 name: "distort-shockwave",
                 ticks: 69,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "distort-shockwave"],
                 ci_seconds: (lavapipe: 18.8, warp: 47.1),
             ),
             (
                 name: "distort-haze",
                 ticks: 60,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "distort-haze"],
                 ci_seconds: (lavapipe: 24.2, warp: 47.6),
             ),
             (
                 name: "distort-shockwave-mobile-high",
                 ticks: 69,
-                args: ["--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-high", "--ao", "off",
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "18", "--tier", "mobile-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "distort-shockwave"],
                 ci_seconds: (lavapipe: 14.7, warp: 39.5),
             ),

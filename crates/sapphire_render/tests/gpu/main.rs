@@ -22,6 +22,7 @@ mod hot_reload;
 mod inventory;
 mod layers;
 mod look_tiers;
+mod merge;
 mod mip_copies;
 mod outline;
 mod reflections;

@@ -4,7 +4,8 @@
 // through `probe_cube_sample` (`probe_cubes.wgsl` or `probe_faces.wgsl`).
 //
 // The environment finds the probe of the cell around a point in a table built at load from the
-// probes' reaches (the probe reaching into a cell, the nearest where several do), corrects the
+// probes' reaches (the two probes reaching into a cell with the largest weight anywhere in it, and
+// of those the one whose weight at the point is larger), corrects the
 // reflected ray by the box (box parallax, `REFLECTION_PROBES` 2) or reads along it as it is (1),
 // and takes the probe whole inside its box and on its faces, where a room's walls lie, fading to
 // the light it read before probes (the grid's or the hemisphere's) over a short reach past them;
@@ -32,7 +33,7 @@ struct ReflectionUniforms {
     probes: array<ReflectionProbe, 42>,
 }
 
-// Per cell, the probe the environment reads there, or `NO_CELL_PROBE`.
+// Per cell, the two probes the environment reads there (`CellTable`), or `NO_CELL_PROBE`.
 @group(0) @binding(18) var probe_cells: texture_3d<u32>;
 @group(0) @binding(19) var<uniform> reflection: ReflectionUniforms;
 
@@ -46,14 +47,14 @@ const NO_CELL_PROBE: u32 = 255u;
 // A character with no probe (`ambient::reflection_probes::NO_PROBE`).
 const NO_CHARACTER_PROBE: u32 = 0xffffffffu;
 
-// The probe the cell around `position` names, or `NO_CELL_PROBE` outside the table.
-fn cell_probe(position: vec3<f32>) -> u32 {
+// The two probes the cell around `position` names, or `NO_CELL_PROBE` outside the table.
+fn cell_probes(position: vec3<f32>) -> vec2<u32> {
     let dims = vec3<f32>(reflection.cells.xyz);
     let cell = floor((position - reflection.cells_origin.xyz) / reflection.cells_origin.w);
     let inside = all(cell >= vec3<f32>(0.0)) && all(cell < dims);
     let clamped = vec3<i32>(clamp(cell, vec3<f32>(0.0), max(dims - 1.0, vec3<f32>(0.0))));
-    let named = textureLoad(probe_cells, clamped, 0).r;
-    return select(NO_CELL_PROBE, named, inside);
+    let named = textureLoad(probe_cells, clamped, 0).rg;
+    return select(vec2<u32>(NO_CELL_PROBE), named, inside);
 }
 
 // How much of probe `index`'s cube a point at `position` takes: 1 inside its box and on its faces,
@@ -65,10 +66,23 @@ fn probe_weight(index: u32, position: vec3<f32>) -> f32 {
 }
 
 // The light the environment reflects at `position` along `reflected` at `roughness`: `fallback`
-// (what it read before probes) where no probe reaches, else the cell's probe's cube, fading into
-// it past the box's faces.
+// (what it read before probes) where no probe reaches, else the cube of the one of its cell's two
+// probes whose weight at `position` is larger (the first where they tie), fading into it past the
+// box's faces (`CellTable::probe_at`).
 fn environment_reflection(position: vec3<f32>, reflected: vec3<f32>, roughness: f32, fallback: vec3<f32>) -> vec3<f32> {
-    let index = cell_probe(position);
+    let named = cell_probes(position);
+    var index = named.x;
+    var weight = 0.0;
+    if index != NO_CELL_PROBE {
+        weight = probe_weight(index, position);
+    }
+    if named.y != NO_CELL_PROBE {
+        let other = probe_weight(named.y, position);
+        if other > weight {
+            index = named.y;
+            weight = other;
+        }
+    }
     var light = fallback;
     if index != NO_CELL_PROBE {
         let probe = reflection.probes[index];
@@ -84,7 +98,7 @@ fn environment_reflection(position: vec3<f32>, reflected: vec3<f32>, roughness: 
         }
         let level = roughness * (probe_cube_levels() - 1.0);
         let probed = probe_cube_sample(direction, index, level);
-        light = mix(fallback, probed, probe_weight(index, position));
+        light = mix(fallback, probed, weight);
     }
     return light;
 }

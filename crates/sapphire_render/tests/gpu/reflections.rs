@@ -4,7 +4,8 @@
 //! dispatched for a zone without probes, composing counts its dispatches in the ambient pass and adds no
 //! draw to any pass's counts, a tier change composes them again at the new tier's size, and
 //! hiding them leaves the sky's reflection; a character's reflective part reads the probe the picker names
-//! for where it stands and the sky's reflection, to the byte, beyond every probe's reach; and Mobile-Low
+//! for where it stands and the sky's reflection, to the byte, beyond every probe's reach; a floor inside one
+//! room by a wall it shares with another reflects its own room's probe whole; and Mobile-Low
 //! holds its keys at the size it composes at, averaged as the composition would, which a set handed to a
 //! larger tier keeps. Run with
 //! `cargo test -p sapphire_render --test gpu reflections:: -- --ignored --test-threads=1`.
@@ -535,6 +536,26 @@ fn a_closed_red_room_reflects_red() {
         6 * 8 * (32 * 32 + 16 * 16 + 8 * 8),
         "Rgba16Float, six faces, three levels"
     );
+}
+
+/// Beside a wall it shares with a blue room whose probe stands by the wall, a red room's floor
+/// reflects red to the wall (review F3): the blue probe reaches half a metre into the red room and its
+/// position is nearer the cell's centre there, but a point inside the red box reads the probe of its
+/// cell's two whose weight at it is larger, the red one whole.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_floor_inside_a_red_room_by_a_blue_rooms_wall_reflects_red() {
+    let (red, blue) = (Vec3::new(0.5, 0.02, 0.02), Vec3::new(0.02, 0.02, 0.5));
+    let mut harness = Harness::new(desktop(), 0.0, false);
+    harness.show(&rooms(&[
+        (Vec3::new(-2.5, 1.5, 0.0), Vec3::new(-3.0, 0.0, -3.0), Vec3::new(1.0, 3.0, 3.0), red),
+        (Vec3::new(1.3, 1.5, 0.0), Vec3::new(1.0, 0.0, -3.0), Vec3::new(4.0, 3.0, 3.0), blue),
+    ]));
+    let frame = harness.settle(2);
+    for point in [Vec3::new(0.6, 0.0, 0.0), Vec3::new(0.75, 0.0, -0.5), Vec3::new(0.9, 0.0, 0.3)] {
+        assert_near(frame.at(point), red, &format!("the red room's floor at {point}"));
+    }
+    assert_near(frame.at(Vec3::new(1.2, 0.0, 0.0)), blue, "the blue room's floor past the wall");
 }
 
 #[test]

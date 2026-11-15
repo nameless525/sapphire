@@ -1382,8 +1382,12 @@ impl Placeholders {
         let reflection = texture("no reflection cube", wgpu::TextureDimension::D2, 6, STORAGE_FORMAT);
         let occlusion = texture("no gtao", wgpu::TextureDimension::D2, 1, STORAGE_FORMAT);
         let probe_cubes = texture("no reflection probes", wgpu::TextureDimension::D2, 6, STORAGE_FORMAT);
-        let probe_cells =
-            texture("no reflection probe cells", wgpu::TextureDimension::D3, 1, wgpu::TextureFormat::R8Uint);
+        let probe_cells = texture(
+            "no reflection probe cells",
+            wgpu::TextureDimension::D3,
+            1,
+            reflection_probes::CELL_FORMAT,
+        );
         // Open: visibility 1 at the farthest depth, as half floats (1, 65504, 0, 1).
         let open: [u16; 4] = [0x3c00, 0x7bff, 0, 0x3c00];
         queue.write_texture(

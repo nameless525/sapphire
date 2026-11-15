@@ -52,10 +52,12 @@ pub(crate) const NO_PROBE: u32 = u32::MAX;
 
 /// A cell with no probe (WGSL `NO_CELL_PROBE`).
 pub(crate) const NO_CELL_PROBE: u8 = 255;
+/// The cell table's texels: a cell's two probes.
+pub(crate) const CELL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Uint;
 
 /// The cell table's side at its finest, metres; it doubles until the zone's probes fit [`MAX_CELLS`].
 const CELL_SIDE: f32 = 1.0;
-/// The most cells the table holds: 256 KiB of `R8Uint`.
+/// The most cells the table holds: 512 KiB of `Rg8Uint`.
 const MAX_CELLS: usize = 1 << 18;
 
 /// How far past its box's faces a probe's cube reaches, fading out: a quarter of the box's least side, at
@@ -125,6 +127,13 @@ impl ProbeBox {
         (low + side).cmpgt(self.min - fade).all() && low.cmplt(self.max + fade).all()
     }
 
+    /// The largest weight it has anywhere in the cell from `low` to `low + side` ([`Self::weight`] at the
+    /// cell's point nearest the box): 1 where the box meets the cell.
+    fn weight_in_cell(&self, low: Vec3, side: f32) -> f32 {
+        let outside = (self.min - (low + side)).max(low - self.max).max(Vec3::ZERO).length();
+        (1.0 - outside / self.fade()).clamp(0.0, 1.0)
+    }
+
     /// How much of its cube a point takes: 1 inside the box and on its faces, since a box is the room its
     /// probe stands in and its walls lie on them, falling to 0 over [`Self::fade`] past them (WGSL
     /// `probe_weight`).
@@ -134,18 +143,23 @@ impl ProbeBox {
     }
 }
 
-/// The environment's table of which probe each cell of the zone reads: cells of [`CELL_SIDE`] (doubled
+/// The environment's table of which probes each cell of the zone reads: cells of [`CELL_SIDE`] (doubled
 /// until they fit [`MAX_CELLS`]) over the union of the probes' reaches (each box grown by its fade), each
-/// naming the probe that reaches into it, the one baked nearest its centre where several do, or
-/// [`NO_CELL_PROBE`]. A cell any of a probe reaches names one, so a pixel's weight, which the shader takes
-/// from the box itself, falls to 0 before the table's cells can stop naming its probe.
+/// naming the two probes that reach into it with the largest weight anywhere in it, the one baked nearer
+/// its centre first where they tie, or [`NO_CELL_PROBE`]. A pixel takes the one of its cell's two whose
+/// weight at it is larger, the first where they tie (`probe_at`, WGSL `environment_reflection`). A cell
+/// any of a probe reaches names one, so a pixel's weight, which the shader takes from the box itself,
+/// falls to 0 before the table's cells can stop naming its probe. A pixel inside a box reads it whole
+/// wherever no more than two boxes meet its cell: the box meets the cell, so it is one of the two, and
+/// its weight there is 1 (review F3, 2026-11-15: one probe a cell, the one baked nearest, gave a strip
+/// inside a box by a wall it shares the neighbour's fade).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CellTable {
     pub origin: Vec3,
     pub side: f32,
     pub dims: [u32; 3],
-    /// x fastest, then y, then z.
-    pub cells: Vec<u8>,
+    /// x fastest, then y, then z: per cell, its first probe and its second.
+    pub cells: Vec<[u8; 2]>,
 }
 
 impl CellTable {
@@ -162,36 +176,46 @@ impl CellTable {
             side *= 2.0;
         };
         let mut cells = Vec::with_capacity((dims.x * dims.y * dims.z) as usize);
+        let mut reaching = Vec::with_capacity(boxes.len());
         for z in 0..dims.z {
             for y in 0..dims.y {
                 for x in 0..dims.x {
                     let low = min + Vec3::new(x as f32, y as f32, z as f32) * side;
                     let centre = low + 0.5 * side;
-                    let nearest =
-                        boxes.iter().enumerate().filter(|(_, probe)| probe.reaches_cell(low, side)).min_by(
-                            |(_, a), (_, b)| {
-                                a.position
-                                    .distance_squared(centre)
-                                    .total_cmp(&b.position.distance_squared(centre))
-                            },
-                        );
-                    cells.push(nearest.map_or(NO_CELL_PROBE, |(index, _)| index as u8));
+                    // The probes reaching in, by their largest weight in the cell, then by how near
+                    // their baked position is to its centre, then by index.
+                    reaching.clear();
+                    for (index, probe) in boxes.iter().enumerate() {
+                        if probe.reaches_cell(low, side) {
+                            let weight = probe.weight_in_cell(low, side);
+                            reaching.push((weight, probe.position.distance_squared(centre), index));
+                        }
+                    }
+                    reaching.sort_unstable_by(|a, b| {
+                        b.0.total_cmp(&a.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2))
+                    });
+                    let named = |rank: usize| reaching.get(rank).map_or(NO_CELL_PROBE, |probe| probe.2 as u8);
+                    cells.push([named(0), named(1)]);
                 }
             }
         }
         Self { origin: min, side, dims: dims.to_array(), cells }
     }
 
-    /// The probe the cell around `point` names, as the shader finds it (`cell_probe`).
+    /// The probe a point at `point` reads, of `boxes` the table was built from, as the shader finds it
+    /// (`environment_reflection`): of its cell's two, the one whose weight at the point is larger, the
+    /// first where they tie.
     #[cfg(test)]
-    fn probe_at(&self, point: Vec3) -> Option<usize> {
+    fn probe_at(&self, boxes: &[ProbeBox], point: Vec3) -> Option<usize> {
         let cell = ((point - self.origin) / self.side).floor();
         let dims = Vec3::new(self.dims[0] as f32, self.dims[1] as f32, self.dims[2] as f32);
         if cell.cmplt(Vec3::ZERO).any() || cell.cmpge(dims).any() {
             return None;
         }
         let [x, y, z] = cell.as_uvec3().to_array();
-        let probe = self.cells[(x + self.dims[0] * (y + self.dims[1] * z)) as usize];
+        let [first, second] = self.cells[(x + self.dims[0] * (y + self.dims[1] * z)) as usize];
+        let weight = |probe: u8| boxes[usize::from(probe)].weight(point);
+        let probe = if second != NO_CELL_PROBE && weight(second) > weight(first) { second } else { first };
         (probe != NO_CELL_PROBE).then_some(usize::from(probe))
     }
 }
@@ -687,16 +711,16 @@ impl ActiveProbes {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::R8Uint,
+            format: CELL_FORMAT,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         queue.write_texture(
             cells.as_image_copy(),
-            &table.cells,
+            table.cells.as_flattened(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(table.dims[0]),
+                bytes_per_row: Some(2 * table.dims[0]),
                 rows_per_image: Some(table.dims[1]),
             },
             cells.size(),
@@ -757,29 +781,32 @@ mod tests {
         // each reaches 0.5 m past its box (a quarter of 2 m), so the table starts at -0.5 in 1 m cells.
         let hall = probe(Vec3::new(1.0, 1.5, 1.0), Vec3::ZERO, Vec3::new(6.0, 3.0, 2.0));
         let yard = probe(Vec3::new(10.0, 1.5, 1.0), Vec3::new(4.0, 0.0, 0.0), Vec3::new(12.0, 3.0, 2.0));
-        let table = CellTable::build(&[hall, yard]);
+        let boxes = [hall, yard];
+        let table = CellTable::build(&boxes);
         assert_eq!((table.origin, table.side, table.dims), (Vec3::splat(-0.5), 1.0, [13, 4, 3]));
-        assert_eq!(table.probe_at(Vec3::new(0.5, 0.5, 0.5)), Some(0));
-        assert_eq!(table.probe_at(Vec3::new(11.5, 2.5, 1.5)), Some(1));
+        assert_eq!(table.probe_at(&boxes, Vec3::new(0.5, 0.5, 0.5)), Some(0));
+        assert_eq!(table.probe_at(&boxes, Vec3::new(11.5, 2.5, 1.5)), Some(1));
         // A wall on the box's face, and the cell past it that the fade reaches into.
-        assert_eq!(table.probe_at(Vec3::new(-0.2, 1.0, 1.0)), Some(0));
-        assert_eq!(table.probe_at(Vec3::new(12.2, 1.0, 1.0)), Some(1));
+        assert_eq!(table.probe_at(&boxes, Vec3::new(-0.2, 1.0, 1.0)), Some(0));
+        assert_eq!(table.probe_at(&boxes, Vec3::new(12.2, 1.0, 1.0)), Some(1));
         // Where both reach, the probe baked nearer the cell's centre: the cell from 4.5 to 5.5 is centred
         // 4 m from the hall's and 5 from the yard's.
-        assert_eq!(table.probe_at(Vec3::new(4.6, 1.5, 1.5)), Some(0));
-        let table = CellTable::build(&[
-            hall,
-            probe(Vec3::new(7.0, 1.5, 1.0), Vec3::new(4.0, 0.0, 0.0), Vec3::new(12.0, 3.0, 2.0)),
-        ]);
-        assert_eq!(table.probe_at(Vec3::new(4.6, 1.5, 1.5)), Some(1), "now nearer the yard's");
+        assert_eq!(table.probe_at(&boxes, Vec3::new(4.6, 1.5, 1.5)), Some(0));
+        let boxes =
+            [hall, probe(Vec3::new(7.0, 1.5, 1.0), Vec3::new(4.0, 0.0, 0.0), Vec3::new(12.0, 3.0, 2.0))];
+        let table = CellTable::build(&boxes);
+        assert_eq!(table.probe_at(&boxes, Vec3::new(4.6, 1.5, 1.5)), Some(1), "now nearer the yard's");
         // Outside the table, and a cell of the table no probe reaches.
-        assert_eq!(table.probe_at(Vec3::new(-1.0, 1.0, 1.0)), None);
-        assert_eq!(table.probe_at(Vec3::new(13.0, 1.0, 1.0)), None);
-        let apart = CellTable::build(&[
-            hall,
-            probe(Vec3::new(10.0, 1.5, 1.0), Vec3::new(8.0, 0.0, 0.0), Vec3::new(12.0, 3.0, 2.0)),
-        ]);
-        assert_eq!(apart.probe_at(Vec3::new(7.0, 1.5, 1.5)), None, "between the reaches, 6.5 and 7.5");
+        assert_eq!(table.probe_at(&boxes, Vec3::new(-1.0, 1.0, 1.0)), None);
+        assert_eq!(table.probe_at(&boxes, Vec3::new(13.0, 1.0, 1.0)), None);
+        let boxes =
+            [hall, probe(Vec3::new(10.0, 1.5, 1.0), Vec3::new(8.0, 0.0, 0.0), Vec3::new(12.0, 3.0, 2.0))];
+        let apart = CellTable::build(&boxes);
+        assert_eq!(
+            apart.probe_at(&boxes, Vec3::new(7.0, 1.5, 1.5)),
+            None,
+            "between the reaches, 6.5 and 7.5"
+        );
     }
 
     #[test]
@@ -789,7 +816,30 @@ mod tests {
         let cells = table.dims.iter().map(|&d| d as usize).product::<usize>();
         assert!(cells <= MAX_CELLS && table.side == 8.0, "{table:?}");
         assert_eq!(table.cells.len(), cells);
-        assert!(table.cells.iter().all(|&cell| cell == 0));
+        assert!(table.cells.iter().all(|&cell| cell == [0, NO_CELL_PROBE]));
+    }
+
+    /// Inside one box, by a wall it shares with a neighbour whose cube reaches past it, a point reads
+    /// its own box's probe whole, never the neighbour's fade: the neighbour's probe baked nearer the
+    /// cell's centre used to take the cell, so a strip of the hall's floor faded toward the yard's cube.
+    #[test]
+    fn a_point_inside_one_box_never_reads_a_neighbours_fade() {
+        // A hall from x = 0 to 10 baked at 2, and a yard beside it from 10 to 14 baked by the shared
+        // wall: the yard reaches 0.5 m into the hall.
+        let hall = probe(Vec3::new(2.0, 1.5, 2.0), Vec3::ZERO, Vec3::new(10.0, 3.0, 4.0));
+        let yard = probe(Vec3::new(10.5, 1.5, 2.0), Vec3::new(10.0, 0.0, 0.0), Vec3::new(14.0, 3.0, 4.0));
+        let boxes = [hall, yard];
+        let table = CellTable::build(&boxes);
+        for step in 0..=200 {
+            let x = 8.0 + 0.01 * step as f32;
+            for point in [Vec3::new(x, 0.0, 2.0), Vec3::new(x, 1.3, 0.7)] {
+                let read = table.probe_at(&boxes, point).map(|probe| boxes[probe].weight(point));
+                assert_eq!(read, Some(1.0), "at {point}: the hall whole");
+            }
+            let point = Vec3::new(20.0 - x, 0.0, 2.0);
+            let read = table.probe_at(&boxes, point).map(|probe| boxes[probe].weight(point));
+            assert_eq!(read, Some(1.0), "at {point}: the yard whole");
+        }
     }
 
     #[test]
@@ -819,7 +869,7 @@ mod tests {
             assert_eq!(shelter.weight(point), 1.0, "{point}");
         }
         let table = CellTable::build(&[shelter]);
-        assert_eq!(table.probe_at(Vec3::new(-24.0, 0.0, 30.0)), Some(0));
+        assert_eq!(table.probe_at(&[shelter], Vec3::new(-24.0, 0.0, 30.0)), Some(0));
     }
 
     fn keys(a: u32, b: u32, t: f32) -> ProbeKeys {

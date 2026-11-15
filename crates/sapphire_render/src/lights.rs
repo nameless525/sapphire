@@ -128,7 +128,8 @@ pub(crate) struct GpuLight {
     /// xyz: unit vector the spot points along, zero for point lights; w: cos(outer angle), −1
     /// for point lights.
     pub spot: [f32; 4],
-    /// xy: the cone as `saturate(cos θ × x + y)` before its smoothstep; zw: 0. x is 0 for point
+    /// xy: the cone as `saturate(cos θ × x + y)` before its smoothstep; z: its spot shadow's tile
+    /// plus 1 (M5 L16: `ShadowUniforms::spots`), 0 where it casts none; w: 0. x is 0 for point
     /// lights alone (a spot's is at least ½), which the per-object lists' influence tells them
     /// apart by.
     pub cone: [f32; 4],
@@ -155,7 +156,7 @@ impl GpuLight {
         }
         let (spot, cone) = match kind {
             LightKind::Point => ([0.0, 0.0, 0.0, -1.0], [0.0, 1.0, 0.0, 0.0]),
-            LightKind::Spot { direction, inner_angle, outer_angle } => {
+            LightKind::Spot { direction, inner_angle, outer_angle, .. } => {
                 let direction = direction.try_normalize()?;
                 if !(inner_angle.is_finite() && outer_angle.is_finite()) {
                     return None;
@@ -332,15 +333,16 @@ impl Lights {
         self.objects.invalidate();
     }
 
-    /// Culls, caps and packs the packet's lights for its main view, and on the per-object
-    /// path chooses the lists that need it (`slots` already has the packet's instance deltas
-    /// applied), with the bounds of `meshes`. Returns `true` when the list buffer was replaced,
-    /// so bind groups that use it must be rebuilt.
+    /// Culls, caps and packs the packet's lights for its main view, each spot that casts a shadow
+    /// with its tile (`spot_tiles`: a light's index in the packet and its tile, M5 L16), and on the
+    /// per-object path chooses the lists that need it (`slots` already has the packet's instance
+    /// deltas applied), with the bounds of `meshes`. Returns `true` when the list buffer was
+    /// replaced, so bind groups that use it must be rebuilt.
     pub(crate) fn prepare(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
         packet: &FramePacket,
+        spot_tiles: &[(u32, u8)],
         slots: &InstanceSlots,
         meshes: &[MeshRecord],
     ) -> bool {
@@ -356,6 +358,13 @@ impl Lights {
         std::mem::swap(&mut self.packed, &mut self.previous);
         let Gathered { culled, dropped, farthest } =
             gather(&packet.lights, camera, self.max_lights, &mut self.candidates, &mut self.packed);
+        // Packed in the candidates' order, each one's index beside it.
+        for &(index, tile) in spot_tiles {
+            let at = self.candidates.iter().position(|candidate| candidate.index == index);
+            if let Some(light) = at.and_then(|at| self.packed.get_mut(at)) {
+                light.cone[2] = f32::from(tile) + 1.0;
+            }
+        }
         let changed = self.packed != self.previous;
         self.unsent |= changed;
 
@@ -625,7 +634,12 @@ mod tests {
 
     fn spot(inner_angle: f32, outer_angle: f32) -> LocalLight {
         LocalLight {
-            kind: LightKind::Spot { direction: Vec3::new(0.0, -2.0, 0.0), inner_angle, outer_angle },
+            kind: LightKind::Spot {
+                direction: Vec3::new(0.0, -2.0, 0.0),
+                inner_angle,
+                outer_angle,
+                shadow: false,
+            },
             ..point(Vec3::ZERO, 2.0)
         }
     }
@@ -649,7 +663,12 @@ mod tests {
             LocalLight { color: Vec3::splat(f32::MAX), intensity: 10.0, ..good },
             LocalLight { position: Vec3::new(0.0, f32::INFINITY, 0.0), ..good },
             LocalLight {
-                kind: LightKind::Spot { direction: Vec3::ZERO, inner_angle: 0.1, outer_angle: 0.2 },
+                kind: LightKind::Spot {
+                    direction: Vec3::ZERO,
+                    inner_angle: 0.1,
+                    outer_angle: 0.2,
+                    shadow: false,
+                },
                 ..good
             },
             LocalLight {
@@ -657,6 +676,7 @@ mod tests {
                     direction: Vec3::splat(f32::NAN),
                     inner_angle: 0.1,
                     outer_angle: 0.2,
+                    shadow: false,
                 },
                 ..good
             },
@@ -803,7 +823,7 @@ mod gpu_tests {
         let kind = if rng.next() < 0.4 {
             let outer = rng.range(0.1, 1.4);
             let direction = Vec3::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
-            LightKind::Spot { direction, inner_angle: outer * rng.next(), outer_angle: outer }
+            LightKind::Spot { direction, inner_angle: outer * rng.next(), outer_angle: outer, shadow: false }
         } else {
             LightKind::Point
         };

@@ -12,6 +12,8 @@
 //   It runs in frames where a face or an eye draws. Its group 0 holds the shadow uniforms, the
 //   cascades and the comparison sampler at frame.wgsl's bindings; group 1 the character buffer,
 //   read-write, at binding 1 (binding 0 is the view's, which the face pass doesn't bind).
+// - The spot tiles' clear (`vs_clear_tile`, M5 L16): a tile the spot pass draws again in a layer
+//   it loads is cleared first, the others left as earlier frames drew them.
 
 // Threads per workgroup of the face pass (`shadows::FACE_WORKGROUP`).
 const FACE_SHADOW_WORKGROUP: u32 = 64u;
@@ -23,6 +25,15 @@ fn vs_shadow_caster(@location(0) position: vec4<f32>, draw: DrawRecord) -> @buil
     let instance = instances[draw.instance];
     let world_position = instance.world_from_object * vec4<f32>(object_position(position, draw), 1.0);
     return view.clip_from_world * world_position;
+}
+
+// The spot tiles' clear (M5 L16, `shadows::Shadows::record_spots`): one triangle over the
+// viewport (the tile, under its scissor) at reverse-Z's farthest depth, written whatever the tile
+// held. No bindings, no fragment stage.
+@vertex
+fn vs_clear_tile(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
+    let corner = vec2<f32>(f32((vertex << 1u) & 2u), f32(vertex & 2u));
+    return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
 }
 
 @compute @workgroup_size(FACE_SHADOW_WORKGROUP)

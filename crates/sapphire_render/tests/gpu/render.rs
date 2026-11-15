@@ -1387,7 +1387,12 @@ fn four_lights_scene(frames: &mut Frames) -> Vec<MeshInstance> {
         color,
         intensity: 1.5,
         range: 5.0,
-        kind: LightKind::Spot { direction: target - position, inner_angle: 0.15, outer_angle: 0.3 },
+        kind: LightKind::Spot {
+            direction: target - position,
+            inner_angle: 0.15,
+            outer_angle: 0.3,
+            shadow: false,
+        },
     };
     frames.lights = vec![
         point_light(Vec3::new(-1.0, 0.8, 0.8), Vec3::new(1.0, 0.4, 0.1), 1.2, 1.8),
@@ -1464,7 +1469,12 @@ fn local_lights_run_at_any_size_and_msaa_on_both_paths() {
             frames.lights = vec![
                 point_light(Vec3::new(1.2, 0.5, 1.0), Vec3::new(1.0, 0.5, 0.2), 1.0, 3.0),
                 LocalLight {
-                    kind: LightKind::Spot { direction: Vec3::NEG_Y, inner_angle: 0.2, outer_angle: 0.5 },
+                    kind: LightKind::Spot {
+                        direction: Vec3::NEG_Y,
+                        inner_angle: 0.2,
+                        outer_angle: 0.5,
+                        shadow: false,
+                    },
                     ..point_light(Vec3::new(0.0, 2.0, 0.0), Vec3::ONE, 1.0, 4.0)
                 },
             ];

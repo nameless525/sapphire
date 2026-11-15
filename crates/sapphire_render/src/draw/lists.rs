@@ -49,7 +49,7 @@ use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::pipelines::{SurfaceVariant, format_index};
 use crate::scene::{DeformedDraw, DrawCommand, DrawList};
 use crate::shadows::plan::SlotCaster;
-use crate::shadows::{MAX_CASCADES, MAX_CHARACTER_MAPS};
+use crate::shadows::{MAX_CASCADES, MAX_CHARACTER_MAPS, MAX_SPOT_SHADOWS};
 use crate::view_cull::{Culled, Verdict};
 
 /// The variants whose static surfaces can sort: the depth-writing ones, which come first in
@@ -563,6 +563,10 @@ pub(crate) enum Walk {
     CharacterMaps,
     /// One character map, below [`MAX_CHARACTER_MAPS`].
     CharacterMap(usize),
+    /// The spot pass as a whole (M5 L16): what it left out, which it counts once.
+    Spots,
+    /// One spot tile, below [`MAX_SPOT_SHADOWS`].
+    Spot(usize),
     /// An inset's main pass, below [`MAX_INSETS`].
     InsetMain(usize),
     /// An inset's character prepass.
@@ -578,8 +582,10 @@ pub(crate) struct CasterTests<'a, P> {
     pub cascades: [bool; MAX_CASCADES],
     /// The character maps drawn this frame.
     pub maps: usize,
-    /// Per instance slot: the cascades it casts into, the character map it draws into, and what
-    /// left it out of the others ([`SlotCaster`]).
+    /// The spot tiles drawn this frame (M5 L16).
+    pub spots: [bool; MAX_SPOT_SHADOWS],
+    /// Per instance slot: the cascades it casts into, the character map it draws into, the spot
+    /// tiles it casts into, and what left it out of the others ([`SlotCaster`]).
     pub plan: P,
 }
 
@@ -595,6 +601,10 @@ pub(crate) struct ViewLists {
     maps: [ViewList; MAX_CHARACTER_MAPS],
     /// What the character maps' pass looks at and doesn't draw: each map looks at every caster.
     maps_left_out: PassCounts,
+    /// Per spot tile (M5 L16), and what the spot pass looks at and doesn't draw: each tile drawn
+    /// looks at every caster.
+    spots: [ViewList; MAX_SPOT_SHADOWS],
+    spots_left_out: PassCounts,
     /// Per inset: its main pass's list and its character prepass's.
     insets: [[ViewList; 2]; MAX_INSETS],
     /// Which of this frame's lists form runs (M5 D2, `RenderSettings::draw_runs`).
@@ -616,6 +626,8 @@ impl Default for ViewLists {
             cascades: Default::default(),
             maps: Default::default(),
             maps_left_out: PassCounts::default(),
+            spots: Default::default(),
+            spots_left_out: PassCounts::default(),
             insets: Default::default(),
             runs: DrawRuns::Off,
             records: Vec::new(),
@@ -647,19 +659,20 @@ impl ViewLists {
     /// What this frame's lists made of their draws: every list's runs, an undrawn scene prepass's
     /// too.
     pub(crate) fn run_stats(&mut self) -> RunStats {
-        let Self { main, scene, characters, cascades, maps, insets, records, lengths, .. } = self;
-        let lists = [&*main, &*scene, &*characters].into_iter().chain(&*cascades).chain(&*maps);
+        let Self { main, scene, characters, cascades, maps, spots, insets, records, lengths, .. } = self;
+        let lists =
+            [&*main, &*scene, &*characters].into_iter().chain(&*cascades).chain(&*maps).chain(&*spots);
         let runs = lists.chain(insets.iter().flatten()).flat_map(|list| list.runs.all());
         RunStats::of(runs, records.len(), lengths)
     }
 
     fn each_list_mut(&mut self, mut f: impl FnMut(&mut ViewList)) {
-        let Self { main, scene, characters, cascades, maps, insets, .. } = self;
+        let Self { main, scene, characters, cascades, maps, spots, insets, .. } = self;
         [main, scene, characters].into_iter().for_each(&mut f);
-        cascades.iter_mut().chain(maps).chain(insets.iter_mut().flatten()).for_each(f);
+        cascades.iter_mut().chain(maps).chain(spots).chain(insets.iter_mut().flatten()).for_each(f);
     }
 
-    /// The list `walk` draws from; none for the character maps' pass as a whole.
+    /// The list `walk` draws from; none for the character maps' pass or the spot pass as a whole.
     pub(crate) fn list(&self, walk: Walk) -> Option<&ViewList> {
         match walk {
             Walk::Main => Some(&self.main),
@@ -668,17 +681,21 @@ impl ViewLists {
             Walk::Cascade(index) => self.cascades.get(index),
             Walk::CharacterMaps => None,
             Walk::CharacterMap(map) => self.maps.get(map),
+            Walk::Spots => None,
+            Walk::Spot(tile) => self.spots.get(tile),
             Walk::InsetMain(index) => self.insets.get(index).map(|[main, _]| main),
             Walk::InsetCharacters(index) => self.insets.get(index).map(|[_, characters]| characters),
         }
     }
 
     /// What the pass walking `walk` looked at and didn't draw, which it counts once: a single
-    /// character map's is its pass's ([`Walk::CharacterMaps`]).
+    /// character map's is its pass's ([`Walk::CharacterMaps`]), and a single spot tile's the spot
+    /// pass's ([`Walk::Spots`]).
     pub(crate) fn left_out(&self, walk: Walk) -> PassCounts {
         match walk {
             Walk::CharacterMaps => self.maps_left_out,
-            Walk::CharacterMap(_) => PassCounts::default(),
+            Walk::Spots => self.spots_left_out,
+            Walk::CharacterMap(_) | Walk::Spot(_) => PassCounts::default(),
             walk => self.list(walk).map(|list| *list.left_out()).unwrap_or_default(),
         }
     }
@@ -699,7 +716,7 @@ impl ViewLists {
             Walk::CharacterPrepass => (ViewKind::CharacterPrepass, characters, None),
             Walk::InsetMain(index) => (ViewKind::Main, &mut insets[index][0], None),
             Walk::InsetCharacters(index) => (ViewKind::CharacterPrepass, &mut insets[index][1], None),
-            Walk::Cascade(_) | Walk::CharacterMaps | Walk::CharacterMap(_) => {
+            Walk::Cascade(_) | Walk::CharacterMaps | Walk::CharacterMap(_) | Walk::Spots | Walk::Spot(_) => {
                 unreachable!("the shadow views compact together, in `compact_casters`")
             }
         };
@@ -745,7 +762,19 @@ impl ViewLists {
         J: Fn(u32) -> bool + Sync,
         P: Fn(u32) -> SlotCaster + Sync,
     {
-        let Self { groups, main, scene, characters: listed, cascades, maps, maps_left_out, .. } = self;
+        let Self {
+            groups,
+            main,
+            scene,
+            characters: listed,
+            cascades,
+            maps,
+            maps_left_out,
+            spots,
+            spots_left_out,
+            ..
+        } = self;
+        let spot_lists = (spots, spots_left_out);
         let groups = &*groups;
         let main_groups = &groups[kind_index(ViewKind::Main)];
         let scene_groups = &groups[kind_index(ViewKind::ScenePrepass)];
@@ -757,21 +786,29 @@ impl ViewLists {
                 scope.spawn(|| scene.compact(ViewKind::ScenePrepass, scene_groups, list, world));
                 scope
                     .spawn(|| listed.compact(ViewKind::CharacterPrepass, character_groups, list, characters));
-                scope.spawn(|| compact_casters(caster_groups, cascades, maps, maps_left_out, list, casters));
+                scope.spawn(|| {
+                    compact_casters(caster_groups, cascades, maps, maps_left_out, spot_lists, list, casters);
+                });
             });
         } else {
             main.compact(ViewKind::Main, main_groups, list, world);
             scene.compact(ViewKind::ScenePrepass, scene_groups, list, world);
             listed.compact(ViewKind::CharacterPrepass, character_groups, list, characters);
-            compact_casters(caster_groups, cascades, maps, maps_left_out, list, casters);
+            compact_casters(caster_groups, cascades, maps, maps_left_out, spot_lists, list, casters);
         }
-        self.form_world_runs(list, &casters.cascades, casters.maps);
+        self.form_world_runs(list, &casters.cascades, casters.maps, &casters.spots);
     }
 
     /// Forms the world's views' runs (M5 D2) once they're compacted, in a fixed order: the main
     /// view's, the scene prepass's (which takes the main view's where they list alike), the
-    /// character prepass's, then the drawn cascades' and character maps'.
-    fn form_world_runs(&mut self, list: &DrawList, cascades: &[bool; MAX_CASCADES], maps: usize) {
+    /// character prepass's, then the drawn cascades', character maps' and spot tiles'.
+    fn form_world_runs(
+        &mut self,
+        list: &DrawList,
+        cascades: &[bool; MAX_CASCADES],
+        maps: usize,
+        spots: &[bool; MAX_SPOT_SHADOWS],
+    ) {
         let Self { main, scene, characters, runs, records, .. } = self;
         if runs.form_in(RunView::Shown) {
             main.form_runs(list, records, None);
@@ -780,12 +817,18 @@ impl ViewLists {
             scene.form_runs(list, records, Some(&*main));
             characters.form_runs(list, records, None);
         }
-        self.form_caster_runs(list, cascades, maps);
+        self.form_caster_runs(list, cascades, maps, spots);
     }
 
     /// Forms the drawn shadow views' runs (M5 D2), if the shadow views run.
-    fn form_caster_runs(&mut self, list: &DrawList, drawn: &[bool; MAX_CASCADES], maps: usize) {
-        let Self { cascades, maps: map_lists, runs, records, .. } = self;
+    fn form_caster_runs(
+        &mut self,
+        list: &DrawList,
+        drawn: &[bool; MAX_CASCADES],
+        maps: usize,
+        spots: &[bool; MAX_SPOT_SHADOWS],
+    ) {
+        let Self { cascades, maps: map_lists, spots: spot_lists, runs, records, .. } = self;
         if !runs.form_in(RunView::Shadow) {
             return;
         }
@@ -796,6 +839,11 @@ impl ViewLists {
         }
         let maps = maps.min(MAX_CHARACTER_MAPS);
         map_lists[..maps].iter_mut().for_each(|map| map.form_runs(list, records, None));
+        for (spot, &drawn) in spot_lists.iter_mut().zip(spots) {
+            if drawn {
+                spot.form_runs(list, records, None);
+            }
+        }
     }
 
     /// Compacts every shadow view's list from `list` in one walk of the casters: each cascade
@@ -806,9 +854,10 @@ impl ViewLists {
         list: &DrawList,
         tests: &CasterTests<'_, P>,
     ) {
-        let Self { groups, cascades, maps, maps_left_out, .. } = self;
-        compact_casters(&groups[kind_index(ViewKind::Casters)], cascades, maps, maps_left_out, list, tests);
-        self.form_caster_runs(list, &tests.cascades, tests.maps);
+        let Self { groups, cascades, maps, maps_left_out, spots, spots_left_out, .. } = self;
+        let groups = &groups[kind_index(ViewKind::Casters)];
+        compact_casters(groups, cascades, maps, maps_left_out, (spots, spots_left_out), list, tests);
+        self.form_caster_runs(list, &tests.cascades, tests.maps, &tests.spots);
     }
 }
 
@@ -816,13 +865,15 @@ impl ViewLists {
 /// shorter ones on the calling thread, which allocates nothing.
 pub(crate) const PARALLEL_DRAWS: usize = 4096;
 
-/// Compacts every shadow view's list (`cascades`, `maps`, what the maps' pass leaves out) from
-/// `list`'s caster `groups` in one walk of the casters, by `tests`.
+/// Compacts every shadow view's list (`cascades`, `maps`, what the maps' pass leaves out, the spot
+/// tiles and what the spot pass leaves out) from `list`'s caster `groups` in one walk of the
+/// casters, by `tests`.
 fn compact_casters<P: Fn(u32) -> SlotCaster>(
     groups: &[u16],
     cascades: &mut [ViewList; MAX_CASCADES],
     maps: &mut [ViewList; MAX_CHARACTER_MAPS],
     maps_left_out: &mut PassCounts,
+    (spots, spots_left_out): (&mut [ViewList; MAX_SPOT_SHADOWS], &mut PassCounts),
     list: &DrawList,
     tests: &CasterTests<'_, P>,
 ) {
@@ -835,7 +886,13 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
     }
     maps.iter_mut().for_each(ViewList::clear);
     *maps_left_out = PassCounts::default();
-    if !tests.cascades.contains(&true) && maps.is_empty() {
+    for (spot, &drawn) in spots.iter_mut().zip(&tests.spots) {
+        if drawn {
+            spot.clear();
+        }
+    }
+    *spots_left_out = PassCounts::default();
+    if !tests.cascades.contains(&true) && maps.is_empty() && !tests.spots.contains(&true) {
         return;
     }
     let others = to_u32(drawn_maps.saturating_sub(1));
@@ -845,6 +902,7 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
         let starts = cascades.each_ref().map(ViewList::end);
         let map_starts: [u32; MAX_CHARACTER_MAPS] =
             std::array::from_fn(|map| maps.get(map).map_or(0, ViewList::end));
+        let spot_starts = spots.each_ref().map(ViewList::end);
         // `levels`: the levels its submesh has triangles at (`DrawCommand::levels`).
         let mut take = |slot: u32, index: u32, levels: u8| {
             if tests.stands.get(slot as usize).copied().unwrap_or(0) != 0 {
@@ -874,6 +932,21 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
                         list.left_out.considered += 1;
                         list.left_out.count_culled(verdict);
                     }
+                }
+            }
+            // Each spot tile drawn takes what casts into it, at its level there (M5 L16).
+            for (tile, list) in spots.iter_mut().enumerate() {
+                if !tests.spots[tile] {
+                    continue;
+                }
+                if caster.spots & (1 << tile) == 0 {
+                    spots_left_out.considered += 1;
+                    spots_left_out.culled_by_pass += 1;
+                    continue;
+                }
+                let level = caster.spot_levels[tile];
+                if has_level(levels, level) {
+                    list.draws.push(Entry { at: index, level });
                 }
             }
             if drawn_maps == 0 {
@@ -927,6 +1000,16 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
         }
         for (map, start) in maps.iter_mut().zip(map_starts) {
             map.ranges[index] = [start, map.end()];
+        }
+        for ((spot, start), &drawn) in spots.iter_mut().zip(spot_starts).zip(&tests.spots) {
+            if drawn {
+                let end = spot.end();
+                spot.ranges[index] = [start, end];
+                if let Source::Static(format) = source {
+                    let commands = &list.commands[format_index(format)][variant.index()];
+                    sort_by_level(&mut spot.draws[start as usize..end as usize], commands);
+                }
+            }
         }
     }
 }

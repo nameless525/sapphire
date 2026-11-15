@@ -264,8 +264,16 @@ pub struct Light {
 pub enum LightShape {
     #[default]
     Point,
-    /// A cone along `direction`, which needn't be unit length; angles are half angles.
-    Spot { direction: [f32; 3], inner_degrees: f32, outer_degrees: f32 },
+    /// A cone along `direction`, which needn't be unit length; angles are half angles. `shadow` asks
+    /// it to cast shadows (M5 L16): on the desktop tiers the renderer gives up to a few such lamps
+    /// nearest the view a cached shadow tile each, and none past 120° across; phones cast none.
+    Spot {
+        direction: [f32; 3],
+        inner_degrees: f32,
+        outer_degrees: f32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        shadow: bool,
+    },
 }
 
 /// A place something spawns at.
@@ -507,7 +515,7 @@ impl ZoneDocument {
             check_color(light.color).map_err(invalid(field("color")))?;
             check_positive(light.intensity).map_err(invalid(field("intensity")))?;
             check_positive(light.range).map_err(invalid(field("range")))?;
-            if let LightShape::Spot { direction, inner_degrees, outer_degrees } = light.shape {
+            if let LightShape::Spot { direction, inner_degrees, outer_degrees, .. } = light.shape {
                 check_spot(direction, inner_degrees.to_radians(), outer_degrees.to_radians())
                     .map_err(invalid(field("shape")))?;
             }
@@ -941,11 +949,14 @@ impl Light {
             range: self.range,
             shape: match self.shape {
                 LightShape::Point => CookedLightShape::Point,
-                LightShape::Spot { direction, inner_degrees, outer_degrees } => CookedLightShape::Spot {
-                    direction,
-                    inner_angle: inner_degrees.to_radians(),
-                    outer_angle: outer_degrees.to_radians(),
-                },
+                LightShape::Spot { direction, inner_degrees, outer_degrees, shadow } => {
+                    CookedLightShape::Spot {
+                        direction,
+                        inner_angle: inner_degrees.to_radians(),
+                        outer_angle: outer_degrees.to_radians(),
+                        shadow,
+                    }
+                }
             },
             at_night: self.at_night,
         }
@@ -1190,12 +1201,20 @@ mod tests {
             ("lights[0].color", |d| d.lights[0].color = [0.0; 3]),
             ("lights[0].range", |d| d.lights[0].range = 0.0),
             ("lights[1].shape", |d| {
-                d.lights[1].shape =
-                    LightShape::Spot { direction: [0.0; 3], inner_degrees: 1.0, outer_degrees: 2.0 };
+                d.lights[1].shape = LightShape::Spot {
+                    direction: [0.0; 3],
+                    inner_degrees: 1.0,
+                    outer_degrees: 2.0,
+                    shadow: false,
+                };
             }),
             ("lights[1].shape", |d| {
-                d.lights[1].shape =
-                    LightShape::Spot { direction: [1.0; 3], inner_degrees: 40.0, outer_degrees: 20.0 };
+                d.lights[1].shape = LightShape::Spot {
+                    direction: [1.0; 3],
+                    inner_degrees: 40.0,
+                    outer_degrees: 20.0,
+                    shadow: false,
+                };
             }),
             ("day", |d| d.day = Some("/etc/day.ron".to_owned())),
             ("spawners[0].name", |d| d.spawners[0].name.clear()),

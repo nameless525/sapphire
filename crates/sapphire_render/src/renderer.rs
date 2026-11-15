@@ -72,7 +72,7 @@ use crate::shader_builds::{
 };
 use crate::shaders::{BuildOn, ProbeRead, Program, ShaderError, ShaderSources};
 use crate::shadows::plan::CasterCull;
-use crate::shadows::{CasterBindings, ShadowSettings, ShadowStats, Shadows};
+use crate::shadows::{CasterBindings, MAX_SPOT_SHADOWS, ShadowSettings, ShadowStats, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
@@ -1247,8 +1247,9 @@ impl Renderer {
     fn material_changed(&mut self, handle: MaterialHandle, before: Option<(MaterialFlags, u32, bool)>) {
         let record = self.materials.record(handle).expect("updated material is current");
         let (family, flags, layer, reflects) = (record.family, record.flags, record.layer, record.reflects);
-        // A held inset picture showing it shows the old payload.
+        // A held inset picture showing it shows the old payload, and a spot tile its old cutout.
         self.insets.redraw();
+        self.shadows.forget_spots();
         // An eye that moves to another layer keeps its pipelines, but its draws move among the
         // variant's (M1 C6). A material that starts or stops reflecting changes whether the
         // ambient pass prefilters the reflection cube, which the draw list's rebuild decides
@@ -1803,6 +1804,7 @@ impl Renderer {
         }
         self.prepare_mesh(handle, &materials, moves);
         self.lights.mesh_replaced();
+        self.shadows.forget_spots();
         self.scene.mesh_replaced(handle);
         self.insets.redraw();
         self.update_pool_stats();
@@ -1834,6 +1836,7 @@ impl Renderer {
         }
         if !replacements.is_empty() {
             self.lights.mesh_replaced();
+            self.shadows.forget_spots();
             self.insets.redraw();
             self.update_pool_stats();
         }
@@ -2150,8 +2153,9 @@ impl Renderer {
         self.edited_shaders = !sources.is_compiled_in();
         self.shaders = sources;
         self.stats.shader_rebuilds += 1;
-        // Held inset pictures were drawn by the pipelines just replaced.
+        // Held inset pictures and spot tiles were drawn by the pipelines just replaced.
         self.insets.redraw();
+        self.shadows.forget_spots();
         tracing::info!(target: LOG_TARGET, programs = update.programs, pipelines = update.pipelines, "shaders rebuilt");
         update
     }
@@ -2614,8 +2618,21 @@ impl Renderer {
         self.skinning.prepare(device, queue, packet, self.scene.slots_mut(), self.meshes.records());
         self.settle_freed();
         self.stats.mip_streaming = self.mip_streaming.take_stats();
-        let lists_replaced =
-            self.lights.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
+        // Spots that cast shadows are chosen first: each one's light record names its tile (M5 L16).
+        self.shadows.choose_spots(packet);
+        let mut spot_tiles = [(u32::MAX, 0); MAX_SPOT_SHADOWS];
+        let mut spots = 0;
+        for (slot, tile) in spot_tiles.iter_mut().zip(self.shadows.spot_tiles()) {
+            *slot = tile;
+            spots += 1;
+        }
+        let lists_replaced = self.lights.prepare(
+            (device, queue),
+            packet,
+            &spot_tiles[..spots],
+            self.scene.slots(),
+            self.meshes.records(),
+        );
         let picker = self.ambient.probe_picker();
         let characters_replaced =
             self.characters.prepare(device, queue, packet, self.scene.slots_mut(), picker);

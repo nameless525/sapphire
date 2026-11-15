@@ -518,6 +518,7 @@ mod tests {
                         ),
                         inner_angle: outer * 0.7,
                         outer_angle: outer,
+                        shadow: false,
                     }
                 } else {
                     LightKind::Point
@@ -569,7 +570,7 @@ mod tests {
             color: Vec3::ONE,
             intensity: 1.0,
             range: 3.0,
-            kind: LightKind::Spot { direction: away, inner_angle: 0.1, outer_angle: 0.2 },
+            kind: LightKind::Spot { direction: away, inner_angle: 0.1, outer_angle: 0.2, shadow: false },
         };
         let (spot, point) = (gpu_light(light), gpu_light(LocalLight { kind: LightKind::Point, ..light }));
         let lists = bin(&[spot, point], camera.view, inverse, (0.05, SLICE_FAR), 64, CULL_PADDING);

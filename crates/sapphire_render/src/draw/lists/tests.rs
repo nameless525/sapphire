@@ -172,7 +172,13 @@ fn each_kind_of_view_holds_its_order() {
     }
 
     let plan = |slot: u32| caster(1, Some((slot % 2) as u8));
-    let casters = CasterTests { stands: &stands, cascades: [true, false, false, false], maps: 2, plan };
+    let casters = CasterTests {
+        stands: &stands,
+        cascades: [true, false, false, false],
+        maps: 2,
+        spots: [false; 4],
+        plan,
+    };
     lists.compact_casters(&list, &casters);
     let cascade = lists.list(Walk::Cascade(0)).expect("listed");
     assert_eq!(
@@ -308,7 +314,13 @@ fn a_view_counts_what_it_leaves_out() {
         2 => caster(0b10, None),
         _ => caster(0b11, Some(1)),
     };
-    let tests = CasterTests { stands: &stands, cascades: [true, true, false, false], maps: 2, plan };
+    let tests = CasterTests {
+        stands: &stands,
+        cascades: [true, true, false, false],
+        maps: 2,
+        spots: [false; 4],
+        plan,
+    };
     lists.compact_casters(&list, &tests);
     let len = |walk| lists.list(walk).expect("listed").len();
     assert_eq!((len(Walk::Cascade(0)), len(Walk::Cascade(1))), (2, 1), "slot 3 stands in the inset");
@@ -336,6 +348,7 @@ fn a_list_rebuilt_after_the_pool_compacts_draws_the_same() {
         stands: &[],
         cascades: [true, false, false, false],
         maps: 0,
+        spots: [false; 4],
         plan: |_| caster(1, None),
     };
     let compact = |lists: &mut ViewLists, list: &DrawList| {
@@ -381,6 +394,7 @@ fn a_cascade_runs_each_meshs_submesh() {
         stands: &[],
         cascades: [true, false, false, false],
         maps: 0,
+        spots: [false; 4],
         plan: |_| caster(1, None),
     };
     lists.compact_casters(&list, &casters);
@@ -470,7 +484,7 @@ fn a_run_is_of_one_level() {
     let plan = |slot: u32| SlotCaster { levels: [u8::from(slot < 2), 0, 0, 0], ..caster(1, None) };
     lists.compact_casters(
         &list,
-        &CasterTests { stands: &[], cascades: [true, false, false, false], maps: 0, plan },
+        &CasterTests { stands: &[], cascades: [true, false, false, false], maps: 0, spots: [false; 4], plan },
     );
     let cascade = lists.list(Walk::Cascade(0)).expect("listed");
     assert_eq!(levels(cascade, &list, DrawSet::Surfaces), [(2, 0), (3, 0), (0, 1), (1, 1)], "mesh, level");
@@ -492,8 +506,13 @@ fn default_runs_and_calls_dont_follow_the_slot_order() {
         let mut lists = ViewLists::default();
         lists.begin_frame(DrawRuns::default());
         let world = world(&[], &[], None);
-        let casters =
-            CasterTests { stands: &[], cascades: [true; 4], maps: 0, plan: |_| caster(0b1111, None) };
+        let casters = CasterTests {
+            stands: &[],
+            cascades: [true; 4],
+            maps: 0,
+            spots: [false; 4],
+            plan: |_| caster(0b1111, None),
+        };
         lists.compact_world_as(&list, &world, &world, &casters, false);
         let walks = [Walk::Main, Walk::ScenePrepass, Walk::Cascade(0), Walk::Cascade(3)];
         let calls = walks.map(|walk| {
@@ -570,6 +589,7 @@ fn compacting_a_warm_frame_allocates_nothing() {
             stands: &[],
             cascades: [true; 4],
             maps: 8,
+            spots: [false; 4],
             plan: |slot| caster(0b1011, Some((slot % 8) as u8)),
         };
         lists.compact_casters(&list, &casters);
@@ -608,6 +628,7 @@ fn district(instances: u32) -> (DrawList, Vec<SlotCull>, Vec<SlotCaster>) {
             far: verdict(slot) == Verdict::Distance,
             levels: [0, 1, 2, 3].map(|level| ((slot + level) % 3) as u8),
             map_level: 0,
+            ..SlotCaster::default()
         })
         .collect();
     (list, culled, casters)
@@ -654,7 +675,8 @@ fn each_view_lists_its_levels() {
         levels: [u8::from(slot != 3), 0, 0, 0],
         ..caster(0b11, (slot == 0).then_some(0))
     };
-    let tests = CasterTests { stands: &[], cascades: [true, true, false, false], maps: 1, plan };
+    let tests =
+        CasterTests { stands: &[], cascades: [true, true, false, false], maps: 1, spots: [false; 4], plan };
     lists.compact_casters(&list, &tests);
     let cascade = |index| levels(lists.list(Walk::Cascade(index)).expect("listed"), &list, DrawSet::Surfaces);
     // Mesh 0's at level 1, slot 0's second and slot 2's second simplified away; mesh 1's slot 3
@@ -676,7 +698,7 @@ fn the_world_compacts_alike_in_parallel_and_in_turn() {
     let world = world(&[], &[], Some(Culled::new(&culled)));
     let characters = world.with_instance(|slot: u32| slot % 3 == 2);
     let plan = |slot: u32| casters[slot as usize];
-    let tests = CasterTests { stands: &[], cascades: [true; 4], maps: 8, plan };
+    let tests = CasterTests { stands: &[], cascades: [true; 4], maps: 8, spots: [false; 4], plan };
     let walks = [
         Walk::Main,
         Walk::ScenePrepass,
@@ -713,7 +735,7 @@ fn cull_cost_at_a_districts_scale() {
     let world = world(&[], &[], Some(Culled::new(&culled)));
     let characters = world.with_instance(|slot: u32| slot % 3 == 2);
     let plan = |slot: u32| casters[slot as usize];
-    let tests = CasterTests { stands: &[], cascades: [true; 4], maps: 8, plan };
+    let tests = CasterTests { stands: &[], cascades: [true; 4], maps: 8, spots: [false; 4], plan };
     let mut lists = ViewLists::default();
     for parallel in [false, true, false, true] {
         lists.compact_world_as(&list, &world, &characters, &tests, parallel);

@@ -320,6 +320,7 @@ fn without_calls(passes: FrameCounts) -> FrameCounts {
         upscale: calls(passes.upscale),
         ui: calls(passes.ui),
         debug: calls(passes.debug),
+        spots: calls(passes.spots),
     }
 }
 

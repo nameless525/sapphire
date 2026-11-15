@@ -831,6 +831,7 @@ impl Scene {
                     direction: spot_target - spot_position,
                     inner_angle: 0.12,
                     outer_angle: 0.16,
+                    shadow: false,
                 },
             },
         ];

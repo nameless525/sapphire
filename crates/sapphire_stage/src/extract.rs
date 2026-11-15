@@ -188,9 +188,12 @@ pub(crate) fn extract_poses(
 fn place(light: LocalLight, transform: Mat4) -> LocalLight {
     let kind = match light.kind {
         LightKind::Point => LightKind::Point,
-        LightKind::Spot { direction, inner_angle, outer_angle } => {
-            LightKind::Spot { direction: transform.transform_vector3(direction), inner_angle, outer_angle }
-        }
+        LightKind::Spot { direction, inner_angle, outer_angle, shadow } => LightKind::Spot {
+            direction: transform.transform_vector3(direction),
+            inner_angle,
+            outer_angle,
+            shadow,
+        },
     };
     LocalLight { position: transform.transform_point3(light.position), kind, ..light }
 }
@@ -303,7 +306,12 @@ mod tests {
             color: Vec3::new(1.0, 0.5, 0.2),
             intensity: 2.0,
             range: 3.0,
-            kind: LightKind::Spot { direction: Vec3::NEG_Y, inner_angle: 0.2, outer_angle: 0.4 },
+            kind: LightKind::Spot {
+                direction: Vec3::NEG_Y,
+                inner_angle: 0.2,
+                outer_angle: 0.4,
+                shadow: false,
+            },
         };
         let point = LocalLight { kind: LightKind::Point, ..spot };
         let world = ecs.world_mut();

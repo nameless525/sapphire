@@ -219,6 +219,7 @@
 
 pub(crate) mod fit;
 pub(crate) mod plan;
+pub(crate) mod spots;
 
 use std::num::NonZeroU64;
 
@@ -261,6 +262,14 @@ pub const MAX_CAPSULES: usize = crate::lights::capsule_bins::BINNED_CAPSULES;
 /// The most other characters' shadows a character receives (M5 L12): the slots of its entry's
 /// `received` ([`ShadowSettings::others`] per tier).
 pub const MAX_OTHERS: usize = 4;
+/// The most spot lights that cast shadows in a frame (M5 L16), nearest the camera first: the tiles
+/// of the spot layer ([`ShadowSettings::spots`] per tier).
+pub const MAX_SPOT_SHADOWS: usize = 4;
+
+/// The spot layer's tiles across and down.
+const SPOT_COLUMNS: u32 = 2;
+/// The first spot tile's view among the shadow views: after every cascade's and character map's.
+const SPOT_VIEW: usize = MAX_CASCADES + MAX_CHARACTER_MAPS;
 
 /// The character atlas's tiles across and down.
 const ATLAS_COLUMNS: u32 = 4;
@@ -268,12 +277,20 @@ const ATLAS_ROWS: u32 = MAX_CHARACTER_MAPS as u32 / ATLAS_COLUMNS;
 
 /// The frame graph passes shadows add: what the overlay and the bench sum for their GPU time
 /// against spec §3.3's budget (2 ms with 4 cascades on desktop, 3 ms with 2 on phones).
-pub const PASSES: [&str; MAX_CASCADES + 2] =
-    [CASCADE_PASSES[0], CASCADE_PASSES[1], CASCADE_PASSES[2], CASCADE_PASSES[3], CHARACTER_PASS, FACE_PASS];
+pub const PASSES: [&str; MAX_CASCADES + 3] = [
+    CASCADE_PASSES[0],
+    CASCADE_PASSES[1],
+    CASCADE_PASSES[2],
+    CASCADE_PASSES[3],
+    CHARACTER_PASS,
+    FACE_PASS,
+    SPOT_PASS,
+];
 const CASCADE_PASSES: [&str; MAX_CASCADES] =
     ["shadow cascade 0", "shadow cascade 1", "shadow cascade 2", "shadow cascade 3"];
 const CHARACTER_PASS: &str = "character shadows";
 const FACE_PASS: &str = "face shadows";
+const SPOT_PASS: &str = "spot shadows";
 
 /// Threads per workgroup of the face pass (`FACE_SHADOW_WORKGROUP` in `shadows.wgsl`).
 pub(crate) const FACE_WORKGROUP: u32 = 64;
@@ -288,6 +305,8 @@ pub(crate) mod override_constant {
     pub const SHADOWS: &str = "SHADOWS";
     /// The tent filter's width in texels, 3 or 5.
     pub const TENT: &str = "SHADOW_TENT";
+    /// Spot lights may cast shadows (M5 L16): the local lights' loops read their tiles.
+    pub const SPOTS: &str = "SPOT_SHADOWS";
 }
 
 /// The shadows of a quality tier (`tiers.ron`, [`QualityTier`](crate::quality::QualityTier)):
@@ -325,6 +344,11 @@ pub struct ShadowSettings {
     /// table without it receives none.
     #[serde(default)]
     pub others: u32,
+    /// The most spot lights that cast shadows (M5 L16), 0..=[`MAX_SPOT_SHADOWS`]: flagged spots
+    /// nearest the view, each a cached tile of the spot layer, `resolution / 2` texels across. 0
+    /// casts none and builds nothing for them. A table without it casts none.
+    #[serde(default)]
+    pub spots: u32,
 }
 
 /// How receivers filter a shadow map: a tent over `N × N` texels (Castaño 2013), smooth and
@@ -361,6 +385,7 @@ impl Default for ShadowSettings {
             character_resolution: Self::default_character_resolution(),
             filter: ShadowFilter::Tent5,
             others: MAX_OTHERS as u32,
+            spots: MAX_SPOT_SHADOWS as u32,
         }
     }
 }
@@ -395,7 +420,25 @@ impl ShadowSettings {
         if self.others > MAX_OTHERS as u32 {
             return Err(("shadows.others", "must be within 0..=4"));
         }
+        if self.spots > MAX_SPOT_SHADOWS as u32 {
+            return Err(("shadows.spots", "must be within 0..=4"));
+        }
         Ok(())
+    }
+
+    /// The spot lights that cast shadows (M5 L16): [`Self::spots`], at most [`MAX_SPOT_SHADOWS`].
+    pub(crate) fn spot_count(&self) -> usize {
+        (self.spots as usize).min(MAX_SPOT_SHADOWS)
+    }
+
+    /// Layers of the cascades' array: one per cascade, and the spot layer where spots cast.
+    fn layers(&self) -> u32 {
+        self.cascades + u32::from(self.spot_count() > 0)
+    }
+
+    /// A spot tile's texels across: a quarter of the spot layer, 2 × 2 tiles of a cascade's size.
+    pub(crate) fn spot_resolution(&self) -> u32 {
+        self.resolution / 2
     }
 
     /// The character atlas's size in texels, where these settings draw one.
@@ -422,9 +465,15 @@ impl ShadowSettings {
         }
     }
 
-    /// The receivers' pipeline constants for these settings (`SHADOWS`, `SHADOW_TENT`).
-    pub(crate) fn constants(&self) -> [(&'static str, f64); 2] {
-        [(override_constant::SHADOWS, 1.0), (override_constant::TENT, f64::from(self.filter.texels()))]
+    /// The receivers' pipeline constants for these settings (`SHADOWS`, `SHADOW_TENT`,
+    /// `SPOT_SHADOWS`): a tier that casts no spot's shadow compiles the local lights' loops as they
+    /// were before them (M5 L16).
+    pub(crate) fn constants(&self) -> [(&'static str, f64); 3] {
+        [
+            (override_constant::SHADOWS, 1.0),
+            (override_constant::TENT, f64::from(self.filter.texels())),
+            (override_constant::SPOTS, if self.spot_count() > 0 { 1.0 } else { 0.0 }),
+        ]
     }
 }
 
@@ -457,6 +506,21 @@ pub struct ShadowStats {
     /// Times the quantized key light stepped since the renderer was created; each draws every
     /// cascade again.
     pub light_steps: u32,
+    /// Spot lights casting this frame (M5 L16), each in a tile of the spot layer; of those, the
+    /// tiles drawn this frame and those sampled as an earlier frame drew them.
+    pub spot_tiles: u32,
+    pub spot_tiles_drawn: u32,
+    pub spot_tiles_cached: u32,
+    /// Mesh draws in this frame's spot tiles, every tile drawn: the instances they draw.
+    pub spot_draws: u32,
+    /// The spot pass cleared the whole layer this frame, every tile a spot holds being drawn;
+    /// otherwise it loaded the layer and cleared only the tiles it drew.
+    pub spot_clear: bool,
+    /// Bytes of the spot layer the spot pass loads this frame: the whole layer where it draws some
+    /// tiles and keeps others, 0 where it draws none or clears the layer.
+    pub spot_load_bytes: u64,
+    /// Flagged spot lights too wide to cast (over 120° across), which cast nothing.
+    pub spots_too_wide: u32,
 }
 
 /// One cascade as receivers read it (WGSL `ShadowCascade`).
@@ -481,6 +545,21 @@ pub(crate) struct GpuCharacterMap {
     pub depth: [f32; 4],
     /// xy: the tile's corner in the atlas's texture coordinates; zw: its size in them.
     pub tile: [f32; 4],
+}
+
+/// One spot light's tile as receivers read it (WGSL `SpotShadow`, M5 L16): in
+/// [`ShadowUniforms::spots`] at its tile's index, which the light's record names.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub(crate) struct GpuSpotShadow {
+    /// World space to the tile's clip space: the light's perspective, reverse-Z.
+    pub clip_from_world: [[f32; 4]; 4],
+    /// xy: the tile's corner in the layer's texture coordinates; z: its size in them; w: its texels
+    /// across.
+    pub tile: [f32; 4],
+    /// x: one texel's width per meter from the light; y: the layer it is in; z: its shadow's weight
+    /// (it fades out before it gives its tile up); w: 0.
+    pub lens: [f32; 4],
 }
 
 /// One character's capsule as receivers read it (WGSL `ShadowCapsule`).
@@ -513,6 +592,8 @@ pub(crate) struct ShadowUniforms {
     pub cascades: [GpuCascade; MAX_CASCADES],
     pub characters: [GpuCharacterMap; MAX_CHARACTER_MAPS],
     pub capsules: [GpuCapsule; MAX_CAPSULES],
+    /// Each spot tile's (M5 L16), by tile.
+    pub spots: [GpuSpotShadow; MAX_SPOT_SHADOWS],
 }
 
 impl Default for ShadowUniforms {
@@ -521,27 +602,30 @@ impl Default for ShadowUniforms {
     }
 }
 
-/// The shadow pipelines: the caster's per position format, and the face pass's.
+/// The shadow pipelines: the caster's per position format, the face pass's, and the spot tiles'
+/// clear.
 #[derive(Debug)]
 pub(crate) struct ShadowPipelines {
     /// Per [`PositionFormat::ALL`] entry, built with the first mesh drawn in the format.
     casters: [Option<wgpu::RenderPipeline>; 2],
     face: wgpu::ComputePipeline,
+    /// Clears one spot tile to the farthest depth (M5 L16): built where spots cast.
+    clear: Option<wgpu::RenderPipeline>,
 }
 
 impl ShadowPipelines {
     /// How many there are, for [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources)'s count.
     pub(crate) fn count(&self) -> u32 {
-        1 + self.casters.iter().flatten().count() as u32
+        1 + self.casters.iter().flatten().count() as u32 + u32::from(self.clear.is_some())
     }
 }
 
 /// The textures shadows draw into and receivers sample.
 #[derive(Debug)]
 struct ShadowTextures {
-    /// The cascades' layers, each a view to draw into.
+    /// The cascades' layers, each a view to draw into, then the spot layer where spots cast.
     layers: Vec<wgpu::TextureView>,
-    /// Every cascade, as receivers sample them.
+    /// Every cascade and the spot layer, as receivers sample them.
     cascades: wgpu::TextureView,
     /// The character atlas, drawn into and sampled whole.
     atlas: wgpu::TextureView,
@@ -570,16 +654,18 @@ pub(crate) struct Shadows {
 }
 
 /// What the shadow pipelines are built with besides their module: the casters' layout, the face
-/// pass's, and the pipeline cache.
+/// pass's, the spot tiles' clear's (where spots cast) and the pipeline cache.
 #[derive(Clone, Debug)]
 struct ShadowBuilder {
     caster_layout: wgpu::PipelineLayout,
     face_layout: wgpu::PipelineLayout,
+    clear_layout: Option<wgpu::PipelineLayout>,
     builds: PipelineBuilds,
 }
 
 impl ShadowBuilder {
-    /// The face pass's pipeline and the caster pipelines for `formats`, from `sources`.
+    /// The face pass's pipeline, the caster pipelines for `formats` and the spot tiles' clear,
+    /// from `sources`.
     fn build_pipelines(
         &self,
         device: &wgpu::Device,
@@ -607,7 +693,44 @@ impl ShadowBuilder {
                 cache: self.builds.cache(),
             },
         );
-        ShadowPipelines { casters, face }
+        let clear = self.clear_layout.as_ref().map(|layout| self.build_clear(device, &module, layout));
+        ShadowPipelines { casters, face, clear }
+    }
+
+    /// The spot tiles' clear (M5 L16): a triangle over the viewport at the farthest depth, written
+    /// whatever the tile held, from `module`.
+    fn build_clear(
+        &self,
+        device: &wgpu::Device,
+        module: &wgpu::ShaderModule,
+        layout: &wgpu::PipelineLayout,
+    ) -> wgpu::RenderPipeline {
+        self.builds.render(
+            device,
+            PipelineFamily::Shadow,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("spot tile clear"),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_clear_tile"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: None,
+                multiview_mask: None,
+                cache: self.builds.cache(),
+            },
+        )
     }
 
     /// The caster pipeline for meshes in `format`, from `module`.
@@ -686,6 +809,13 @@ impl Shadows {
             bind_group_layouts: &[None, Some(&layouts.view), Some(&layouts.scene[0])],
             immediate_size: 0,
         });
+        let clear_layout = settings.filter(|settings| settings.spot_count() > 0).map(|_| {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("spot tile clear"),
+                bind_group_layouts: &[],
+                immediate_size: 0,
+            })
+        });
         let face_layouts = face_layouts(device);
         let face_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(FACE_PASS),
@@ -710,7 +840,7 @@ impl Shadows {
             sampler,
             uniforms,
             pipelines: None,
-            builder: ShadowBuilder { caster_layout, face_layout, builds: builds.clone() },
+            builder: ShadowBuilder { caster_layout, face_layout, clear_layout, builds: builds.clone() },
             face_layouts,
             face_maps,
             face_entries: None,
@@ -726,10 +856,11 @@ impl Shadows {
     }
 
     /// Views the shadow passes draw through, after the renderer's own in the view buffer: one per
-    /// cascade and per character map.
+    /// cascade, per character map and per spot tile.
     pub(crate) fn views(&self) -> u32 {
         self.settings.map_or(0, |settings| {
-            settings.cascades + if settings.character_shadow { MAX_CHARACTER_MAPS as u32 } else { 0 }
+            let maps = if settings.character_shadow { MAX_CHARACTER_MAPS as u32 } else { 0 };
+            settings.cascades + maps + settings.spot_count() as u32
         })
     }
 
@@ -839,6 +970,27 @@ impl Shadows {
         }));
     }
 
+    /// Chooses the frame's spot lights from `packet` and gives each a tile (M5 L16; see
+    /// [`ShadowPlan::choose_spots`]), before the local lights are packed: none while shadows are
+    /// off or the tier casts no spot's shadow.
+    pub(crate) fn choose_spots(&mut self, packet: &FramePacket) {
+        match self.settings.filter(|settings| settings.spot_count() > 0) {
+            Some(settings) => self.plan.choose_spots(&settings, packet),
+            None => self.plan.spots.clear(),
+        }
+    }
+
+    /// This frame's spots' tiles, as [`Self::choose_spots`] gave them: each light's index in the
+    /// packet and its tile.
+    pub(crate) fn spot_tiles(&self) -> impl Iterator<Item = (u32, u8)> + '_ {
+        self.plan.spot_tiles()
+    }
+
+    /// Forgets what the spot tiles hold, so each is drawn again: a mesh was replaced in place.
+    pub(crate) fn forget_spots(&mut self) {
+        self.plan.forget_spots();
+    }
+
     /// Plans the frame's shadows from `packet` (CPU only; see [`ShadowPlan::update`]): `slots`
     /// has the packet's instance deltas applied, `meshes` are the pool's records, `wind_margin`
     /// how far the frame's wind carries each one's vertices past its bounds, `list` the draw list,
@@ -923,6 +1075,15 @@ impl Shadows {
         buffer::stage(belt, encoder, &self.uniforms, 0, bytemuck::bytes_of(&self.plan.uniforms));
         let cascades = self.plan.drawn.iter().enumerate().filter_map(|(index, fit)| Some((index, (*fit)?)));
         let maps = self.plan.maps.iter().enumerate().map(|(index, fit)| (MAX_CASCADES + index, *fit));
+        for spot in self.plan.spots.iter().filter(|spot| spot.redraw) {
+            let camera = spot.fit.camera();
+            let resolution = spot.fit.resolution;
+            let view =
+                ViewUniforms::new(&camera, (resolution, resolution), camera.proj * camera.view, [0.0; 2]);
+            let offset =
+                u64::from(stride) * u64::from(first + self.view_index(SPOT_VIEW + usize::from(spot.tile)));
+            buffer::stage(belt, encoder, views, offset, bytemuck::bytes_of(&view));
+        }
         for (index, fit) in cascades.chain(maps) {
             let camera = fit.camera();
             // Never jittered; and nothing reads a shadow view's velocity.
@@ -938,8 +1099,8 @@ impl Shadows {
     }
 
     /// What every shadow view's draw list (M5 D1) is compacted by: each cascade the frame draws
-    /// lists the world's casters its test keeps, each character map its character's. `stands` says
-    /// which view each instance slot stands in.
+    /// lists the world's casters its test keeps, each character map its character's, each spot tile
+    /// drawn what casts into it. `stands` says which view each instance slot stands in.
     pub(crate) fn caster_tests<'a>(
         &'a self,
         stands: &'a [u16],
@@ -956,13 +1117,14 @@ impl Shadows {
                 active && self.plan.drawn.get(index).is_some_and(Option::is_some)
             }),
             maps,
+            spots: std::array::from_fn(|tile| active && self.plan.spots_drawn() & (1 << tile) != 0),
             plan: |slot: u32| plan.get(slot as usize).copied().unwrap_or_default(),
         }
     }
 
-    /// The finest level of detail the instance in `slot` casts at into a cascade or a character map
-    /// this frame draws (M5 D4: a map's is 0), or `None` if it casts into none: what skinning poses
-    /// besides what the views draw (M5 D3).
+    /// The finest level of detail the instance in `slot` casts at into a cascade, a character map or
+    /// a spot tile this frame draws (M5 D4: a map's is 0), or `None` if it casts into none: what
+    /// skinning poses besides what the views draw (M5 D3).
     pub(crate) fn cast_level(&self, slot: u32) -> Option<u8> {
         if self.pipelines.is_none() || !self.plan.active {
             return None;
@@ -973,7 +1135,11 @@ impl Shadows {
             .filter(|&index| caster.cascades & (1 << index) != 0 && self.plan.drawn[index].is_some())
             .map(|index| caster.levels[index]);
         let map = (maps && caster.map.is_some()).then_some(caster.map_level);
-        cascades.chain(map).min()
+        let spots = caster.spots & self.plan.spots_drawn();
+        let spot_levels = (0..MAX_SPOT_SHADOWS)
+            .filter(|&tile| spots & (1 << tile) != 0)
+            .map(|tile| caster.spot_levels[tile]);
+        cascades.chain(map).chain(spot_levels).min()
     }
 
     /// One texel, in meters, of each cascade the frame draws and of each character map, as
@@ -993,11 +1159,17 @@ impl Shadows {
         (cascades, texels, maps)
     }
 
-    /// The view of cascade `index` (below [`MAX_CASCADES`]), or of character map `index −
-    /// MAX_CASCADES`, among the shadows' views.
+    /// The view of cascade `index` (below [`MAX_CASCADES`]), of character map `index −
+    /// MAX_CASCADES` (below [`SPOT_VIEW`]), or of spot tile `index − SPOT_VIEW`, among the shadows'
+    /// views.
     fn view_index(&self, index: usize) -> u32 {
-        let cascades = self.settings.map_or(0, |settings| settings.cascades);
-        if index < MAX_CASCADES { index as u32 } else { cascades + (index - MAX_CASCADES) as u32 }
+        let Some(settings) = self.settings else { return 0 };
+        let maps = if settings.character_shadow { MAX_CHARACTER_MAPS as u32 } else { 0 };
+        match index {
+            index if index < MAX_CASCADES => index as u32,
+            index if index < SPOT_VIEW => settings.cascades + (index - MAX_CASCADES) as u32,
+            index => settings.cascades + maps + (index - SPOT_VIEW) as u32,
+        }
     }
 
     /// Adds the frame's shadow passes to `graph`, side effects to run before the main pass: each
@@ -1061,6 +1233,7 @@ impl Shadows {
                 }
             });
         }
+        self.record_spots(graph, draws, counts, view_group, casters, offset, labels);
         if let Some(entries) = self.face_entries.as_ref().filter(|_| self.entries > 0 && self.head_readers) {
             let workgroups = self.entries.div_ceil(FACE_WORKGROUP);
             let face = &pipelines.face;
@@ -1080,6 +1253,52 @@ impl Shadows {
     }
 }
 
+impl Shadows {
+    /// Adds the spot pass to `graph` (M5 L16) where the frame draws a spot tile: one pass into the
+    /// spot layer, cleared whole when every tile a spot holds is drawn, else loaded with each tile
+    /// drawn cleared first by the clear pipeline. Each tile draws its casters through its own view
+    /// (`offset`, by its index among the shadow views), all counted in the pass's counter.
+    #[expect(clippy::too_many_arguments, reason = "the frame's shared bindings, all borrowed for the graph")]
+    fn record_spots<'f>(
+        &'f self,
+        graph: &mut FrameGraph<'f>,
+        draws: MeshDraws<'f>,
+        counts: &'f PassCounters,
+        view_group: &'f wgpu::BindGroup,
+        casters: CasterBindings<'f>,
+        offset: impl Fn(usize) -> u32 + Send + Sync + 'f,
+        labels: bool,
+    ) {
+        let Some(pipelines) = &self.pipelines else { return };
+        let Some(settings) = self.settings.filter(|_| self.plan.spots_drawn() != 0) else { return };
+        let Some(clear_tile) = pipelines.clear.as_ref() else { return };
+        let Some(layer) = self.textures.layers.get(settings.cascades as usize) else { return };
+        let tile = settings.spot_resolution();
+        let clear = self.plan.spot_clear;
+        let draws = MeshDraws { counter: counts.get(Counted::Spots), walk: Walk::Spots, ..draws };
+        graph.add_pass(SPOT_PASS).side_effect().weight(pass_weight::MAP).record(move |ctx| {
+            let timestamps = ctx.timestamp_writes();
+            let load = if clear { wgpu::LoadOp::Clear(0.0) } else { wgpu::LoadOp::Load };
+            let mut pass = begin_depth_pass_with(ctx.encoder, SPOT_PASS, layer, timestamps, labels, load);
+            pass.set_index_buffer(draws.meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
+            draws.count_left_out();
+            for spot in self.plan.spots.iter().filter(|spot| spot.redraw) {
+                let index = u32::from(spot.tile);
+                let (x, y) = ((index % SPOT_COLUMNS) * tile, (index / SPOT_COLUMNS) * tile);
+                pass.set_viewport(x as f32, y as f32, tile as f32, tile as f32, 0.0, 1.0);
+                pass.set_scissor_rect(x, y, tile, tile);
+                if !clear {
+                    draws.set_pipeline(&mut pass, clear_tile);
+                    pass.draw(0..3, 0..1);
+                }
+                pass.set_bind_group(1, view_group, &[offset(SPOT_VIEW + usize::from(spot.tile))]);
+                let draws = MeshDraws { walk: Walk::Spot(usize::from(spot.tile)), ..draws };
+                draw_casters(&mut pass, pipelines, casters, &draws);
+            }
+        });
+    }
+}
+
 /// Begins a depth-only render pass into `view`, cleared to 0 (reverse-Z's farthest) and stored.
 fn begin_depth_pass<'p>(
     encoder: &'p mut wgpu::CommandEncoder,
@@ -1088,12 +1307,24 @@ fn begin_depth_pass<'p>(
     timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'p>>,
     labels: bool,
 ) -> wgpu::RenderPass<'p> {
+    begin_depth_pass_with(encoder, label, view, timestamp_writes, labels, wgpu::LoadOp::Clear(0.0))
+}
+
+/// Begins a depth-only render pass into `view`, loaded by `load` and stored.
+fn begin_depth_pass_with<'p>(
+    encoder: &'p mut wgpu::CommandEncoder,
+    label: &'static str,
+    view: &'p wgpu::TextureView,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'p>>,
+    labels: bool,
+    load: wgpu::LoadOp<f32>,
+) -> wgpu::RenderPass<'p> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: labels.then_some(label),
         color_attachments: &[],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
             view,
-            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+            depth_ops: Some(wgpu::Operations { load, store: wgpu::StoreOp::Store }),
             stencil_ops: None,
         }),
         timestamp_writes,
@@ -1184,9 +1415,10 @@ fn draw_casters(
 }
 
 impl ShadowTextures {
-    /// The maps for `settings`: `cascades` layers of `resolution`² and, on desktop, an atlas of
-    /// [`MAX_CHARACTER_MAPS`] tiles of `character_resolution`²; 1 × 1 where there is nothing to
-    /// draw, so the frame's bind group is complete with shadows off.
+    /// The maps for `settings`: `cascades` layers of `resolution`² (and the spot layer where spots
+    /// cast, M5 L16) and, on desktop, an atlas of [`MAX_CHARACTER_MAPS`] tiles of
+    /// `character_resolution`²; 1 × 1 where there is nothing to draw, so the frame's bind group is
+    /// complete with shadows off.
     fn new(device: &wgpu::Device, settings: Option<&ShadowSettings>) -> Self {
         let depth = |label, width, height, layers| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -1201,7 +1433,7 @@ impl ShadowTextures {
             })
         };
         let (resolution, layers) =
-            settings.map_or((1, 1), |settings| (settings.resolution, settings.cascades));
+            settings.map_or((1, 1), |settings| (settings.resolution, settings.layers()));
         let cascades = depth("shadow cascades", resolution, resolution, layers);
         let layer_views = (0..layers)
             .map(|layer| {

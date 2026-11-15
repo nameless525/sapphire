@@ -895,7 +895,11 @@ pub enum LightKind {
     /// A cone along `direction` (need not be normalized): full brightness within
     /// `inner_angle` of it, fading smoothly to nothing at `outer_angle`. Both are half-angles in
     /// radians, at most π; an inner angle beyond the outer one is taken as the outer one.
-    Spot { direction: Vec3, inner_angle: f32, outer_angle: f32 },
+    ///
+    /// `shadow`: its author asks it to cast shadows (M5 L16). On a tier that casts spot shadows
+    /// ([`ShadowSettings::spots`](crate::ShadowSettings::spots)) the renderer gives it a cached tile
+    /// while it is among the flagged spots nearest the view; one wider than 120° casts nothing.
+    Spot { direction: Vec3, inner_angle: f32, outer_angle: f32, shadow: bool },
 }
 
 /// One drawn mesh, as an instance delta carries it.

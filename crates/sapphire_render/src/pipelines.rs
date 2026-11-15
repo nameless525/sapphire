@@ -2115,7 +2115,7 @@ struct PipelineTarget {
     /// The receivers' shadow constants (`frame.wgsl`'s `SHADOWS` and `SHADOW_TENT`), which every
     /// surface and outline takes with its permutation's; none with shadows off, which keeps the
     /// shaders as they were without them.
-    shadows: Option<[(&'static str, f64); 2]>,
+    shadows: Option<[(&'static str, f64); 3]>,
     /// Fog cards fade against the scene prepass's depth (`fog::FogCards`).
     card_depth_fade: bool,
     /// The scene prepass has a velocity target (`RenderSettings::writes_velocity`).

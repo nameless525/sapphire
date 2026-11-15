@@ -25,7 +25,8 @@ struct LocalLight {
     // for point lights.
     spot: vec4<f32>,
     // xy: the cone as saturate(cos θ × x + y) before the smoothstep (0 and 1 for point lights);
-    // zw: unused.
+    // z: its spot shadow's tile + 1 (M5 L16: `spot_visibility` in frame.wgsl), 0 where it casts
+    // none; w: unused.
     cone: vec4<f32>,
 }
 

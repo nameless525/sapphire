@@ -1034,8 +1034,8 @@ impl<F: Fn(AssetId) -> Option<MeshHandle>> CellHost for Host<'_, F> {
             range: light.range.to_native(),
             kind: match light.shape() {
                 CookedLightShape::Point => LightKind::Point,
-                CookedLightShape::Spot { direction, inner_angle, outer_angle } => {
-                    LightKind::Spot { direction: Vec3::from(direction), inner_angle, outer_angle }
+                CookedLightShape::Spot { direction, inner_angle, outer_angle, shadow } => {
+                    LightKind::Spot { direction: Vec3::from(direction), inner_angle, outer_angle, shadow }
                 }
             },
         });

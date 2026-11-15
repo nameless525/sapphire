@@ -100,7 +100,10 @@
 // over (shadows module docs, "Later milestones"). Characters shadow each other (M5 L12): `others`
 // is how many other characters' shadows a named character receives, their tiles on desktop and
 // their capsules on phones, nearest along the light first; a party of three needs two, and
-// Desktop-High takes four for a party standing among named enemies.
+// Desktop-High takes four for a party standing among named enemies. Spot lights flagged to cast
+// (M5 L16): `spots` is how many cast at once, nearest the view first, each a cached tile of half a
+// cascade's resolution in one more layer of the cascades' array; desktop alone, since a phone's
+// local-light loop has no room for a shadow lookup a light. A table without it casts none.
 //
 // Antialiasing (M1 R7, look pillar 6): desktop tiers resolve with temporal AA and MSAA off.
 // TAA's jittered history resolves edges inside a surface (painted shadow-bias steps, the
@@ -147,6 +150,7 @@
                     character_resolution: 1024,
                     filter: Tent5,
                     others: 4,
+                    spots: 4,
                 ),
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
@@ -194,6 +198,7 @@
                     character_resolution: 512,
                     filter: Tent5,
                     others: 2,
+                    spots: 2,
                 ),
                 ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,

@@ -818,7 +818,7 @@ mod tests {
         position_attributes, previous_position_attributes,
     };
     use crate::post::PostUniforms;
-    use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
+    use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, GpuSpotShadow, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
     use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
 
@@ -1295,6 +1295,7 @@ mod tests {
             (Program::AnimeCharacter, "ShadowCascade", size_of::<GpuCascade>()),
             (Program::AnimeCharacter, "CharacterShadowMap", size_of::<GpuCharacterMap>()),
             (Program::AnimeCharacter, "ShadowCapsule", size_of::<GpuCapsule>()),
+            (Program::AnimeCharacter, "SpotShadow", size_of::<GpuSpotShadow>()),
             (Program::Shadows, "CharacterData", size_of::<GpuCharacter>()),
             (Program::Shadows, "ShadowUniforms", size_of::<ShadowUniforms>()),
             (Program::Shadows, "ViewUniforms", size_of::<ViewUniforms>()),
@@ -1551,9 +1552,11 @@ mod tests {
                     atlas,
                     cascades,
                     characters,
-                    capsules
+                    capsules,
+                    spots
                 }),
             ),
+            ("SpotShadow", offsets!(GpuSpotShadow { clip_from_world, tile, lens })),
             ("ShadowCascade", offsets!(GpuCascade { area, depth })),
             ("CharacterShadowMap", offsets!(GpuCharacterMap { area, depth, tile })),
             ("ShadowCapsule", offsets!(GpuCapsule { base, top })),
@@ -1789,14 +1792,15 @@ mod tests {
         // `frame.wgsl`'s scene prepass (OPT-021) and shadow constants (M1 R4), which its receivers
         // read, then its own: the permutation, the tier's specular model, wet surfaces (M5 L4) and the
         // ambient terms (M1 W5).
-        let shadows = [crate::shadows::override_constant::SHADOWS, crate::shadows::override_constant::TENT];
         use crate::ambient::override_constant as ambient;
+        use crate::shadows::override_constant as shadows;
         assert_eq!(
             overrides,
             [
                 crate::pipelines::override_constant::VELOCITY,
-                shadows[0],
-                shadows[1],
+                shadows::SHADOWS,
+                shadows::TENT,
+                shadows::SPOTS,
                 // `reflections.wgsl`'s (M5 L3), included before the environment's own.
                 ambient::REFLECTION_PROBES,
                 "PERMUTATION_ALPHA_TEST",
@@ -1918,13 +1922,14 @@ mod tests {
         }
         assert_eq!(wgsl_vec3(&module, "WIND_FLUTTER_SPREAD"), foliage::FLUTTER_SPREAD.to_array());
         let overrides: Vec<&str> = module.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
-        let shadows = [crate::shadows::override_constant::SHADOWS, crate::shadows::override_constant::TENT];
+        use crate::shadows::override_constant as shadows;
         assert_eq!(
             overrides,
             [
                 crate::pipelines::override_constant::VELOCITY,
-                shadows[0],
-                shadows[1],
+                shadows::SHADOWS,
+                shadows::TENT,
+                shadows::SPOTS,
                 "PERMUTATION_ALPHA_TEST",
                 override_constant::SAMPLES,
                 override_constant::WIND_LEVELS,
@@ -2549,7 +2554,8 @@ mod tests {
     #[test]
     fn wgsl_shadow_constants_match_rust() {
         use crate::shadows::{
-            FACE_WORKGROUP, MAX_CAPSULES, MAX_CASCADES, MAX_CHARACTER_MAPS, override_constant,
+            FACE_WORKGROUP, MAX_CAPSULES, MAX_CASCADES, MAX_CHARACTER_MAPS, MAX_SPOT_SHADOWS,
+            override_constant,
         };
         let character = validate(Program::AnimeCharacter);
         let shadows = validate(Program::Shadows);
@@ -2558,7 +2564,8 @@ mod tests {
             assert_eq!(wgsl_u32(module, "MAX_CHARACTER_SHADOW_MAPS") as usize, MAX_CHARACTER_MAPS);
             assert_eq!(wgsl_u32(module, "MAX_SHADOW_CAPSULES") as usize, MAX_CAPSULES);
             assert_eq!(wgsl_u32(module, "CAPSULE_BIN_WORDS") as usize, crate::lights::capsule_bins::WORDS);
-            for constant in [override_constant::SHADOWS, override_constant::TENT] {
+            assert_eq!(wgsl_u32(module, "MAX_SPOT_SHADOWS") as usize, MAX_SPOT_SHADOWS);
+            for constant in [override_constant::SHADOWS, override_constant::TENT, override_constant::SPOTS] {
                 assert!(
                     module.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(constant)),
                     "{constant}"

@@ -283,7 +283,8 @@ fn foliage_base(material: u32, uv: MaterialUv) -> vec4<f32> {
 }
 
 // Every listed local light's diffuse: through the terminator, at least a pixel's change of the
-// light's N·L wide, and wrapped, as the environment shader's.
+// light's N·L wide, and wrapped, as the environment shader's; a spot that casts a shadow (M5 L16)
+// takes its tile's visibility into its terminator.
 fn foliage_local_lights(
     n: vec3<f32>,
     position: vec3<f32>,
@@ -315,7 +316,12 @@ fn foliage_local_lights(
         let n_dot_l = dot(n, l);
         let dx = dot(normal_dx, l) + (n_dot_l * dot(l, position_dx) - dot(n, position_dx)) / distance;
         let dy = dot(normal_dy, l) + (n_dot_l * dot(l, position_dy) - dot(n, position_dy)) / distance;
-        let lit = light_step(0.0, max(width, 0.5 * (abs(dx) + abs(dy))), n_dot_l);
+        var lit = light_step(0.0, max(width, 0.5 * (abs(dx) + abs(dy))), n_dot_l);
+        if SPOT_SHADOWS {
+            if light.cone.z > 0.0 {
+                lit *= spot_visibility(u32(light.cone.z) - 1u, position, n, l, distance);
+            }
+        }
         diffuse += light.radiance.rgb * (window * light_cone(light, l) * lit * wrapped(n_dot_l, wrap));
     }
     return diffuse;

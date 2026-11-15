@@ -259,7 +259,7 @@ mod tests {
                 color: Vec3::ONE,
                 intensity: 1.0,
                 range: 5.0,
-                kind: LightKind::Spot { direction, inner_angle: 0.1, outer_angle: 0.3 },
+                kind: LightKind::Spot { direction, inner_angle: 0.1, outer_angle: 0.3, shadow: false },
             })
             .expect("valid")
         };
@@ -375,7 +375,7 @@ mod tests {
                         // Every few a hard edge: the inner angle at the outer one.
                         let inner_angle =
                             if index % 3 == 0 { outer_angle } else { rng.range(0.0, outer_angle) };
-                        LightKind::Spot { direction, inner_angle, outer_angle }
+                        LightKind::Spot { direction, inner_angle, outer_angle, shadow: false }
                     }
                 };
                 let light = LocalLight {
@@ -495,7 +495,7 @@ mod tests {
         for (inner_angle, outer_angle) in
             [(std::f32::consts::PI, std::f32::consts::PI), (0.0, 0.0), (0.0, 7.0)]
         {
-            let kind = LightKind::Spot { direction: Vec3::Z, inner_angle, outer_angle };
+            let kind = LightKind::Spot { direction: Vec3::Z, inner_angle, outer_angle, shadow: false };
             let spot =
                 LocalLight { position: Vec3::ZERO, color: Vec3::ONE, intensity: 1.0, range: 1.0, kind };
             let light = GpuLight::new(&spot).expect("valid");

@@ -903,12 +903,15 @@ fn local_light_split(
 
 // Every listed local light, each split and toned like the key light, with its rim through the
 // shared depth step (`rim`), their sum held under `ceiling` (the rig's) in luminance (see the top
-// of this file).
+// of this file). A spot that casts a shadow (M5 L16) takes its tile's visibility into its split as
+// occlusion, by the surface's geometric normal `geometric` (any length): faces and eyes too, per
+// pixel.
 fn local_lighting(
     surface: CharacterSurface,
     ceiling: f32,
     list: u32,
     position: vec3<f32>,
+    geometric: vec3<f32>,
     derivatives: CharacterDerivatives,
     rim: CharacterRim,
 ) -> vec3<f32> {
@@ -934,7 +937,12 @@ fn local_lighting(
         let distance = max(sqrt(distance_squared), 1e-4);
         let l = to_light / distance;
         let radiance = light.radiance.rgb * (window * light_cone(light, l));
-        let split = local_light_split(surface, derivatives, l, distance, dot(surface.normal, l));
+        var split = local_light_split(surface, derivatives, l, distance, dot(surface.normal, l));
+        if SPOT_SHADOWS {
+            if light.cone.z > 0.0 {
+                split *= spot_visibility(u32(light.cone.z) - 1u, position, safe_normalize(geometric), l, distance);
+            }
+        }
         lit += radiance * split;
         shaded += radiance * (1.0 - split);
         rims += radiance * rim_light(rim, l, surface.view_dir, split);
@@ -1458,7 +1466,8 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     // A uniform branch: frames without local lights skip them.
     if frame.lights.y != LIGHT_LISTS_NONE {
         let list = light_list(in.clip_position, in.instance);
-        color += local_lighting(surface, rig.key_radiance.w, list, in.world_position, derivatives, rim);
+        let geometric = in.world_normal;
+        color += local_lighting(surface, rig.key_radiance.w, list, in.world_position, geometric, derivatives, rim);
     }
     if PERMUTATION_HAIR {
         // The highlight band (surface.y wide) in its color × strength (surface.x), where the mask

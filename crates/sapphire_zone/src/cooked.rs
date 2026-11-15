@@ -43,8 +43,8 @@ pub struct Zone {
 impl Versioned for Zone {
     /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4). 5:
     /// patrols, and who walks them (P3). 6: a sky material, wind, weather and fog in the presentation (M5 M6).
-    /// 7: its reflection probes' asset (M5 L2).
-    const VERSION: u32 = 7;
+    /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16).
+    const VERSION: u32 = 8;
 }
 
 impl Versioned for ZoneSimulation {
@@ -278,11 +278,13 @@ pub struct CookedLight {
 #[rkyv(derive(Debug))]
 pub enum CookedLightShape {
     Point,
-    /// A cone along `direction`, which needn't be unit length. Half angles, in radians.
+    /// A cone along `direction`, which needn't be unit length. Half angles, in radians. `shadow`: its
+    /// author asks it to cast shadows (M5 L16).
     Spot {
         direction: [f32; 3],
         inner_angle: f32,
         outer_angle: f32,
+        shadow: bool,
     },
 }
 
@@ -418,11 +420,12 @@ impl ArchivedCookedLight {
     pub fn shape(&self) -> CookedLightShape {
         match &self.shape {
             ArchivedCookedLightShape::Point => CookedLightShape::Point,
-            ArchivedCookedLightShape::Spot { direction, inner_angle, outer_angle } => {
+            ArchivedCookedLightShape::Spot { direction, inner_angle, outer_angle, shadow } => {
                 CookedLightShape::Spot {
                     direction: native3(direction),
                     inner_angle: inner_angle.to_native(),
                     outer_angle: outer_angle.to_native(),
+                    shadow: *shadow,
                 }
             }
         }
@@ -712,7 +715,7 @@ impl ArchivedZone {
             check_color(light.color()).map_err(invalid)?;
             check_positive(light.intensity.to_native()).map_err(invalid)?;
             check_positive(light.range.to_native()).map_err(invalid)?;
-            if let CookedLightShape::Spot { direction, inner_angle, outer_angle } = light.shape() {
+            if let CookedLightShape::Spot { direction, inner_angle, outer_angle, .. } = light.shape() {
                 check_spot(direction, inner_angle, outer_angle).map_err(invalid)?;
             }
         }

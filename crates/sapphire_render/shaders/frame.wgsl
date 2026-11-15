@@ -834,9 +834,22 @@ struct ShadowCapsule {
     top: vec4<f32>,
 }
 
+// One spot light's tile (M5 L16), at its tile's index, which the light's record names
+// (`LocalLight::cone.z`).
+struct SpotShadow {
+    // World space to the tile's clip space: the light's perspective, reverse-Z.
+    clip_from_world: mat4x4<f32>,
+    // xy: the tile's corner in the layer's texture coordinates; z: its size in them; w: its texels
+    // across.
+    tile: vec4<f32>,
+    // x: one texel's width per meter from the light; y: the layer it is in; z: its shadow's weight.
+    lens: vec4<f32>,
+}
+
 const MAX_SHADOW_CASCADES: u32 = 4u;
 const MAX_CHARACTER_SHADOW_MAPS: u32 = 8u;
 const MAX_SHADOW_CAPSULES: u32 = 64u;
+const MAX_SPOT_SHADOWS: u32 = 4u;
 
 struct ShadowUniforms {
     // Light space's axes in the world: x, y, and z toward the key light as shadows are cast.
@@ -852,10 +865,12 @@ struct ShadowUniforms {
     cascades: array<ShadowCascade, MAX_SHADOW_CASCADES>,
     characters: array<CharacterShadowMap, MAX_CHARACTER_SHADOW_MAPS>,
     capsules: array<ShadowCapsule, MAX_SHADOW_CAPSULES>,
+    spots: array<SpotShadow, MAX_SPOT_SHADOWS>,
 }
 
 @group(0) @binding(4) var<uniform> shadows: ShadowUniforms;
-// The cascades, layers of one reverse-Z depth array (1 toward the light, 0 cleared).
+// The cascades, layers of one reverse-Z depth array (1 toward the light, 0 cleared), then the spot
+// layer's 2 × 2 tiles where spots cast (M5 L16).
 @group(0) @binding(5) var shadow_cascades: texture_depth_2d_array;
 // The characters' maps, tiles of one atlas.
 @group(0) @binding(6) var character_shadows: texture_depth_2d;
@@ -867,6 +882,9 @@ struct ShadowUniforms {
 override SHADOWS: bool = false;
 // The tent filter's width in texels: 5 on desktop, 3 on phones (`ShadowFilter`).
 override SHADOW_TENT: u32 = 5u;
+// Spot lights may cast shadows (M5 L16): the local lights' loops look up the tiles of those that
+// do. Off, they compile as they were before spot shadows.
+override SPOT_SHADOWS: bool = false;
 
 // Receivers' bias (`shadows` module docs): the point moves off the surface along its normal by
 // SHADOW_NORMAL_OFFSET texels, plus half the tent's width × sin θ where the light grazes it, then
@@ -1030,6 +1048,47 @@ fn character_map_lookup(index: u32, p: vec3<f32>, n: vec3<f32>, slope: f32) -> f
         visibility = mix(1.0, sum / weights, fade);
     }
     return visibility;
+}
+
+// Spot tile `tile`'s filtered visibility (M5 L16) at `position` on a surface with geometric normal
+// `normal` (unit), lit along the unit `to_light` from `distance` away: 1 outside the tile, and
+// taken by the spot's weight, which falls to 0 before it gives its tile up. The same bias as the
+// cascades', by the tile's texel where the point is; the filter's center is kept inside the tile,
+// so it never reads a neighbour.
+fn spot_visibility(tile: u32, position: vec3<f32>, normal: vec3<f32>, to_light: vec3<f32>, distance: f32) -> f32 {
+    let spot = shadows.spots[min(tile, MAX_SPOT_SHADOWS - 1u)];
+    let texel = spot.lens.x * distance;
+    let n_dot_l = dot(normal, to_light);
+    let slope = sqrt(saturate(1.0 - n_dot_l * n_dot_l));
+    let at = position + normal * (texel * shadow_offset_texels(slope)) + to_light * (texel * SHADOW_DEPTH_BIAS);
+    let clip = spot.clip_from_world * vec4<f32>(at, 1.0);
+    if clip.w <= 0.0 {
+        return 1.0;
+    }
+    let ndc = clip.xyz / clip.w;
+    // Texture v runs down; clip y up.
+    let uv = vec2<f32>(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
+        return 1.0;
+    }
+    let size = spot.tile.w;
+    let inside = clamp(uv, vec2<f32>(SHADOW_EDGE_TEXELS / size), vec2<f32>(1.0 - SHADOW_EDGE_TEXELS / size));
+    let layer_size = size / spot.tile.z;
+    let tent = shadow_tent((spot.tile.xy + inside * spot.tile.z) * layer_size);
+    let layer = u32(spot.lens.y);
+    let depth = saturate(ndc.z);
+    var sum = 0.0;
+    var weights = 0.0;
+    for (var j = 0u; j < tent.taps; j++) {
+        for (var i = 0u; i < tent.taps; i++) {
+            let coords = (tent.base + vec2<f32>(tent.u[i], tent.v[j])) / layer_size;
+            let lit = textureSampleCompareLevel(shadow_cascades, shadow_sampler, coords, layer, depth);
+            let weight = tent.weight_u[i] * tent.weight_v[j];
+            sum += weight * lit;
+            weights += weight;
+        }
+    }
+    return mix(1.0, sum / weights, spot.lens.z);
 }
 
 // The key light's visibility at light-space `p` past the characters' own maps (desktop).

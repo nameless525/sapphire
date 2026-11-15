@@ -188,11 +188,14 @@ pub struct FrameCounts {
     pub ui: PassCounts,
     /// The debug views' replays and passes, and the debug lines.
     pub debug: PassCounts,
+    /// The spot lights' shadows (M5 L16): every tile of the spot layer drawn this frame, the tiles'
+    /// clears among its calls where the pass loads the layer.
+    pub spots: PassCounts,
 }
 
 impl FrameCounts {
     /// Every pass, with the name a bench's row gives it.
-    pub fn passes(&self) -> [(&'static str, &PassCounts); 9 + MAX_CASCADES + MAX_INSETS] {
+    pub fn passes(&self) -> [(&'static str, &PassCounts); 10 + MAX_CASCADES + MAX_INSETS] {
         let [c0, c1, c2, c3] = &self.cascades;
         let [i0, i1] = &self.insets;
         [
@@ -211,6 +214,7 @@ impl FrameCounts {
             ("upscale", &self.upscale),
             ("ui", &self.ui),
             ("debug", &self.debug),
+            ("spot shadows", &self.spots),
         ]
     }
 
@@ -219,9 +223,9 @@ impl FrameCounts {
         self.passes().iter().fold(PassCounts::default(), |total, (_, pass)| total.plus(pass))
     }
 
-    /// The shadow passes': every cascade's and the character maps'.
+    /// The shadow passes': every cascade's, the character maps' and the spot tiles'.
     pub fn shadows(&self) -> PassCounts {
-        self.cascades.iter().fold(self.character_maps, |total, pass| total.plus(pass))
+        self.cascades.iter().fold(self.character_maps.plus(&self.spots), |total, pass| total.plus(pass))
     }
 }
 
@@ -241,10 +245,12 @@ pub(crate) enum Counted {
     Upscale,
     Ui,
     Debug,
+    /// The spot shadows' pass (M5 L16).
+    Spots,
 }
 
 impl Counted {
-    const SLOTS: usize = 9 + MAX_CASCADES + MAX_INSETS;
+    const SLOTS: usize = 10 + MAX_CASCADES + MAX_INSETS;
 
     fn slot(self) -> usize {
         match self {
@@ -259,6 +265,7 @@ impl Counted {
             Self::Upscale => 6 + MAX_CASCADES + MAX_INSETS,
             Self::Ui => 7 + MAX_CASCADES + MAX_INSETS,
             Self::Debug => 8 + MAX_CASCADES + MAX_INSETS,
+            Self::Spots => 9 + MAX_CASCADES + MAX_INSETS,
         }
     }
 }
@@ -436,6 +443,7 @@ impl PassCounters {
             upscale: read(Counted::Upscale),
             ui: read(Counted::Ui),
             debug: read(Counted::Debug),
+            spots: read(Counted::Spots),
         }
     }
 }
@@ -464,6 +472,7 @@ mod tests {
             Counted::Upscale,
             Counted::Ui,
             Counted::Debug,
+            Counted::Spots,
         ];
         assert_eq!(passes.len(), Counted::SLOTS);
         for (index, pass) in passes.into_iter().enumerate() {

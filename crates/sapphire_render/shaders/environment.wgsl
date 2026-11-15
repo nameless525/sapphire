@@ -398,11 +398,13 @@ struct EnvironmentDerivatives {
 }
 
 // Every listed local light: the diffuse through the terminator and the wrapped falloff, and the
-// highlight (see the top of this file).
+// highlight (see the top of this file). A spot that casts a shadow (M5 L16) takes its tile's
+// visibility into its terminator, by the surface's geometric normal `geometric` (any length).
 fn local_lighting(
     surface: EnvironmentSurface,
     list: u32,
     position: vec3<f32>,
+    geometric: vec3<f32>,
     derivatives: EnvironmentDerivatives,
 ) -> vec3<f32> {
     let base = list * frame.lights.z;
@@ -432,7 +434,12 @@ fn local_lighting(
             + (n_dot_l * dot(l, derivatives.position_dx) - dot(surface.normal, derivatives.position_dx)) / distance;
         let dy = dot(derivatives.normal_dy, l)
             + (n_dot_l * dot(l, derivatives.position_dy) - dot(surface.normal, derivatives.position_dy)) / distance;
-        let lit = light_step(0.0, max(surface.terminator, 0.5 * (abs(dx) + abs(dy))), n_dot_l);
+        var lit = light_step(0.0, max(surface.terminator, 0.5 * (abs(dx) + abs(dy))), n_dot_l);
+        if SPOT_SHADOWS {
+            if light.cone.z > 0.0 {
+                lit *= spot_visibility(u32(light.cone.z) - 1u, position, safe_normalize(geometric), l, distance);
+            }
+        }
         diffuse += radiance * (lit * wrapped(n_dot_l, surface.wrap));
         specular_light += radiance * specular(surface, l, n_dot_l) * lit;
     }
@@ -656,7 +663,7 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
     // A uniform branch: frames without local lights skip them.
     if frame.lights.y != LIGHT_LISTS_NONE {
         let list = light_list(in.clip_position, in.instance);
-        color += local_lighting(surface, list, in.world_position, derivatives);
+        color += local_lighting(surface, list, in.world_position, in.world_normal, derivatives);
     }
     let emission_params = environment_materials[material].emission;
     var emission = emission_params.rgb * mix(frame.emission_scale, 1.0, emission_params.a);

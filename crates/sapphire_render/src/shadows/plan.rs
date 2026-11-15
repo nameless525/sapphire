@@ -1,14 +1,17 @@
 //! Each frame's shadows, planned on the CPU: which cascades are drawn and where, who casts into
 //! what, which characters draw maps and which cast capsules, which other characters' shadows each
-//! character receives, and what receivers read. Its vectors are reused, so a warm frame allocates
+//! character receives, which spot lights cast and which of their tiles are drawn again (M5 L16, the
+//! `spots` module), and what receivers read. Its vectors are reused, so a warm frame allocates
 //! nothing.
 
 use glam::Vec3;
 
 use super::fit::{self, CascadeFit, Frustum, LightSpace};
+use super::spots::{self, ChosenSpot, Signature, SpotTile};
 use super::{
-    ATLAS_COLUMNS, GpuCapsule, GpuCascade, GpuCharacterMap, MAX_CAPSULES, MAX_CASCADES, MAX_CHARACTER_MAPS,
-    MAX_OTHERS, ShadowSettings, ShadowStats, ShadowUniforms,
+    ATLAS_COLUMNS, GpuCapsule, GpuCascade, GpuCharacterMap, GpuSpotShadow, MAX_CAPSULES, MAX_CASCADES,
+    MAX_CHARACTER_MAPS, MAX_OTHERS, MAX_SPOT_SHADOWS, SPOT_COLUMNS, ShadowSettings, ShadowStats,
+    ShadowUniforms,
 };
 use crate::bounds::{Sphere, max_stretch};
 use crate::characters::{CharacterTable, GpuReceived, RECEIVED_CAPSULE};
@@ -57,6 +60,11 @@ pub(crate) struct SlotCaster {
     /// The level its character map draws it at (M5 D5), by the map's texel as a cascade chooses:
     /// 0 for a character that stays whole, and where no map draws it.
     pub map_level: u8,
+    /// Bit `i`: the instance is drawn into spot tile `i` (M5 L16), which is drawn this frame.
+    pub spots: u8,
+    /// Per spot tile: the level it draws the instance at, by the tile's texel where it stands, as a
+    /// cascade's; 0 where it doesn't draw it.
+    pub spot_levels: [u8; MAX_SPOT_SHADOWS],
 }
 
 impl SlotCaster {
@@ -156,6 +164,16 @@ pub(crate) struct ShadowPlan {
     pub received: Vec<GpuReceived>,
     /// A receiver's casters as [`Self::receive`] ranks them.
     candidates: Vec<Candidate>,
+    /// The spot layer's tiles as last drawn (M5 L16): what each holds, kept across frames.
+    tiles: [SpotTile; MAX_SPOT_SHADOWS],
+    /// This frame's spots, nearest the camera first, each with its tile.
+    pub spots: Vec<ChosenSpot>,
+    /// Scratch for choosing them.
+    spot_candidates: Vec<spots::Candidate>,
+    /// The spot pass clears the whole layer this frame: every tile a spot holds is drawn again.
+    pub spot_clear: bool,
+    /// Flagged spots too wide to cast were logged: once.
+    warned_wide: bool,
     /// What receivers read.
     pub uniforms: ShadowUniforms,
     /// The frame has a main view: there is something to draw.
@@ -195,6 +213,7 @@ impl ShadowPlan {
             self.active = false;
             self.cached = [None; MAX_CASCADES];
             self.received.clear();
+            self.spots.clear();
             return;
         };
         self.active = true;
@@ -216,6 +235,51 @@ impl ShadowPlan {
         self.count_draws(list, settings);
     }
 
+    /// Chooses the frame's spot lights from `packet` (M5 L16; the `spots` module): at most
+    /// `settings.spots` flagged spots whose cone reaches the main view, nearest the camera first,
+    /// each given a tile, the one that holds its drawing where one does. Before the local lights
+    /// are packed, which carry each one's tile ([`Self::spot_tiles`]); [`Self::update`] then says
+    /// which tiles are drawn again.
+    pub(crate) fn choose_spots(&mut self, settings: &ShadowSettings, packet: &FramePacket) {
+        let Some(view) = packet.main_view() else {
+            self.spots.clear();
+            return;
+        };
+        let count = settings.spot_count();
+        let too_wide = spots::choose(
+            &packet.lights,
+            &view.camera,
+            (count, settings.spot_resolution()),
+            &self.tiles,
+            &mut self.spot_candidates,
+            &mut self.spots,
+        );
+        if too_wide > 0 && !std::mem::replace(&mut self.warned_wide, true) {
+            tracing::warn!(
+                target: crate::LOG_TARGET,
+                lights = too_wide,
+                "a spot light asks for a shadow with a cone wider than 120°: it casts none"
+            );
+        }
+        self.stats.spots_too_wide = too_wide;
+    }
+
+    /// This frame's spots' tiles: each chosen light's index in the packet and its tile.
+    pub(crate) fn spot_tiles(&self) -> impl Iterator<Item = (u32, u8)> + '_ {
+        self.spots.iter().map(|spot| (spot.light, spot.tile))
+    }
+
+    /// Forgets what every spot tile holds, so each spot's is drawn again: a mesh was replaced in
+    /// place, which the tiles' signatures can't see.
+    pub(crate) fn forget_spots(&mut self) {
+        self.tiles = [SpotTile::default(); MAX_SPOT_SHADOWS];
+    }
+
+    /// Bit `i`: spot tile `i` is drawn this frame.
+    pub(crate) fn spots_drawn(&self) -> u8 {
+        self.spots.iter().filter(|spot| spot.redraw).fold(0, |bits, spot| bits | 1 << spot.tile)
+    }
+
     /// Takes back what this plan kept of the cascades it drew, which were never drawn: their
     /// frame was prepared but its passes didn't run (never recorded, or recorded into a graph
     /// that was dropped, rejected or sized to nothing; M1 review RA-001). Their maps hold what
@@ -228,6 +292,13 @@ impl ShadowPlan {
                 self.cached[index] = None;
                 self.empty[index] = false;
             }
+        }
+        // The spot tiles it drew hold what they held, and a cleared layer what it held before.
+        if self.spot_clear {
+            self.forget_spots();
+        }
+        for spot in self.spots.iter().filter(|spot| spot.redraw) {
+            self.tiles[spot.tile as usize] = SpotTile::default();
         }
     }
 
@@ -336,14 +407,21 @@ impl ShadowPlan {
             uncast += u32::from(group.cast == Cast::Nothing);
         }
         // Characters into their maps; environment casters into the cascades drawn that they can
-        // cast into, unless they're past the tier's distance or too small in its texels.
+        // cast into, unless they're past the tier's distance or too small in its texels; both into
+        // the tiles of the spots whose views they reach (M5 L16), each tile's signature folding
+        // them in.
         let least = cull.least_texels;
+        let mut signatures = [Signature::default(); MAX_SPOT_SHADOWS];
+        let mut moving = [false; MAX_SPOT_SHADOWS];
         for (slot, mesh, transform) in slots.live_transforms() {
             let caster = &mut self.casters[slot as usize];
             let small = &mut self.small[slot as usize];
             if cull.culled.fresh(slot) {
                 *small = 0;
             }
+            // What the spots test it by: its sphere, whether it moves by itself (a tile it casts
+            // into is drawn every frame), its levels' errors and its stretch.
+            let mut spot_caster = None;
             match self.characters[slot as usize] {
                 SlotCharacter::Character(group) => {
                     caster.map = group.and_then(|group| match self.groups[group as usize].cast {
@@ -361,19 +439,29 @@ impl ShadowPlan {
                             levels::cascade_level(errors, max_stretch(transform), texel, cull.levels.bias)
                         });
                     }
+                    if !self.spots.is_empty() {
+                        spot_caster =
+                            slots.world_bounds(slot, meshes).map(|sphere| (sphere, true, None, 1.0));
+                    }
                 }
                 SlotCharacter::Environment => {
+                    let mut windy = false;
                     let sphere = match meshes.get(mesh.index()) {
                         Some(record) if matches!(record.streams, MeshStreams::Slab { .. }) => {
                             // Foliage reaches past its cooked bounds by as far as the wind
                             // carries it (M1 W6), in world meters whatever the transform.
                             let mut sphere = record.bounds.transformed(transform);
-                            sphere.radius += wind_margin(record);
+                            let margin = wind_margin(record);
+                            sphere.radius += margin;
+                            windy = margin > 0.0;
                             Some(sphere)
                         }
                         // A skinned or morphed instance that isn't a character: its posed bounds
                         // (M5 D3), which hold its pending pose and its last drawn one.
-                        Some(_) => slots.world_bounds(slot, meshes),
+                        Some(_) => {
+                            windy = true;
+                            slots.world_bounds(slot, meshes)
+                        }
                         None => None,
                     };
                     caster.far = cull.culled.far(slot);
@@ -410,12 +498,61 @@ impl ShadowPlan {
                             }
                         }
                     }
+                    if !self.spots.is_empty() {
+                        spot_caster = sphere.map(|sphere| (sphere, windy, errors, stretch));
+                    }
                 }
             }
+            let Some((sphere, moves, errors, stretch)) = spot_caster else { continue };
+            for (index, spot) in self.spots.iter().enumerate() {
+                if !spot.fit.holds(&sphere) {
+                    continue;
+                }
+                let tile = usize::from(spot.tile);
+                let level = errors.map_or(0, |errors| {
+                    cull.levels.forced(errors.len()).unwrap_or_else(|| {
+                        levels::cascade_level(errors, stretch, spot.fit.texel_at(&sphere), cull.levels.bias)
+                    })
+                });
+                caster.spots |= 1 << tile;
+                caster.spot_levels[tile] = level;
+                signatures[index].caster(slot, mesh.index() as u32, level, &transform);
+                moving[index] |= moves;
+            }
         }
+        self.decide_spots(&signatures, &moving);
         self.stats.character_maps = self.maps.len() as u32;
         self.stats.capsules = capsules;
         self.stats.uncast_characters = uncast;
+    }
+
+    /// Says which chosen spots' tiles are drawn this frame, by what cast into each (`signatures`,
+    /// in [`Self::spots`]' order) and whether any of it moves by itself (`moving`): a tile is drawn
+    /// again when its spot was just given it or changed its fit, when what casts into it changed,
+    /// or when something in it moves. When every tile a spot holds is drawn, the pass clears the
+    /// whole layer, and the tiles no spot holds are forgotten.
+    fn decide_spots(
+        &mut self,
+        signatures: &[Signature; MAX_SPOT_SHADOWS],
+        moving: &[bool; MAX_SPOT_SHADOWS],
+    ) {
+        let mut kept = false;
+        for (index, spot) in self.spots.iter_mut().enumerate() {
+            let tile = &mut self.tiles[usize::from(spot.tile)];
+            let signature = signatures[index].0;
+            spot.redraw = moving[index] || tile.drawn != Some(spot.fit) || tile.signature != signature;
+            kept |= !spot.redraw;
+            *tile = SpotTile { drawn: Some(spot.fit), signature };
+        }
+        self.spot_clear = !kept && !self.spots.is_empty();
+        if self.spot_clear {
+            let held = self.spots.iter().fold(0u8, |bits, spot| bits | 1 << spot.tile);
+            for (index, tile) in self.tiles.iter_mut().enumerate() {
+                if held & 1 << index == 0 {
+                    *tile = SpotTile::default();
+                }
+            }
+        }
     }
 
     /// Chooses the other characters' shadows each named character receives (M5 L12; the module
@@ -530,17 +667,30 @@ impl ShadowPlan {
         }
         uniforms.counts = [settings.cascades, self.maps.len() as u32, count, entries];
         uniforms.atlas = [1.0 / width as f32, 1.0 / height as f32, tile, 0.0];
+        // The spots, each in its tile's record: a light's record names its tile (M5 L16).
+        let size = 1.0 / SPOT_COLUMNS as f32;
+        for spot in &self.spots {
+            let tile = u32::from(spot.tile);
+            let (column, row) = (tile % SPOT_COLUMNS, tile / SPOT_COLUMNS);
+            uniforms.spots[tile as usize] = GpuSpotShadow {
+                clip_from_world: spot.fit.clip_from_world().to_cols_array_2d(),
+                tile: [column as f32 * size, row as f32 * size, size, settings.spot_resolution() as f32],
+                lens: [spot.fit.texel_per_meter(), settings.cascades as f32, spot.weight, 0.0],
+            };
+        }
         uniforms
     }
 
     /// Counts the frame's caster draws, and the environment draws culled from cascades drawn.
     fn count_draws(&mut self, list: &DrawList, settings: &ShadowSettings) {
         let drawn = self.drawn_mask();
-        let (mut draws, mut culled) = (0, 0);
+        let spots = self.spots_drawn();
+        let (mut draws, mut culled, mut spot_draws) = (0, 0, 0);
         let mut count = |slot: u32| {
             let caster = self.casters.get(slot as usize).copied().unwrap_or_default();
             let cascades = (caster.cascades & drawn).count_ones();
             draws += cascades + u32::from(caster.map.is_some());
+            spot_draws += (caster.spots & spots).count_ones();
             if self.characters.get(slot as usize) == Some(&SlotCharacter::Environment) {
                 culled += drawn.count_ones() - cascades;
             }
@@ -563,6 +713,17 @@ impl ShadowPlan {
             cascades_cached: settings.cascades - drawn.count_ones(),
             caster_draws: draws,
             culled_draws: culled,
+            spot_tiles: self.spots.len() as u32,
+            spot_tiles_drawn: spots.count_ones(),
+            spot_tiles_cached: self.spots.len() as u32 - spots.count_ones(),
+            spot_draws,
+            spot_clear: self.spot_clear,
+            // A loaded layer is read whole; a depth texel is 4 bytes.
+            spot_load_bytes: if spots != 0 && !self.spot_clear {
+                u64::from(settings.resolution).pow(2) * 4
+            } else {
+                0
+            },
             ..self.stats
         };
     }
@@ -683,6 +844,7 @@ mod tests {
         character_resolution: 1024,
         filter: super::super::ShadowFilter::Tent5,
         others: 4,
+        spots: 4,
     };
 
     /// A static unit cube (mesh 0) and a deformable one (mesh 1).

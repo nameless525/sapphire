@@ -65,6 +65,9 @@ pub enum ReflectionCookError {
     Scene(#[from] ProbeCookError),
     #[error(transparent)]
     Bake(#[from] BakeError),
+    /// A probe the bake refused for standing inside geometry ([`BakeError::InsideGeometry`]), by its name.
+    #[error("reflection probe `{probe}` stands inside geometry: {share} of its rays meet backfaces")]
+    InsideGeometry { probe: String, share: f32 },
     #[error("the baked probes are invalid")]
     Invalid(#[from] ReflectionProbesError),
 }
@@ -122,17 +125,25 @@ pub fn cook<'a>(
     Ok(bytes.into_vec())
 }
 
-/// Bakes `document`'s probes at `size` on `threads` threads: the asset, every texel encoded.
+/// Bakes `document`'s probes at `size` on `threads` threads: the asset, every texel encoded. Refuses a
+/// probe inside geometry, by its name.
 pub fn bake(
     scene: &probes::bake::BakeScene,
     keys: &[probes::bake::BakeKey],
     document: &[sapphire_zone::ReflectionProbe],
     size: u32,
     threads: usize,
-) -> Result<ReflectionProbes, BakeError> {
+) -> Result<ReflectionProbes, ReflectionCookError> {
     let probes: Vec<CubeProbe> =
         document.iter().map(|probe| CubeProbe { position: Vec3::from(probe.position) }).collect();
-    let texels = cubes::bake_cubes(scene, keys, &probes, reach(document), size, threads)?;
+    let texels = cubes::bake_cubes(scene, keys, &probes, reach(document), size, threads).map_err(
+        |error| match error {
+            BakeError::InsideGeometry { probe, share } => {
+                ReflectionCookError::InsideGeometry { probe: document[probe].name.clone(), share }
+            }
+            error => error.into(),
+        },
+    )?;
     Ok(ReflectionProbes {
         size,
         key_hours: keys.iter().map(|key| key.hours).collect(),

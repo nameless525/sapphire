@@ -18,7 +18,10 @@
 //!
 //! all of it times the material's albedo as the grid's bake sees it (its color map's mean), like a
 //! surfel's light. A hit beyond the surfels' reach is lit under the open sky, as the grid's far hits are.
-//! A ray that meets a one-sided surface's back adds nothing at all: it is inside something.
+//! A ray that meets a one-sided surface's back adds nothing at all: it is inside something. A probe more
+//! than `MAX_BACKFACE_SHARE` of whose rays do stands inside something, as the grid's bake judges its
+//! probes, and the bake refuses it ([`BakeError::InsideGeometry`]), counted in whole rays, so the same
+//! scene refuses the same probe on every machine.
 //!
 //! What a probe holds is radiance in the renderer's normalization, linear RGB, before exposure. Local
 //! lights are left out, as the grid leaves them out: a zone's lanterns reach a cube only through their
@@ -37,8 +40,8 @@ use glam::Vec3;
 use sapphire_math::sh::{self, SkyTransfer};
 
 use super::{
-    BakeError, BakeKey, BakeScene, Bvh, Lighting, RAY_OFFSET, Rays, SurfelLight, Surfels, Target, key_light,
-    light_surfels, material, parallel_map, place_surfels, sky_irradiance,
+    BakeError, BakeKey, BakeScene, Bvh, Lighting, MAX_BACKFACE_SHARE, RAY_OFFSET, Rays, SurfelLight, Surfels,
+    Target, key_light, light_surfels, material, parallel_map, place_surfels, sky_irradiance,
 };
 
 /// Rays per texel along each side: four in all, at the quarters of its footprint.
@@ -63,6 +66,7 @@ pub struct CubeProbe {
 /// row from the top, per texel from the left, linear RGB radiance and the share of the texel that sees
 /// the sky. Surfels carry the sky's light and the bounce within `reach` (grown by the grid's margin), the
 /// box the probes' surroundings fill. On up to `threads` threads; the bytes don't depend on how many.
+/// Refuses the first probe more than `MAX_BACKFACE_SHARE` of whose rays meet backfaces.
 pub fn bake_cubes(
     scene: &BakeScene,
     keys: &[BakeKey],
@@ -102,9 +106,17 @@ pub fn bake_cubes(
         let (row, column) = ((texel % face_texels) as u32 / size, (texel % face_texels) as u32 % size);
         tracer.texel(probes[probe].position, face, column, row, size)
     });
+    // A probe inside something: its rays that met backfaces, counted whole.
+    let rays = per_probe as u32 * SUBSAMPLES * SUBSAMPLES;
+    for (probe, texels) in texels.chunks(per_probe).enumerate() {
+        let backfaces: u32 = texels.iter().map(|(_, backfaces)| backfaces).sum();
+        if backfaces as f32 > MAX_BACKFACE_SHARE * rays as f32 {
+            return Err(BakeError::InsideGeometry { probe, share: backfaces as f32 / rays as f32 });
+        }
+    }
     // Reordered to probe, key, face, row, column: each key's six faces together, as they upload.
     let mut out = vec![[0.0; 4]; probes.len() * keys.len() * per_probe];
-    for (index, values) in texels.into_iter().enumerate() {
+    for (index, (values, _)) in texels.into_iter().enumerate() {
         let (probe, texel) = (index / per_probe, index % per_probe);
         for (key, value) in values.into_iter().enumerate() {
             out[(probe * keys.len() + key) * per_probe + texel] = value;
@@ -138,12 +150,14 @@ struct Tracer<'a> {
 }
 
 impl Tracer<'_> {
-    /// Texel `(column, row)` of face `face` of a cube of `size` from `position`, per key.
-    fn texel(&self, position: Vec3, face: u32, column: u32, row: u32, size: u32) -> Vec<[f32; 4]> {
+    /// Texel `(column, row)` of face `face` of a cube of `size` from `position`, per key, and how many of
+    /// its rays met a backface.
+    fn texel(&self, position: Vec3, face: u32, column: u32, row: u32, size: u32) -> (Vec<[f32; 4]>, u32) {
         let share = 1.0 / (SUBSAMPLES * SUBSAMPLES) as f32;
         let mut color = vec![Vec3::ZERO; self.keys.len()];
         let mut sky = 0.0;
         let mut far = Vec::new();
+        let mut backfaces = 0;
         for sample in 0..SUBSAMPLES * SUBSAMPLES {
             let offset = |step: u32| (step as f32 + 0.5) / SUBSAMPLES as f32;
             let s = (column as f32 + offset(sample % SUBSAMPLES)) / size as f32 * 2.0 - 1.0;
@@ -157,6 +171,7 @@ impl Tracer<'_> {
             far.clear();
             let target = self.surfels.target(self.scene, &hit, point, &mut far);
             if target == Target::Blocked {
+                backfaces += 1;
                 continue;
             }
             let triangle = &self.scene.triangles[hit.triangle as usize];
@@ -189,6 +204,6 @@ impl Tracer<'_> {
                 *total += (material.albedo * lit + material.emission_under(&self.keys[key])) * share;
             }
         }
-        color.into_iter().map(|color| [color.x, color.y, color.z, sky]).collect()
+        (color.into_iter().map(|color| [color.x, color.y, color.z, sky]).collect(), backfaces)
     }
 }

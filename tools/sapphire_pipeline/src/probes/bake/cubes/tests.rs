@@ -187,3 +187,38 @@ fn bad_cubes_are_refused() {
     let nowhere = [CubeProbe { position: Vec3::NAN }];
     assert!(bake_cubes(&room, &keys, &nowhere, REACH, 8, 1).is_err(), "a probe nowhere");
 }
+
+/// A solid crate from `center` out by `half` along each axis, its faces facing out, of material 0.
+fn crate_at(center: Vec3, half: f32) -> Vec<BakeTriangle> {
+    let (min, max) = (center - half, center + half);
+    let (dx, dy, dz) = (Vec3::X * 2.0 * half, Vec3::Y * 2.0 * half, Vec3::Z * 2.0 * half);
+    let mut triangles = Vec::new();
+    triangles.extend(quad(min, dz, dy, 0));
+    triangles.extend(quad(Vec3::new(max.x, min.y, min.z), dy, dz, 0));
+    triangles.extend(quad(min, dx, dz, 0));
+    triangles.extend(quad(Vec3::new(min.x, max.y, min.z), dz, dx, 0));
+    triangles.extend(quad(min, dy, dx, 0));
+    triangles.extend(quad(Vec3::new(min.x, min.y, max.z), dx, dy, 0));
+    triangles
+}
+
+/// A probe inside something solid sees only backfaces and would cook a black cube: the bake refuses
+/// it, naming it, as the grid's bake rejects a probe past `MAX_BACKFACE_SHARE`. One beside the crate,
+/// whose rays meet its front, bakes.
+#[test]
+fn a_probe_inside_geometry_is_refused() {
+    let mut triangles = room(Sides { roof: true, pos_x: true });
+    triangles.extend(crate_at(Vec3::new(-1.0, 1.0, 1.0), 0.4));
+    let room = scene(triangles, grey());
+    let keys = [key(12.0, true)];
+    let probes = [CubeProbe { position: CENTER }, CubeProbe { position: Vec3::new(-1.0, 1.0, 1.0) }];
+    match bake_cubes(&room, &keys, &probes, REACH, 8, 3) {
+        Err(BakeError::InsideGeometry { probe, share }) => {
+            assert_eq!(probe, 1);
+            assert!(share > 0.99, "{share}");
+        }
+        other => panic!("{:?}", other.map(|texels| texels.len())),
+    }
+    let beside = [CubeProbe { position: CENTER }, CubeProbe { position: Vec3::new(-1.0, 1.0, 0.2) }];
+    assert!(bake_cubes(&room, &keys, &beside, REACH, 8, 3).is_ok());
+}

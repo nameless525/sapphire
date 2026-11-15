@@ -156,6 +156,10 @@ pub enum BakeError {
     Settings(&'static str),
     #[error("no geometry near the bake box: no bricks to keep")]
     Empty,
+    /// A reflection probe whose rays meet backfaces past `MAX_BACKFACE_SHARE`: it stands inside
+    /// something, and would bake a black cube.
+    #[error("reflection probe {probe} stands inside geometry: {share} of its rays meet backfaces")]
+    InsideGeometry { probe: usize, share: f32 },
 }
 
 /// How far surfels reach past the bake box: light from just outside it still bounces in.

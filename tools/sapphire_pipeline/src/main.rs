@@ -52,6 +52,11 @@ Usage:
       scale (ci, budget or double), each with its sidecar, into --out: a source tree for a cook under target/,
       never committed. Files an earlier run left in --out that this one doesn't write are removed;
       --out must be empty or a tree gen-bench wrote.
+  sapphire_pipeline gen-kinds --bench <DIR> --preset <PRESET> --specs <DIR> --content <DIR> --out <DIR>
+      Link the content directory --content into --out and write over it the figures --bench's
+      kinds.ron makes again at a preset's scale, from their specs in --specs (tools/figures), under
+      the same IDs: a source tree for a cook under target/, never committed. --out must be missing,
+      empty or a tree gen-kinds wrote.
   sapphire_pipeline icons --source <PNG> --out <DIR>
       Make every platform's icon set from a square, opaque master of at least 1024 px under DIR:
       Apple's asset catalogs (ios/, macos/), Android's adaptive icon and Play's listing icon
@@ -161,6 +166,13 @@ enum Command {
         preset: Preset,
         out: PathBuf,
     },
+    GenKinds {
+        bench: PathBuf,
+        preset: Preset,
+        specs: PathBuf,
+        content: PathBuf,
+        out: PathBuf,
+    },
     Icons {
         source: PathBuf,
         out: PathBuf,
@@ -268,6 +280,18 @@ fn run(command: Command) -> anyhow::Result<()> {
                 out.display(),
                 generated.created.len() + generated.replaced.len(),
                 generated.unchanged.len()
+            );
+        }
+        Command::GenKinds { bench, preset, specs, content, out } => {
+            let done = bench::kinds::generate(&bench, &specs, preset, &content, &out).with_context(|| {
+                format!("failed to make the {preset} kinds from {} into {}", content.display(), out.display())
+            })?;
+            eprintln!(
+                "gen-kinds: {preset} into {}: {} made again ({}), {} files written over",
+                out.display(),
+                done.figures.len(),
+                done.figures.join(", "),
+                done.replaced.len()
             );
         }
         Command::Icons { source, out } => {
@@ -565,6 +589,13 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             preset: options.required("--preset")?,
             out: options.required("--out")?,
         },
+        "gen-kinds" => Command::GenKinds {
+            bench: options.required("--bench")?,
+            preset: options.required("--preset")?,
+            specs: options.required("--specs")?,
+            content: options.required("--content")?,
+            out: options.required("--out")?,
+        },
         "icons" => Command::Icons { source: options.required("--source")?, out: options.required("--out")? },
         "cook-mesh" => {
             let cook = options.value("--cook")?.unwrap_or(Cook::Desktop);
@@ -701,6 +732,30 @@ mod tests {
             Command::GenBench { bench: "bench".into(), preset: Preset::Budget, out: "src".into() }
         );
         assert!(parse(&["gen-bench", "--bench", "bench", "--preset", "huge", "--out", "src"]).is_err());
+        assert_eq!(
+            parse(&[
+                "gen-kinds",
+                "--bench",
+                "bench",
+                "--preset",
+                "budget",
+                "--specs",
+                "figures",
+                "--content",
+                "content",
+                "--out",
+                "src",
+            ])
+            .unwrap(),
+            Command::GenKinds {
+                bench: "bench".into(),
+                preset: Preset::Budget,
+                specs: "figures".into(),
+                content: "content".into(),
+                out: "src".into(),
+            }
+        );
+        assert!(parse(&["gen-kinds", "--bench", "bench", "--preset", "budget", "--out", "src"]).is_err());
         assert_eq!(
             parse(&["gen-lookdev", "--out", "dir"]).unwrap(),
             Command::GenLookdev { out: "dir".into(), force: false }

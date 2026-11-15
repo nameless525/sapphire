@@ -1,0 +1,25 @@
+// The party's kinds and the wave's at spec §3.4's rows (M5 C12b): which shipped figures a preset makes again
+// from their committed specs in `tools/figures/`, and how (`sapphire_pipeline::bench::kinds`). The shipped
+// content is linked into `target/bench/<preset>/kinds/source/`, these figures' generated files (the model, its
+// maps, the face's masks and the matcap) are written over there, and that tree is cooked: the hand-written
+// sidecars and documents are the shipped ones, so every ID stands, and the same scenario, replay and documents
+// play at the row. Each scale is the cast's (`bench/cast/cast.ron`): `detail`, `maps` and `triangles` over the
+// spec's own, one copy.
+//
+// `budget`: Aster at the hero row's detail, exactly its 80,000 triangles, and Wren at the same detail, 83,808,
+// 4.8% over it, both with its 2K maps (1K stored on mobile, by the cap their sidecars take there); the Ember
+// Lancer, already at the enemy row's 8,000 triangles, with its 1K maps. The heroine isn't here: her model is authored, not generated, and
+// within the row at 36,470. `ci` makes nothing again: the goldens and CI cook the kinds as they ship.
+(
+    type: "sapphire::pipeline::BenchKinds",
+    version: 1,
+    data: (
+        kinds: [
+            // Wren at detail 4 is 83,808, 4.8% over the row: detail is a whole step (her 3 is 48,840, 39% under),
+            // and her spec wasn't shaped to land on the row as Aster's was. Over it proves the row on the heavy side.
+            (spec: "wren", presets: (ci: None, budget: Some((detail: Some(4), maps: Some(2048), triangles: Some(83808))))),
+            (spec: "hero", presets: (ci: None, budget: Some((detail: Some(4), maps: Some(2048), triangles: Some(80000))))),
+            (spec: "ember_lancer", presets: (ci: None, budget: Some((maps: Some(1024))))),
+        ],
+    ),
+)

@@ -52,6 +52,7 @@ use crate::samples::{Existing, Generated, write_files};
 
 pub mod cast;
 pub mod district;
+pub mod kinds;
 #[cfg(test)]
 mod tests;
 

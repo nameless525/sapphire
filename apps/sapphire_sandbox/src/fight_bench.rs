@@ -382,6 +382,8 @@ struct Run<'a> {
     last_timed: u64,
     /// The asset server's counters after the last frame, for what the next one admitted.
     assets: sapphire_assets::AssetStats,
+    /// The loads the frame's thread had done in play after the last frame (exit test 2), for what the next did.
+    loads: u64,
     /// A walk under a running day (`--day-length`): the hour its tour starts at, which each phase's restart of
     /// the tour sets again, so every phase walks the same stretch of the day (M5 Z1). `None` where time stands
     /// still or for a fight, which nothing here changes.
@@ -419,6 +421,9 @@ pub(crate) fn run(
     let length = stage.show.fight.combat.as_ref().and_then(Combat::ticks_left).unwrap_or(0);
     let per_phase = u64::from(frames).max(length / u64::from(steps) + 1) as usize;
     let assets = stage.content.stats();
+    // In play from here, the audio and the stage ready: what this thread loads from now on counts (exit test 2).
+    let _in_play = sapphire_core::frame_loads::InPlay::begin();
+    let loads = sapphire_core::frame_loads::loads().total();
     let mut run = Run {
         stage,
         view: &view,
@@ -432,6 +437,7 @@ pub(crate) fn run(
         first_traced: 0,
         last_timed: 0,
         assets,
+        loads,
         walk_hour: None,
     };
     if option.is_none() && run.stage.scene.time_of_day().clock().day_length().is_some() {
@@ -624,7 +630,11 @@ impl Run<'_> {
         let memory = zone::Held::of(stage, after.live_bytes);
         let assets = stage.content.stats();
         let streaming = stage.content.texture_streaming_stats();
-        let counted = counts::Counted::of(&stats, &assets, &self.assets, &streaming).with_stage(stage);
+        let loads = sapphire_core::frame_loads::loads().total();
+        let counted = counts::Counted {
+            frame_thread_loads: loads - std::mem::replace(&mut self.loads, loads),
+            ..counts::Counted::of(&stats, &assets, &self.assets, &streaming).with_stage(stage)
+        };
         self.assets = assets;
         Ok(Traced {
             phase,

@@ -1265,3 +1265,38 @@ fn metadata_credit_returns_after_toc_failure_and_receiver_drop() {
     assert!(retry.contains(id(TEXTURE)));
     assert_eq!(*source.bad_closes.lock().unwrap(), 0);
 }
+
+/// Exit test 2's count (M5): what a thread in play reads, decodes or checks counts, by kind, wherever it was asked
+/// for. A source that reads in place reads on the caller's thread; a decode or a check forced onto it counts there.
+/// Out of play, the same work counts nothing.
+#[test]
+fn a_load_forced_onto_the_frames_thread_counts_by_kind() {
+    use sapphire_core::frame_loads::{self, FrameLoads, InPlay};
+
+    let since = |start: FrameLoads| {
+        let now = frame_loads::loads();
+        (now.reads - start.reads, now.decodes - start.decodes, now.builds - start.builds)
+    };
+    let pack = write_pack(character()).unwrap();
+    let decode_and_check = || {
+        let bytes = crate::pack::PackReader::new(&pack).unwrap().read(id(MESH)).unwrap();
+        AssetKind::Mesh.references(&bytes).unwrap();
+    };
+    let start = frame_loads::loads();
+    let (mut server, _) = serve(character(), unlimited());
+    let _mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
+    decode_and_check();
+    assert_eq!(since(start), (0, 0, 0), "out of play");
+
+    let (mut server, _) = serve(character(), unlimited());
+    let start = frame_loads::loads();
+    let in_play = InPlay::begin();
+    // The mesh, its material and their texture, each read in place; their decodes run on the workers.
+    let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
+    assert_eq!(since(start), (3, 0, 0), "the reads");
+    decode_and_check();
+    assert_eq!(since(start), (3, 1, 1), "a decode and a check");
+    drop(in_play);
+    server.finish(&mesh, |_| Ok(())).unwrap();
+    assert_eq!(since(start), (3, 1, 1), "out of play again");
+}

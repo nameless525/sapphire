@@ -44,6 +44,11 @@
 //! (`fight_bench::DrawnCounts`, M5 X4): what CI's scale lane holds. So does a zone stage standing still under
 //! `--draw-every` (M5 C11): a view held, such as a crowd's densest.
 //!
+//! From its first frame to its last a bench's thread is the frame's, in play (`sapphire_core::frame_loads`, exit
+//! test 2): what it reads, decodes or checks of an asset meanwhile is counted, and a zone stage's walk logs it
+//! (`frame_thread_loads=`, by kind) and as the count row `frame thread loads`, whose budget is 0. A fight's bench
+//! does the same from its first frame, the audio and stage ready.
+//!
 //! Every bench first logs the class its OS schedules its threads in, the main thread's and the compute pool's,
 //! then asks for the main thread to be scheduled as user-interactive, as a game the user started is
 //! ([`schedule`]): a run started from a background shell would otherwise measure what the shell's class allows.
@@ -51,6 +56,7 @@
 use std::time::Duration;
 
 use sapphire_core::alloc;
+use sapphire_core::frame_loads::{self, FrameLoads, InPlay};
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::{
     CHARACTER_PREPASS, DISTORTION_PASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, debug_draw, debug_view,
@@ -86,6 +92,8 @@ struct ZoneWalk {
     /// The most the pools have held.
     texture_peak: u64,
     mesh_peak: u64,
+    /// The frame's thread's loads in play as the walk began (exit test 2, `sapphire_core::frame_loads`).
+    loads: FrameLoads,
 }
 
 impl ZoneWalk {
@@ -111,6 +119,7 @@ impl ZoneWalk {
         let at = |frames: &[Duration], p: usize| frames[(frames.len() - 1) * p / 100].as_secs_f64() * 1e6;
         let settings = options.stream.settings(stage.quality.active().id);
         let builds = stage.renderer.stats().pipelines;
+        let (now, then) = (frame_loads::loads(), self.loads);
         tracing::info!(
             target: LOG_TARGET,
             frames = self.streaming.len(),
@@ -135,6 +144,10 @@ impl ZoneWalk {
             warmed_off_frame = builds.warmed_off_frame,
             frame_thread = builds.frame_thread_builds,
             frame_waits = builds.frame_waits,
+            frame_thread_loads = now.total() - then.total(),
+            frame_thread_reads = now.reads - then.reads,
+            frame_thread_decodes = now.decodes - then.decodes,
+            frame_thread_builds = now.builds - then.builds,
             "zone walk"
         );
     }
@@ -225,7 +238,9 @@ pub(crate) fn run(
     let mut anim_ik = 0_u64;
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
-    let mut zone_walk = ZoneWalk::default();
+    // In play from the first frame, the stage built: what this thread loads from now on counts (exit test 2).
+    let in_play = InPlay::begin();
+    let mut zone_walk = ZoneWalk { loads: frame_loads::loads(), ..ZoneWalk::default() };
     let spin = options.ui_screen.as_ref().map_or(0.0, |shown| shown.spin);
     // `--draw-every`, on a zone (M3 K1): every frame steps, streams, prepares and records, and one in `n` runs its
     // graph, so a pipeline any of them builds still counts, on the frame it's built or the next one drawn.
@@ -309,6 +324,7 @@ pub(crate) fn run(
         0 => "untimed".to_owned(),
         timed => format!("{:.1}", micros(gpu_span / timed)),
     };
+    drop(in_play);
     stage.lose_frames = false;
     zone_walk.log(&stage, options);
     if let Some(drawn) = &drawn {

@@ -56,6 +56,10 @@ pub(crate) struct Counted {
     pub admitted: u64,
     pub reads_held: u64,
     pub decoded_waiting: u64,
+    /// Loads the frame's thread did in play since the last frame counted (exit test 2,
+    /// `sapphire_core::frame_loads`): reads, decodes and checks, which the asset server's workers do. The bench
+    /// fills it in; [`Self::of`] leaves it 0.
+    pub frame_thread_loads: u64,
     /// The texture and mesh pools' bytes, and what every pool held over its budget, in use.
     pub texture_pool: u64,
     pub mesh_pool: u64,
@@ -291,7 +295,7 @@ const GROUPS: [&str; 13] = [
 /// and the main view's switches, M5 D4), the state the mesh passes changed, the instanced runs,
 /// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's and the
 /// characters' capsules by cluster.
-pub(crate) const COUNT_ROWS: [CountRow; 88] = [
+pub(crate) const COUNT_ROWS: [CountRow; 89] = [
     // Every call the frame submitted, across all passes: m5-plan §3's second row, with no budget.
     row(FRAME, "draw calls", |c| u64::from(c.passes.total().draws)),
     row(FRAME, "triangles", |c| c.passes.total().triangles),
@@ -381,6 +385,13 @@ pub(crate) const COUNT_ROWS: [CountRow; 88] = [
     row(ASSETS, "bytes admitted", |c| c.admitted),
     row(ASSETS, "bytes decoded waiting", |c| c.decoded_waiting),
     row(ASSETS, "reads held", |c| c.reads_held),
+    // Exit test 2: nothing loads on the frame's thread, on any tier.
+    CountRow {
+        group: ASSETS,
+        name: "frame thread loads",
+        read: |c| c.frame_thread_loads,
+        budget: [Some(0); 4],
+    },
     row(ASSETS, "texture bytes raised", |c| c.raised),
     row(ASSETS, "bytes given back", |c| c.given_back),
     row(ASSETS, "mesh pool capacity", |c| c.mesh_pool_capacity),
@@ -497,16 +508,19 @@ fn rows<'a, I: Iterator<Item = Counting<'a>>>(frames: impl Fn() -> I, phase: &st
 }
 
 /// What a plain bench of a walk drew, frame by frame (see the module docs): every frame's asset server is
-/// read, for what the next admitted, and a drawn frame's counts kept.
+/// read, for what the next admitted, and a drawn frame's counts kept. A drawn frame's loads on the frame's
+/// thread are those since the last drawn frame, so none done on a frame that wasn't drawn goes uncounted.
 pub(crate) struct DrawnCounts {
     frames: Vec<(Counted, u64, Option<f32>)>,
     assets: AssetStats,
+    loads: u64,
 }
 
 impl DrawnCounts {
     /// Before the bench's first frame, with room for `frames` drawn.
     pub(crate) fn new(stage: &Stage, frames: usize) -> Self {
-        Self { frames: Vec::with_capacity(frames), assets: stage.content.stats() }
+        let loads = sapphire_core::frame_loads::loads().total();
+        Self { frames: Vec::with_capacity(frames), assets: stage.content.stats(), loads }
     }
 
     /// After frame `frame`, which ran its graph if `drawn`.
@@ -514,8 +528,11 @@ impl DrawnCounts {
         let assets = stage.content.stats();
         if drawn {
             let streaming = stage.content.texture_streaming_stats();
-            let counted =
-                Counted::of(&stage.renderer.stats(), &assets, &self.assets, &streaming).with_stage(stage);
+            let loads = sapphire_core::frame_loads::loads().total();
+            let counted = Counted {
+                frame_thread_loads: loads - std::mem::replace(&mut self.loads, loads),
+                ..Counted::of(&stage.renderer.stats(), &assets, &self.assets, &streaming).with_stage(stage)
+            };
             self.frames.push((counted, frame, stage.scene.zone_walked()));
         }
         self.assets = assets;
@@ -632,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn budgets_are_spec_section_3_4s_alone() {
+    fn budgets_are_spec_section_3_4s_and_exit_test_2s_alone() {
         // Desktop-High, Desktop-Low, Mobile-High, Mobile-Low; nothing measured.
         let mib = |mib: u64| Some(mib << 20);
         let budgeted: Vec<(&str, [Option<u64>; 4])> = COUNT_ROWS
@@ -646,6 +663,7 @@ mod tests {
                 ("main draws", [Some(2_500), Some(2_500), Some(700), Some(700)]),
                 ("lights", [Some(64), Some(64), Some(8), Some(8)]),
                 ("texture pool bytes", [mib(2_560), mib(2_560), mib(600), mib(400)]),
+                ("frame thread loads", [Some(0); 4]),
             ]
         );
         // The pool's figures are the tier table's, which writes §3.4's row.

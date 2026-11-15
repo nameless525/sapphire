@@ -1432,3 +1432,58 @@ fn the_district_encounter_plays_with_no_hitch_cold_and_warm() {
         assert_eq!(most_people > 0, crowd == "on", "{what}: {most_people} people in view at most");
     }
 }
+
+/// Exit test 2's "nothing loads on the frame's thread" on the benchmark district (M5 Z2): the lane's counting walk
+/// of the `ci` district's tour on Desktop-High, and with textures streaming as a game's do on Desktop-High and
+/// Mobile-Low, read, decode and check nothing on the bench's thread, by the walk's line and its count row.
+#[cfg(feature = "dev")]
+#[test]
+#[ignore = "needs a GPU and the `ci` district beside the cooked content (`cargo xtask bench-content --preset ci --with-content`)"]
+fn walking_the_district_loads_nothing_on_the_frames_thread() {
+    let content = district_content();
+    for (tier, streaming) in
+        [("desktop-high", None), ("desktop-high", Some("on")), ("mobile-low", Some("on"))]
+    {
+        let what = format!("{tier}, texture streaming {}", streaming.unwrap_or("as the lane's"));
+        let mut args = vec![
+            "--bench",
+            "3720",
+            "--draw-every",
+            "7",
+            "--tier",
+            tier,
+            "--size",
+            "320x180",
+            "--zone",
+            "district",
+            "--zone-walk",
+            "tour",
+            "--time-of-day",
+            "19.75",
+            "--no-hot-reload",
+            "--live-link",
+            "off",
+        ];
+        if let Some(streaming) = streaming {
+            args.extend(["--texture-streaming", streaming]);
+        }
+        let output = sandbox(&args, &content);
+        let log = log_of(&output);
+        assert!(output.status.success(), "{what}: {log}");
+        let walk =
+            log.lines().find(|line| line.contains("zone walk")).unwrap_or_else(|| panic!("{what}: {log}"));
+        for part in [
+            "frame_thread_loads=0",
+            "frame_thread_reads=0",
+            "frame_thread_decodes=0",
+            "frame_thread_builds=0",
+        ] {
+            assert!(walk.contains(part), "{what}: {walk}");
+        }
+        let row = log
+            .lines()
+            .find(|line| line.contains("row=\"frame thread loads\""))
+            .unwrap_or_else(|| panic!("{what}: no row: {log}"));
+        assert!(row.contains("count row not exercised"), "{what}: {row}");
+    }
+}

@@ -14,6 +14,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 use std::{error, fmt, io};
 
+use sapphire_core::frame_loads::{self, LoadWork};
 use sapphire_core::target::FormFactor;
 use sapphire_serialize::cooked::AlignedVec;
 use slotmap::SlotMap;
@@ -1227,6 +1228,8 @@ impl AssetServer {
         if self.reads_in_flight == 0 {
             return false;
         }
+        // The calling thread waits for a read or decode.
+        frame_loads::count(LoadWork::Read);
         match self.receiver.recv_timeout(timeout) {
             Ok(completion) => {
                 self.complete(completion);
@@ -1484,16 +1487,21 @@ impl AssetServer {
         let range = toc.stored_range(&entry);
         let sender = self.sender.clone();
         self.reads_in_flight += 1;
-        let done: ReadDone = Box::new(move |result| match result {
-            Ok(stored) => sapphire_jobs::spawn_async(move || {
-                let result = std::panic::catch_unwind(AssertUnwindSafe(|| decode(&toc, &entry, &stored)))
-                    .unwrap_or(Err(LoadError::Panicked { id: entry.id }));
-                // A closed channel means the server is gone, and the result with it.
-                let _ = sender.send(Completion::Asset { key, request, result });
-            }),
-            Err(error) => {
-                let result = Err(LoadError::Io { id: entry.id, message: error.to_string() });
-                let _ = sender.send(Completion::Asset { key, request, result });
+        let done: ReadDone = Box::new(move |result| {
+            // On the thread that read it: the source's IO thread, or the caller's for a source that reads
+            // in place.
+            frame_loads::count(LoadWork::Read);
+            match result {
+                Ok(stored) => sapphire_jobs::spawn_async(move || {
+                    let result = std::panic::catch_unwind(AssertUnwindSafe(|| decode(&toc, &entry, &stored)))
+                        .unwrap_or(Err(LoadError::Panicked { id: entry.id }));
+                    // A closed channel means the server is gone, and the result with it.
+                    let _ = sender.send(Completion::Asset { key, request, result });
+                }),
+                Err(error) => {
+                    let result = Err(LoadError::Io { id: entry.id, message: error.to_string() });
+                    let _ = sender.send(Completion::Asset { key, request, result });
+                }
             }
         });
         match usize::try_from(range.end - range.start) {

@@ -596,6 +596,7 @@ impl Toc {
         decoder: &mut Decoder,
     ) -> Result<AlignedVec, PackError> {
         profiling::scope!("pack::decode_asset");
+        sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Decode);
         let range = self.stored_range(entry);
         if stored.len() as u64 != range.end - range.start {
             return Err(PackError::Truncated {

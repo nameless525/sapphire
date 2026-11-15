@@ -203,6 +203,7 @@ fn checked(
 
 /// Decodes a whole Ogg Vorbis file.
 pub fn decode_vorbis(vorbis: &[u8]) -> Result<DecodedSound, SoundError> {
+    sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Decode);
     let mut samples = Vec::new();
     let format = walk_vorbis(vorbis, |packet| samples.extend_from_slice(packet))?;
     Ok(DecodedSound { sample_rate: format.sample_rate, channels: format.channels, samples })

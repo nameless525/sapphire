@@ -398,6 +398,7 @@ impl AssetKind {
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
+        sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
         let mut references: Vec<AssetId> = match self {
             Self::Mesh => {
                 let mesh = Mesh::read(bytes)?;

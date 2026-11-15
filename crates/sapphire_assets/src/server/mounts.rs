@@ -7,6 +7,8 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use sapphire_core::frame_loads::{self, LoadWork};
+
 use super::handle::SlotKey;
 use super::{
     AssetServer, Completion, LOG_TARGET, LoadError, LoadPriority, MountError, PackFile, PackSource, SlotState,
@@ -78,6 +80,8 @@ impl Drop for OpenPack {
 
 /// Reads a range of `file` and waits for it.
 fn read_now(source: &dyn PackSource, file: PackFile, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+    // The calling thread waits for it, wherever it's read.
+    frame_loads::count(LoadWork::Read);
     let (sender, receiver) = mpsc::sync_channel(1);
     let done = Box::new(move |result| {
         // The receiver waits below, so the send can't fail.

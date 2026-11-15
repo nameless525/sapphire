@@ -814,6 +814,8 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.renderer.set_cull_pose(self.cull_pose);
         self.renderer.set_color_vision(sapphire_render::color_vision::COLOR_VISION.get());
         if self.capture_textures != CaptureTextures::Stream {
+            // It waits for reads by design, as no game frame does: aside from play (exit test 2's count).
+            let _aside = sapphire_core::frame_loads::Aside::begin();
             self.content.finish_texture_levels(&mut self.renderer, &self.gpu);
             // And every reflection probe composed whole, not one a frame (M5 L3).
             self.renderer.finish_reflection_probes();

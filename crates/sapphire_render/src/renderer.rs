@@ -249,10 +249,12 @@ pub struct RenderSettings {
     /// [`RenderStats::levels`] counts the main view's switches.
     pub levels: LevelSettings,
     /// Instanced runs (M5 D2, the `draw::runs` module): equal neighbours in a view's draw list draw
-    /// as one call of several instances. By default the shadow views alone form them, which changes
-    /// no pixel and whose runs don't depend on the order instances were placed in; the prepasses'
-    /// runs and every view's are for the test that compares them and for the bench ([`DrawRuns`]
-    /// says why neither is the default). [`RenderStats::runs`] says what they made.
+    /// as one call of several instances. By default every view forms them in the groups it sorts
+    /// (the shadow views, the main view, the scene prepass and the insets; the main view and the
+    /// insets draw opaque surfaces a call a draw, a Metal finding), which draws what a call a
+    /// draw draws, byte for byte, and whose runs don't depend on the order instances were placed in;
+    /// none, or the shadow views' alone, are for the test that compares them and for the bench.
+    /// [`RenderStats::runs`] says what they made.
     pub draw_runs: DrawRuns,
     /// The characters' capsules by cluster (M5 L18, the `lights` module's `capsule_bins`): each
     /// pixel walks only the shadow and AO capsules that can reach its cluster, and each list holds
@@ -3364,7 +3366,7 @@ impl Renderer {
         let main_depth = if wants_prepass_depth
             && temporal_targets.is_some()
             && pipelines.equal_depth()
-            && draw_runs != DrawRuns::EveryView
+            && !matches!(draw_runs, DrawRuns::EveryView | DrawRuns::EveryViewOpaque)
             && !uncut
         {
             MainDepth::FromPrepass

@@ -56,7 +56,11 @@
 //   what is under a pixel or a texel. Named characters, what they hold, fog cards and inset
 //   instances never cull this way; an ambient character's parts cull together. On the `budget`
 //   district's walk none of them removes a draw: its instances are merged blocks, which span 20
-//   pixels and 50 texels at the least (M5 D3's hand-back), so the calls left over are D2's and D4's.
+//   pixels and 50 texels at the least (M5 D3's hand-back), so the calls left over were D2's and D4's.
+//   Since D2's second change every tier forms runs in every view (`DrawRuns::EveryView`,
+//   `RenderSettings`'s default, not a row here), but the main view draws opaque surfaces a call a
+//   draw (a Metal finding): the scene prepass's calls on the walk fall by a third and the main
+//   pass's don't move, the buildings and the props (m5-plan's D2 row has the counts).
 // - `upscaler` (M5 L14, `sapphire_render::post`'s `upscale` module): how a frame below render scale 1
 //   reaches the output where no temporal AA upsamples it. The phones take `Edge`: post's fused pass writes
 //   the scene's size, then an edge-adaptive upscale and a sharpen (after FSR 1's two passes) take it to the

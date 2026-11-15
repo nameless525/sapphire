@@ -37,8 +37,9 @@
 //! by instance slot rather than by mesh. Each draw record carries its mesh's dequantization, so
 //! the vertex shaders decode any mesh without another binding. Each view compacts a list of its
 //! own every frame (M5 D1, the `draw::lists` module): the shadow views draw a group's
-//! depth-writing static surfaces by mesh, in orders sorted when the list is rebuilt (so a frame
-//! that only moves instances sorts nothing); the views that write colour keep this order.
+//! depth-writing static surfaces by mesh, and the views that write colour the world's by mesh and
+//! material (M5 D2), in orders sorted when the list is rebuilt (so a frame that only moves
+//! instances sorts nothing); the anime characters' surfaces keep this order there.
 //! Sorting transparent draws back to front depends on where things are, so it will run every
 //! frame that has them.
 
@@ -880,7 +881,7 @@ impl DrawList {
             commands[layers].sort_unstable_by_key(|command| (layer(command.material), command.draw_id));
         }
         self.deformed[layers].sort_unstable_by_key(|draw| (layer(draw.material), draw.draw_id));
-        // Then each view's order within its groups (M5 D1): material, mesh, record.
+        // Then each view's order within its groups (M5 D1, D2): mesh, level, submesh, record.
         self.orders.build(&self.commands);
     }
 

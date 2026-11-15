@@ -5,15 +5,23 @@
 //!   ([`Orders`]). Draws already come grouped by pipeline: per position format (or deformed),
 //!   surface variant and set ([`DrawSet`]), each group drawn through one pipeline in a fixed order
 //!   a pass's code walks. Within a group, the views that write depth alone (each cascade, the
-//!   character maps) draw the static depth-writing surfaces by [`DrawKey`]: mesh, then the
-//!   submesh's place, then the draw's record, since there an exact tie in depth writes the same
-//!   depth whichever draws first. **The views that write anything else keep the draw list's order
-//!   (record):** the main view and each inset, whose pass clears its own depth and keeps the
-//!   first-drawn surface at an exact tie, and both prepasses, which write normals, the outline mask
-//!   and the characters' IDs where the same ties fall. Reordering one moves those pixels (spec
-//!   §5.12, 124 of 400 Metal captures under a material-first key). Groups whose order shows in any
-//!   view keep it everywhere: transparent surfaces and eyes' layers blend in it, eyes through hair
-//!   and outline hulls draw at depths that tie, and skinned or morphed instances bind by instance.
+//!   character maps, the spot tiles) draw the static depth-writing surfaces by [`DrawKey`]: mesh,
+//!   then level, then the submesh's place, then the draw's record, since there an exact tie in depth
+//!   writes the same depth whichever draws first. **The views that write colour sort the world's
+//!   surfaces too** (M5 D2's second change): the main view, each inset (and the debug views'
+//!   replays, which walk the main view's kind) and the scene prepass draw the environment's and
+//!   foliage's opaque and cut-out surfaces by mesh, level, the submesh's place, material and record
+//!   (meshes and materials placed by the first record that draws each, [`Rank`], never by handle),
+//!   so equal draws are neighbours, one instanced run, whatever order their instances took their
+//!   slots in, which for a streamed world is the order its cells arrived in. Their pass keeps the
+//!   first-drawn surface at an exact tie in depth (reverse-Z, `Greater`), so at a tie between two
+//!   objects the mesh whose first record comes first shows, as in the record's order before, whichever
+//!   was uploaded first (`an_exact_tie_between_two_objects_follows_the_records_not_the_handles`), and
+//!   runs or none draw the same order. The anime characters' surfaces keep the record's order in every view but
+//!   the shadow views, as does the character prepass, which writes their IDs. Groups whose order
+//!   shows in any view keep it everywhere: transparent surfaces and eyes' layers blend in it, eyes
+//!   through hair and outline hulls draw at depths that tie, and skinned or morphed instances bind
+//!   by instance.
 //! - **A view's list is compacted each frame** ([`ViewList`]): walking its groups in key order, it
 //!   keeps the draws that stand in the view and pass its tests (its instance's culling verdict, M5
 //!   D3's `view_cull`; an outline hull's cutoff, a cascade's casters, a character map's character,
@@ -22,8 +30,9 @@
 //!   keep their capacity, so a warm frame allocates nothing; the shadow views are compacted in one
 //!   walk, beside the world's other views ([`ViewLists::compact_world`]).
 //! - **Then it forms its runs** (M5 D2, the `runs` module), if its view runs ([`DrawRuns`]: by
-//!   default the shadow views alone): neighbours in a static depth-writing group that draw the same
-//!   mesh, level, submesh and material draw as one instanced call, their records listed side
+//!   default every view, each in the groups it sorts, but the opaque surfaces in the main view and
+//!   the insets and opaque foliage in the scene prepass, a Metal finding the `runs` module gives): neighbours in a sorted group that draw the
+//!   same mesh, level, submesh and material draw as one instanced call, their records listed side
 //!   by side in the frame's run records ([`ViewLists::records`]). The world's views form theirs once
 //!   all are compacted, on the calling thread in a fixed order, so the records are the same whether
 //!   the lists compacted in parallel or not.
@@ -35,8 +44,8 @@
 //!   (`SlotCaster::levels`), a character map's from its texel (`SlotCaster::map_level`, M5 D5), 0
 //!   for an inset and for anything that stays whole (`view_cull`'s `whole`). A submesh its
 //!   level simplified away is left out unlisted and uncounted, as a draw outside the group's set
-//!   is. The shadow views draw by (mesh, level, submesh, record): their order built at level 0, and
-//!   a group whose instances of one mesh draw at more than one level sorted again as it's compacted.
+//!   is. A sorted group's order is built at level 0, and a group whose instances of one mesh draw at
+//!   more than one level is sorted again, in place, as it's compacted.
 
 use sapphire_assets::material::MaterialFlags;
 use sapphire_assets::mesh::PositionFormat;
@@ -46,7 +55,7 @@ use super::runs::{DrawRuns, Run, RunStats, RunView, Runs};
 use crate::counts::PassCounts;
 use crate::inset::MAX_INSETS;
 use crate::materials::{MaterialHandle, MaterialRecord};
-use crate::pipelines::{SurfaceVariant, format_index};
+use crate::pipelines::{Shading, SurfaceVariant, format_index};
 use crate::scene::{DeformedDraw, DrawCommand, DrawList};
 use crate::shadows::plan::SlotCaster;
 use crate::shadows::{MAX_CASCADES, MAX_CHARACTER_MAPS, MAX_SPOT_SHADOWS};
@@ -70,16 +79,40 @@ const GROUPS: usize = SOURCES * VARIANTS * SETS;
 /// | field | what | why |
 /// |---|---|---|
 /// | (group) | the pipeline: format or deformed, surface variant, set | held apart, as the list's groups, which a pass walks in its own fixed order |
-/// | `mesh` | the mesh's handle index | the mesh's streams bind once |
+/// | `mesh` | the mesh's handle index in the shadow views; in the views that write colour, its [`Rank`] | the mesh's streams bind once |
 /// | `level` | the level of detail the view draws it at (M5 D4) | a level is its own index ranges, so its own run (M5 D2); built at 0, and sorted again where a frame's levels differ ([`Entry`]) |
-/// | `submesh` | the submesh's place: its first index at level 0 (`DrawCommand::indices`) | each submesh's draws of a level lie side by side, one instanced call (M5 D2); its material comes with it from the mesh |
+/// | `submesh` | the submesh's place: its first index at level 0 (`DrawCommand::indices`) | each submesh's draws of a level lie side by side, one instanced call (M5 D2), in the mesh's authored order |
+/// | `material` | the material's [`Rank`], in the views that write colour (M5 D2's second change); 0 in the shadow views, which bind none | a submesh's material comes with it from the mesh, but an instance may override it: equal draws are neighbours still |
 /// | `draw` | the draw's record (`DrawCommand::draw_id`) | unique in its group, so the order is total and the same whatever sorts it |
+///
+/// Mesh first, not material first (M5 D1 measured both): a mesh's submeshes carry different
+/// materials, so a material-first key binds fewer materials but more than twice the stream buffers,
+/// and scrambles a mesh's authored order; both form the same runs.
+///
+/// The views that write colour order meshes and materials by [`Rank`], not by handle: there the
+/// first-drawn of two surfaces tied exactly in depth shows, and handles are numbered in the order
+/// uploads finish, which differs run to run, so a key by handle drew such ties differently from one
+/// run to the next (M5 D2's second change found it, as goldens that never captured the same twice).
+/// The shadow views write depth alone, where a tie writes the same whichever draws first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct DrawKey {
     pub mesh: u32,
     pub level: u8,
     pub submesh: u32,
+    pub material: u32,
     pub draw: u32,
+}
+
+/// Where the views that write colour place a static command's mesh and material in a group's order
+/// (M5 D2): the first record in the group that draws each. Records follow the instances' slots,
+/// which a scene places the same way every run, so the order of meshes, and of which first-drawn
+/// surface shows at an exact tie, is the same every run too; and as every draw of a mesh shares its
+/// rank, equal draws are still neighbours wherever their instances lie, so the runs and calls don't
+/// follow the slots. Two meshes (or materials) never share a rank: each is a record of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Rank {
+    pub mesh: u32,
+    pub material: u32,
 }
 
 /// The sorted groups' orders: per [`ViewKind`] that sorts, format and depth-writing variant, the
@@ -88,8 +121,14 @@ pub(crate) struct DrawKey {
 #[derive(Debug, Default)]
 pub(crate) struct Orders {
     sorted: [[[Vec<u32>; SORTED]; FORMATS]; KINDS],
+    /// Per format and depth-writing variant, each static command's [`Rank`], in the views that
+    /// write colour's groups (empty elsewhere).
+    ranks: [[Vec<Rank>; SORTED]; FORMATS],
     /// Scratch for the sort, kept so a rebuild allocates nothing new.
     keys: Vec<(DrawKey, u32)>,
+    /// Scratch for the ranks: the first record of each mesh and of each material by handle index,
+    /// `u32::MAX` where none, kept likewise.
+    firsts: [Vec<u32>; 2],
 }
 
 impl Orders {
@@ -97,16 +136,28 @@ impl Orders {
     /// kind that keys them.
     pub(crate) fn build(&mut self, commands: &[[Vec<DrawCommand>; VARIANTS]; FORMATS]) {
         profiling::scope!("Orders::build");
-        let Self { sorted, keys } = self;
+        let Self { sorted, ranks, keys, firsts } = self;
+        for (commands, ranks) in commands.iter().zip(ranks.iter_mut()) {
+            for ((commands, ranks), variant) in commands.iter().zip(ranks).zip(SurfaceVariant::DEPTH_WRITING)
+            {
+                ranks.clear();
+                if sorts_in_colour(variant) {
+                    rank(commands, ranks, firsts);
+                }
+            }
+        }
         for (kind, sorted) in ViewKind::ALL.into_iter().zip(sorted) {
-            for (commands, sorted) in commands.iter().zip(sorted) {
+            for ((commands, sorted), ranks) in commands.iter().zip(sorted).zip(&*ranks) {
                 // The depth-writing variants alone: zip stops at the sorted ones.
-                for (commands, sorted) in commands.iter().zip(sorted) {
+                for (((commands, sorted), variant), ranks) in
+                    commands.iter().zip(sorted).zip(SurfaceVariant::DEPTH_WRITING).zip(ranks)
+                {
                     keys.clear();
                     sorted.clear();
                     let mut keyed = true;
                     for (command, index) in commands.iter().zip(0..) {
-                        let Some(key) = kind.key(command) else {
+                        let rank = ranks.get(index as usize).copied().unwrap_or_default();
+                        let Some(key) = kind.key(variant, command, rank) else {
                             // A kind that keeps the list's order keys nothing, and lists no order.
                             keyed = false;
                             break;
@@ -133,6 +184,37 @@ impl Orders {
     ) -> Option<&[u32]> {
         let sorted = self.sorted[kind_index(kind)][format_index(format)].get(variant.index())?;
         (!sorted.is_empty()).then_some(sorted.as_slice())
+    }
+
+    /// `variant`'s static commands' ranks in `format`, by position, where the views that write
+    /// colour sort them; else none.
+    pub(crate) fn ranks(&self, format: PositionFormat, variant: SurfaceVariant) -> &[Rank] {
+        self.ranks[format_index(format)].get(variant.index()).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// Ranks each of `commands`' meshes and materials by the first record that draws it, into `ranks`
+/// by position, with `firsts` for scratch (left as it was found: every entry `u32::MAX`).
+fn rank(commands: &[DrawCommand], ranks: &mut Vec<Rank>, [meshes, materials]: &mut [Vec<u32>; 2]) {
+    let at = |firsts: &mut Vec<u32>, index: usize| {
+        if firsts.len() <= index {
+            firsts.resize(index + 1, u32::MAX);
+        }
+        index
+    };
+    for command in commands {
+        let mesh = at(meshes, command.mesh.index());
+        meshes[mesh] = meshes[mesh].min(command.draw_id);
+        let material = at(materials, command.material.index());
+        materials[material] = materials[material].min(command.draw_id);
+    }
+    ranks.extend(commands.iter().map(|command| Rank {
+        mesh: meshes[command.mesh.index()],
+        material: materials[command.material.index()],
+    }));
+    for command in commands {
+        meshes[command.mesh.index()] = u32::MAX;
+        materials[command.material.index()] = u32::MAX;
     }
 }
 
@@ -196,22 +278,36 @@ pub(crate) enum ViewKind {
 impl ViewKind {
     const ALL: [Self; 4] = [Self::Main, Self::ScenePrepass, Self::CharacterPrepass, Self::Casters];
 
-    /// **The order's one seam:** the key this kind of view draws `command` by within its group (a
-    /// static depth-writing surface's), or `None` where it keeps the draw list's order, the
-    /// record. A kind answers alike for every command: all keyed, or none.
+    /// **The order's one seam:** the key this kind of view draws `command`, of `variant`'s static
+    /// depth-writing surfaces, by within its group, or `None` where it keeps the draw list's order,
+    /// the record. A kind answers alike for every command of a variant: all keyed, or none.
     ///
     /// - The shadow views write depth alone, which an exact tie writes the same whichever draws
-    ///   first: mesh, then the submesh's place, then record ([`DrawKey`]), so a mesh's streams
-    ///   bind once and each of its submeshes is one run (M5 D2).
-    /// - The main view and each inset keep the record: their pass clears its own depth and keeps
-    ///   the first-drawn surface at an exact tie (reverse-Z, `Greater`), so a reorder moves those
-    ///   pixels. The scene prepass writes normals and the outline mask, and the character prepass
-    ///   the characters' IDs, where the same ties fall: they keep it too. Which reorder they
-    ///   take, and the tests and goldens it moves, is m5-plan D2's to decide, here.
-    pub(crate) fn key(self, command: &DrawCommand) -> Option<DrawKey> {
+    ///   first: mesh, then level, then the submesh's place, then record ([`DrawKey`], material 0),
+    ///   so a mesh's streams bind once and each of its submeshes at a level is one run (M5 D2).
+    /// - The main view (and each inset, and the debug views' replays, which walk its kind) and the
+    ///   scene prepass draw the world's surfaces, the environment's and foliage's, by mesh, level,
+    ///   the submesh's place, material and record (M5 D2's second change), so equal draws are
+    ///   neighbours, one run, whatever order their instances were placed or streamed in, and a
+    ///   mesh's streams bind once. Both use one key, so the scene prepass
+    ///   takes the main view's runs. At an exact tie in depth the first-drawn surface keeps the
+    ///   pixel (reverse-Z, `Greater`), so this order, not the slot's, decides those pixels.
+    /// - Anime character surfaces keep the record in every view but the shadow views: what is held
+    ///   and drawn with a character is few draws, and the character prepass's IDs and the hulls
+    ///   fall where they tie.
+    pub(crate) fn key(self, variant: SurfaceVariant, command: &DrawCommand, rank: Rank) -> Option<DrawKey> {
         match self {
             Self::Casters => Some(caster_key(command, 0)),
+            Self::Main | Self::ScenePrepass if sorts_in_colour(variant) => Some(colour_key(command, 0, rank)),
             Self::Main | Self::ScenePrepass | Self::CharacterPrepass => None,
+        }
+    }
+
+    /// The key this kind draws `command` by at `level`, in a group it sorts ([`Self::key`]).
+    fn key_at(self, command: &DrawCommand, level: u8, rank: Rank) -> DrawKey {
+        match self {
+            Self::Main | Self::ScenePrepass => colour_key(command, level, rank),
+            Self::CharacterPrepass | Self::Casters => caster_key(command, level),
         }
     }
 
@@ -247,9 +343,22 @@ impl ViewKind {
     }
 }
 
+/// Whether the views that write colour sort `variant`'s static surfaces ([`ViewKind::key`]): the
+/// world's, the environment's and foliage's, opaque and cut out.
+pub(crate) fn sorts_in_colour(variant: SurfaceVariant) -> bool {
+    matches!(variant.shading, Shading::Environment | Shading::Foliage)
+        && SurfaceVariant::DEPTH_WRITING.contains(&variant)
+}
+
+/// The colour views' key of `command` drawn at `level`.
+fn colour_key(command: &DrawCommand, level: u8, rank: Rank) -> DrawKey {
+    DrawKey { mesh: rank.mesh, material: rank.material, ..caster_key(command, level) }
+}
+
 /// The shadow views' key of `command` drawn at `level`.
 fn caster_key(command: &DrawCommand, level: u8) -> DrawKey {
     DrawKey {
+        material: 0,
         mesh: to_u32(command.mesh.index()),
         level,
         submesh: command.indices.start,
@@ -429,9 +538,16 @@ impl ViewList {
         self.runs.of(format, variant)
     }
 
-    /// Forms the runs of its static depth-writing surfaces from `list`, listing their records in
-    /// `records`; a group that `twin` lists alike takes `twin`'s runs, if it formed them this frame.
-    fn form_runs(&mut self, list: &DrawList, records: &mut Vec<u32>, twin: Option<&Self>) {
+    /// Forms the runs of the static depth-writing surfaces `view` runs from `list`, listing their
+    /// records in `records`; a group that `twin` formed and lists alike takes `twin`'s runs, if it
+    /// formed them this frame.
+    fn form_runs(
+        &mut self,
+        (view, mode): (RunView, DrawRuns),
+        list: &DrawList,
+        records: &mut Vec<u32>,
+        twin: Option<&Self>,
+    ) {
         let Self { draws, ranges, runs, .. } = self;
         let (draws, ranges): (&[Entry], &[[u32; 2]; GROUPS]) = (draws, ranges);
         let listed = move |format, variant| {
@@ -443,7 +559,7 @@ impl ViewList {
                 twin.group(Source::Static(format), variant, DrawSet::Surfaces)
             })
         });
-        runs.form(listed, twin, list, records);
+        runs.form(view, mode, listed, twin, list, records);
     }
 
     /// The listed draws of `set` of `variant`'s from `source`: positions in the draw list's group,
@@ -494,6 +610,11 @@ impl ViewList {
                         .then(|| list.orders.sorted(kind, format, variant))
                         .flatten();
                     self.compact_group(commands, sorted, set, tests);
+                    if sorted.is_some() {
+                        // Sorted at level 0: in the key's order at the frame's levels (M5 D4).
+                        let ranks = list.orders.ranks(format, variant);
+                        sort_by_level(&mut self.draws[start as usize..], commands, ranks, kind);
+                    }
                 }
                 Source::Deformed => self.compact_group(&list.deformed[variant.index()], None, set, tests),
             }
@@ -742,12 +863,14 @@ impl ViewLists {
             }
         };
         target.compact(kind, &groups[kind_index(kind)], list, tests);
-        let view = match walk {
-            Walk::ScenePrepass | Walk::CharacterPrepass => RunView::Prepass,
-            _ => RunView::Shown,
+        // The character prepasses sort nothing, so form no runs (`runs::runs_in`).
+        let view = match kind {
+            ViewKind::ScenePrepass => RunView::Prepass,
+            ViewKind::Main => RunView::Shown,
+            ViewKind::CharacterPrepass | ViewKind::Casters => return,
         };
         if runs.form_in(view) {
-            target.form_runs(list, records, twin);
+            target.form_runs((view, *runs), list, records, twin);
         }
     }
 
@@ -861,13 +984,12 @@ impl ViewLists {
         maps: usize,
         spots: &[bool; MAX_SPOT_SHADOWS],
     ) {
-        let Self { main, scene, characters, runs, records, .. } = self;
+        let Self { main, scene, runs, records, .. } = self;
         if runs.form_in(RunView::Shown) {
-            main.form_runs(list, records, None);
+            main.form_runs((RunView::Shown, *runs), list, records, None);
         }
         if runs.form_in(RunView::Prepass) {
-            scene.form_runs(list, records, Some(&*main));
-            characters.form_runs(list, records, None);
+            scene.form_runs((RunView::Prepass, *runs), list, records, Some(&*main));
         }
         self.form_caster_runs(list, cascades, maps, spots);
     }
@@ -886,14 +1008,16 @@ impl ViewLists {
         }
         for (cascade, &drawn) in cascades.iter_mut().zip(drawn) {
             if drawn {
-                cascade.form_runs(list, records, None);
+                cascade.form_runs((RunView::Shadow, *runs), list, records, None);
             }
         }
         let maps = maps.min(MAX_CHARACTER_MAPS);
-        map_lists[..maps].iter_mut().for_each(|map| map.form_runs(list, records, None));
+        map_lists[..maps]
+            .iter_mut()
+            .for_each(|map| map.form_runs((RunView::Shadow, *runs), list, records, None));
         for (spot, &drawn) in spot_lists.iter_mut().zip(spots) {
             if drawn {
-                spot.form_runs(list, records, None);
+                spot.form_runs((RunView::Shadow, *runs), list, records, None);
             }
         }
     }
@@ -1046,7 +1170,12 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
                 cascade.ranges[index] = [start, end];
                 if let Source::Static(format) = source {
                     let commands = &list.commands[format_index(format)][variant.index()];
-                    sort_by_level(&mut cascade.draws[start as usize..end as usize], commands);
+                    sort_by_level(
+                        &mut cascade.draws[start as usize..end as usize],
+                        commands,
+                        &[],
+                        ViewKind::Casters,
+                    );
                 }
             }
         }
@@ -1059,19 +1188,28 @@ fn compact_casters<P: Fn(u32) -> SlotCaster>(
                 spot.ranges[index] = [start, end];
                 if let Source::Static(format) = source {
                     let commands = &list.commands[format_index(format)][variant.index()];
-                    sort_by_level(&mut spot.draws[start as usize..end as usize], commands);
+                    sort_by_level(
+                        &mut spot.draws[start as usize..end as usize],
+                        commands,
+                        &[],
+                        ViewKind::Casters,
+                    );
                 }
             }
         }
     }
 }
 
-/// Puts a cascade's group of static casters, listed in their key's order at level 0, in the key's
-/// order at their levels (M5 D4): only where one mesh's instances draw at more than one level, as
-/// they rarely do (a cascade chooses by its texel alone, so only their stretch tells them apart).
-/// A list built by hand keeps its order.
-fn sort_by_level(entries: &mut [Entry], commands: &[DrawCommand]) {
-    let key = |entry: &Entry| commands.get(entry.at as usize).map(|command| caster_key(command, entry.level));
+/// Puts a group of static draws that `kind` sorts, listed in its key's order at level 0, in the
+/// key's order at their levels (M5 D4): only where one mesh's instances draw at more than one level.
+/// A cascade's rarely do (it chooses by its texel alone, so only their stretch tells them apart);
+/// the main view's and the scene prepass's do wherever the view reaches past a level's distance.
+/// In place, so it allocates nothing. A list built by hand keeps its order.
+fn sort_by_level(entries: &mut [Entry], commands: &[DrawCommand], ranks: &[Rank], kind: ViewKind) {
+    let key = |entry: &Entry| {
+        let rank = ranks.get(entry.at as usize).copied().unwrap_or_default();
+        commands.get(entry.at as usize).map(|command| kind.key_at(command, entry.level, rank))
+    };
     if entries.is_sorted_by_key(key) {
         return;
     }

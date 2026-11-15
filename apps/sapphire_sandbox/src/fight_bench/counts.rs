@@ -295,7 +295,7 @@ const GROUPS: [&str; 13] = [
 /// and the main view's switches, M5 D4), the state the mesh passes changed, the instanced runs,
 /// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's and the
 /// characters' capsules by cluster.
-pub(crate) const COUNT_ROWS: [CountRow; 89] = [
+pub(crate) const COUNT_ROWS: [CountRow; 90] = [
     // Every call the frame submitted, across all passes: m5-plan §3's second row, with no budget.
     row(FRAME, "draw calls", |c| u64::from(c.passes.total().draws)),
     row(FRAME, "triangles", |c| c.passes.total().triangles),
@@ -309,6 +309,8 @@ pub(crate) const COUNT_ROWS: [CountRow; 89] = [
         read: |c| u64::from(c.passes.main.draws),
         budget: [Some(2_500), Some(2_500), Some(700), Some(700)],
     },
+    // The instances those calls draw (M5 D2).
+    row(PASSES, "main instances", |c| u64::from(c.passes.main.instances)),
     row(PASSES, "main triangles", |c| c.passes.main.triangles),
     row(PASSES, "character prepass draws", |c| u64::from(c.passes.character_prepass.draws)),
     row(PASSES, "scene prepass draws", |c| u64::from(c.passes.scene_prepass.draws)),

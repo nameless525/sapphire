@@ -44,12 +44,13 @@ fn slab(first_vertex: u32) -> MeshStreams {
 }
 
 /// Handles 10 to 19 are opaque environment materials, 20 an anime character body with a hull, 30
-/// a transparent environment material and 40 an eye's layer.
+/// a transparent environment material, 40 an eye's layer and 50 opaque foliage.
 fn kind(handle: MaterialHandle) -> (MaterialFamily, MaterialFlags) {
     match handle.index() {
         20 => (MaterialFamily::AnimeCharacter, MaterialFlags::OUTLINE),
         30 => (MaterialFamily::Environment, MaterialFlags::TRANSPARENT),
         40 => (MaterialFamily::AnimeCharacter, MaterialFlags::EYE | MaterialFlags::TRANSPARENT),
+        50 => (MaterialFamily::Foliage, MaterialFlags::empty()),
         _ => (MaterialFamily::Environment, MaterialFlags::empty()),
     }
 }
@@ -129,10 +130,11 @@ fn mixed() -> (Vec<MeshRecord>, InstanceSlots) {
     (meshes, slots(&[2, 0, 1, 2, 0, 1]))
 }
 
-/// Each kind of view holds its order: the views that write anything but depth (the main view, an
-/// inset, both prepasses) draw a group in the record's order, where an exact tie in depth keeps
-/// the first-drawn surface; the shadow views (each cascade, each character map) by mesh, then the
-/// submesh's place, then record, so each mesh's submesh is one run (m5-plan D2).
+/// Each kind of view holds its order: the views that write colour (the main view, an inset, the scene
+/// prepass) draw the world's surfaces by mesh, the submesh's place, material, then record (M5 D2's
+/// second change), and the character prepass the characters' in the record's order; the shadow views
+/// (each cascade, each character map) by mesh, then the submesh's place, then record, so each mesh's
+/// submesh is one run (m5-plan D2).
 #[test]
 fn each_kind_of_view_holds_its_order() {
     let (meshes, slots) = mixed();
@@ -154,8 +156,8 @@ fn each_kind_of_view_holds_its_order() {
         let view = lists.list(walk).expect("listed");
         assert_eq!(
             drawn(&list, view, environment(), DrawSet::Surfaces),
-            records,
-            "{walk:?}: the record's order"
+            [(0, 12, 2), (4, 12, 2), (1, 12, 0), (5, 12, 0), (2, 11, 0), (6, 11, 0), (3, 11, 1), (7, 11, 1)],
+            "{walk:?}: mesh (by its first record), the submesh's place, material, record"
         );
     }
     // The character prepass draws the characters' surfaces alone, in the record's order too.
@@ -192,8 +194,30 @@ fn each_kind_of_view_holds_its_order() {
     assert_eq!(records, [5, 6, 3, 0], "a character map: mesh, then record");
 }
 
+/// The views that write colour order meshes and materials by the first record that draws each, not
+/// by handle, which uploads number in the order they finish (it differs run to run, and the order
+/// decides an exact tie between two objects): the same instances, their meshes and materials
+/// numbered the other way round, draw in the same order (M5 D2).
+#[test]
+fn the_colour_order_doesnt_follow_the_handles() {
+    let (a, b) = (mesh(slab(0), vec![submesh(0, 10)]), mesh(slab(4), vec![submesh(3, 11)]));
+    let one = built(&[a.clone(), b.clone()], &slots(&[1, 0, 1, 0]));
+    let other = built(&[b, a], &slots(&[0, 1, 0, 1]));
+    let records = |list: &DrawList| {
+        let mut lists = ViewLists::default();
+        lists.begin_frame(DrawRuns::EveryView);
+        lists.compact_view(Walk::Main, list, &world(&[], &[], None));
+        let main = lists.list(Walk::Main).expect("listed");
+        let records: Vec<u32> =
+            drawn(list, main, environment(), DrawSet::Surfaces).iter().map(|d| d.0).collect();
+        records
+    };
+    assert_eq!(records(&one), [0, 2, 1, 3], "the mesh drawn first first");
+    assert_eq!(records(&one), records(&other));
+}
+
 /// Keys are unique and total: a rebuild gives the same order, and draws of one mesh keep their
-/// records' order. The views that keep the record list no order of their own.
+/// records' order. The character prepass, which keeps the record, lists no order of its own.
 #[test]
 fn the_order_is_stable() {
     let (meshes, slots) = mixed();
@@ -204,15 +228,28 @@ fn the_order_is_stable() {
             list.orders.sorted(kind, UNORM16, environment()),
             again.orders.sorted(kind, UNORM16, environment())
         );
-        assert_eq!(list.orders.sorted(kind, UNORM16, environment()).is_some(), kind == ViewKind::Casters);
+        assert_eq!(
+            list.orders.sorted(kind, UNORM16, environment()).is_some(),
+            kind != ViewKind::CharacterPrepass
+        );
     }
-    let mut keys: Vec<DrawKey> = list.commands[0][environment().index()]
-        .iter()
-        .filter_map(|command| ViewKind::Casters.key(command))
-        .collect();
-    keys.sort();
-    keys.dedup_by_key(|key| key.mesh);
-    assert_eq!(keys.len(), 3, "three runs: meshes 0, 1 and 2");
+    let ranks = list.orders.ranks(UNORM16, environment());
+    let keys = |kind: ViewKind| {
+        let mut keys: Vec<DrawKey> = list.commands[0][environment().index()]
+            .iter()
+            .zip(ranks)
+            .filter_map(|(command, &rank)| kind.key(environment(), command, rank))
+            .map(|key| DrawKey { draw: 0, ..key })
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys.len()
+    };
+    assert_eq!(keys(ViewKind::Casters), 4, "four runs: mesh 0's two submeshes, meshes 1 and 2");
+    assert_eq!(keys(ViewKind::Main), 4, "and the same four with their materials");
+    let body = SurfaceVariant::character(Coverage::Opaque, Part::Body);
+    let command = &list.commands[0][environment().index()][0];
+    assert_eq!(ViewKind::Main.key(body, command, Rank::default()), None, "the characters' keep the record");
 }
 
 /// Groups whose order can show keep the draw list's: transparent surfaces, eyes' layers (in their
@@ -406,63 +443,63 @@ fn a_cascade_runs_each_meshs_submesh() {
     assert_eq!(lists.records().len(), 8);
 }
 
-/// The views that write colour keep the record's order (M5 D2's first change), so runs form there only
-/// where equal draws are neighbours already; the scene prepass takes the main view's runs and lists no
-/// records of its own; runs off, or dropped, form none; with the prepasses' runs the main view forms
-/// none and the scene prepass forms its own; by default neither forms any.
+/// The views that write colour put equal draws side by side wherever their instances lie (M5 D2's
+/// second change), and the scene prepass runs them; the main view and the insets draw the world's
+/// opaque surfaces a call a draw (`runs::calls_alone_in_colour`, a Metal finding), in the same order.
+/// Runs off, or dropped, form none, and the same draws are listed in the same order; with the shadow
+/// views' alone neither forms any.
 #[test]
-fn the_main_view_runs_equal_neighbours_alone() {
+fn the_colour_views_run_equal_draws_wherever_they_lie() {
     let (meshes, _) = mixed();
-    // Meshes 1 and 2 have a submesh each, in materials 11 and 12: records 0 to 6 in slot order.
+    // Meshes 1 and 2 have a submesh each, in materials 11 and 12: records 0 to 6 in slot order,
+    // mesh 1's 0, 1 and 3.
     let slots = slots(&[1, 1, 2, 1, 2, 2, 2]);
     let list = built(&meshes, &slots);
     let mut lists = ViewLists::default();
     let tests = world(&[], &[], None);
     lists.begin_frame(DrawRuns::EveryView);
     lists.compact_view(Walk::Main, &list, &tests);
-    let main = lists.list(Walk::Main).expect("listed").runs(UNORM16, environment()).to_vec();
-    let counts: Vec<u32> = main.iter().map(|run| run.count).collect();
-    assert_eq!(counts, [2, 1, 1, 3]);
-    assert_eq!(run_records(&lists, &main), [vec![0, 1], vec![2], vec![3], vec![4, 5, 6]]);
-    assert_eq!(lists.records(), [0, 1, 4, 5, 6], "runs of one bind their own record");
+    let main = lists.list(Walk::Main).expect("listed");
+    assert!(main.runs(UNORM16, environment()).is_empty(), "the buildings, a call a draw");
+    let order = drawn(&list, main, environment(), DrawSet::Surfaces);
+    let records: Vec<u32> = order.iter().map(|d| d.0).collect();
+    assert_eq!(records, [0, 1, 3, 2, 4, 5, 6], "side by side");
     lists.compact_view(Walk::ScenePrepass, &list, &tests);
-    let scene = lists.list(Walk::ScenePrepass).expect("listed").runs(UNORM16, environment());
-    assert_eq!(scene, main, "the main view's runs");
-    assert_eq!(lists.records().len(), 5, "and its records");
+    let scene = lists.list(Walk::ScenePrepass).expect("listed").runs(UNORM16, environment()).to_vec();
+    let counts: Vec<u32> = scene.iter().map(|run| run.count).collect();
+    assert_eq!(counts, [3, 4]);
+    assert_eq!(run_records(&lists, &scene), [vec![0, 1, 3], vec![2, 4, 5, 6]]);
+    assert_eq!(lists.records(), [0, 1, 3, 2, 4, 5, 6]);
     let stats = lists.run_stats();
-    assert_eq!((stats.runs, stats.instances, stats.longest, stats.median), (4, 10, 3, 2), "{stats:?}");
-    assert_eq!(stats.record_bytes, 5 * 48);
+    assert_eq!((stats.runs, stats.instances, stats.longest, stats.median), (2, 7, 4, 3), "{stats:?}");
+    assert_eq!(stats.record_bytes, 7 * 48);
 
     lists.drop_runs();
-    assert!(lists.list(Walk::Main).expect("listed").runs(UNORM16, environment()).is_empty());
+    assert!(lists.list(Walk::ScenePrepass).expect("listed").runs(UNORM16, environment()).is_empty());
     assert!(lists.records().is_empty());
     lists.begin_frame(DrawRuns::Off);
     lists.compact_view(Walk::Main, &list, &tests);
-    assert!(lists.list(Walk::Main).expect("listed").runs(UNORM16, environment()).is_empty(), "off");
-    assert_eq!(lists.list(Walk::Main).expect("listed").len(), 7, "every draw still listed");
-
-    lists.begin_frame(DrawRuns::ShadowsAndPrepasses);
-    lists.compact_view(Walk::Main, &list, &tests);
-    lists.compact_view(Walk::InsetMain(0), &list, &tests);
     lists.compact_view(Walk::ScenePrepass, &list, &tests);
-    for walk in [Walk::Main, Walk::InsetMain(0)] {
-        assert!(lists.list(walk).expect("listed").runs(UNORM16, environment()).is_empty(), "{walk:?}");
-    }
-    let scene = lists.list(Walk::ScenePrepass).expect("listed").runs(UNORM16, environment());
-    assert_eq!(scene, main, "the scene prepass's own runs");
-    assert_eq!(lists.records(), [0, 1, 4, 5, 6], "and records");
+    assert!(lists.list(Walk::ScenePrepass).expect("listed").runs(UNORM16, environment()).is_empty(), "off");
+    let off = lists.list(Walk::Main).expect("listed");
+    assert_eq!(drawn(&list, off, environment(), DrawSet::Surfaces), order, "every draw, in the same order");
 
-    lists.begin_frame(DrawRuns::default());
-    for walk in [Walk::Main, Walk::ScenePrepass, Walk::CharacterPrepass] {
+    lists.begin_frame(DrawRuns::Shadows);
+    for walk in [Walk::Main, Walk::InsetMain(0), Walk::ScenePrepass, Walk::CharacterPrepass] {
         lists.compact_view(walk, &list, &tests);
         assert!(lists.list(walk).expect("listed").runs(UNORM16, environment()).is_empty(), "{walk:?}");
     }
-    assert!(lists.records().is_empty(), "by default, the shadow views alone");
+    assert!(lists.records().is_empty(), "the shadow views alone");
+
+    lists.begin_frame(DrawRuns::default());
+    lists.compact_view(Walk::InsetMain(0), &list, &tests);
+    let inset = lists.list(Walk::InsetMain(0)).expect("listed");
+    assert!(inset.runs(UNORM16, environment()).is_empty(), "an inset, as the main view");
+    assert_eq!(drawn(&list, inset, environment(), DrawSet::Surfaces), order, "in its order");
 }
 
 /// A run is of one level of detail (M5 D4): two draws of one mesh's submesh at different levels draw
-/// different index ranges, so they never join, in a view that keeps the record's order or in a shadow
-/// view, whose key puts each level's draws side by side.
+/// different index ranges, so they never join; every view's key puts each level's draws side by side.
 #[test]
 fn a_run_is_of_one_level() {
     let mut meshes = vec![mesh(slab(0), vec![submesh(0, 10)])];
@@ -472,14 +509,16 @@ fn a_run_is_of_one_level() {
     let list = built(&meshes, &slots(&[0, 0, 0, 0]));
     let mut lists = ViewLists::default();
     lists.begin_frame(DrawRuns::EveryView);
-    // The main view draws slots 1 and 3 at level 1: no two neighbours of one level.
+    // The scene prepass (the main view's tests) draws slots 1 and 3 at level 1, the others at 0: a
+    // run of each level.
     let culled = SlotCull::at_levels(&[0, 1, 0, 1]);
     let tests = ViewTests { levels: Some(Culled::new(&culled)), ..world(&[], &[], None) };
-    lists.compact_view(Walk::Main, &list, &tests);
-    let main = lists.list(Walk::Main).expect("listed");
-    assert_eq!(levels(main, &list, DrawSet::Surfaces), [(0, 0), (1, 1), (2, 0), (3, 1)]);
-    let counts: Vec<u32> = main.runs(UNORM16, environment()).iter().map(|run| run.count).collect();
-    assert_eq!(counts, [1, 1, 1, 1], "equal neighbours but for their level");
+    lists.compact_view(Walk::ScenePrepass, &list, &tests);
+    let scene = lists.list(Walk::ScenePrepass).expect("listed");
+    let order = levels(scene, &list, DrawSet::Surfaces);
+    assert_eq!(order, [(0, 0), (2, 0), (1, 1), (3, 1)], "mesh, level");
+    let counts: Vec<u32> = scene.runs(UNORM16, environment()).iter().map(|run| run.count).collect();
+    assert_eq!(counts, [2, 2], "one run a level");
     // Cascade 0 draws slots 0 and 1 at level 1 and the others at 0: a run of each level.
     let plan = |slot: u32| SlotCaster { levels: [u8::from(slot < 2), 0, 0, 0], ..caster(1, None) };
     lists.compact_casters(
@@ -494,10 +533,11 @@ fn a_run_is_of_one_level() {
     assert_eq!(run_records(&lists, runs), [[2, 3], [0, 1]]);
 }
 
-/// By default (`DrawRuns::Shadows`), the runs and calls of every view don't depend on the order the
+/// By default (`DrawRuns::EveryView`), the runs and calls of every view don't depend on the order the
 /// instances were placed in, which for a streamed world is the order its cells arrived in: the shadow
-/// views key their draws by mesh, and the views that keep the record's order form no runs. The same
-/// instances in two slot orders make the same run stats, and each view the same calls.
+/// views key their draws by mesh, the main view and the scene prepass by mesh and material, and the
+/// character prepass, which keeps the record's order, forms no runs. The same instances in three slot
+/// orders make the same run stats, and each view the same calls.
 #[test]
 fn default_runs_and_calls_dont_follow_the_slot_order() {
     let (meshes, _) = mixed();
@@ -527,36 +567,55 @@ fn default_runs_and_calls_dont_follow_the_slot_order() {
     };
     let alternating = calls(&[2, 0, 1, 2, 0, 1, 0, 0]);
     let grouped = calls(&[0, 0, 0, 0, 1, 1, 2, 2]);
+    let reversed = calls(&[2, 2, 1, 1, 0, 0, 0, 0]);
     assert_eq!(alternating, grouped);
-    // Eight instances, twelve draws a view: a cascade's runs are each mesh's submesh, of four, four,
-    // two and two instances.
-    assert_eq!(alternating.0, [12, 12, 4, 4], "{alternating:?}");
-    assert_eq!(alternating.1, (16, 48, 4, 2), "four runs a cascade");
+    assert_eq!(alternating, reversed);
+    // Eight instances, twelve draws a view: each view's runs are each mesh's submesh, of four, four,
+    // two and two instances, but the main view's, which draws the world's opaque surfaces a call a
+    // draw (`runs::calls_alone_in_colour`).
+    assert_eq!(alternating.0, [12, 4, 4, 4], "{alternating:?}");
+    assert_eq!(alternating.1, (20, 60, 4, 2), "four runs a view, in five views");
+    assert_eq!(alternating.2, 5 * 12 * 48, "records for each but the main view");
 }
 
 /// Groups whose order shows form no runs, whatever their neighbours: transparent surfaces, outline
-/// hulls (a set apart from the surfaces) and skinned instances draw a call a draw.
+/// hulls (a set apart from the surfaces) and skinned instances draw a call a draw; and in the views
+/// that write colour, the anime characters' surfaces, which keep the record's order, too. The world's
+/// opaque surfaces run.
 #[test]
 fn only_static_depth_writing_surfaces_run() {
     let meshes = vec![
         mesh(slab(0), vec![submesh(0, 30)]),
         mesh(slab(4), vec![submesh(3, 20)]),
         mesh(MeshStreams::Deformable(DeformSource::default()), vec![submesh(6, 20)]),
+        mesh(slab(8), vec![submesh(9, 10)]),
+        mesh(slab(12), vec![submesh(12, 50)]),
     ];
-    let list = built(&meshes, &slots(&[0, 0, 1, 1, 2, 2]));
+    let list = built(&meshes, &slots(&[0, 0, 1, 1, 2, 2, 3, 3, 4, 4]));
     let mut lists = ViewLists::default();
     lists.begin_frame(DrawRuns::EveryView);
-    lists.compact_view(Walk::Main, &list, &world(&[], &[true; 6], None));
+    lists.compact_view(Walk::Main, &list, &world(&[], &[true; 10], None));
+    lists.compact_view(Walk::ScenePrepass, &list, &world(&[], &[true; 10], None));
     let main = lists.list(Walk::Main).expect("listed");
     let transparent = SurfaceVariant::environment(Coverage::Transparent);
     assert_eq!(main.group(Source::Static(UNORM16), transparent, DrawSet::Surfaces).len(), 2);
     assert!(main.runs(UNORM16, transparent).is_empty(), "blended draws a call a draw");
     let body = SurfaceVariant::character(Coverage::Opaque, Part::Body);
     assert_eq!(main.group(Source::Static(UNORM16), body, DrawSet::Outlines).len(), 2, "two hulls");
-    let bodies: Vec<u32> = main.runs(UNORM16, body).iter().map(|run| run.count).collect();
-    assert_eq!(bodies, [2], "the bodies' surfaces run; their hulls are drawn one by one");
+    assert_eq!(main.group(Source::Static(UNORM16), body, DrawSet::Surfaces).len(), 2, "two bodies");
+    assert!(main.runs(UNORM16, body).is_empty(), "the bodies' surfaces, a call a draw, and their hulls");
     assert_eq!(main.group(Source::Deformed, body, DrawSet::Surfaces).len(), 2, "skinned, one by one");
-    assert_eq!(lists.records(), [2, 3], "the bodies' alone");
+    // The world's opaque surfaces are sorted in both colour views but run in the scene prepass
+    // alone, and opaque foliage in neither (`runs::calls_alone_in_colour`, a Metal finding).
+    assert!(main.runs(UNORM16, environment()).is_empty(), "the buildings, a call a draw in the main view");
+    let scene = lists.list(Walk::ScenePrepass).expect("listed");
+    let opaque: Vec<u32> = scene.runs(UNORM16, environment()).iter().map(|run| run.count).collect();
+    assert_eq!(opaque, [2], "and one run in the scene prepass");
+    let bark = SurfaceVariant::foliage(Coverage::Opaque);
+    assert_eq!(drawn(&list, main, bark, DrawSet::Surfaces).len(), 2);
+    assert!(main.runs(UNORM16, bark).is_empty(), "opaque foliage, a call a draw in the main view");
+    assert!(scene.runs(UNORM16, bark).is_empty(), "and in the scene prepass");
+    assert_eq!(lists.records(), [6, 7], "theirs alone");
 }
 
 /// The frame's run stats: of the runs of more than one draw, their count, instances, longest and
@@ -665,8 +724,8 @@ fn each_view_lists_its_levels() {
         let view = lists.list(walk).expect("listed");
         assert_eq!(
             levels(view, &list, DrawSet::Surfaces),
-            [(0, 0), (1, 0), (2, 1), (3, 1), (5, 0)],
-            "{walk:?}: record 4's submesh has no triangles at level 1"
+            [(0, 0), (1, 0), (3, 1), (5, 0), (2, 1)],
+            "{walk:?}: mesh, level, submesh; record 4's submesh has no triangles at level 1"
         );
         assert_eq!(lists.left_out(walk), PassCounts::default(), "{walk:?}: and isn't counted");
     }

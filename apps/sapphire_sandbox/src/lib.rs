@@ -392,11 +392,11 @@
 //! - `--cull-thresholds <distance>,<pixels>,<texels>`: distance and size culling's thresholds instead of the
 //!   tier's (M5 D3, `RenderSettings::culling`), for the walks that choose them: meters past which nothing is
 //!   drawn (0 for none), the least output pixels and the least cascade texels an instance's bounds must span.
-//! - `--draw-runs off|shadows|prepasses|every`: which views draw equal neighbours in their draw list as
-//!   one instanced call (M5 D2, `RenderSettings::draw_runs`): `shadows`, the shadow views alone, is the
-//!   tiers' and changes no pixel; `off` draws a call a draw, `prepasses` runs both prepasses too (their
-//!   runs follow the order streamed cells arrive in) and `every` the main view and the insets too
-//!   (pixels move on Metal), for benches that compare them.
+//! - `--draw-runs off|shadows|every|every-opaque`: which views draw equal neighbours in their draw list as one
+//!   instanced call (M5 D2, `RenderSettings::draw_runs`): `every`, the tiers', runs the shadow views, the
+//!   world's surfaces in the scene prepass and their cut-out ones in the main view and the insets, and draws what
+//!   `off` draws a call a draw, byte for byte; `shadows` runs the shadow views alone, for benches that compare
+//!   them; `every-opaque` runs the main view's buildings too, which moves a few pixels on Metal, to count them.
 //! - `--texture-streaming on|off`: stream textures by what the views draw, inside the tier's pool (M5 M5,
 //!   `Content::set_texture_streaming`), or want every texture a material binds whole, as before. A window and
 //!   `--bench` stream unless told off; a capture doesn't unless told on, and then draws a frame at its tick

@@ -3,30 +3,29 @@
 //! and material through the same pipeline, draw as one call of instances `0..n`.
 //!
 //! - **Where runs form:** in the groups of static depth-writing surfaces (a position format, a
-//!   surface variant that writes depth, the surfaces set), from neighbours in the list's order,
-//!   which a run keeps. A run is of one level of detail (M5 D4), whose index ranges it draws: two
-//!   draws of a mesh at different levels never join. The shadow views sort those groups by mesh,
-//!   then level, then the submesh's place (the `lists` module's `DrawKey`), so each mesh's submesh
-//!   at a level is one run there; the prepasses keep the draw list's order, where a run forms only
-//!   where equal draws happen to be neighbours. Groups
-//!   whose order shows (transparent surfaces, eyes' layers, eyes through hair, outline hulls) draw a
-//!   call a draw, as do skinned and morphed instances, which bind their own outputs, and fog cards,
-//!   which sort themselves.
-//! - **Which views** ([`DrawRuns`], `RenderSettings::draw_runs`): by default the shadow views
-//!   alone (each cascade, each character map), where a run writes every byte its draws wrote one by
-//!   one and, as they sort by mesh, the runs and calls don't depend on the order instances were
-//!   placed in. The world's two prepasses write every byte alike too (every Metal golden, and the
-//!   readback test on every tier), but they keep the draw list's order, instance slot order, which
-//!   follows the order streamed cells arrive in: their runs, and so the frame's calls, would move
-//!   with it, and in that order they hold almost no equal neighbours, so they run only by
-//!   `DrawRuns::ShadowsAndPrepasses`. The main view and the insets draw a call a draw: on Metal, one
-//!   instanced call of the main pass's
-//!   pipelines shades a few pixels differently from the same records drawn as one call each (five
-//!   desktop goldens with temporal AA, up to 8 code values on under 0.04% of pixels). It isn't a tie
-//!   in depth resolved the other way: the same instances drawn as separate calls in reverse order
-//!   move nothing, and an exact tie between two instances of one call shows the first, as separate
-//!   calls do (`a_tie_between_a_runs_instances_shows_one_of_them`). `DrawRuns::EveryView` runs them
-//!   too, for the bench and for the test that shows it.
+//!   surface variant that writes depth, the surfaces set) that a view sorts, from neighbours in the
+//!   list's order, which a run keeps. A run is of one level of detail (M5 D4), whose index ranges it
+//!   draws: two draws of a mesh at different levels never join. The shadow views sort every such
+//!   group by mesh, then level, then the submesh's place; the views that write colour sort the
+//!   world's (the environment's and foliage's) by mesh, level, the submesh's place and material (the
+//!   `lists` module's `DrawKey`), so each mesh's submesh at a level, in one material, is one run
+//!   wherever its instances took their slots. Groups whose order shows (transparent surfaces, eyes'
+//!   layers, eyes through hair, outline hulls) draw a call a draw, as do the anime characters'
+//!   surfaces in the views that write colour (they keep the record's order there), skinned and
+//!   morphed instances, which bind their own outputs, and fog cards, which sort themselves.
+//! - **Which views** ([`DrawRuns`], `RenderSettings::draw_runs`): by default every view, each in the
+//!   groups it sorts ([`runs_in`]): each cascade, character map and spot tile, the main view, each
+//!   inset and the scene prepass. A run writes every byte its draws wrote one by one, which the
+//!   readback test holds on every tier and the whole Metal golden set shows against `Off`, and as
+//!   each view sorts by what a run draws, its runs and calls don't depend on the order instances
+//!   were placed or streamed in (`default_runs_and_calls_dont_follow_the_slot_order`). The character
+//!   prepass forms none (it keeps the record's order). **The opaque surfaces draw a call a draw in
+//!   the main view and the insets, and opaque foliage in the scene prepass too**
+//!   ([`calls_alone_in_colour`] has the finding): on Metal an instanced main-pass call of either
+//!   opaque pipeline shades a few pixels differently from the same records drawn instance by
+//!   instance, where the cut-out ones match. So in the main view only the cut-out surfaces run,
+//!   and the scene prepass runs the buildings. `DrawRuns::Shadows` runs the shadow views alone, as
+//!   D2's first change shipped, for the bench's before and after.
 //! - **How a run's records reach the shader:** a vertex stage reads its draw's record as
 //!   instance-step vertex data (slot 0), with no first instance (the iOS Simulator has none, ADR
 //!   0002), so a run's records must lie side by side, the first where the slot is bound. The draw
@@ -36,7 +35,8 @@
 //!   ([`RunRecords`]) through the staging belt; the run binds that buffer at its first. A run of one
 //!   binds its record where it lies, as every draw did before. Where the main view formed runs, the
 //!   scene prepass takes them wherever its group lists what the main view's does (always, as they
-//!   share one view's tests), and writes no records of its own. Nothing changes in a shader or a
+//!   share one view's tests and one key), and writes no records of those; the opaque surfaces,
+//!   which only it runs, it forms and lists itself. Nothing changes in a shader or a
 //!   bind group, and the path is the same on every backend.
 //! - **Off** (`DrawRuns::Off`), no list forms runs and every draw is a call of one instance, as
 //!   before: for the test that draws scenes both ways and compares every byte, and for the bench.
@@ -46,10 +46,10 @@
 use sapphire_assets::mesh::PositionFormat;
 use sapphire_rhi::wgpu;
 
-use super::lists::Entry;
+use super::lists::{Entry, sorts_in_colour};
 use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::DrawData;
-use crate::pipelines::{SurfaceVariant, format_index};
+use crate::pipelines::{Coverage, Shading, SurfaceVariant, format_index};
 use crate::scene::{DrawCommand, DrawList};
 
 const FORMATS: usize = PositionFormat::ALL.len();
@@ -59,25 +59,26 @@ const RUNNING: usize = SurfaceVariant::DEPTH_WRITING.len();
 const RECORD_BYTES: u64 = size_of::<DrawData>() as u64;
 
 /// Which views' lists form runs (M5 D2, `RenderSettings::draw_runs`; the sandbox's `--draw-runs
-/// off|shadows|prepasses|every`).
+/// off|shadows|every|every-opaque`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DrawRuns {
-    /// None: every draw is a call of one instance. For the test that compares, and the bench.
+    /// None: every draw is a call of one instance, in the same order. For the test that compares,
+    /// and the bench.
     Off,
-    /// The shadow views alone (each cascade, each character map), every tier's: they sort by mesh,
-    /// so their runs and calls are the same whatever order instances were placed in, and every
-    /// call the district saves is theirs.
-    #[default]
+    /// The shadow views alone (each cascade, each character map, each spot tile), as D2's first
+    /// change shipped: for the bench's before and after.
     Shadows,
-    /// The shadow views and the world's scene and character prepasses. Not the default: the
-    /// prepasses keep the draw list's order, instance slot order, which follows the order streamed
-    /// cells arrive in, so their runs and the frame's calls would move with it (and the nightly
-    /// scale lane holds those rows exactly); in that order they hold almost no equal neighbours.
-    ShadowsAndPrepasses,
-    /// Every view, the main view and the insets too. Not the default: on Metal an instanced call of
-    /// the main pass's pipelines moves a few pixels by a code value or two, cause under study (the
-    /// module docs).
+    /// Every view that sorts its world's surfaces, every tier's: the shadow views, the main view,
+    /// the scene prepass and the insets, each in the groups it sorts (but the opaque surfaces in
+    /// the main view and the insets, and opaque foliage in the scene prepass; the module's docs say
+    /// why). Each sorts by what a run draws, so its runs and calls are the same whatever order
+    /// instances were placed or streamed in.
+    #[default]
     EveryView,
+    /// As [`Self::EveryView`], and the main view and the insets run the opaque environment
+    /// surfaces (the buildings) too, which on Metal moves a few pixels: for counting what those
+    /// runs would save, never a tier's.
+    EveryViewOpaque,
 }
 
 /// What a view's list draws, for which [`DrawRuns`] forms its runs.
@@ -85,7 +86,7 @@ pub enum DrawRuns {
 pub(crate) enum RunView {
     /// A cascade or a character map.
     Shadow,
-    /// The world's scene or character prepass.
+    /// The world's scene prepass (the character prepass forms no runs).
     Prepass,
     /// The main view or an inset, whose colour is what the frame shows.
     Shown,
@@ -97,10 +98,52 @@ impl DrawRuns {
         match self {
             Self::Off => false,
             Self::Shadows => view == RunView::Shadow,
-            Self::ShadowsAndPrepasses => view != RunView::Shown,
-            Self::EveryView => true,
+            Self::EveryView | Self::EveryViewOpaque => true,
         }
     }
+}
+
+/// Whether `view`'s list forms runs of `variant`'s static surfaces, one of the depth-writing ones:
+/// every one in the shadow views, which sort them all by mesh; in the views that write colour, the
+/// groups they sort (the world's, `lists::sorts_in_colour`), since in another's order (the
+/// record's, which follows the order instances arrived in) the runs and the frame's calls would
+/// follow arrival too. Not the opaque surfaces a Metal finding keeps a call a draw there
+/// ([`calls_alone_in_colour`]).
+pub(crate) fn runs_in(view: RunView, variant: SurfaceVariant, runs: DrawRuns) -> bool {
+    match view {
+        RunView::Shadow => true,
+        RunView::Prepass | RunView::Shown => {
+            sorts_in_colour(variant) && !calls_alone_in_colour(view, variant, runs)
+        }
+    }
+}
+
+/// The pipelines that draw a call a draw in a view that writes colour, whatever [`DrawRuns`] says:
+/// on Metal one instanced call of each shades a few pixels differently from the same records drawn
+/// as one call an instance (M5 D2's probe). Drawing the same run buffer instance by instance
+/// (instances `i..i + 1`) matches the calls byte for byte, so it is the instanced call itself, not
+/// the records, the order, the first instance or a depth tie; the cause inside the driver isn't
+/// confirmed (both shaders take screen derivatives of position and normal, where pixel quads shared
+/// between the instances of one call would show, a guess).
+///
+/// - **Opaque environment surfaces in the main view and the insets** (the buildings): 1 or 2 code
+///   values on up to 51 pixels, at roof edges, of 18 golden scenes (`lod-desktop-high`, the
+///   `tier-ward-*` ladder, `zone-ward-hub` and others), each byte-stable run to run. The scene
+///   prepass's runs of them write what its calls do, so it keeps them.
+/// - **Opaque foliage** (bark, trunks, the grove's solid parts) in both: 1 to 3 code values on 3 to
+///   12 pixels of `foliage-day` and `foliage-wind`. The prepass draws it alone too, not yet shown
+///   byte-identical there.
+///
+/// Cut-out surfaces, the environment's and foliage's, run in both, byte for byte.
+/// [`DrawRuns::EveryViewOpaque`] runs the main view's opaque environment surfaces anyway, to count
+/// them.
+pub(crate) fn calls_alone_in_colour(view: RunView, variant: SurfaceVariant, runs: DrawRuns) -> bool {
+    variant.coverage == Coverage::Opaque
+        && match variant.shading {
+            Shading::Foliage => true,
+            Shading::Environment => view == RunView::Shown && runs != DrawRuns::EveryViewOpaque,
+            _ => false,
+        }
 }
 
 /// One call of a view's list: `count` neighbours from `first`, in their group, equal in what they
@@ -132,13 +175,21 @@ pub(crate) struct Runs {
     runs: Vec<Run>,
     /// Per format and running variant, its runs' range in `runs`.
     ranges: [[[u32; 2]; RUNNING]; FORMATS],
+    /// Per format and running variant, whether it formed runs: a group that doesn't run in a view
+    /// ([`runs_in`]) draws a call a draw, and a twin's runs are taken only for a group it formed.
+    ran: [[bool; RUNNING]; FORMATS],
     /// Whether they were formed since they were last cleared: a twin's runs are taken only then.
     formed: bool,
 }
 
 impl Default for Runs {
     fn default() -> Self {
-        Self { runs: Vec::new(), ranges: [[[0; 2]; RUNNING]; FORMATS], formed: false }
+        Self {
+            runs: Vec::new(),
+            ranges: [[[0; 2]; RUNNING]; FORMATS],
+            ran: [[false; RUNNING]; FORMATS],
+            formed: false,
+        }
     }
 }
 
@@ -147,6 +198,7 @@ impl Runs {
     pub(crate) fn clear(&mut self) {
         self.runs.clear();
         self.ranges = [[[0; 2]; RUNNING]; FORMATS];
+        self.ran = [[false; RUNNING]; FORMATS];
         self.formed = false;
     }
 
@@ -159,12 +211,15 @@ impl Runs {
         }
     }
 
-    /// Forms the runs of each running group, whose listed draws `group` gives (positions in the
-    /// draw list's group), from `list`'s commands. A run of more than one lists its records in
-    /// `records`. A group that `twin` (its runs, and its groups' listed draws) lists alike takes
-    /// `twin`'s runs, whose records are listed already, if `twin` formed them since it was cleared.
+    /// Forms the runs of each group `view` runs ([`runs_in`]), whose listed draws `group` gives
+    /// (positions in the draw list's group), from `list`'s commands. A run of more than one lists
+    /// its records in `records`. A group that `twin` (its runs, and its groups' listed draws)
+    /// formed and lists alike takes `twin`'s runs, whose records are listed already, if `twin`
+    /// formed them since it was cleared.
     pub(crate) fn form<'a, G, T>(
         &mut self,
+        view: RunView,
+        mode: DrawRuns,
         group: G,
         twin: Option<(&Self, T)>,
         list: &DrawList,
@@ -175,22 +230,25 @@ impl Runs {
     {
         self.clear();
         let twin = twin.filter(|(twin, _)| twin.formed);
-        let Self { runs, ranges, formed } = self;
+        let Self { runs, ranges, ran, formed } = self;
         *formed = true;
         for format in PositionFormat::ALL {
-            for &variant in &SurfaceVariant::DEPTH_WRITING {
+            for &variant in
+                SurfaceVariant::DEPTH_WRITING.iter().filter(|&&variant| runs_in(view, variant, mode))
+            {
+                let (at, index) = (format_index(format), variant.index());
                 let listed = group(format, variant);
                 let start = to_u32(runs.len());
                 match &twin {
-                    Some((twin, twin_group)) if twin_group(format, variant) == listed => {
+                    Some((twin, twin_group))
+                        if twin.ran[at][index] && twin_group(format, variant) == listed =>
+                    {
                         runs.extend_from_slice(twin.of(format, variant));
                     }
-                    _ => {
-                        let commands = &list.commands[format_index(format)][variant.index()];
-                        form_group(listed, commands, runs, records);
-                    }
+                    _ => form_group(listed, &list.commands[at][index], runs, records),
                 }
-                ranges[format_index(format)][variant.index()] = [start, to_u32(runs.len())];
+                ranges[at][index] = [start, to_u32(runs.len())];
+                ran[at][index] = true;
             }
         }
     }

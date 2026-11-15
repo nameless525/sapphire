@@ -12,7 +12,7 @@ use sapphire_render::debug_view::{
 };
 use sapphire_render::quality::TierTable;
 use sapphire_render::texture::GpuTexture;
-use sapphire_render::{CullPose, DebugView, LevelsMode, MainDepth, StreamedTops};
+use sapphire_render::{CullPose, DebugView, DrawRuns, LevelsMode, MainDepth, StreamedTops};
 
 use super::levels::{camera_at, frames_with, shadowed, square_with_levels, street, with_levels};
 use super::*;
@@ -334,15 +334,18 @@ fn the_overdraw_view_answers_to_the_main_depth_a_frame_took() {
     let mesh = square_with_levels();
     let table = TierTable::shipped();
     // A desktop tier's settings with its own depth and with the prepass's asked for (M5 D10): the
-    // overdraw view shows on both, and the frame says which depth its main pass took.
+    // overdraw view shows on both, and the frame says which depth its main pass took. The prepass's
+    // holds only where the main view forms no runs, so the shadow views' alone (M5 D2).
     let asked = |tier: &sapphire_render::quality::QualityTier| RenderSettings {
         main_depth: MainDepth::FromPrepass,
+        draw_runs: DrawRuns::Shadows,
         ..tier.render_settings()
     };
     let tier =
         table.tiers().iter().find(|tier| asked(tier).main_depth_from_prepass()).expect("a desktop tier");
     for asked in [MainDepth::Own, MainDepth::FromPrepass] {
-        let settings = RenderSettings { main_depth: asked, ..tier.render_settings() };
+        let settings =
+            RenderSettings { main_depth: asked, draw_runs: DrawRuns::Shadows, ..tier.render_settings() };
         let (mut frames, square) = frames_with(&gpu, settings, &mesh);
         let (instances, camera) = street(&mut frames, square);
         let pixels = (0..3)

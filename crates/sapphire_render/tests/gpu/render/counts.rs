@@ -60,8 +60,8 @@ fn scene(gpu: &GpuContext, settings: RenderSettings) -> (Frames, Vec<MeshInstanc
 
 /// What a pass of the scene's draws counts: the five squares' surfaces looked at, the three in view drawn
 /// and two culled by the frustum where the pass culls by it, and the sphere's surface and hull, a call
-/// each: by default only the shadow views form instanced runs (M5 D2, `DrawRuns::Shadows`), and this
-/// scene draws none.
+/// each. The squares are opaque environment surfaces: the main view draws them a call each, and the scene
+/// prepass, which runs them (M5 D2), as one instanced call.
 fn scene_pass(frustum: bool) -> PassCounts {
     let squares = if frustum { IN_VIEW } else { IN_VIEW + BEHIND };
     PassCounts {
@@ -153,7 +153,8 @@ fn a_known_scene_counts_exactly_in_each_pass() {
     let reads: [PrepassRead<'_>; 1] = [(|targets| targets.normals, &readback)];
     assert!(frames.render_reading(&gpu, &view, camera, &[], &[], &reads).is_none());
     let stats = frames.renderer.stats();
-    assert_eq!(stats.passes.scene_prepass, scene_pass(true), "{:#?}", stats.passes);
+    let runs = PassCounts { draws: 1 + 2, ..scene_pass(true) };
+    assert_eq!(stats.passes.scene_prepass, runs, "{:#?}", stats.passes);
     assert_eq!(stats.passes.main, scene_pass(true).plus(&sky));
     assert_levels_add_up(&stats.passes);
     // Unposed, the sphere moves no joints.

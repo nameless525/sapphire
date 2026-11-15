@@ -4,10 +4,14 @@
 //! with outline hulls, one fading), eyes and their layers through hair, many environment instances
 //! out of mesh and material order, some behind the camera, some placed twice at the same place
 //! (twins in neighbouring slots, so a run holds an exact tie), rows of one environment mesh and of
-//! one foliage card in neighbouring slots (long runs in every view), exact ties in depth between
-//! two materials of one object and between two objects (which a reorder of the views that write
-//! colour would flip), transparent surfaces, foliage and fog cards, every cascade and the character
-//! maps, an inset, and two debug views' replays, which draw a call a draw either way. Each frame
+//! one foliage card in neighbouring slots (long runs in every view), a cut-out foliage card and an
+//! opaque environment card with two levels of detail, each placed near and far in alternating slots
+//! (a run of the cut-out cards in every view, and of each level of the opaque ones in the scene
+//! prepass; the main view and the inset draw opaque surfaces a call a draw, and opaque foliage the
+//! scene prepass too, `runs::calls_alone_in_colour`), exact ties in depth between two materials of one object and between two objects (which
+//! the order of the views that write colour decides, the same with runs and without), transparent
+//! surfaces, foliage and fog cards, every cascade and the character maps, an inset, and two debug
+//! views' replays, which draw a call a draw either way. Each frame
 //! compares the target, the scene prepass's depth, normals and outline mask, and the character
 //! prepass's depth and IDs; every pass's counts but the calls, which runs cut; and the state the
 //! passes changed. It replaces D1's test of the lists against the filtered walk they replaced;
@@ -23,6 +27,9 @@ use sapphire_render::quality::TierTable;
 use sapphire_render::{
     DebugView, DrawRuns, FrameCounts, InsetView, PassCounts, RenderStats, UiDrawList, UiQuad,
 };
+
+use sapphire_assets::material::FoliageMaterial;
+use sapphire_assets::mesh::{FoliageVertex, Lod};
 
 use super::sequences::{character, sequence_meshes};
 use super::*;
@@ -107,13 +114,21 @@ fn eyes() -> Mesh {
     Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Float32)
 }
 
-/// An opaque environment material of `rgb`.
-fn environment(rgb: [f32; 3]) -> Material {
-    let document =
-        EnvironmentMaterial { base_color: [rgb[0], rgb[1], rgb[2], 1.0], ..EnvironmentMaterial::default() };
+/// An environment material of `rgb` and `alpha`: a cut-out one discards nothing (its alpha is 1), but
+/// it draws through the cut-out pipeline, which runs in the main view, where the opaque one draws a call
+/// a draw (`runs::calls_alone_in_colour`).
+fn environment_as(rgb: [f32; 3], alpha: AlphaMode) -> Material {
+    let document = EnvironmentMaterial {
+        base_color: [rgb[0], rgb[1], rgb[2], 1.0],
+        alpha,
+        ..EnvironmentMaterial::default()
+    };
     let swizzles = vec![Swizzle::IDENTITY; document.textures().len()];
     Material::from_document(&document, &swizzles).expect("a valid material")
 }
+
+/// A cut-out that keeps every pixel: the tie tests' surfaces, which run in the main view.
+const CUT_OUT: AlphaMode = AlphaMode::Mask { cutoff: 0.5 };
 
 /// A rectangle's corners and its material slot.
 type Placed = ((f32, f32), (f32, f32), u32);
@@ -121,6 +136,11 @@ type Placed = ((f32, f32), (f32, f32), u32);
 /// Exact ties in depth: `rects` drawn in one plane, each a submesh of material slot `material`
 /// with its own vertices (in f32, so two meshes' corners match exactly).
 fn coplanar(rects: &[Placed], materials: &[[f32; 3]]) -> Mesh {
+    coplanar_as(rects, materials, AlphaMode::Opaque)
+}
+
+/// [`coplanar`], its materials of `alpha`.
+fn coplanar_as(rects: &[Placed], materials: &[[f32; 3]], alpha: AlphaMode) -> Mesh {
     let (mut vertices, mut indices, mut submeshes) = (Vec::new(), Vec::new(), Vec::new());
     for &(min, max, material) in rects {
         let base = vertices.len() as u32;
@@ -131,7 +151,7 @@ fn coplanar(rects: &[Placed], materials: &[[f32; 3]]) -> Mesh {
     let slots = materials
         .iter()
         .enumerate()
-        .map(|(slot, &rgb)| MaterialSlot::embedded(format!("tie {slot}"), environment(rgb)))
+        .map(|(slot, &rgb)| MaterialSlot::embedded(format!("tie {slot}"), environment_as(rgb, alpha)))
         .collect();
     Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Float32)
 }
@@ -147,6 +167,49 @@ fn ties() -> [Mesh; 2] {
     let other = coplanar(&[((0.0, -0.6), (0.6, 0.6), 0)], &[[0.1, 0.9, 0.2]]);
     [one, other]
 }
+
+/// A card 2 m tall with two levels of detail: level 0 its two triangles, level 1, at an error of
+/// [`CARD_ERROR`], the lower-right one alone, from a prefix of the vertices. Under a cut-out foliage
+/// material (`foliage`), which always draws level 0, with a still wind stream; else under an opaque
+/// environment material, which takes level 1 far off.
+fn card_with_levels(foliage: bool) -> Mesh {
+    let corner = |s: f32, t: f32| Vertex {
+        position: [s, t + 1.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        outline_normal: [0.0, 0.0, 1.0],
+        uv: [(s + 1.0) * 0.5, (1.0 - t) * 0.5],
+        color: VERTEX_COLOR_NEUTRAL,
+        flags: VertexFlags::NONE,
+    };
+    let vertices = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)];
+    let material = if foliage {
+        let document = FoliageMaterial { alpha_cutoff: 0.5, ..FoliageMaterial::default() };
+        Material::from_document(&document, &vec![Swizzle::IDENTITY; document.textures().len()])
+    } else {
+        let document =
+            EnvironmentMaterial { base_color: [0.3, 0.6, 0.4, 1.0], ..EnvironmentMaterial::default() };
+        Material::from_document(&document, &vec![Swizzle::IDENTITY; document.textures().len()])
+    };
+    let material = material.expect("a valid material");
+    let submeshes = vec![Submesh { first_index: 0, index_count: 6, material: 0 }];
+    let slots = vec![MaterialSlot::embedded("card", material)];
+    let indices = vec![0, 1, 2, 0, 2, 3, 0, 1, 2];
+    let mut mesh = Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16);
+    if foliage {
+        let still = FoliageVertex { sway: 0.0, bend: 0.0, flutter: 0.0, phase: 0.0, gradient: 1.0 };
+        mesh.streams = mesh.streams.clone().with_foliage(&[FoliageVertex::decode(still.encode()); 4]);
+    }
+    let coarse = vec![Submesh { first_index: 6, index_count: 3, material: 0 }];
+    mesh.lods.push(Lod { vertex_count: 3, error: CARD_ERROR, submeshes: coarse });
+    mesh
+}
+
+/// The cards' level 1 error, meters: scaled by [`CARD_SCALE`], a few pixels at the near
+/// cards' 3 m from the camera (level 0) and under one at the far cards' 15 m (level 1).
+const CARD_ERROR: f32 = 0.6;
+const CARD_SCALE: f32 = 0.15;
+/// The cards' instances, near and far in turn: the cut-out ones, then the opaque ones.
+const CARDS: u64 = 6000;
 
 /// Where the ties stand: in front of everything else.
 const TIED_AT: Vec3 = Vec3::new(2.4, 1.8, 1.0);
@@ -217,8 +280,8 @@ impl Side {
         packet.post = frames.post;
         packet.time_seconds = 1000.0;
         packet.lights.push(point_light(Vec3::new(1.0, 1.0, 2.0), Vec3::ONE, 2.0, 5.0));
-        // The scattered meshes, then the eyes, the tied object and the covering one.
-        let kinds = self.handles.len() - 3;
+        // The scattered meshes, then the eyes, the tied object, the covering one and the two cards.
+        let kinds = self.handles.len() - 5;
         let place = |id: u64| {
             let (column, row) = ((id * 7) % 12, (id * 5) % 6);
             let behind = id % 9 == 4;
@@ -236,6 +299,18 @@ impl Side {
                 packet.instances.changed.push(instance(id, self.handles[mesh(id)], place(id)));
                 if id % 5 == 0 {
                     packet.instances.changed.push(instance(TWINS + id, self.handles[mesh(id)], place(id)));
+                }
+            }
+            // Cards near the camera and far from it in alternating slots: the cut-out ones, then
+            // opaque ones beneath them at two levels.
+            for (first, kind, y) in [(CARDS, kinds + 3, -0.9), (CARDS + 8, kinds + 4, -1.25)] {
+                for n in 0..8 {
+                    let (x, z) =
+                        if n % 2 == 0 { (n as f32 * 0.05 - 0.2, 11.3) } else { (n as f32 * 0.4 - 1.6, -1.0) };
+                    let at = Vec3::new(x, y, z);
+                    let card =
+                        Mat4::from_scale_rotation_translation(Vec3::splat(CARD_SCALE), Quat::IDENTITY, at);
+                    packet.instances.changed.push(instance(first + n, self.handles[kind], card));
                 }
             }
         }
@@ -329,11 +404,13 @@ fn without_calls(passes: FrameCounts) -> FrameCounts {
     }
 }
 
-/// The scene's meshes, cooked: the sequences', the eyes, and the tied and covering objects.
+/// The scene's meshes, cooked: the sequences', the eyes, the tied and covering objects, and the
+/// cards with two levels, cut-out foliage and opaque environment.
 pub(super) fn scene_meshes() -> Vec<AlignedVec> {
     let mut meshes = sequence_meshes();
     meshes.push(eyes().to_cooked().expect("cook"));
     meshes.extend(ties().map(|mesh| mesh.to_cooked().expect("cook")));
+    meshes.extend([true, false].map(|foliage| card_with_levels(foliage).to_cooked().expect("cook")));
     meshes
 }
 
@@ -348,21 +425,20 @@ fn runs_draw_what_their_draws_drew_one_by_one_on_every_tier() {
         let texture = target(&gpu, FORMAT, SIZE);
         let view = texture.create_view(&Default::default());
         let settings = tier.render_settings();
-        // The default (the shadow views alone), the prepasses too, and every view, each against off.
-        // Every view is exact on this scene, whose ties are between equal surfaces, but not on every
-        // scene (the goldens' foliage and arena, M5 D2): the default is what's shipped.
-        let modes = [DrawRuns::Shadows, DrawRuns::ShadowsAndPrepasses, DrawRuns::EveryView];
-        let mut sides = [modes[0], modes[1], modes[2], DrawRuns::Off]
-            .map(|runs| Side::new(&gpu, settings, runs, &meshes));
+        assert_eq!(settings.draw_runs, DrawRuns::EveryView, "{}: every view's runs, the tiers'", tier.id);
+        // The shadow views' alone, and every view's, the default, each against off.
+        let modes = [DrawRuns::Shadows, DrawRuns::EveryView];
+        let mut sides =
+            [modes[0], modes[1], DrawRuns::Off].map(|runs| Side::new(&gpu, settings, runs, &meshes));
         // The shadow views' calls over the frames, with runs and without: a frame's cascades may hold
         // no two equal casters, the tier's frames together do.
-        let mut shadow_calls = [0; 4];
+        let mut shadow_calls = [0; 3];
         for frame in 0..5 {
-            let [default, prepasses, every, one_by_one] = &mut sides;
+            let [shadows, every, one_by_one] = &mut sides;
             let (old_images, old_stats) = one_by_one.frame(&gpu, (&texture, &view), frame);
             assert_eq!(old_stats.runs, Default::default(), "{} frame {frame}: off forms none", tier.id);
-            shadow_calls[3] += old_stats.passes.shadows().draws;
-            for (index, (side, runs)) in [default, prepasses, every].into_iter().zip(modes).enumerate() {
+            shadow_calls[2] += old_stats.passes.shadows().draws;
+            for (index, (side, runs)) in [shadows, every].into_iter().zip(modes).enumerate() {
                 let (images, stats) = side.frame(&gpu, (&texture, &view), frame);
                 let id = format!("{} {runs:?} frame {frame}", tier.id);
                 for ((name, new), old) in names.iter().zip(&images).zip(&old_images) {
@@ -376,25 +452,25 @@ fn runs_draw_what_their_draws_drew_one_by_one_on_every_tier() {
                 shadow_calls[index] += new.shadows().draws;
                 if runs == DrawRuns::EveryView {
                     assert!(new.main.draws < old.main.draws, "{id}: runs in the main view");
+                    assert!(new.scene_prepass.draws < old.scene_prepass.draws, "{id}: runs in the prepass");
                 } else {
                     assert_eq!(new.main.draws, old.main.draws, "{id}: the main view a call a draw");
                     assert_eq!(new.insets, old.insets, "{id}: and the insets");
-                }
-                if runs == DrawRuns::Shadows {
                     assert_eq!(new.scene_prepass, old.scene_prepass, "{id}: the prepass a call a draw");
-                    assert_eq!(new.character_prepass, old.character_prepass, "{id}: both prepasses");
-                } else {
-                    assert!(new.scene_prepass.draws < old.scene_prepass.draws, "{id}: runs in the prepass");
                 }
+                // The characters' surfaces keep the record's order and draw a call a draw.
+                assert_eq!(new.character_prepass, old.character_prepass, "{id}: the character prepass");
+                // The opaque cards draw at two levels in the main view (foliage keeps level 0).
+                assert!(new.main.levels[1] >= 4, "{id}: the far cards at level 1: {:?}", new.main.levels);
                 assert_eq!(new.debug, old.debug, "{id}: replays draw one by one");
                 for ((name, pass), (_, before)) in new.passes().into_iter().zip(old.passes()) {
                     assert!(pass.draws <= before.draws, "{id}: {name}");
                 }
                 assert_eq!(without_calls(new), without_calls(old), "{id}");
                 assert!(new.main.considered > new.main.mesh_instances(), "{id}: something's culled");
-                // The rows lie in neighbouring slots, so they run in the prepasses' record order.
-                if runs != DrawRuns::Shadows {
-                    assert!(stats.runs.longest >= 8, "{id}: the rows run: {:?}", stats.runs);
+                // The rows run in the views that write colour.
+                if runs == DrawRuns::EveryView {
+                    assert!(stats.runs.longest >= 12, "{id}: the rows run: {:?}", stats.runs);
                 }
                 // Runs change no more state than their draws did one by one.
                 let (changes, before) = (stats.state_changes, old_stats.state_changes);
@@ -403,13 +479,13 @@ fn runs_draw_what_their_draws_drew_one_by_one_on_every_tier() {
                 assert!(changes.vertex_buffers <= before.vertex_buffers, "{id}: {changes:?} {before:?}");
             }
         }
-        let [default, prepasses, every, one_by_one] = shadow_calls;
+        let [shadows, every, one_by_one] = shadow_calls;
         assert!(
-            one_by_one == 0 || default < one_by_one,
-            "{}: runs in the shadows, {default} of {one_by_one}",
+            one_by_one == 0 || shadows < one_by_one,
+            "{}: runs in the shadows, {shadows} of {one_by_one}",
             tier.id
         );
-        assert_eq!([prepasses, every], [default; 2], "{}: the shadows run alike", tier.id);
+        assert_eq!(every, shadows, "{}: the shadows run alike", tier.id);
     }
 }
 
@@ -540,7 +616,7 @@ fn leaning_square() -> Mesh {
         vertex
     });
     let submeshes = vec![Submesh { first_index: 0, index_count: 6, material: 0 }];
-    let slots = vec![MaterialSlot::embedded("leaning", environment([0.8; 3]))];
+    let slots = vec![MaterialSlot::embedded("leaning", environment_as([0.8; 3], CUT_OUT))];
     Mesh::from_vertices(&corners, vec![0, 1, 2, 0, 2, 3], submeshes, slots, PositionFormat::Float32)
 }
 
@@ -605,5 +681,66 @@ fn a_tie_between_a_runs_instances_shows_one_of_them() {
             apart.len()
         );
         assert_eq!((calls_first, calls_second), (apart.len(), 0), "{name}: two calls keep the first drawn");
+    }
+}
+
+/// Two objects of different materials exactly coplanar (M5 D2's second change): at their tie the view
+/// that writes colour keeps the first it draws, and its key says which: the mesh whose first instance
+/// took the first slot, whichever mesh was uploaded first (handles are numbered in the order uploads
+/// finish, which differs run to run). Runs draw it as a call a draw does, byte for byte (the red object
+/// has a twin beside it, so it runs).
+#[test]
+#[ignore = "needs a GPU"]
+fn an_exact_tie_between_two_objects_follows_the_records_not_the_handles() {
+    let gpu = gpu();
+    let size = (64, 64);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(40.0, size, 0.3);
+    let square = ((-0.6, -0.6), (0.6, 0.6));
+    let red = coplanar_as(&[(square.0, square.1, 0)], &[[0.9, 0.1, 0.1]], CUT_OUT);
+    let green = coplanar_as(&[(square.0, square.1, 0)], &[[0.1, 0.9, 0.2]], CUT_OUT);
+    let beside = Mat4::from_translation(Vec3::new(1.5, 0.0, 0.0));
+    let draw = |runs: DrawRuns, (green_first, green_uploaded_first): (bool, bool), only: Option<bool>| {
+        let settings = RenderSettings { draw_runs: runs, msaa: Msaa::Off, ..RenderSettings::default() };
+        let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+        let (red, green) = if green_uploaded_first {
+            let green = upload(&mut frames.renderer, &green);
+            (upload(&mut frames.renderer, &red), green)
+        } else {
+            let red = upload(&mut frames.renderer, &red);
+            (red, upload(&mut frames.renderer, &green))
+        };
+        let mut placed = vec![(red, Mat4::IDENTITY), (green, Mat4::IDENTITY), (red, beside)];
+        if green_first {
+            placed.swap(0, 1);
+        }
+        // `only`: the red square alone (true) or the green alone (false), for what each shows.
+        if let Some(red_alone) = only {
+            placed.retain(|&(mesh, transform)| transform == Mat4::IDENTITY && (mesh == red) == red_alone);
+        }
+        let instances: Vec<MeshInstance> = placed
+            .iter()
+            .enumerate()
+            .map(|(id, &(mesh, transform))| instance(id as u64, mesh, transform))
+            .collect();
+        assert!(frames.render(&gpu, &view, camera, &instances, &[]).is_none());
+        (read_back(&gpu, &texture), frames.renderer.stats().passes.main.draws)
+    };
+    let (red_alone, _) = draw(DrawRuns::Off, (false, false), Some(true));
+    let (green_alone, _) = draw(DrawRuns::Off, (false, false), Some(false));
+    let centre = (size.1 / 2 * size.0 + size.0 / 2) as usize;
+    assert_ne!(red_alone[centre], green_alone[centre], "the two are told apart");
+    for order in [(false, false), (false, true), (true, false), (true, true)] {
+        let (off, off_calls) = draw(DrawRuns::Off, order, None);
+        let (runs, run_calls) = draw(DrawRuns::EveryView, order, None);
+        let first = if order.0 { green_alone[centre] } else { red_alone[centre] };
+        assert_eq!(
+            off[centre], first,
+            "{order:?} (green placed, uploaded first): the first placed keeps the tie"
+        );
+        let (_, differing) = difference(&runs, &off, 0);
+        assert_eq!(differing, 0, "{order:?}: runs draw what a call a draw drew");
+        assert_eq!((off_calls, run_calls), (3 + 1, 2 + 1), "{order:?}: the red pair is one call");
     }
 }

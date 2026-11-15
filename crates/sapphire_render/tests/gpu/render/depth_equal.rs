@@ -15,7 +15,8 @@
 //! A desktop tier takes the prepass's depth; a phone, without temporal AA,
 //! keeps its own and builds the same pipelines either way. A frame the prepass can't stand in for (an
 //! environment alpha-tested draw, which the prepass doesn't cut out, or runs in the main view) keeps its
-//! own too, drawing what it drew. And a hull lying exactly on a two-sided surface, a tie between draws the
+//! own too, drawing what it drew: the tiers run the main view (M5 D2), so the comparisons draw with the
+//! shadow views' runs alone (`DrawRuns::Shadows`). And a hull lying exactly on a two-sided surface, a tie between draws the
 //! reverse walk can't keep, is counted (a flat one shows nowhere, so none changes hands). Run alone with
 //! `cargo test -p sapphire_render --test gpu render::depth_equal:: -- --ignored --test-threads=1`.
 
@@ -163,7 +164,7 @@ fn the_main_pass_draws_every_byte_it_drew_testing_equal_on_every_tier() {
     let colors = colors_asserted(&gpu(), "every tier");
     for tier in TierTable::shipped().tiers() {
         let gpu = gpu();
-        let settings = RenderSettings { main_depth: MainDepth::FromPrepass, ..tier.render_settings() };
+        let settings = asked(tier);
         let takes = settings.main_depth_from_prepass();
         desktop += usize::from(takes);
         for scale in [1.0, 0.7] {
@@ -186,11 +187,19 @@ fn the_main_pass_draws_every_byte_it_drew_testing_equal_on_every_tier() {
     assert!(desktop >= 2, "both desktop tiers take the prepass's depth");
 }
 
+/// `tier`'s settings asking for the prepass's depth, with the shadow views' runs alone: runs in the main
+/// view, the tiers', keep its own.
+fn asked(tier: &QualityTier) -> RenderSettings {
+    RenderSettings {
+        main_depth: MainDepth::FromPrepass,
+        draw_runs: DrawRuns::Shadows,
+        ..tier.render_settings()
+    }
+}
+
 /// The first shipped tier's settings that take the prepass's depth when asked: a desktop tier's.
 fn desktop_settings() -> RenderSettings {
     let table = TierTable::shipped();
-    let asked =
-        |tier: &QualityTier| RenderSettings { main_depth: MainDepth::FromPrepass, ..tier.render_settings() };
     let tier = table.tiers().iter().find(|tier| asked(tier).main_depth_from_prepass());
     asked(tier.expect("a desktop tier"))
 }
@@ -209,7 +218,7 @@ fn a_frame_the_prepass_cant_stand_in_for_keeps_its_own_depth() {
     // An environment alpha-tested surface among the scattered meshes: the prepass draws it uncut.
     let mut meshes = scene_meshes();
     let cut = environment_sphere(AlphaMode::Mask { cutoff: 0.5 }).to_cooked().expect("cook");
-    meshes.insert(meshes.len() - 3, cut);
+    meshes.insert(meshes.len() - 5, cut);
     let (stats, _) = compare(&gpu, settings, &meshes, (1.0, colors), "an environment alpha-tested draw");
     assert_eq!(stats.main_depth, MainDepth::Own, "an uncut surface keeps its own");
 }

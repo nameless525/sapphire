@@ -399,9 +399,10 @@ pub(crate) struct Options {
     /// thresholds instead of the tier's (M5 D3), for the walks that choose them: meters (0 for
     /// none), output pixels across and a cascade's texels across.
     pub culling: Option<CullingThresholds>,
-    /// `--draw-runs off|shadows|prepasses|every`: which views form instanced runs (M5 D2), for the
-    /// bench's before and after: none, the tier's (`shadows`: the shadow views alone), the shadow
-    /// views and both prepasses, or every view.
+    /// `--draw-runs off|shadows|every|every-opaque`: which views form instanced runs (M5 D2), for the
+    /// bench's before and after: none, the shadow views alone, every view that sorts its world's
+    /// surfaces (`every`, the tier's), or that and the main view's buildings (`every-opaque`, which
+    /// moves a few pixels on Metal).
     pub draw_runs: Option<DrawRuns>,
     /// `--texture-streaming on|off`: stream textures by what the views draw (M5 M5), or want every texture a
     /// material binds whole, as before. Unset, a window and `--bench` stream and a capture doesn't; a capture
@@ -1519,11 +1520,11 @@ impl Options {
                     options.draw_runs = Some(match value("--draw-runs")?.as_str() {
                         "off" => DrawRuns::Off,
                         "shadows" => DrawRuns::Shadows,
-                        "prepasses" => DrawRuns::ShadowsAndPrepasses,
                         "every" => DrawRuns::EveryView,
+                        "every-opaque" => DrawRuns::EveryViewOpaque,
                         other => {
                             return Err(format!(
-                                "--draw-runs expects off, shadows, prepasses or every, got {other:?}"
+                                "--draw-runs expects off, shadows, every or every-opaque, got {other:?}"
                             ));
                         }
                     });
@@ -3223,11 +3224,12 @@ mod tests {
     fn draw_runs_turn_off_for_the_bench() {
         let tier = RenderSettings::default();
         let runs = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).draw_runs;
-        assert_eq!(runs(&[]), DrawRuns::Shadows, "the tier's");
+        assert_eq!(runs(&[]), DrawRuns::EveryView, "the tier's");
         assert_eq!(runs(&["--draw-runs", "off"]), DrawRuns::Off);
         assert_eq!(runs(&["--draw-runs=every"]), DrawRuns::EveryView);
         assert_eq!(runs(&["--draw-runs", "shadows"]), DrawRuns::Shadows);
-        assert_eq!(runs(&["--draw-runs", "prepasses"]), DrawRuns::ShadowsAndPrepasses);
+        assert_eq!(runs(&["--draw-runs", "every-opaque"]), DrawRuns::EveryViewOpaque);
+        assert!(parse(&["--draw-runs", "prepasses"]).is_err());
         assert!(parse(&["--draw-runs", "on"]).is_err());
     }
 

@@ -595,8 +595,9 @@ jobs:
   # and why (spec §9 lists them); none is skipped for failing. `--tests` leaves the doctests to the
   # Test job.
   #
-  # WARP runs the same suites in gpu-tests-warp.yml once a change is on main: 31 minutes of tests
-  # after a cold 18-minute build, longer than a PR's other checks together.
+  # WARP runs the same suites in gpu-tests-warp.yml once a change is on main, built once and run in
+  # four shards: an hour of tests after a 16-minute build (2026-11-15), longer than a PR's other checks
+  # together.
   gpu-tests:
     name: GPU tests (${{ matrix.family }})
     strategy:

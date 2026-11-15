@@ -1,7 +1,13 @@
 # The GPU tests on WARP, Windows' CPU rasterizer, once a change is on main. CI's `GPU tests` job
 # runs the same suites on lavapipe for every PR. WARP takes longer than all of a PR's other
 # checks together, so it isn't a PR check: this catches what only D3D12 shows soon after landing,
-# and a PR changing this file runs it, so the file is tested before it lands.
+# and a PR changing this file or the scripts it runs runs it, so they are tested before they land.
+#
+# One job builds the tests and four shards run them (2026-11-15): as one job they had outgrown its 90
+# minutes, and a failure in the first suite skipped the second. `app_tests_bundle.py --tests-only` carries
+# the test executables, each put back where Cargo built it, as for the App tests; `gpu_test_shards.py` deals
+# each test to a shard by a hash of its name and runs both suites' shares. `GPU tests (dx12-warp)` is the
+# one check to read: it fails unless the build and every shard passed.
 #
 # As in ci.yml, actions are pinned to commit SHAs and the runner image is pinned, and only runs on `main`
 # write the Rust cache, never a failed or cancelled one (ci.yml's header says why).
@@ -13,7 +19,10 @@ on:
     branches: [main]
     paths-ignore: ['docs/**', '**/*.md']
   pull_request:
-    paths: ['.github/workflows/gpu-tests-warp.yml']
+    paths:
+      - '.github/workflows/gpu-tests-warp.yml'
+      - '.github/scripts/gpu_test_shards.py'
+      - '.github/scripts/app_tests_bundle.py'
   workflow_dispatch:
 
 permissions:
@@ -34,13 +43,13 @@ env:
   SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
-  gpu-tests:
-    name: GPU tests (dx12-warp)
+  gpu-tests-build:
+    name: Prepare GPU tests (dx12-warp)
     runs-on: windows-2025
-    timeout-minutes: 90
-    env:
-      SAPPHIRE_GPU_BACKEND: dx12
-      SAPPHIRE_GPU_DEBUG: none
+    # The build took 11.5 to 16 minutes with the cache warm on main's last four runs and 31.5 cold (a
+    # dispatch, 2026-11-15); packaging and uploading add about 2. A cold build ends at about 34, under two
+    # thirds of 60.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust (job targets)
@@ -48,24 +57,97 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: v1-rust
+          # The cache the single job saved, under its job's name.
+          shared-key: gpu-tests
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
           save-if: ${{ env.SAVE_RUST_CACHE }}
-      # Built apart from the run, so the run's time is the tests' own. Bash, so the first build's
-      # failure fails the step (PowerShell checks the last).
+      # Each suite its own build, as it runs: a union of these packages can build a different feature graph.
+      # Cargo's messages name each test executable for the bundle. Bash, so the first build's failure fails
+      # the step (PowerShell checks the last).
       - name: Build the GPU tests
         shell: bash
         run: |
-          cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-run
-          cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib --no-run
+          messages="$RUNNER_TEMP/gpu-tests.jsonl"
+          cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-run --message-format=json-render-diagnostics >> "$messages"
+          cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib --no-run --message-format=json-render-diagnostics >> "$messages"
+      - name: Package exact-commit GPU test inputs
+        shell: bash
+        run: |
+          python .github/scripts/app_tests_bundle.py create --tests-only --archive "$RUNNER_TEMP/gpu-tests.tar.gz" \
+            --commit "$GITHUB_SHA" --messages "$RUNNER_TEMP/gpu-tests.jsonl"
+      - name: Upload GPU test inputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gpu-test-inputs-dx12-warp
+          path: ${{ runner.temp }}/gpu-tests.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  gpu-tests:
+    name: GPU tests (dx12-warp, ${{ matrix.shard }}/4)
+    needs: gpu-tests-build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: windows-2025
+    # Main's run at 643d5ea6 (2026-11-15) took 60 minutes for the first suite's 483 tests; d498ebb3's the
+    # second's 93 in 6, on a runner 1.16 times as fast. Dealt by name into four, each test at its own time
+    # there, the shards come to 11.7, 23.9, 14.9 and 16.6 minutes of both suites: by count, not cost, so the
+    # three slowest tests (7, 7 and 3 minutes) weigh where they fall. Half again as many tests, 36 at most,
+    # and about 3 to set up: 39, under two thirds of 60.
+    timeout-minutes: 60
+    env:
+      SAPPHIRE_GPU_BACKEND: dx12
+      SAPPHIRE_GPU_DEBUG: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download GPU test inputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gpu-test-inputs-dx12-warp
+          path: ${{ runner.temp }}/gpu-tests-download
+      - name: Verify and unpack GPU test inputs
+        shell: bash
+        run: |
+          python .github/scripts/app_tests_bundle.py unpack \
+            --archive "$RUNNER_TEMP/gpu-tests-download/gpu-tests.tar.gz" --commit "$GITHUB_SHA"
       # Beside the test executables, where D3D12 looks for it.
       - name: Install WARP 1.0.21
+        id: warp
         shell: pwsh
         run: |
           curl.exe -sSfL --retry 5 -o warp.zip https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.warp/1.0.21/microsoft.direct3d.warp.1.0.21.nupkg
           if ((Get-FileHash warp.zip -Algorithm SHA256).Hash -ne "EA44B77EB30EEC14427193E20F40CDB2E4C31ED11AB39CB880538FDF4BAC2681") { throw "WARP package checksum mismatch" }
           tar.exe -xf warp.zip build/native/bin/x64/d3d10warp.dll
           Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/deps/
+      # Each prints how many tests each shard holds of the suite's total, and fails if a test it was given
+      # didn't run. The second runs whatever the first did.
       - name: GPU tests (render, RHI, world, overlay)
-        run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-fail-fast -- --ignored --test-threads=1
+        shell: bash
+        run: |
+          python .github/scripts/gpu_test_shards.py --shard ${{ matrix.shard }} --shards 4 \
+            crates/sapphire_render crates/sapphire_rhi crates/sapphire_world crates/sapphire_debug
       - name: GPU tests (stage and sandbox, dev)
-        run: cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib -- --ignored --test-threads=1
+        if: ${{ !cancelled() && steps.warp.outcome == 'success' }}
+        shell: bash
+        run: |
+          python .github/scripts/gpu_test_shards.py --shard ${{ matrix.shard }} --shards 4 \
+            apps/sapphire_sandbox crates/sapphire_stage game/game_combat game/game_ui
+
+  # The one check to read: a cancelled or skipped shard is not a pass.
+  gpu-tests-summary:
+    name: GPU tests (dx12-warp)
+    needs: [gpu-tests-build, gpu-tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          BUILD: ${{ needs.gpu-tests-build.result }}
+          SHARDS: ${{ needs.gpu-tests.result }}
+        run: |
+          echo "Build: $BUILD. Shards: $SHARDS."
+          test "$BUILD" = success && test "$SHARDS" = success

@@ -83,6 +83,7 @@ The bindings are documents: [`apps/sapphire_sandbox/default_bindings.ron`](../ap
 - **day:** scrubs the time of day.
 - **effects:** the screen effects.
 - **combat:** the fight's state.
+- **counts:** the benchmark's count rows for the frame, grouped, each against its spec §3.4 budget on the tier where it has one (draw calls, lights, the texture pool), past it in the warning color.
 - **console:** `list` shows every cvar, `<name> <value>` sets one, Tab completes names.
 - **cvars:** every cvar.
 
@@ -96,6 +97,12 @@ It works in offscreen captures too:
 
 ```bash
 cargo xtask run --platform desktop --features dev -- --capture overlay.png --size 1280x720 --debug-overlay=all
+```
+
+The renderer's debug views draw over the frame in any build, with a legend bar in the corner (`--debug-view <name>`, or the `r.debug_view` cvar): `wireframe`, `overdraw`, `lights` (the light list per pixel), `material-ids`, `ramp-rows` and `outline-widths` for anime character shading, and the scale views, which color each instance by what the frame did with it at scale: `levels` (the level of detail it drew at), `textures` (its material's worst streamed texture against the level wanted), `culling` (which views drew it, or which test culled it) and `runs` (the instanced run a shadow view drew it in). The scale views draw what the main view culled too, striped, and `--debug-cull-from <x>,<y>,<z>,<yaw>,<pitch>` (degrees) culls from that pose in the camera's place, so a capture shows from outside what the pose's view leaves out:
+
+```bash
+cargo xtask run --platform desktop -- --capture levels.png --zone lantern_ward --debug-view levels
 ```
 
 ## Hot reload and live link

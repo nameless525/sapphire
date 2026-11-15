@@ -15,8 +15,15 @@
 //!   ([`crate::materials::Materials::rebind`]), so no frame prepared after a raise draws with the old, and
 //!   it waits as freed meshes and materials do (the `retire` module) for the last frame that may read it:
 //!   the one the copies are submitted with, which comes after every frame that drew it.
+//! - **Nothing maps on a lost device.** The belt's buffers can't be mapped once the device is lost (wgpu
+//!   panics on that, and a shipped build aborts), so the live flag (`GpuContext::lost_flag`), not the one
+//!   `prepare` read, refuses a raise, and the copies and staging of raises made before the loss are dropped
+//!   unsubmitted: nothing draws again, as with the mesh pool's uploads.
 //! - **Counters** (rule R9, [`MipStreamingStats`]): raises, lowers and bytes since the last frame was
 //!   prepared, and what waits to be let go of.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sapphire_rhi::wgpu;
 
@@ -69,10 +76,12 @@ pub(crate) struct MipStreaming {
     budget: u64,
     /// What the counters read since the last prepared frame.
     frame: MipStreamingStats,
+    /// The device's lost flag (`GpuContext::lost_flag`).
+    lost: Arc<AtomicBool>,
 }
 
 impl MipStreaming {
-    pub(crate) fn new(device: &wgpu::Device) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, lost: Arc<AtomicBool>) -> Self {
         Self {
             encoder: None,
             staging: wgpu::util::StagingBelt::new(device.clone(), STAGING_CHUNK),
@@ -80,7 +89,13 @@ impl MipStreaming {
             retired_bytes: 0,
             budget: DEFAULT_MIP_BUDGET,
             frame: MipStreamingStats::default(),
+            lost,
         }
+    }
+
+    /// Whether the device is lost now: then nothing may map the belt's buffers.
+    pub(crate) fn lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire)
     }
 
     /// The encoder the next copies go into.
@@ -101,13 +116,17 @@ impl MipStreaming {
     }
 
     /// Submits the copies recorded since the last submission, if any, and readies their staging to be
-    /// reused once the GPU has read it.
+    /// reused once the GPU has read it. On a lost device it drops them instead.
     pub(crate) fn submit(&mut self, queue: &wgpu::Queue) {
-        if let Some(encoder) = self.encoder.take() {
-            self.staging.finish();
-            queue.submit([encoder.finish()]);
-            self.staging.recall();
+        let Some(encoder) = self.encoder.take() else {
+            return;
+        };
+        if self.lost() {
+            return;
         }
+        self.staging.finish();
+        queue.submit([encoder.finish()]);
+        self.staging.recall();
     }
 
     /// Counts a raise that wrote `written` bytes of levels and copied `copied`, or a lower that copied

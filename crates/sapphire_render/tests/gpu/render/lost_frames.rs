@@ -128,6 +128,73 @@ fn a_device_lost_after_prepare_loses_the_frame_alone() {
     assert_eq!(panics.so_far(), 0, "a panic on some thread around the lost device");
 }
 
+/// A raise asked for after `prepare` read the flag, on a device lost since, staged its level through
+/// the mip streamer's belt, which can't map on a lost device: a panic, which a shipped build aborts
+/// on. A raise made before the loss is dropped with the frame's other writes, unsubmitted.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_device_lost_after_prepare_refuses_a_raise() {
+    use sapphire_assets::AssetId;
+    use sapphire_assets::texture::{Texture, TextureDesc, TextureFormat, TextureTail};
+    use sapphire_assets::texture_level::TextureLevel;
+    use sapphire_render::texture::GpuTexture;
+
+    let panics = crate::panics::Panics::count();
+    let gpu = gpu();
+    let texture = target(&gpu, FORMAT, SIZE);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, SIZE, 0.6);
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+    let plain = upload(&mut frames.renderer, &sphere(white(1.0)));
+    assert!(draw_frame(&mut frames, &gpu, &view, camera, &[instance(0, plain, Mat4::IDENTITY)]));
+    // A 16×16 texture streamed in as its tail from 4×4 down.
+    let id = AssetId::from_bytes([5; 16]);
+    let desc = TextureDesc {
+        format: TextureFormat::Rgba8UnormSrgb,
+        width: 4,
+        height: 4,
+        mip_level_count: 3,
+        swizzle: Swizzle::IDENTITY,
+    };
+    let red: Vec<Vec<u8>> = [16, 4, 1].map(|texels| [255, 0, 0, 255].repeat(texels)).into();
+    let tail =
+        TextureTail { texture: Texture { desc, levels: red.iter().map(Vec::as_slice).collect() }, above: 2 };
+    let mut streamed = GpuTexture::upload_tail(&gpu, &tail, "streamed").expect("upload the tail");
+    let level = |level: u32| {
+        let side = 16 >> level;
+        let data = [0, 0, 255, 255].repeat((side * side) as usize);
+        let level = TextureLevel {
+            texture: id,
+            level,
+            format: desc.format.vk_format(),
+            width: side,
+            height: side,
+            data,
+        };
+        level.to_cooked().expect("cook")
+    };
+    let (one, zero) = (level(1), level(0));
+    let read = |bytes| TextureLevel::read(bytes).expect("a valid level");
+    let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+
+    prepare(&mut frames, &gpu, camera, false, &[]);
+    // Raised before the loss: its copies wait for the next frame, which never runs.
+    frames.renderer.raise_texture(id, &mut streamed, &[read(&one)]).expect("raise on a live device");
+    gpu.device().destroy();
+    let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    assert!(gpu.is_lost());
+    let error = frames.renderer.raise_texture(id, &mut streamed, &[read(&zero)]).unwrap_err();
+    assert!(matches!(error, RenderError::DeviceLost), "{error}");
+    assert_eq!(streamed.top(), 1, "nothing raised");
+    let mut graph = FrameGraph::new();
+    let target = graph.import_texture("target", &view);
+    assert!(frames.renderer.record(&mut graph, target).is_some(), "prepare hadn't seen the loss");
+    frames.graph.execute(&gpu, graph).expect("a valid graph, though nothing runs");
+    // The next frame submits the streamer's writes first, and must drop them instead.
+    assert!(!draw_frame(&mut frames, &gpu, &view, camera, &[]));
+    assert_eq!(panics.so_far(), 0, "a panic on some thread around the lost device");
+}
+
 /// RC-2: an invalid graph is still an error on a lost device, and none of its passes run.
 #[test]
 #[ignore = "needs a GPU"]

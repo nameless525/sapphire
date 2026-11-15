@@ -208,8 +208,10 @@ impl GpuTexture {
         let alignment = wgpu::BufferSize::new(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)).expect("not 0");
         let slice = staging.allocate(size, alignment);
         {
-            let mut mapped =
-                slice.get_mapped_range_mut().expect("a staging belt hands out slices of mapped buffers");
+            // A slice of a buffer lost with its device doesn't map; nothing draws again, so it's left.
+            let Ok(mut mapped) = slice.get_mapped_range_mut() else {
+                return;
+            };
             // A level's bytes are its rows' (`TextureLevel::validate`), so they fit.
             let data = &data[..data.len().min(mapped.len())];
             if spaced == row {

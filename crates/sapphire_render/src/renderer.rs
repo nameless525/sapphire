@@ -1123,7 +1123,7 @@ impl Renderer {
         let skinning = Skinning::new(&device);
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
         let run_records = RunRecords::new(&device);
-        let mip_streaming = MipStreaming::new(&device);
+        let mip_streaming = MipStreaming::new(&device, gpu.lost_flag());
         // A device lost while the pipelines were built (the Android emulator's, building GTAO's
         // on Mobile-High, QA-001) left everything made since invalid.
         if gpu.is_lost() {
@@ -1581,7 +1581,8 @@ impl Renderer {
         levels: &[&ArchivedTextureLevel],
     ) -> Result<(), RenderError> {
         profiling::scope!("Renderer::raise_texture");
-        if self.device_lost {
+        // The live flag: a device lost since `prepare` can't map the belt's buffers.
+        if self.mip_streaming.lost() {
             return Err(RenderError::DeviceLost);
         }
         let label = self.labels.then_some("raised texture");

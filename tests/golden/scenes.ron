@@ -4386,6 +4386,7 @@
                        "--replay", "tests/replays/arena-ultimate.sreplay", "--time-of-day", "10",
                        "--tier", "desktop-high", "--ao", "off", "--blade", "on", "--capture-frames", "32",
                        "--character-shadows", "own"],
+                ci_seconds: (lavapipe: 68.6, warp: 112.7),
             ),
             // Partway through the enter: the band sliding in from the left, its picture with it, cut where the
             // frame's left edge would be.

@@ -4,7 +4,7 @@
 # Rewrite it with `cargo xtask counts --update` when a count moves on purpose, and say why in the change.
 #
 # preset: ci
-# sources: fb19b6befec6e893 (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
+# sources: 7f7e84eace2871fd (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
 # walks: --bench 3720 --draw-every 7 --size 320x180 --zone district --zone-walk tour, at each tier's settings
 # reported in counts.txt, not held (the order cells arrive in is timing):
 #   materials bound: bound when the next draw's material differs, so it follows the draws' order
@@ -13,6 +13,9 @@
 desktop-high-dusk | ambient characters in view | not exercised
 desktop-high-dusk | ambient characters spawned | not exercised
 desktop-high-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1593
+desktop-high-dusk | ambient in the far band | not exercised
+desktop-high-dusk | ambient in the middle band | not exercised
+desktop-high-dusk | ambient spring rigs | not exercised
 desktop-high-dusk | animation jobs | not exercised
 desktop-high-dusk | ao capsules | p50 1 p95 1 worst 1 total 531
 desktop-high-dusk | bytes admitted | not exercised
@@ -76,6 +79,7 @@ desktop-high-dusk | shadow capsules | not exercised
 desktop-high-dusk | shadow draws above level 0 | p50 473 p95 553 worst 553 total 239179
 desktop-high-dusk | shadow triangles | p50 1961182 p95 2300788 worst 2474724 total 997642453
 desktop-high-dusk | skinned instances | not exercised
+desktop-high-dusk | skinned instances above level 0 | not exercised
 desktop-high-dusk | skinned vertices | not exercised
 desktop-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-high-dusk | streamed texture pool | not exercised
@@ -96,6 +100,9 @@ desktop-high-dusk | worst texture debt frames | not exercised
 desktop-high-night | ambient characters in view | not exercised
 desktop-high-night | ambient characters spawned | not exercised
 desktop-high-night | ambient dispatches | p50 3 p95 3 worst 3 total 1593
+desktop-high-night | ambient in the far band | not exercised
+desktop-high-night | ambient in the middle band | not exercised
+desktop-high-night | ambient spring rigs | not exercised
 desktop-high-night | animation jobs | not exercised
 desktop-high-night | ao capsules | p50 1 p95 1 worst 1 total 531
 desktop-high-night | bytes admitted | not exercised
@@ -159,6 +166,7 @@ desktop-high-night | shadow capsules | not exercised
 desktop-high-night | shadow draws above level 0 | p50 532 p95 553 worst 553 total 259374
 desktop-high-night | shadow triangles | p50 1952772 p95 2176391 worst 2233094 total 1006813456
 desktop-high-night | skinned instances | not exercised
+desktop-high-night | skinned instances above level 0 | not exercised
 desktop-high-night | skinned vertices | not exercised
 desktop-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-high-night | streamed texture pool | not exercised
@@ -179,6 +187,9 @@ desktop-high-night | worst texture debt frames | not exercised
 desktop-low-dusk | ambient characters in view | not exercised
 desktop-low-dusk | ambient characters spawned | not exercised
 desktop-low-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1593
+desktop-low-dusk | ambient in the far band | not exercised
+desktop-low-dusk | ambient in the middle band | not exercised
+desktop-low-dusk | ambient spring rigs | not exercised
 desktop-low-dusk | animation jobs | not exercised
 desktop-low-dusk | ao capsules | p50 1 p95 1 worst 1 total 531
 desktop-low-dusk | bytes admitted | not exercised
@@ -242,6 +253,7 @@ desktop-low-dusk | shadow capsules | not exercised
 desktop-low-dusk | shadow draws above level 0 | p50 595 p95 740 worst 753 total 299218
 desktop-low-dusk | shadow triangles | p50 1742003 p95 2045735 worst 2166627 total 879487917
 desktop-low-dusk | skinned instances | not exercised
+desktop-low-dusk | skinned instances above level 0 | not exercised
 desktop-low-dusk | skinned vertices | not exercised
 desktop-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-low-dusk | streamed texture pool | not exercised
@@ -262,6 +274,9 @@ desktop-low-dusk | worst texture debt frames | not exercised
 desktop-low-night | ambient characters in view | not exercised
 desktop-low-night | ambient characters spawned | not exercised
 desktop-low-night | ambient dispatches | p50 3 p95 3 worst 3 total 1593
+desktop-low-night | ambient in the far band | not exercised
+desktop-low-night | ambient in the middle band | not exercised
+desktop-low-night | ambient spring rigs | not exercised
 desktop-low-night | animation jobs | not exercised
 desktop-low-night | ao capsules | p50 1 p95 1 worst 1 total 531
 desktop-low-night | bytes admitted | not exercised
@@ -325,6 +340,7 @@ desktop-low-night | shadow capsules | not exercised
 desktop-low-night | shadow draws above level 0 | p50 655 p95 723 worst 741 total 320658
 desktop-low-night | shadow triangles | p50 1658751 p95 1879372 worst 1950995 total 868271755
 desktop-low-night | skinned instances | not exercised
+desktop-low-night | skinned instances above level 0 | not exercised
 desktop-low-night | skinned vertices | not exercised
 desktop-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 desktop-low-night | streamed texture pool | not exercised
@@ -345,6 +361,9 @@ desktop-low-night | worst texture debt frames | not exercised
 mobile-high-dusk | ambient characters in view | not exercised
 mobile-high-dusk | ambient characters spawned | not exercised
 mobile-high-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1593
+mobile-high-dusk | ambient in the far band | not exercised
+mobile-high-dusk | ambient in the middle band | not exercised
+mobile-high-dusk | ambient spring rigs | not exercised
 mobile-high-dusk | animation jobs | not exercised
 mobile-high-dusk | ao capsules | p50 1 p95 1 worst 1 total 531
 mobile-high-dusk | bytes admitted | not exercised
@@ -408,6 +427,7 @@ mobile-high-dusk | shadow capsules | p50 1 p95 1 worst 1 total 531
 mobile-high-dusk | shadow draws above level 0 | p50 362 p95 432 worst 451 total 172241
 mobile-high-dusk | shadow triangles | p50 835996 p95 1039361 worst 1086456 total 431321310
 mobile-high-dusk | skinned instances | not exercised
+mobile-high-dusk | skinned instances above level 0 | not exercised
 mobile-high-dusk | skinned vertices | not exercised
 mobile-high-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-high-dusk | streamed texture pool | not exercised
@@ -428,6 +448,9 @@ mobile-high-dusk | worst texture debt frames | not exercised
 mobile-high-night | ambient characters in view | not exercised
 mobile-high-night | ambient characters spawned | not exercised
 mobile-high-night | ambient dispatches | p50 3 p95 3 worst 3 total 1593
+mobile-high-night | ambient in the far band | not exercised
+mobile-high-night | ambient in the middle band | not exercised
+mobile-high-night | ambient spring rigs | not exercised
 mobile-high-night | animation jobs | not exercised
 mobile-high-night | ao capsules | p50 1 p95 1 worst 1 total 531
 mobile-high-night | bytes admitted | not exercised
@@ -491,6 +514,7 @@ mobile-high-night | shadow capsules | p50 1 p95 1 worst 1 total 531
 mobile-high-night | shadow draws above level 0 | p50 377 p95 457 worst 466 total 184337
 mobile-high-night | shadow triangles | p50 827504 p95 1041685 worst 1067097 total 427907809
 mobile-high-night | skinned instances | not exercised
+mobile-high-night | skinned instances above level 0 | not exercised
 mobile-high-night | skinned vertices | not exercised
 mobile-high-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-high-night | streamed texture pool | not exercised
@@ -511,6 +535,9 @@ mobile-high-night | worst texture debt frames | not exercised
 mobile-low-dusk | ambient characters in view | not exercised
 mobile-low-dusk | ambient characters spawned | not exercised
 mobile-low-dusk | ambient dispatches | not exercised
+mobile-low-dusk | ambient in the far band | not exercised
+mobile-low-dusk | ambient in the middle band | not exercised
+mobile-low-dusk | ambient spring rigs | not exercised
 mobile-low-dusk | animation jobs | not exercised
 mobile-low-dusk | ao capsules | p50 1 p95 1 worst 1 total 531
 mobile-low-dusk | bytes admitted | not exercised
@@ -574,6 +601,7 @@ mobile-low-dusk | shadow capsules | p50 1 p95 1 worst 1 total 531
 mobile-low-dusk | shadow draws above level 0 | p50 311 p95 383 worst 397 total 153852
 mobile-low-dusk | shadow triangles | p50 743197 p95 881534 worst 930705 total 377002567
 mobile-low-dusk | skinned instances | not exercised
+mobile-low-dusk | skinned instances above level 0 | not exercised
 mobile-low-dusk | skinned vertices | not exercised
 mobile-low-dusk | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-low-dusk | streamed texture pool | not exercised
@@ -594,6 +622,9 @@ mobile-low-dusk | worst texture debt frames | not exercised
 mobile-low-night | ambient characters in view | not exercised
 mobile-low-night | ambient characters spawned | not exercised
 mobile-low-night | ambient dispatches | not exercised
+mobile-low-night | ambient in the far band | not exercised
+mobile-low-night | ambient in the middle band | not exercised
+mobile-low-night | ambient spring rigs | not exercised
 mobile-low-night | animation jobs | not exercised
 mobile-low-night | ao capsules | p50 1 p95 1 worst 1 total 531
 mobile-low-night | bytes admitted | not exercised
@@ -657,6 +688,7 @@ mobile-low-night | shadow capsules | p50 1 p95 1 worst 1 total 531
 mobile-low-night | shadow draws above level 0 | p50 335 p95 398 worst 413 total 165923
 mobile-low-night | shadow triangles | p50 723772 p95 887235 worst 917567 total 370117858
 mobile-low-night | skinned instances | not exercised
+mobile-low-night | skinned instances above level 0 | not exercised
 mobile-low-night | skinned vertices | not exercised
 mobile-low-night | streamed texture bytes | p50 37379050 p95 37379050 worst 37379050 total 19848275550
 mobile-low-night | streamed texture pool | not exercised

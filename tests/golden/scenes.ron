@@ -4080,6 +4080,23 @@
                        "--capture-frames", "32"],
                 ci_seconds: (lavapipe: 36.5, warp: 45.4),
             ),
+            // The district's people (M5 C11): the crowd the `ci` preset stands and walks in front of its 48 block
+            // sides (144 people, the proving hub's cast, mounted beside it), at dusk, 100 m along the tour, where
+            // its walk sees the most of them (38 in view of the tier's 60 standing). Each draws at the level of
+            // detail its error gives (M5 D5) and is posed through the animation levels (M5 C1). Metal only.
+            (
+                name: "zone-district-street-crowd",
+                ticks: 1000,
+                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
+                       "--tier", "desktop-high", "--mount", "zone_proving_hub", "--capture-frames", "32"],
+            ),
+            // The same on Mobile-High: its 30 nearest, with a crowd's shadows, capsules alone.
+            (
+                name: "zone-district-street-crowd-mobile-high",
+                ticks: 1000,
+                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
+                       "--tier", "mobile-high", "--mount", "zone_proving_hub", "--capture-frames", "32"],
+            ),
             // Wet surfaces (M5 L4). The proving ground's yard at night after rain: its paving darkened, glossed
             // and standing in puddles that mirror the yard's probe (its lanterns and the shelter) and the night
             // sky beyond it; the lanterns' light streaks across the wet stone.

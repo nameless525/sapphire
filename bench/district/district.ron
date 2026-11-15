@@ -85,7 +85,8 @@
             mobile_skip: 0,
         ),
         // Its people (M5 C10), for a preset with `crowd`: in front of every block side, one standing and two
-        // walking its length there and back, 720 on the budget's 240 sides, which the tiers' caps draw from.
+        // walking its length there and back, 720 on the budget's 240 sides and 144 on `ci`'s 48 (M5 C11, for the
+        // goldens `zone-district-street-crowd*`), which the tiers' caps draw from.
         // The cast and graph are the shipped content's, the proving hub's (`content/ambient/`), so a run that
         // draws them mounts `zone_proving_hub` beside the district (`--mount zone_proving_hub`).
         crowd: Some((
@@ -103,7 +104,7 @@
             walk_out: 2.2,
         )),
         presets: (
-            ci: (cells: 4, texture_sets: 4, texture_size: 256),
+            ci: (cells: 4, texture_sets: 4, texture_size: 256, crowd: true),
             budget: (cells: 8, texture_sets: 160, texture_size: 2048, crowd: true),
             double: Some((cells: 8, texture_sets: 320, texture_size: 2048)),
         ),

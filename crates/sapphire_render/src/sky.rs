@@ -19,7 +19,10 @@
 //!    **The nebula** (M1 X1 part 2e) lies under them on the same sphere: an optional map whose
 //!    three channels are the densities of three kinds of cloud (broad clouds, the bright wisps
 //!    along them, sparse accents), each in a color time of day gives it, so a night's nebula can
-//!    turn from violet at dusk to teal at midnight, and black by day draws nothing.
+//!    turn from violet at dusk to teal at midnight, and black by day draws nothing. With it comes
+//!    a third, finer grid of stars (M5 L17: 256 cells an edge, most of them faint), dense where
+//!    the map's clouds and wisps are and absent where they aren't, so the nebula reads as a crowd
+//!    of stars; a material with a nebula map pays for it, one more star grid per night-sky pixel.
 //! 3. **Glows** around the sun and moon: compact, so a body far out of view adds exactly
 //!    nothing, and stretched along the horizon while the body is low, as anime skies spread a
 //!    setting sun's warmth along it.

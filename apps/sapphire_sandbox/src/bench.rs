@@ -251,6 +251,8 @@ pub(crate) fn run(
         .map(|every| DrawnCounts::new(&stage, (u64::from(frames) / every + 1) as usize));
     // A counting walk (M5 Z3) holds at its start through the warm-up and draws its first step.
     let counting_walk = drawn.is_some() && options.zone_walk.is_some();
+    // Its waits for a texture's level from here, logged at its end as a fight's bench logs a phase's (M5 Z2).
+    stage.content.start_texture_waits_over();
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
         stage.lose_frames = draw_every.is_some_and(|every| !drawn_frame(frame, every, counting_walk));
         let before = alloc::stats();
@@ -329,6 +331,8 @@ pub(crate) fn run(
     zone_walk.log(&stage, options);
     if let Some(drawn) = &drawn {
         drawn.log(&stage);
+        // Exit test 2's waits over the counting walk, as its one phase, `drawn` (while streaming).
+        crate::fight_bench::report_texture_waits("drawn", &stage.content.texture_streaming_stats());
     }
     if options.zone.is_some() {
         check_first_uses(&stage)?;

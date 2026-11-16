@@ -2047,6 +2047,18 @@ impl Options {
                  --zone-walk"
             ));
         }
+        // A counting walk (M5 Z3) runs the plain bench, which keeps no frames to trace: refused, not ignored (M5 Z2).
+        if options.bench_trace.is_some()
+            && options.zone_walk.is_some()
+            && options.draw_every.is_some()
+            && !matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. }))
+        {
+            return Err(
+                "--bench-trace with --zone-walk and --draw-every: a counting walk times nothing and writes \
+                        no trace; drop --draw-every for a timed walk's"
+                    .to_owned(),
+            );
+        }
         if options.zone_walk.is_some() && options.zone.is_none() {
             return Err("--zone-walk needs --zone".to_owned());
         }
@@ -3985,9 +3997,25 @@ mod tests {
             &["--capture", "x.png", "--replay", "x", "--bench-trace", "t.csv"],
             &["--capture", "x.png", "--zone", "district", "--zone-walk", "tour", "--bench-trace", "t.csv"],
             &["--bench", "1", "--record", "x", "--scenario", "y", "--script", "z", "--bench-trace", "t.csv"],
+            // A counting walk writes no trace, so it refuses one rather than ignore it (M5 Z2).
+            &[
+                "--bench",
+                "1",
+                "--zone",
+                "district",
+                "--zone-walk",
+                "tour",
+                "--draw-every",
+                "7",
+                "--bench-trace",
+                "t.csv",
+            ],
         ] {
             assert!(parse(args).unwrap_err().contains("--bench-trace"), "{args:?}");
         }
+        // A fight's bench under --draw-every still writes its trace (the district's fight test reads it).
+        let fight = ["--bench", "1", "--replay", "x", "--draw-every", "25", "--bench-trace", "t.csv"];
+        assert_eq!(parse(&fight).unwrap().0.bench_trace, Some(PathBuf::from("t.csv")));
     }
 
     #[test]

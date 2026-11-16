@@ -39,7 +39,9 @@
 //! the kind of core they ran on (M5 B4).
 //!
 //! Rows the spec budgets on Desktop-Low and Mobile-Low only, as §3.2 does, have no budget on the other
-//! two tiers. A row is per frame, so a Mobile-Low step's budget is doubled, as §3.2's "× 2 steps" says.
+//! two tiers; §3.3's carry M5 B4's proposed figures there, logged as `proposed_us`, which the exit run's report
+//! shows and fails nothing on (M5 Z2). A grouped row (`gpu main`, `gpu prepasses`) is held to the sum of its
+//! members' figures; Metal overlaps passes, so exclusive pass times are a Vulkan or DX12 GPU's. A row is per frame, so a Mobile-Low step's budget is doubled, as §3.2's "× 2 steps" says.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -252,14 +254,25 @@ struct Row {
     read: fn(&Traced) -> Option<Duration>,
     /// In µs a frame: Desktop-High, Desktop-Low, Mobile-High, Mobile-Low.
     budget: [Option<u32>; 4],
+    /// A figure proposed where the spec has adopted none (M5 B4's Desktop-High and Mobile-High columns of §3.3),
+    /// logged beside the row as `proposed_us` for the report to show and fail nothing on. Adopting one is moving
+    /// it into [`Self::budget`].
+    proposed: [Option<u32>; 4],
 }
 
 const fn cpu_row(name: &'static str, read: fn(&Traced) -> Option<Duration>, budget: [Option<u32>; 4]) -> Row {
-    Row { name, gpu: false, read, budget }
+    Row { name, gpu: false, read, budget, proposed: [None; 4] }
 }
 
 const fn gpu_row(name: &'static str, read: fn(&Traced) -> Option<Duration>, budget: [Option<u32>; 4]) -> Row {
-    Row { name, gpu: true, read, budget }
+    Row { name, gpu: true, read, budget, proposed: [None; 4] }
+}
+
+impl Row {
+    /// With B4's proposed Desktop-High and Mobile-High figures (spec §3.3, "Proposed columns and rows").
+    const fn proposing(self, desktop_high: u32, mobile_high: u32) -> Self {
+        Self { proposed: [Some(desktop_high), None, Some(mobile_high), None], ..self }
+    }
 }
 
 /// §3.2's two columns, for the rows that have only those.
@@ -300,17 +313,22 @@ const ROWS: [Row; 33] = [
     cpu_row("zone prefetch", |t| (!t.prefetch.is_zero()).then_some(t.prefetch), UNBUDGETED),
     cpu_row("gpu wait", |t| Some(t.wait), UNBUDGETED),
     gpu_row("gpu frame", |t| t.gpu.span, [Some(12_000), Some(14_000), Some(13_000), Some(26_000)]),
-    gpu_row("gpu prepasses", |t| t.gpu.prepasses, low(1_500, 1_500)),
-    gpu_row("gpu shadows", |t| t.gpu.shadows, low(2_000, 3_000)),
+    // A grouped row is held to the sum of its members' figures (M5 Z2): culling and the prepasses.
+    gpu_row("gpu prepasses", |t| t.gpu.prepasses, low(1_500, 1_500)).proposing(1_200, 1_000),
+    gpu_row("gpu shadows", |t| t.gpu.shadows, low(2_000, 3_000)).proposing(2_000, 1_600),
     // §3.3 gives Mobile-Low none, and it runs neither.
-    gpu_row("gpu clustering and ao", |t| t.gpu.clustering_ao, [None, Some(1_500), None, None]),
-    // §3.3's forward opaque, outlines, and hair, eyes and transparents all draw in the main pass.
-    gpu_row("gpu main", |t| t.gpu.main, low(4_900, 11_500)),
-    gpu_row("gpu effects", |t| t.gpu.vfx, low(1_200, 3_000)),
-    gpu_row("gpu taa", |t| t.gpu.taa, low(800, 1_000)),
-    gpu_row("gpu post", |t| t.gpu.post, low(700, 2_500)),
-    gpu_row("gpu ui", |t| t.gpu.ui, low(300, 1_000)),
-    gpu_row("gpu skinning", |t| t.gpu.skinning, UNBUDGETED),
+    gpu_row("gpu clustering and ao", |t| t.gpu.clustering_ao, [None, Some(1_500), None, None])
+        .proposing(1_200, 800),
+    // §3.3's forward opaque, outlines, and hair, eyes and transparents all draw in the main pass: their sum,
+    // 3.5 + 0.6 + 0.8 and 8.0 + 1.5 + 2.0 ms, and B4's 2.8 + 0.5 + 0.7 and 3.4 + 1.0 + 0.9.
+    gpu_row("gpu main", |t| t.gpu.main, low(4_900, 11_500)).proposing(4_000, 5_300),
+    gpu_row("gpu effects", |t| t.gpu.vfx, low(1_200, 3_000)).proposing(800, 1_000),
+    gpu_row("gpu taa", |t| t.gpu.taa, low(800, 1_000)).proposing(900, 600),
+    gpu_row("gpu post", |t| t.gpu.post, low(700, 2_500)).proposing(800, 1_200),
+    gpu_row("gpu ui", |t| t.gpu.ui, low(300, 1_000)).proposing(200, 500),
+    // Skinning and morphs, the whole cast's compute (§3.3's new row, M5 B4): 0.5 and 1.0 ms on the low tiers,
+    // 0.4 and 0.6 proposed on the high.
+    gpu_row("gpu skinning", |t| t.gpu.skinning, low(500, 1_000)).proposing(400, 600),
 ];
 
 /// A row's place in [`Row::budget`].
@@ -446,8 +464,7 @@ pub(crate) fn run(
     if let Some(every) = run.draw_every {
         run.phase(Phase::First, frames)?;
         zone::report(run.stage, &run.trace, Phase::First);
-        let column = tier_column(run.stage.quality.stats().tier.id);
-        counts::report_drawn(&run.trace, Phase::First, every.get(), column);
+        counts::report_drawn(&run.trace, Phase::First, every.get(), &counts::RunBudgets::of(run.stage));
         if let Some(path) = &options.bench_trace {
             write_trace(path, &run.trace)
                 .map_err(|error| AppInitError::msg(format!("--bench-trace {}: {error}", path.display())))?;
@@ -526,7 +543,7 @@ impl Run<'_> {
                     first_hour = format_args!("{first_hour:.4}"),
                     "fight pipelines",
                 );
-                report_texture_waits(phase, &self.stage.content.texture_streaming_stats());
+                report_texture_waits(phase.name(), &self.stage.content.texture_streaming_stats());
                 // Loads after the phase's last drawn frame go to it, so none goes unlogged.
                 if let Some(every) = self.draw_every {
                     let loads = sapphire_core::frame_loads::loads().total();
@@ -749,7 +766,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
                 tracing::info!(target: LOG_TARGET, phase = phase.name(), row = row.name, "fight row not exercised");
                 continue;
             };
-            let budget = row.budget[column];
+            let (budget, proposed) = (row.budget[column], row.proposed[column]);
             let worst = frames().nth(spread.worst_tick as usize).expect("the spread's frame");
             tracing::info!(
                 target: LOG_TARGET,
@@ -763,6 +780,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
                 worst_tick = worst.tick,
                 worst_walked_m = worst.walked.map(|walked| format!("{walked:.1}")),
                 budget_us = ?budget,
+                proposed_us = ?proposed,
                 over_p50 = budget.is_some_and(|budget| micros(spread.p50) > f64::from(budget)),
                 over_worst = budget.is_some_and(|budget| micros(spread.worst) > f64::from(budget)),
                 "fight row",
@@ -801,7 +819,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             "fight phase",
         );
         zone::report(run.stage, &run.trace, phase);
-        counts::report(&run.trace, phase, column);
+        counts::report(&run.trace, phase, &counts::RunBudgets::of(run.stage));
     }
 }
 
@@ -809,7 +827,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
 /// wait completed in it, of both kinds, with their 50th and 99th percentiles and the worst, in frames; the
 /// pool's share of them; and those open at its end, with the longest. A wait open at a phase's start lands
 /// in the phase it ends in, with its whole length.
-fn report_texture_waits(phase: Phase, stats: &TextureStreamingStats) {
+pub(crate) fn report_texture_waits(phase: &'static str, stats: &TextureStreamingStats) {
     if !stats.streaming {
         return;
     }
@@ -850,10 +868,10 @@ struct WaitsLine {
 }
 
 impl WaitsLine {
-    fn of(phase: Phase, stats: &TextureStreamingStats) -> Self {
+    fn of(phase: &'static str, stats: &TextureStreamingStats) -> Self {
         let (all, pool) = (stats.all_waits(), stats.pool_waits);
         Self {
-            phase: phase.name(),
+            phase,
             completed: all.completed(),
             p50: wait_frames(all.percentile(0.5)),
             p99: wait_frames(all.percentile(0.99)),
@@ -1116,6 +1134,24 @@ mod tests {
         assert_eq!(budget("gpu frame", TierId::MobileLow), Some(26_000));
         assert_eq!(budget("gpu frame", TierId::DesktopHigh), Some(12_000));
         assert_eq!(budget("simulation", TierId::DesktopHigh), None, "§3.2 has no column for it");
+        assert_eq!(budget("gpu skinning", TierId::DesktopLow), Some(500), "§3.3's skinning row");
+        assert_eq!(budget("gpu skinning", TierId::MobileLow), Some(1_000));
+        // B4's proposed columns are logged beside a row and never as its budget.
+        let proposed = |name: &str, tier| {
+            let row = ROWS.iter().find(|row| row.name == name).expect("a row");
+            (row.budget[tier_column(tier)], row.proposed[tier_column(tier)])
+        };
+        assert_eq!(proposed("gpu main", TierId::DesktopHigh), (None, Some(4_000)));
+        assert_eq!(proposed("gpu main", TierId::MobileHigh), (None, Some(5_300)));
+        assert_eq!(proposed("gpu skinning", TierId::MobileHigh), (None, Some(600)));
+        assert_eq!(
+            proposed("gpu frame", TierId::DesktopHigh),
+            (Some(12_000), None),
+            "the frame's is adopted"
+        );
+        assert!(
+            ROWS.iter().all(|row| (0..4).all(|at| row.budget[at].is_none() || row.proposed[at].is_none()))
+        );
     }
 
     #[test]
@@ -1205,7 +1241,7 @@ mod tests {
     #[test]
     fn a_phases_waits_line_reads_both_kinds() {
         let mut stats = TextureStreamingStats { streaming: true, ..TextureStreamingStats::default() };
-        let line = WaitsLine::of(Phase::First, &stats);
+        let line = WaitsLine::of(Phase::First.name(), &stats);
         assert_eq!(
             (line.phase, line.completed, line.p99.as_str(), line.pool_worst.as_str()),
             ("first", 0, "-", "-")
@@ -1213,7 +1249,7 @@ mod tests {
         stats.waits.frames[3] = 99;
         stats.pool_waits.frames[WAIT_BINS - 1] = 1;
         (stats.pool_waits.open, stats.pool_waits.longest_open) = (1, 500);
-        let line = WaitsLine::of(Phase::Cpu, &stats);
+        let line = WaitsLine::of(Phase::Cpu.name(), &stats);
         assert_eq!(line.phase, "cpu");
         assert_eq!(
             (line.completed, line.p50.as_str(), line.p99.as_str(), line.worst.as_str()),

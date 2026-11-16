@@ -8,7 +8,10 @@
 //!   scene's, not the machine's. Each is logged per phase with its 50th and 95th percentile, its worst
 //!   frame, the tick and the metres walked it fell on, its total over the phase's frames, and spec §3.4's
 //!   view budget where it has one (2,500 of the main view's draw calls and 64 lights a desktop frame, 700 and 8
-//!   a phone's: m5-plan §3 puts the draws on `main draws`, and `draw calls`, every pass's, has none). A row
+//!   a phone's: m5-plan §3 puts the draws on `main draws`, and `draw calls`, every pass's, has none), and exit
+//!   test 2's where it has one ([`Budget`], M5 Z2): nothing over a pool's budget in use and nothing loaded on
+//!   the frame's thread, what's decoded and waiting held to the run's admission cap, and the streamed textures
+//!   to the pool the run holds (`--texture-pool` where given), both read from its asset server. A row
 //!   every frame read zero of says `not exercised`: nothing on this walk or fight fed it (a fourth cascade
 //!   on a tier of three, say).
 //! - **A plain bench of a walk** (`--zone-walk` with `--draw-every <n>`, which `bench.rs` runs) logs the same
@@ -22,7 +25,7 @@
 
 use std::time::Duration;
 
-use sapphire_assets::{AssetKind, AssetStats};
+use sapphire_assets::{AssetBudgets, AssetKind, AssetStats};
 use sapphire_platform::CoreKind;
 use sapphire_render::{FrameCounts, RenderStats, RunStats, StateChanges};
 use sapphire_stage::TextureStreamingStats;
@@ -194,7 +197,7 @@ impl Counted {
         let pool = |kind: AssetKind| -> u64 {
             AssetKind::ALL
                 .into_iter()
-                .filter(|&counted| sapphire_assets::AssetBudgets::pool(counted) == kind)
+                .filter(|&counted| AssetBudgets::pool(counted) == kind)
                 .map(|counted| assets.resident[counted.index()])
                 .sum()
         };
@@ -261,12 +264,51 @@ pub(crate) struct CountRow {
     pub group: &'static str,
     pub name: &'static str,
     pub read: fn(&Counted) -> u64,
-    /// Desktop-High, Desktop-Low, Mobile-High, Mobile-Low.
-    pub budget: [Option<u64>; 4],
+    pub budget: Budget,
+}
+
+/// What a count row is budgeted against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Budget {
+    /// A figure on each tier, or none: Desktop-High, Desktop-Low, Mobile-High, Mobile-Low.
+    Tiers([Option<u64>; 4]),
+    /// The asset server's admission cap as the run holds it ([`sapphire_assets::AssetBudgets::admission`]).
+    Admission,
+    /// The textures' pool as the run holds it: `--texture-pool` where given, else the tier's zone texture pool
+    /// (the asset server's texture budget follows either, `Content::set_texture_pool`).
+    TexturePool,
+}
+
+impl Budget {
+    /// The figure on `run`, if any.
+    pub(crate) fn on(self, run: &RunBudgets) -> Option<u64> {
+        match self {
+            Self::Tiers(tiers) => tiers[run.column],
+            Self::Admission => Some(run.assets.admission),
+            Self::TexturePool => Some(run.assets.resident(AssetKind::Texture)),
+        }
+    }
+}
+
+/// What a run's count rows are measured against: its tier's column of the fixed figures, and its asset server's
+/// budgets as they stand, so a run's own pool is the pool's budget and nothing is a copy.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RunBudgets {
+    pub column: usize,
+    pub assets: AssetBudgets,
+}
+
+impl RunBudgets {
+    pub(crate) fn of(stage: &Stage) -> Self {
+        Self {
+            column: super::tier_column(stage.quality.stats().tier.id),
+            assets: stage.content.stats().budgets,
+        }
+    }
 }
 
 const fn row(group: &'static str, name: &'static str, read: fn(&Counted) -> u64) -> CountRow {
-    CountRow { group, name, read, budget: [None; 4] }
+    CountRow { group, name, read, budget: Budget::Tiers([None; 4]) }
 }
 
 /// The count rows' groups, in their order.
@@ -307,7 +349,7 @@ pub(crate) const COUNT_ROWS: [CountRow; 90] = [
         name: "main draws",
         group: PASSES,
         read: |c| u64::from(c.passes.main.draws),
-        budget: [Some(2_500), Some(2_500), Some(700), Some(700)],
+        budget: Budget::Tiers([Some(2_500), Some(2_500), Some(700), Some(700)]),
     },
     // The instances those calls draw (M5 D2).
     row(PASSES, "main instances", |c| u64::from(c.passes.main.instances)),
@@ -372,7 +414,7 @@ pub(crate) const COUNT_ROWS: [CountRow; 90] = [
         name: "lights",
         group: LIGHTS,
         read: |c| u64::from(c.lights),
-        budget: [Some(64), Some(64), Some(8), Some(8)],
+        budget: Budget::Tiers([Some(64), Some(64), Some(8), Some(8)]),
     },
     row(LIGHTS, "lights dropped", |c| u64::from(c.lights_dropped)),
     // §3.4: a zone texture pool of 2.5 GB on the desktop, 600 MB on a phone and 400 MB on Mobile-Low, as
@@ -381,18 +423,31 @@ pub(crate) const COUNT_ROWS: [CountRow; 90] = [
         group: ASSETS,
         name: "texture pool bytes",
         read: |c| c.texture_pool,
-        budget: [Some(2_560 << 20), Some(2_560 << 20), Some(600 << 20), Some(400 << 20)],
+        budget: Budget::Tiers([Some(2_560 << 20), Some(2_560 << 20), Some(600 << 20), Some(400 << 20)]),
     },
-    row(ASSETS, "bytes over budget in use", |c| c.over_budget),
+    // Exit test 2: no pool holds more than its budget in use, on any tier.
+    CountRow {
+        group: ASSETS,
+        name: "bytes over budget in use",
+        read: |c| c.over_budget,
+        budget: Budget::Tiers([Some(0); 4]),
+    },
     row(ASSETS, "bytes admitted", |c| c.admitted),
-    row(ASSETS, "bytes decoded waiting", |c| c.decoded_waiting),
+    // Exit test 2's cap on what's decoded and waiting for the GPU: the asset server's admission, as the run holds
+    // it (256 MiB on a desktop, 64 on a phone).
+    CountRow {
+        group: ASSETS,
+        name: "bytes decoded waiting",
+        read: |c| c.decoded_waiting,
+        budget: Budget::Admission,
+    },
     row(ASSETS, "reads held", |c| c.reads_held),
     // Exit test 2: nothing loads on the frame's thread, on any tier.
     CountRow {
         group: ASSETS,
         name: "frame thread loads",
         read: |c| c.frame_thread_loads,
-        budget: [Some(0); 4],
+        budget: Budget::Tiers([Some(0); 4]),
     },
     row(ASSETS, "texture bytes raised", |c| c.raised),
     row(ASSETS, "bytes given back", |c| c.given_back),
@@ -417,7 +472,13 @@ pub(crate) const COUNT_ROWS: [CountRow; 90] = [
     row(STREAMING, "texture levels raised", |c| c.levels_raised),
     row(STREAMING, "texture levels lowered", |c| c.levels_lowered),
     row(STREAMING, "texture lowers waiting", |c| c.lowers_waiting),
-    row(STREAMING, "streamed texture bytes", |c| c.streamed_bytes),
+    // Exit test 2's pool: the one the run holds, `--texture-pool` where given (a binding pool), else the tier's.
+    CountRow {
+        group: STREAMING,
+        name: "streamed texture bytes",
+        read: |c| c.streamed_bytes,
+        budget: Budget::TexturePool,
+    },
     row(STREAMING, "streamed texture pool", |c| c.streamed_pool),
     row(STREAMING, "texture tail bytes", |c| c.texture_tails),
     row(STREAMING, "texture bytes wanted", |c| c.texture_wanted),
@@ -434,21 +495,21 @@ type Counting<'a> = (&'a Counted, u64, Option<f32>);
 /// Logs each count row over the frames of `phase` that ran their graph under `--draw-every <every>`, as a phase
 /// of its own, `drawn`, as [`DrawnCounts`] does a walk's (M5 B5): a fight's bench under it times nothing, and a
 /// frame that runs no graph submits nothing.
-pub(super) fn report_drawn(trace: &[Traced], phase: Phase, every: u32, column: usize) {
+pub(super) fn report_drawn(trace: &[Traced], phase: Phase, every: u32, budgets: &RunBudgets) {
     let frames = || trace.iter().filter(move |frame| frame.phase == phase && frame.frame % every == 0);
     if frames().next().is_none() {
         return;
     }
-    rows(|| frames().map(|frame| (&frame.counted, frame.tick, frame.walked)), "drawn", column);
+    rows(|| frames().map(|frame| (&frame.counted, frame.tick, frame.walked)), "drawn", budgets);
 }
 
 /// Logs each count row over `phase`'s frames, and its frames' times by the kind of core they ran on.
-pub(super) fn report(trace: &[Traced], phase: Phase, column: usize) {
+pub(super) fn report(trace: &[Traced], phase: Phase, budgets: &RunBudgets) {
     let frames = || trace.iter().filter(move |frame| frame.phase == phase && frame.restart.is_zero());
     if frames().next().is_none() {
         return;
     }
-    rows(|| frames().map(|frame| (&frame.counted, frame.tick, frame.walked)), phase.name(), column);
+    rows(|| frames().map(|frame| (&frame.counted, frame.tick, frame.walked)), phase.name(), budgets);
     for core in [Some(CoreKind::Performance), Some(CoreKind::Efficiency), None] {
         let on = || frames().filter(move |frame| frame.core == core);
         let samples = on().count();
@@ -475,7 +536,7 @@ pub(super) fn report(trace: &[Traced], phase: Phase, column: usize) {
 }
 
 /// Logs each count row over `frames`, with its total over them.
-fn rows<'a, I: Iterator<Item = Counting<'a>>>(frames: impl Fn() -> I, phase: &str, column: usize) {
+fn rows<'a, I: Iterator<Item = Counting<'a>>>(frames: impl Fn() -> I, phase: &str, budgets: &RunBudgets) {
     for row in &COUNT_ROWS {
         // Counts ride in a spread's Duration as nanoseconds: one per unit.
         let values = frames()
@@ -488,7 +549,7 @@ fn rows<'a, I: Iterator<Item = Counting<'a>>>(frames: impl Fn() -> I, phase: &st
         }
         let (_, worst_tick, worst_walked) =
             frames().nth(spread.worst_tick as usize).expect("the spread's frame");
-        let budget = row.budget[column];
+        let budget = row.budget.on(budgets);
         let count = |value: Duration| value.as_nanos() as u64;
         tracing::info!(
             target: LOG_TARGET,
@@ -542,8 +603,12 @@ impl DrawnCounts {
 
     /// Logs each count row over the frames drawn, as a phase of its own, `drawn`.
     pub(crate) fn log(&self, stage: &Stage) {
-        let column = super::tier_column(stage.quality.stats().tier.id);
-        rows(|| self.frames.iter().map(|(counted, tick, walked)| (counted, *tick, *walked)), "drawn", column);
+        let budgets = RunBudgets::of(stage);
+        rows(
+            || self.frames.iter().map(|(counted, tick, walked)| (counted, *tick, *walked)),
+            "drawn",
+            &budgets,
+        );
     }
 }
 
@@ -654,26 +719,49 @@ mod tests {
     fn budgets_are_spec_section_3_4s_and_exit_test_2s_alone() {
         // Desktop-High, Desktop-Low, Mobile-High, Mobile-Low; nothing measured.
         let mib = |mib: u64| Some(mib << 20);
-        let budgeted: Vec<(&str, [Option<u64>; 4])> = COUNT_ROWS
+        let budgeted: Vec<(&str, Budget)> = COUNT_ROWS
             .iter()
-            .filter(|row| row.budget.iter().any(Option::is_some))
+            .filter(|row| row.budget != Budget::Tiers([None; 4]))
             .map(|row| (row.name, row.budget))
             .collect();
         assert_eq!(
             budgeted,
             [
-                ("main draws", [Some(2_500), Some(2_500), Some(700), Some(700)]),
-                ("lights", [Some(64), Some(64), Some(8), Some(8)]),
-                ("texture pool bytes", [mib(2_560), mib(2_560), mib(600), mib(400)]),
-                ("frame thread loads", [Some(0); 4]),
+                ("main draws", Budget::Tiers([Some(2_500), Some(2_500), Some(700), Some(700)])),
+                ("lights", Budget::Tiers([Some(64), Some(64), Some(8), Some(8)])),
+                ("texture pool bytes", Budget::Tiers([mib(2_560), mib(2_560), mib(600), mib(400)])),
+                ("bytes over budget in use", Budget::Tiers([Some(0); 4])),
+                ("bytes decoded waiting", Budget::Admission),
+                ("frame thread loads", Budget::Tiers([Some(0); 4])),
+                ("streamed texture bytes", Budget::TexturePool),
             ]
         );
         // The pool's figures are the tier table's, which writes §3.4's row.
         let pool = COUNT_ROWS.iter().find(|row| row.name == "texture pool bytes").expect("a row");
         let table = sapphire_render::quality::TierTable::shipped();
         for tier in table.tiers() {
-            let column = super::super::tier_column(tier.id);
-            assert_eq!(pool.budget[column], mib(u64::from(tier.texture_pool_mib)), "{:?}", tier.id);
+            let run =
+                RunBudgets { column: super::super::tier_column(tier.id), assets: AssetBudgets::DESKTOP };
+            assert_eq!(pool.budget.on(&run), mib(u64::from(tier.texture_pool_mib)), "{:?}", tier.id);
         }
+    }
+
+    /// Exit test 2 under a binding pool (M5 Z2): what's decoded and waiting is held to the admission cap, and the
+    /// streamed textures to the pool the run holds, both read from the run's asset server, never a copy.
+    #[test]
+    fn the_admission_cap_and_the_pool_are_the_runs_own() {
+        use sapphire_core::target::FormFactor;
+        let row = |name: &str| COUNT_ROWS.iter().find(|row| row.name == name).expect("a row").budget;
+        let desktop = RunBudgets { column: 1, assets: AssetBudgets::for_form_factor(FormFactor::Desktop) };
+        let phone = RunBudgets { column: 3, assets: AssetBudgets::for_form_factor(FormFactor::Mobile) };
+        assert_eq!(row("bytes decoded waiting").on(&desktop), Some(256 << 20));
+        assert_eq!(row("bytes decoded waiting").on(&phone), Some(64 << 20));
+        let binding =
+            RunBudgets { assets: phone.assets.with_resident(AssetKind::Texture, 331 << 20), ..phone };
+        assert_eq!(row("streamed texture bytes").on(&binding), Some(331 << 20), "the run's --texture-pool");
+        assert_eq!(
+            row("streamed texture bytes").on(&desktop),
+            Some(desktop.assets.resident(AssetKind::Texture))
+        );
     }
 }

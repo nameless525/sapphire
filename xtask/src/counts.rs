@@ -48,6 +48,8 @@ pub fn run(counts: &Counts<'_>) -> anyhow::Result<()> {
         .arg(&mobile.dir)
         .arg("--sources")
         .arg(bench::source_dir(Preset::Ci))
+        .arg("--mobile-sources")
+        .arg(bench::source_dir_for(Preset::Ci, Cook::Mobile))
         .arg("--table")
         .arg(workspace::root().join(TABLE))
         .arg("--out")

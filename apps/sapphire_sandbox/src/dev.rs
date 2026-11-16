@@ -371,12 +371,15 @@ impl DevTools {
             let before = self.counted_assets.unwrap_or(frame.assets);
             let counted =
                 Counted::of(&frame.render, &frame.assets, &before, &frame.streaming).with_scene(frame.scene);
-            let column = crate::fight_bench::tier_column(frame.quality.stats().tier.id);
+            let budgets = crate::fight_bench::counts::RunBudgets {
+                column: crate::fight_bench::tier_column(frame.quality.stats().tier.id),
+                assets: frame.assets.budgets,
+            };
             self.count_rows.extend(COUNT_ROWS.iter().map(|row| CountRowView {
                 group: row.group,
                 name: row.name,
                 value: (row.read)(&counted),
-                budget: row.budget[column],
+                budget: row.budget.on(&budgets),
             }));
         }
         self.counted_assets = shows_counts.then_some(frame.assets);

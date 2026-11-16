@@ -33,7 +33,8 @@ Usage:
       Draw the stores' screenshots (sapphire_testkit::store_shots) into <out>/<store>/<size>/
       <language>/, emptied first, with each capture's log in <out>/logs/.
   sapphire_testkit counts --sandbox <exe> --content <dir> --mobile-content <dir> --table <file>
-                          --out <dir> [--sources <dir>] [--update] [--walk <name>]...
+                          --out <dir> [--sources <dir>] [--mobile-sources <dir>] [--update]
+                          [--walk <name>]...
                           [--walk-timeout <seconds>]
       Walk the benchmark district's tour with the sandbox's walk bench at each tier's
       settings, dusk and night, and compare each walk's count rows with the table: one line
@@ -41,7 +42,7 @@ Usage:
       --content is a desktop cook with the district's pack and a release manifest naming it,
       which the desktop tiers read, and --mobile-content the same for the mobile cook, which
       the phone tiers read (`cargo xtask counts` makes both). --sources is the district's generated sources, whose
-      digest the table names. --walk runs one walk (more than once for more); --update
+      digest the table names, and --mobile-sources the phones' district's, beside it. --walk runs one walk (more than once for more); --update
       rewrites those walks' rows. Each walk's log is <out>/<walk>.log, and what every walk
       counted is <out>/counts.txt, a table (sapphire_testkit::counts).
   sapphire_testkit scale plan --manifest <file> [--smoke] [--out <dir>]
@@ -170,6 +171,7 @@ fn counts(mut args: Vec<String>) -> Result<Vec<String>, String> {
         table: path("--table")?,
         out: path("--out")?,
         sources: value("--sources")?.map(PathBuf::from),
+        mobile_sources: value("--mobile-sources")?.map(PathBuf::from),
     };
     let timeout = seconds("--walk-timeout", value("--walk-timeout")?, counts::DEFAULT_WALK_TIMEOUT)?;
     if let Some(unexpected) = args.first() {

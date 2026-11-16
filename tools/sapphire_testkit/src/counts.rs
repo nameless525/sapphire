@@ -147,6 +147,9 @@ pub struct Paths {
     pub table: PathBuf,
     /// The district's generated sources, whose digest the table's header names: checked when given.
     pub sources: Option<PathBuf>,
+    /// The phones' district's generated sources (M5 B6: four materials a cell, a tree of their own), whose digest
+    /// the header names beside the desktop's: checked when given.
+    pub mobile_sources: Option<PathBuf>,
     /// The walks' logs and what they counted; emptied first.
     pub out: PathBuf,
 }
@@ -170,17 +173,22 @@ pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Re
     })?;
     let table = Table::parse(&text).map_err(|error| format!("{}: {error}", paths.table.display()))?;
     let digest = paths.sources.as_deref().map(sources_digest).transpose()?;
+    let mobile_digest = paths.mobile_sources.as_deref().map(sources_digest).transpose()?;
 
     let mut failures = Vec::new();
-    if let Some(digest) = &digest
-        && mode == Mode::Compare
-        && header_digest(&table.header).is_some_and(|written| written != digest)
+    for (what, digest, key) in
+        [("district's", &digest, SOURCES), ("phones' district's", &mobile_digest, MOBILE_SOURCES)]
     {
-        failures.push(format!(
-            "the district's sources digest {digest}, where the table was written from {}: a change to the \
-             generator re-baselines the counts (`cargo xtask counts --update`)",
-            header_digest(&table.header).unwrap_or_default()
-        ));
+        if let Some(digest) = digest
+            && mode == Mode::Compare
+            && header_digest(&table.header, key).is_some_and(|written| written != digest)
+        {
+            failures.push(format!(
+                "the {what} sources digest {digest}, where the table was written from {}: a change to the \
+                 generator re-baselines the counts (`cargo xtask counts --update`)",
+                header_digest(&table.header, key).unwrap_or_default()
+            ));
+        }
     }
     let mut seen = BTreeMap::new();
     let mut over_budget = Vec::new();
@@ -217,7 +225,10 @@ pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Re
         }
     }
     let names: Vec<&str> = selected.iter().map(|walk| walk.name).collect();
-    let header = header(digest.as_deref().or_else(|| header_digest(&table.header)));
+    let header = header(
+        digest.as_deref().or_else(|| header_digest(&table.header, SOURCES)),
+        mobile_digest.as_deref().or_else(|| header_digest(&table.header, MOBILE_SOURCES)),
+    );
     // Everything the walks counted goes in `counts.txt`; the table holds all but the rows only reported.
     let counted = table::update(&Table::default(), &seen, &names, header.clone(), is_ceiling, HEADROOM);
     seen.retain(|(_, row), _| !is_reported(row));
@@ -277,8 +288,12 @@ fn select(names: &[String]) -> Result<Vec<Walk>, String> {
         .collect())
 }
 
+/// The header's line naming the desktop's generated sources, and the phones'.
+const SOURCES: &str = "sources: ";
+const MOBILE_SOURCES: &str = "sources-mobile: ";
+
 /// The header `--update` writes.
-fn header(digest: Option<&str>) -> Vec<String> {
+fn header(digest: Option<&str>, mobile_digest: Option<&str>) -> Vec<String> {
     let mut header = vec![
         "The benchmark district's counts (M5 X4): what CI's nightly scale lane holds each walk of the `ci`".to_owned(),
         "preset's tour to, a walk a job. A row fails on any change, up or down; an `at most` row, which none".to_owned(),
@@ -289,7 +304,12 @@ fn header(digest: Option<&str>) -> Vec<String> {
     ];
     if let Some(digest) = digest {
         header.push(format!(
-            "sources: {digest} (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)"
+            "{SOURCES}{digest} (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)"
+        ));
+    }
+    if let Some(digest) = mobile_digest {
+        header.push(format!(
+            "{MOBILE_SOURCES}{digest} (the phones' district, which the phone tiers' walks read, the same digest)"
         ));
     }
     header.push(format!(
@@ -300,9 +320,9 @@ fn header(digest: Option<&str>) -> Vec<String> {
     header
 }
 
-/// The sources digest a table's header names.
-fn header_digest(header: &[String]) -> Option<&str> {
-    header.iter().find_map(|line| line.strip_prefix("sources: ")?.split(' ').next())
+/// The sources digest a table's header names on its line `key` (`SOURCES` or `MOBILE_SOURCES`).
+fn header_digest<'h>(header: &'h [String], key: &str) -> Option<&'h str> {
+    header.iter().find_map(|line| line.strip_prefix(key)?.split(' ').next())
 }
 
 /// A digest of every file under `dir`: FNV-1a 64 over each one's path from `dir`, its length and its bytes, in
@@ -478,7 +498,7 @@ mod tests {
 
     #[test]
     fn the_rows_only_reported_are_named_in_the_header_and_nothing_held_is_among_them() {
-        let header = header(Some("0123456789abcdef"));
+        let header = header(Some("0123456789abcdef"), None);
         for (row, why) in REPORTED {
             assert!(is_reported(row) && !is_ceiling(row), "{row}");
             assert!(header.iter().any(|line| line.trim() == format!("{row}: {why}")), "{row} in {header:?}");
@@ -486,7 +506,7 @@ mod tests {
         for held in ["draw calls", "pipelines set", "draw instances", "triangles"] {
             assert!(!is_reported(held), "{held}");
         }
-        assert_eq!(header_digest(&header), Some("0123456789abcdef"));
+        assert_eq!(header_digest(&header, SOURCES), Some("0123456789abcdef"));
     }
 
     #[test]
@@ -513,6 +533,7 @@ mod tests {
             mobile_content: PathBuf::from("mobile"),
             table: PathBuf::from("table.txt"),
             sources: None,
+            mobile_sources: None,
             out: PathBuf::from("out"),
         };
         for walk in WALKS {
@@ -530,6 +551,17 @@ mod tests {
             assert!(args.windows(2).any(|pair| pair == ["--mount", "zone_proving_hub"]), "{}", walk.name);
             assert!(args.windows(2).any(|pair| pair == ["--ambient", "on"]), "{}", walk.name);
         }
+    }
+
+    /// The header names both trees the walks read (M5 Z2): the desktop's sources and the phones' (M5 B6), each
+    /// read back by its own line, so a change to either generator is caught.
+    #[test]
+    fn the_header_names_the_phones_sources_beside_the_desktops() {
+        let header = header(Some("00000000000000aa"), Some("00000000000000bb"));
+        assert_eq!(header_digest(&header, SOURCES), Some("00000000000000aa"));
+        assert_eq!(header_digest(&header, MOBILE_SOURCES), Some("00000000000000bb"));
+        let older = self::header(Some("00000000000000aa"), None);
+        assert_eq!(header_digest(&older, MOBILE_SOURCES), None, "a table written before names none");
     }
 
     #[test]

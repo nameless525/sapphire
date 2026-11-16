@@ -611,3 +611,93 @@ fn a_wait_open_across_a_start_over_lands_after_it_whole() {
     assert_eq!(stats.all_waits().completed(), 1);
     assert_eq!(stats.pool_waits.frames[10], 1, "with its whole length: {:?}", stats.pool_waits.frames);
 }
+
+/// The finest level a texture holds is the least first key of its three maps (M5 Z2's cheaper count), the
+/// same as the search from level 0 it replaced, over every set of levels in each map under every top.
+#[test]
+fn the_finest_level_held_is_the_least_first_key() {
+    for masks in 0..(1u32 << 15) {
+        let sets = [masks & 31, (masks >> 5) & 31, masks >> 10];
+        let firsts = sets.map(|set| (set != 0).then(|| set.trailing_zeros()));
+        for top in 0..=6 {
+            let searched =
+                (0..top).find(|&index| sets.iter().any(|set| set & (1 << index) != 0)).unwrap_or(top);
+            assert_eq!(
+                lowest_of(firsts.each_ref().map(Option::as_ref), top),
+                searched,
+                "{sets:?} under {top}"
+            );
+        }
+    }
+}
+
+/// The streamer's decisions over a recorded walk (M5 Z2): twelve textures, three held whole, their estimates
+/// wandering and some unread, one let go of and bound again, the pool ample, binding and tight in turn, and every
+/// third update with no fresh estimate. Every choice of every texture after every plan, with what it returned
+/// and the lowers left waiting, hashes to what the plan made of the same walk before it skipped its passes and
+/// lookups (bff650dcc): the cuts moved no decision.
+#[test]
+fn a_recorded_walk_plans_what_it_did_before_the_cuts() {
+    let ids: Vec<AssetId> = (1..=12u8).map(|byte| AssetId::from_bytes([byte; 16])).collect();
+    let mut levels = TextureLevels::default();
+    for (index, &id) in ids.iter().enumerate() {
+        levels.bind(id, index % 5 == 0);
+    }
+    let whole = whole();
+    let all = ids.len() as u64 * bytes_from(&whole, 0);
+    let mut tops = vec![ABOVE; ids.len()];
+    let mut seen = [false; 3];
+    let (mut seed, mut digest) = (0x2545_f491_u64, 0xcbf2_9ce4_8422_2325_u64);
+    let mut fold = |text: String| {
+        for byte in text.bytes() {
+            digest = (digest ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    for update in 1..=240u64 {
+        let pool = match update / 40 {
+            0 | 3 => all,
+            1 | 4 => all / 2,
+            _ => all / 5,
+        };
+        let streaming = TextureStreaming { pool, raise: u64::MAX };
+        if update == 100 {
+            levels.unbind(ids[3], false);
+        } else if update == 170 {
+            levels.bind(ids[3], false);
+        }
+        let mut reads = Vec::new();
+        for &id in &ids {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            let roll = (seed >> 33) as u32;
+            if !roll.is_multiple_of(7) {
+                reads.push(read(id, (roll % 80) as f32 / 10.0 - 1.0));
+            }
+        }
+        reads.sort_by_key(|entry| entry.texture);
+        let frame = if update.is_multiple_of(3) { update - 1 } else { update };
+        let coverage = TextureCoverageFrame { frame, textures: &reads };
+        let now = tops.clone();
+        let shape = |id: AssetId| {
+            ids.iter().position(|&each| each == id).map(|index| Shape {
+                whole,
+                top: now[index],
+                above: ABOVE,
+            })
+        };
+        let starts = levels.plan(shape, coverage, streaming, u64::MAX, 0);
+        fold(format!("{update} {starts} {}", levels.stats.lowers_waiting));
+        for (top, id) in tops.iter_mut().zip(&ids) {
+            let Some(wanted) = levels.textures.get(id) else { continue };
+            let choice = wanted.choice;
+            fold(format!("{id:?} {choice:?}"));
+            seen[0] |= choice.pool.is_some();
+            seen[1] |= choice.lower;
+            seen[2] |= choice.start.is_some();
+            if (choice.lower && *top < choice.planned) || (choice.start.is_some() && choice.planned < *top) {
+                *top = choice.planned;
+            }
+        }
+    }
+    assert_eq!(seen, [true; 3], "the walk has the pool lower, remember, lower a texture and start one");
+    assert_eq!(digest, 4_265_341_610_408_563_456, "the recorded walk's decisions moved");
+}

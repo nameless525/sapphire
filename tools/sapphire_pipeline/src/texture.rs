@@ -81,8 +81,9 @@
 //! A cook's output depends only on its inputs, on every machine of an architecture (spec §5.27,
 //! "Reproducible cooks"): mips are computed in a fixed order in scalar code, the cooker itself
 //! quantizes texels before an encoder sees them (the `encode` module), sRGB decoding uses
-//! `sapphire_math::det` rather than the platform's `powf`, the encoders run serially, and the
-//! KTX2 writer writes no timestamps. The block encoders are SIMD kernels that pick an
+//! `sapphire_math::det` rather than the platform's `powf`, a level encodes in strips of block rows
+//! on threads with the same bytes as on one (`kernels::strips`), and the KTX2 writer writes no
+//! timestamps. The block encoders are SIMD kernels that pick an
 //! instruction set at run time, so the `kernels` module calls one fixed set by name: AVX2 on
 //! x86-64, NEON on Arm. None of the x86-64 kernels it calls uses a reciprocal estimate, whose low
 //! bits differ between Intel's and AMD's CPUs, so BC7 there is Intel's kernel rather than `bc7e`.
@@ -95,9 +96,6 @@
 //!   as further shapes of the same container.
 //! - Mips that preserve alpha-tested coverage, for hair and lashes (ctt's issue #107 is the
 //!   same problem in its own mip generator).
-//! - Parallel encoding (blocks encode independently, so splitting a level into runs of blocks
-//!   can't change its bytes) once content is large enough; a 2048² color texture takes 1.2 s (BC7) and 0.5 s (ASTC)
-//!   serially on an M5.
 
 pub mod mips;
 

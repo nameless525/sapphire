@@ -23,7 +23,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use super::log::{Counted, Entry, Log, Timed, percentile, trace_column};
-use super::manifest::{Read, Run, ScaleBench, Tier, Unit};
+use super::manifest::{Device, Read, Run, ScaleBench, Tier, Unit};
 use super::status::Status;
 
 /// Count rows the report's counts table shows, after every row with a budget (spec §3.4's): draws, lights,
@@ -194,7 +194,7 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
     let manifest = inputs.manifest;
     let mut out = String::new();
     let mut failures = Vec::new();
-    let units: Vec<Unit> = manifest.units(None).into_iter().chain(manifest.counting(None)).collect();
+    let units: Vec<Unit> = manifest.every_unit(None);
     let statuses: BTreeMap<&str, Option<Status>> =
         units.iter().map(|unit| (unit.name.as_str(), Status::read(inputs.logs, &unit.name))).collect();
     let done = statuses.values().filter(|status| status.as_ref().is_some_and(Status::complete)).count();
@@ -276,10 +276,10 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
     for (tier_index, tier) in manifest.tiers.iter().enumerate() {
         let _ = writeln!(out, "## {}\n", title(&tier.name));
         for (run_index, run) in manifest.runs.iter().enumerate() {
-            if !run.on(&tier.name) || !run.variants.is_empty() {
+            if !run.on(&tier.name) || !run.variants.is_empty() || !run.devices.is_empty() {
                 continue;
             }
-            let rounds = gather(inputs, &units, &statuses, run_index, tier_index, None);
+            let rounds = gather(inputs, &units, &statuses, run_index, tier_index, None, None);
             let beside = run.beside.as_deref().and_then(|name| baseline(inputs, manifest, name, tier));
             section(&mut out, &mut failures, manifest, run, tier, &rounds, beside.as_ref());
         }
@@ -310,7 +310,7 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
                 continue;
             }
             let variants: Vec<Rounds> = (0..run.variants.len())
-                .map(|variant| gather(inputs, &units, &statuses, run_index, tier_index, Some(variant)))
+                .map(|variant| gather(inputs, &units, &statuses, run_index, tier_index, Some(variant), None))
                 .collect();
             for row in &run.rows {
                 let cells: Vec<String> = variants.iter().map(|rounds| pair_cell(rounds, row)).collect();
@@ -323,7 +323,60 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
         let _ = writeln!(out);
         out.push_str(&notes);
     }
+
+    // The devices' walks (M5 Z2), each tier's runs in a section of its own, as this Mac's are.
+    for (device_index, device) in manifest.devices.iter().enumerate() {
+        if !manifest.runs.iter().any(|run| run.devices.contains(&device.name)) {
+            continue;
+        }
+        for (tier_index, tier) in manifest.tiers.iter().enumerate() {
+            let walks: Vec<(usize, &Run)> = manifest
+                .runs
+                .iter()
+                .enumerate()
+                .filter(|(_, run)| run.devices.contains(&device.name) && run.on(&tier.name))
+                .collect();
+            if walks.is_empty() {
+                continue;
+            }
+            let _ = writeln!(out, "## {}, {}\n", capital(&device.about), title(&tier.name));
+            let _ = writeln!(out, "{}\n", device_note(device));
+            for (run_index, run) in walks {
+                let rounds =
+                    gather(inputs, &units, &statuses, run_index, tier_index, None, Some(device_index));
+                section(&mut out, &mut failures, manifest, run, tier, &rounds, None);
+            }
+        }
+    }
     (out, failures)
+}
+
+/// What a device's walk is and isn't: what its section and its verdict lines say.
+fn device_note(device: &Device) -> String {
+    format!(
+        "`cargo xtask bench-scale device --platform {}`: the `{}` district's phone tree in the bundle beside the \
+         shipped mobile cook, walked by counts. **Counts only:** no time read on {} is judged, and none is a \
+         phone's.",
+        device.name, device.preset, device.about
+    )
+}
+
+/// Each verdict of the units that walked on device `device` (by its index) in `logs`, a line each, and a line
+/// for each that failed (M5 Z2): what `bench-scale device` prints when its walks are done.
+pub fn device_verdicts(manifest: &ScaleBench, logs: &Path, device: usize) -> (Vec<String>, Vec<String>) {
+    let inputs = Inputs { manifest, logs, baseline: None, commit: "", smoke: false };
+    let units = manifest.on_device(device, &[], None);
+    let statuses: BTreeMap<&str, Option<Status>> =
+        units.iter().map(|unit| (unit.name.as_str(), Status::read(logs, &unit.name))).collect();
+    let mut lines = vec![device_note(&manifest.devices[device])];
+    let mut failures = Vec::new();
+    for row in verdict::device_rows(&inputs, &units, &statuses, device) {
+        lines.push(format!("exit test {} on {}: {}{}", row.test, row.tier, row.verdict, row.why_suffix()));
+        if row.failed {
+            failures.push(format!("exit test {} on {}: {}", row.test, row.tier, row.why.join("; ")));
+        }
+    }
+    (lines, failures)
 }
 
 /// A run's section on one tier: a table for each thing it's read for.
@@ -991,7 +1044,7 @@ fn pair_cell(rounds: &Rounds, row: &str) -> String {
     }
 }
 
-/// A run's rounds on a tier, one variant: each round whose unit completed.
+/// A run's rounds on a tier, one variant, on this Mac or one device: each round whose unit completed.
 fn gather(
     inputs: &Inputs<'_>,
     units: &[Unit],
@@ -999,9 +1052,12 @@ fn gather(
     run: usize,
     tier: usize,
     variant: Option<usize>,
+    device: Option<usize>,
 ) -> Rounds {
     let mut rounds = Vec::new();
-    for unit in units.iter().filter(|unit| unit.run == run && unit.tier == tier && unit.variant == variant) {
+    for unit in units.iter().filter(|unit| {
+        unit.run == run && unit.tier == tier && unit.variant == variant && unit.device == device
+    }) {
         let Some(Some(status)) = statuses.get(unit.name.as_str()) else { continue };
         if !status.complete() {
             continue;

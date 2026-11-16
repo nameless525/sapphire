@@ -12,6 +12,8 @@
 //!   wait open at a run's end for 30 frames or more.
 //! - **Pairs** (runs serving exit test 3, each package's on against off) are costs to read beside each other, so
 //!   no verdict reads them.
+//! - **A device's walk** (a run naming `devices`, M5 Z2) has lines of its own, a tier and a device each, by the
+//!   same rules; a tier it hasn't walked is "not run". This Mac's lines never read it.
 
 use std::fmt::Write as _;
 
@@ -139,7 +141,11 @@ pub(super) fn section(
                 findings.unjudged.push(elsewhere.to_owned());
             } else {
                 for (run_index, run) in manifest.runs.iter().enumerate() {
-                    if !run.serves.contains(&test) || run.serves.contains(&3) || !run.on(&tier.name) {
+                    if !run.serves.contains(&test)
+                        || run.serves.contains(&3)
+                        || !run.on(&tier.name)
+                        || !run.devices.is_empty()
+                    {
                         continue;
                     }
                     let variants: Vec<Option<usize>> = if run.variants.is_empty() {
@@ -152,7 +158,7 @@ pub(super) fn section(
                             Some(index) => format!("{} ({})", run.name, run.variants[index].name),
                             None => run.name.clone(),
                         };
-                        let rounds = gather(inputs, units, statuses, run_index, tier_index, variant);
+                        let rounds = gather(inputs, units, statuses, run_index, tier_index, variant, None);
                         findings.absorb(judge(test, run, &name, tier, &rounds));
                     }
                 }
@@ -187,6 +193,23 @@ pub(super) fn section(
                 if why.is_empty() { String::new() } else { short(&why) }
             );
         }
+        for device in 0..manifest.devices.len() {
+            for row in device_rows(inputs, units, statuses, device).into_iter().filter(|row| row.test == test)
+            {
+                if row.failed {
+                    failures.extend(
+                        row.why.iter().map(|what| format!("exit test {test} on {}: {what}", row.tier)),
+                    );
+                }
+                let _ = writeln!(
+                    out,
+                    "| {test} | {} | {} | {judged_here} | {} |",
+                    row.tier,
+                    if row.failed { "**fail**" } else { row.verdict },
+                    short(&row.why)
+                );
+            }
+        }
     }
     let _ = writeln!(out);
     if !beside.is_empty() {
@@ -196,6 +219,80 @@ pub(super) fn section(
         }
         let _ = writeln!(out);
     }
+}
+
+/// A device's verdict on one exit test and tier (M5 Z2): its own line beside this Mac's.
+pub(super) struct DeviceRow {
+    pub test: u32,
+    /// The tier and the device: "Mobile-High, the iOS Simulator".
+    pub tier: String,
+    /// "pass", "fail", "not run", or "not judged here".
+    pub verdict: &'static str,
+    pub failed: bool,
+    /// What failed, or why it wasn't judged.
+    pub why: Vec<String>,
+}
+
+impl DeviceRow {
+    /// Its reasons in brackets after the verdict, if it has any.
+    pub(super) fn why_suffix(&self) -> String {
+        if self.why.is_empty() { String::new() } else { format!(" ({})", short(&self.why)) }
+    }
+}
+
+/// Device `device`'s verdicts (by its index): one for each exit test a run on it serves and each tier it walks,
+/// by the same rules as this Mac's, from its own units. A tier with no unit complete is "not run".
+pub(super) fn device_rows(
+    inputs: &super::Inputs<'_>,
+    units: &[Unit],
+    statuses: &std::collections::BTreeMap<&str, Option<Status>>,
+    device: usize,
+) -> Vec<DeviceRow> {
+    let manifest = inputs.manifest;
+    let about = &manifest.devices[device].about;
+    let mut rows = Vec::new();
+    for (test, judged_here, _) in TESTS {
+        if judged_here.is_empty() {
+            continue;
+        }
+        for (tier_index, tier) in manifest.tiers.iter().enumerate() {
+            let walks: Vec<(usize, &Run)> = manifest
+                .runs
+                .iter()
+                .enumerate()
+                .filter(|(_, run)| {
+                    run.devices.contains(&manifest.devices[device].name)
+                        && run.serves.contains(&test)
+                        && run.on(&tier.name)
+                })
+                .collect();
+            if walks.is_empty() {
+                continue;
+            }
+            let mut findings = Findings::default();
+            let mut ran = false;
+            for (run_index, run) in walks {
+                let rounds = gather(inputs, units, statuses, run_index, tier_index, None, Some(device));
+                ran |= !rounds.rounds.is_empty();
+                findings.absorb(judge(test, run, &run.name, tier, &rounds));
+            }
+            let verdict = Verdict::of(&findings);
+            let (text, why) = match (ran, &verdict) {
+                (false, _) => ("not run", Vec::new()),
+                (true, Verdict::Fail) => ("fail", findings.failed),
+                (true, Verdict::Pass) => ("pass", Vec::new()),
+                (true, Verdict::NotJudged) => ("not judged here", findings.unjudged),
+            };
+            rows.push(DeviceRow {
+                test,
+                tier: format!("{}, {about}", title(&tier.name)),
+                verdict: text,
+                failed: verdict == Verdict::Fail,
+                why,
+            });
+        }
+    }
+    rows
 }
 
 /// The first few of a verdict's reasons, and how many more.
@@ -450,7 +547,7 @@ pub(super) fn serving(manifest: &crate::scale::manifest::ScaleBench, test: u32) 
     manifest
         .runs
         .iter()
-        .filter(|run| run.serves.contains(&test) && !run.serves.contains(&3))
+        .filter(|run| run.serves.contains(&test) && !run.serves.contains(&3) && run.devices.is_empty())
         .map(|run| run.name.as_str())
         .collect()
 }
@@ -657,6 +754,81 @@ mod tests {
             Verdict::of(&judge(1, night, "counted-night (wet)", &tier, &rounds(&[&within]))),
             Verdict::Pass
         );
+    }
+
+    /// A device's walk (M5 Z2) has verdicts of its own, a line for each tier and exit test it serves, by the
+    /// rules this Mac's are judged by: a tier it didn't walk is "not run", a pool over the run's fails, and the
+    /// Mac's lines never read a device's units.
+    #[test]
+    fn a_devices_walk_has_verdicts_of_its_own() {
+        let manifest = manifest();
+        let out = std::env::temp_dir().join(format!("sapphire_scale_device_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+        let device = manifest.device("android").expect("the emulator");
+        let unit = "device-streaming.mobile-high.android.r1";
+        let walk = |streamed: u64| {
+            [
+                count("bytes over budget in use", 0, "Some(0)"),
+                count("bytes decoded waiting", 1 << 20, "Some(67108864)"),
+                count("streamed texture bytes", streamed, "Some(13631488)"),
+                count("frame thread loads", 0, "Some(0)"),
+                closed(true, 4 << 20, 4 << 20),
+                waits("4", 0),
+                "x INFO sapphire::sandbox: zone walk frames=7600 first_use=0 rebuilt=0 frame_thread=0 \
+                 frame_waits=0\n"
+                    .to_owned(),
+            ]
+            .concat()
+        };
+        let status = Status {
+            exit: Some(0),
+            timed_out: false,
+            seconds: 90.0,
+            load: None,
+            load_end: None,
+            command: String::new(),
+        };
+        status.write(&out, unit).unwrap();
+        let inputs = super::super::Inputs {
+            manifest: &manifest,
+            logs: &out,
+            baseline: None,
+            commit: "",
+            smoke: false,
+        };
+        let units = manifest.every_unit(None);
+        let verdicts = |log: String| {
+            std::fs::write(out.join(format!("{unit}.log")), log).unwrap();
+            let statuses: std::collections::BTreeMap<&str, Option<Status>> =
+                units.iter().map(|unit| (unit.name.as_str(), Status::read(&out, &unit.name))).collect();
+            device_rows(&inputs, &units, &statuses, device)
+                .into_iter()
+                .map(|row| (row.test, row.tier, row.verdict))
+                .collect::<Vec<_>>()
+        };
+        let android = |tier: &str| format!("{tier}, the Android emulator");
+        assert_eq!(
+            verdicts(walk(12 << 20)),
+            [
+                (2, android("Mobile-High"), "pass"),
+                (2, android("Mobile-Low"), "not run"),
+                (7, android("Mobile-High"), "pass"),
+                (7, android("Mobile-Low"), "not run"),
+            ]
+        );
+        assert_eq!(verdicts(walk(14 << 20))[0], (2, android("Mobile-High"), "fail"), "over the 13 MiB pool");
+        // This Mac's exit test 2 on Mobile-High reads its own runs, none of them made here.
+        let mut text = String::new();
+        let mut failures = Vec::new();
+        let statuses =
+            units.iter().map(|unit| (unit.name.as_str(), Status::read(&out, &unit.name))).collect();
+        section(&mut text, &mut failures, &inputs, &units, &statuses);
+        let mac = text.lines().find(|line| line.starts_with("| 2 | Mobile-High | ")).expect(&text);
+        assert!(mac.contains("not judged here") && !mac.contains("device-streaming"), "{mac}");
+        assert!(text.contains("| 2 | Mobile-High, the Android emulator | **fail** |"), "{text}");
+        assert!(failures.iter().any(|failure| failure.contains("the Android emulator")), "{failures:?}");
+        std::fs::remove_dir_all(&out).unwrap();
     }
 
     /// The manifest's `serves` follow m5-plan §1 (M5 Z2): the crowd is exit test 6, the packages' pairs serve 3,

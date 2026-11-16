@@ -48,6 +48,9 @@ Usage:
   sapphire_testkit scale plan --manifest <file> [--smoke] [--out <dir>]
   sapphire_testkit scale run --manifest <file> --sandbox <exe> --desktop <dir> --mobile <dir>
                              --replays <dir> --out <dir> [--smoke] [--sitting <n> | --counts]
+  sapphire_testkit scale run --manifest <file> --out <dir> --device <name> [--tier <name>]...
+                             [--smoke] --launch <program> [<argument>...]
+  sapphire_testkit scale preset --manifest <file> [--device <name>]
   sapphire_testkit scale report --manifest <file> --out <dir> [--baseline <dir>] [--commit <name>]
                                 [--smoke]
       The benches at scale (sapphire_testkit::scale, `cargo xtask bench-scale`). `plan` prints the
@@ -56,6 +59,12 @@ Usage:
       with --counts every run of counts alone; it takes no gate slot. --desktop and --mobile are
       each cook's packs with the district's beside them. Each unit writes <out>/<unit>.log and
       .status (and .csv where its run traces). --smoke runs every run at 200 frames at 320x180.
+      With --device, `run` runs the units that walk on that device (on the tiers --tier names, or
+      all), each through --launch and its arguments, which take everything after it: given `--`
+      and the unit's sandbox arguments, it starts the sandbox on the booted device and prints its
+      log (`cargo xtask bench-scale device` passes `xtask bench-scale launch`). It then prints the
+      device's verdict lines and fails on a fail. `preset` prints the preset the batch mounts, or
+      the device's.
       `report` writes <out>/report.md from the logs, beside the baseline's folder of logs named
       as the runs they stand beside, and fails on counts that moved where they must be exact.
   sapphire_testkit measure <with lines.png> <without lines.png> [--region <x,y,width,height>]
@@ -184,9 +193,11 @@ fn counts(mut args: Vec<String>) -> Result<Vec<String>, String> {
 #[allow(clippy::print_stdout, reason = "the plan and the report's path are the command's output")]
 fn scale(mut args: Vec<String>) -> Result<Vec<String>, String> {
     if args.is_empty() {
-        return Err("scale expects `plan`, `run` or `report`".into());
+        return Err("scale expects `plan`, `run`, `preset` or `report`".into());
     }
     let command = args.remove(0);
+    // `--launch` takes every argument after it, its program's own.
+    let launch = args.iter().position(|arg| arg == "--launch").map(|i| args.split_off(i).split_off(1));
     let mut flag = |name: &str| args.iter().position(|arg| arg == name).map(|i| args.remove(i)).is_some();
     let smoke = flag("--smoke").then_some(scale::manifest::SMOKE);
     let counts = flag("--counts");
@@ -200,8 +211,12 @@ fn scale(mut args: Vec<String>) -> Result<Vec<String>, String> {
         .map_err(|e| format!("failed to read {manifest_path}: {e}"))?;
     let manifest = ScaleBench::parse(&text).map_err(|error| format!("{manifest_path}: {error}"))?;
     let out = value("--out")?.map(PathBuf::from);
-    match command.as_str() {
-        "plan" => {
+    let device = value("--device")?;
+    if launch.is_some() && device.is_none() {
+        return Err("--launch runs a device's units: it goes with --device".into());
+    }
+    match (command.as_str(), device) {
+        ("plan", None) => {
             let (sandbox, desktop, mobile, replays) =
                 (PathBuf::new(), PathBuf::new(), PathBuf::new(), PathBuf::new());
             let paths = out.map(|out| scale::Paths { sandbox, desktop, mobile, replays, out });
@@ -209,7 +224,34 @@ fn scale(mut args: Vec<String>) -> Result<Vec<String>, String> {
             print!("{}", scale::plan(&manifest, smoke, paths.as_ref()));
             Ok(Vec::new())
         }
-        "run" => {
+        ("run", Some(device)) => {
+            let mut tiers = Vec::new();
+            while let Some(tier) = value("--tier")? {
+                tiers.push(tier);
+            }
+            let out = out.ok_or("missing --out")?;
+            let launch = launch.ok_or("a device's units need --launch <program> [<argument>...]")?;
+            if counts || launch.is_empty() {
+                return Err("--device takes --launch <program>, and not --counts".into());
+            }
+            finish(&args)?;
+            scale::run_on_device(&manifest, &out, &device, &tiers, &launch, smoke)
+        }
+        ("preset", device) => {
+            finish(&args)?;
+            let preset = match device {
+                None => &manifest.preset,
+                Some(name) => {
+                    let index = manifest
+                        .device(&name)
+                        .ok_or_else(|| format!("the manifest lists no device {name:?}"))?;
+                    &manifest.devices[index].preset
+                }
+            };
+            println!("{preset}");
+            Ok(Vec::new())
+        }
+        ("run", None) => {
             let mut path =
                 |name: &str| value(name)?.map(PathBuf::from).ok_or_else(|| format!("missing {name}"));
             let paths = scale::Paths {
@@ -233,7 +275,7 @@ fn scale(mut args: Vec<String>) -> Result<Vec<String>, String> {
             };
             scale::run(&manifest, &paths, select, smoke)
         }
-        "report" => {
+        ("report", None) => {
             let out = out.ok_or("missing --out")?;
             let baseline = value("--baseline")?.map(PathBuf::from);
             let commit = value("--commit")?.unwrap_or_else(|| out.display().to_string());
@@ -252,7 +294,8 @@ fn scale(mut args: Vec<String>) -> Result<Vec<String>, String> {
             println!("{}", written.display());
             Ok(failures)
         }
-        other => Err(format!("scale expects `plan`, `run` or `report`, not {other:?}")),
+        (_, Some(_)) => Err("--device goes with `run` and `preset`".into()),
+        (other, None) => Err(format!("scale expects `plan`, `run`, `preset` or `report`, not {other:?}")),
     }
 }
 

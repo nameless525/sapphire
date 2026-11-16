@@ -21,6 +21,9 @@
 //   numbers, whose verdicts read it (a pair serving 3 is a cost read beside its other side, judged by none);
 //   `stands_in`: what it stands in for, where the exit test's own run can't be made yet, which the report never
 //   reads as a pass.
+// - `devices`: the devices it walks on in place of this Mac, by the `devices` list's names: a run of counts
+//   alone, run only by `cargo xtask bench-scale device --platform <name>` (M5 Z2), whose logs are
+//   `<run>.<tier>.<device>.r<n>.log` and whose verdicts are lines of their own.
 // - A tier's `memory_mib` is spec §3.1's memory budget in MiB (a GB taken as 1,024 MiB, as §3.4's pools are), and
 //   `crowd` the ambient characters exit test 6 asks for on it.
 //
@@ -370,6 +373,39 @@
                 timed: false,
                 serves: [1, 7],
             ),
+            // Exit test 2 where §1 says its counters run beside this Mac (M5 Z2): `counted-streaming`'s walk on the
+            // Simulator and the emulator, `cargo xtask bench-scale device --platform ios-sim|android`, one round a
+            // phone tier. Their bundles carry the `ci` district (the budget's is gigabytes), whose phone tree with
+            // the shipped mobile cook holds 28,932,504 bytes (27.6 MiB) of textures whole on both phones
+            // (`texture pool bytes`, tests/counts/district-ci.txt), so its pool is 13 MiB, half that rounded down
+            // as the batch's 331 is: the district's textures come to 2.1 times it.
+            (
+                name: "device-streaming",
+                about: "the tour's counts on a device, a frame in seven drawn, the ci district's streamer binding",
+                args: [
+                    "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--texture-streaming", "on", "--no-hot-reload",
+                    "--live-link", "off",
+                ],
+                tier_args: {
+                    "mobile-high": ["--texture-pool", "13"],
+                    "mobile-low": ["--texture-pool", "13"],
+                },
+                tiers: ["mobile-high", "mobile-low"],
+                frames: Lap,
+                phases: 1,
+                rounds: Some(1),
+                read: [Counts, Streaming, Pipelines],
+                timed: false,
+                serves: [2, 7],
+                devices: ["ios-sim", "android"],
+            ),
+        ],
+        // Where a run with `devices` walks (M5 Z2). Each device's bundle is the release `dev` sandbox with the
+        // mobile cook and its preset's district beside it; its walks read counts only, never a time.
+        devices: [
+            (name: "ios-sim", about: "the iOS Simulator", preset: "ci"),
+            (name: "android", about: "the Android emulator", preset: "ci"),
         ],
     ),
 )

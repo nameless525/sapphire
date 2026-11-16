@@ -15,6 +15,10 @@
 //!   its start and end ([`status`]). A complete unit is skipped, so a batch cut short goes on where it stopped,
 //!   and the folder is the commit's (`target/bench-scale/<commit>/`, never committed). Runs of counts alone
 //!   (`--draw-every`) aren't timed and run apart, in an ordinary slot ([`Select::Counts`]).
+//! - **Devices** (M5 Z2): a run naming `devices` walks on the iOS Simulator or the Android emulator instead
+//!   ([`run_on_device`]), each unit through a launcher (`cargo xtask bench-scale launch`) on a device
+//!   `cargo xtask bench-scale device` booted, into the same folder as `<run>.<tier>.<device>.r<n>`; its verdicts
+//!   are lines of their own, by counts alone.
 //! - **The report** ([`report`]) reads a folder's logs into Markdown.
 //!
 //! Nothing here reads a time it then compares: the bench reads its own frames, and the runner's wall clock only
@@ -27,7 +31,7 @@ pub mod status;
 
 use std::fmt::Write as _;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -67,7 +71,7 @@ pub enum Select {
 /// The plan as text: each sitting's tier, units and minutes, with what's done, and the minutes by tier.
 pub fn plan(manifest: &ScaleBench, smoke: Option<Smoke>, paths: Option<&Paths>) -> String {
     let sittings = manifest.sittings(smoke);
-    let complete = |unit: &Unit| paths.is_some_and(|paths| done(paths, unit));
+    let complete = |unit: &Unit| paths.is_some_and(|paths| done(&paths.out, unit));
     let mut text = String::new();
     let mut by_tier = vec![(0_u32, 0_u32, 0_usize); manifest.tiers.len()];
     for (index, sitting) in sittings.iter().enumerate() {
@@ -143,7 +147,8 @@ pub fn run(
             sitting.units.clone()
         }
         Select::Next => {
-            match sittings.iter().position(|sitting| sitting.units.iter().any(|unit| !done(paths, unit))) {
+            match sittings.iter().position(|sitting| sitting.units.iter().any(|unit| !done(&paths.out, unit)))
+            {
                 Some(index) => {
                     eprintln!("sitting  {} of {}", index + 1, sittings.len());
                     sittings[index].units.clone()
@@ -158,7 +163,7 @@ pub fn run(
     let clock = Stopwatch::start();
     let mut failures = Vec::new();
     for unit in &units {
-        if done(paths, unit) {
+        if done(&paths.out, unit) {
             eprintln!("skipped  {} (complete)", unit.name);
             continue;
         }
@@ -167,7 +172,7 @@ pub fn run(
         }
     }
     let left: Vec<&Sitting> =
-        sittings.iter().filter(|sitting| sitting.units.iter().any(|unit| !done(paths, unit))).collect();
+        sittings.iter().filter(|sitting| sitting.units.iter().any(|unit| !done(&paths.out, unit))).collect();
     eprintln!(
         "ran      {} unit(s) in {:.1} min; {} sitting(s) left, {:.0} min by their stated lengths{}",
         units.len(),
@@ -183,9 +188,9 @@ pub fn run(
     Ok(failures)
 }
 
-/// Whether a unit's status says it's complete.
-fn done(paths: &Paths, unit: &Unit) -> bool {
-    Status::read(&paths.out, &unit.name).is_some_and(|status| status.complete())
+/// Whether a unit's status in `out` says it's complete.
+fn done(out: &Path, unit: &Unit) -> bool {
+    Status::read(out, &unit.name).is_some_and(|status| status.complete())
 }
 
 /// Runs one unit; returns why it failed, if it did.
@@ -197,7 +202,6 @@ fn run_unit(
     smoke: Option<Smoke>,
 ) -> Result<Option<String>, String> {
     let tier = &manifest.tiers[unit.tier];
-    let log = paths.out.join(format!("{}.log", unit.name));
     let trace = paths.out.join(format!("{}.csv", unit.name));
     let replays = paths.replays.to_string_lossy();
     let args = manifest.args(unit, smoke, &replays, &trace.to_string_lossy());
@@ -219,6 +223,71 @@ fn run_unit(
     };
     let mut command = Command::new(&paths.sandbox);
     command.env(CONTENT_DIR_ENV, content).args(&args);
+    let line = format!("{} {}", paths.sandbox.display(), args.join(" "));
+    run_command(&paths.out, unit, command, line, deadline)
+}
+
+/// Runs every unit that walks on the device called `device`, on the tiers `tiers` names (each its runs are on,
+/// when empty), skipping complete ones (M5 Z2). Each goes through `launch`, a program and its leading
+/// arguments, given `--` and the unit's sandbox arguments: it starts the sandbox on the device, already booted
+/// with the bundle installed, prints the app's log as it runs and exits with its status
+/// (`cargo xtask bench-scale launch`). Returns a line for each unit that failed, then for each verdict that
+/// failed on the device.
+pub fn run_on_device(
+    manifest: &ScaleBench,
+    out: &Path,
+    device: &str,
+    tiers: &[String],
+    launch: &[String],
+    smoke: Option<Smoke>,
+) -> Result<Vec<String>, String> {
+    let index = manifest.device(device).ok_or_else(|| {
+        let names: Vec<&str> = manifest.devices.iter().map(|device| device.name.as_str()).collect();
+        format!("the manifest lists no device {device:?}; it lists {}", names.join(", "))
+    })?;
+    let Some((program, leading)) = launch.split_first() else {
+        return Err("a device's units need a launcher".into());
+    };
+    let units = manifest.on_device(index, tiers, smoke);
+    if units.is_empty() {
+        return Err(format!("no run walks on {device} on the tiers asked for"));
+    }
+    fs::create_dir_all(out).map_err(|e| format!("failed to create {}: {e}", out.display()))?;
+    let mut failures = Vec::new();
+    for unit in &units {
+        if done(out, unit) {
+            eprintln!("skipped  {} (complete)", unit.name);
+            continue;
+        }
+        // No trace and no replays: a device's walk is counts alone, its frames and files on the device.
+        let args = manifest.args(unit, smoke, "", "");
+        let mut command = Command::new(program);
+        command.args(leading).arg("--").args(&args);
+        let line = format!("{} -- {}", launch.join(" "), args.join(" "));
+        // A device draws slower than this Mac, and its stated length is this Mac's: four times it, and the
+        // bundle's install and the device's first compile beside.
+        let deadline = Duration::from_secs(u64::from(unit.seconds) * 4 + 600);
+        if let Some(failure) = run_command(out, unit, command, line, deadline)? {
+            failures.push(failure);
+        }
+    }
+    let (lines, failed) = report::device_verdicts(manifest, out, index);
+    for line in lines {
+        eprintln!("{line}");
+    }
+    failures.extend(failed);
+    Ok(failures)
+}
+
+/// Runs a unit's `command` into its log by `deadline` and writes its status; returns why it failed, if it did.
+fn run_command(
+    out: &Path,
+    unit: &Unit,
+    mut command: Command,
+    line: String,
+    deadline: Duration,
+) -> Result<Option<String>, String> {
+    let log = out.join(format!("{}.log", unit.name));
     let load = load();
     eprintln!(
         "running  {} ({} s stated, load {})",
@@ -235,11 +304,9 @@ fn run_unit(
         seconds: clock.elapsed().as_secs_f64(),
         load,
         load_end: self::load(),
-        command: format!("{} {}", paths.sandbox.display(), args.join(" ")),
+        command: line,
     };
-    status
-        .write(&paths.out, &unit.name)
-        .map_err(|e| format!("failed to write {}'s status: {e}", unit.name))?;
+    status.write(out, &unit.name).map_err(|e| format!("failed to write {}'s status: {e}", unit.name))?;
     eprintln!(
         "{} {} in {:.0} s",
         if status.complete() { "done    " } else { "FAILED  " },
@@ -284,10 +351,8 @@ mod tests {
     #[test]
     fn the_runner_skips_complete_units_and_the_plan_says_whats_left() {
         let manifest = ScaleBench::parse(
-            &fs::read_to_string(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/scale/fixtures/scale.ron"),
-            )
-            .unwrap(),
+            &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/scale/fixtures/scale.ron"))
+                .unwrap(),
         )
         .unwrap();
         let out = std::env::temp_dir().join(format!("sapphire_scale_skip_{}", std::process::id()));

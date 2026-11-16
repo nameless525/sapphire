@@ -33,6 +33,23 @@ pub struct ScaleBench {
     pub tiers: Vec<Tier>,
     /// The runs, in the order each tier's sittings run them.
     pub runs: Vec<Run>,
+    /// The devices a run may name to walk there in place of this Mac (M5 Z2).
+    #[serde(default)]
+    pub devices: Vec<Device>,
+}
+
+/// A device beside this Mac that a run walks on (M5 Z2): the iOS Simulator or the Android emulator, which
+/// `cargo xtask bench-scale device --platform <name>` boots, installs a bundle on, walks and shuts down.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Device {
+    /// `ios-sim` or `android`, as `bench-scale device --platform` takes it: its units' and logs' part.
+    pub name: String,
+    /// What it is, in the report's words.
+    pub about: String,
+    /// The benchmark preset whose district its bundle carries, in place of the manifest's: a phone's bundle
+    /// holds the district whole, so the `budget` one's gigabytes don't go on a device.
+    pub preset: String,
 }
 
 impl Versioned for ScaleBench {
@@ -192,6 +209,10 @@ pub struct Run {
     /// "not measured as written", never as a pass.
     #[serde(default)]
     pub stands_in: Option<String>,
+    /// The devices it walks on, by name, in place of this Mac (M5 Z2): such a run is of counts alone, has no
+    /// variants, and only `bench-scale device` runs it, its units apart from the batch's.
+    #[serde(default)]
+    pub devices: Vec<String>,
 }
 
 fn three() -> u32 {
@@ -202,14 +223,16 @@ fn yes() -> bool {
     true
 }
 
-/// One sandbox run of the batch: a run on a tier, one variant, one round.
+/// One sandbox run of the batch: a run on a tier, one variant, one round, on this Mac or a device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unit {
-    /// `<run>.<tier>[.<variant>].r<round>`: its logs' stem.
+    /// `<run>.<tier>[.<variant>][.<device>].r<round>`: its logs' stem.
     pub name: String,
     pub run: usize,
     pub tier: usize,
     pub variant: Option<usize>,
+    /// The device it walks on, by its index in [`ScaleBench::devices`]; `None` on this Mac.
+    pub device: Option<usize>,
     pub round: u32,
     /// Its stated length, in whole seconds.
     pub seconds: u32,
@@ -313,6 +336,30 @@ impl ScaleBench {
                 return Err(format!("run {:?} stands beside {beside:?}, which isn't a run", run.name));
             }
         }
+        let mut devices = BTreeSet::new();
+        for device in &self.devices {
+            if !name_ok(&device.name) || !devices.insert(device.name.as_str()) {
+                return Err(format!(
+                    "device {:?}: names are lowercase letters, digits and hyphens, each once",
+                    device.name
+                ));
+            }
+        }
+        for run in self.runs.iter().filter(|run| !run.devices.is_empty()) {
+            if let Some(unknown) = run.devices.iter().find(|name| !devices.contains(name.as_str())) {
+                return Err(format!(
+                    "run {:?} walks on {unknown:?}, which the manifest doesn't list",
+                    run.name
+                ));
+            }
+            if run.timed || !run.variants.is_empty() || run.beside.is_some() {
+                return Err(format!(
+                    "run {:?} walks on a device: it is of counts alone (`timed: false`), with no variants and \
+                     nothing beside it, since a device's time is never read",
+                    run.name
+                ));
+            }
+        }
         // Each unit fits a sitting.
         for unit in self.units(None).into_iter().chain(self.counting(None)) {
             if unit.seconds > self.sitting_seconds {
@@ -333,6 +380,49 @@ impl ScaleBench {
     /// The run called `name`.
     pub fn run(&self, name: &str) -> Option<&Run> {
         self.runs.iter().find(|run| run.name == name)
+    }
+
+    /// The device called `name`, by its index.
+    pub fn device(&self, name: &str) -> Option<usize> {
+        self.devices.iter().position(|device| device.name == name)
+    }
+
+    /// Every unit that walks on device `device` (by its index), on the tiers `tiers` names (every tier its runs
+    /// are on, when empty), in the batch's order: rounds, then tiers, then runs.
+    pub fn on_device(&self, device: usize, tiers: &[String], smoke: Option<Smoke>) -> Vec<Unit> {
+        let name = &self.devices[device].name;
+        let walks: Vec<(usize, &Run)> =
+            self.runs.iter().enumerate().filter(|(_, run)| run.devices.contains(name)).collect();
+        let most = walks.iter().map(|(_, run)| self.rounds_of(run)).max().unwrap_or(0);
+        let mut units = Vec::new();
+        for round in 1..=most {
+            for (tier_index, tier) in self.tiers.iter().enumerate() {
+                if !tiers.is_empty() && !tiers.contains(&tier.name) {
+                    continue;
+                }
+                for &(run_index, run) in &walks {
+                    if round > self.rounds_of(run) || !run.on(&tier.name) {
+                        continue;
+                    }
+                    units.push(Unit {
+                        name: unit_name(run, tier, None, Some(name), round),
+                        run: run_index,
+                        tier: tier_index,
+                        variant: None,
+                        device: Some(device),
+                        round,
+                        seconds: self.seconds(run, tier, smoke),
+                    });
+                }
+            }
+        }
+        units
+    }
+
+    /// Every unit, this Mac's (timed and counting) and every device's: what the report reads.
+    pub fn every_unit(&self, smoke: Option<Smoke>) -> Vec<Unit> {
+        let devices = (0..self.devices.len()).flat_map(|device| self.on_device(device, &[], smoke));
+        self.units(smoke).into_iter().chain(self.counting(smoke)).chain(devices).collect()
     }
 
     fn rounds_of(&self, run: &Run) -> u32 {
@@ -356,7 +446,11 @@ impl ScaleBench {
         for round in 1..=most {
             for (tier_index, tier) in self.tiers.iter().enumerate() {
                 for (run_index, run) in self.runs.iter().enumerate() {
-                    if run.timed != timed || round > self.rounds_of(run) || !run.on(&tier.name) {
+                    if run.timed != timed
+                        || round > self.rounds_of(run)
+                        || !run.on(&tier.name)
+                        || !run.devices.is_empty()
+                    {
                         continue;
                     }
                     let seconds = self.seconds(run, tier, smoke);
@@ -370,10 +464,11 @@ impl ScaleBench {
                     }
                     for variant in variants {
                         units.push(Unit {
-                            name: unit_name(run, tier, variant, round),
+                            name: unit_name(run, tier, variant, None, round),
                             run: run_index,
                             tier: tier_index,
                             variant,
+                            device: None,
                             round,
                             seconds,
                         });
@@ -483,12 +578,14 @@ impl Run {
 /// Arguments the runner gives every unit, so a run can't.
 const RUNNER_FLAGS: [&str; 4] = ["--bench", "--tier", "--size", "--bench-trace"];
 
-/// A unit's name: `<run>.<tier>[.<variant>].r<round>`.
-fn unit_name(run: &Run, tier: &Tier, variant: Option<usize>, round: u32) -> String {
-    match variant {
-        Some(index) => format!("{}.{}.{}.r{round}", run.name, tier.name, run.variants[index].name),
-        None => format!("{}.{}.r{round}", run.name, tier.name),
+/// A unit's name: `<run>.<tier>[.<variant>][.<device>].r<round>`.
+fn unit_name(run: &Run, tier: &Tier, variant: Option<usize>, device: Option<&str>, round: u32) -> String {
+    let mut name = format!("{}.{}", run.name, tier.name);
+    for part in [variant.map(|index| run.variants[index].name.as_str()), device].into_iter().flatten() {
+        name.push('.');
+        name.push_str(part);
     }
+    format!("{name}.r{round}")
 }
 
 /// `<width>x<height>`, both above 0.
@@ -673,6 +770,70 @@ mod tests {
                 assert!(pool.is_some(), "{} on {} streams under its tier's own pool", run.name, tier.name);
             }
         }
+    }
+
+    /// A run on a device (M5 Z2) is apart from the batch: none of its units is the Mac's, each device has its
+    /// own, named for it, and a device's run must be of counts alone on a device the manifest lists.
+    #[test]
+    fn a_devices_units_are_its_own_and_its_run_counts_alone() {
+        let with_devices = small().replace(
+            "            ],\n        ),\n    )",
+            r#"                (name: "device", about: "on a device", args: ["--draw-every", "7"], frames: Lap,
+                 tiers: ["mobile-low"], rounds: Some(1), read: [Counts], timed: false, devices: ["sim", "emu"]),
+            ],
+            devices: [
+                (name: "sim", about: "a simulator", preset: "ci"),
+                (name: "emu", about: "an emulator", preset: "ci"),
+            ],
+        ),
+    )"#,
+        );
+        assert_ne!(with_devices, small(), "the small manifest has a device's run");
+        let manifest = ScaleBench::parse(&with_devices).expect("parses");
+        assert!(
+            manifest.units(None).iter().chain(&manifest.counting(None)).all(|unit| unit.device.is_none())
+        );
+        assert!(!manifest.counting(None).iter().any(|unit| unit.name.starts_with("device.")));
+        let emu = manifest.device("emu").expect("a device");
+        let names: Vec<String> =
+            manifest.on_device(emu, &[], None).into_iter().map(|unit| unit.name).collect();
+        assert_eq!(names, ["device.mobile-low.emu.r1"]);
+        assert!(manifest.on_device(emu, &["desktop-low".to_owned()], None).is_empty());
+        assert_eq!(
+            manifest.every_unit(None).len(),
+            manifest.units(None).len() + manifest.counting(None).len() + 2
+        );
+        let unknown = with_devices.replace("\"sim\", \"emu\"]", "\"sim\", \"phone\"]");
+        assert!(ScaleBench::parse(&unknown).unwrap_err().contains("phone"));
+        let timed = with_devices.replace("read: [Counts], timed: false, devices", "read: [Counts], devices");
+        assert!(ScaleBench::parse(&timed).unwrap_err().contains("counts alone"));
+    }
+
+    /// The devices' walk is `counted-streaming`'s, under the `ci` district's pool on the phone tiers alone: 13
+    /// MiB, half the 28,932,504 bytes its phone tree holds whole (tests/counts/district-ci.txt's `texture pool
+    /// bytes` on the phones), rounded down, so its textures come to twice the pool or more.
+    #[test]
+    fn the_devices_walk_counted_streamings_walk_under_half_the_ci_districts_textures() {
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let (device, counted) =
+            (manifest.run("device-streaming").unwrap(), manifest.run("counted-streaming").unwrap());
+        assert_eq!(device.args, counted.args);
+        assert_eq!(device.devices, ["ios-sim", "android"]);
+        assert!(manifest.devices.iter().all(|device| device.preset == "ci"));
+        let table = include_str!("../../../../tests/counts/district-ci.txt");
+        for tier in ["mobile-high", "mobile-low"] {
+            let whole: u64 = table
+                .lines()
+                .find(|line| line.starts_with(&format!("{tier}-dusk | texture pool bytes |")))
+                .and_then(|line| line.split(" worst ").nth(1)?.split_whitespace().next()?.parse().ok())
+                .expect("the ci walk's whole textures on the phone");
+            let pool: u64 = device.tier_args[tier][1].parse().unwrap();
+            assert_eq!(device.tier_args[tier][0], "--texture-pool");
+            assert_eq!(pool, whole / 2 / (1 << 20), "{tier}: half what the walk holds whole, in whole MiB");
+        }
+        assert!(
+            device.tiers.iter().all(|tier| manifest.tier(tier).is_some_and(|tier| tier.cook == Cook::Mobile))
+        );
     }
 
     /// Z1's counting walks count the crowd the timed walks draw: the proving hub's crowd mounted, the ambient

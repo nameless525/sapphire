@@ -120,6 +120,18 @@ pub struct Waits {
     pub pool_p99: WaitFrames,
     pub open: u32,
     pub longest_open: u32,
+    /// The longest a wait the pool held is still open at the phase's end.
+    pub pool_longest_open: u32,
+}
+
+/// A phase's `texture wait reasons` line (M5 Z2), beside its waits: whether the pool was ever too small for the
+/// textures' tails, the update the zone arrived at (0 if it never did), and its other fields, shown only.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WaitReasons {
+    pub tails_over_pool: u64,
+    pub arrived_at_update: u64,
+    /// Every field the line logs that reads as a number, by name.
+    pub fields: BTreeMap<String, f64>,
 }
 
 /// A counting walk's end (M5 Z2, exit test 2's floor): the zone taken down and its pack unmounted, as a trip
@@ -152,6 +164,10 @@ pub struct Log {
     pub pipelines: BTreeMap<String, Pipelines>,
     /// Each phase's `texture waits` line, while streaming.
     pub waits: BTreeMap<String, Waits>,
+    /// Each phase's `texture wait reasons` line, while streaming.
+    pub wait_reasons: BTreeMap<String, WaitReasons>,
+    /// A counting walk's `texture streaming cpu` line (M5 Z2): its fields that read as numbers, shown only.
+    pub streaming_cpu: Option<BTreeMap<String, f64>>,
     /// A counting walk's `zone closed` line, at its end.
     pub zone_closed: Option<ZoneClosed>,
     /// The load's time, from the bench's first line.
@@ -180,7 +196,27 @@ impl Log {
             let float = |name: &str| field(name).and_then(|value| value.parse::<f64>().ok());
             let int = |name: &str| field(name).and_then(|value| value.parse::<u64>().ok());
             let key = || Some((field("phase")?.to_owned(), field("row")?.to_owned()));
-            if has(line, "fight row not exercised") || has(line, "count row not exercised") {
+            if has(line, "texture streaming cpu") {
+                log.streaming_cpu = Some(
+                    fields
+                        .iter()
+                        .filter_map(|(name, value)| Some(((*name).to_owned(), value.parse().ok()?)))
+                        .collect(),
+                );
+            } else if has(line, "texture wait reasons") {
+                let Some(phase) = field("phase") else { continue };
+                log.wait_reasons.insert(
+                    phase.to_owned(),
+                    WaitReasons {
+                        tails_over_pool: int("tails_over_pool").unwrap_or(0),
+                        arrived_at_update: int("arrived_at_update").unwrap_or(0),
+                        fields: fields
+                            .iter()
+                            .filter_map(|(name, value)| Some(((*name).to_owned(), value.parse().ok()?)))
+                            .collect(),
+                    },
+                );
+            } else if has(line, "fight row not exercised") || has(line, "count row not exercised") {
                 let Some(key) = key() else { continue };
                 if has(line, "fight row not exercised") {
                     log.timed.push((key, Entry::NotExercised));
@@ -290,6 +326,7 @@ impl Log {
                         pool_p99: bin("pool_held_p99_frames").unwrap_or(WaitFrames::None),
                         open,
                         longest_open,
+                        pool_longest_open: count("pool_longest_open_frames").unwrap_or(0),
                     },
                 );
             } else if has(line, "fight pipelines") {

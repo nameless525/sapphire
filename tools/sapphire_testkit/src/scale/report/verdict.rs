@@ -8,8 +8,9 @@
 //!   (M5 B4's Desktop-High and Mobile-High columns of §3.3) is shown against it, marked proposed, and fails
 //!   nothing: adopting a column is moving its figure into the bench's budget, data the sandbox logs.
 //! - **A count** fails on any round's worst frame over its budget.
-//! - **A wait for a texture's level** fails on a phase's 99th percentile over 30 frames (`32+` is over), or a
-//!   wait open at a run's end for 30 frames or more.
+//! - **A wait for a texture's level** fails on a phase's 99th percentile over 30 frames (an `N+` bin is over), a
+//!   wait open at a run's end for 30 frames or more, the pool's too, or no line; its reasons line on the counting
+//!   walk fails on the pool ever too small for the tails or a zone that never arrived.
 //! - **Pairs** (runs serving exit test 3, each package's on against off) are costs to read beside each other, so
 //!   no verdict reads them.
 //! - **A device's walk** (a run naming `devices`, M5 Z2) has lines of its own, a tier and a device each, by the
@@ -18,6 +19,7 @@
 use std::fmt::Write as _;
 
 use super::{CountCell, Rounds, TimedCell, gather, ms, thousands, title};
+use crate::scale::log::{WaitFrames, Waits};
 use crate::scale::manifest::{Read, Run, Tier, Unit};
 use crate::scale::status::Status;
 
@@ -437,9 +439,11 @@ fn counts(findings: &mut Findings, name: &str, rounds: &Rounds, phases: &[&str],
     }
 }
 
-/// The waits for a texture's level: each phase's line in each round, its p99 at 30 frames or under and no wait
-/// open 30 frames or more at its end. A streaming run with no line fails, as the sandbox logs one while
-/// streaming.
+/// The waits for a texture's level (m5-plan exit test 2, M5 Z2): each phase's line in each round, its judged
+/// p99 at 30 frames or under and no wait open 30 frames or more at its end, the pool's held waits too; and on the
+/// counting walk (`drawn`) its reasons line, the pool never too small for the tails and the zone arrived. A
+/// streaming run with no line fails, as the sandbox logs both while streaming. The reasons' other fields, and
+/// `texture streaming cpu`, are shown only.
 fn waits(findings: &mut Findings, name: &str, rounds: &Rounds) {
     for round in &rounds.rounds {
         if round.log.waits.is_empty() {
@@ -448,19 +452,58 @@ fn waits(findings: &mut Findings, name: &str, rounds: &Rounds) {
         }
         for (phase, waits) in &round.log.waits {
             let mut over = Vec::new();
-            if waits.p99.over(WAIT_FRAMES) {
-                over.push(format!("p99 {} frames", waits.p99));
+            let p99 = judged_p99(waits);
+            if p99.over(WAIT_FRAMES) {
+                over.push(format!("p99 {p99} frames"));
             }
             if waits.longest_open >= WAIT_FRAMES {
                 over.push(format!("a wait open {} frames at its end", waits.longest_open));
+            }
+            if waits.pool_longest_open >= WAIT_FRAMES {
+                over.push(format!("a wait the pool held open {} frames at its end", waits.pool_longest_open));
             }
             if over.is_empty() {
                 findings.pass();
             } else {
                 findings.fail(format!("{name} r{} {phase} waits: {}", round.round, over.join(", ")));
             }
+            if phase != "drawn" {
+                continue;
+            }
+            match round.log.wait_reasons.get(phase) {
+                None => findings.fail(format!("{name} r{}: no texture wait reasons line", round.round)),
+                Some(reasons) if reasons.tails_over_pool > 0 => findings.fail(format!(
+                    "{name} r{}: the pool too small for the tails {} times",
+                    round.round, reasons.tails_over_pool
+                )),
+                Some(reasons) if reasons.arrived_at_update == 0 => {
+                    findings.fail(format!("{name} r{}: the zone never arrived", round.round));
+                }
+                Some(_) => findings.pass(),
+            }
+            if let Some(reasons) = round.log.wait_reasons.get(phase) {
+                findings.notes.push(format!(
+                    "{name} r{} texture wait reasons: {}",
+                    round.round,
+                    shown(&reasons.fields)
+                ));
+            }
+        }
+        if let Some(cpu) = &round.log.streaming_cpu {
+            findings.notes.push(format!("{name} r{} texture streaming cpu: {}", round.round, shown(cpu)));
         }
     }
+}
+
+/// A line's numeric fields as `name value`, for a note.
+fn shown(fields: &std::collections::BTreeMap<String, f64>) -> String {
+    fields.iter().map(|(name, value)| format!("{name} {value}")).collect::<Vec<_>>().join(", ")
+}
+
+/// The 99th percentile a phase's waits are judged on, in one place: whether the waits the pool held while the
+/// views wanted more than it holds leave it is the orchestrator's open ruling (M5 Z2). Today it is every wait's.
+fn judged_p99(waits: &Waits) -> WaitFrames {
+    waits.p99
 }
 
 /// Exit test 2's 30 frames.
@@ -604,7 +647,17 @@ mod tests {
         format!(
             "x INFO sapphire::sandbox: texture waits phase=\"drawn\" completed=12 p50_frames=1 p99_frames={p99} \
              worst_frames={p99} pool_held=0 pool_held_p99_frames=- pool_held_worst_frames=- open=1 \
-             longest_open_frames={longest_open} pool_open=0 pool_longest_open_frames=0\n"
+             longest_open_frames={longest_open} pool_open=0 pool_longest_open_frames=0\n{}",
+            reasons(0, 41)
+        )
+    }
+
+    fn reasons(tails_over_pool: u32, arrived_at_update: u32) -> String {
+        format!(
+            "x INFO sapphire::sandbox: texture wait reasons decode=1 decode_long=0 phase=\"drawn\" \
+             long_over_frames=30 raised_bytes=9 reraised_bytes=0 reraised_within_updates=60 \
+             tails_over_pool={tails_over_pool} arrival_waits=3 arrival_long=0 arrival_open=0 \
+             arrived_at_update={arrived_at_update}\n"
         )
     }
 
@@ -674,6 +727,47 @@ mod tests {
             ["counted-streaming r1: no texture waits line"],
             "a streaming run logs one"
         );
+    }
+
+    /// Exit test 2's lines (M5 Z2): the pool's longest open wait, and on the counting walk the reasons line, the
+    /// pool too small for the tails or a zone that never arrived failing, and the line missing failing.
+    #[test]
+    fn the_waits_reasons_and_the_pools_open_waits_fail_as_given() {
+        let manifest = manifest();
+        let (run, tier) = (manifest.run("counted-streaming").expect("a run"), tier(&manifest, "mobile-low"));
+        let rows = [
+            count("bytes over budget in use", 0, "Some(0)"),
+            count("bytes decoded waiting", 1 << 20, "Some(67108864)"),
+            count("streamed texture bytes", 300 << 20, "Some(347078656)"),
+            count("frame thread loads", 0, "Some(0)"),
+            closed(true, 8 << 20, 8 << 20),
+        ]
+        .concat();
+        let line = waits("12", 0);
+        let (waits_line, _) = line.split_at(
+            line.find("texture wait reasons").and_then(|at| line[..at].rfind('\n')).expect("two lines") + 1,
+        );
+        for (log, failed) in [
+            (format!("{rows}{line}"), None),
+            (format!("{rows}{waits_line}{}", reasons(2, 41)), Some("too small for the tails")),
+            (format!("{rows}{waits_line}{}", reasons(0, 0)), Some("never arrived")),
+            (format!("{rows}{waits_line}"), Some("no texture wait reasons line")),
+            (
+                format!(
+                    "{rows}{}",
+                    line.replace("pool_longest_open_frames=0", "pool_longest_open_frames=30")
+                ),
+                Some("the pool held open 30"),
+            ),
+        ] {
+            let findings = judge(2, run, "counted-streaming", &tier, &rounds(&[&log]));
+            match failed {
+                None => assert!(findings.failed.is_empty(), "{findings:?}"),
+                Some(why) => {
+                    assert!(findings.failed.iter().any(|what| what.contains(why)), "{why}: {findings:?}")
+                }
+            }
+        }
     }
 
     /// A count over its budget in any round fails, and the pool under a binding pool is the run's own.

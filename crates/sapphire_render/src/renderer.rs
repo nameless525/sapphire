@@ -4083,6 +4083,12 @@ impl Renderer {
         self.ui.page_state()
     }
 
+    /// The pipelines the last recorded frame's mesh passes set, by pass ([`crate::PIPELINE_PASSES`]'s order):
+    /// [`StateChanges::pipelines`](crate::StateChanges::pipelines) split, for the scale lane's walks (M5 X4).
+    pub fn pipelines_by_pass(&self) -> [u32; crate::PIPELINE_PASSES.len()] {
+        self.counts.pipelines_by_pass()
+    }
+
     /// Counters from the last [`Self::prepare`] plus pool totals, and the last recorded scene
     /// size, sky cube faces and ambient textures.
     pub fn stats(&self) -> RenderStats {

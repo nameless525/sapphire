@@ -322,9 +322,16 @@ impl ChangeCounter {
     }
 }
 
+/// The passes [`crate::Renderer::pipelines_by_pass`] counts the pipelines set in, in its order: each cascade's and each
+/// inset's summed (M5 X4's diagnosis of a difference in `pipelines set` between two backends).
+pub const PIPELINE_PASSES: [&str; 8] =
+    ["character prepass", "scene prepass", "main", "cascades", "character maps", "insets", "spots", "debug"];
+
 /// One pass's counters, which only its recording adds to.
 #[derive(Debug, Default)]
 pub(crate) struct Counter {
+    /// Pipelines its mesh draws set: [`StateChanges::pipelines`], the pass's part.
+    pipelines: AtomicU32,
     draws: AtomicU32,
     instances: AtomicU32,
     triangles: AtomicU64,
@@ -339,6 +346,13 @@ pub(crate) struct Counter {
 }
 
 impl Counter {
+    /// Adds `pipelines` set by the pass's mesh draws.
+    pub(crate) fn add_pipelines(&self, pipelines: u32) {
+        if pipelines != 0 {
+            self.pipelines.fetch_add(pipelines, Ordering::Relaxed);
+        }
+    }
+
     /// Adds `counts`, what a group of the pass's calls submitted.
     pub(crate) fn add(&self, counts: &PassCounts) {
         let add = |counter: &AtomicU32, value: u32| {
@@ -383,6 +397,7 @@ impl Counter {
     fn reset(&self) {
         let zero = |counter: &AtomicU32| counter.store(0, Ordering::Relaxed);
         for counter in [
+            &self.pipelines,
             &self.draws,
             &self.instances,
             &self.outline_draws,
@@ -420,6 +435,22 @@ impl PassCounters {
     /// What the mesh passes have changed since the last [`Self::reset`].
     pub(crate) fn read_changes(&self) -> StateChanges {
         self.changes.read()
+    }
+
+    /// The pipelines each of [`PIPELINE_PASSES`] set since the last [`Self::reset`]: they sum to
+    /// [`Self::read_changes`]'s.
+    pub(crate) fn pipelines_by_pass(&self) -> [u32; PIPELINE_PASSES.len()] {
+        let read = |pass| self.get(pass).pipelines.load(Ordering::Relaxed);
+        [
+            read(Counted::CharacterPrepass),
+            read(Counted::ScenePrepass),
+            read(Counted::Main),
+            (0..MAX_CASCADES).map(|index| read(Counted::Cascade(index))).sum(),
+            read(Counted::CharacterMaps),
+            (0..MAX_INSETS).map(|index| read(Counted::Inset(index))).sum(),
+            read(Counted::Spots),
+            read(Counted::Debug),
+        ]
     }
 
     /// Zeroes every pass's counts, for a frame about to record.

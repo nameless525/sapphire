@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use sapphire_assets::{AssetBudgets, AssetKind, AssetStats};
 use sapphire_platform::CoreKind;
-use sapphire_render::{FrameCounts, RenderStats, RunStats, StateChanges};
+use sapphire_render::{FrameCounts, PIPELINE_PASSES, RenderStats, RunStats, StateChanges};
 use sapphire_stage::TextureStreamingStats;
 
 use super::{Phase, Traced, spread};
@@ -577,13 +577,21 @@ pub(crate) struct DrawnCounts {
     frames: Vec<(Counted, u64, Option<f32>)>,
     assets: AssetStats,
     loads: u64,
+    /// The pipelines the frames drawn set, by pass (`sapphire_render::PIPELINE_PASSES`): logged beside the
+    /// rows, not one, so two backends' `pipelines set` can be told apart by pass (M5 X4).
+    pipelines: [u64; PIPELINE_PASSES.len()],
 }
 
 impl DrawnCounts {
     /// Before the bench's first frame, with room for `frames` drawn.
     pub(crate) fn new(stage: &Stage, frames: usize) -> Self {
         let loads = sapphire_core::frame_loads::loads().total();
-        Self { frames: Vec::with_capacity(frames), assets: stage.content.stats(), loads }
+        Self {
+            frames: Vec::with_capacity(frames),
+            assets: stage.content.stats(),
+            loads,
+            pipelines: [0; PIPELINE_PASSES.len()],
+        }
     }
 
     /// After frame `frame`, which ran its graph if `drawn`.
@@ -597,6 +605,9 @@ impl DrawnCounts {
                 ..Counted::of(&stage.renderer.stats(), &assets, &self.assets, &streaming).with_stage(stage)
             };
             self.frames.push((counted, frame, stage.scene.zone_walked()));
+            for (total, pass) in self.pipelines.iter_mut().zip(stage.renderer.pipelines_by_pass()) {
+                *total += u64::from(pass);
+            }
         }
         self.assets = assets;
     }
@@ -608,6 +619,17 @@ impl DrawnCounts {
             || self.frames.iter().map(|(counted, tick, walked)| (counted, *tick, *walked)),
             "drawn",
             &budgets,
+        );
+        let by_pass: Vec<String> = PIPELINE_PASSES
+            .iter()
+            .zip(self.pipelines)
+            .map(|(pass, total)| format!("{pass}={total}"))
+            .collect();
+        tracing::info!(
+            target: LOG_TARGET,
+            frames = self.frames.len(),
+            by_pass = %by_pass.join(", "),
+            "pipelines set by pass"
         );
     }
 }

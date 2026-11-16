@@ -173,7 +173,13 @@ impl MeshDraws<'_> {
     /// Sets `pipeline` for the draws after, counting it.
     pub(crate) fn set_pipeline(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline) {
         pass.set_pipeline(pipeline);
-        self.changes.add(&StateChanges { pipelines: 1, ..StateChanges::default() });
+        self.count_changes(&StateChanges { pipelines: 1, ..StateChanges::default() });
+    }
+
+    /// Adds `changes` to the frame's, and its pipelines to this pass's own.
+    fn count_changes(&self, changes: &StateChanges) {
+        self.changes.add(changes);
+        self.counter.add_pipelines(changes.pipelines);
     }
 
     /// Whether the instance in `slot` stands in the view this pass draws.
@@ -290,7 +296,7 @@ impl MeshDraws<'_> {
             counts.mesh_call(1, count, level, hull);
         }
         self.counter.add(&counts);
-        self.changes.add(&bound.changes);
+        self.count_changes(&bound.changes);
     }
 
     /// As [`Self::draw_static_where`], but each draw once through each of `pipelines` in turn,
@@ -339,7 +345,7 @@ impl MeshDraws<'_> {
                 counts.mesh_call(run.count, count, level, hull);
             }
             self.counter.add(&counts);
-            self.changes.add(&bound.changes);
+            self.count_changes(&bound.changes);
             return;
         }
         let mut draw = |command: &DrawCommand, level: u8, bound: &mut Bound, counts: &mut PassCounts| {
@@ -368,7 +374,7 @@ impl MeshDraws<'_> {
             }
         }
         self.counter.add(&counts);
-        self.changes.add(&bound.changes);
+        self.count_changes(&bound.changes);
     }
 
     /// Draws `indices` of `command`, a static mesh's in `format` (its level's, [`Self::indices`]),
@@ -474,7 +480,7 @@ impl MeshDraws<'_> {
             }
         }
         self.counter.add(&counts);
-        self.changes.add(&bound.changes);
+        self.count_changes(&bound.changes);
     }
 
     /// As [`Self::draw_deformed_where`], but each draw once through each of `pipelines` in turn,
@@ -520,7 +526,7 @@ impl MeshDraws<'_> {
             }
         }
         self.counter.add(&counts);
-        self.changes.add(&bound.changes);
+        self.count_changes(&bound.changes);
     }
 
     /// Draws `indices` of `command`, a skinned or morphed instance's (its level's,
@@ -626,7 +632,7 @@ impl MeshDraws<'_> {
             }
         }
         self.counter.add(&counts);
-        self.changes.add(&bound.changes);
+        self.count_changes(&bound.changes);
     }
 
     /// Binds `material`'s group 3 if `kind` shades with materials and it isn't bound already.

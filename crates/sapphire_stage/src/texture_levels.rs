@@ -133,6 +133,13 @@ pub const RERAISE_WITHIN: u32 = 300;
 /// bounds what a frame starts.
 pub const ARRIVAL_RAISE: u64 = 64 << 20;
 
+/// Updates (frames) at most that a zone's arrival waits for its textures to be at their plan (M5 Z2): past it the
+/// wipe lifts with them where they are, counted ([`ArrivalWaits::held_to_bound`]) and logged, so no streamer
+/// fault keeps a player on a wipe. 300 is twice what the slowest tier's asset server needs to upload its whole
+/// pool at its upload budget (Mobile-High's 600 MiB at 4 MiB a frame, 150 frames; a desktop's 2,560 MiB at 16
+/// MiB, 160): five seconds at 60 frames a second, ten at 30.
+pub const ARRIVAL_HOLD: u32 = 300;
+
 /// The raise budget a frame goes at: the tier's, or the wipe's while a zone arrives.
 fn raise_budget(streaming: TextureStreaming, arriving: bool) -> u64 {
     if arriving { streaming.raise.max(ARRIVAL_RAISE) } else { streaming.raise }
@@ -268,6 +275,9 @@ pub struct ArrivalWaits {
     /// The update the first view's textures were first at their plan, ending the arrival a bench opened with
     /// (`Content::end_texture_arrival`); 0 while it hasn't.
     pub arrived_at: u32,
+    /// Arrivals, a trip's or a bench's opening, whose textures weren't at their plan after [`ARRIVAL_HOLD`]
+    /// updates, so the hold let them go there: a streamer fault, which a run should read as one.
+    pub held_to_bound: u32,
 }
 
 impl TextureStreamingStats {
@@ -383,6 +393,9 @@ pub(crate) struct TextureLevels {
     /// A bench opened as an arrival ([`Self::open_as_arrival`]), until the first view's textures are first at
     /// their plan: arriving all the same.
     opening: bool,
+    /// Budgeted updates the arrival under way has waited, 0 with none: [`Self::at_plan`] holds it no longer
+    /// than [`ARRIVAL_HOLD`].
+    arrival_updates: u32,
 }
 
 /// One texture's levels.
@@ -495,7 +508,9 @@ impl Choice {
             }
         };
         self.need = need;
-        let target = self.target.unwrap_or(above);
+        // Estimated from here on, read or not: a texture the views don't read targets its tail, so one never
+        // drawn (a material's slot no view reads) is at its plan once its tail is in (M5 Z2).
+        let target = *self.target.get_or_insert(above);
         if need < target {
             (self.target, self.coarser) = (Some(need), 0);
         } else if slack > target {
@@ -891,6 +906,9 @@ impl TextureLevels {
             stats.raising = raising;
             stats.time = stopwatch.elapsed();
         }
+        if !unlimited {
+            self.step_arrival(arriving, |id| textures.get(&id).map(|held| Shape::of(&held.object)));
+        }
         let Self { textures: wants, give_back, .. } = self;
         for (texture, index) in std::mem::take(give_back) {
             // Let go of and asked for again since, it stays. One the server can't unload yet (loading, or
@@ -1167,13 +1185,33 @@ impl TextureLevels {
 
     /// Whether a zone's arrival may lift its wipe as far as textures go (M5 Z2): while streaming, every texture
     /// `shape` says is on the renderer is at its plan, the first view's levels in; with streaming off, or a pool
-    /// too small for the tails ([`TextureStreamingStats::tails_over_pool`], which no plan settles), at once.
+    /// too small for the tails ([`TextureStreamingStats::tails_over_pool`], which no plan settles), at once; and
+    /// after [`ARRIVAL_HOLD`] updates of an arrival whatever they hold, so no fault holds a wipe for ever.
     pub(crate) fn at_plan(&self, shape: impl Fn(AssetId) -> Option<Shape>) -> bool {
-        if self.streaming.is_none() || self.stats.tails_over_pool > 0 {
-            return true;
+        self.streaming.is_none()
+            || self.stats.tails_over_pool > 0
+            || self.arrival_updates >= ARRIVAL_HOLD
+            || self.plan_reached(shape)
+    }
+
+    /// Counts a budgeted update of the arrival under way, if `arriving`: one whose textures `shape` says aren't
+    /// at their plan by its [`ARRIVAL_HOLD`]th update is let go there ([`Self::at_plan`]), counted and logged once.
+    fn step_arrival(&mut self, arriving: bool, shape: impl Fn(AssetId) -> Option<Shape>) {
+        self.arrival_updates = if arriving { self.arrival_updates.saturating_add(1) } else { 0 };
+        if self.arrival_updates == ARRIVAL_HOLD && self.streaming.is_some() && !self.plan_reached(shape) {
+            self.stats.arrival.held_to_bound += 1;
+            tracing::warn!(
+                target: LOG_TARGET,
+                updates = ARRIVAL_HOLD,
+                "an arrival's textures weren't at their plan within its bound: its wipe lifts with them where they are"
+            );
         }
+    }
+
+    /// Whether every texture `shape` says is on the renderer has been estimated and is at its plan.
+    fn plan_reached(&self, shape: impl Fn(AssetId) -> Option<Shape>) -> bool {
         // One on the renderer the views haven't estimated yet plans its tail only for want of a reading: not at
-        // its plan until they have.
+        // its plan until they have, which the next estimate does, whether they read it or not.
         self.textures.iter().all(|(&id, wanted)| {
             shape(id).is_none_or(|texture| {
                 wanted.choice.target.is_some() && texture.top == wanted.choice.planned.min(texture.above)

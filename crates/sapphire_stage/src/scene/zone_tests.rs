@@ -1588,6 +1588,25 @@ fn a_trip_leaves_the_mesh_pool_at_its_floor() {
     }
 }
 
+/// A trip under streaming arrives at its textures' plan, not by the arrival's bound (M5 Z2; the final batch's
+/// zone trip was held on its wipe for ever): the camera fitted to one corner of each room reads only some of its
+/// cells' textures, and those no view reads are at their plan, their tails, once the views are estimated.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_trip_under_streaming_arrives_though_no_view_reads_some_textures() {
+    let zone = SyntheticZone { texture: 4, ..SMALL };
+    let mut walk = Walk::rooms(zone, 2, no_limits(), Vec::new());
+    walk.content.set_texture_streaming(true);
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    for (visit, to) in [0, 1, 0].into_iter().enumerate() {
+        let trip = walk.trip(to, small_settings());
+        let stats = walk.content.texture_streaming_stats();
+        assert!(stats.streaming, "{stats:?}");
+        assert_eq!(stats.arrival.held_to_bound, 0, "trip {visit}: at its plan, not let go at the bound");
+        assert!(trip.pool.frames < crate::ARRIVAL_HOLD, "trip {visit}: {trip:?}");
+    }
+}
+
 /// A stand's "zone's grid" part waits for no read (M5 X3): the part before it, which finds the zone, asks for
 /// the zone's probe grid and sky material too, so their reads land while a boot screen draws between the two,
 /// and lighting the zone only mounts and uploads what has come. It waited on the frame's thread for both, about

@@ -881,6 +881,7 @@ pub(crate) fn report_texture_waits(phase: &'static str, stats: &TextureStreaming
         arrival_long = stats.arrival.long,
         arrival_open = stats.arrival.open,
         arrived_at_update = stats.arrival.arrived_at,
+        arrival_held_to_bound = stats.arrival.held_to_bound,
         "texture wait reasons{reasons}",
     );
 }

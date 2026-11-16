@@ -421,6 +421,60 @@ fn a_benchs_arrival_ends_once_the_first_views_textures_are_at_their_plan() {
     assert!(levels.stats.arrival.arrived_at > 0, "the update it arrived at");
 }
 
+/// M5 Z2 (a zone trip's wipe held for ever): a texture on the renderer that no view reads, a material's slot
+/// nothing draws, is at its plan, its tail, from the views' first estimate, so it never holds an arrival.
+#[test]
+fn a_texture_no_view_reads_is_at_its_plan_once_the_views_are_estimated() {
+    let whole = whole();
+    let mut levels = TextureLevels::default();
+    levels.bind(A, false);
+    let streaming = TextureStreaming { pool: u64::MAX, raise: 4 << 20 };
+    levels.set_streaming(Some(streaming));
+    let at = |top| move |_| Some(Shape { whole, top, above: ABOVE });
+    levels.plan(at(ABOVE), TextureCoverageFrame { frame: 0, textures: &[] }, streaming, u64::MAX, 0);
+    assert!(!levels.at_plan(at(ABOVE)), "not estimated yet: not at its plan");
+    for frame in 1..=3 {
+        levels.plan(at(ABOVE), TextureCoverageFrame { frame, textures: &[] }, streaming, u64::MAX, 0);
+        assert!(
+            levels.at_plan(at(ABOVE)),
+            "estimated at frame {frame} and read by no view: at its tail's plan"
+        );
+    }
+    assert_eq!(levels.textures[&A].choice.need, ABOVE, "it needs its tail, so it waits for nothing");
+}
+
+/// M5 Z2: an arrival waits for its textures at most [`ARRIVAL_HOLD`] updates; one that hasn't reached its plan
+/// by then is let go, counted once in [`ArrivalWaits::held_to_bound`]; one that reaches it first isn't counted.
+#[test]
+fn an_arrival_holds_its_wipe_no_longer_than_its_bound() {
+    let whole = whole();
+    let mut levels = TextureLevels::default();
+    levels.bind(A, false);
+    let streaming = TextureStreaming { pool: u64::MAX, raise: 4 << 20 };
+    levels.set_streaming(Some(streaming));
+    let at = |top| move |_| Some(Shape { whole, top, above: ABOVE });
+    let reads = [read(A, 0.2)];
+    levels.plan(at(ABOVE), TextureCoverageFrame { frame: 1, textures: &reads }, streaming, u64::MAX, 0);
+    // Its levels never come: a fault, which the bound lets go.
+    for update in 1..ARRIVAL_HOLD {
+        levels.step_arrival(true, at(ABOVE));
+        assert!(!levels.at_plan(at(ABOVE)), "held at update {update}");
+    }
+    levels.step_arrival(true, at(ABOVE));
+    assert!(levels.at_plan(at(ABOVE)), "let go at the bound");
+    assert_eq!(levels.stats.arrival.held_to_bound, 1);
+    levels.step_arrival(true, at(ABOVE));
+    assert_eq!(levels.stats.arrival.held_to_bound, 1, "counted once an arrival");
+    // Arrived, the next arrival starts its count afresh, and one at its plan in time isn't counted.
+    levels.step_arrival(false, at(ABOVE));
+    assert!(!levels.at_plan(at(ABOVE)), "a new arrival holds again");
+    for _ in 0..ARRIVAL_HOLD {
+        levels.step_arrival(true, at(0));
+    }
+    assert!(levels.at_plan(at(0)));
+    assert_eq!(levels.stats.arrival.held_to_bound, 1, "at its plan within the bound");
+}
+
 /// m5-plan exit test 2's waits: a texture settled at its tail is needed two levels finer, and its levels
 /// come `k` updates later; the wait lands in bin `k`, the last bin for [`WAIT_BINS`] - 1 or more. One the pool
 /// held at any update of its wait is the pool's kind; one that hasn't ended shows as open with its length.

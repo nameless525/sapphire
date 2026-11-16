@@ -309,6 +309,15 @@ its start and end, and the report marks one above the manifest's bound (8) rathe
 `--smoke` runs every unit at 200 frames and 320x180 into `smoke/` with the preset `prepare --preset ci`
 made: it proves the batch runs and its logs parse, in an ordinary slot, and measures nothing.
 
+**On a device (M5 Z2).** A run that names `devices` in the manifest walks there instead of on the Mac:
+`cargo xtask bench-scale device --platform ios-sim|android [--tier <name>] [--smoke]` needs no `prepare`. It puts
+the mobile cook and the device's preset's district together (the manifest's `devices` say `ci`: the budget's is
+too big to bundle), bundles the release `dev` sandbox with them, boots its own device headless (a private
+simulator, deleted after, or the emulator, killed after), installs, walks each unit through `bench-scale
+launch` into `logs/<run>.<tier>.<device>.r<n>.log` and prints the device's verdicts, by counts alone. One device
+is up at a time on the machine, so run it under the device slot, after `--dry-run` has built the bundle.
+[m5-exit-run.md](m5-exit-run.md)'s exit test 2 says what it reads.
+
 **Reading the report.** First the verdicts (M5 Z2): one line for each exit test and tier, pass, fail, or
 not judged here with why, by [m5-exit-run.md](m5-exit-run.md)'s rules, which say each one; the report exits
 non-zero on any fail. Then one section a tier: CPU rows against spec §3.2, GPU rows against §3.3, counts against

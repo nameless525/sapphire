@@ -9,7 +9,7 @@ It is run three times: a rehearsal before the last packages land ("Rehearsal at 
 | Exit test | Who answers it | Needs | Where it stands |
 |---|---|---|---|
 | 1. The district holds the frame | This Mac: counted walks for draws and lights, timed walks for §3.2 and §3.3; CI's scale lane by counts | Every reference device; exclusive GPU pass times on a Vulkan or DX12 GPU | Not yet run |
-| 2. Memory holds under a hard pool | This Mac by the engine's counters; the Simulator and the emulator (no tool yet) | A phone's memory limit and its kill, a discrete GPU's VRAM, a person judging a late level | Not yet run |
+| 2. Memory holds under a hard pool | This Mac by the engine's counters; the Simulator and the emulator by the same counters on the `ci` district (`bench-scale device`) | A phone's memory limit and its kill, a discrete GPU's VRAM, a person judging a late level | Not yet run |
 | 3. The look survives scale | Metal here, lavapipe and WARP in CI | A person's eye on motion | Not yet run |
 | 4. The picture's missing parts | Metal here, lavapipe and WARP in CI, the budget rows timed here | An artist's eye, Zenless Zone Zero references | Not yet run |
 | 5. Characters at budget | This Mac, timed and counted; the anim and pipeline tests | Authored characters, clips and voice; a person's verdict on cloth and faces | Not yet run |
@@ -17,7 +17,7 @@ It is run three times: a rehearsal before the last packages land ("Rehearsal at 
 | 7. No hitches at scale | This Mac cold and warm, CI by counts | A phone driver's cold compile | Not yet run |
 | 8. Still authorable | This Mac | Nothing | Not yet run |
 
-**The shortest path:** "Before anything", then `cargo xtask bench-scale run --counts` and `report` (the counted halves of exit tests 1, 2, 6 and 7), the GPU tests and goldens under exit test 3, and the replays under exit tests 6 and 7. That's everything but the timed sittings, in an afternoon once prepared. The timed sittings (exit tests 1, 2 and 5, and the crowd's row in 6) need the machine to themselves, about ten minutes each.
+**The shortest path:** "Before anything", then `cargo xtask bench-scale run --counts`, `bench-scale device` on each device, and `report` (the counted halves of exit tests 1, 2, 6 and 7), the GPU tests and goldens under exit test 3, and the replays under exit tests 6 and 7. That's everything but the timed sittings, in an afternoon once prepared. The timed sittings (exit tests 1, 2 and 5, and the crowd's row in 6) need the machine to themselves, about ten minutes each.
 
 ## Before anything
 
@@ -42,7 +42,16 @@ The tiers, as the manifest draws them: Desktop-High at 2560×1440, Desktop-Low a
 
 ### The Simulator and the emulator
 
-M5's batch runs nothing on either. M4's recipes for a private Simulator and the headless emulator stand ([m4-exit-run.md](m4-exit-run.md), "The Simulator and the emulator"): a Simulator made with `simctl create`, booted with `simctl boot`, never Simulator.app; the emulator with `-no-window -gpu host`; one up at a time. The sandbox's Android activity is `dev.sapphire.sandbox/.SandboxActivity`. Exit test 2's §1 row names both as places its counters prove it, but no tool today installs the district beside a phone bundle and walks it there: see exit test 2.
+M4's recipes for a private Simulator and the headless emulator stand ([m4-exit-run.md](m4-exit-run.md), "The Simulator and the emulator"): a Simulator made with `simctl create`, booted with `simctl boot`, never Simulator.app; the emulator with `-no-window -gpu host`; one up at a time. The sandbox's Android activity is `dev.sapphire.sandbox/.SandboxActivity`. M5's batch walks one run on both, exit test 2's counters (M5 Z2), with one command a device that keeps the device's whole life inside it:
+
+```bash
+cargo xtask bench-scale device --platform ios-sim --dry-run       # cook and bundle only: build before taking the device
+slot --device cargo xtask bench-scale device --platform ios-sim   # a private iPhone 17 Pro simulator, made, walked, deleted
+cargo xtask bench-scale device --platform android --dry-run       # JAVA_HOME as running.md gives it; Gradle offline
+slot --device cargo xtask bench-scale device --platform android   # sapphire_api36, -no-window -gpu host -no-snapshot-save
+```
+
+It puts the shipped mobile cook and the `ci` district's phone tree together in `content/ci/mobile/` under the commit's folder, bundles the release `dev` sandbox with them in place of the mobile cook (only a `dev` bundle takes other content), boots its own device headless (a simulator from `simctl create` on the newest runtime; the emulator, refusing to start beside a device already connected), installs the bundle fresh (the app uninstalled first on the emulator), walks the manifest's `device-streaming` run on Mobile-High and Mobile-Low (`--tier` picks one; `--smoke` walks 200 frames at 320x180 into `smoke/`), and shuts the device down however the walks went. The walks go through `cargo xtask bench-scale launch`, the testkit's launcher, which starts the sandbox on the booted device and prints its log as it runs: the Simulator's through `simctl launch --console-pty`, the emulator's from logcat until the app's `main returned status=` line. Each log comes back as `logs/device-streaming.<tier>.<ios-sim|android>.r1.log`, beside the Mac's; the command prints the device's verdict lines and fails on a fail, and `report` shows them as lines of their own. See exit test 2 for what they judge.
 
 ## Exit test 1: the district holds the frame
 
@@ -129,7 +138,15 @@ The test (§1): "The district's textures come to twice the tier's pool. Through 
 
 A `p99_frames` of `32+` fails; `-` (no wait completed) passes. §3.1's figures are taken at 1,024 MiB a GB (10,240 / 6,144 / 2,867 / 1,638 MiB). On unified memory the process's footprint holds what the GPU allocates too, so it stands for RAM and VRAM together against §3.1's RAM figure; a discrete GPU's VRAM (6 GB and 3 GB on the desktops) is owed to one.
 
-**On the Simulator and the emulator:** nothing yet. §1 names both as places this test's counters run, but no command today installs the `budget` or `ci` district beside a phone bundle and walks it with `--texture-streaming on --texture-pool 331`. Until one does, this half is not run, and the rehearsal says so.
+**On the Simulator and the emulator, by counts (M5 Z2):** `slot --device cargo xtask bench-scale device --platform ios-sim`, then `--platform android` ("The Simulator and the emulator", above). Each walks `device-streaming`, which is `counted-streaming`'s walk (a frame in seven drawn, the crowd on, `--texture-streaming on`) on the **`ci` district**: the budget's is gigabytes, too much to bundle and install on a device each run. Its phone tree with the shipped mobile cook holds 28,932,504 bytes (27.6 MiB) of textures whole on both phones (`texture pool bytes` in [tests/counts/district-ci.txt](../tests/counts/district-ci.txt)), so by the batch's own rule its pool is **13 MiB** (`--texture-pool 13`, 13,631,488 bytes), half that rounded down as 331 is, and its textures come to 2.1 times the pool. The command reads each walk's log by this test's counted rules above, and exit test 7's pipelines:
+
+- `bytes over budget in use` worst 0 or not exercised; `streamed texture bytes` worst at or under 13 MiB; `bytes decoded waiting` at or under 64 MiB, the phones' admission cap; `frame thread loads` 0;
+- every phase's `texture waits` line: `p99_frames` at or under 30 and `longest_open_frames` under 30; the `zone closed` line unmounted and at its floor;
+- exit test 7's line, the walk's `zone walk` pipelines: `first_use=0 rebuilt=0 frame_thread=0 frame_waits=0`.
+
+It prints a line for each exit test and tier, **pass**, **fail** or **not run**, and `report` shows them as lines of their own beside this Mac's ("Mobile-High, the iOS Simulator"). **Counts only:** no time read on either device is judged, and none is a phone's; the process's memory is the Mac's row alone. The Simulator draws on the Mac's GPU through Apple's simulated Metal, without indirect draws, which the engine never uses; the emulator draws through gfxstream on the host's Vulkan. On Android a scoped allocation count is process-wide, which no row here reads.
+
+**What the `ci` district's walk shows at half its textures (first run, 2026-11-15):** the district is small enough that the tour keeps every texture it places in view (`zone walk` `placed=244 removed=0`), so a 13 MiB pool is full from the first drawn frame and stays full, and about 27 waits are still open when the walk ends (`texture waits` `pool_open=27 longest_open_frames=7660` on Mobile-High). Both devices read the same: every counted row and exit test 7 pass, and exit test 2 fails on its waits alone, on both tiers. With the pool at 28 MiB, which holds the district whole, the Simulator's Mobile-High walk passes (`p99_frames=12`, nothing open). So on this district the fail is the pool's, not the device's: twice the pool proves the streamer's eviction only where a walk leaves textures behind, which the `budget` district does and `ci` does not. Which pool the device rows are judged at is the maintainer's call.
 
 **Can't prove here:** a phone's own memory limit and the OS killing the app at it, a discrete GPU's VRAM, and whether a level arriving late reads as a pop to a person. Owed to a maintainer with a phone and a desktop GPU, and to a person watching.
 
@@ -296,6 +313,8 @@ The date, the commit, the machine (model, macOS, Xcode), the load, and how the t
 | 2, pool and process | each tier | | | the run's pool; §3.1 | | |
 | 2, `texture waits` | each tier, each phase | | | 30 frames | | |
 | 2, decoded waiting; the pool's floor | each tier | `counted-streaming`'s `zone closed` | | 256 / 64 MiB; the floor | | |
+| 2, the iOS Simulator, counts only | Mobile-High, Mobile-Low | `device-streaming` on the `ci` district | | 13 MiB pool; 64 MiB; 30 frames; pipelines 0 | | `logs/device-streaming.mobile-high.ios-sim.r1.log` and beside it |
+| 2, the Android emulator, counts only | Mobile-High, Mobile-Low | `device-streaming` on the `ci` district | | 13 MiB pool; 64 MiB; 30 frames; pipelines 0 | | `logs/device-streaming.mobile-high.android.r1.log` and beside it |
 | 3 | all | goldens, on/off tests, switch | | | | |
 | 4 | all | eight features' checklist | | | | |
 | 5 | each tier | Cast rows; tests | | §3.2, §3.3 | | |
@@ -323,7 +342,7 @@ The same table, on the release's head, with what changed since the rehearsal.
 No run on this Mac answers these; each needs a device or a person (§1, and [m5-plan.md](m5-plan.md) §7 for what the maintainer holds):
 
 - **Exit test 1:** every reference device's frame times, and exclusive GPU pass times on a Vulkan or DX12 GPU (Metal overlaps its passes).
-- **Exit test 2:** a phone's own memory limit and its kill, a discrete GPU's VRAM, and whether a level arriving late reads as a pop to a person; and, until a tool walks the district there, the Simulator's and the emulator's counters.
+- **Exit test 2:** a phone's own memory limit and its kill, a discrete GPU's VRAM, and whether a level arriving late reads as a pop to a person; and the budget district's walk on a device, since the Simulator and the emulator walk the `ci` district's (`bench-scale device`).
 - **Exit test 3:** a person's eye on motion.
 - **Exit test 4:** an artist's eye, and Zenless Zone Zero references.
 - **Exit test 5:** a second authored character, authored clips, recorded voice, and a person's verdict on the cloth and the faces.

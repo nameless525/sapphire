@@ -356,12 +356,14 @@ fn count_wait(
 }
 
 /// m5-plan exit test 2's waits: a texture settled at its tail is needed two levels finer, and its levels
-/// come `k` updates later; the wait lands in bin `k`, the last bin for 32 or more. One the pool held at any
-/// update of its wait is the pool's kind; one that hasn't ended shows as open with its length.
+/// come `k` updates later; the wait lands in bin `k`, the last bin for [`WAIT_BINS`] - 1 or more. One the pool
+/// held at any update of its wait is the pool's kind; one that hasn't ended shows as open with its length.
 #[test]
 fn a_wait_lands_in_the_bin_of_the_frames_it_took() {
     let mut stats = TextureStreamingStats::default();
-    for (k, bin) in [(0, 0), (1, 1), (31, 31), (32, 32), (200, 32)] {
+    let last = WAIT_BINS - 1;
+    let after = last as u32 + 200;
+    for (k, bin) in [(0, 0), (1, 1), (31, 31), (32, 32), (last as u32, last), (after, last)] {
         let mut choice = Choice::default();
         count_wait(&mut choice, &mut stats, 5, 5, false);
         for _ in 0..k {
@@ -369,12 +371,12 @@ fn a_wait_lands_in_the_bin_of_the_frames_it_took() {
         }
         assert_eq!((stats.waits.open, stats.waits.longest_open), (u32::from(k > 0), k), "k = {k}");
         count_wait(&mut choice, &mut stats, 2, 2, false);
-        assert_eq!(stats.waits.frames[bin], 1 + u32::from(k == 200), "k = {k}: {:?}", stats.waits.frames);
+        assert_eq!(stats.waits.frames[bin], 1 + u32::from(k == after), "k = {k}");
         assert_eq!(stats.waits.open, 0);
         // Settled, it waits no more.
         count_wait(&mut choice, &mut stats, 2, 2, false);
     }
-    assert_eq!(stats.waits.completed(), 5);
+    assert_eq!(stats.waits.completed(), 6);
     assert_eq!(stats.pool_waits, TextureWaits::default(), "the pool held none");
 
     // The pool held it for one update of its wait: the pool's kind, open while it lasts.
@@ -387,15 +389,15 @@ fn a_wait_lands_in_the_bin_of_the_frames_it_took() {
     assert_eq!((stats.pool_waits.open, stats.pool_waits.longest_open), (1, 500), "a starved one shows");
     assert_eq!(stats.waits.open, 0);
     count_wait(&mut choice, &mut stats, 2, 2, false);
-    assert_eq!((stats.pool_waits.completed(), stats.pool_waits.worst()), (1, Some(32)));
-    assert_eq!(stats.waits.completed(), 5, "the other kind's unchanged");
+    assert_eq!((stats.pool_waits.completed(), stats.pool_waits.worst()), (1, Some(500)));
+    assert_eq!(stats.waits.completed(), 6, "the other kind's unchanged");
 
     // Needed coarser, or as it holds, it isn't waiting.
     let mut choice = Choice::default();
     count_wait(&mut choice, &mut stats, 2, 2, false);
     count_wait(&mut choice, &mut stats, 2, 4, false);
     count_wait(&mut choice, &mut stats, 4, 4, false);
-    assert_eq!(stats.waits.completed(), 5);
+    assert_eq!(stats.waits.completed(), 6);
 }
 
 /// A completed wait's reason is what held it longest (M5 Z2): the pool at any frame makes it the pool's, of the
@@ -435,13 +437,14 @@ fn a_percentile_of_waits_reads_its_bin() {
     assert_eq!((waits.percentile(0.5), waits.worst()), (None, None), "no waits");
     waits.frames[0] = 98;
     waits.frames[31] = 1;
-    waits.frames[32] = 1;
+    waits.frames[WAIT_BINS - 1] = 1;
+    let last = Some(WAIT_BINS as u32 - 1);
     assert_eq!(waits.percentile(0.5), Some(0));
     assert_eq!(waits.percentile(0.98), Some(0), "the 98th of 100 is the last in bin 0");
     assert_eq!(waits.percentile(0.99), Some(31));
-    assert_eq!(waits.percentile(1.0), Some(32), "32 or more");
+    assert_eq!(waits.percentile(1.0), last, "the last bin's frames or more");
     assert_eq!(waits.percentile(0.0), Some(0), "the first");
-    assert_eq!(waits.worst(), Some(32));
+    assert_eq!(waits.worst(), last);
     let one =
         TextureWaits { frames: std::array::from_fn(|bin| u32::from(bin == 7)), ..TextureWaits::default() };
     assert_eq!((one.percentile(0.01), one.percentile(0.99), one.worst()), (Some(7), Some(7), Some(7)));
@@ -458,7 +461,8 @@ fn every_wait_counts_whichever_kind_it_is() {
     (stats.pool_waits.open, stats.pool_waits.longest_open) = (1, 90);
     let all = stats.all_waits();
     assert_eq!(all.completed(), 100);
-    assert_eq!((all.percentile(0.5), all.percentile(0.99), all.worst()), (Some(2), Some(32), Some(32)));
+    let last = Some(WAIT_BINS as u32 - 1);
+    assert_eq!((all.percentile(0.5), all.percentile(0.99), all.worst()), (Some(2), last, last));
     assert_eq!(stats.waits.percentile(0.99), Some(2), "the loads' kind alone would flatter it");
     assert_eq!((all.open, all.longest_open), (4, 90));
 }

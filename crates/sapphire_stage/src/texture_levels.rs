@@ -264,8 +264,9 @@ impl TextureStreamingStats {
     }
 }
 
-/// Bins of [`TextureWaits::frames`]: 0 to 31 frames, and the last for 32 or more.
-pub const WAIT_BINS: usize = 33;
+/// Bins of [`TextureWaits::frames`]: 0 to 1,023 frames, and the last for 1,024 or more, 17 seconds at 60 frames
+/// a second: wide enough that a paced walk's 99th percentile is read, not clamped at the bins' end (M5 Z2).
+pub const WAIT_BINS: usize = 1025;
 
 /// Waits of one kind for a texture's level (m5-plan exit test 2). A wait starts at the update a texture is
 /// needed finer than it held at the last, and ends at the first its top reaches what it needs, its debt

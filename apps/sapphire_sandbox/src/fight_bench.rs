@@ -917,7 +917,7 @@ impl WaitsLine {
     }
 }
 
-/// A bin of [`sapphire_stage::TextureWaits`] in frames: the last reads `32+`, none `-`.
+/// A bin of [`sapphire_stage::TextureWaits`] in frames: the last reads `1024+`, none `-`.
 fn wait_frames(bin: Option<u32>) -> String {
     match bin {
         None => "-".to_owned(),
@@ -1282,11 +1282,12 @@ mod tests {
         assert_eq!(trace_line(&traced(12, 345)).split(',').nth(column), Some(""));
     }
 
-    /// The waits line reads the last bin as 32 or more, and no wait as none.
+    /// The waits line reads the last bin as its frames or more, and no wait as none.
     #[test]
     fn a_wait_bin_reads_in_frames() {
-        let names = [None, Some(0), Some(31), Some(32)].map(wait_frames);
-        assert_eq!(names, ["-", "0", "31", "32+"]);
+        let last = WAIT_BINS as u32 - 1;
+        let names = [None, Some(0), Some(32), Some(last - 1), Some(last)].map(wait_frames);
+        assert_eq!(names, ["-", "0", "32", "1023", "1024+"]);
     }
 
     /// A phase's waits line: its label, both kinds together, the pool's share, and `-` for no waits.
@@ -1305,9 +1306,9 @@ mod tests {
         assert_eq!(line.phase, "cpu");
         assert_eq!(
             (line.completed, line.p50.as_str(), line.p99.as_str(), line.worst.as_str()),
-            (100, "3", "3", "32+")
+            (100, "3", "3", "1024+")
         );
-        assert_eq!((line.pool_held, line.pool_p99.as_str(), line.pool_worst.as_str()), (1, "32+", "32+"));
+        assert_eq!((line.pool_held, line.pool_p99.as_str(), line.pool_worst.as_str()), (1, "1024+", "1024+"));
         assert_eq!((line.open, line.longest_open, line.pool_open, line.pool_longest_open), (1, 500, 1, 500));
     }
 }

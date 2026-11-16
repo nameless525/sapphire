@@ -769,6 +769,22 @@ const LAPS: [(&str, &str); 2] = [("first", "cold lap"), ("cpu", "warm lap")];
 /// Exit test 2's rows: a counting walk's one phase, or a timed walk's two laps side by side, the worse lap's
 /// figure over its budget named.
 #[allow(clippy::too_many_arguments, reason = "one table's inputs, each named")]
+/// Whether a run is paced at the tier's rate on this tier, and so whether exit test 2's 30 frames judge its waits
+/// (M5 Z2, the orchestrator's ruling).
+fn pace_note(run: &Run, tier: &Tier) -> String {
+    match run.pace(&tier.name) {
+        Some(rate) => format!(
+            "**Paced** at {rate} frames a second (`--bench-pace`), a game's frames: exit test 2's 30 frames judge its \
+             waits."
+        ),
+        None => {
+            "**Not paced:** its frames run as fast as this Mac draws them, so 30 of them aren't 30 at the \
+                 tier's rate; exit test 2 shows its waits beside the verdicts and judges them on nothing."
+                .to_owned()
+        }
+    }
+}
+
 fn streaming_table(
     out: &mut String,
     failures: &mut Vec<String>,
@@ -778,6 +794,7 @@ fn streaming_table(
     beside: Option<&Rounds>,
     beside_name: &str,
 ) {
+    let _ = writeln!(out, "{}\n", pace_note(run, tier));
     if phase_of_counts(rounds) == "drawn" {
         count_table(out, failures, run, tier, rounds, beside, beside_name, &STREAMING);
         return;

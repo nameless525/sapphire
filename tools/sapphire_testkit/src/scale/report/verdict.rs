@@ -15,7 +15,8 @@
 //! - **A round with the display's 60 Hz lock is void** (M5 Z2): its GPU rows are left out of the least of the
 //!   rounds and shown as void with the lock's figure, and a row with every round void isn't judged.
 //! - **A count** fails on any round's worst frame over its budget.
-//! - **A wait for a texture's level** fails on a phase's 99th percentile over 30 frames (an `N+` bin is over), a
+//! - **A wait for a texture's level**, on a run paced at the tier's rate (M5 Z2: an unpaced run's waits are shown
+//!   with its frame time and judged on nothing), fails on a phase's 99th percentile over 30 frames (an `N+` bin is over), a
 //!   wait open at a run's end for 30 frames or more, the pool's too, or no line; its reasons line on the counting
 //!   walk fails on the pool ever too small for the tails or a zone that never arrived.
 //! - **Exit test 6** (M5 Z2, the orchestrator's ruling) judges the crowd on: a variant whose arguments turn it off
@@ -370,7 +371,7 @@ pub(super) fn judge(test: u32, run: &Run, name: &str, tier: &Tier, rounds: &Roun
                         "frame thread loads",
                     ],
                 );
-                waits(&mut findings, name, rounds);
+                waits(&mut findings, name, rounds, run.pace(&tier.name));
                 if !run.timed {
                     floor(&mut findings, name, rounds);
                 }
@@ -570,34 +571,55 @@ fn counts(findings: &mut Findings, name: &str, rounds: &Rounds, phases: &[&str],
     }
 }
 
-/// The waits for a texture's level (m5-plan exit test 2, M5 Z2): each phase's line in each round, its judged
-/// p99 at 30 frames or under and no wait open 30 frames or more at its end, the pool's held waits too; and on the
+/// The waits for a texture's level (m5-plan exit test 2, M5 Z2): each phase's line in each round, on a run paced
+/// at the tier's rate (`pace`, its `--bench-pace` on this tier) its judged p99 at 30 frames or under and no wait
+/// open 30 frames or more at its end, the pool's held waits too, and on a run that isn't, those shown beside the
+/// verdict with its frame time and judged on nothing (the orchestrator's ruling); and on the
 /// counting walk (`drawn`) its reasons line, the pool never too small for the tails and the zone arrived. A
 /// streaming run with no line fails, as the sandbox logs both while streaming. The reasons' other fields, and
 /// `texture streaming cpu`, are shown only.
-fn waits(findings: &mut Findings, name: &str, rounds: &Rounds) {
+fn waits(findings: &mut Findings, name: &str, rounds: &Rounds, pace: Option<u32>) {
     for round in &rounds.rounds {
         if round.log.waits.is_empty() {
             findings.fail(format!("{name} r{}: no texture waits line", round.round));
             continue;
         }
         for (phase, waits) in &round.log.waits {
-            let mut over = Vec::new();
-            let p99 = judged_p99(waits);
-            if p99.over(WAIT_FRAMES) {
-                over.push(format!("p99 {p99} frames"));
-            }
-            if waits.longest_open >= WAIT_FRAMES {
-                over.push(format!("a wait open {} frames at its end", waits.longest_open));
-            }
-            if waits.pool_longest_open >= WAIT_FRAMES {
-                over.push(format!("a wait the pool held open {} frames at its end", waits.pool_longest_open));
-            }
-            if over.is_empty() {
-                findings.pass();
+            if pace.is_none() {
+                // The 30 frames are at the tier's rate (M5 Z2, the orchestrator's ruling): an unpaced run's frames
+                // are as short as the Mac draws them, so its waits are shown beside the verdict, judged on nothing.
+                // The GPU phase times no CPU rows: its frames are the warm lap's.
+                let frame = frame_ms(&round.log, phase).or_else(|| frame_ms(&round.log, "cpu")).map_or_else(
+                    || "a frame time not logged".to_owned(),
+                    |frame| format!("frames of about {frame:.1} ms"),
+                );
+                findings.notes.push(format!(
+                    "{name} r{} {phase} waits, not judged: the run isn't paced at the tier's rate ({frame}), so 30 of \
+                     its frames aren't the rule's; p99 {} frames, worst {}, longest open {}, the pool's longest open {}",
+                    round.round, waits.p99, waits.worst, waits.longest_open, waits.pool_longest_open
+                ));
             } else {
-                findings.fail(format!("{name} r{} {phase} waits: {}", round.round, over.join(", ")));
+                let mut over = Vec::new();
+                let p99 = judged_p99(waits);
+                if p99.over(WAIT_FRAMES) {
+                    over.push(format!("p99 {p99} frames"));
+                }
+                if waits.longest_open >= WAIT_FRAMES {
+                    over.push(format!("a wait open {} frames at its end", waits.longest_open));
+                }
+                if waits.pool_longest_open >= WAIT_FRAMES {
+                    over.push(format!(
+                        "a wait the pool held open {} frames at its end",
+                        waits.pool_longest_open
+                    ));
+                }
+                if over.is_empty() {
+                    findings.pass();
+                } else {
+                    findings.fail(format!("{name} r{} {phase} waits: {}", round.round, over.join(", ")));
+                }
             }
+            // The reasons line counts updates, not frames: judged paced or not.
             if phase != "drawn" {
                 continue;
             }
@@ -643,6 +665,16 @@ fn arrivals(findings: &mut Findings, name: &str, rounds: &Rounds) {
             }
         }
     }
+}
+
+/// About how long a phase's frames took, in ms: its `cpu frame` and `gpu wait` rows' p50 together, the frame's
+/// CPU and its wait for the GPU.
+fn frame_ms(log: &crate::scale::log::Log, phase: &str) -> Option<f64> {
+    let p50 = |row: &str| match log.timed(phase, row) {
+        Some(Entry::Read(timed)) => Some(timed.p50),
+        _ => None,
+    };
+    Some((p50("cpu frame")? + p50("gpu wait").unwrap_or(0.0)) / 1000.0)
 }
 
 /// A line's numeric fields as `name value`, for a note.
@@ -1054,6 +1086,41 @@ mod tests {
         assert_eq!(findings.failed, ["trip r1 first: 2 arrivals held to their bound"]);
         let findings = judge(2, trip, "trip", &tier, &rounds(&[&held("first", 0)]));
         assert_eq!(Verdict::of(&findings), Verdict::NotJudged, "{findings:?}");
+    }
+
+    /// The 30 frames are at the tier's rate (M5 Z2, the orchestrator's ruling): an unpaced run's wait over them
+    /// fails nothing and is shown with its frame time; a run paced on the tier still fails.
+    #[test]
+    fn an_unpaced_runs_waits_are_shown_and_a_paced_runs_judged() {
+        let manifest = manifest();
+        let tier = tier(&manifest, "desktop-high");
+        let streaming = manifest.run("streaming").expect("a run");
+        assert_eq!(streaming.pace("desktop-high"), None, "the timed walk isn't paced");
+        let frame = |row: &str, p50: f64| {
+            format!(
+                "x INFO sapphire::sandbox: fight row phase=\"first\" row=\"{row}\" samples=100 p50_us={p50:.1} \
+                 p95_us={p50:.1} p99_us={p50:.1} worst_us={p50:.1} worst_tick=1 budget_us=None proposed_us=None\n"
+            )
+        };
+        let log = [
+            frame("cpu frame", 7_000.0),
+            frame("gpu wait", 3_000.0),
+            waits("53", 31).replace("drawn", "first"),
+        ]
+        .concat();
+        let findings = judge(2, streaming, "streaming", &tier, &rounds(&[&log]));
+        assert!(!findings.failed.iter().any(|what| what.contains("waits")), "{findings:?}");
+        let shown =
+            findings.notes.iter().find(|note| note.contains("first waits, not judged")).expect("shown");
+        assert!(shown.contains("frames of about 10.0 ms") && shown.contains("p99 53 frames"), "{shown}");
+        assert!(shown.contains("longest open 31"), "{shown}");
+        let paced = manifest.run("counted-streaming").expect("a run");
+        assert_eq!(paced.pace("desktop-high"), Some(60));
+        let findings = judge(2, paced, "counted-streaming", &tier, &rounds(&[&waits("53", 0)]));
+        assert!(
+            findings.failed.contains(&"counted-streaming r1 drawn waits: p99 53 frames".to_owned()),
+            "{findings:?}"
+        );
     }
 
     /// Exit test 6 (M5 Z2, the orchestrator's ruling): a held bench, which its log says logs no fight rows, is

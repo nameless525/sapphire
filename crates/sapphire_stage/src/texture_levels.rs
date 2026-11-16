@@ -423,7 +423,8 @@ struct Wanted {
     /// churn ([`TextureStreamingStats::reraised_bytes`]).
     lowered_at: [u32; MAX_LEVELS],
     /// What [`TextureLevels::plan`] read of it on the renderer at its start, and the finest level it held, for
-    /// the plan's later passes, which change neither (M5 Z2: each looked them up again).
+    /// the plan's later passes, which change neither (M5 Z2: each looked them up again); after the walk of
+    /// [`TextureLevels::follow`], what it left on the renderer, for the count straight after it.
     shape: Option<Shape>,
     lowest: u32,
     /// Its bytes from each top down, for its whole texture's shape.
@@ -889,6 +890,7 @@ impl TextureLevels {
         let mut change = 0;
         wants.retain(|&id, wanted| {
             let Some(texture) = textures.get_mut(&id).map(|held| &mut held.object) else {
+                wanted.shape = None;
                 // Its tail isn't on the renderer: what's held of its levels waits for it while a material
                 // binds it.
                 if wanted.users == 0 {
@@ -939,6 +941,7 @@ impl TextureLevels {
             }
             raised += before.1.saturating_sub(after);
             lowered += after.saturating_sub(before.1);
+            wanted.shape = Some(Shape::of(texture));
             // Nothing binds it and nothing's held of it: it's at its tail, with nothing left to do.
             wanted.users > 0 || !wanted.handles.is_empty() || !wanted.arrived.is_empty()
         });
@@ -948,7 +951,7 @@ impl TextureLevels {
         add_pass(stats, !unlimited, [raised, lowered, started]);
         stats.raised_bytes += raised_bytes;
         stats.reraised_bytes += reraised_bytes;
-        count(wants, asked, textures, streaming, arriving, stats);
+        count(wants, asked, streaming, arriving, stats);
         if !unlimited {
             stats.raising = raising;
             stats.time = stopwatch.elapsed();
@@ -1363,7 +1366,6 @@ fn add_pass(stats: &mut TextureStreamingStats, first: bool, [raised, lowered, st
 fn count(
     wants: &mut BTreeMap<AssetId, Wanted>,
     asked: &BTreeMap<AssetId, u32>,
-    textures: &HashMap<AssetId, Held<GpuTexture>>,
     streaming: Option<TextureStreaming>,
     arriving: bool,
     stats: &mut TextureStreamingStats,
@@ -1377,14 +1379,15 @@ fn count(
     // The views want more than the pool: this frame's plan, made before the count.
     let views_over = streaming.is_some() && stats.wanted > stats.pool;
     for (&id, wanted) in wants.iter_mut() {
-        let Some(texture) = textures.get(&id).map(|held| &held.object) else { continue };
-        let above = texture.above();
+        // What the walk just left on the renderer (M5 Z2: the count looked each texture up again).
+        let Some(texture) = wanted.shape else { continue };
+        let above = texture.above;
         count += 1;
         held_whole += u32::from(wanted.users > 0 && (wanted.whole_users > 0 || wanted.whole_now));
-        wanted.bytes.follow(&texture.whole());
+        wanted.bytes.follow(&texture.whole);
         tails += wanted.bytes.from(above);
         // On the GPU, and levels on their way down to the top planned.
-        let top = texture.top();
+        let top = texture.top;
         let lowest_held = wanted.lowest_held(top);
         resident += wanted.bytes.from(lowest_held);
         let need = match streaming {

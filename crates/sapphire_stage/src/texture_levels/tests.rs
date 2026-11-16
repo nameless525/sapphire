@@ -267,6 +267,25 @@ fn a_binding_pool_lowers_a_surplus_before_a_texture_under_its_need() {
     assert_eq!(tops, [1, 0]);
 }
 
+/// A texture the stage hasn't estimated yet isn't waiting (M5 Z2): its need is its tail until the views have
+/// read it, so the first update of a run, before any frame is drawn, opens no wait for it, of either kind.
+#[test]
+fn an_update_with_no_estimate_opens_no_wait() {
+    let mut levels = TextureLevels::default();
+    levels.bind(A, false);
+    let shape = |_| Some(Shape { whole: whole(), top: ABOVE, above: ABOVE });
+    // No frame recorded yet: the estimate's frame is the one already seen.
+    let coverage = TextureCoverageFrame { frame: 0, textures: &[] };
+    let streaming = TextureStreaming { pool: u64::MAX, raise: u64::MAX };
+    levels.plan(shape, coverage, streaming, u64::MAX);
+    let choice = &mut levels.textures.get_mut(&A).expect("bound").choice;
+    assert_eq!(choice.need, ABOVE, "unread, it needs its tail");
+    let (need, pool_held) = (choice.need, choice.planned > choice.need);
+    let mut stats = TextureStreamingStats::default();
+    count_wait(choice, &mut stats, ABOVE, need, pool_held);
+    assert_eq!(stats.all_waits(), TextureWaits::default(), "no wait opened");
+}
+
 /// One update's count of a texture for [`wait`], with the open waits started over as `count` does.
 fn count_wait(
     choice: &mut Choice,

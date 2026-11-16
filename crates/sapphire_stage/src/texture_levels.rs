@@ -795,6 +795,10 @@ impl TextureLevels {
                     finest_level(coverage.textures[index].uv_per_pixel, whole.width.min(whole.height))
                 });
                 choice.follow(finest, above);
+            } else if choice.target.is_none() {
+                // Not estimated yet (a run's first update, before any frame is drawn): it needs its tail until
+                // the views have read it, so it isn't waiting, nor held by the pool (M5 Z2).
+                choice.need = above;
             }
             // One the pool lowered keeps last frame's plan until it may rise (below), or until it tries its
             // target again. One held whole doesn't: it goes last, so every frame's plan lowers each streamed

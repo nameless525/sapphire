@@ -17,10 +17,11 @@
 #     --differences tests/counts/district-ci-vulkan-lavapipe.txt --refresh <folder>...
 # It keeps each line's reason, and writes a new difference under a placeholder that fails until it has one.
 #
-# Bootstrapped from the scheduled run 43941132946 at f4efa213e (the lane's first). Not here, on purpose:
-# `animation jobs`, which the walks' fixed worker count (`--compute-threads 3`) makes the same on both; and
-# `pipelines set`, +82 on every desktop walk, which no reason explains yet (the walks log `pipelines set by pass`
-# beside their rows to find it), so the lane fails on it until it is explained.
+# Bootstrapped from the scheduled run 43941132946 at f4efa213e (the lane's first); `animation jobs` added from
+# #416's first run. The walks' fixed worker count (`--compute-threads 3`) takes the machine out of that row: what
+# it leaves is the crowd's, so it is in the second block. Not here, on purpose: `pipelines set`, +82 on every
+# desktop walk, which no reason explains yet (each walk's trace, `<walk>.csv` beside its log, has the pipelines
+# set by pass on every frame to find it), so the lane fails on it until it is explained.
 
 # The crowd's characters a frame's view culls (sapphire_stage/src/scene/ambient.rs `place_of` and
 # `animate_ambient`, std atan2, sin and cos; sapphire_render/src/skinning.rs `posed_bounds`; the view cull's
@@ -98,10 +99,13 @@ desktop-low-night | triangles | total -293280 p50 +6574
 # `pace`): a character shows if it or the shadow it casts along the sun is in view, so these differ by hour as
 # well as by tier. More shown on lavapipe means fewer held off screen (their sum is the crowd's), more poses
 # evaluated against fewer held (their sum too), and the shadow and occlusion capsules binned with the posed crowd
-# (`capsule_bins`) follow.
+# (`capsule_bins`) follow. So do the animation jobs: a frame's are `min(characters posed, 2 x (threads + 1))`,
+# and none below twelve posed (sapphire_anim/src/character.rs `evaluate_all`, the crowd's `JOBS_FROM`), so with the
+# threads fixed the row follows how many the levels pose on each frame, which needn't move with the walk's total.
 desktop-high-dusk | ambient characters in view | total +334
 desktop-high-dusk | ambient in the far band | total +214 worst +1 p95 +1 p50 +1
 desktop-high-dusk | ambient in the middle band | total +120
+desktop-high-dusk | animation jobs | total +84
 desktop-high-dusk | capsule bits in fullest cluster | total +25 worst -1 p95 +1 p50 -1
 desktop-high-dusk | capsule bits set | total +1190
 desktop-high-dusk | capsule clusters marked | total +649
@@ -111,6 +115,7 @@ desktop-high-dusk | poses held | total -117
 desktop-high-night | ambient characters in view | total +43
 desktop-high-night | ambient in the far band | total +50 worst +1
 desktop-high-night | ambient in the middle band | total -7
+desktop-high-night | animation jobs | total +58
 desktop-high-night | capsule bits in fullest cluster | total +104 p95 +2
 desktop-high-night | capsule bits set | total +1577
 desktop-high-night | capsule clusters marked | total +762
@@ -119,6 +124,7 @@ desktop-high-night | poses evaluated | total +13 p95 +1
 desktop-high-night | poses held | total -13
 desktop-low-dusk | ambient characters in view | total +295
 desktop-low-dusk | ambient in the far band | total +295 p95 +1
+desktop-low-dusk | animation jobs | total +28
 desktop-low-dusk | capsule bits in fullest cluster | total +25 worst -1
 desktop-low-dusk | capsule bits set | total +1263 p50 +8
 desktop-low-dusk | capsule clusters marked | total +445 p50 -3
@@ -127,6 +133,7 @@ desktop-low-dusk | poses evaluated | total +78
 desktop-low-dusk | poses held | total -78
 desktop-low-night | ambient characters in view | total +12
 desktop-low-night | ambient in the far band | total +12
+desktop-low-night | animation jobs | total -7
 desktop-low-night | capsule bits in fullest cluster | total +104 p95 +1
 desktop-low-night | capsule bits set | total +1618 p50 -1
 desktop-low-night | capsule clusters marked | total +501

@@ -1587,3 +1587,42 @@ fn a_trip_leaves_the_mesh_pool_at_its_floor() {
         assert_eq!(walk.renderer.stats().mesh_pool.retired, 0);
     }
 }
+
+/// A stand's "zone's grid" part waits for no read (M5 X3): the part before it, which finds the zone, asks for
+/// the zone's probe grid and sky material too, so their reads land while a boot screen draws between the two,
+/// and lighting the zone only mounts and uploads what has come. It waited on the frame's thread for both, about
+/// 11 ms of a 22 to 27 ms boot frame on an M5.
+#[test]
+#[ignore = "needs a GPU"]
+fn lighting_a_zone_stood_in_waits_for_no_read() {
+    use sapphire_core::frame_loads::{self, InPlay};
+
+    let looks = [RoomLook { grid: Some(vec![12.0]), sky: true, ..RoomLook::default() }];
+    let mut walk = Walk::dressed_rooms(SMALL, &looks, no_limits());
+    let figure = walk.scene.figure();
+    let show = ZoneShow {
+        stem: "room_0",
+        at: "16, 0, 16, 0",
+        walk: None,
+        settings: small_settings(),
+        pose: RenderPose::default(),
+        figure,
+    };
+    let standing = walk.scene.begin_stand_in_zone(show, &mut walk.content).expect("the zone found");
+    // The boot screen's frame between the parts: what was asked for lands, off the frame's thread.
+    let (server, _) = walk.content.streaming_parts();
+    while server.wait(Duration::from_secs(5)) {}
+
+    let start = frame_loads::loads();
+    let in_play = InPlay::begin();
+    let standing =
+        walk.scene.light_zone(standing, &mut walk.content, &mut walk.renderer, &walk.gpu).expect("lit");
+    drop(in_play);
+    let loads = frame_loads::loads();
+    assert_eq!(loads, start, "lighting the zone read, decoded or built nothing on the frame's thread");
+    assert!(walk.content.zone_probe_grid().is_some(), "its grid on the renderer");
+    assert!(walk.content.zone_sky_material().is_some(), "and its sky");
+    walk.scene
+        .finish_stand_in_zone(standing, &mut walk.content, &mut walk.renderer, &walk.gpu)
+        .expect("the zone stood in");
+}

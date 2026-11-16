@@ -984,6 +984,17 @@ impl HeldGraph {
     }
 }
 
+/// A zone's look asked for a part before it's lit ([`Content::ask_for_zone_look`]): its handles, which keep it
+/// loading. Never read: [`Content::begin_zone`] asks for the same and takes on what has come.
+struct AskedLook {
+    #[expect(dead_code, reason = "held so that what it was asked for keeps loading")]
+    probes: Option<Handle<ProbeGrid>>,
+    #[expect(dead_code, reason = "held so that what it was asked for keeps loading")]
+    sky: Option<Handle<Material>>,
+    #[expect(dead_code, reason = "held so that what it was asked for keeps loading")]
+    reflections: Option<Handle<ReflectionProbes>>,
+}
+
 /// The asset server, what it has uploaded, and the character it keeps loaded.
 ///
 /// Graph source revisions belong to this Content lifetime. Replacing the whole asset owner
@@ -1037,6 +1048,8 @@ pub struct Content {
     zone_sky: Option<Handle<Material>>,
     /// The zone on stage's reflection probes, if it has any (M5 L3), which the renderer holds once uploaded.
     zone_reflections: Option<Handle<ReflectionProbes>>,
+    /// What [`Self::ask_for_zone_look`] asked for, held loading until [`Self::begin_zone`] takes it on.
+    asked_look: Option<AskedLook>,
     /// Zones' reflection probes are asked for; off, none is loaded and the sky alone is reflected
     /// (`--no-reflection-probes`, which the scenes captured before them keep).
     reflection_probes: bool,
@@ -1437,6 +1450,7 @@ impl Content {
             texture_raise: sapphire_render::DEFAULT_MIP_BUDGET,
             zone_sky: None,
             zone_reflections: None,
+            asked_look: None,
             reflection_probes: true,
             zone_prewarms: Vec::new(),
             zone_prewarm_time: std::time::Duration::ZERO,
@@ -2140,8 +2154,37 @@ impl Content {
         Ok(self.preload_zone(zone, focus, settings, renderer, gpu))
     }
 
+    /// Asks for what zone `zone` (found, [`Self::find_zone`]) is lit and backed by, its probe grid, its sky
+    /// material and its reflection probes, without waiting for any of them: a stand's part before
+    /// [`Self::begin_zone`]'s, so that their reads and decodes land while a boot screen draws between the two, and
+    /// lighting the zone only mounts and uploads what has come (M5 X3: it waited about 11 ms on the frame's
+    /// thread for them). What's asked is held loading until `begin_zone` takes it on, and let go if another zone
+    /// is asked for. Nothing else changes: `begin_zone` asks for the same, and waits for what hasn't come.
+    pub fn ask_for_zone_look(&mut self, zone: &Handle<Zone>) -> Result<(), AppInitError> {
+        let Some(read) = self.server.get(zone) else {
+            return Err(AppInitError::msg(format!("zone {} isn't found yet", zone.id())));
+        };
+        let presentation = &read.presentation;
+        let probes = presentation.probes.as_ref().copied();
+        let sky = presentation.sky.as_ref().copied();
+        let reflections = presentation.reflections.as_ref().copied().filter(|_| self.reflection_probes);
+        let server = &mut self.server;
+        let critical = LoadPriority::Critical;
+        let asked = AskedLook {
+            probes: probes.map(|id| server.load_with(id, critical)).transpose().map_err(AppInitError::msg)?,
+            sky: sky.map(|id| server.load_with(id, critical)).transpose().map_err(AppInitError::msg)?,
+            reflections: reflections
+                .map(|id| server.load_with(id, critical))
+                .transpose()
+                .map_err(AppInitError::msg)?,
+        };
+        self.asked_look = Some(asked);
+        Ok(())
+    }
+
     /// [`Self::open_zone`]'s first half, which a boot stands on a frame of its own (M4 H4): the pack mounted and
-    /// what its meshes draw through built, and the zone and its probe grid loaded and on `renderer`.
+    /// what its meshes draw through built, and the zone and its probe grid loaded and on `renderer`. What
+    /// [`Self::ask_for_zone_look`] asked for it first is taken on as it is, waited for only if it hasn't come.
     pub fn begin_zone(
         &mut self,
         id: AssetId,
@@ -2209,6 +2252,8 @@ impl Content {
         self.gpu.wanted_reflections = reflections;
         self.gpu.follow_wanted_grid(&self.server, self.zone_probes.as_ref(), renderer);
         self.gpu.follow_wanted_reflections(renderer);
+        // What was asked for it is held by the zone's own handles now; another zone's goes.
+        self.asked_look = None;
         Ok(zone)
     }
 

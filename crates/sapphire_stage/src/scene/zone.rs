@@ -629,8 +629,9 @@ impl Scene {
     }
 
     /// [`Self::stand_in_zone`]'s first part, which a boot stands on a frame of its own (M4 H4): the character and
-    /// the camera placed, and the zone's day and light rigs read. [`Self::light_zone`] is the next, on a frame of
-    /// its own since M4 H8: together they held a boot's frame 22 ms on an M5.
+    /// the camera placed, the zone's day and light rigs read, and its probe grid, sky and reflections asked for
+    /// ([`Content::ask_for_zone_look`], M5 X3). [`Self::light_zone`] is the next, on a frame of its own since M4
+    /// H8: together they held a boot's frame 22 ms on an M5.
     pub fn begin_stand_in_zone(
         &mut self,
         show: ZoneShow<'_>,
@@ -638,6 +639,8 @@ impl Scene {
     ) -> Result<ZoneStanding, AppInitError> {
         let ZoneShow { stem, at, walk, settings, pose, figure } = show;
         let handle = content.find_zone(stem)?;
+        // Its grid, sky and reflections load while a boot screen draws, so lighting it waits for none (M5 X3).
+        content.ask_for_zone_look(&handle)?;
         let zone = content.read(&handle).expect("a zone just loaded");
         let (position, yaw) = match zone.simulation.spawner(sapphire_core::Name::new(at)) {
             Some(spawner) => (Vec3::from(spawner.position()), spawner.yaw()),
@@ -686,7 +689,8 @@ impl Scene {
     }
 
     /// [`Self::stand_in_zone`]'s second part, after [`Self::begin_stand_in_zone`]: what the zone's meshes draw
-    /// through built, and its probe grid on `renderer` (M4 H8).
+    /// through built, and its probe grid on `renderer` (M4 H8), from what the first part asked for: once that has
+    /// come, it reads nothing on the frame's thread (M5 X3).
     pub fn light_zone(
         &mut self,
         standing: ZoneStanding,

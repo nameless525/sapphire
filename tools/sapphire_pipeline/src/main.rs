@@ -47,12 +47,15 @@ Usage:
       Write every figure spec's model and maps (each <name>.figure.ron in --specs, such as
       tools/figures) under the content directory --out, in the folder each spec names. Missing
       files only, as gen-samples, unless --force.
-  sapphire_pipeline gen-bench --bench <DIR> --preset <PRESET> [--cook <COOK>] --out <DIR>
+  sapphire_pipeline gen-bench --bench <DIR> --preset <PRESET> [--cook <COOK>] [--cell-levels on|off]
+                             --out <DIR>
       Write the benchmark's sources that the documents under --bench (bench/) describe, at a preset's
       scale (ci, budget or double), each with its sidecar, into --out: a source tree for a cook under target/,
       never committed. --cook (default desktop) is the cook the tree is for: the phones' (mobile) district
       draws four materials a cell where the desktop's draws sixteen. Files an earlier run left in --out that
       this one doesn't write are removed; --out must be empty or a tree gen-bench wrote for the same cook.
+      --cell-levels off cooks the district's cells with one level, not the document's (the tree the
+      benches at scale measure M5 D6 against).
   sapphire_pipeline gen-kinds --bench <DIR> --preset <PRESET> --specs <DIR> --content <DIR> --out <DIR>
       Link the content directory --content into --out and write over it the figures --bench's
       kinds.ron makes again at a preset's scale, from their specs in --specs (tools/figures), under
@@ -166,6 +169,7 @@ enum Command {
         bench: PathBuf,
         preset: Preset,
         cook: Cook,
+        cells: bench::CellLevels,
         out: PathBuf,
     },
     GenKinds {
@@ -269,8 +273,8 @@ fn run(command: Command) -> anyhow::Result<()> {
             })?;
             print_generated(&generated, "gen-figures");
         }
-        Command::GenBench { bench, preset, cook, out } => {
-            let generated = bench::generate(&bench, preset, cook, &out).with_context(|| {
+        Command::GenBench { bench, preset, cook, cells, out } => {
+            let generated = bench::generate_with(&bench, preset, cook, cells, &out).with_context(|| {
                 format!(
                     "failed to generate the {preset} benchmark for {cook} from {} into {}",
                     bench.display(),
@@ -590,6 +594,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             bench: options.required("--bench")?,
             preset: options.required("--preset")?,
             cook: options.value("--cook")?.unwrap_or(Cook::Desktop),
+            cells: options.value("--cell-levels")?.unwrap_or_default(),
             out: options.required("--out")?,
         },
         "gen-kinds" => Command::GenKinds {
@@ -736,6 +741,7 @@ mod tests {
                 bench: "bench".into(),
                 preset: Preset::Budget,
                 cook: Cook::Desktop,
+                cells: bench::CellLevels::On,
                 out: "src".into()
             }
         );
@@ -746,8 +752,16 @@ mod tests {
                 bench: "bench".into(),
                 preset: Preset::Ci,
                 cook: Cook::Mobile,
+                cells: bench::CellLevels::On,
                 out: "src".into()
             }
+        );
+        let whole =
+            ["gen-bench", "--bench", "bench", "--preset", "ci", "--cell-levels", "off", "--out", "src"];
+        assert!(matches!(parse(&whole).unwrap(), Command::GenBench { cells: bench::CellLevels::Off, .. }));
+        assert!(
+            parse(&["gen-bench", "--bench", "b", "--preset", "ci", "--cell-levels", "x", "--out", "s"])
+                .is_err()
         );
         assert!(parse(&["gen-bench", "--bench", "bench", "--preset", "huge", "--out", "src"]).is_err());
         assert_eq!(

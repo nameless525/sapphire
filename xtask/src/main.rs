@@ -208,13 +208,14 @@ Commands:
       costs on and off beside exit test 3, on each tier,
       run from bench/scale.ron by sapphire_testkit scale, all under target/bench-scale/<commit>/.
       prepare cooks both cooks of content/ (past ci, with the kinds part, as bench-content does) and
-      of the preset's district (the manifest's, budget: check the disk first), puts each pair together, builds the release dev sandbox and records
+      of the preset's district (the manifest's, budget: check the disk first), with its cells' levels
+      and without (D6's pair), puts each content and district together, builds the release dev sandbox and records
       the crowds' replays. plan prints the sittings (each at most ten minutes, a pair's sides
       alternating), the minutes by tier and what is left. run runs the next sitting not yet done
       (--sitting <n> that one, --counts the runs that read counts alone) and is resumable: a timed
       sitting only under `slot --all --load 8` on a quiet machine. report writes report.md, each
-      tier's rows beside their budgets and beside --baseline's logs (B4's), and fails on what is
-      missing or differs between rounds. --smoke runs everything at 200 frames and 320x180 into
+      tier's rows beside their budgets and beside --baseline's logs (B4's), a verdict for each exit
+      test and tier, and fails on a failed verdict or on what is missing or differs between rounds. --smoke runs everything at 200 frames and 320x180 into
       smoke/, which proves the batch runs and parses and measures nothing.
   store-shots [--scene-timeout <seconds>]
       Draw the stores' screenshots into target/store-shots/<store>/<size>/<language>/, which is

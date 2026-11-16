@@ -274,7 +274,10 @@ M5's batch (Z1) measures every row exit tests 1, 2, 5, 6 and 7 ask for, on each 
 packages' costs on and off beside exit test 3: B4's
 eight walks of the budget district by their exact flags, exit test 1's walk under a running day with the
 crowd about, the night held wet against dry, the streamer under a binding pool, the crowd held at its
-densest and walked, the cast, each package's on/off pair and the counting walks. The runs are data,
+densest and walked, the cast, each package's on/off pair and the counting walks: the tour at dusk, at
+night dry and wet, under the binding pool, and the district's fight (M5 Z2). A counting walk's end closes
+the district and logs the mesh pool against its floor (`zone closed`), exit test 2's floor where the district
+has no exit. The runs are data,
 [`bench/scale.ron`](../bench/scale.ron), whose header says what each field means; adding a run is one more
 entry there. The phone tiers draw onto a phone's panel, 2532x1170, their scenes capped at 740 and 590 rows
 and upscaled, as they ship (B4's baseline drew them at the scenes' size, which the report says beside it), and
@@ -283,7 +286,7 @@ whole, so the district's textures come to twice it. Everything goes under `targe
 which is never committed:
 
 ```sh
-cargo xtask bench-scale prepare            # cook both cooks with the kinds, and the budget district; build; replays
+cargo xtask bench-scale prepare            # both cooks with the kinds, the budget district with and without its cells' levels; build; replays
 cargo xtask bench-scale plan               # the sittings, the minutes by tier, what is left
 cargo xtask bench-scale run --counts       # the counting walks, in any slot: no time is read
 cargo xtask bench-scale run                # the next timed sitting, with nothing else running
@@ -291,7 +294,8 @@ cargo xtask bench-scale report --baseline <dir>   # report.md beside the logs
 ```
 
 `prepare` takes gigabytes and most of an hour cold (two budget cooks of about 1.1 GB each, beside
-`target/bench/`'s cache): check the disk first. Past `ci` its content is the kinds part's (M5 C12b,
+`target/bench/`'s cache, and each again with the cells cooked at one level for D6's pair, which only the
+zone's cell meshes tell apart): check the disk first. Past `ci` its content is the kinds part's (M5 C12b,
 [bench/README.md](../bench/README.md)'s "The kinds"): `content/` with the party's kinds and the wave's made
 again at the preset's rows under their shipped IDs, about 20 s a cook beside a warm content cache, and
 0.8 GB of loose files and packs. `cargo xtask bench-content --preset budget --with-content [--cook mobile]`

@@ -201,9 +201,14 @@ fn run_unit(
     let trace = paths.out.join(format!("{}.csv", unit.name));
     let replays = paths.replays.to_string_lossy();
     let args = manifest.args(unit, smoke, &replays, &trace.to_string_lossy());
-    let content = match tier.cook {
+    let tier_content = match tier.cook {
         Cook::Desktop => &paths.desktop,
         Cook::Mobile => &paths.mobile,
+    };
+    // A variant may mount another cook beside the tier's (D6's pair: the cells with one level, M5 Z2).
+    let content = match unit.variant {
+        Some(variant) => manifest.runs[unit.run].variants[variant].content_dir(tier_content),
+        None => tier_content.clone(),
     };
     // A timed unit stops within its sitting's hold; one of counts alone gets room for a slow machine.
     let stated = u64::from(unit.seconds);

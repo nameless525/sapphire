@@ -48,11 +48,11 @@ M5's batch runs nothing on either. M4's recipes for a private Simulator and the 
 
 The test (§1): "A scripted walk of the benchmark district: dusk into night, dry into wet, through its crowd, ending in an encounter of twelve enemies against a party of three. With the view at §3.4's counts (2,500 draws and 64 lights on a desktop, 700 and 8 on a phone), every row of §3.2 and §3.3 is at or under its budget at each tier's settings."
 
-No single run walks all of that. Three timed runs stand for it (a ruling, and a deviation the report prints): `exit-walk` (the tour under a running day, `--day-length 935`, dusk into night, the crowd on), `night-weather` (the night held dry against `--weather 0.8,0.4`), and `district-fight` (the party of three against the twelve, at night). `tour-dusk` and `tour-night` are B4's walks, judged beside them.
+No single run walks all of that. Three timed runs stand for it (a ruling, and a deviation the report prints): `exit-walk` (the tour under a running day, `--day-length 935`, dusk into night, the crowd on), `night-weather` (the night held dry against `--weather 0.8,0.4`), and `district-fight` (the party of three against the twelve, at night). `tour-dusk` and `tour-night` are B4's walks, judged beside them. By counts, each has its own (M5 Z2): `counted` at dusk, `counted-night` held dry and held wet, and `counted-fight`, the district's encounter with a frame in seven drawn.
 
 **What proves it:**
 
-- **Draws and lights, counted (this Mac, any slot).** The ruling: §3.4's draw budget is on the main view's surface draws after culling (`main draws`), read from the exact counted walks, never the timed ones. `cargo xtask bench-scale run --counts` walks `counted` (the tour at dusk, a frame in seven drawn, the crowd on, whole textures) on every tier. Read in each `logs/counted.<tier>.r<n>.log`, or the report's counts table for `counted`:
+- **Draws and lights, counted (this Mac, any slot).** The ruling: §3.4's draw budget is on the main view's surface draws after culling (`main draws`), read from the exact counted walks, never the timed ones. `cargo xtask bench-scale run --counts` walks `counted` (the tour at dusk, a frame in seven drawn, the crowd on, whole textures), `counted-night` (the same at night, its `dry` and `wet` variants as `night-weather`'s) and `counted-fight` (the district's encounter at night, a frame in seven drawn) on every tier. Read in each `logs/counted.<tier>.r<n>.log`, `logs/counted-night.<tier>.<dry|wet>.r<n>.log` and `logs/counted-fight.<tier>.r<n>.log`, or the report's counts tables; the verdict reads all three:
 
   ```
   count row phase="drawn" row="main draws" frames= p50= p95= worst= … budget=Some(2500) over_p50= over_worst=
@@ -67,8 +67,8 @@ No single run walks all of that. Three timed runs stand for it (a ruling, and a 
 
 | | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
 |---|---|---|---|---|
-| `main draws` on `counted`, every round | `over_worst=false` (≤ 2,500) | `over_worst=false` (≤ 2,500) | `over_worst=false` (≤ 700) | `over_worst=false` (≤ 700) |
-| `lights` on `counted` | worst ≤ 64 | worst ≤ 64 | worst ≤ 8 | worst ≤ 8 |
+| `main draws` on `counted`, `counted-night` (both) and `counted-fight`, every round | `over_worst=false` (≤ 2,500) | `over_worst=false` (≤ 2,500) | `over_worst=false` (≤ 700) | `over_worst=false` (≤ 700) |
+| `lights` on the same | worst ≤ 64 | worst ≤ 64 | worst ≤ 8 | worst ≤ 8 |
 | `cpu frame`, each timed run | p95 ≤ 8 ms | p95 ≤ 12 ms | p95 ≤ 12 ms | p95 ≤ 22 ms |
 | `gpu frame`, each timed run | p95 ≤ 12 ms | p95 ≤ 14 ms | p95 ≤ 13 ms | p95 ≤ 26 ms |
 | §3.2's stage rows and §3.3's pass rows, each timed run | no adopted column: shown beside B4's proposed figure, fails nothing | each row's p95 at or under its Desktop-Low figure | no adopted column: shown beside B4's proposed figure, fails nothing | each row's p95 at or under its Mobile-Low figure |
@@ -105,7 +105,14 @@ The test (§1): "The district's textures come to twice the tier's pool. Through 
 
   The report's line "**A surface newly in view at its level within 30 frames (exit test 2):**", a bound from the trace's `worst_texture_debt` column, stays beside it as a note.
 - **Nothing on the frame's thread.** Counted: the `frame thread loads` row (budget 0) and the `zone walk` line's `frame_thread_loads=`, `_reads=`, `_decodes=` and `_builds=`.
-- **The trip, timed** (`trip`'s section): "at the lap's last frame the mesh pool is back at its floor". The run is a stand-in, which its section says, so it is read and never a pass of a trip from the district.
+- **The pool's floor, counted** (M5 Z2). The district has no exit, so a trip from it can't be played; the counting walk stands for it (a deviation the report prints): at its end, after every count row is logged, it closes the zone and unmounts its pack, as a trip leaves a zone, asks the mesh pool to give back what the zone held, as a trip's arrival does, and draws until the pool is at its floor or 120 frames have passed. It logs:
+
+  ```
+  zone closed unmounted="unmounted" frames= at_floor= capacity_before= floor_before= capacity= floor= in_use= meshes_freed=
+  ```
+
+  The verdict reads it on `counted-streaming`, every round: it fails on no line, a pack that didn't unmount, or `at_floor=false` (a capacity over its floor). On the `ci` district the pool came back in two frames, from 84 MiB to 6.75 MiB on Desktop-Low and from 46 MiB to 3.75 MiB on Mobile-High.
+- **The trip, timed** (`trip`'s section): "at the lap's last frame the mesh pool is back at its floor", the ward's zone-trip, read beside the district's close and judged on nothing.
 
 **Passes when**, on each tier (desktop pools 1280 MiB on both desktop tiers, phones 331 MiB):
 
@@ -117,7 +124,8 @@ The test (§1): "The district's textures come to twice the tier's pool. Through 
 | `texture waits`, each phase, each run (from the waits counter) | `p99_frames` ≤ 30 and `longest_open_frames` < 30 | the same | the same | the same |
 | `bytes decoded waiting` worst | ≤ 256 MiB | ≤ 256 MiB | ≤ 64 MiB | ≤ 64 MiB |
 | `frame thread loads` worst | 0 | 0 | 0 | 0 |
-| `trip` | back at its floor (stand-in: read) | the same | the same | the same |
+| `zone closed`, `counted-streaming`, every round | `unmounted`, `at_floor=true` | the same | the same | the same |
+| `trip` | back at its floor (read beside) | the same | the same | the same |
 
 A `p99_frames` of `32+` fails; `-` (no wait completed) passes. §3.1's figures are taken at 1,024 MiB a GB (10,240 / 6,144 / 2,867 / 1,638 MiB). On unified memory the process's footprint holds what the GPU allocates too, so it stands for RAM and VRAM together against §3.1's RAM figure; a discrete GPU's VRAM (6 GB and 3 GB on the desktops) is owed to one.
 
@@ -149,6 +157,7 @@ The test (§1): "Sorting, instancing, culling, levels of detail, streaming and t
   | Debug views (D5, Z3) | `render::scale_views::with_no_view_shown_every_tier_draws_what_it_draws_without_them` | exact |
 
   The `zone-district-*`, `lod-*`, `lod-crowd-*`, `debug-levels*`, `debug-runs`, `debug-culling`, `debug-textures` and `upscale-*` goldens hold the same work in a picture.
+- **What each optimization costs and saves, timed** (the orchestrator's sittings): the batch's pairs, each package's on against its off, read beside each other in each tier's section and judged on nothing: `lods`, `character-lods`, `character-lods-crowd`, `draw-runs`, `shadow-cache`, `capsule-bins`, `capsule-bins-hub`, `upscaler`, and D6's `cell-levels` (M5 Z2): the district's cells cooked with their levels against cooked with one. Its `off` variant mounts the content `prepare` puts beside each cook's, `content/<preset>/<cook>-no-cell-levels/`, cooked from `gen-bench --cell-levels off`, whose tree differs from the other only in the zone's sidecar; read `main triangles`, `shadow triangles`, `mesh pool capacity` and `mesh pool floor` beside `gpu main` and `gpu shadows`.
 - **At each switch.** `look_tiers::lines_and_two_tone_edges_hold_at_every_tier_and_scale` holds the lines and the two-tone edge at every tier and render scale; `cargo test -q -p sapphire_render --lib view_cull::tests::a_camera_held_at_a_switch_never_flaps` holds that a level doesn't flap. **Across a level switch:** `cargo test -p sapphire_render --test gpu render::level_switches:: -- --ignored --test-threads=1` walks every step of the chains the shipped characters (D5), static meshes (D4) and cells (D6) cook with, on every tier, through each switch's hysteresis, and holds the lines and the two-tone edge on both sides of the switch to level 0 and to each other with the look test's gates (`a_characters_line_and_two_tone_edge_hold_at_each_switch`, `a_static_meshs_two_tone_response_holds_at_each_switch`, `a_cells_two_tone_response_holds_at_each_switch`). D5's one-off measure (`--lods 0` against `--lods 1`: line width within 1.9%, strength within 1.2%, the two-tone edge within 0.1%) stands beside it.
 
 **Passes when**, on every tier: every golden `ok` on Metal and green in CI's lavapipe and WARP jobs; every moved reference named by a look package's row; every test above passes; the switch clause as above. The tiers are covered within each test (`on_every_tier`) and by the `tier-*` scenes.
@@ -174,7 +183,20 @@ The test (§1): "Reflection probes with wet streets, effect meshes with distorti
 
 "Nothing built or dispatched while it's off" is held by `ambient::nothing_is_built_or_run_for_work_nothing_reads` and `scene_prepass::mobile_low_builds_none_of_a_pass_it_never_runs` (`cargo test -p sapphire_render --test gpu --locked -q -- --ignored --test-threads=1 <filter>`), and by each package's own off test named in its row.
 
-The budget rows are timed by exit test 1's sittings (`gpu effects`, `gpu main`, `gpu post`, `gpu shadows`); the sandbox has no row of its own for reflections, decals, depth of field or shafts, so a feature's cost is the package's own measurement, cited from its row.
+**Each part's figure** (M5 Z2). The sandbox times §3.3's passes, not features, so a part's cost is the difference its switch makes in the pass that holds it, where a switch exists, and its package's own measurement where not. The batch carries two such pairs today (the wet streets, and the capsules of characters shadowing each other); the others are the commands below, run as a pair on the stage named (a run each way, `--bench 3800 --tier <tier>`, timed, the orchestrator's) or cited from the package's row:
+
+| Part | §3.3 row | The timed row that holds it | The switch | Where the figure comes from |
+|---|---|---|---|---|
+| Reflection probes, wet streets | Reflection probes (inside forward opaque and AO, not in the total); Forward opaque | `gpu main`, `gpu clustering and ao` | `--no-reflection-probes`; `--weather dry` against `--weather 0.8,0.4` | The wet streets: `night-weather`'s `dry` and `wet`, in the batch. The probes: L3's measurement (0.06 ms in forward opaque, 0.12 in the ambient pass on a frame that composes one), since the batch has no probes-off pair; `--no-reflection-probes` on the zone stage makes one |
+| Effect meshes, distortion | Particles, distortion | `gpu effects` (the effects' pass and their bends) | `--distortion on\|off` with `--cues` or with `--vfx distort-full`; `--vfx mesh-eight` against none | L5's and L6's measurement (bends 0.10 to 0.21 ms at 1080p): the batch's fights run without `--cues`, so nothing in it fires effects; `district-fight` with `--cues`, distortion on and off, would make the pair |
+| Ground decals | Ground decals (proposal, inside forward opaque) | `gpu main` | `--decals off` with `--cues`; `--vfx decal-full` against none | L7's measurement: no run in the batch lays decals, and the row is a proposal, so it would be shown and fail nothing |
+| Depth of field | Depth of field (desktop, close-ups and cutscenes only, not in the total) | none of its own: the post chain's passes | `--focus <distance>,<sharp>,<near>,<far>,<blur>` against none, on a desktop tier | L8's measurement (1.2 ms): no walk or fight in the batch holds a focus, since only a close-up or a cutscene draws it |
+| The effects pack, cut-ins | Bloom + tonemap + LUT, screen effects | `gpu post` | `--post-effect <preset>` against none; `--cutins off` with `--cues` | L9's and L10's measurements: the batch's runs push no screen effect and fire no cue, so `gpu post` holds the chain without them |
+| Dissolves, driven emission | Forward opaque | `gpu main` | `--dissolve 0.5` against none | L11's measurement: a material's drive changes its shading, not a pass, and no run in the batch drives one |
+| Characters shadowing each other | Shadows; Forward opaque | `gpu shadows`, `gpu main` | `--character-shadows own\|others`; `--capsule-bins on\|off` | `capsule-bins` and `capsule-bins-hub`, in the batch (the capsules' share); the shadow maps' share is L12's and L16's measurement |
+| Light shafts | Bloom + tonemap + LUT (the fused pass) | `gpu post` | `--shafts on\|off` | L13's measurement: the district's day draws no shafts key, so a pair there would measure nothing |
+
+Where the table cites a package's measurement, that measurement is the part's figure against its row (the spec's §3.3 notes and the package's As built row hold it); a pair in the batch makes it the batch's.
 
 **Passes when,** for each of the eight: its goldens exist on all three backends and pass; its row states a behaviour on each of the four tiers; its cost, as its row measured it, is at or under its §3.3 row on Desktop-Low and Mobile-Low; a recipe authors it; its off test passes. A checklist, one line a feature, in the run's table.
 
@@ -234,13 +256,13 @@ The test (§1): "`zero_hitches` plays the district's walk too: no first use, no 
 
 **What proves it:**
 
-- **The district's walk, counted** (`cargo xtask bench-scale run --counts`): `counted` and `counted-streaming` on every tier. Read the `zone walk` line of each log, `… prewarmed= first_use= rebuilt= warmed_off_frame= frame_thread= frame_waits=`, and the report's "Pipelines built after the load (exit test 7, by counts):". The report fails on a pipeline built after the load, and its verdict fails exit test 7 on any of `first_use`, `rebuilt`, `frame_thread` or `frame_waits` above 0. That `zero_hitches` doesn't play the district is a ruling, printed as a deviation: these walks and B5's fight test stand in.
+- **The district's walk, counted** (`cargo xtask bench-scale run --counts`): `counted`, `counted-streaming` and `counted-night` (both variants) on every tier, and `counted-fight`, whose `fight pipelines` line reads the same counts. Read the `zone walk` line of each log, `… prewarmed= first_use= rebuilt= warmed_off_frame= frame_thread= frame_waits=`, and the report's "Pipelines built after the load (exit test 7, by counts):". The report fails on a pipeline built after the load, and its verdict fails exit test 7 on any of `first_use`, `rebuilt`, `frame_thread` or `frame_waits` above 0. That `zero_hitches` doesn't play the district is a ruling, printed as a deviation: these walks and B5's fight test stand in.
 - **The district's fight, cold and warm** (Metal here): `cargo test -p sapphire_sandbox --features dev --locked --test replays -- --ignored --test-threads=1 the_district_encounter_plays_with_no_hitch_cold_and_warm`, Desktop-High and Mobile-Low, cold then warm, crowd on and off; each `fight pipelines` row must read `first_use=0 frame_thread=0 frame_waits=0 rebuilt=0`. It needs the `ci` district ("Before anything").
 - **The timed runs' pipelines** (the orchestrator's sittings): `exit-walk`, `district-fight` and `party-kinds` read Pipelines too.
 - **The ward, as in M4.** `cargo test -p game_app --features dev --locked --test zero_hitches -- --ignored` here, cold and warm; CI's `App tests (vulkan-lavapipe, walk-desktop-low | walk-mobile-low | walk-mobile-high)` by counts. `zero_hitches` plays the Lantern Ward, not the district; the counting walks and the fight's rows stand in on the district.
 - **A texture level.** Under the hard pool, `counted-streaming`'s `frame_waits` counts frames that waited on a pipeline; a frame that drew a lower texture level while a higher one loaded is a wait in exit test 2's line, not a stall.
 
-**Passes when,** on every tier: every `zone walk` line on `counted` and `counted-streaming` reads `first_use=0 rebuilt=0 frame_thread=0 frame_waits=0`; the report lists no pipeline built after a load; `the_district_encounter_plays_with_no_hitch_cold_and_warm` passes (it runs Desktop-High and Mobile-Low; the counted walks cover all four); `zero_hitches` passes here and in CI's three lanes.
+**Passes when,** on every tier: every `zone walk` line on `counted`, `counted-streaming` and `counted-night`, and `counted-fight`'s `fight pipelines` line, reads `first_use=0 rebuilt=0 frame_thread=0 frame_waits=0`; the report lists no pipeline built after a load; `the_district_encounter_plays_with_no_hitch_cold_and_warm` passes (it runs Desktop-High and Mobile-Low; the counted walks cover all four); `zero_hitches` passes here and in CI's three lanes.
 
 **Can't prove here:** a phone driver's cold compile, as in M4; a desktop GPU's driver cache on Windows and Linux. Owed to a maintainer with the devices.
 
@@ -264,7 +286,7 @@ The date, the commit, the machine (model, macOS, Xcode), the load, and how the t
 
 | Exit test | Tier | What was read | Measured | Budget | Verdict | Evidence |
 |---|---|---|---|---|---|---|
-| 1, `main draws` | Desktop-High | `counted`, worst | | 2,500 | | `logs/counted.desktop-high.r1.log` |
+| 1, `main draws` | Desktop-High | `counted`, `counted-night`, `counted-fight`, worst | | 2,500 | | `logs/counted.desktop-high.r1.log` and beside it |
 | 1, `main draws` | Desktop-Low | | | 2,500 | | |
 | 1, `main draws` | Mobile-High | | | 700 | | |
 | 1, `main draws` | Mobile-Low | | | 700 | | |
@@ -273,7 +295,7 @@ The date, the commit, the machine (model, macOS, Xcode), the load, and how the t
 | 1, §3.2 / §3.3 rows | Desktop-Low, Mobile-Low | | | §3.2, §3.3 | | |
 | 2, pool and process | each tier | | | the run's pool; §3.1 | | |
 | 2, `texture waits` | each tier, each phase | | | 30 frames | | |
-| 2, decoded waiting; trip | each tier | | | 256 / 64 MiB; the floor | | |
+| 2, decoded waiting; the pool's floor | each tier | `counted-streaming`'s `zone closed` | | 256 / 64 MiB; the floor | | |
 | 3 | all | goldens, on/off tests, switch | | | | |
 | 4 | all | eight features' checklist | | | | |
 | 5 | each tier | Cast rows; tests | | §3.2, §3.3 | | |

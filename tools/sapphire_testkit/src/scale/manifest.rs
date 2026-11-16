@@ -119,6 +119,25 @@ pub enum Read {
 pub struct Variant {
     pub name: String,
     pub args: Vec<String>,
+    /// Another cook of the same content to mount, beside the tier's: its folder is the tier's cook's with
+    /// `-<content>` (`desktop-no-cell-levels`, M5 Z2), which `cargo xtask bench-scale prepare` makes. `None`
+    /// mounts the tier's.
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+impl Variant {
+    /// The content folder this variant mounts, given the tier's.
+    pub fn content_dir(&self, tier: &std::path::Path) -> std::path::PathBuf {
+        match &self.content {
+            None => tier.to_owned(),
+            Some(beside) => {
+                let name =
+                    tier.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                tier.with_file_name(format!("{name}-{beside}"))
+            }
+        }
+    }
 }
 
 /// One run of the batch.
@@ -275,10 +294,11 @@ impl ScaleBench {
             }
             let mut variants = BTreeSet::new();
             if run.variants.len() == 1
-                || run
-                    .variants
-                    .iter()
-                    .any(|variant| !name_ok(&variant.name) || !variants.insert(&variant.name))
+                || run.variants.iter().any(|variant| {
+                    !name_ok(&variant.name)
+                        || !variants.insert(&variant.name)
+                        || variant.content.as_deref().is_some_and(|content| !name_ok(content))
+                })
             {
                 return Err(format!("{what}: a pair has two variants or more, each named once"));
             }
@@ -597,6 +617,21 @@ mod tests {
         assert!(args.ends_with(&["--lods".to_owned(), "on".to_owned(), "/r/a".to_owned()]));
         let smoke = manifest.args(&unit, Some(SMOKE), "/r", "/t.csv");
         assert_eq!(smoke[..6], ["--bench", "200", "--tier", "desktop-low", "--size", "320x180"]);
+    }
+
+    #[test]
+    fn a_variant_mounts_the_cook_beside_the_tiers_it_names() {
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let pair = manifest.run("cell-levels").expect("D6's pair (M5 Z2)");
+        let tier = std::path::Path::new("batch/content/budget/mobile");
+        let dirs: Vec<_> = pair.variants.iter().map(|variant| variant.content_dir(tier)).collect();
+        assert_eq!(
+            dirs,
+            [tier.to_owned(), std::path::PathBuf::from("batch/content/budget/mobile-no-cell-levels")]
+        );
+        let bad = SMALL.replacen("args: [\"--lods\", \"off\"]", "args: [], content: Some(\"No Levels\")", 1);
+        assert_ne!(bad, SMALL, "the small manifest has a pair to break");
+        assert!(ScaleBench::parse(&bad).is_err(), "a content's name is a run's");
     }
 
     #[test]

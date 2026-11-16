@@ -131,7 +131,7 @@ pub(super) fn section(
     }
     let _ = writeln!(out, "| Exit test | Tier | Verdict | Judged here | Why |");
     let _ = writeln!(out, "|---|---|---|---|---|");
-    let mut proposed = Vec::new();
+    let mut beside = Vec::new();
     for (test, judged_here, elsewhere) in TESTS {
         for (tier_index, tier) in manifest.tiers.iter().enumerate() {
             let mut findings = Findings::default();
@@ -175,7 +175,7 @@ pub(super) fn section(
             if verdict == Verdict::Pass && !elsewhere.is_empty() {
                 why.push(format!("outside the batch: {elsewhere}"));
             }
-            proposed.extend(
+            beside.extend(
                 findings.notes.iter().map(|note| format!("exit test {test}, {}: {note}", title(&tier.name))),
             );
             let _ = writeln!(
@@ -189,9 +189,9 @@ pub(super) fn section(
         }
     }
     let _ = writeln!(out);
-    if !proposed.is_empty() {
-        let _ = writeln!(out, "Over a *proposed* figure, judged on nothing:\n");
-        for note in proposed {
+    if !beside.is_empty() {
+        let _ = writeln!(out, "Shown beside the verdicts, judged on nothing:\n");
+        for note in beside {
             let _ = writeln!(out, "- {note}");
         }
         let _ = writeln!(out);
@@ -216,7 +216,9 @@ pub(super) fn judge(test: u32, run: &Run, name: &str, tier: &Tier, rounds: &Roun
         return findings;
     }
     if let Some(stands_in) = &run.stands_in {
-        findings.unjudged.push(format!("{name} stands in for {stands_in}"));
+        // Read beside the runs that judge the test, never a pass of what it stands in for (M5 Z2): the trip's
+        // floor is judged where the counting walk closes the district.
+        findings.notes.push(format!("{name} stands in for {stands_in}: read beside, judged on nothing"));
         return findings;
     }
     match test {
@@ -243,6 +245,9 @@ pub(super) fn judge(test: u32, run: &Run, name: &str, tier: &Tier, rounds: &Roun
                     ],
                 );
                 waits(&mut findings, name, rounds);
+                if !run.timed {
+                    floor(&mut findings, name, rounds);
+                }
             }
             if run.read.contains(&Read::Memory) {
                 memory(&mut findings, name, tier, rounds);
@@ -364,6 +369,24 @@ fn waits(findings: &mut Findings, name: &str, rounds: &Rounds) {
 /// Exit test 2's 30 frames.
 const WAIT_FRAMES: u32 = 30;
 
+/// Exit test 2's floor (M5 Z2): every round's counting walk closes the zone at its end, and the mesh pool is back
+/// at its floor within the frames the bench gives it.
+fn floor(findings: &mut Findings, name: &str, rounds: &Rounds) {
+    for round in &rounds.rounds {
+        match round.log.zone_closed {
+            None => findings.fail(format!("{name} r{}: no zone closed line", round.round)),
+            Some(closed) if !closed.unmounted => {
+                findings.fail(format!("{name} r{}: the zone's pack didn't unmount", round.round));
+            }
+            Some(closed) if !closed.at_floor || closed.capacity > closed.floor => findings.fail(format!(
+                "{name} r{}: the mesh pool {} B, over its floor {} B, {} frames after the zone closed",
+                round.round, closed.capacity, closed.floor, closed.frames
+            )),
+            Some(_) => findings.pass(),
+        }
+    }
+}
+
 /// The process's most through each lap, every round, against §3.1's figure for the tier.
 fn memory(findings: &mut Findings, name: &str, tier: &Tier, rounds: &Rounds) {
     let most = super::process_most(rounds);
@@ -472,6 +495,14 @@ mod tests {
         )
     }
 
+    fn closed(at_floor: bool, capacity: u64, floor: u64) -> String {
+        format!(
+            "x INFO sapphire::sandbox: zone closed unmounted=\"unmounted\" frames=6 at_floor={at_floor} \
+             capacity_before=67108864 floor_before=67108864 capacity={capacity} floor={floor} in_use=1 \
+             meshes_freed=9\n"
+        )
+    }
+
     fn waits(p99: &str, longest_open: u32) -> String {
         format!(
             "x INFO sapphire::sandbox: texture waits phase=\"drawn\" completed=12 p50_frames=1 p99_frames={p99} \
@@ -530,6 +561,7 @@ mod tests {
             count("bytes decoded waiting", 1 << 20, "Some(67108864)"),
             count("streamed texture bytes", 300 << 20, "Some(347078656)"),
             count("frame thread loads", 0, "Some(0)"),
+            closed(true, 8 << 20, 8 << 20),
         ]
         .concat();
         for (p99, open, failed) in
@@ -572,6 +604,59 @@ mod tests {
         let trip = manifest.run("trip").expect("a run");
         let findings = judge(2, trip, "trip", &tier, &rounds(&["x"]));
         assert_eq!(Verdict::of(&findings), Verdict::NotJudged, "{findings:?}");
+        // A stand-in is shown beside the runs that judge its test, and holds no verdict back.
+        assert!(findings.unjudged.is_empty() && findings.notes[0].contains("stands in for"), "{findings:?}");
+    }
+
+    /// Exit test 2's floor (M5 Z2): the counting walk under a binding pool closes the district at its end, and
+    /// the mesh pool must be back at its floor; a walk that logs no close fails.
+    #[test]
+    fn the_pools_floor_is_judged_where_the_counting_walk_closes_the_zone() {
+        let manifest = manifest();
+        let (run, tier) =
+            (manifest.run("counted-streaming").expect("a run"), tier(&manifest, "desktop-high"));
+        let rows = [
+            count("bytes over budget in use", 0, "Some(0)"),
+            count("bytes decoded waiting", 1 << 20, "Some(268435456)"),
+            count("streamed texture bytes", 900 << 20, "Some(1342177280)"),
+            count("frame thread loads", 0, "Some(0)"),
+            waits("9", 0),
+        ]
+        .concat();
+        for (closing, failed) in [
+            (closed(true, 8 << 20, 8 << 20), None),
+            (closed(false, 16 << 20, 8 << 20), Some("over its floor")),
+            (String::new(), Some("no zone closed line")),
+        ] {
+            let findings = judge(2, run, "counted-streaming", &tier, &rounds(&[&format!("{rows}{closing}")]));
+            match failed {
+                None => assert!(findings.failed.is_empty(), "{findings:?}"),
+                Some(why) => assert!(findings.failed.iter().any(|what| what.contains(why)), "{findings:?}"),
+            }
+        }
+    }
+
+    /// The counted walk at night, dry and wet, and the counted fight count draws and lights for exit test 1
+    /// (M5 Z2), and their pipelines for exit test 7, a fight's under its phase.
+    #[test]
+    fn the_counted_night_and_fight_hold_draws_lights_and_pipelines() {
+        let manifest = manifest();
+        let tier = tier(&manifest, "mobile-low");
+        let fight = manifest.run("counted-fight").expect("a run");
+        let over = [count("main draws", 720, "Some(700)"), count("lights", 8, "Some(8)")].concat();
+        let findings = judge(1, fight, "counted-fight", &tier, &rounds(&[&over]));
+        assert_eq!(findings.failed, ["counted-fight main draws worst 720 over 700"]);
+        let built = "x INFO sapphire::sandbox: fight pipelines phase=\"first\" at_start=9 after_first_frame=9 \
+                     at_end=9 prewarmed=9 first_use=1 rebuilt=0 warmed_off_frame=0 frame_thread=0 frame_waits=0\n";
+        let findings = judge(7, fight, "counted-fight", &tier, &rounds(&[built]));
+        assert!(findings.failed[0].contains("first use 1"), "{findings:?}");
+        let night = manifest.run("counted-night").expect("a run");
+        assert_eq!(night.variants.len(), 2, "dry and wet");
+        let within = [count("main draws", 650, "Some(700)"), count("lights", 8, "Some(8)")].concat();
+        assert_eq!(
+            Verdict::of(&judge(1, night, "counted-night (wet)", &tier, &rounds(&[&within]))),
+            Verdict::Pass
+        );
     }
 
     /// The manifest's `serves` follow m5-plan §1 (M5 Z2): the crowd is exit test 6, the packages' pairs serve 3,
@@ -581,7 +666,20 @@ mod tests {
         let manifest = manifest();
         assert_eq!(
             serving(&manifest, 1),
-            ["tour-dusk", "tour-night", "exit-walk", "night-weather", "district-fight", "counted"]
+            [
+                "tour-dusk",
+                "tour-night",
+                "exit-walk",
+                "night-weather",
+                "district-fight",
+                "counted",
+                "counted-night",
+                "counted-fight"
+            ]
+        );
+        assert_eq!(
+            serving(&manifest, 7),
+            ["exit-walk", "district-fight", "counted", "counted-streaming", "counted-night", "counted-fight"]
         );
         assert_eq!(serving(&manifest, 6), ["crowd-hold", "crowd-tour", "counted"]);
         let pairs = [

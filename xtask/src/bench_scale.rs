@@ -9,6 +9,8 @@
 //! - `content/<preset>/<cook>/`: the content at the preset with its district beside it, one for each cook
 //!   ([`bench::put_beside`]): the shipped cook of `content/` for `ci`, and past it the shipped content with the
 //!   party's kinds and the wave's at the preset's rows ([`bench::cook_kinds`], M5 C12b);
+//! - `content/<preset>/<cook>-no-cell-levels/`: the same with the district's cells cooked with one level, what
+//!   D6's pair measures its levels against (M5 Z2), a run's variant naming it (`content: Some("no-cell-levels")`);
 //! - `bin/`: the release `dev` sandbox (what B4 walked) and the testkit, copied so a later build can't change
 //!   what a resumed batch runs;
 //! - `replays/`: the crowd scenarios' replays, recorded here since none is committed, and the committed ones the
@@ -24,7 +26,7 @@ use std::process::Command;
 
 use anyhow::{Context, bail};
 
-use crate::bench::{self, Preset};
+use crate::bench::{self, CellLevels, Preset};
 use crate::cli::Args;
 use crate::content::{self, Cook};
 use crate::platforms;
@@ -109,25 +111,31 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
     }
 }
 
-/// Cooks both cooks of the content at the preset (with its kinds past `ci`) and of the preset's district, puts
-/// each pair together, builds the sandbox and the testkit into `bin/` and records the crowds' replays.
+/// Cooks both cooks of the content at the preset (with its kinds past `ci`) and of the preset's district, with
+/// its cells' levels and without (D6's pair, M5 Z2), puts each content and district together, builds the
+/// sandbox and the testkit into `bin/` and records the crowds' replays.
 fn prepare(folder: &Path, preset: Preset) -> anyhow::Result<()> {
     fs::create_dir_all(folder)?;
     for cook in [Cook::Desktop, Cook::Mobile] {
-        let district = bench::cook(preset, cook)?;
-        let out = folder.join("content").join(preset.name()).join(cook.name());
-        if bench::has_kinds(preset) {
-            let kinds = bench::cook_kinds(preset, cook)?;
-            bench::put_beside(&kinds.dir, &district.dir, &out, cook)?;
-        } else {
-            let shipped = content::cook(cook)?;
-            bench::put_beside(&shipped.dir, &district.dir, &out, cook)?;
+        // Held, each under its lock, while both districts are put beside it.
+        let kinds = bench::has_kinds(preset).then(|| bench::cook_kinds(preset, cook)).transpose()?;
+        let shipped = if kinds.is_none() { Some(content::cook(cook)?) } else { None };
+        let content_dir = match (&kinds, &shipped) {
+            (Some(kinds), _) => &kinds.dir,
+            (None, Some(shipped)) => &shipped.dir,
+            (None, None) => unreachable!("one of the two is cooked"),
+        };
+        for cells in [CellLevels::On, CellLevels::Off] {
+            let district = bench::cook_with(preset, cook, cells)?;
+            let out = content_folder(folder, preset, cook, cells);
+            bench::put_beside(content_dir, &district.dir, &out, cook)?;
+            eprintln!(
+                "put the content and the {} district{} together for {cook} in {}",
+                preset.name(),
+                if cells == CellLevels::Off { " (its cells with one level)" } else { "" },
+                out.display()
+            );
         }
-        eprintln!(
-            "put the content and the {} district together for {cook} in {}",
-            preset.name(),
-            out.display()
-        );
     }
 
     let env = platforms::host_build_env()?;
@@ -199,6 +207,12 @@ fn testkit(folder: &Path, command: &str, smoke: bool) -> anyhow::Result<Command>
     Ok(process)
 }
 
+/// `content/<preset>/<cook>[-no-cell-levels]/`: what a run on `cook`'s tiers mounts, the cells with their levels
+/// or with one. The testkit finds the second beside the first (`Variant::content`).
+fn content_folder(folder: &Path, preset: Preset, cook: Cook, cells: CellLevels) -> PathBuf {
+    folder.join("content").join(preset.name()).join(format!("{}{}", cook.name(), cells.suffix()))
+}
+
 fn bin(folder: &Path, name: &str) -> PathBuf {
     folder.join("bin").join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
@@ -242,6 +256,19 @@ fn prepared(folder: &Path) -> anyhow::Result<Preset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D6's pair (M5 Z2): the content without the cells' levels sits beside each cook's, its name the cook's with
+    /// the suffix a manifest's variant names (`content: Some("no-cell-levels")`).
+    #[test]
+    fn the_content_without_cell_levels_sits_beside_each_cooks() {
+        let folder = Path::new("batch");
+        let with = content_folder(folder, Preset::Budget, Cook::Mobile, CellLevels::On);
+        let without = content_folder(folder, Preset::Budget, Cook::Mobile, CellLevels::Off);
+        assert_eq!(with, Path::new("batch/content/budget/mobile"));
+        assert_eq!(without, Path::new("batch/content/budget/mobile-no-cell-levels"));
+        let manifest = fs::read_to_string(workspace::root().join(MANIFEST)).expect("the committed manifest");
+        assert!(manifest.contains(&format!("content: Some(\"{}\")", &CellLevels::Off.suffix()[1..])));
+    }
 
     #[test]
     fn the_manifests_preset_is_read_from_its_text() {

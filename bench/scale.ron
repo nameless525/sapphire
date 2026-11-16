@@ -34,13 +34,11 @@
         rounds: 2,
         sitting_seconds: 600,
         load_bound: 8.0,
-        gaps: [
-            "Exit test 2: a trip from the district to another zone and back: the district has no exits, so the ward's zone-trip replay stands in for the mesh pool's floor.",
-            "Exit test 3: the cells' levels before and after (D6) need a cook without them, so they aren't in this batch.",
-        ],
+        gaps: [],
         // Where the batch measures an exit test otherwise than its words, by the orchestrator's rulings (M5 Z2).
         deviations: [
-            "Exit test 1: three runs stand for the plan's one walk. exit-walk walks dusk into night with the crowd about, night-weather holds the night wet against dry (weather doesn't move along one walk), and district-fight is the encounter of twelve against the party of three; the counting walks count draws and lights at dusk.",
+            "Exit test 1: three runs stand for the plan's one walk. exit-walk walks dusk into night with the crowd about, night-weather holds the night wet against dry (weather doesn't move along one walk), and district-fight is the encounter of twelve against the party of three; the counting walks count draws and lights at dusk, at night dry and wet, and through the fight.",
+            "Exit test 2: a trip from the district: the district has no exits, so the counting walk under a binding pool closes it at its end, as a trip leaves a zone, and the mesh pool's floor is judged there; trip plays the ward's zone-trip beside it.",
             "Exit test 7: zero_hitches plays the ward, since a shipping build can't stand a zone code builds: the counting walks' pipeline counts (no first use, none rebuilt, none on the frame's thread, no frame waiting) and B5's fight test stand in on the district.",
         ],
         // The phones draw onto a phone's panel, 2532x1170, and their tier caps the scene at 740 and 590 rows and
@@ -206,6 +204,24 @@
                 rows: ["gpu frame", "gpu main", "gpu shadows", "gpu prepasses", "triangles", "lod1+ draws", "level switches"],
                 serves: [3],
             ),
+            // D6's pair (M5 Z2): the district's cells cooked with their levels against cooked with one, the second
+            // the content `prepare` puts beside each cook's (`content/<preset>/<cook>-no-cell-levels/`).
+            (
+                name: "cell-levels",
+                about: "the district's cells' levels (D6), cooked with them against with one",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [(name: "on", args: []), (name: "off", args: [], content: Some("no-cell-levels"))],
+                rows: [
+                    "gpu frame", "gpu main", "gpu shadows", "main triangles", "shadow triangles", "mesh pool capacity",
+                    "mesh pool floor",
+                ],
+                serves: [3],
+            ),
             (
                 name: "character-lods",
                 about: "characters' levels (D5) on the crowd's tour, on against off",
@@ -322,6 +338,37 @@
                 read: [Counts, Streaming, Pipelines],
                 timed: false,
                 serves: [2, 7],
+            ),
+            // Exit test 1's draws and lights by counts where the timed runs go (M5 Z2): the tour at night, held dry
+            // and held wet, and the district's fight, a frame in seven drawn. Each fails on a pipeline built after
+            // the load, as `counted` does.
+            (
+                name: "counted-night",
+                about: "the tour's counts at night, dry and wet, a frame in seven drawn",
+                args: [
+                    "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Lap,
+                phases: 1,
+                read: [Counts, Pipelines],
+                variants: [(name: "dry", args: ["--weather", "dry"]), (name: "wet", args: ["--weather", "0.8,0.4"])],
+                timed: false,
+                serves: [1, 7],
+            ),
+            (
+                name: "counted-fight",
+                about: "the district's encounter at night by counts, a frame in seven drawn",
+                args: [
+                    "--draw-every", "7", "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party",
+                    "--time-of-day", "23", "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(1600),
+                phases: 1,
+                read: [Counts, Pipelines],
+                timed: false,
+                serves: [1, 7],
             ),
         ],
     ),

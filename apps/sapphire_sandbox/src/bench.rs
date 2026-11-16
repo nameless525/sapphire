@@ -178,6 +178,54 @@ pub(crate) fn check_no_waits(builds: sapphire_render::PipelineStats) -> Result<(
     }
 }
 
+/// The frames a counting walk's end gives the mesh pool to come back to its floor once the zone is closed: a
+/// compaction moves a few parts a frame, and the frees land at the update after the close.
+const GIVE_BACK_FRAMES: u32 = 120;
+
+/// Exit test 2's floor where the zone has no exit (M5 Z2): the counting walk's end takes the zone down and
+/// unmounts its pack as a trip leaves it, asks the mesh pool to give back what the zone held, as a trip's
+/// arrival does, and draws frames until the pool is at its floor or [`GIVE_BACK_FRAMES`] have passed. Logs
+/// `zone closed`: the pool's capacity and floor before and after, whether it came back, and in how many
+/// frames. Runs after every count row is logged, so it moves none.
+fn close_the_zone(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitError> {
+    let before = stage.renderer.stats();
+    let (capacity_before, floor_before) = (before.mesh_pool_capacity, before.mesh_pool.floor);
+    let unmounted = match stage.scene.close_zone(&mut stage.content) {
+        Some(Ok(_)) => "unmounted",
+        Some(Err(error)) => {
+            tracing::warn!(target: LOG_TARGET, %error, "the zone's pack didn't unmount");
+            "failed"
+        }
+        None => "no zone",
+    };
+    stage.content.give_back_meshes();
+    let mut frames = 0;
+    while frames < GIVE_BACK_FRAMES && !stage.content.meshes_given_back() {
+        stage.step();
+        stage.render(view, 1.0, |_, _| {})?;
+        stage.scene.end_frame();
+        stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+        frames += 1;
+    }
+    let at_floor = stage.content.meshes_given_back();
+    stage.content.end_giving_back();
+    let after = stage.renderer.stats();
+    tracing::info!(
+        target: LOG_TARGET,
+        unmounted,
+        frames,
+        at_floor,
+        capacity_before,
+        floor_before,
+        capacity = after.mesh_pool_capacity,
+        floor = after.mesh_pool.floor,
+        in_use = after.mesh_pool_bytes,
+        meshes_freed = after.meshes_freed,
+        "zone closed"
+    );
+    Ok(())
+}
+
 /// Whether a counting walk (`walk`: a zone walk under `--draw-every`) is put back at its rail's start after frame
 /// `frame`: through the warm-up, so its count rows start at its first step rather than [`WARMUP_FRAMES`] steps in
 /// (M5 Z3). The warm-up still steps, streams and draws there, which is what it's for.
@@ -369,6 +417,9 @@ pub(crate) fn run(
             meshes_freed = stage.renderer.stats().meshes_freed,
             "streaming"
         );
+    }
+    if counting_walk {
+        close_the_zone(&mut stage, &view)?;
     }
     if draw_every.is_some() {
         // Most frames lost: what's left checks the load's inventory and measures nothing, as a fight's does.

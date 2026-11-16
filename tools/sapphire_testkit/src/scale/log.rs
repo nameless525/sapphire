@@ -122,6 +122,22 @@ pub struct Waits {
     pub longest_open: u32,
 }
 
+/// A counting walk's end (M5 Z2, exit test 2's floor): the zone taken down and its pack unmounted, as a trip
+/// leaves one, and the mesh pool given back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ZoneClosed {
+    /// Whether its pack unmounted.
+    pub unmounted: bool,
+    /// Whether the pool came back to its floor, and in how many frames.
+    pub at_floor: bool,
+    pub frames: u32,
+    /// The pool's capacity and floor, in bytes, before the close and at the end.
+    pub capacity_before: u64,
+    pub floor_before: u64,
+    pub capacity: u64,
+    pub floor: u64,
+}
+
 /// A phase and a row: `("cpu", "cpu frame")`.
 pub type Key = (String, String);
 
@@ -136,6 +152,8 @@ pub struct Log {
     pub pipelines: BTreeMap<String, Pipelines>,
     /// Each phase's `texture waits` line, while streaming.
     pub waits: BTreeMap<String, Waits>,
+    /// A counting walk's `zone closed` line, at its end.
+    pub zone_closed: Option<ZoneClosed>,
     /// The load's time, from the bench's first line.
     pub startup_ms: Option<f64>,
     /// A plain bench's `bench` and `bench gpu` fields, numbers only.
@@ -215,6 +233,16 @@ impl Log {
                     }
                 }
                 log.trips.entry(phase.to_owned()).or_default().push(trip);
+            } else if has(line, "zone closed") {
+                log.zone_closed = Some(ZoneClosed {
+                    unmounted: field("unmounted") == Some("unmounted"),
+                    at_floor: field("at_floor") == Some("true"),
+                    frames: field("frames").and_then(|value| value.parse().ok()).unwrap_or(0),
+                    capacity_before: int("capacity_before").unwrap_or(0),
+                    floor_before: int("floor_before").unwrap_or(0),
+                    capacity: int("capacity").unwrap_or(0),
+                    floor: int("floor").unwrap_or(0),
+                });
             } else if has(line, "zone walk") {
                 // A plain bench's walk (a counting walk's): its pipelines over the whole run, under the phase its
                 // count rows took, as a fight's bench logs each phase's.
@@ -406,6 +434,21 @@ mod tests {
         assert_eq!((waits.pool_p99, waits.open, waits.longest_open), (WaitFrames::None, 1, 12));
         assert!(waits.p99.over(30) && !waits.p50.over(30) && !WaitFrames::None.over(0));
         assert!(!WaitFrames::Frames(30).over(30) && WaitFrames::Frames(31).over(30));
+    }
+
+    /// A counting walk's end (M5 Z2): the pool against its floor once the zone is closed.
+    #[test]
+    fn a_closed_zones_pool_is_read_against_its_floor() {
+        let log = Log::parse(
+            "2026-11-16T00:00:00.000000Z  INFO sapphire::sandbox: zone closed unmounted=\"unmounted\" frames=4 \
+             at_floor=true capacity_before=50331648 floor_before=50331648 capacity=8388608 floor=8388608 \
+             in_use=6000000 meshes_freed=244",
+        );
+        let closed = log.zone_closed.expect("the line");
+        assert!(closed.unmounted && closed.at_floor);
+        assert_eq!((closed.frames, closed.capacity, closed.floor), (4, 8_388_608, 8_388_608));
+        assert_eq!((closed.capacity_before, closed.floor_before), (50_331_648, 50_331_648));
+        assert!(Log::parse("zone walk frames=3").zone_closed.is_none());
     }
 
     #[test]

@@ -105,6 +105,30 @@ fn loose_dir(preset: Preset, cook: Cook) -> PathBuf {
     output_dir().join(preset.name()).join("loose").join(cook.name())
 }
 
+/// Whether the district's cells cook with the levels of detail its document asks for (M5 D6) or with one
+/// (`gen-bench --cell-levels off`): the tree the benches at scale measure D6 against (M5 Z2). The folders of a
+/// tree without them are the others' with [`CellLevels::suffix`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellLevels {
+    On,
+    Off,
+}
+
+impl CellLevels {
+    /// What a folder of this tree adds to the name of the tree with levels.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::On => "",
+            Self::Off => "-no-cell-levels",
+        }
+    }
+
+    fn of(self, dir: PathBuf) -> PathBuf {
+        let name = dir.file_name().expect("a named folder").to_string_lossy().into_owned();
+        dir.with_file_name(format!("{name}{}", self.suffix()))
+    }
+}
+
 /// The benchmark's own content cache, apart from `content`'s so that removing `target/bench/` takes it.
 fn cache_dir() -> PathBuf {
     output_dir().join("cache")
@@ -119,6 +143,11 @@ pub struct BenchCooked {
 
 /// Generates `preset`'s sources and cooks them for `cook`, desktop or mobile.
 pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
+    cook_with(preset, cook, CellLevels::On)
+}
+
+/// [`cook`], the district's cells with their levels or without (`cells`), each tree in folders of its own.
+pub fn cook_with(preset: Preset, cook: Cook, cells: CellLevels) -> anyhow::Result<BenchCooked> {
     if cook == Cook::Editor {
         bail!("the benchmark cooks for desktop or mobile, not the editor");
     }
@@ -126,7 +155,7 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
     let preset_dir = output_dir().join(preset.name());
     fs::create_dir_all(&preset_dir)?;
 
-    let source = source_dir_for(preset, cook);
+    let source = cells.of(source_dir_for(preset, cook));
     {
         let lock = workspace::lock_file(&preset_dir.join("generate.lock"))?;
         workspace::wait_for_lock(
@@ -148,6 +177,7 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
             .arg("--bench")
             .arg(workspace::root().join(SOURCE_DIR))
             .args(["--preset", preset.name(), "--cook", cook.name()])
+            .args(if cells == CellLevels::Off { &["--cell-levels", "off"][..] } else { &[] })
             .arg("--out")
             .arg(&source);
         workspace::run(&mut generate)?;
@@ -157,14 +187,14 @@ pub fn cook(preset: Preset, cook: Cook) -> anyhow::Result<BenchCooked> {
         }
     }
 
-    let out = cooked_dir(preset, cook);
+    let out = cells.of(cooked_dir(preset, cook));
     let lock = workspace::lock_file(&out.with_extension("lock"))?;
     let waiting = format!("to finish with the {} {cook} cook", preset.name());
     workspace::wait_for_lock(&lock, File::try_lock, File::lock, &waiting)?;
     // Every source is generated with its sidecar, so one missing is a fault: always locked.
     let run = CookRun {
         source: &source,
-        loose: &loose_dir(preset, cook),
+        loose: &cells.of(loose_dir(preset, cook)),
         packs: &out,
         cook,
         cache: &cache_dir(),

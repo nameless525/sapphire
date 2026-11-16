@@ -1617,6 +1617,14 @@ impl Content {
         matches!(self.gpu.give_back, GiveBack::Idle | GiveBack::Asked { at_floor: true })
     }
 
+    /// Asks the mesh pool to give back what a zone just closed held, as a trip's arrival does
+    /// ([`Scene::close_zone`](crate::Scene::close_zone) with no zone after it): the frees reach the renderer
+    /// at the next update, which asks for the compaction, and [`Self::meshes_given_back`] says when the pool
+    /// is at its floor. A bench's way to hold exit test 2's floor where the zone has no exit (M5 Z2).
+    pub fn give_back_meshes(&mut self) {
+        self.gpu.give_back = GiveBack::Arrived;
+    }
+
     /// The trip's over: the pool stops being asked to compact, and uploads from here grow it as they need.
     pub fn end_giving_back(&mut self) {
         self.gpu.give_back = GiveBack::Idle;

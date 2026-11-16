@@ -92,6 +92,36 @@ pub fn marker_text(preset: Preset, cook: Cook) -> String {
     }
 }
 
+/// Whether the district's cells cook with the levels of detail its document asks for (M5 D6), or with one: the
+/// tree M5 Z2's batch measures D6 against, `gen-bench --cell-levels off`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CellLevels {
+    #[default]
+    On,
+    Off,
+}
+
+impl FromStr for CellLevels {
+    type Err = BenchError;
+
+    fn from_str(s: &str) -> Result<Self, BenchError> {
+        match s {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            other => Err(BenchError::CellLevels(other.to_owned())),
+        }
+    }
+}
+
+/// [`marker_text`], for a tree whose cells have no levels: it says so, so its tree reads as what it is.
+pub fn marker_text_with(preset: Preset, cook: Cook, cells: CellLevels) -> String {
+    let text = marker_text(preset, cook);
+    match cells {
+        CellLevels::On => text,
+        CellLevels::Off => text.replacen("`: never", " --cell-levels off`: never", 1),
+    }
+}
+
 /// The cook a marker's text says its tree is for: the phones' names its cook, the desktop's doesn't.
 pub fn marker_cook(text: &str) -> Cook {
     if text.contains("--cook mobile") { Cook::Mobile } else { Cook::Desktop }
@@ -202,6 +232,8 @@ pub fn asset_id(part: &str, path: &str) -> AssetId {
 pub enum BenchError {
     #[error("unknown preset `{0}`; expected `ci`, `budget` or `double`")]
     Preset(String),
+    #[error("--cell-levels expects `on` or `off`, not `{0}`")]
+    CellLevels(String),
     #[error("{path}: {source}")]
     Document { path: PathBuf, source: Box<DocumentError> },
     #[error("{path}: {why}")]
@@ -242,6 +274,18 @@ pub(crate) fn document_bytes<T: Versioned + Serialize + TypePath>(document: &T) 
 /// with its sidecar, and removes what an earlier run left there that this one didn't write. `out` must be
 /// empty, missing or a tree this wrote for the same cook ([`MARKER`], [`marker_cook`]).
 pub fn generate(bench: &Path, preset: Preset, cook: Cook, out: &Path) -> Result<Generated, BenchError> {
+    generate_with(bench, preset, cook, CellLevels::On, out)
+}
+
+/// [`generate`], the district's cells with their levels or with one (`cells`): every other byte the same, so
+/// the two trees cook to the same assets but the zone's cell meshes (M5 Z2, D6's pair).
+pub fn generate_with(
+    bench: &Path,
+    preset: Preset,
+    cook: Cook,
+    cells: CellLevels,
+    out: &Path,
+) -> Result<Generated, BenchError> {
     let marker = out.join(MARKER);
     if out.is_dir() && !marker.is_file() && fs::read_dir(out)?.next().is_some() {
         return Err(BenchError::NotGenerated(out.to_owned()));
@@ -255,7 +299,12 @@ pub fn generate(bench: &Path, preset: Preset, cook: Cook, out: &Path) -> Result<
     let mut outputs = Vec::new();
     let mut written = BTreeSet::new();
     for (part, generator) in PARTS {
-        for source in generator(&bench.join(part), preset, cook)? {
+        for mut source in generator(&bench.join(part), preset, cook)? {
+            if cells == CellLevels::Off
+                && let Some((ImportSettings::Zone(settings), _)) = &mut source.sidecar
+            {
+                settings.lods = crate::zone::ZoneSettings::default().lods;
+            }
             let relative = Path::new(&source.path);
             let plain =
                 relative.components().all(|component| matches!(component, std::path::Component::Normal(_)));
@@ -275,7 +324,7 @@ pub fn generate(bench: &Path, preset: Preset, cook: Cook, out: &Path) -> Result<
         }
     }
     fs::create_dir_all(out)?;
-    meta::replace_file(&marker, marker_text(preset, cook).as_bytes())?;
+    meta::replace_file(&marker, marker_text_with(preset, cook, cells).as_bytes())?;
     let generated = write_files(out, outputs, Existing::Replace)?;
     remove_stale(out, out, &written)?;
     Ok(generated)

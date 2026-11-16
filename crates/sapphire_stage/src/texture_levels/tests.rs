@@ -311,6 +311,36 @@ fn a_level_starts_only_with_room_beside_everything_the_server_holds() {
     assert_eq!(start(pool, pool), (false, 1), "the tail alone is over what's left: counted");
 }
 
+/// A trip's wipe holds for the first view's textures (M5 Z2): while a streamed texture is short of its plan the
+/// arrival isn't over; once it's there, or with streaming off, or a pool too small for the tails, it is. Under
+/// the wipe the levels raise at the wipe's budget, and at the tier's once the zone has arrived.
+#[test]
+fn an_arrival_waits_for_the_first_views_textures_at_their_plan() {
+    let whole = whole();
+    let mut levels = TextureLevels::default();
+    levels.bind(A, false);
+    let streaming = TextureStreaming { pool: u64::MAX, raise: 4 << 20 };
+    levels.set_streaming(Some(streaming));
+    let reads = [read(A, 0.2)];
+    let coverage = TextureCoverageFrame { frame: 1, textures: &reads };
+    let at = |top| move |_| Some(Shape { whole, top, above: ABOVE });
+    levels.plan(at(ABOVE), coverage, streaming, u64::MAX, 0);
+    assert_eq!(levels.textures[&A].choice.planned, 0, "the view reads A whole");
+    assert!(!levels.at_plan(at(ABOVE)), "at its tail, A is short of its plan: the wipe holds");
+    assert!(!levels.at_plan(at(1)), "a level short still holds it");
+    assert!(levels.at_plan(at(0)), "at its plan, the arrival may end");
+    levels.stats.tails_over_pool = 1;
+    assert!(
+        levels.at_plan(at(ABOVE)),
+        "a pool too small for the tails never settles: it doesn't hold the wipe"
+    );
+    levels.stats.tails_over_pool = 0;
+    levels.set_streaming(None);
+    assert!(levels.at_plan(at(ABOVE)), "streaming off holds nothing");
+    assert_eq!(raise_budget(streaming, true), ARRIVAL_RAISE, "the wipe's budget");
+    assert_eq!(raise_budget(streaming, false), 4 << 20, "play's");
+}
+
 /// One update's count of a texture for [`wait`], with the open waits started over as `count` does.
 fn count_wait(
     choice: &mut Choice,

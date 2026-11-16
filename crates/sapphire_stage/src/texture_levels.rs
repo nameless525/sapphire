@@ -127,6 +127,17 @@ const MAX_LEVELS: usize = 16;
 /// ([`TextureStreamingStats::reraised_bytes`]): five seconds at 60 frames a second (M5 Z2).
 pub const RERAISE_WITHIN: u32 = 300;
 
+/// Bytes of levels a frame may raise while a zone arrives under its wipe, in place of the tier's raise budget
+/// (M5 Z2): nothing is on screen to hitch, so the first view's levels come as fast as the mesh pool gives
+/// back what the last zone held under the same wipe, 64 MiB a frame. The asset server's upload budget still
+/// bounds what a frame starts.
+pub const ARRIVAL_RAISE: u64 = 64 << 20;
+
+/// The raise budget a frame goes at: the tier's, or the wipe's while a zone arrives.
+fn raise_budget(streaming: TextureStreaming, arriving: bool) -> u64 {
+    if arriving { streaming.raise.max(ARRIVAL_RAISE) } else { streaming.raise }
+}
+
 /// Frames past which a wait fails exit test 2's rule ("within 30 frames"), for [`WaitReasons::long`].
 pub const LONG_WAIT: u32 = 30;
 
@@ -347,6 +358,8 @@ pub(crate) struct TextureLevels {
     /// Budgeted updates on this renderer, from 1, for when each level was lowered off
     /// ([`Wanted::lowered_at`]).
     updates: u32,
+    /// A zone is arriving under its wipe: raises go at [`ARRIVAL_RAISE`] a frame ([`Self::set_arriving`]).
+    arriving: bool,
 }
 
 /// One texture's levels.
@@ -495,7 +508,7 @@ struct Rank {
 
 /// What the streamer's plan reads of a texture on the renderer ([`TextureLevels::plan`]).
 #[derive(Clone, Copy, Debug)]
-struct Shape {
+pub(crate) struct Shape {
     /// The whole texture's shape.
     whole: TextureDesc,
     /// Its top on the GPU, and the levels above its tail.
@@ -504,7 +517,7 @@ struct Shape {
 }
 
 impl Shape {
-    fn of(texture: &GpuTexture) -> Self {
+    pub(crate) fn of(texture: &GpuTexture) -> Self {
         Self { whole: texture.whole(), top: texture.top(), above: texture.above() }
     }
 }
@@ -763,11 +776,17 @@ impl TextureLevels {
         // A capture's finishing goes to the plan, unbudgeted, while streaming (a capture that streams), and
         // whole otherwise (the stage turns a whole capture's streamer off).
         let streaming = self.streaming;
-        renderer.set_mip_budget(streaming.map_or(DEFAULT_MIP_BUDGET, |streaming| streaming.raise));
+        let arriving = self.arriving;
+        renderer.set_mip_budget(
+            streaming.map_or(DEFAULT_MIP_BUDGET, |streaming| raise_budget(streaming, arriving)),
+        );
         let started = match streaming {
             Some(streaming) => {
-                let start_bytes =
-                    if unlimited { u64::MAX } else { server.budgets().upload_per_frame.min(streaming.raise) };
+                let start_bytes = if unlimited {
+                    u64::MAX
+                } else {
+                    server.budgets().upload_per_frame.min(raise_budget(streaming, arriving))
+                };
                 self.choose(textures, renderer, server, streaming, start_bytes)
             }
             None => 0,
@@ -1119,6 +1138,24 @@ impl TextureLevels {
                 }
             })
         })
+    }
+
+    /// Whether a zone's arrival may lift its wipe as far as textures go (M5 Z2): while streaming, every texture
+    /// `shape` says is on the renderer is at its plan, the first view's levels in; with streaming off, or a pool
+    /// too small for the tails ([`TextureStreamingStats::tails_over_pool`], which no plan settles), at once.
+    pub(crate) fn at_plan(&self, shape: impl Fn(AssetId) -> Option<Shape>) -> bool {
+        if self.streaming.is_none() || self.stats.tails_over_pool > 0 {
+            return true;
+        }
+        self.textures.iter().all(|(&id, wanted)| {
+            shape(id).is_none_or(|texture| texture.top == wanted.choice.planned.min(texture.above))
+        })
+    }
+
+    /// A zone is arriving, under its wipe ([`crate::Content::textures_at_plan`]): the raise budget is the wipe's,
+    /// [`ARRIVAL_RAISE`], until it has arrived, and then play's again.
+    pub(crate) fn set_arriving(&mut self, arriving: bool) {
+        self.arriving = arriving;
     }
 
     /// Whether the last [`Self::follow`] raised, lowered or started anything.

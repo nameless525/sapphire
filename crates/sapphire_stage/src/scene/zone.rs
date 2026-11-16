@@ -968,12 +968,13 @@ impl Scene {
         self.zone.as_ref().is_some_and(|zone| zone.streamer.first_cells_in())
     }
 
-    /// Whether a trip's arrival can end, its wipe let go: the zone's first cells are in, and the renderer's
-    /// mesh pool has given back what the zone left held, down to its floor (M5 D9,
-    /// [`Content::meshes_given_back`]).
+    /// Whether a trip's arrival can end, its wipe let go: the zone's first cells are in, the renderer's mesh
+    /// pool has given back what the zone left held, down to its floor (M5 D9,
+    /// [`Content::meshes_given_back`]), and the first view's streamed textures are at their plan (M5 Z2,
+    /// [`Content::textures_at_plan`]).
     #[must_use]
     pub fn zone_arrived(&self, content: &Content) -> bool {
-        self.zone_settled() && content.meshes_given_back()
+        self.zone_settled() && content.meshes_given_back() && content.textures_at_plan()
     }
 
     /// The arrival's over: streaming goes by the camera's eye from here on, and the mesh pool grows as the

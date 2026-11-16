@@ -761,6 +761,8 @@ impl GpuAssets {
 
     /// Raises and lowers textures toward what's wanted of them ([`TextureLevels::follow`]).
     fn follow_levels(&mut self, server: &mut AssetServer, renderer: &mut Renderer, unlimited: bool) {
+        // Under a trip's wipe, the first view's levels come at the wipe's budget (M5 Z2).
+        self.levels.set_arriving(!matches!(self.give_back, GiveBack::Idle));
         let change = self.levels.follow(&mut self.textures, server, renderer, unlimited);
         self.texture_bytes = self.texture_bytes.saturating_add_signed(change);
     }
@@ -1618,6 +1620,19 @@ impl Content {
     #[must_use]
     pub fn textures_settled(&self) -> bool {
         self.gpu.levels.settled(&self.gpu.textures)
+    }
+
+    /// Whether a trip's arrival may lift its wipe as far as streamed textures go (M5 Z2): every texture on the
+    /// renderer at the streamer's plan for the frame drawn under the wipe, so the first view opens at its levels
+    /// rather than waiting for them in play; at once with streaming off or a pool too small for the tails.
+    /// While a trip arrives the levels raise at [`crate::ARRIVAL_RAISE`] a frame, and at the tier's budget
+    /// again from [`Self::end_giving_back`].
+    #[must_use]
+    pub fn textures_at_plan(&self) -> bool {
+        let textures = &self.gpu.textures;
+        self.gpu
+            .levels
+            .at_plan(|id| textures.get(&id).map(|held| crate::texture_levels::Shape::of(&held.object)))
     }
 
     /// Texture `id`'s top on the renderer, and its tail's (the deepest it goes), if it's there.

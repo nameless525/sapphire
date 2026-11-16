@@ -435,7 +435,8 @@ fn moves_of(document: &str) -> Result<MoveSet, ScenarioError> {
 }
 
 /// Every scenario document this build holds, read: its name and what it says. A bad one stops here, saying
-/// which and why, the first time anyone asks for a scenario.
+/// which and why, the first time anyone asks for a scenario. The playable kinds its cast draws as are read as it
+/// sets up (`set_up_from`), so a bad `.playable.ron` is that set-up's error rather than every scenario's stop.
 pub(super) fn read_all() -> Vec<(&'static str, ScenarioDocument)> {
     SCENARIO_DOCUMENTS
         .iter()
@@ -443,9 +444,6 @@ pub(super) fn read_all() -> Vec<(&'static str, ScenarioDocument)> {
             let document: ScenarioDocument = sapphire_serialize::from_ron(text)
                 .unwrap_or_else(|error| panic!("content/scenarios/{name}.scenario.ron: {error}"));
             document.check().unwrap_or_else(|error| panic!("content/scenarios/{name}.scenario.ron: {error}"));
-            document
-                .playable_kinds()
-                .unwrap_or_else(|error| panic!("content/scenarios/{name}.scenario.ron: {error}"));
             (*name, document)
         })
         .collect()
@@ -842,6 +840,10 @@ impl ScenarioDocument {
         if run.zone.is_some() && self.zone.is_none() && self.built.is_none() {
             return Err(invalid("zone", "a save's place needs a zone, and this names none"));
         }
+        // Who the cast draws as is presentation, which no step reads; but nothing should record or play a
+        // scenario no game can draw, so a kind that doesn't read, or plays another set, refuses the set-up here,
+        // naming the member, the document and what is wrong.
+        self.playable_kinds()?;
         let ZoneWithGround { zone, colliders, encounters, navmesh, .. } = self.zone_with_ground(zones)?;
         let names_colliders = zone.as_ref().is_some_and(|(document, _)| document.colliders.is_some());
         if !names_colliders {
@@ -1309,6 +1311,39 @@ mod tests {
         let kinds = boss.kinds_of_enemy().expect("it plans");
         let set = crate::moves::MoveSetId(1);
         assert_eq!(kinds, [KindOfEnemy { set, kind: captain, name: "boss-captain".to_owned() }]);
+    }
+
+    /// A cast member's playable kind is read as its scenario sets up, and one it can't draw as is that set-up's
+    /// error, naming the member and what is wrong, never a panic: `sapphire_replay record` stopped on a bad
+    /// `.playable.ron` before it said anything of its own (M5 Z2's rehearsal).
+    #[test]
+    fn a_kind_the_cast_cannot_draw_as_fails_its_set_up_naming_it() {
+        let text = SCENARIO_DOCUMENTS.iter().find(|(name, _)| *name == "party-three-kinds").expect("held").1;
+        let document: ScenarioDocument = sapphire_serialize::from_ron(text).expect("reads");
+        let place = document.cast.iter().position(|member| member.playable.is_some()).expect("a kind");
+        let field = format!("cast[{place}].playable");
+        let set_up = |document: &ScenarioDocument| {
+            let mut sim = Simulation::new(document.config());
+            document.set_up(&mut sim, ZONES).map(drop).map_err(|error| error.to_string())
+        };
+        set_up(&document).expect("sets up as it ships");
+
+        let mut nobody = document.clone();
+        nobody.cast[place].playable = Some("nobody".to_owned());
+        let error = set_up(&nobody).expect_err("no such kind");
+        assert!(error.contains(&field) && error.contains("nobody.playable.ron"), "{error}");
+
+        // A kind this build holds, on a member playing another kind's set.
+        let other = document
+            .cast
+            .iter()
+            .filter_map(|member| member.playable.clone())
+            .find(|name| Some(name) != document.cast[place].playable.as_ref())
+            .expect("a second kind");
+        let mut swapped = document.clone();
+        swapped.cast[place].playable = Some(other.clone());
+        let error = set_up(&swapped).expect_err("another kind's moves");
+        assert!(error.contains(&field) && error.contains(&format!("`{other}` plays other moves")), "{error}");
     }
 
     /// A playable kind is found by its file's stem, as `--playable` names it (M5 C4), and one this build

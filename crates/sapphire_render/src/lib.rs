@@ -1001,6 +1001,7 @@ pub use materials::MaterialHandle;
 pub use mesh_pool::{MeshHandle, MeshPoolStats};
 pub use pipeline_builds::{
     FirstUseBuild, FirstUseReport, PipelineFamily, PipelineInventory, PipelineStats, PipelineWarmup,
+    WarmUpBuilds, warm_up_builds,
 };
 pub use post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Crt, DepthOfFieldSettings, Desaturation,

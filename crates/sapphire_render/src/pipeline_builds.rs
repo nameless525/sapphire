@@ -390,6 +390,49 @@ impl Drop for PipelineWarmup {
     }
 }
 
+/// Pipelines the warm-up's threads have started building in this process, and those building at this moment
+/// ([`warm_up_builds`]).
+static WARM_UP_STARTED: AtomicU32 = AtomicU32::new(0);
+static WARM_UP_BUILDING: AtomicU32 = AtomicU32::new(0);
+
+/// The pipelines the warm-up's threads build, across the process (M5 X3): every renderer's, the one being made
+/// on the pool among them, which no ledger of its own can say yet. What a traced frame reads beside its own
+/// times, since a driver may hold a frame's GPU work behind compiles on other threads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WarmUpBuilds {
+    /// Started since the process did.
+    pub started: u32,
+    /// Building at this moment.
+    pub building: u32,
+}
+
+impl WarmUpBuilds {
+    /// Those finished since the process started.
+    #[must_use]
+    pub const fn finished(self) -> u32 {
+        self.started.saturating_sub(self.building)
+    }
+}
+
+/// The pipelines the warm-up's threads have started and are building now, across the process: two atomic loads,
+/// so a frame may read them as often as it likes.
+#[must_use]
+pub fn warm_up_builds() -> WarmUpBuilds {
+    // Started first: a build that starts between the loads then counts as building and not yet started, so the
+    // finished count can be one short for a read, never over and never going back.
+    let started = WARM_UP_STARTED.load(Ordering::Relaxed);
+    WarmUpBuilds { started, building: WARM_UP_BUILDING.load(Ordering::Relaxed) }
+}
+
+/// A pipeline building on a warm-up thread, counted while it lives.
+struct Building;
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        WARM_UP_BUILDING.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// The route to a pipeline. See the [module docs](self). Clones share one ledger and one cache.
 #[derive(Clone)]
 pub(crate) struct PipelineBuilds {
@@ -437,6 +480,7 @@ impl PipelineBuilds {
                 positions.and_then(|buffer| buffer.attributes.first()).map(|attribute| attribute.format);
             name_of(desc.label, [desc.vertex.compilation_options.constants, fragment], format)
         });
+        let _building = self.building();
         device.create_render_pipeline(desc)
     }
 
@@ -448,7 +492,17 @@ impl PipelineBuilds {
         desc: &wgpu::ComputePipelineDescriptor<'_>,
     ) -> wgpu::ComputePipeline {
         self.count(family, || name_of(desc.label, [desc.compilation_options.constants, &[]], None));
+        let _building = self.building();
         device.create_compute_pipeline(desc)
+    }
+
+    /// Counts a pipeline building on a warm-up thread ([`warm_up_builds`]) until what it returns drops.
+    fn building(&self) -> Option<Building> {
+        sapphire_jobs::on_warm_up_thread().then(|| {
+            WARM_UP_STARTED.fetch_add(1, Ordering::Relaxed);
+            WARM_UP_BUILDING.fetch_add(1, Ordering::Relaxed);
+            Building
+        })
     }
 
     fn count(&self, family: PipelineFamily, name: impl FnOnce() -> String) {
@@ -786,6 +840,34 @@ mod tests {
         assert!(
             report.to_string().contains("1 built on a frame's thread after the first frame:\n  sky: sky")
         );
+    }
+
+    /// A build on a warm-up thread counts as building while it runs and finished after; one on any other
+    /// thread isn't the warm-up's. Other tests build at once in this process, so the counts only bound.
+    #[test]
+    fn the_warm_ups_builds_count_while_they_run() {
+        let builds = PipelineBuilds::new(None);
+        assert!(builds.building().is_none(), "the test's thread isn't the warm-up's");
+        let before = warm_up_builds();
+        let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let off = builds.clone();
+        sapphire_jobs::spawn_warm_up(move || {
+            let building = off.building();
+            held.0.send(building.is_some()).expect("the test waits");
+            release.1.recv().expect("the test lets it go");
+        });
+        assert!(held.1.recv().expect("the warm-up ran"), "a warm-up thread's build counts");
+        let during = warm_up_builds();
+        assert!(during.building >= 1 && during.started > before.started, "{before:?} then {during:?}");
+        release.0.send(()).expect("it waits");
+        // Its count drops as it ends, after the send: wait for that, boundedly.
+        for _ in 0..1000 {
+            if warm_up_builds().finished() > before.finished() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the build never counted as finished: {before:?} then {:?}", warm_up_builds());
     }
 
     #[test]

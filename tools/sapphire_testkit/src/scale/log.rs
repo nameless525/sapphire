@@ -205,6 +205,9 @@ pub struct Log {
     pub zone_closed: Option<ZoneClosed>,
     /// The load's time, from the bench's first line.
     pub startup_ms: Option<f64>,
+    /// Whether it is a plain bench's log (a `bench` or `bench gpu` line, M5 Z2): one that holds the camera and
+    /// logs fields, never a `fight row`.
+    pub plain_bench: bool,
     /// A plain bench's `bench` and `bench gpu` fields, numbers only.
     pub fields: BTreeMap<String, f64>,
 }
@@ -409,6 +412,7 @@ impl Log {
                     log.startup_ms = Some(startup);
                 }
                 if has(line, "bench") || has(line, "bench gpu") {
+                    log.plain_bench = true;
                     for (name, value) in &fields {
                         if let Ok(number) = value.parse::<f64>() {
                             log.fields.insert((*name).to_owned(), number);

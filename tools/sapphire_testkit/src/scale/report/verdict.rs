@@ -18,6 +18,9 @@
 //! - **A wait for a texture's level** fails on a phase's 99th percentile over 30 frames (an `N+` bin is over), a
 //!   wait open at a run's end for 30 frames or more, the pool's too, or no line; its reasons line on the counting
 //!   walk fails on the pool ever too small for the tails or a zone that never arrived.
+//! - **Exit test 6** (M5 Z2, the orchestrator's ruling) judges the crowd on: a variant whose arguments turn it off
+//!   is shown beside, and a plain bench, which its log says holds the camera and logs no fight row, is read in its
+//!   own table; both are judged on nothing. A fight bench that logs no rows still fails.
 //! - **Pairs** (runs serving exit test 3, each package's on against off) are costs to read beside each other, so
 //!   no verdict reads them.
 //! - **A device's walk** (a run naming `devices`, M5 Z2) has lines of its own, a tier and a device each, by the
@@ -167,6 +170,14 @@ pub(super) fn section(
                             Some(index) => format!("{} ({})", run.name, run.variants[index].name),
                             None => run.name.clone(),
                         };
+                        if test == 6 && variant.is_some_and(|index| crowd_off(&run.variants[index].args)) {
+                            // The crowd off is what the crowd on is read against (M5 Z2, the orchestrator's
+                            // ruling): its arguments, not its name, say so.
+                            findings.notes.push(format!(
+                                "{name}: the crowd off, shown beside the crowd on, judged on nothing by exit test 6"
+                            ));
+                            continue;
+                        }
                         let rounds = gather(inputs, units, statuses, run_index, tier_index, variant, None);
                         findings.absorb(judge(test, run, &name, tier, &rounds));
                     }
@@ -304,6 +315,11 @@ pub(super) fn device_rows(
     rows
 }
 
+/// Whether a variant's arguments turn the crowd off (`--ambient off`).
+fn crowd_off(args: &[String]) -> bool {
+    args.windows(2).any(|pair| pair[0] == "--ambient" && pair[1] == "off")
+}
+
 /// The first few of a verdict's reasons, and how many more.
 fn short(why: &[String]) -> String {
     const SHOWN: usize = 4;
@@ -375,7 +391,15 @@ pub(super) fn judge(test: u32, run: &Run, name: &str, tier: &Tier, rounds: &Roun
             .contains(&row)
         }),
         6 => {
-            if run.timed {
+            let plain = rounds.rounds.iter().all(|round| round.log.plain_bench && round.log.timed.is_empty());
+            if run.timed && plain {
+                // A held bench (M5 Z2, the orchestrator's ruling): its log, not its name, says it is one, and a
+                // fight bench that logs no rows still fails below.
+                findings.notes.push(format!(
+                    "{name}: a plain bench, which logs no fight rows, read in its own table and judged on nothing \
+                     by exit test 6"
+                ));
+            } else if run.timed {
                 timed_rows(&mut findings, name, rounds, |row| row == "animation and ik");
             } else {
                 crowd(&mut findings, name, tier, rounds);
@@ -1030,6 +1054,34 @@ mod tests {
         assert_eq!(findings.failed, ["trip r1 first: 2 arrivals held to their bound"]);
         let findings = judge(2, trip, "trip", &tier, &rounds(&[&held("first", 0)]));
         assert_eq!(Verdict::of(&findings), Verdict::NotJudged, "{findings:?}");
+    }
+
+    /// Exit test 6 (M5 Z2, the orchestrator's ruling): a held bench, which its log says logs no fight rows, is
+    /// shown and judged on nothing; a fight bench that logs no rows still fails; the crowd off is told by its
+    /// arguments.
+    #[test]
+    fn a_held_bench_is_shown_and_a_fight_bench_with_no_rows_fails() {
+        let manifest = manifest();
+        let tier = tier(&manifest, "desktop-high");
+        let hold = manifest.run("crowd-hold").expect("a run");
+        let held = "x INFO sapphire::sandbox: bench frames=1200 width=2560 height=1440 tier=\"Desktop-High\"\n\
+                    x INFO sapphire::sandbox: bench gpu frames=239 gpu_frame_us=10539.5\n";
+        let findings = judge(6, hold, "crowd-hold (on)", &tier, &rounds(&[held]));
+        assert!(findings.failed.is_empty(), "{findings:?}");
+        assert!(findings.notes[0].contains("a plain bench, which logs no fight rows"), "{findings:?}");
+        let tour = manifest.run("crowd-tour").expect("a run");
+        let fight = "x INFO sapphire::sandbox: bench of a fight tier=\"desktop-high\" startup_ms=900.0\n";
+        let findings = judge(6, tour, "crowd-tour (on)", &tier, &rounds(&[fight]));
+        assert_eq!(findings.failed, ["crowd-tour (on): no timed row logged"]);
+        let off = tour.variants.iter().find(|variant| crowd_off(&variant.args)).expect("an off variant");
+        assert_eq!(off.name, "off");
+        assert!(
+            !tour
+                .variants
+                .iter()
+                .filter(|variant| variant.name == "on")
+                .any(|variant| crowd_off(&variant.args))
+        );
     }
 
     /// A count over its budget in any round fails, and the pool under a binding pool is the run's own.

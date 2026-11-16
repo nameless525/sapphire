@@ -537,7 +537,11 @@ jobs:
     name: Golden images (metal 1/1)
     runs-on: macos-26
     # One shard needs no artifact fanout.
-    timeout-minutes: 45
+    #
+    # 75 minutes (2026-11-16), where 45 held while the build cache was warm: a cold build takes 13 to 15
+    # minutes and the scenes 25 to 30, and a job cancelled at its limit saves no cache, so once the cache
+    # was evicted every later run began cold and met the same limit, on main too.
+    timeout-minutes: 75
     env:
       SAPPHIRE_GPU_BACKEND: metal
       SAPPHIRE_GPU_DEBUG: none

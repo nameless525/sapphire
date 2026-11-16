@@ -875,6 +875,7 @@ pub(crate) fn report_texture_waits(phase: &'static str, stats: &TextureStreaming
         raised_bytes = stats.raised_bytes,
         reraised_bytes = stats.reraised_bytes,
         reraised_within_updates = RERAISE_WITHIN,
+        tails_over_pool = stats.tails_over_pool,
         "texture wait reasons{reasons}",
     );
 }

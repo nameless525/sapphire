@@ -903,6 +903,19 @@ impl AssetServer {
         &self.budgets
     }
 
+    /// Bytes `kind`'s pool ([`AssetBudgets::pool`]) holds now, every asset in it from its load on, as the
+    /// residency count at [`Self::update`] takes them ([`AssetStats::over_budget`]): the one count of the pool
+    /// that a streamer within it plans by (M5 Z2). It walks every slot.
+    #[must_use]
+    pub fn in_use(&self, kind: AssetKind) -> u64 {
+        let pool = AssetBudgets::pool(kind);
+        self.slots
+            .values()
+            .filter(|slot| AssetBudgets::pool(slot.handle.kind()) == pool)
+            .map(Slot::resident_size)
+            .sum()
+    }
+
     /// Holds every mount and remount from here on to `release`: a pack it doesn't name, or whose file isn't
     /// the length and header it names, fails to mount (see [mounting](AssetServer#mounting)). A shipping
     /// build's call, on its install's manifest, before it mounts anything; development builds, whose packs

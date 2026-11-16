@@ -150,7 +150,7 @@ impl Pair {
         let tops = self.tops;
         let shape =
             |id: AssetId| Some(Shape { whole: whole(), top: tops[usize::from(id == B)], above: ABOVE });
-        self.levels.plan(shape, coverage, self.streaming, u64::MAX);
+        self.levels.plan(shape, coverage, self.streaming, u64::MAX, 0);
         for (top, id) in self.tops.iter_mut().zip([A, B]) {
             let choice = self.levels.textures[&id].choice;
             if (choice.lower && *top < choice.planned) || (choice.start.is_some() && choice.planned < *top) {
@@ -227,7 +227,7 @@ fn a_streamed_texture_never_rises_past_one_held_whole_the_pool_lowered() {
         let coverage = TextureCoverageFrame { frame, textures: &reads[..if frame == 1 { 1 } else { 2 }] };
         let now = tops;
         let shape = |id: AssetId| Some(Shape { whole, top: now[usize::from(id == B)], above: ABOVE });
-        levels.plan(shape, coverage, streaming, u64::MAX);
+        levels.plan(shape, coverage, streaming, u64::MAX, 0);
         for (top, id) in tops.iter_mut().zip([A, B]) {
             let choice = levels.textures[&id].choice;
             if (choice.lower && *top < choice.planned) || (choice.start.is_some() && choice.planned < *top) {
@@ -277,13 +277,38 @@ fn an_update_with_no_estimate_opens_no_wait() {
     // No frame recorded yet: the estimate's frame is the one already seen.
     let coverage = TextureCoverageFrame { frame: 0, textures: &[] };
     let streaming = TextureStreaming { pool: u64::MAX, raise: u64::MAX };
-    levels.plan(shape, coverage, streaming, u64::MAX);
+    levels.plan(shape, coverage, streaming, u64::MAX, 0);
     let choice = &mut levels.textures.get_mut(&A).expect("bound").choice;
     assert_eq!(choice.need, ABOVE, "unread, it needs its tail");
     let (need, pool_held) = (choice.need, choice.planned > choice.need);
     let mut stats = TextureStreamingStats::default();
     count_wait(choice, &mut stats, ABOVE, need, pool_held);
     assert_eq!(stats.all_waits(), TextureWaits::default(), "no wait opened");
+}
+
+/// The pool is the server's (M5 Z2): what the server's textures' pool holds that the streamer doesn't (a tail
+/// still loading, a level let go of that the server can't unload yet) takes the room first, so a level starts
+/// only if it fits beside everything the server holds; a lower frees room only for levels the server can give
+/// back now; and a pool too small for what the streamer can't lower is counted, not exceeded silently.
+#[test]
+fn a_level_starts_only_with_room_beside_everything_the_server_holds() {
+    let whole = whole();
+    let start = |outside: u64, pool: u64| {
+        let mut levels = TextureLevels::default();
+        levels.bind(A, false);
+        let shape = |_| Some(Shape { whole, top: ABOVE, above: ABOVE });
+        let reads = [read(A, 0.2)];
+        let coverage = TextureCoverageFrame { frame: 1, textures: &reads };
+        let streaming = TextureStreaming { pool, raise: u64::MAX };
+        // The server holds A's tail, as the streamer counts it, and `outside` it doesn't.
+        levels.plan(shape, coverage, streaming, u64::MAX, bytes_from(&whole, ABOVE) + outside);
+        (levels.textures[&A].choice.start.is_some(), levels.stats.tails_over_pool)
+    };
+    let pool = bytes_from(&whole, 0);
+    assert_eq!(start(0, pool), (true, 0), "with nothing else held, A's levels fit");
+    let level = whole.level_byte_len(ABOVE - 1);
+    assert_eq!(start(pool - bytes_from(&whole, ABOVE) - level + 1, pool), (false, 0), "no room for a level");
+    assert_eq!(start(pool, pool), (false, 1), "the tail alone is over what's left: counted");
 }
 
 /// One update's count of a texture for [`wait`], with the open waits started over as `count` does.

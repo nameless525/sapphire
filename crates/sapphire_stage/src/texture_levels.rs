@@ -91,7 +91,8 @@ use std::collections::{BTreeMap, HashMap};
 use sapphire_assets::texture::TextureDesc;
 use sapphire_assets::texture_level::{ArchivedTextureLevel, TextureLevel};
 use sapphire_assets::{
-    AssetId, AssetServer, AssetSlot, CpuResident, Handle, LoadPriority, LoadState, Upload, UploadError,
+    AssetId, AssetKind, AssetServer, AssetSlot, CpuResident, Handle, LoadPriority, LoadState, Upload,
+    UploadError,
 };
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{DEFAULT_MIP_BUDGET, Renderer, StreamedTops, TextureCoverageFrame};
@@ -233,6 +234,10 @@ pub struct TextureStreamingStats {
     /// [`RERAISE_WITHIN`] updates of being lowered off: the churn, levels traded back and forth (M5 Z2).
     pub raised_bytes: u64,
     pub reraised_bytes: u64,
+    /// Updates at which the pool couldn't hold what the streamer can't lower, the tails and what the server
+    /// holds beside them, since the streamer started: a pool too small for the content, a configuration error,
+    /// logged at its first (M5 Z2). The pool is over by the rest, which no plan can take back.
+    pub tails_over_pool: u32,
 }
 
 impl TextureStreamingStats {
@@ -763,7 +768,7 @@ impl TextureLevels {
             Some(streaming) => {
                 let start_bytes =
                     if unlimited { u64::MAX } else { server.budgets().upload_per_frame.min(streaming.raise) };
-                self.choose(textures, renderer, streaming, start_bytes)
+                self.choose(textures, renderer, server, streaming, start_bytes)
             }
             None => 0,
         };
@@ -859,34 +864,44 @@ impl TextureLevels {
         &mut self,
         textures: &HashMap<AssetId, Held<GpuTexture>>,
         renderer: &Renderer,
+        server: &AssetServer,
         streaming: TextureStreaming,
         start_bytes: u64,
     ) -> u32 {
         let shape = |id: AssetId| textures.get(&id).map(|held| Shape::of(&held.object));
-        self.plan(shape, renderer.texture_coverage(), streaming, start_bytes)
+        let in_use = server.in_use(AssetKind::Texture);
+        self.plan(shape, renderer.texture_coverage(), streaming, start_bytes, in_use)
     }
 
     /// Each texture's need from `coverage`, the top held by hysteresis, the plan within `streaming`'s pool (with
     /// what the pool lowered last frame), and which textures may start loading levels, within `start_bytes`.
-    /// `shape` says what each texture on the renderer is. Returns how many textures may start.
+    /// `shape` says what each texture on the renderer is, and `in_use` what the asset server's textures' pool
+    /// holds now ([`AssetServer::in_use`]), the one count of it: what of that this doesn't hold (tails still
+    /// loading, levels let go of that the server can't unload yet) takes the pool's room first. Returns how many
+    /// textures may start.
     fn plan(
         &mut self,
         shape: impl Fn(AssetId) -> Option<Shape>,
         coverage: TextureCoverageFrame<'_>,
         streaming: TextureStreaming,
         start_bytes: u64,
+        in_use: u64,
     ) -> u32 {
         let fresh = coverage.frame != self.seen;
         self.seen = coverage.frame;
         let mut total = 0u64;
         let mut tails = 0u64;
         let mut wanted_bytes = 0u64;
+        let mut counted = 0u64;
         self.order.clear();
         for (&id, wanted) in &mut self.textures {
             let Some(texture) = shape(id) else { continue };
             let (above, whole) = (texture.above, texture.whole);
             let floor = wanted.floor(above);
             let held_whole = wanted.held_whole();
+            // What it holds as the server counts it: on the GPU, and its levels on their way.
+            let lowest = (0..texture.top).find(|&index| wanted.holds(index)).unwrap_or(texture.top);
+            counted += bytes_from(&whole, lowest);
             let choice = &mut wanted.choice;
             (choice.start, choice.lower) = (None, false);
             if wanted.users == 0 {
@@ -921,10 +936,28 @@ impl TextureLevels {
                 self.order.push((rank(&texture, choice, held_whole), id));
             }
         }
+        // The pool's room is the server's (M5 Z2): what its textures' pool holds that these don't, tails still
+        // loading and levels let go of that it can't unload yet, comes off the pool first, so a plan and its
+        // starts fit beside everything the server holds. A pool too small for the tails and that is a
+        // configuration error, counted and logged, which no plan can take back.
+        let room = streaming.pool.saturating_sub(in_use.saturating_sub(counted));
+        if tails > room {
+            if self.stats.tails_over_pool == 0 {
+                tracing::error!(
+                    target: LOG_TARGET,
+                    pool = streaming.pool,
+                    tails,
+                    outside = in_use.saturating_sub(counted),
+                    "the texture pool can't hold the streamed textures' tails and what the server holds beside \
+                     them: it is too small for this content"
+                );
+            }
+            self.stats.tails_over_pool = self.stats.tails_over_pool.saturating_add(1);
+        }
         // Over the pool: lower plans a level at a time, the greatest rank first.
-        if total > streaming.pool {
+        if total > room {
             let mut heap = std::collections::BinaryHeap::from(std::mem::take(&mut self.order));
-            while total > streaming.pool
+            while total > room
                 && let Some((_, id)) = heap.pop()
             {
                 let (Some(wanted), Some(texture)) = (self.textures.get_mut(&id), shape(id)) else {
@@ -959,7 +992,7 @@ impl TextureLevels {
             let choice = &mut wanted.choice;
             while choice.planned > base {
                 let level = texture.whole.level_byte_len(choice.planned - 1);
-                if total + 2 * level > streaming.pool {
+                if total + 2 * level > room {
                     break 'rise;
                 }
                 total += level;
@@ -1000,7 +1033,14 @@ impl TextureLevels {
             };
             let top = texture.top;
             let lowest = (0..top).find(|&index| wanted.holds(index)).unwrap_or(top);
-            held -= bytes_from(&texture.whole, lowest) - bytes_from(&texture.whole, wanted.choice.planned);
+            // A level still loading can't go back to the server yet, so its room isn't free this frame.
+            let loading: u64 = (lowest..top)
+                .filter(|index| wanted.handles.contains_key(index) && !wanted.arrived.contains_key(index))
+                .map(|index| texture.whole.level_byte_len(index))
+                .sum();
+            held -= bytes_from(&texture.whole, lowest)
+                - bytes_from(&texture.whole, wanted.choice.planned)
+                - loading;
             wanted.choice.lower = true;
         }
         self.stats.lowers_waiting = (self.order.len() - lowers) as u32;
@@ -1035,7 +1075,7 @@ impl TextureLevels {
             if !urgent && (bounded >= MAX_STARTS || (bounded > 0 && bytes + rank.bytes > start_bytes)) {
                 continue;
             }
-            if held + rank.bytes > streaming.pool {
+            if held + rank.bytes > room {
                 continue;
             }
             if !urgent {

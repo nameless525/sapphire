@@ -101,12 +101,13 @@
                 rows: ["cpu frame", "gpu frame", "gpu main", "gpu post", "draw calls"],
                 serves: [1],
             ),
-            // Exit test 2: the streamer under a pool that binds, the district's textures twice it: half of what each
-            // cook's walk holds whole. The desktops' 1280 MiB is half their 2,560 MiB pool, which the budget's sets
-            // fill (B2). The phones' 331 MiB is half the mobile cook's 695,870,268 bytes (663.6 MiB), the `texture
-            // pool bytes` the counting walk with whole textures (`counted`) holds at the tour's end on both phones
-            // (d1d8b612f's batch): its sets are 1K (`MOBILE_SET_SIZE`), so against the phones' own 600 and 400 MiB
-            // it is only ×1.1 and ×1.66.
+            // Exit test 2: the streamer under a pool that binds, the district's textures twice it: exactly half of
+            // what each cook's walk holds whole, in whole MiB, rounded down (M5 Z2). That whole is the `texture pool
+            // bytes` the counting walk with whole textures (`counted`) holds at the tour's end, the same on both
+            // tiers of a cook (ce7707fd9's batch): the desktop cook's 2,733,906,860 bytes, half 1,366,953,430, so
+            // 1303 MiB, which holds the views' worst ask of 1,362,595,306 bytes; the mobile cook's 699,285,048,
+            // half 349,642,524, so 333 MiB. The mobile cook's sets are 1K (`MOBILE_SET_SIZE`), so against the
+            // phones' own 600 and 400 MiB its whole is only ×1.1 and ×1.66.
             (
                 name: "streaming",
                 about: "memory and streaming along the tour, the pool binding",
@@ -115,10 +116,10 @@
                     "--no-hot-reload", "--live-link", "off",
                 ],
                 tier_args: {
-                    "desktop-high": ["--texture-pool", "1280"],
-                    "desktop-low": ["--texture-pool", "1280"],
-                    "mobile-high": ["--texture-pool", "331"],
-                    "mobile-low": ["--texture-pool", "331"],
+                    "desktop-high": ["--texture-pool", "1303"],
+                    "desktop-low": ["--texture-pool", "1303"],
+                    "mobile-high": ["--texture-pool", "333"],
+                    "mobile-low": ["--texture-pool", "333"],
                 },
                 frames: Lap,
                 read: [Memory, Streaming],
@@ -329,12 +330,14 @@
                     "--mount", "zone_proving_hub", "--ambient", "on", "--texture-streaming", "on", "--no-hot-reload",
                     "--live-link", "off",
                 ],
-                // `streaming`'s pools, half what each cook's walk holds whole.
+                // `streaming`'s pools, half what each cook's walk holds whole, and paced at each tier's frame rate
+                // (tiers.ron's `frame_rate`), so a wait's frames each last a frame's time, as a game's do (M5 Z2):
+                // paced, it is timed work, planned into the sittings, though it reads counts.
                 tier_args: {
-                    "desktop-high": ["--texture-pool", "1280"],
-                    "desktop-low": ["--texture-pool", "1280"],
-                    "mobile-high": ["--texture-pool", "331"],
-                    "mobile-low": ["--texture-pool", "331"],
+                    "desktop-high": ["--texture-pool", "1303", "--bench-pace", "60"],
+                    "desktop-low": ["--texture-pool", "1303", "--bench-pace", "60"],
+                    "mobile-high": ["--texture-pool", "333", "--bench-pace", "60"],
+                    "mobile-low": ["--texture-pool", "333", "--bench-pace", "30"],
                 },
                 frames: Lap,
                 phases: 1,
@@ -375,10 +378,12 @@
             ),
             // Exit test 2 where §1 says its counters run beside this Mac (M5 Z2): `counted-streaming`'s walk on the
             // Simulator and the emulator, `cargo xtask bench-scale device --platform ios-sim|android`, one round a
-            // phone tier. Their bundles carry the `ci` district (the budget's is gigabytes), whose phone tree with
-            // the shipped mobile cook holds 28,932,504 bytes (27.6 MiB) of textures whole on both phones
-            // (`texture pool bytes`, tests/counts/district-ci.txt), so its pool is 13 MiB, half that rounded down
-            // as the batch's 331 is: the district's textures come to 2.1 times it.
+            // phone tier, paced as it is. Their bundles carry the `ci` district (the budget's is gigabytes), whose
+            // phone tree with the shipped mobile cook holds 28,932,504 bytes (27.6 MiB) of textures whole on both
+            // phones (`texture pool bytes`, tests/counts/district-ci.txt). Its pool is 28 MiB, the orchestrator's
+            // ruling (M5 Z2): it holds the views' worst ask, 28,903,381 bytes, and the whole too, so its walk proves
+            // the streamer's waits and uploads on a device, not a binding pool, which the batch's walk proves on
+            // this Mac.
             (
                 name: "device-streaming",
                 about: "the tour's counts on a device, a frame in seven drawn, the ci district's streamer binding",
@@ -388,8 +393,8 @@
                     "--live-link", "off",
                 ],
                 tier_args: {
-                    "mobile-high": ["--texture-pool", "13"],
-                    "mobile-low": ["--texture-pool", "13"],
+                    "mobile-high": ["--texture-pool", "28", "--bench-pace", "60"],
+                    "mobile-low": ["--texture-pool", "28", "--bench-pace", "30"],
                 },
                 tiers: ["mobile-high", "mobile-low"],
                 frames: Lap,

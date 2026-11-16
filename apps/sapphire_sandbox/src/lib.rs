@@ -362,7 +362,9 @@
 //!   for at least `<frames>`, every row and count with its worst frame's metres along the rail, the frames split
 //!   by the kind of core they ran on, and `--bench-trace` takes every frame. Under `--day-length` each phase
 //!   starts its tour at the hour the first did, so each walks the same stretch of the day (M5 Z1). With `--draw-every` it is a plain
-//!   bench, which adds a `zone walk` row (streaming's and the uploads' times, what uploaded, the pools' peaks).
+//!   bench, which adds a `zone walk` row (streaming's and the uploads' times, what uploaded, the pools' peaks),
+//!   and `--bench-pace <frames a second>` paces its frames at a tier's frame time, so the streamer's waits are
+//!   read in frames that last one (M5 Z2).
 //!   Either fails if any frame built a pipeline; `--inventory-without ambient` shows that failing, by leaving its
 //!   grid undeclared.
 //! - `--stream off|<entities>:<metres>`: how the town's zone streams (M3 W2): not at all, so the town has

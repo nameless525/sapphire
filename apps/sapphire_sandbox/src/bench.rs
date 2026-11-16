@@ -53,6 +53,7 @@
 //! then asks for the main thread to be scheduled as user-interactive, as a game the user started is
 //! ([`schedule`]): a run started from a background shell would otherwise measure what the shell's class allows.
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use sapphire_core::alloc;
@@ -233,6 +234,36 @@ fn holds_at_start(frame: u64, walk: bool) -> bool {
     walk && frame < u64::from(WARMUP_FRAMES)
 }
 
+/// A counting walk's pace under `--bench-pace` (M5 Z2): each frame starts no sooner than `period` after the last
+/// began, on [`Stopwatch`]'s clock (R2). One that ran long starts the next at once, never catching up on the
+/// time it lost, as a game's frame waits for its next swap.
+struct Pace {
+    period: Duration,
+    last: Option<Stopwatch>,
+}
+
+impl Pace {
+    fn new(period: Duration) -> Self {
+        Self { period, last: None }
+    }
+
+    /// Waits for the next frame's start, and starts it.
+    fn wait(&mut self) {
+        if let Some(last) = &self.last {
+            let left = pace_left(last.elapsed(), self.period);
+            if !left.is_zero() {
+                std::thread::sleep(left);
+            }
+        }
+        self.last = Some(Stopwatch::start());
+    }
+}
+
+/// What's left of a paced frame `since` after it began: none once it has run its `period` or longer.
+fn pace_left(since: Duration, period: Duration) -> Duration {
+    period.saturating_sub(since)
+}
+
 /// Whether frame `frame` runs its graph under `--draw-every <every>`: a counting walk's every `every`th from its
 /// first measured frame, so the frame of its first step is drawn; anything else's every `every`th from frame 0.
 fn drawn_frame(frame: u64, every: u64, walk: bool) -> bool {
@@ -301,7 +332,12 @@ pub(crate) fn run(
     let counting_walk = drawn.is_some() && options.zone_walk.is_some();
     // Its waits for a texture's level from here, logged at its end as a fight's bench logs a phase's (M5 Z2).
     stage.content.start_texture_waits_over();
+    // `--bench-pace` (M5 Z2): each frame starts a frame's time after the last began, or late if that ran long.
+    let mut pace = options.bench_pace.map(|rate| Pace::new(Duration::from_secs(1) / rate.get()));
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
+        if let Some(pace) = &mut pace {
+            pace.wait();
+        }
         stage.lose_frames = draw_every.is_some_and(|every| !drawn_frame(frame, every, counting_walk));
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
@@ -423,7 +459,8 @@ pub(crate) fn run(
     }
     if draw_every.is_some() {
         // Most frames lost: what's left checks the load's inventory and measures nothing, as a fight's does.
-        tracing::info!(target: LOG_TARGET, frames, "one frame in --draw-every drawn: nothing measured");
+        let paced = options.bench_pace.map_or(0, NonZeroU32::get);
+        tracing::info!(target: LOG_TARGET, frames, paced, "one frame in --draw-every drawn: nothing measured");
         stage.check_gpu()?;
         return stage.show.fight.finish().map_err(AppInitError::msg);
     }
@@ -760,7 +797,19 @@ fn gpu_times(
 mod tests {
     use sapphire_render::PipelineStats;
 
-    use super::{WARMUP_FRAMES, check_no_waits, drawn_frame, holds_at_start};
+    use std::time::Duration;
+
+    use super::{WARMUP_FRAMES, check_no_waits, drawn_frame, holds_at_start, pace_left};
+
+    /// A paced frame waits out the rest of its period, and one that ran its period or longer waits for nothing.
+    #[test]
+    fn a_paced_frame_waits_out_its_period_and_never_catches_up() {
+        let period = Duration::from_secs(1) / 60;
+        assert_eq!(pace_left(Duration::ZERO, period), period);
+        assert_eq!(pace_left(period / 4, period), period - period / 4);
+        assert_eq!(pace_left(period, period), Duration::ZERO);
+        assert_eq!(pace_left(period * 3, period), Duration::ZERO, "a long frame owes the next nothing");
+    }
 
     /// A counting walk holds at its rail's start through the warm-up and counts from its first step: the first
     /// measured frame is drawn, and the frames drawn are every `n`th from it. A held view keeps its old cadence.

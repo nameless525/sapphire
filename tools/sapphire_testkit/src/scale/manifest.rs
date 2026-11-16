@@ -196,7 +196,8 @@ pub struct Run {
     #[serde(default)]
     pub rounds: Option<u32>,
     /// Whether it's timed, and so planned into sittings. A run of counts alone (`--draw-every`) isn't: it runs
-    /// in an ordinary slot (`run --counts`), and its rounds must count the same.
+    /// in an ordinary slot (`run --counts`), and its rounds must count the same, unless it's paced
+    /// ([`Run::paced`]): a walk at a frame's time is timed work, planned into sittings, though read as counts.
     #[serde(default = "yes")]
     pub timed: bool,
     /// The baseline's run it stands beside, by name, read from the baseline's folder for the same tier.
@@ -311,6 +312,11 @@ impl ScaleBench {
             }
             if run.phases == 0 || run.rounds == Some(0) || run.frames == Frames::Count(0) {
                 return Err(format!("{what}: phases, rounds and frames must be above 0"));
+            }
+            if let Some(tier) =
+                self.tiers.iter().find(|tier| run.on(&tier.name) && run.pace(&tier.name) == Some(0))
+            {
+                return Err(format!("{what}: {PACE_FLAG} on {} takes frames a second above 0", tier.name));
             }
             if run.size.as_deref().is_some_and(|text| size(text).is_none()) {
                 return Err(format!("{what}: its size isn't <width>x<height>"));
@@ -446,7 +452,7 @@ impl ScaleBench {
         for round in 1..=most {
             for (tier_index, tier) in self.tiers.iter().enumerate() {
                 for (run_index, run) in self.runs.iter().enumerate() {
-                    if run.timed != timed
+                    if (run.timed || run.paced()) != timed
                         || round > self.rounds_of(run)
                         || !run.on(&tier.name)
                         || !run.devices.is_empty()
@@ -488,10 +494,12 @@ impl ScaleBench {
         smoke.map_or(frames, |smoke| frames.min(smoke.frames))
     }
 
-    /// A unit's stated length: its load, then its phases' frames at the tier's rate, in whole seconds.
+    /// A unit's stated length: its load, then its phases' frames at the tier's rate, or its pace where that's
+    /// slower, in whole seconds.
     fn seconds(&self, run: &Run, tier: &Tier, smoke: Option<Smoke>) -> u32 {
         let frames = u64::from(self.frames(run, tier, smoke)) * u64::from(run.phases);
-        let drawing = frames.div_ceil(u64::from(tier.frames_a_second));
+        let rate = run.pace(&tier.name).map_or(tier.frames_a_second, |pace| pace.min(tier.frames_a_second));
+        let drawing = frames.div_ceil(u64::from(rate.max(1)));
         u32::try_from(u64::from(tier.startup_seconds) + drawing).unwrap_or(u32::MAX)
     }
 
@@ -573,7 +581,24 @@ impl Run {
     pub fn runs_the_day(&self) -> bool {
         self.args.iter().any(|arg| arg == "--day-length")
     }
+
+    /// Its frames a second on the tier called `tier` under `--bench-pace` (M5 Z2): a walk paced at the tier's
+    /// frame time, each frame a frame's time as a game's is, so the streamer's waits are read in frames that
+    /// last one. `None` unpaced; `Some(0)` for a pace that isn't a count, which the check refuses.
+    pub fn pace(&self, tier: &str) -> Option<u32> {
+        let mut args = self.args.iter().chain(self.tier_args.get(tier).into_iter().flatten());
+        args.position(|arg| arg == PACE_FLAG)?;
+        Some(args.next().and_then(|rate| rate.parse().ok()).unwrap_or(0))
+    }
+
+    /// Whether any tier's walk is paced: timed work all the same, planned into sittings, even of counts alone.
+    pub fn paced(&self) -> bool {
+        self.args.iter().chain(self.tier_args.values().flatten()).any(|arg| arg == PACE_FLAG)
+    }
 }
+
+/// The sandbox's bench paced at a tier's frame rate (M5 Z2).
+const PACE_FLAG: &str = "--bench-pace";
 
 /// Arguments the runner gives every unit, so a run can't.
 const RUNNER_FLAGS: [&str; 4] = ["--bench", "--tier", "--size", "--bench-trace"];
@@ -752,24 +777,61 @@ mod tests {
 
     /// A phone draws its tier's capped scene onto a native panel and upscales it (spec §3.1's "~1600×740 →
     /// native"), so every phone unit is at a panel's size, never the scene's; and exit test 2's runs give every
-    /// tier a pool under half of what its cook's district holds whole, the phones as the desktops.
+    /// tier a pool of exactly half what its cook's district holds whole, in whole MiB rounded down (M5 Z2): the
+    /// `texture pool bytes` `counted` holds at the tour's end in ce7707fd9's batch, as bench/scale.ron says.
     #[test]
     fn the_phones_draw_at_a_panel_and_every_tier_streams_under_half_its_cook() {
         let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
         for tier in manifest.tiers.iter().filter(|tier| tier.cook == Cook::Mobile) {
             assert_eq!(tier.size, "2532x1170", "{} draws at its scene's size", tier.name);
         }
+        let whole = |cook: Cook| match cook {
+            Cook::Desktop => 2_733_906_860_u64,
+            Cook::Mobile => 699_285_048,
+        };
         for run in
             manifest.runs.iter().filter(|run| run.name == "streaming" || run.name == "counted-streaming")
         {
             for tier in &manifest.tiers {
                 let pool = run.tier_args.get(&tier.name).and_then(|args| {
                     let at = args.iter().position(|arg| arg == "--texture-pool")?;
-                    args.get(at + 1)?.parse::<u32>().ok()
+                    args.get(at + 1)?.parse::<u64>().ok()
                 });
-                assert!(pool.is_some(), "{} on {} streams under its tier's own pool", run.name, tier.name);
+                assert_eq!(
+                    pool,
+                    Some(whole(tier.cook) / 2 / (1 << 20)),
+                    "{} on {}: half its cook's whole",
+                    run.name,
+                    tier.name
+                );
+                // The desktops' pool holds the views' worst ask on the desktop cook.
+                if tier.cook == Cook::Desktop {
+                    assert!(pool.is_some_and(|pool| pool << 20 >= 1_362_595_306), "{}", tier.name);
+                }
             }
         }
+    }
+
+    /// The counting walk under a binding pool is paced at each tier's frame rate (tiers.ron's `frame_rate`), so
+    /// it's timed work, planned into the sittings and never run beside them, lasting its frames at that rate.
+    #[test]
+    fn the_streaming_counting_walk_is_paced_and_planned_into_the_sittings() {
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let run = manifest.run("counted-streaming").unwrap();
+        let paces: Vec<_> = manifest.tiers.iter().map(|tier| run.pace(&tier.name)).collect();
+        assert_eq!(paces, [Some(60), Some(60), Some(60), Some(30)]);
+        assert!(run.paced() && !run.timed, "read as counts");
+        let named =
+            |units: Vec<Unit>| units.into_iter().any(|unit| unit.name.starts_with("counted-streaming."));
+        assert!(named(manifest.units(None)) && !named(manifest.counting(None)));
+        let unit =
+            manifest.units(None).into_iter().find(|unit| unit.name == "counted-streaming.mobile-low.r1");
+        let tier = &manifest.tiers[3];
+        assert_eq!(unit.unwrap().seconds, tier.startup_seconds + tier.lap.div_ceil(30));
+        assert!(manifest.run("counted").unwrap().pace("desktop-high").is_none());
+        let unpaced = include_str!("../../../../bench/scale.ron")
+            .replace("\"--bench-pace\", \"30\"", "\"--bench-pace\"");
+        assert!(ScaleBench::parse(&unpaced).unwrap_err().contains("--bench-pace on mobile-low"));
     }
 
     /// A run on a device (M5 Z2) is apart from the batch: none of its units is the Mac's, each device has its
@@ -809,9 +871,10 @@ mod tests {
         assert!(ScaleBench::parse(&timed).unwrap_err().contains("counts alone"));
     }
 
-    /// The devices' walk is `counted-streaming`'s, under the `ci` district's pool on the phone tiers alone: 13
-    /// MiB, half the 28,932,504 bytes its phone tree holds whole (tests/counts/district-ci.txt's `texture pool
-    /// bytes` on the phones), rounded down, so its textures come to twice the pool or more.
+    /// The devices' walk is `counted-streaming`'s, paced as it is, under the `ci` district's pool on the phone
+    /// tiers alone: 28 MiB, the orchestrator's ruling (M5 Z2), which holds the views' worst ask of 28,903,381
+    /// bytes and is within a MiB of the 28,932,504 its phone tree holds whole (tests/counts/district-ci.txt's
+    /// `texture pool bytes` on the phones).
     #[test]
     fn the_devices_walk_counted_streamings_walk_under_half_the_ci_districts_textures() {
         let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
@@ -829,7 +892,10 @@ mod tests {
                 .expect("the ci walk's whole textures on the phone");
             let pool: u64 = device.tier_args[tier][1].parse().unwrap();
             assert_eq!(device.tier_args[tier][0], "--texture-pool");
-            assert_eq!(pool, whole / 2 / (1 << 20), "{tier}: half what the walk holds whole, in whole MiB");
+            assert_eq!(pool, 28, "{tier}: the device rows' pool");
+            assert!(pool << 20 >= 28_903_381, "{tier}: it holds the views' worst ask");
+            assert_eq!(whole >> 20, pool - 1, "{tier}: within a MiB of the whole");
+            assert_eq!(device.pace(tier), counted.pace(tier), "{tier}: paced as the batch's walk");
         }
         assert!(
             device.tiers.iter().all(|tier| manifest.tier(tier).is_some_and(|tier| tier.cook == Cook::Mobile))

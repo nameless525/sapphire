@@ -517,6 +517,11 @@ pub(crate) struct Options {
     /// times nothing (M3 K1): every pipeline is built before a graph runs, so one that isn't counts. A walk's
     /// bench logs what the frames it drew submitted, as a bench's count rows (M5 X4).
     pub draw_every: Option<NonZeroU32>,
+    /// `--bench-pace <frames a second>`: a counting walk's frames paced at that rate (M5 Z2), each starting no
+    /// sooner than a frame's time after the last began, as a game's do at its tier's frame rate, so a wait for a
+    /// texture's level, counted in frames, lasts a frame's time each and the loads behind it run at a game's
+    /// speed. With `--bench` of `--zone-walk` and `--draw-every`; it times nothing.
+    pub bench_pace: Option<NonZeroU32>,
     /// `--capture-through-trips`, with `--replay` and `--capture-ticks` (M5 M6): each tick a capture counts is
     /// one of the replay's, a step a zone trip holds losing a frame, and more while the trip waits on its load,
     /// and stepping again, as a capture of a replay's end steps; so a capture can land after a trip, in the zone
@@ -1637,6 +1642,7 @@ impl Options {
                 CAPTURE_FLAG => capture = Some(PathBuf::from(value(CAPTURE_FLAG)?)),
                 BENCH_FLAG => bench = Some(number(&value(BENCH_FLAG)?, BENCH_FLAG)?),
                 "--bench-trace" => options.bench_trace = Some(PathBuf::from(value("--bench-trace")?)),
+                "--bench-pace" => options.bench_pace = Some(number(&value("--bench-pace")?, "--bench-pace")?),
                 OFFSCREEN_FLAG => serve = true,
                 CONTACT_SHEET_FLAG => {
                     options.clip = Some(lookdev::ClipName::parse(&value(CONTACT_SHEET_FLAG)?));
@@ -2074,6 +2080,13 @@ impl Options {
         if options.inventory_without.is_some() && !bench_of_a_load {
             return Err(format!(
                 "--inventory-without needs {BENCH_FLAG} of a fight (--replay, or --fight with --script) or of a zone"
+            ));
+        }
+        if options.bench_pace.is_some()
+            && !(benching && !fight && options.zone_walk.is_some() && options.draw_every.is_some())
+        {
+            return Err(format!(
+                "--bench-pace needs {BENCH_FLAG} of a counting walk: --zone-walk with --draw-every"
             ));
         }
         if options.draw_every.is_some() && !(capturing || serve || bench_of_a_load) {
@@ -3982,6 +3995,25 @@ mod tests {
         refused(&["--capture", "x", "--replay", "a", "--scenario", "s"], "--record");
         refused(&["--capture", "x", "--replay", "a", "--record", "b"], "exclusive");
         refused(&["--capture", "x", "--replay"], "--replay needs a value");
+    }
+
+    /// A bench's pace (M5 Z2) goes with a counting walk alone, at a rate above 0.
+    #[test]
+    fn a_bench_pace_goes_with_a_counting_walk() {
+        let walk = ["--bench", "1", "--zone", "district", "--zone-walk", "tour", "--draw-every", "7"];
+        let (options, _) = parse(&[&walk[..], &["--bench-pace", "60"]].concat()).unwrap();
+        assert_eq!(options.bench_pace.map(NonZeroU32::get), Some(60));
+        for args in [
+            &walk[..6],
+            &["--bench", "1", "--replay", "x", "--draw-every", "7"],
+            &["--offscreen", "--zone", "district", "--zone-walk", "tour", "--draw-every", "7"],
+        ] {
+            assert!(
+                parse(&[args, &["--bench-pace", "60"]].concat()).unwrap_err().contains("--bench-pace"),
+                "{args:?}"
+            );
+        }
+        assert!(parse(&[&walk[..], &["--bench-pace", "0"]].concat()).is_err());
     }
 
     #[test]

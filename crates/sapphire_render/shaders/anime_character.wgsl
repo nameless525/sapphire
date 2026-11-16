@@ -443,7 +443,7 @@ struct CharacterSurface {
 
 // Texture slot `slot` at `uv`, through the slot's swizzle (`swizzles` from the block).
 fn sample_material(map: texture_2d<f32>, swizzles: vec4<u32>, slot: u32, uv: MaterialUv) -> vec4<f32> {
-    let sampled = textureSampleGrad(map, material_sampler, uv.uv, uv.dx, uv.dy);
+    let sampled = material_sample(map, material_sampler, uv);
     return material_swizzle(sampled, swizzles, slot);
 }
 

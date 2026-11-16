@@ -92,7 +92,7 @@ fn vs_fog_card(packed: PackedVertex, draw: DrawRecord) -> FogCardVaryings {
 
 // Texture slot `slot` at `uv`, through the slot's swizzle.
 fn sample_card(swizzles: vec4<u32>, slot: u32, uv: MaterialUv) -> vec4<f32> {
-    let sampled = textureSampleGrad(card_map, material_sampler, uv.uv, uv.dx, uv.dy);
+    let sampled = material_sample(card_map, material_sampler, uv);
     return material_swizzle(sampled, swizzles, slot);
 }
 

@@ -977,6 +977,52 @@ mod tests {
         }
     }
 
+    /// A material texture's level is the shader's to compute: `textureSampleGrad` leaves it to the
+    /// GPU, whose approximation the APIs let stray, and an Apple M5's took a figure's control map
+    /// half a level coarser, onto the next region's cell (game-hud-party-three-en).
+    #[test]
+    fn material_textures_are_read_at_a_level_the_shader_computes() {
+        for file in ShaderFile::ALL {
+            for call in file.compiled_in().split("textureSampleGrad(").skip(1) {
+                let arguments = &call[..call.find(';').unwrap_or(call.len())];
+                assert!(
+                    !arguments.contains("material_sampler"),
+                    "{} reads a material texture through textureSampleGrad({arguments}",
+                    file.file_name(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn material_level_is_log2_of_the_longer_derivative_in_texels() {
+        let text = ShaderFile::Materials.compiled_in();
+        let start = text.find("struct MaterialUv {").expect("MaterialUv");
+        let end = text[start..].find("fn material_level").expect("material_level") + start;
+        let end = text[end..].find("\n}\n").expect("its end") + end + 3;
+        let expression = "vec4<f32>(material_level(vec2<u32>(256u, 128u), \
+            MaterialUv(vec2<f32>(0.0), input.xy, input.zw)), 0.0, 0.0, 0.0)";
+        let (w, h) = (1.0 / 256.0, 1.0 / 128.0);
+        let cases = [
+            // One texel along each axis: level 0.
+            ([w, 0.0, 0.0, h], 0.0),
+            // A 3-4-5 footprint along x, one texel along y: log2 5, not log2 of the axes' sum.
+            ([3.0 * w, 4.0 * h, 0.0, h], 5f32.log2()),
+            // The longer derivative wins, whichever it is: eight texels along y.
+            ([w, 0.0, 0.0, 8.0 * h], 3.0),
+            ([0.0, 2.0 * h, 0.0, 0.0], 1.0),
+        ];
+        let inputs = cases.map(|(input, _)| input);
+        let actual = evaluate_on_gpu(&text[start..end], None, expression, &inputs);
+        for ((input, expected), [level, ..]) in cases.iter().zip(actual) {
+            assert!((level - expected).abs() < 1e-4, "{input:?}: {level} against {expected}");
+        }
+        // No derivative at all reads level 0: the level is far below it, and the sampler clamps.
+        let level = evaluate_on_gpu(&text[start..end], None, expression, &[[0.0; 4]])[0][0];
+        assert!(level < -20.0, "{level}");
+    }
+
     #[test]
     fn programs_join_their_files_as_they_always_have() {
         let sources = ShaderSources::compiled_in();

@@ -186,7 +186,7 @@ fn masked_keeps(cut: MaskedCut, pixel: vec2<f32>, fade: f32) -> bool {
     let modes = materials[material].modes;
     var alpha = materials[material].base_color.a;
     if material_has_texture(modes, CHARACTER_BASE_COLOR) {
-        let sampled = textureSampleGrad(base_color_map, material_sampler, uv.uv, uv.dx, uv.dy);
+        let sampled = material_sample(base_color_map, material_sampler, uv);
         alpha *= material_swizzle(sampled, materials[material].swizzles, CHARACTER_BASE_COLOR).a;
     }
     let tested = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u;

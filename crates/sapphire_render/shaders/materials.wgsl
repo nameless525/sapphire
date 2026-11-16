@@ -335,9 +335,42 @@ fn material_swizzle(sampled: vec4<f32>, swizzles: vec4<u32>, slot: u32) -> vec4<
 // A UV-mapped sample's coordinates and their screen derivatives. The derivatives are taken once,
 // in uniform control flow, so slots can be sampled inside branches on the block: WGSL counts
 // those as non-uniform (the block is indexed by a varying), so implicit-derivative sampling and
-// `fwidth` aren't allowed in them, while `textureSampleGrad` is.
+// `fwidth` aren't allowed in them, while an explicit level is ([`material_sample`]).
 struct MaterialUv {
     uv: vec2<f32>,
     dx: vec2<f32>,
     dy: vec2<f32>,
+}
+
+// The level a material texture `size` texels across is read at for `uv`'s derivatives: log2 of the
+// larger of the two derivatives' lengths in texels, the textbook level. `textureSampleGrad` would
+// leave it to the GPU, and the APIs let its answer stray: given the shader's own `dpdx`/`dpdy`,
+// Metal on an Apple M5 samples as if the derivatives were implicit, and takes up to half a level
+// coarser where the two derivatives point the same way. A figure's control map read that way gave
+// a facet near its region's cell edge the next cell's highlight, unlike three other
+// implementations. Where both derivatives are zero the level is far below 0.
+//
+// A streamed texture lowered by `k` levels (M5 M5) is `size >> k` across and must come out at
+// `L - k` to the bit. So the float `log2` sees only the size over its largest power of two, which
+// lowering leaves alone, the power comes back as a whole number, and the fraction is rounded to
+// 1/65536 so the sum is exact at any power. That holds while lowering halves both sides exactly:
+// power-of-two sides, above the level where the shorter one would clamp at 1.
+fn material_level(size: vec2<u32>, uv: MaterialUv) -> f32 {
+    let power = firstLeadingBit(max(size.x, size.y));
+    let shape = ldexp(vec2<f32>(size), vec2<i32>(-i32(power)));
+    let fraction = log2(max(max(length(uv.dx * shape), length(uv.dy * shape)), 1e-12));
+    return f32(power) + round(fraction * 65536.0) / 65536.0;
+}
+
+// Material texture `map` at `uv`, trilinear at [`material_level`]: the two whole levels either side,
+// each read at its exact level, blended by the level's fraction here. One read at the fractional
+// level would be half the reads, but an Apple M5 resolves a fractional level more coarsely the
+// larger it is, so a texture lowered by two or more levels blended its two levels differently
+// from the whole one and moved pixels by a code value or two; at whole levels it reads alike.
+fn material_sample(map: texture_2d<f32>, map_sampler: sampler, uv: MaterialUv) -> vec4<f32> {
+    let level = material_level(textureDimensions(map), uv);
+    let finer = floor(level);
+    let near = textureSampleLevel(map, map_sampler, uv.uv, finer);
+    let far = textureSampleLevel(map, map_sampler, uv.uv, finer + 1.0);
+    return mix(near, far, level - finer);
 }

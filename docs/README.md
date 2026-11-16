@@ -27,7 +27,7 @@ Every doc in `docs/`, grouped by what you'd read it for. New here? Start with [A
 
 | Doc | What it holds | Read it when |
 |---|---|---|
-| [m5-handoff.md](m5-handoff.md) | Where things stand; "How to add" recipes (a move, enemy, boss, encounter, zone, dialogue, cutscene, screen, golden, patch, GPU, tier, setting); rules the reviews made; everything deferred; known risks | Adding content or features; picking up the next milestone |
+| [m6-handoff.md](m6-handoff.md) | Where things stand; "How to add" recipes (a move, enemy, playable kind, cloth, boss, encounter, zone, a zone's look and weather, reflection probe, ambient characters, levels of detail, dialogue, cutscene, face track, voiced line, effect mesh, decal, bend, focus key, light shafts, cut-in, screen, golden, patch, GPU, tier, setting); rules the reviews made; everything deferred; known risks | Adding content or features; picking up the next milestone |
 | [blender-mask-bake.md](blender-mask-bake.md) | Baking the anime character shader's SDF face map, ramps and ILM map, from documents or headless Blender | Authoring a character's masks |
 | [playtest.md](playtest.md) | Watching someone play a playtest build and turning the session into answers that point at a file | Running or reading a playtest |
 | [optimization-pass-two.md](optimization-pass-two.md) | The second iteration-speed pass: watcher, packing, tests, captures, CI fan-out, with measurements | Changing build, test or CI speed |
@@ -60,9 +60,10 @@ Each milestone has a plan (work packages and their "As built" notes), an exit ru
 | [m4-plan.md](m4-plan.md) | M4, ship readiness: exit tests (§1), decisions (§3, patches among them), work packages by track (§4), what's owed to the maintainer (§7) |
 | [m4-exit-run.md](m4-exit-run.md) | M4's exit-test runbook: what to measure, and what only a device or an account proves |
 | [m4-handoff.md](m4-handoff.md) | What M4 inherited from M3, with the first "How to add" recipes |
-| [m5-handoff.md](m5-handoff.md) | What the next milestone inherits from M4 (also under "Working in the code") |
+| [m5-handoff.md](m5-handoff.md) | What M5 inherited from M4 |
 | [m5-plan.md](m5-plan.md) | M5, fidelity at scale, **the milestone under way**: a benchmark at the content budgets, exit tests (§1), decisions (§3), work packages by track (§4), what's needed from the maintainer (§7) |
 | [m5-exit-run.md](m5-exit-run.md) | M5's exit-test runbook: for each test, what is run (counted, timed or in CI), the line read and the rule that passes it on each tier, and what only a device proves |
+| [m6-handoff.md](m6-handoff.md) | What the next milestone inherits from M5 (also under "Working in the code") |
 
 `docs/media/` holds screenshots the older docs show.
 

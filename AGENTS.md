@@ -18,7 +18,7 @@ A Rust engine for 3D **anime-aesthetic** action games, the look of Wuthering Wav
 | 3 | [docs/conventions.md](docs/conventions.md) | How code reads: errors, unsafe, logging, GPU structs, tests |
 | 4 | [docs/development-iteration.md](docs/development-iteration.md) | The smallest useful check for each kind of edit; replays; build profiles |
 | 5 | [docs/getting-started.md](docs/getting-started.md) | Requirements, running on each platform, the sandbox, hot reload and live link |
-| 6 | [docs/m5-handoff.md](docs/m5-handoff.md) | Where things stand, "How to add" recipes, rules the reviews made, known risks |
+| 6 | [docs/m6-handoff.md](docs/m6-handoff.md) | Where things stand, "How to add" recipes, rules the reviews made, known risks |
 
 [docs/engine-spec.md](docs/engine-spec.md) is the design reference, thousands of lines long. Don't read it top to bottom: open the §5 section of the crate you're changing (§5.0 is the module index), and §4 for the architecture.
 
@@ -192,13 +192,13 @@ Then whatever the change itself must prove. [docs/development-iteration.md](docs
 
 | Task | Start at |
 |---|---|
-| Add a move, kind of enemy, boss, encounter, zone, dialogue, cutscene, screen, music phase | [m5-handoff.md "How to add"](docs/m5-handoff.md#how-to-add): each is documents under `content/`, with Rust steps marked |
-| Add or re-baseline a golden | [m5-handoff.md "A golden"](docs/m5-handoff.md#a-golden); `tests/golden/scenes.ron`'s header |
+| Add a move, kind of enemy, playable kind, cloth, boss, encounter, zone and its look, ambient characters, dialogue, cutscene, face track, voiced line, effect mesh, decal, screen, music phase | [m6-handoff.md "How to add"](docs/m6-handoff.md#how-to-add): each is documents under `content/`, with Rust steps marked |
+| Add or re-baseline a golden | [m6-handoff.md "A golden"](docs/m6-handoff.md#a-golden); `tests/golden/scenes.ron`'s header |
 | Add a replay, or move checksums | [development-iteration.md "Replays"](docs/development-iteration.md#replays) |
 | Change a shader or the look | `crates/sapphire_render/shaders/`, the module's `//!` docs, [spec §5.12](docs/engine-spec.md#512-sapphire_render-l3); look changes for the look-dev stage go in `content/lookdev/` so other goldens stay put |
 | Add a cvar | `sapphire_core::cvar` (its module docs); set one live with `cargo xtask link cvar <name> <value>` |
-| Add a setting, a tier, a rung, a GPU row | [m5-handoff.md "A setting"](docs/m5-handoff.md#a-setting), ["A rung of the ladder, or a tier"](docs/m5-handoff.md#a-rung-of-the-ladder-or-a-tier), ["A GPU"](docs/m5-handoff.md#a-gpu) |
-| Ship a patch | [m5-handoff.md "A patch"](docs/m5-handoff.md#a-patch) |
+| Add a setting, a tier, a rung, a GPU row | [m6-handoff.md "A setting"](docs/m6-handoff.md#a-setting), ["A rung of the ladder, or a tier"](docs/m6-handoff.md#a-rung-of-the-ladder-or-a-tier), ["A GPU"](docs/m6-handoff.md#a-gpu) |
+| Ship a patch | [m6-handoff.md "A patch"](docs/m6-handoff.md#a-patch) |
 | Change a platform's packaging | `platform/`, `xtask/src/platforms/`, [spec §7.4](docs/engine-spec.md#74-xtask-commands); `packages.yml` runs on PRs touching those |
 | A store's checklist | [docs/store/](docs/store/) (Apple, Google Play, Steam, privacy policy) |
 | Add a crate | Place it in `xtask/layers.toml`; `license.workspace = true`, `[lints] workspace = true`, a `//!` doc; dependencies only in the root `[workspace.dependencies]` |

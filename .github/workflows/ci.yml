@@ -618,8 +618,8 @@ jobs:
   # passed.
   #
   # WARP runs the same suites in gpu-tests-warp.yml once a change is on main, built once and run in
-  # four shards: an hour of tests after a 16-minute build (2026-11-15), longer than a PR's other checks
-  # together.
+  # eight shards: two and a half hours of tests in all after a 16-minute build (2026-11-16), longer than a
+  # PR's other checks together.
   gpu-tests-build:
     name: Prepare GPU tests (vulkan-lavapipe)
     runs-on: ubuntu-24.04

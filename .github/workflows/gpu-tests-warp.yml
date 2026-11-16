@@ -4,11 +4,12 @@
 # check: this catches what only D3D12 shows soon after landing,
 # and a PR changing this file or the scripts it runs runs it, so they are tested before they land.
 #
-# One job builds the tests and four shards run them (2026-11-15): as one job they had outgrown its 90
-# minutes, and a failure in the first suite skipped the second. `app_tests_bundle.py --tests-only` carries
-# the test executables, each put back where Cargo built it, as for the App tests; `gpu_test_shards.py` deals
-# each test to a shard by a hash of its name and runs both suites' shares. `GPU tests (dx12-warp)` is the
-# one check to read: it fails unless the build and every shard passed.
+# One job builds the tests and eight shards run them (four from 2026-11-15, eight since 2026-11-16): as one
+# job they had outgrown its 90 minutes, and a failure in the first suite skipped the second.
+# `app_tests_bundle.py --tests-only` carries the test executables, each put back where Cargo built it, as
+# for the App tests; `gpu_test_shards.py` deals each test to a shard by a hash of its name and runs both
+# suites' shares. `GPU tests (dx12-warp)` is the one check to read: it fails unless the build and every
+# shard passed.
 #
 # As in ci.yml, actions are pinned to commit SHAs and the runner image is pinned, and only runs on `main`
 # write the Rust cache, never a failed or cancelled one (ci.yml's header says why).
@@ -86,19 +87,20 @@ jobs:
           retention-days: 1
 
   gpu-tests:
-    name: GPU tests (dx12-warp, ${{ matrix.shard }}/4)
+    name: GPU tests (dx12-warp, ${{ matrix.shard }}/8)
     needs: gpu-tests-build
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: windows-2025
-    # Main's run at 643d5ea6 (2026-11-15) took 60 minutes for the first suite's 483 tests; d498ebb3's the
-    # second's 93 in 6, on a runner 1.16 times as fast. Dealt by name into four, each test at its own time
-    # there, the shards come to 11.7, 23.9, 14.9 and 16.6 minutes of both suites: by count, not cost, so the
-    # three slowest tests (7, 7 and 3 minutes) weigh where they fall. Half again as many tests, 36 at most,
-    # and about 3 to set up: 39, under two thirds of 60.
-    timeout-minutes: 60
+    # In four shards a dispatch at bff650dc (2026-11-16) took 14, 41, 58 and 32 minutes for the first suite's
+    # 572 tests, and the third was cancelled at its 60 with no test failing, on a runner 1.35 times slower
+    # than main's. The hash deals by count, not cost: five tests take 68 of both suites' 153 minutes (17, 16,
+    # 12, 11 and 11), and three of them fell in that shard. Dealt by name into eight, each test at its own
+    # time there, the shards come to 7, 33, 31, 4, 9, 12, 28 and 29 minutes of both suites. Half again as
+    # much, 50 at most, and about 3 to set up: 53, two thirds of 80.
+    timeout-minutes: 80
     env:
       SAPPHIRE_GPU_BACKEND: dx12
       SAPPHIRE_GPU_DEBUG: none
@@ -128,13 +130,13 @@ jobs:
       - name: GPU tests (render, RHI, world, overlay)
         shell: bash
         run: |
-          python .github/scripts/gpu_test_shards.py --shard ${{ matrix.shard }} --shards 4 \
+          python .github/scripts/gpu_test_shards.py --shard ${{ matrix.shard }} --shards 8 \
             crates/sapphire_render crates/sapphire_rhi crates/sapphire_world crates/sapphire_debug
       - name: GPU tests (stage and sandbox, dev)
         if: ${{ !cancelled() && steps.warp.outcome == 'success' }}
         shell: bash
         run: |
-          python .github/scripts/gpu_test_shards.py --shard ${{ matrix.shard }} --shards 4 \
+          python .github/scripts/gpu_test_shards.py --shard ${{ matrix.shard }} --shards 8 \
             apps/sapphire_sandbox crates/sapphire_stage game/game_combat game/game_ui
 
   # The one check to read: a cancelled or skipped shard is not a pass.

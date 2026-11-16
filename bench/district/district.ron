@@ -11,11 +11,11 @@
 // streamer's proof; nothing cooks it unless asked.
 //
 // The phones' cook reads a tree of its own (`gen-bench --cook mobile`, M5 B6): the same district, its cells
-// drawing four materials (`phone_palette`) where the desktop's draw sixteen (`palette`), as a phone build's
-// content would. The engine reduces no cell's materials by itself.
+// drawing four materials (`phone_palette`) where the desktop's draw sixteen (`palette`; thirteen at the
+// budget, M5 B7), as a phone build's content would. The engine reduces no cell's materials by itself.
 (
     type: "sapphire::pipeline::BenchDistrict",
-    version: 4,
+    version: 5,
     data: (
         cell_size: 32.0,
         // Widths in metres; `edge` is the alley between the outer blocks and the boundary wall.
@@ -71,7 +71,7 @@
             boundary_length: 8.0,
         ),
         // Texture sets a cell's props and ground draw from: a cell's merged mesh has at most this many
-        // materials, and its ground the first.
+        // materials, and its ground the first. A preset's `palette` takes its place on the desktop's tree.
         palette: 16,
         // The same in the phones' tree (M5 B6): a phone build's content carries fewer materials a cell, since a
         // cell's merged mesh draws a call a material and the engine reduces none by itself.
@@ -110,10 +110,12 @@
             post_out: 1.4,
             walk_out: 2.2,
         )),
+        // The budget's desktop cells draw thirteen materials, not sixteen (M5 B7): the tour's worst frame, its
+        // start, where the view up the avenue takes in most of the district, sits at spec §3.4's 2,500 main draws.
         presets: (
             ci: (cells: 4, texture_sets: 4, texture_size: 256, crowd: true),
-            budget: (cells: 8, texture_sets: 160, texture_size: 2048, crowd: true),
-            double: Some((cells: 8, texture_sets: 320, texture_size: 2048)),
+            budget: (cells: 8, texture_sets: 160, texture_size: 2048, crowd: true, palette: Some(13)),
+            double: Some((cells: 8, texture_sets: 320, texture_size: 2048, palette: Some(13))),
         ),
     ),
 )

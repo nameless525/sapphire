@@ -115,6 +115,12 @@ fn the_budget_district_holds_the_specs_counts() {
     // Every variant's slots and every cell's palette within a cell's mesh's sixteen materials.
     assert!(zone.placements.iter().all(|placement| placement.materials.len() <= 3));
     assert_eq!(district.palette, 16);
+    // The budget's desktop cells carry fewer (M5 B7), which holds the tour's worst frame at spec §3.4's 2,500
+    // main draws: a cell's merged mesh draws a call a material.
+    let palette = district.palette(district.presets.budget, Cook::Desktop);
+    assert_eq!((district.presets.budget.palette, district.presets.ci.palette), (Some(palette), None));
+    let most = cell_materials(&plan, &zone).values().map(BTreeSet::len).max().unwrap();
+    assert_eq!(most, palette as usize, "a budget cell binds {most} sets");
 }
 
 #[test]
@@ -336,6 +342,9 @@ fn a_wrong_document_is_an_error() {
     let phones = |phone_palette| BenchDistrict { phone_palette, ..district.clone() };
     assert!(check(&phones(0), scale).is_err(), "a phone cell binds no set");
     assert!(check(&phones(17), scale).is_err(), "more sets on the phones than the desktop");
+    let own = |palette| DistrictScale { palette: Some(palette), ..scale };
+    assert!(check(&district, own(district.phone_palette - 1)).is_err(), "a preset's under the phones'");
+    assert!(check(&district, own(0)).is_err(), "a preset's cell binds no set");
     // Too many sets for the tour to pass.
     let plan = Plan::new(&district, 4);
     assert!(Assignment::new(&plan, &district.buildings, 1, 1000, &BTreeMap::new()).is_err());
@@ -365,7 +374,7 @@ fn the_phones_cells_draw_four_materials_where_the_desktops_draw_sixteen() {
         };
         assert!(most(&phone) <= 4, "{preset}: a phone cell binds {} sets", most(&phone));
         if preset != Preset::Ci {
-            assert!(most(&desktop) > 4, "{preset}: the desktop's cells keep their sixteen");
+            assert!(most(&desktop) > 4, "{preset}: the desktop's cells keep their palette");
         }
         assert_eq!(desktop.sources.keys().collect::<Vec<_>>(), phone.sources.keys().collect::<Vec<_>>());
         for (path, source) in &desktop.sources {

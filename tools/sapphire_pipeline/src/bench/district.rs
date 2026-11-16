@@ -67,6 +67,10 @@
 //! simulation's half are the desktop's; only which sets the cells' ground and props bind differs, given out
 //! by the same rule from the smaller palette, so the tour still passes every set.
 //!
+//! A preset may give the desktop's cells a palette of its own (`DistrictScale::palette`, M5 B7): the budget's
+//! thirteen hold the tour's worst frame, at its start, where the view up the avenue takes in most of the
+//! district, at spec §3.4's 2,500 main draws. `ci` keeps the document's sixteen, so its tree doesn't move.
+//!
 //! # Determinism
 //!
 //! Integer hashes, the four operations, `floor` and `sqrt` only: no transcendental is reached, and every turn
@@ -190,8 +194,9 @@ pub struct DistrictCrowd {
 }
 
 impl Versioned for BenchDistrict {
-    /// 1: M5 B1. 2: M5 B2, the district. 3: M5 D6, its cells' levels. 4: M5 B6, the phones' palette.
-    const VERSION: u32 = 4;
+    /// 1: M5 B1. 2: M5 B2, the district. 3: M5 D6, its cells' levels. 4: M5 B6, the phones' palette. 5: M5
+    /// B7, a preset's own palette.
+    const VERSION: u32 = 5;
 }
 
 /// The streets' widths, in metres.
@@ -285,6 +290,22 @@ pub struct DistrictScale {
     /// Whether the zone has the document's `crowd` (M5 C10).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub crowd: bool,
+    /// The desktop's cells' palette at this preset, where it isn't the document's `palette` (M5 B7): the
+    /// budget's holds its worst frame at spec §3.4's draws, since a cell's merged mesh draws a call a
+    /// material. At least `phone_palette`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette: Option<u32>,
+}
+
+impl BenchDistrict {
+    /// The sets a cell's ground and props draw from at `scale`, for `cook` (see the [module
+    /// docs](self#the-phones-district)).
+    pub fn palette(&self, scale: DistrictScale, cook: Cook) -> u32 {
+        match cook {
+            Cook::Desktop => scale.palette.unwrap_or(self.palette),
+            Cook::Mobile => self.phone_palette,
+        }
+    }
 }
 
 /// Generates the district from the documents in `dir` (`bench/district/`) at `preset`'s scale, for `cook`:
@@ -330,10 +351,7 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
     let plan = Plan::new(&district, scale.cells);
     let slot_counts: BTreeMap<String, usize> =
         slots.iter().map(|(stem, names)| (stem.clone(), names.len())).collect();
-    let palette = match cook {
-        Cook::Desktop => district.palette,
-        Cook::Mobile => district.phone_palette,
-    };
+    let palette = district.palette(scale, cook);
     let assignment = Assignment::new(&plan, &district.buildings, palette, scale.texture_sets, &slot_counts)
         .map_err(|why| invalid(format!("{preset} for {cook}: {why}")))?;
     let set = |user: usize| materials[assignment.sets[user] as usize];
@@ -588,7 +606,8 @@ fn check(district: &BenchDistrict, scale: DistrictScale) -> Result<(), String> {
     if !district.props.values().flat_map(|prop| prop.clear).all(|half| half.is_finite() && half > 0.0) {
         return Err("every prop keeps some room clear".to_owned());
     }
-    if district.palette == 0 || !(1..=district.palette).contains(&district.phone_palette) {
+    let desktop = [district.palette, district.palette(scale, Cook::Desktop)];
+    if !desktop.iter().all(|&palette| (1..=palette).contains(&district.phone_palette)) {
         return Err(
             "a cell's palette holds at least a set, and the phones' no more than the desktop's".to_owned()
         );

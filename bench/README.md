@@ -12,8 +12,8 @@ cargo xtask bench-content --preset double              # the budget at twice the
 
 Each run writes the preset's sources to `target/bench/<preset>/sources/`, with their sidecars, and the phones'
 to `target/bench/<preset>/sources-mobile/` (M5 B6: the same district, its cells drawing four materials where
-the desktop's draw sixteen, as a phone build's content would; the engine reduces no cell's materials by
-itself). Each cook reads its own tree and refuses the other's. It cooks them to `target/bench/<preset>/<cook>/`
+the desktop's draw sixteen, thirteen at `budget`, as a phone build's content would; the engine reduces no cell's
+materials by itself). Each cook reads its own tree and refuses the other's. It cooks them to `target/bench/<preset>/<cook>/`
 (packs) and `target/bench/<preset>/loose/<cook>/`, with a cache of its own in `target/bench/cache/`. `rm -rf target/bench` takes all of it. Generating twice writes the same bytes.
 
 **Nothing cooked or generated from here is committed, and nothing here ships.** Apps, packages and releases
@@ -34,7 +34,7 @@ The presets:
 | Preset | District | Cast |
 |---|---|---|
 | `ci` | 4 × 4 cells (the plaza and a ring of twelve blocks): 95 buildings of the 40 variants, 1,565 props, 133 lights, 4 texture sets at 256 texels | a small hero, an enemy and two ambient figures, maps at 256 texels |
-| `budget` | 8 × 8 cells, 256 m square: 469 buildings of 40 variants, 6,943 props, 518 lights, 160 texture sets at 2048 texels: 2.5 GiB of maps on desktop, the texture pool | three heroes at spec §3.4's hero row, three enemies at 8,000 triangles, six ambient figures sharing a skeleton |
+| `budget` | 8 × 8 cells, 256 m square: 469 buildings of 40 variants, 6,943 props, 518 lights, 160 texture sets at 2048 texels: 2.5 GiB of maps on desktop, the texture pool. A desktop cell draws 13 of them, not 16 (M5 B7), so the tour's worst frame sits at spec §3.4's 2,500 main draws | three heroes at spec §3.4's hero row, three enemies at 8,000 triangles, six ambient figures sharing a skeleton |
 | `double` | the budget's district at 320 texture sets: twice the pool | the budget's |
 
 To open the district after a cook, a `dev` sandbox reads the shipped packs and the district's pack side by

@@ -595,47 +595,121 @@ jobs:
   # and why (spec §9 lists them); none is skipped for failing. `--tests` leaves the doctests to the
   # Test job.
   #
+  # One job builds the tests and two shards run them (2026-11-16), as gpu-tests-warp.yml does: as one job
+  # with a 45-minute limit, a cold build on a slow runner (17.8 minutes) and the first suite (25.7) left the
+  # second no time, and the stack's run was cancelled with no test failing. `app_tests_bundle.py
+  # --tests-only` carries the test executables, each put back where Cargo built it, as for the App tests;
+  # `gpu_test_shards.py` deals each test to a shard by a hash of its name and runs both suites' shares.
+  # `GPU tests (vulkan-lavapipe)` is the one check to read: it fails unless the build and both shards
+  # passed.
+  #
   # WARP runs the same suites in gpu-tests-warp.yml once a change is on main, built once and run in
   # four shards: an hour of tests after a 16-minute build (2026-11-15), longer than a PR's other checks
   # together.
-  gpu-tests:
-    name: GPU tests (${{ matrix.family }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan }
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    env:
-      SAPPHIRE_GPU_BACKEND: ${{ matrix.backend }}
-      SAPPHIRE_GPU_DEBUG: none
+  gpu-tests-build:
+    name: Prepare GPU tests (vulkan-lavapipe)
+    runs-on: ubuntu-24.04
+    # The build took 17.8 minutes with no cache restored on a runner 1.3 to 1.5 times slower than main's
+    # (the stack's run, 2026-11-16), 14.9 on main's, 6.9 with the cache warm. Setting up takes under 1 and
+    # packing and uploading about 2, as on WARP: a cold build on a slow runner ends at about 21, under two
+    # thirds of 35.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install SDL3 build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS libvulkan1
-      - name: Install lavapipe (Mesa 26.1.3)
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/lavapipe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS
       - name: Install Rust (job targets)
         uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: v1-rust
+          # The cache the single job saved, under its job's name.
+          shared-key: gpu-tests
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
           save-if: ${{ env.SAVE_RUST_CACHE }}
-      # Built apart from the run, so the run's time is the tests' own. Bash on every runner, so
-      # the first build's failure fails the step (Windows' default PowerShell checks the last).
+      # Each suite its own build, as it runs: a union of these packages can build a different feature graph.
+      # Cargo's messages name each test executable for the bundle.
       - name: Build the GPU tests
-        shell: bash
         run: |
-          cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-run
-          cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib --no-run
+          messages="$RUNNER_TEMP/gpu-tests.jsonl"
+          cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-run --message-format=json-render-diagnostics >> "$messages"
+          cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib --no-run --message-format=json-render-diagnostics >> "$messages"
+      - name: Package exact-commit GPU test inputs
+        run: |
+          python3 .github/scripts/app_tests_bundle.py create --tests-only --archive "$RUNNER_TEMP/gpu-tests.tar.gz" \
+            --commit "$GITHUB_SHA" --messages "$RUNNER_TEMP/gpu-tests.jsonl"
+      - name: Upload GPU test inputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gpu-test-inputs-vulkan-lavapipe
+          path: ${{ runner.temp }}/gpu-tests.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  gpu-tests:
+    name: GPU tests (vulkan-lavapipe, ${{ matrix.shard }}/2)
+    needs: gpu-tests-build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-24.04
+    # The stack's run (2026-11-16, on a runner 1.3 to 1.5 times slower than main's) took 25.7 minutes for the
+    # first suite and was cancelled 1 into the second, which took 1.9 on main's. Dealt by name into two, each
+    # test at its own time there, the shards come to 12.9 and 13.6 minutes, about 15 at most with the rest of
+    # the second suite at that pace (main's run: 9.1 and 10.5). Half again as many tests, 23 at most, and
+    # about 3 to set up: 26, under two thirds of 40.
+    timeout-minutes: 40
+    env:
+      SAPPHIRE_GPU_BACKEND: vulkan
+      SAPPHIRE_GPU_DEBUG: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No compiler: the shards run the build's executables, which link SDL statically. Those that take
+      # audio link ALSA's library, as the App tests' lanes say.
+      - name: Install the Vulkan runtime loader and ALSA's library
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 libasound2t64
+      - name: Install lavapipe (Mesa 26.1.3)
+        uses: ./.github/actions/lavapipe
+      - name: Download GPU test inputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gpu-test-inputs-vulkan-lavapipe
+          path: ${{ runner.temp }}/gpu-tests-download
+      - name: Verify and unpack GPU test inputs
+        id: unpack
+        run: |
+          python3 .github/scripts/app_tests_bundle.py unpack \
+            --archive "$RUNNER_TEMP/gpu-tests-download/gpu-tests.tar.gz" --commit "$GITHUB_SHA"
+      # Each prints how many tests each shard holds of the suite's total, and fails if a test it was given
+      # didn't run. The second runs whatever the first did.
       - name: GPU tests (render, RHI, world, debug overlay)
-        run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-fail-fast -- --ignored --test-threads=1
+        run: |
+          python3 .github/scripts/gpu_test_shards.py --shard ${{ matrix.shard }} --shards 2 \
+            crates/sapphire_render crates/sapphire_rhi crates/sapphire_world crates/sapphire_debug
       - name: GPU tests (stage and sandbox, dev)
-        run: cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib -- --ignored --test-threads=1
+        if: ${{ !cancelled() && steps.unpack.outcome == 'success' }}
+        run: |
+          python3 .github/scripts/gpu_test_shards.py --shard ${{ matrix.shard }} --shards 2 \
+            apps/sapphire_sandbox crates/sapphire_stage game/game_combat game/game_ui
+
+  # The one check to read: a cancelled or skipped shard is not a pass. It keeps the single job's name, so
+  # nothing that reads the check changes.
+  gpu-tests-summary:
+    name: GPU tests (vulkan-lavapipe)
+    needs: [gpu-tests-build, gpu-tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          BUILD: ${{ needs.gpu-tests-build.result }}
+          SHARDS: ${{ needs.gpu-tests.result }}
+        run: |
+          echo "Build: $BUILD. Shards: $SHARDS."
+          test "$BUILD" = success && test "$SHARDS" = success
 
   # A development build, headless on lavapipe, in the real app: replays beside the renderer, live
   # tuning, the timeline editor against a real fight, and the app driven over live link (review

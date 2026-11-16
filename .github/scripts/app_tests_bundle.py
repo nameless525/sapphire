@@ -12,8 +12,8 @@ the district's pack and a manifest naming both, which the sandbox's district pla
 only those two files of it: `create` refuses a folder whose other files aren't the cook's bytes, and `unpack`
 lays the cook's files out in it again, linked, so the cook travels once.
 
-`create --tests-only` packages the test executables alone, with no sandbox, tool or cook: the WARP GPU
-tests' shards run them that way (`gpu_test_shards.py`).
+`create --tests-only` packages the test executables alone, with no sandbox, tool or cook: the GPU tests'
+shards on lavapipe and on WARP run them that way (`gpu_test_shards.py`).
 """
 
 import argparse

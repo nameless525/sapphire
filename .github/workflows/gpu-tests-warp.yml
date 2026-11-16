@@ -1,6 +1,7 @@
-# The GPU tests on WARP, Windows' CPU rasterizer, once a change is on main. CI's `GPU tests` job
-# runs the same suites on lavapipe for every PR. WARP takes longer than all of a PR's other
-# checks together, so it isn't a PR check: this catches what only D3D12 shows soon after landing,
+# The GPU tests on WARP, Windows' CPU rasterizer, once a change is on main. CI's `GPU tests
+# (vulkan-lavapipe)` runs the same suites on lavapipe for every PR, built and sharded the same way, in
+# two shards (2026-11-16). WARP takes longer than all of a PR's other checks together, so it isn't a PR
+# check: this catches what only D3D12 shows soon after landing,
 # and a PR changing this file or the scripts it runs runs it, so they are tested before they land.
 #
 # One job builds the tests and four shards run them (2026-11-15): as one job they had outgrown its 90

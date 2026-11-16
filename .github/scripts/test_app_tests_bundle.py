@@ -152,7 +152,7 @@ class AppTestsBundleTests(unittest.TestCase):
             app_tests_bundle.run(self.consumer, "wins_the_wards", [])
 
     def fixture_tests_only(self):
-        """The WARP GPU tests' bundle: an integration test and a library's unit tests, with no sandbox or cook."""
+        """The GPU tests' bundle: an integration test and a library's unit tests, with no sandbox or cook."""
         self.fixture()
         (self.workspace / "target/debug/deps/sapphire_render-0a1b2c3d").write_bytes(b"unit test bytes")
         (self.workspace / "crates/sapphire_render").mkdir(parents=True, exist_ok=True)

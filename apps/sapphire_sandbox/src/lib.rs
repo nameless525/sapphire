@@ -567,7 +567,15 @@ pub fn startup() {
         let guard = install_crash_capture();
         *CRASH_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = guard;
 
-        let jobs = sapphire_jobs::init(sapphire_jobs::JobConfig::default());
+        // `--compute-threads <n>` fixes the compute pool's threads (M5 X4: a counted walk's worker count is the
+        // walk's). A bad value is reported by the full parse, which fails the run; here it leaves the default.
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let compute_threads = options::compute_threads_requested(&args).ok().flatten();
+        let config = sapphire_jobs::JobConfig {
+            compute_threads: compute_threads.and_then(|threads| usize::try_from(threads.get()).ok()),
+            ..sapphire_jobs::JobConfig::default()
+        };
+        let jobs = sapphire_jobs::init(config);
         tracing::info!(target: LOG_TARGET, topology = ?jobs.topology(), config = ?jobs.config(), "job system ready");
     });
 }

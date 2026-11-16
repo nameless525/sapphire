@@ -50,6 +50,7 @@ Common options:
   --frames <count>          Exit after this many frames
   --size <width>x<height>    Offscreen image size
   --tier <tier>             desktop-high, desktop-low, mobile-high or mobile-low
+  --compute-threads <n>     The job system's compute threads (at least 1), not the machine's
   --aa off|msaa|taa         Antialiasing override
   --render-scale <0.25..1>   Render scale override
   --upscaler bilinear|edge  Phone tiers' upscaler override
@@ -92,6 +93,28 @@ const DEBUG_OVERLAY_FLAG: &str = "--debug-overlay";
 /// Whether `arg` selects an offscreen mode, as `--capture`, `--bench`, `--offscreen`,
 /// `--contact-sheet` or their `--flag=value` forms. `main` checks this before SDL starts, so the windowed app never opens
 /// for one.
+/// The flag naming the job system's compute threads.
+const COMPUTE_THREADS_FLAG: &str = "--compute-threads";
+
+/// The compute threads `args` ask for with `--compute-threads <n>` (or `--compute-threads=<n>`), read before the
+/// job system starts, as [`is_offscreen_flag`] is before SDL: `None` without the flag, an error for a value that
+/// isn't a whole number of at least 1. The last one given wins, as the full parse's does.
+pub(crate) fn compute_threads_requested(args: &[String]) -> Result<Option<NonZeroU32>, String> {
+    let mut threads = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let raw = match arg.split_once('=') {
+            Some((COMPUTE_THREADS_FLAG, value)) => value,
+            _ if arg == COMPUTE_THREADS_FLAG => {
+                args.next().ok_or_else(|| format!("{COMPUTE_THREADS_FLAG} needs a value"))?.as_str()
+            }
+            _ => continue,
+        };
+        threads = Some(number(raw, COMPUTE_THREADS_FLAG)?);
+    }
+    Ok(threads)
+}
+
 pub(crate) fn is_offscreen_flag(arg: &str) -> bool {
     let name = arg.split_once('=').map_or(arg, |(name, _)| name);
     name == CAPTURE_FLAG || name == BENCH_FLAG || name == OFFSCREEN_FLAG || name == CONTACT_SHEET_FLAG
@@ -522,6 +545,11 @@ pub(crate) struct Options {
     /// texture's level, counted in frames, lasts a frame's time each and the loads behind it run at a game's
     /// speed. With `--bench` of `--zone-walk` and `--draw-every`; it times nothing.
     pub bench_pace: Option<NonZeroU32>,
+    /// `--compute-threads <n>`: the job system's compute pool runs `n` threads, not one a physical core but the
+    /// main thread's (M5 X4's lane: a counted walk's worker count is the walk's, so its animation jobs are the
+    /// scene's and not the machine's). Read before the job system starts ([`compute_threads_requested`]), so any
+    /// run may take it; held here so the full parse knows the flag.
+    pub compute_threads: Option<NonZeroU32>,
     /// `--capture-through-trips`, with `--replay` and `--capture-ticks` (M5 M6): each tick a capture counts is
     /// one of the replay's, a step a zone trip holds losing a frame, and more while the trip waits on its load,
     /// and stepping again, as a capture of a replay's end steps; so a capture can land after a trip, in the zone
@@ -1643,6 +1671,10 @@ impl Options {
                 BENCH_FLAG => bench = Some(number(&value(BENCH_FLAG)?, BENCH_FLAG)?),
                 "--bench-trace" => options.bench_trace = Some(PathBuf::from(value("--bench-trace")?)),
                 "--bench-pace" => options.bench_pace = Some(number(&value("--bench-pace")?, "--bench-pace")?),
+                COMPUTE_THREADS_FLAG => {
+                    options.compute_threads =
+                        Some(number(&value(COMPUTE_THREADS_FLAG)?, COMPUTE_THREADS_FLAG)?);
+                }
                 OFFSCREEN_FLAG => serve = true,
                 CONTACT_SHEET_FLAG => {
                     options.clip = Some(lookdev::ClipName::parse(&value(CONTACT_SHEET_FLAG)?));
@@ -3995,6 +4027,28 @@ mod tests {
         refused(&["--capture", "x", "--replay", "a", "--scenario", "s"], "--record");
         refused(&["--capture", "x", "--replay", "a", "--record", "b"], "exclusive");
         refused(&["--capture", "x", "--replay"], "--replay needs a value");
+    }
+
+    /// `--compute-threads` takes a whole number of at least 1, in the full parse and in the early read the job
+    /// system starts from, which agree.
+    #[test]
+    fn compute_threads_take_a_count_of_at_least_one() {
+        let (options, _) = parse(&["--bench", "1", "--compute-threads", "3"]).unwrap();
+        assert_eq!(options.compute_threads.map(NonZeroU32::get), Some(3));
+        assert_eq!(parse(&["--bench", "1"]).unwrap().0.compute_threads, None);
+        for bad in ["0", "-1", "many"] {
+            assert!(
+                parse(&["--bench", "1", "--compute-threads", bad]).unwrap_err().contains("--compute-threads")
+            );
+        }
+        let early = |args: &[&str]| {
+            compute_threads_requested(&args.iter().map(|&arg| arg.to_owned()).collect::<Vec<_>>())
+        };
+        assert_eq!(early(&["--bench", "1", "--compute-threads", "3"]).unwrap().map(NonZeroU32::get), Some(3));
+        assert_eq!(early(&["--compute-threads=2"]).unwrap().map(NonZeroU32::get), Some(2));
+        assert_eq!(early(&["--bench", "1"]).unwrap(), None);
+        assert!(early(&["--compute-threads", "0"]).is_err());
+        assert!(early(&["--compute-threads"]).unwrap_err().contains("needs a value"));
     }
 
     /// A bench's pace (M5 Z2) goes with a counting walk alone, at a rate above 0.

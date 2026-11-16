@@ -315,7 +315,9 @@ cargo xtask bench-scale report --baseline <dir>   # report.md beside the logs
 
 `prepare` takes gigabytes and most of an hour cold (two budget cooks of about 1.1 GB each, beside
 `target/bench/`'s cache, and each again with the cells cooked at one level for D6's pair, which only the
-zone's cell meshes tell apart): check the disk first. Past `ci` its content is the kinds part's (M5 C12b,
+zone's cell meshes tell apart): check the disk first. It also wants the machine to itself: its cooks and
+builds keep every core busy for much of it, so start it with no other build or test running, and time nothing
+beside it. Past `ci` its content is the kinds part's (M5 C12b,
 [bench/README.md](../bench/README.md)'s "The kinds"): `content/` with the party's kinds and the wave's made
 again at the preset's rows under their shipped IDs, about 20 s a cook beside a warm content cache, and
 0.8 GB of loose files and packs. `cargo xtask bench-content --preset budget --with-content [--cook mobile]`

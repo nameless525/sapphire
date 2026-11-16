@@ -40,7 +40,7 @@
 //!
 //! Rows the spec budgets on Desktop-Low and Mobile-Low only, as §3.2 does, have no budget on the other
 //! two tiers; §3.3's carry M5 B4's proposed figures there, logged as `proposed_us`, which the exit run's report
-//! shows and fails nothing on (M5 Z2). A grouped row (`gpu main`, `gpu prepasses`) is held to the sum of its
+//! shows and fails nothing on (M5 Z2). §3.3's skinning row is proposed on all four tiers. A grouped row (`gpu main`, `gpu prepasses`) is held to the sum of its
 //! members' figures; Metal overlaps passes, so exclusive pass times are a Vulkan or DX12 GPU's. A row is per frame, so a Mobile-Low step's budget is doubled, as §3.2's "× 2 steps" says.
 
 use std::fmt::Write as _;
@@ -273,6 +273,15 @@ impl Row {
     const fn proposing(self, desktop_high: u32, mobile_high: u32) -> Self {
         Self { proposed: [Some(desktop_high), None, Some(mobile_high), None], ..self }
     }
+
+    /// With a figure proposed on every tier, for a row the spec proposes whole (§3.3's skinning).
+    const fn proposing_all(self, figures: [u32; 4]) -> Self {
+        let [desktop_high, desktop_low, mobile_high, mobile_low] = figures;
+        Self {
+            proposed: [Some(desktop_high), Some(desktop_low), Some(mobile_high), Some(mobile_low)],
+            ..self
+        }
+    }
 }
 
 /// §3.2's two columns, for the rows that have only those.
@@ -326,9 +335,9 @@ const ROWS: [Row; 33] = [
     gpu_row("gpu taa", |t| t.gpu.taa, low(800, 1_000)).proposing(900, 600),
     gpu_row("gpu post", |t| t.gpu.post, low(700, 2_500)).proposing(800, 1_200),
     gpu_row("gpu ui", |t| t.gpu.ui, low(300, 1_000)).proposing(200, 500),
-    // Skinning and morphs, the whole cast's compute (§3.3's new row, M5 B4): 0.5 and 1.0 ms on the low tiers,
-    // 0.4 and 0.6 proposed on the high.
-    gpu_row("gpu skinning", |t| t.gpu.skinning, low(500, 1_000)).proposing(400, 600),
+    // Skinning and morphs, the whole cast's compute (§3.3's new row, M5 B4): a proposal on every tier, as the spec
+    // says, so shown and judged on nothing (the orchestrator's ruling, M5 Z2): 0.4, 0.5, 0.6 and 1.0 ms.
+    gpu_row("gpu skinning", |t| t.gpu.skinning, UNBUDGETED).proposing_all([400, 500, 600, 1_000]),
 ];
 
 /// A row's place in [`Row::budget`].
@@ -1134,8 +1143,6 @@ mod tests {
         assert_eq!(budget("gpu frame", TierId::MobileLow), Some(26_000));
         assert_eq!(budget("gpu frame", TierId::DesktopHigh), Some(12_000));
         assert_eq!(budget("simulation", TierId::DesktopHigh), None, "§3.2 has no column for it");
-        assert_eq!(budget("gpu skinning", TierId::DesktopLow), Some(500), "§3.3's skinning row");
-        assert_eq!(budget("gpu skinning", TierId::MobileLow), Some(1_000));
         // B4's proposed columns are logged beside a row and never as its budget.
         let proposed = |name: &str, tier| {
             let row = ROWS.iter().find(|row| row.name == name).expect("a row");
@@ -1143,7 +1150,9 @@ mod tests {
         };
         assert_eq!(proposed("gpu main", TierId::DesktopHigh), (None, Some(4_000)));
         assert_eq!(proposed("gpu main", TierId::MobileHigh), (None, Some(5_300)));
-        assert_eq!(proposed("gpu skinning", TierId::MobileHigh), (None, Some(600)));
+        // §3.3's skinning row is a proposal on all four tiers: shown, and no tier's budget.
+        let skinning = TierId::ALL.map(|tier| proposed("gpu skinning", tier));
+        assert_eq!(skinning, [(None, Some(400)), (None, Some(500)), (None, Some(600)), (None, Some(1_000))]);
         assert_eq!(
             proposed("gpu frame", TierId::DesktopHigh),
             (Some(12_000), None),

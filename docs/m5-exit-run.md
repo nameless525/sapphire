@@ -197,12 +197,12 @@ The test (§1): "A party of three kinds, each with its own mesh, skeleton, graph
 |---|---|---|---|---|
 | `animation and ik`, p95 | not judged (no column) | ≤ 1.5 ms | not judged | ≤ 3.0 ms |
 | `secondary motion`, p95 | not judged | ≤ 0.5 ms | not judged | ≤ 1.0 ms |
-| `gpu skinning`, p95 | *proposed* 0.4 ms, fails nothing | ≤ 0.5 ms | *proposed* 0.6 ms, fails nothing | ≤ 1.0 ms |
+| `gpu skinning`, p95 | *proposed* 0.4 ms, fails nothing | *proposed* 0.5 ms, fails nothing | *proposed* 0.6 ms, fails nothing | *proposed* 1.0 ms, fails nothing |
 | `gpu main` (outlines within it), p95 | not judged | ≤ 4.9 ms | not judged | ≤ 11.5 ms |
 | `gpu prepasses` (the character prepass within it), p95 | not judged | ≤ 1.5 ms | not judged | ≤ 1.5 ms |
 | the cast, the conversation and cloth tests | pass | pass | pass | pass |
 
-`gpu skinning` logs §3.3's skinning row as its budget on the low tiers and B4's figures as proposed on the high ones (M5 Z2); §3.3 calls the whole row a proposal, so moving the low tiers' figures to proposed too is one data edit if the orchestrator rules so. Outlines (0.6 / 1.5 ms) and the character prepass have no timed row of their own: they are read inside `gpu main` and `gpu prepasses`, which Metal's overlap makes inexact anyway.
+`gpu skinning` logs §3.3's skinning row as proposed on all four tiers, since the spec proposes the whole row (a ruling, M5 Z2): the report shows it beside the row and fails nothing on it, until a figure is adopted into the row's budget. Outlines (0.6 / 1.5 ms) and the character prepass have no timed row of their own: they are read inside `gpu main` and `gpu prepasses`, which Metal's overlap makes inexact anyway.
 
 **Can't prove here:** a second authored character, authored clips, recorded voice, and a person's verdict on the cloth and the faces. The figures and voice lines are generated. Owed to an artist, an animator and a person watching.
 

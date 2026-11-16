@@ -46,7 +46,9 @@
 //! - **The pool is hard.** What the textures hold, tails and levels, on the GPU and on their way, never
 //!   passes the pool ([`TextureStreaming::pool`]). Where the tops held would, the streamer plans coarser
 //!   ones, a level at a time, lowering first what's wanted least: a texture the views stopped reading, the
-//!   longest unseen first; then the one lowered least below its top held, so blur spreads a level at a time;
+//!   longest unseen first; then a top held finer than its need, the widest surplus first, which costs nothing
+//!   on screen, so no texture goes under its need while another holds more than its own (M5 Z2); then the one
+//!   lowered least below its top held, so blur spreads a level at a time;
 //!   then, of two alike, the one it lowered last frame; then the one read most coarsely (by its top held,
 //!   never the need, which follows every estimate); then the largest. A texture held whole goes last. What
 //!   it can't afford stays wanted, as debt.
@@ -388,6 +390,9 @@ struct Rank {
     streams: bool,
     /// Estimates the views haven't read it.
     unseen: u32,
+    /// Levels its plan is finer than its need: a top hysteresis holds that the views don't read, which the pool
+    /// takes before it puts any texture under its need, since lowering it costs nothing on screen (M5 Z2).
+    surplus: u32,
     /// Levels its plan is below its target, reversed: the least lowered first.
     lowered: std::cmp::Reverse<u32>,
     /// The pool lowered it last frame: of two alike, the same one goes again, so they don't take turns.
@@ -904,6 +909,7 @@ impl TextureLevels {
                 let rank = Rank {
                     streams: !wanted.held_whole(),
                     unseen: 0,
+                    surplus: 0,
                     lowered: std::cmp::Reverse(gap),
                     lowered_last: false,
                     read: wanted.choice.target.unwrap_or(texture.above),
@@ -1003,6 +1009,7 @@ fn rank(texture: &Shape, choice: &Choice, held_whole: bool) -> Rank {
     Rank {
         streams: !held_whole,
         unseen: choice.unseen,
+        surplus: choice.need.saturating_sub(choice.planned),
         lowered: std::cmp::Reverse(choice.planned.saturating_sub(read)),
         lowered_last: choice.pool.is_some(),
         read,

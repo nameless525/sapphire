@@ -245,6 +245,28 @@ fn a_streamed_texture_never_rises_past_one_held_whole_the_pool_lowered() {
     }
 }
 
+/// A surplus goes before a need (M5 Z2): A and B both held whole, the pool with room for both, then A's need a
+/// level coarser (its top still held whole by hysteresis, within `LOWER_AFTER` estimates) and the pool cut to
+/// one whole and one a level down. The plan takes A's surplus, which costs nothing on screen, rather than put B
+/// under its need, though they tie on everything else and B loses ties.
+#[test]
+fn a_binding_pool_lowers_a_surplus_before_a_texture_under_its_need() {
+    let mut pair = Pair::new();
+    let whole = whole();
+    pair.streaming.pool = 2 * bytes_from(&whole, 0);
+    for _ in 0..10 {
+        assert_eq!(pair.frame(0.2, 0.2), [0, 0], "both fit whole");
+    }
+    // A's finest level past 1 + MARGIN + LOWER_SLACK: a need of 1, which hysteresis doesn't follow yet.
+    pair.frame(2.1, 0.2);
+    assert_eq!(pair.levels.textures[&A].choice.target, Some(0), "A's top is still held whole");
+    pair.streaming.pool = bytes_from(&whole, 0) + bytes_from(&whole, 1);
+    let tops = pair.frame(2.1, 0.2);
+    let planned = [A, B].map(|id| pair.levels.textures[&id].choice.planned);
+    assert_eq!(planned, [1, 0], "A goes to its need, B stays at its own");
+    assert_eq!(tops, [1, 0]);
+}
+
 /// One update's count of a texture for [`wait`], with the open waits started over as `count` does.
 fn count_wait(
     choice: &mut Choice,

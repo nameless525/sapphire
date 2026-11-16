@@ -6,7 +6,8 @@
 //! - **A timed row** passes on the least of the rounds' 95th percentiles at or under its budget (the plan's "runs
 //!   alternated and the least kept"); a worst frame over it fails nothing. A row with only a proposed figure
 //!   (M5 B4's Desktop-High and Mobile-High columns of §3.3) is shown against it, marked proposed, and fails
-//!   nothing: adopting a column is moving its figure into the bench's budget, data the sandbox logs.
+//!   nothing: adopting a column is moving its figure into the bench's budget, data the sandbox logs. On a tier
+//!   whose pass rows carry no budget (no adopted column), the verdict's why says so and names the rows shown.
 //! - **On a backend that overlaps its passes (Metal, M5 Z2)** the prepasses and shadows are judged as one
 //!   depth-only row, each frame's sum against the sum of their figures, and shown apart, unjudged; a GPU pass row
 //!   is read on the frames with no upload in flight (the bench's `fight row no upload`), and a round where fewer
@@ -42,6 +43,10 @@ pub(super) struct Findings {
     pub notes: Vec<String>,
     /// How many checks passed or failed, as opposed to went unjudged.
     pub judged: usize,
+    /// The timed rows logged with no budget on a tier with no adopted column (M5 B4's Desktop-High and
+    /// Mobile-High), each with whether it carries a proposed figure: shown, failing nothing, and said in the
+    /// verdict's why.
+    pub unadopted: std::collections::BTreeMap<String, bool>,
 }
 
 impl Findings {
@@ -59,6 +64,7 @@ impl Findings {
         self.unjudged.extend(other.unjudged);
         self.notes.extend(other.notes);
         self.judged += other.judged;
+        self.unadopted.extend(other.unadopted);
     }
 }
 
@@ -197,6 +203,7 @@ pub(super) fn section(
                 why.push(format!("{} {checks} held so far", findings.judged));
             }
             if verdict != Verdict::Fail {
+                why.extend(no_column(&findings, tier));
                 why.extend(findings.unjudged.iter().cloned());
             }
             if verdict == Verdict::Pass && !elsewhere.is_empty() {
@@ -302,7 +309,10 @@ pub(super) fn device_rows(
                 (false, _) => ("not run", Vec::new()),
                 (true, Verdict::Fail) => ("fail", findings.failed),
                 (true, Verdict::Pass) => ("pass", Vec::new()),
-                (true, Verdict::NotJudged) => ("not judged here", findings.unjudged),
+                (true, Verdict::NotJudged) => (
+                    "not judged here",
+                    no_column(&findings, tier).into_iter().chain(findings.unjudged).collect(),
+                ),
             };
             rows.push(DeviceRow {
                 test,
@@ -319,6 +329,41 @@ pub(super) fn device_rows(
 /// Whether a variant's arguments turn the crowd off (`--ambient off`).
 fn crowd_off(args: &[String]) -> bool {
     args.windows(2).any(|pair| pair[0] == "--ambient" && pair[1] == "off")
+}
+
+/// Why a tier with no adopted column judges its timed rows on nothing (M5 Z2, the runbook's "not judged (no
+/// column)"): which rows are shown beside M5 B4's proposed figures and which with none. None where every row the
+/// verdict read has a budget.
+fn no_column(findings: &Findings, tier: &Tier) -> Option<String> {
+    if findings.unadopted.is_empty() {
+        return None;
+    }
+    let named = |proposed: bool| {
+        let rows: Vec<&str> = findings
+            .unadopted
+            .iter()
+            .filter(|&(_, &has)| has == proposed)
+            .map(|(row, _)| row.as_str())
+            .collect();
+        match rows.len() {
+            0 => None,
+            1..=3 => Some(format!("{} ({})", rows.len(), rows.join(", "))),
+            n => Some(n.to_string()),
+        }
+    };
+    let mut parts = Vec::new();
+    if let Some(rows) = named(true) {
+        parts.push(format!("{rows} beside M5 B4's proposed figures"));
+    }
+    if let Some(rows) = named(false) {
+        parts.push(format!("{rows} with none"));
+    }
+    Some(format!(
+        "{} has no adopted column, so its rows are shown and fail nothing (the runbook's \"not judged (no \
+         column)\"): {}",
+        title(&tier.name),
+        parts.join(", ")
+    ))
 }
 
 /// The first few of a verdict's reasons, and how many more.
@@ -436,6 +481,25 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
         findings.fail(format!("{name}: no timed row logged"));
         return;
     }
+    // A tier's column is adopted when its pass rows carry budgets (M5 B4): Desktop-High's and Mobile-High's carry
+    // only proposed figures, so a row with no budget there is one the runbook leaves unjudged ("no column").
+    let figures: Vec<(bool, bool)> = first
+        .log
+        .timed
+        .iter()
+        .filter(|((phase, row), _)| phase == "gpu" && row != "gpu frame")
+        .filter_map(|(_, entry)| match entry {
+            Entry::Read(timed) => Some((timed.budget.is_some(), timed.proposed.is_some())),
+            _ => None,
+        })
+        .collect();
+    let no_column =
+        figures.iter().any(|&(_, proposed)| proposed) && figures.iter().all(|&(budget, _)| !budget);
+    let unadopted = |findings: &mut Findings, row: &str, budget: Option<f64>, proposed: Option<f64>| {
+        if no_column && budget.is_none() {
+            findings.unadopted.insert(row.to_owned(), proposed.is_some());
+        }
+    };
     let reading = |round: &super::Round| round.log.gpu_reading.clone().unwrap_or_default();
     let overlaps = rounds.rounds.iter().any(|round| reading(round).overlaps);
     let void = |round: &super::Round| reading(round).lock.is_some_and(|lock| lock >= LOCK_VOID);
@@ -469,6 +533,7 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
     for (phase, row) in rows {
         if phase == "cpu" {
             let TimedCell::Read(timed) = rounds.timed(&phase, &row) else { continue };
+            unadopted(findings, &row, timed.budget, timed.proposed);
             against(findings, name, &row, timed.p95, timed.budget, timed.proposed);
             continue;
         }
@@ -483,6 +548,7 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
         // A row no round read (not exercised) judges nothing, as a row with no budget fails nothing.
         let Some(first) = rounds.rounds.iter().find_map(logged) else { continue };
         let (budget, proposed) = (first.budget, first.proposed);
+        unadopted(findings, &row, budget, proposed);
         let (mut read, mut few) = (Vec::new(), 0);
         for round in rounds.rounds.iter().filter(|round| !void(round)) {
             let Some(timed) = logged(round) else { continue };
@@ -904,6 +970,44 @@ mod tests {
         assert!(findings.failed.is_empty(), "{findings:?}");
         assert_eq!(findings.notes, ["exit-walk gpu main p95 9.000 ms over 4.000 ms *proposed*"]);
         assert_eq!(Verdict::of(&findings), Verdict::Pass, "judged on the frame, which is adopted");
+    }
+
+    /// A tier with no adopted column (M5 B4's Desktop-High and Mobile-High) gives its why: its rows shown beside the
+    /// proposed figures or with none, failing nothing. An adopted tier gives none, and no verdict changes.
+    #[test]
+    fn a_tier_with_no_adopted_column_says_why() {
+        let manifest = manifest();
+        let run = manifest.run("crowd-tour").expect("a run");
+        let high = tier(&manifest, "desktop-high");
+        let log = [
+            timed("cpu", "animation and ik", 900.0, 1_000.0, "None", "None"),
+            timed("gpu", "gpu frame", 9_000.0, 9_500.0, "Some(12000)", "None"),
+            timed("gpu", "gpu main", 3_000.0, 3_500.0, "None", "Some(4000)"),
+        ]
+        .concat();
+        let findings = judge(5, run, "crowd-tour (on)", &high, &rounds(&[&log]));
+        assert_eq!(Verdict::of(&findings), Verdict::NotJudged);
+        assert_eq!(
+            no_column(&findings, &high).as_deref(),
+            Some(
+                "Desktop-High has no adopted column, so its rows are shown and fail nothing (the runbook's \"not \
+                 judged (no column)\"): 1 (gpu main) beside M5 B4's proposed figures, 1 (animation and ik) with none"
+            )
+        );
+        let findings = judge(6, run, "crowd-tour (on)", &high, &rounds(&[&log]));
+        assert!(
+            no_column(&findings, &high).is_some_and(|why| why.contains("1 (animation and ik) with none"))
+        );
+        let low = tier(&manifest, "desktop-low");
+        let log = [
+            timed("cpu", "animation and ik", 900.0, 1_000.0, "Some(1500)", "None"),
+            timed("gpu", "gpu main", 3_000.0, 3_500.0, "Some(4900)", "None"),
+            timed("gpu", "gpu skinning", 300.0, 400.0, "None", "Some(500)"),
+        ]
+        .concat();
+        let findings = judge(5, run, "crowd-tour (on)", &low, &rounds(&[&log]));
+        assert_eq!(no_column(&findings, &low), None, "{findings:?}");
+        assert_eq!(Verdict::of(&findings), Verdict::Pass);
     }
 
     /// A wait for a texture's level over 30 frames at the 99th percentile fails, `32+` among them, and so does

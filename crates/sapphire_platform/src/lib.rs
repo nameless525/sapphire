@@ -166,6 +166,7 @@ mod platform;
 mod sdl;
 mod system;
 mod thermal;
+mod usage;
 mod window;
 
 #[doc(hidden)]
@@ -196,6 +197,7 @@ pub use thermal::{
     CVARS, FORCE_HEADROOM, FORCE_LOW_POWER, FORCE_STATE, ForcedState, ForcedSwitch, ThermalReading,
     ThermalState,
 };
+pub use usage::{CoreTicks, ProcessReads, Ticks, core_ticks, process_reads, thread_cpu_time};
 pub use window::{
     Rect, Size, SurfaceHandle, TextInputKind, Window, WindowDesc, WindowId, points_per_coordinate,
 };

@@ -30,16 +30,13 @@ def safe_name(name: str) -> bool:
         and ":" not in name
         and str(path) == name
         and len(path.parts) > 1
-        and path.parts[0] in {"bin", "content", "mobile-content"}
+        and path.parts[0] in {"bin", "content"}
     )
 
 
 # The shipped desktop cook with the benchmark's `ci` district beside it, as `cargo xtask bench-content
 # --with-content` puts them (M5 X4): what the golden scenes draw.
 CONTENT = "target/bench/ci/with-content/desktop"
-# The same for the mobile cook (`--with-content --cook mobile`), which the scale lane's phone walks read (M5 Z3):
-# bundled under mobile-content/ when given.
-MOBILE_CONTENT = "target/bench/ci/with-content/mobile"
 
 
 def cook_files(content: Path, prefix: str, cook: str) -> dict:
@@ -54,9 +51,7 @@ def cook_files(content: Path, prefix: str, cook: str) -> dict:
     return files
 
 
-def create(
-    workspace: Path, archive: Path, commit: str, family: str, content: str = CONTENT, mobile_content: str | None = None
-) -> dict:
+def create(workspace: Path, archive: Path, commit: str, family: str, content: str = CONTENT) -> dict:
     suffix = FAMILIES[family]
     files = {}
     for executable in ("sapphire_sandbox", "sapphire_testkit"):
@@ -68,8 +63,6 @@ def create(
         if symbols.exists():
             files["bin/sapphire_sandbox.pdb"] = symbols
     files.update(cook_files(workspace / content, "content", "desktop"))
-    if mobile_content is not None:
-        files.update(cook_files(workspace / mobile_content, "mobile-content", "mobile"))
     records = {}
     for name, path in files.items():
         if not safe_name(name) or not path.is_file() or path.is_symlink():
@@ -186,13 +179,10 @@ def main() -> None:
             command.add_argument("--destination", required=True, type=Path)
         else:
             command.add_argument("--content", default=CONTENT, help="the cook to bundle, from the workspace")
-            command.add_argument(
-                "--mobile-content", help="a mobile cook to bundle under mobile-content/, for the scale lane"
-            )
     args = parser.parse_args()
     verify_checkout(args.commit)
     if args.command == "create":
-        create(Path.cwd(), args.archive, args.commit, args.family, args.content, args.mobile_content)
+        create(Path.cwd(), args.archive, args.commit, args.family, args.content)
     else:
         unpack(args.archive, args.destination, args.commit, args.family)
 

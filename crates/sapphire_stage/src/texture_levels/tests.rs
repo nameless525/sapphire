@@ -685,7 +685,11 @@ fn a_recorded_walk_plans_what_it_did_before_the_cuts() {
             })
         };
         let starts = levels.plan(shape, coverage, streaming, u64::MAX, 0);
-        fold(format!("{update} {starts} {}", levels.stats.lowers_waiting));
+        let stats = &levels.stats;
+        fold(format!(
+            "{update} {starts} {} {} {} {} {}",
+            stats.lowers_waiting, stats.tails, stats.wanted, stats.pool, stats.tails_over_pool
+        ));
         for (top, id) in tops.iter_mut().zip(&ids) {
             let Some(wanted) = levels.textures.get(id) else { continue };
             let choice = wanted.choice;
@@ -699,5 +703,30 @@ fn a_recorded_walk_plans_what_it_did_before_the_cuts() {
         }
     }
     assert_eq!(seen, [true; 3], "the walk has the pool lower, remember, lower a texture and start one");
-    assert_eq!(digest, 4_265_341_610_408_563_456, "the recorded walk's decisions moved");
+    assert_eq!(digest, 7_509_442_829_137_340_348, "the recorded walk's decisions moved");
+}
+
+/// A texture's bytes from each top, summed once for its shape, are what summing its levels from that top
+/// gives (M5 Z2's cheaper plan and count), for every format, sizes square and not, every top and past its
+/// tail, and again after the shape changes.
+#[test]
+fn a_textures_bytes_from_each_top_are_its_levels_summed() {
+    use sapphire_assets::texture::{Swizzle, TextureFormat};
+    let mut bytes = LevelBytes::default();
+    for format in TextureFormat::ALL {
+        let (block_width, block_height) = format.block_dimensions();
+        for (width, height) in [(1u32, 1u32), (4096, 4096), (2048, 512), (600, 360), (12, 4096)] {
+            let (width, height) =
+                (width.next_multiple_of(block_width), height.next_multiple_of(block_height));
+            let levels = 32 - width.max(height).leading_zeros();
+            for mip_level_count in [1, levels] {
+                let whole =
+                    TextureDesc { format, width, height, mip_level_count, swizzle: Swizzle::default() };
+                bytes.follow(&whole);
+                for top in 0..=mip_level_count + 2 {
+                    assert_eq!(bytes.from(top), bytes_from(&whole, top), "{whole:?} from {top}");
+                }
+            }
+        }
+    }
 }

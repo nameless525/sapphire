@@ -426,6 +426,38 @@ struct Wanted {
     /// the plan's later passes, which change neither (M5 Z2: each looked them up again).
     shape: Option<Shape>,
     lowest: u32,
+    /// Its bytes from each top down, for its whole texture's shape.
+    bytes: LevelBytes,
+}
+
+/// A texture's bytes from each top to its tail's end ([`bytes_from`] for every top), summed once for the shape
+/// they're for and read by the plan and the count at every update (M5 Z2: each summed its levels again).
+#[derive(Clone, Copy, Default)]
+struct LevelBytes {
+    whole: Option<TextureDesc>,
+    from: [u64; MAX_LEVELS + 1],
+}
+
+impl LevelBytes {
+    /// Sums them for `whole`, unless that's the shape they're for.
+    fn follow(&mut self, whole: &TextureDesc) {
+        if self.whole == Some(*whole) {
+            return;
+        }
+        let mut from = [0; MAX_LEVELS + 1];
+        for level in (0..(whole.mip_level_count as usize).min(MAX_LEVELS)).rev() {
+            from[level] = from[level + 1] + whole.level_byte_len(level as u32);
+        }
+        *self = Self { whole: Some(*whole), from };
+    }
+
+    /// The bytes from `top` down, as [`bytes_from`] counts them, of the shape last followed.
+    fn from(&self, top: u32) -> u64 {
+        match self.whole {
+            Some(whole) if whole.mip_level_count as usize > MAX_LEVELS => bytes_from(&whole, top),
+            _ => self.from.get(top as usize).copied().unwrap_or(0),
+        }
+    }
 }
 
 /// What the streamer chose for one texture.
@@ -981,7 +1013,8 @@ impl TextureLevels {
             // What it holds as the server counts it: on the GPU, and its levels on their way.
             let lowest = wanted.lowest_held(texture.top);
             wanted.lowest = lowest;
-            counted += bytes_from(&whole, lowest);
+            wanted.bytes.follow(&whole);
+            counted += wanted.bytes.from(lowest);
             let choice = &mut wanted.choice;
             (choice.start, choice.lower) = (None, false);
             if wanted.users == 0 {
@@ -1010,9 +1043,9 @@ impl TextureLevels {
                 Some(pool) if pool.estimates < LOWER_AFTER && !held_whole => pool.planned.clamp(base, above),
                 _ => base,
             };
-            total += bytes_from(&whole, choice.planned);
-            tails += bytes_from(&whole, above);
-            wanted_bytes += bytes_from(&whole, choice.need.max(floor).min(above));
+            total += wanted.bytes.from(choice.planned);
+            tails += wanted.bytes.from(above);
+            wanted_bytes += wanted.bytes.from(choice.need.max(floor).min(above));
         }
         // The pool's room is the server's (M5 Z2): what its textures' pool holds that these don't, tails still
         // loading and levels let go of that it can't unload yet, comes off the pool first, so a plan and its
@@ -1107,7 +1140,7 @@ impl TextureLevels {
         for (&id, wanted) in &self.textures {
             let Some(texture) = wanted.shape else { continue };
             let top = texture.top;
-            held += bytes_from(&texture.whole, wanted.lowest);
+            held += wanted.bytes.from(wanted.lowest);
             if top < wanted.choice.planned {
                 self.order.push((rank(&texture, &wanted.choice, wanted.held_whole()), id));
             }
@@ -1124,9 +1157,7 @@ impl TextureLevels {
                 .filter(|index| wanted.handles.contains_key(index) && !wanted.arrived.contains_key(index))
                 .map(|index| texture.whole.level_byte_len(index))
                 .sum();
-            held -= bytes_from(&texture.whole, lowest)
-                - bytes_from(&texture.whole, wanted.choice.planned)
-                - loading;
+            held -= wanted.bytes.from(lowest) - wanted.bytes.from(wanted.choice.planned) - loading;
             wanted.choice.lower = true;
         }
         self.stats.lowers_waiting = (self.order.len() - lowers) as u32;
@@ -1350,11 +1381,12 @@ fn count(
         let above = texture.above();
         count += 1;
         held_whole += u32::from(wanted.users > 0 && (wanted.whole_users > 0 || wanted.whole_now));
-        tails += bytes_from(&texture.whole(), above);
+        wanted.bytes.follow(&texture.whole());
+        tails += wanted.bytes.from(above);
         // On the GPU, and levels on their way down to the top planned.
         let top = texture.top();
         let lowest_held = wanted.lowest_held(top);
-        resident += bytes_from(&texture.whole(), lowest_held);
+        resident += wanted.bytes.from(lowest_held);
         let need = match streaming {
             Some(_) => wanted.choice.need.min(above),
             None => wanted_top(asked, id, wanted, above),

@@ -1,11 +1,14 @@
-//! `cargo xtask counts [--update] [--walk <name>]... [--walk-timeout <seconds>]`: CI's scale lane (M5 X4).
+//! `cargo xtask counts [--update] [--differences <file>] [--walk <name>]... [--walk-timeout <seconds>]`: CI's scale
+//! lane (M5 X4).
 //!
 //! Cooks the desktop content and the benchmark's `ci` district beside it ([`bench::with_content`]), and the
 //! mobile content and district the same way for the phone tiers' walks (M5 Z3), builds
 //! the sandbox and `sapphire_testkit` as the golden scenes do, then runs `sapphire_testkit counts`, which
 //! walks the district's tour at each tier's settings and holds what each walk counted to
-//! `tests/counts/district-ci.txt` (`sapphire_testkit::counts`). It runs as a process because nothing may
-//! depend on a tool crate (rule R1).
+//! `tests/counts/district-ci.txt` (`sapphire_testkit::counts`), or with `--differences` to the table plus a GPU
+//! family's differences from it (lavapipe's: `tests/counts/district-ci-vulkan-lavapipe.txt`,
+//! `sapphire_testkit::counts::differences`). It runs as a process because nothing may depend on a
+//! tool crate (rule R1).
 
 use std::process::Command;
 
@@ -22,6 +25,8 @@ pub const TABLE: &str = "tests/counts/district-ci.txt";
 /// What `cargo xtask counts` runs.
 pub struct Counts<'a> {
     pub update: bool,
+    /// A GPU family's differences from the table, which the walks are held to beside it.
+    pub differences: Option<&'a std::path::Path>,
     pub walks: &'a [String],
     /// Seconds a walk may take before the testkit stops it (its default when `None`).
     pub walk_timeout: Option<u64>,
@@ -56,6 +61,9 @@ pub fn run(counts: &Counts<'_>) -> anyhow::Result<()> {
         .arg(workspace::output_dir().join("counts"));
     if counts.update {
         command.arg("--update");
+    }
+    if let Some(differences) = counts.differences {
+        command.arg("--differences").arg(differences);
     }
     for walk in counts.walks {
         command.args(["--walk", walk]);

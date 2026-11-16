@@ -24,9 +24,17 @@
 //!   though a walk now and then spent its budget on a frame or two (four of the 24 walks of three runs,
 //!   none of whose counts moved). A frame over the budget is timing, not a count, so it isn't a row; but a walk whose
 //!   counts moved and that went over says so beside them, since a cell may have landed late.
+//! - **A walk's worker count is the walk's** ([`COMPUTE_THREADS`]): the jobs a frame's animation splits into follow
+//!   the compute pool's threads, so a walk fixes them, and what it counts is the scene's, not the machine's.
+//! - **A family on another architecture holds the table plus its differences** ([`differences`]): the table is
+//!   taken on an M5's Metal (aarch64), and lavapipe on x86-64 Linux counts a few rows differently by design (the
+//!   crowd's presentation arithmetic, `sapphire_math::det`'s scope), each written down with its reason in
+//!   `tests/counts/district-ci-<family>.txt`. Without `--differences` the table holds exactly.
 //! - Each walk's sandbox writes `<out>/<walk>.log`, has a deadline, and the run writes what it saw as a table,
-//!   `<out>/counts.txt`, which CI uploads. [`Mode::Update`] rewrites the table's rows for the walks it ran.
+//!   `<out>/counts.txt`, which CI uploads. [`Mode::Update`] rewrites the table's rows for the walks it ran, and
+//!   [`refresh_differences`] a differences file from such a folder, walking nothing.
 
+pub mod differences;
 pub mod table;
 
 use std::collections::BTreeMap;
@@ -37,13 +45,20 @@ use std::time::Duration;
 
 use sapphire_time::Stopwatch;
 
-use self::table::{Counted, Reading, Table};
+use self::differences::Differences;
+use self::table::{Counted, Key, Reading, Table};
 use crate::scenes::{CONTENT_DIR_ENV, Mode, log_tail, run_with_deadline};
 
 /// The preset the lane walks.
 pub const PRESET: &str = "ci";
-/// How long a walk may take before it's stopped and fails: over the 45 minutes CI gives a walk's job.
-pub const DEFAULT_WALK_TIMEOUT: Duration = Duration::from_secs(50 * 60);
+/// How long a walk may take before it's stopped and fails: over the 15 minutes CI gives a walk's job (its walks
+/// took 2.7 to 4.5 minutes on lavapipe, M5 X4's first nightly).
+pub const DEFAULT_WALK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// The compute pool's threads every walk runs with (`--compute-threads`): a walk's worker count is part of the
+/// walk, so what it counts is the scene's and not the machine's (a frame's animation jobs are two a thread,
+/// `sapphire_anim::evaluate_all`). Three and not one, so a counted walk still crosses threads; a 2-core runner
+/// carries three.
+pub const COMPUTE_THREADS: u32 = 3;
 /// What a ceiling row's ceiling is over what `--update` saw: five fourths.
 pub const HEADROOM: (u64, u64) = (5, 4);
 
@@ -122,15 +137,22 @@ impl Walk {
             "zone_proving_hub",
             "--ambient",
             "on",
+            "--compute-threads",
+            &COMPUTE_THREADS.to_string(),
         ]
         .map(str::to_owned)
         .to_vec()
     }
 
+    /// Whether it walks a phone tier, which reads the mobile cook.
+    pub fn is_phone(&self) -> bool {
+        self.tier.starts_with("mobile")
+    }
+
     /// The cook the walk reads: a phone tier's the mobile one, as a phone would (M5 Z3), a desktop tier's the
-    /// desktop one.
-    pub fn content<'p>(&self, paths: &'p Paths) -> &'p Path {
-        if self.tier.starts_with("mobile") { &paths.mobile_content } else { &paths.content }
+    /// desktop one. `None` for a phone tier when no mobile cook was given.
+    pub fn content<'p>(&self, paths: &'p Paths) -> Option<&'p Path> {
+        if self.is_phone() { paths.mobile_content.as_deref() } else { Some(&paths.content) }
     }
 }
 
@@ -141,10 +163,13 @@ pub struct Paths {
     /// The desktop cook with the district's pack beside it, and a release manifest naming both: the desktop
     /// tiers' walks read it.
     pub content: PathBuf,
-    /// The same for the mobile cook: the phone tiers' walks read it.
-    pub mobile_content: PathBuf,
+    /// The same for the mobile cook: the phone tiers' walks read it, and need it.
+    pub mobile_content: Option<PathBuf>,
     /// The committed table.
     pub table: PathBuf,
+    /// A GPU family's differences from the table ([`differences`]): with them a walk is held to the table's
+    /// figure plus its difference, without them to the table's.
+    pub differences: Option<PathBuf>,
     /// The district's generated sources, whose digest the table's header names: checked when given.
     pub sources: Option<PathBuf>,
     /// The phones' district's generated sources (M5 B6: four materials a cell, a tree of their own), whose digest
@@ -158,10 +183,22 @@ pub struct Paths {
 /// table's rows for those walks.
 pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Result<Vec<String>, String> {
     let selected = select(walks)?;
-    crate::output_paths::disjoint(
-        &paths.out,
-        &[&paths.content, &paths.mobile_content, &paths.sandbox, &paths.table],
-    )?;
+    if paths.mobile_content.is_none()
+        && let Some(phone) = selected.iter().find(|walk| walk.is_phone())
+    {
+        return Err(format!("{} reads the mobile cook: give it with --mobile-content", phone.name));
+    }
+    if mode == Mode::Update && paths.differences.is_some() {
+        return Err(
+            "--update rewrites the table from this machine's walks, and takes no --differences: a family's \
+                    differences are refreshed from its run's folder (--refresh)"
+                .to_owned(),
+        );
+    }
+    let mut inputs = vec![paths.content.as_path(), paths.sandbox.as_path(), paths.table.as_path()];
+    inputs.extend(paths.mobile_content.as_deref());
+    inputs.extend(paths.differences.as_deref());
+    crate::output_paths::disjoint(&paths.out, &inputs)?;
     if paths.out.exists() {
         fs::remove_dir_all(&paths.out)
             .map_err(|e| format!("failed to empty {}: {e}", paths.out.display()))?;
@@ -172,6 +209,12 @@ pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Re
         _ => Err(format!("failed to read {}: {error}", paths.table.display())),
     })?;
     let table = Table::parse(&text).map_err(|error| format!("{}: {error}", paths.table.display()))?;
+    // What the walks are held to: the table, plus a family's differences where given (read before any walk, so a
+    // file that doesn't hold fails at once).
+    let expected = match &paths.differences {
+        None => table.clone(),
+        Some(path) => differences::apply(&table, &read_differences(path, &table)?),
+    };
     let digest = paths.sources.as_deref().map(sources_digest).transpose()?;
     let mobile_digest = paths.mobile_sources.as_deref().map(sources_digest).transpose()?;
 
@@ -197,7 +240,8 @@ pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Re
         let walked = Stopwatch::start();
         let log = paths.out.join(format!("{}.log", walk.name));
         let mut command = Command::new(&paths.sandbox);
-        command.env(CONTENT_DIR_ENV, walk.content(paths)).args(walk.args());
+        let content = walk.content(paths).expect("a phone walk's cook was checked above");
+        command.env(CONTENT_DIR_ENV, content).args(walk.args());
         let exit = run_with_deadline(&mut command, &log, timeout)
             .map_err(|e| format!("failed to run the sandbox for {} ({}): {e}", walk.name, log.display()))?;
         let failed = |what: String| {
@@ -243,7 +287,7 @@ pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Re
     );
     match mode {
         Mode::Compare => {
-            let moved = table::compare(&table, &seen, &names);
+            let moved = table::compare(&expected, &seen, &names);
             for (walk, frames) in over_budget.into_iter().filter(|&(_, frames)| frames > 0) {
                 let line = format!(
                     "{walk}: the zone spent its streaming budget on {frames} frame(s), so a cell may have landed a \
@@ -266,6 +310,61 @@ pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Re
         Mode::Update => {}
     }
     Ok(failures)
+}
+
+/// Reads a family's differences file, checked against `table`.
+fn read_differences(path: &Path, table: &Table) -> Result<Differences, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    Differences::parse(&text, table).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Rewrites the differences file at `differences` from finished runs' folders (`folders`, each holding the
+/// `counts.txt` a run of the lane wrote, as CI's `scale-lane-<walk>` artifacts do), walking nothing: each walk
+/// the folders counted has its lines rewritten against `table`, every other walk's lines are kept, and each line
+/// keeps its reason. Returns one message per new difference, each written under
+/// [`differences::NEEDS_A_REASON`], which the file fails to read with until it's replaced.
+pub fn refresh_differences(
+    table: &Path,
+    differences: &Path,
+    folders: &[PathBuf],
+) -> Result<Vec<String>, String> {
+    let text = fs::read_to_string(table).map_err(|e| format!("failed to read {}: {e}", table.display()))?;
+    let table_read = Table::parse(&text).map_err(|error| format!("{}: {error}", table.display()))?;
+    let old = match fs::read_to_string(differences) {
+        // A reason still owed is kept owed: the refresh writes the placeholder back.
+        Ok(text) => Differences::parse_owing(&text, &table_read),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Differences::default()),
+        Err(error) => return Err(format!("failed to read {}: {error}", differences.display())),
+    }
+    .map_err(|error| format!("{}: {error}", differences.display()))?;
+    let mut seen: BTreeMap<Key, Reading> = BTreeMap::new();
+    for folder in folders {
+        let path = folder.join("counts.txt");
+        let text =
+            fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        let counted = Table::parse(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+        for (key, expected) in counted.rows {
+            let table::Expected::Exact(reading) = expected else {
+                return Err(format!("{}: {} | {} is a ceiling, not a count", path.display(), key.0, key.1));
+            };
+            if seen.insert(key.clone(), reading).is_some() {
+                return Err(format!("{} | {} is counted in more than one folder", key.0, key.1));
+            }
+        }
+    }
+    let mut walks: Vec<&str> = seen.keys().map(|(walk, _)| walk.as_str()).collect();
+    walks.dedup();
+    if walks.is_empty() {
+        return Err("the folders counted no walk".to_owned());
+    }
+    let (fresh, new) = differences::refresh(&table_read, &old, &seen, &walks, is_reported)?;
+    fs::write(differences, fresh.format())
+        .map_err(|e| format!("failed to write {}: {e}", differences.display()))?;
+    eprintln!("refreshed {} from {} walk(s): {}", differences.display(), walks.len(), walks.join(", "));
+    Ok(new
+        .into_iter()
+        .map(|line| format!("{line}: a new difference, which needs its reason in the file"))
+        .collect())
 }
 
 fn is_ceiling(row: &str) -> bool {
@@ -313,7 +412,7 @@ fn header(digest: Option<&str>, mobile_digest: Option<&str>) -> Vec<String> {
         ));
     }
     header.push(format!(
-        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour --mount zone_proving_hub --ambient on, at each tier's settings and cook"
+        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour --mount zone_proving_hub --ambient on --compute-threads {COMPUTE_THREADS}, at each tier's settings and cook"
     ));
     header.push("reported in counts.txt, not held (the order cells arrive in is timing):".to_owned());
     header.extend(REPORTED.iter().map(|(row, why)| format!("  {row}: {why}")));
@@ -527,19 +626,69 @@ mod tests {
     /// A phone tier's walk reads the mobile cook, as a phone would; a desktop tier's the desktop cook.
     #[test]
     fn the_phone_walks_read_the_mobile_cook() {
-        let paths = Paths {
+        let mut paths = Paths {
             sandbox: PathBuf::from("sandbox"),
             content: PathBuf::from("desktop"),
-            mobile_content: PathBuf::from("mobile"),
+            mobile_content: Some(PathBuf::from("mobile")),
             table: PathBuf::from("table.txt"),
+            differences: None,
             sources: None,
             mobile_sources: None,
             out: PathBuf::from("out"),
         };
         for walk in WALKS {
             let cook = if walk.tier.starts_with("mobile") { "mobile" } else { "desktop" };
-            assert_eq!(walk.content(&paths), Path::new(cook), "{}", walk.name);
+            assert_eq!(walk.content(&paths), Some(Path::new(cook)), "{}", walk.name);
         }
+        // Without a mobile cook a desktop walk runs and a phone walk can't, which the run refuses before walking.
+        paths.mobile_content = None;
+        for walk in WALKS {
+            assert_eq!(walk.content(&paths).is_some(), !walk.is_phone(), "{}", walk.name);
+        }
+        let refused =
+            run(&paths, Mode::Compare, &["mobile-low-dusk".to_owned()], DEFAULT_WALK_TIMEOUT).unwrap_err();
+        assert!(refused.contains("--mobile-content"), "{refused}");
+    }
+
+    /// Every walk fixes its compute pool's threads, so its animation jobs are the scene's, not the machine's.
+    #[test]
+    fn every_walk_fixes_its_worker_count() {
+        for walk in WALKS {
+            let threads = COMPUTE_THREADS.to_string();
+            assert!(
+                walk.args().windows(2).any(|pair| pair == ["--compute-threads", threads.as_str()]),
+                "{}",
+                walk.name
+            );
+        }
+        assert!(header(None, None).iter().any(|line| line.contains("--compute-threads 3")));
+    }
+
+    /// A refresh from a run's folder, as CI uploads it, rewrites that walk's differences and keeps their reasons,
+    /// walking nothing.
+    #[test]
+    fn a_refresh_reads_a_runs_folder() {
+        let dir = std::env::temp_dir().join(format!("sapphire_counts_refresh_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("dh")).unwrap();
+        let table = dir.join("table.txt");
+        fs::write(
+            &table,
+            "# t\n\ndh | draw calls | p50 10 p95 12 worst 14 total 100\ndh | joints | not exercised\n",
+        )
+        .unwrap();
+        let file = dir.join("differences.txt");
+        fs::write(&file, "# d\n\n# Why.\ndh | draw calls | total -5\n").unwrap();
+        fs::write(
+            dir.join("dh/counts.txt"),
+            "# what the walk counted\n\ndh | draw calls | p50 10 p95 12 worst 14 total 93\ndh | joints | not exercised\n\
+             dh | materials bound | p50 1 p95 1 worst 1 total 9\n",
+        )
+        .unwrap();
+        let new = refresh_differences(&table, &file, &[dir.join("dh")]).unwrap();
+        assert!(new.is_empty(), "{new:?}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "# d\n\n# Why.\ndh | draw calls | total -7\n");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The lane's walks count the crowd as the timed walks draw it: the proving hub's crowd mounted, the ambient

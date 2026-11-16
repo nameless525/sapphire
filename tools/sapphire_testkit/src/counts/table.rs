@@ -27,7 +27,7 @@ pub enum Reading {
 }
 
 /// A row's spread over the frames a walk drew.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counted {
     pub p50: u64,
     pub p95: u64,

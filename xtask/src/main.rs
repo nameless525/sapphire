@@ -193,7 +193,7 @@ Commands:
       forces; CI splits the slow backends' scenes across runners with it. A scene still
       running after --scene-timeout (default 900) is stopped and fails. Each scene's
       output is in target/golden/<scene>.log, and their times in timings.json there.
-  counts [--update] [--walk <name>]... [--walk-timeout <seconds>]
+  counts [--update] [--differences <file>] [--walk <name>]... [--walk-timeout <seconds>]
       CI's scale lane (M5 X4): walk the benchmark district's tour (the ci preset, cooked beside
       the content as `bench-content --with-content` does, for desktop and for mobile: the phone
       tiers read the mobile cook) with the sandbox's walk bench at each tier's settings, dusk and night, drawing every seventh frame headlessly, and compare what each
@@ -201,7 +201,10 @@ Commands:
       moved: the walk and row, what the table holds, what the walk saw, and which way. No time
       is read. --update rewrites the table's rows for the walks run, when a count moves on
       purpose; --walk runs one walk (desktop-high-dusk, ..., mobile-low-night), more than once
-      for more. Walks' logs and what they counted are in target/counts/.
+      for more. --differences <file> holds each walk to the table plus a GPU family's
+      differences from it (CI's lavapipe lane: tests/counts/district-ci-vulkan-lavapipe.txt).
+      Every walk runs with --compute-threads 3. Walks' logs and what they counted are in
+      target/counts/.
   bench-scale prepare|plan|run|report [--preset ci|budget|double] [--smoke] [--sitting <n>]
       [--counts] [--baseline <dir>]
       The benches at scale (M5 Z1): every row exit tests 1, 2, 5, 6 and 7 measure, and the packages'
@@ -484,8 +487,14 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
                 walks.push(walk);
             }
             let walk_timeout = args.value::<u64>("--walk-timeout")?;
+            let differences = args.value::<PathBuf>("--differences")?;
             args.finish(false)?;
-            counts::run(&counts::Counts { update, walks: &walks, walk_timeout })
+            counts::run(&counts::Counts {
+                update,
+                differences: differences.as_deref(),
+                walks: &walks,
+                walk_timeout,
+            })
         }
         "bench-scale" => bench_scale::run(args),
         "store-shots" => {

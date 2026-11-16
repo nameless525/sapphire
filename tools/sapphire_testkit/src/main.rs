@@ -32,10 +32,11 @@ Usage:
                                [--scene-timeout <seconds>]
       Draw the stores' screenshots (sapphire_testkit::store_shots) into <out>/<store>/<size>/
       <language>/, emptied first, with each capture's log in <out>/logs/.
-  sapphire_testkit counts --sandbox <exe> --content <dir> --mobile-content <dir> --table <file>
+  sapphire_testkit counts --sandbox <exe> --content <dir> [--mobile-content <dir>] --table <file>
                           --out <dir> [--sources <dir>] [--mobile-sources <dir>] [--update]
-                          [--walk <name>]...
+                          [--differences <file>] [--walk <name>]...
                           [--walk-timeout <seconds>]
+  sapphire_testkit counts --table <file> --differences <file> --refresh <dir>...
       Walk the benchmark district's tour with the sandbox's walk bench at each tier's
       settings, dusk and night, and compare each walk's count rows with the table: one line
       for each row that moved, with what the table holds, what the walk saw and which way.
@@ -44,7 +45,12 @@ Usage:
       the phone tiers read (`cargo xtask counts` makes both). --sources is the district's generated sources, whose
       digest the table names, and --mobile-sources the phones' district's, beside it. --walk runs one walk (more than once for more); --update
       rewrites those walks' rows. Each walk's log is <out>/<walk>.log, and what every walk
-      counted is <out>/counts.txt, a table (sapphire_testkit::counts).
+      counted is <out>/counts.txt, a table (sapphire_testkit::counts). A phone walk needs
+      --mobile-content. --differences holds each walk to the table plus a GPU family's
+      differences from it (tests/counts/district-ci-<family>.txt, sapphire_testkit::counts::differences);
+      without it the table holds exactly. --refresh rewrites the differences file from finished
+      runs' folders, each with the counts.txt a run wrote (CI's scale-lane-<walk> artifacts),
+      walking nothing, keeping each line's reason and naming each new line, which needs one.
   sapphire_testkit scale plan --manifest <file> [--smoke] [--out <dir>]
   sapphire_testkit scale run --manifest <file> --sandbox <exe> --desktop <dir> --mobile <dir>
                              --replays <dir> --out <dir> [--smoke] [--sitting <n> | --counts]
@@ -172,20 +178,44 @@ fn counts(mut args: Vec<String>) -> Result<Vec<String>, String> {
     while let Some(walk) = value("--walk")? {
         walks.push(walk);
     }
-    let mut path = |name: &str| value(name)?.map(PathBuf::from).ok_or_else(|| format!("missing {name}"));
-    let paths = counts::Paths {
-        sandbox: path("--sandbox")?,
-        content: path("--content")?,
-        mobile_content: path("--mobile-content")?,
-        table: path("--table")?,
-        out: path("--out")?,
-        sources: value("--sources")?.map(PathBuf::from),
-        mobile_sources: value("--mobile-sources")?.map(PathBuf::from),
-    };
-    let timeout = seconds("--walk-timeout", value("--walk-timeout")?, counts::DEFAULT_WALK_TIMEOUT)?;
+    let mut folders = Vec::new();
+    while let Some(folder) = value("--refresh")? {
+        folders.push(PathBuf::from(folder));
+    }
+    let mut named = |name: &str| value(name).map(|found| found.map(PathBuf::from));
+    let sandbox = named("--sandbox")?;
+    let content = named("--content")?;
+    let mobile_content = named("--mobile-content")?;
+    let table = named("--table")?;
+    let differences = named("--differences")?;
+    let out = named("--out")?;
+    let sources = named("--sources")?;
+    let mobile_sources = named("--mobile-sources")?;
+    let walk_timeout = value("--walk-timeout")?;
     if let Some(unexpected) = args.first() {
         return Err(format!("unexpected argument `{unexpected}`"));
     }
+    if !folders.is_empty() {
+        let (Some(table), Some(differences)) = (table, differences) else {
+            return Err("--refresh needs --table and --differences".into());
+        };
+        if update || !walks.is_empty() || sandbox.is_some() || out.is_some() {
+            return Err("--refresh walks nothing: it takes no --update, --walk, --sandbox or --out".into());
+        }
+        return counts::refresh_differences(&table, &differences, &folders);
+    }
+    let missing = |name: &str| format!("missing {name}");
+    let paths = counts::Paths {
+        sandbox: sandbox.ok_or_else(|| missing("--sandbox"))?,
+        content: content.ok_or_else(|| missing("--content"))?,
+        mobile_content,
+        table: table.ok_or_else(|| missing("--table"))?,
+        differences,
+        out: out.ok_or_else(|| missing("--out"))?,
+        sources,
+        mobile_sources,
+    };
+    let timeout = seconds("--walk-timeout", walk_timeout, counts::DEFAULT_WALK_TIMEOUT)?;
     counts::run(&paths, mode, &walks, timeout)
 }
 

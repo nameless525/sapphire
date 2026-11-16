@@ -6,7 +6,7 @@
 # preset: ci
 # sources: eb7075c6d42a3466 (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
 # sources-mobile: 9d02413a1a5b1af6 (the phones' district, which the phone tiers' walks read, the same digest)
-# walks: --bench 3720 --draw-every 7 --size 320x180 --zone district --zone-walk tour --mount zone_proving_hub --ambient on, at each tier's settings and cook
+# walks: --bench 3720 --draw-every 7 --size 320x180 --zone district --zone-walk tour --mount zone_proving_hub --ambient on --compute-threads 3, at each tier's settings and cook
 # reported in counts.txt, not held (the order cells arrive in is timing):
 #   materials bound: bound when the next draw's material differs, so it follows the draws' order
 #   vertex buffers bound: bound when the next draw's mesh differs, so it follows the draws' order
@@ -17,7 +17,7 @@ desktop-high-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1596
 desktop-high-dusk | ambient in the far band | p50 9 p95 24 worst 30 total 5750
 desktop-high-dusk | ambient in the middle band | p50 6 p95 13 worst 17 total 3249
 desktop-high-dusk | ambient spring rigs | not exercised
-desktop-high-dusk | animation jobs | p50 0 p95 17 worst 20 total 2406
+desktop-high-dusk | animation jobs | p50 0 p95 8 worst 8 total 1131
 desktop-high-dusk | ao capsules | p50 61 p95 61 worst 61 total 32452
 desktop-high-dusk | bytes admitted | not exercised
 desktop-high-dusk | bytes decoded waiting | not exercised
@@ -114,7 +114,7 @@ desktop-high-night | ambient dispatches | p50 3 p95 3 worst 3 total 1596
 desktop-high-night | ambient in the far band | p50 9 p95 24 worst 29 total 5694
 desktop-high-night | ambient in the middle band | p50 6 p95 12 worst 17 total 3073
 desktop-high-night | ambient spring rigs | not exercised
-desktop-high-night | animation jobs | p50 0 p95 15 worst 19 total 2029
+desktop-high-night | animation jobs | p50 0 p95 8 worst 8 total 992
 desktop-high-night | ao capsules | p50 61 p95 61 worst 61 total 32452
 desktop-high-night | bytes admitted | not exercised
 desktop-high-night | bytes decoded waiting | not exercised
@@ -211,7 +211,7 @@ desktop-low-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1596
 desktop-low-dusk | ambient in the far band | p50 15 p95 34 worst 38 total 8697
 desktop-low-dusk | ambient in the middle band | p50 2 p95 7 worst 9 total 1416
 desktop-low-dusk | ambient spring rigs | not exercised
-desktop-low-dusk | animation jobs | p50 0 p95 14 worst 18 total 1029
+desktop-low-dusk | animation jobs | p50 0 p95 7 worst 8 total 524
 desktop-low-dusk | ao capsules | p50 61 p95 61 worst 61 total 32368
 desktop-low-dusk | bytes admitted | not exercised
 desktop-low-dusk | bytes decoded waiting | not exercised
@@ -308,7 +308,7 @@ desktop-low-night | ambient dispatches | p50 3 p95 3 worst 3 total 1596
 desktop-low-night | ambient in the far band | p50 15 p95 34 worst 36 total 8503
 desktop-low-night | ambient in the middle band | p50 2 p95 7 worst 9 total 1298
 desktop-low-night | ambient spring rigs | not exercised
-desktop-low-night | animation jobs | p50 0 p95 13 worst 18 total 844
+desktop-low-night | animation jobs | p50 0 p95 7 worst 8 total 433
 desktop-low-night | ao capsules | p50 61 p95 61 worst 61 total 32368
 desktop-low-night | bytes admitted | not exercised
 desktop-low-night | bytes decoded waiting | not exercised
@@ -405,7 +405,7 @@ mobile-high-dusk | ambient dispatches | p50 3 p95 3 worst 3 total 1596
 mobile-high-dusk | ambient in the far band | p50 6 p95 18 worst 22 total 4171
 mobile-high-dusk | ambient in the middle band | p50 1 p95 4 worst 6 total 578
 mobile-high-dusk | ambient spring rigs | not exercised
-mobile-high-dusk | animation jobs | p50 0 p95 0 worst 16 total 16
+mobile-high-dusk | animation jobs | p50 0 p95 0 worst 8 total 8
 mobile-high-dusk | ao capsules | p50 31 p95 31 worst 31 total 16492
 mobile-high-dusk | bytes admitted | not exercised
 mobile-high-dusk | bytes decoded waiting | not exercised
@@ -502,7 +502,7 @@ mobile-high-night | ambient dispatches | p50 3 p95 3 worst 3 total 1596
 mobile-high-night | ambient in the far band | p50 6 p95 18 worst 21 total 4039
 mobile-high-night | ambient in the middle band | p50 1 p95 4 worst 6 total 535
 mobile-high-night | ambient spring rigs | not exercised
-mobile-high-night | animation jobs | p50 0 p95 0 worst 16 total 16
+mobile-high-night | animation jobs | p50 0 p95 0 worst 8 total 8
 mobile-high-night | ao capsules | p50 31 p95 31 worst 31 total 16492
 mobile-high-night | bytes admitted | not exercised
 mobile-high-night | bytes decoded waiting | not exercised
@@ -599,7 +599,7 @@ mobile-low-dusk | ambient dispatches | not exercised
 mobile-low-dusk | ambient in the far band | p50 6 p95 17 worst 20 total 4035
 mobile-low-dusk | ambient in the middle band | p50 1 p95 4 worst 7 total 636
 mobile-low-dusk | ambient spring rigs | not exercised
-mobile-low-dusk | animation jobs | p50 0 p95 0 worst 16 total 16
+mobile-low-dusk | animation jobs | p50 0 p95 0 worst 8 total 8
 mobile-low-dusk | ao capsules | p50 31 p95 31 worst 31 total 16492
 mobile-low-dusk | bytes admitted | not exercised
 mobile-low-dusk | bytes decoded waiting | not exercised
@@ -696,7 +696,7 @@ mobile-low-night | ambient dispatches | not exercised
 mobile-low-night | ambient in the far band | p50 6 p95 17 worst 20 total 3910
 mobile-low-night | ambient in the middle band | p50 1 p95 4 worst 6 total 584
 mobile-low-night | ambient spring rigs | not exercised
-mobile-low-night | animation jobs | p50 0 p95 0 worst 16 total 16
+mobile-low-night | animation jobs | p50 0 p95 0 worst 8 total 8
 mobile-low-night | ao capsules | p50 31 p95 31 worst 31 total 16492
 mobile-low-night | bytes admitted | not exercised
 mobile-low-night | bytes decoded waiting | not exercised

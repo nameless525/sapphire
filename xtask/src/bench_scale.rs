@@ -210,8 +210,7 @@ fn prepare(folder: &Path, preset: Preset) -> anyhow::Result<()> {
         },
         SANDBOX,
     )?;
-    let to = bin(folder, SANDBOX);
-    fs::copy(&sandbox, &to).with_context(|| format!("copying {} to {}", sandbox.display(), to.display()))?;
+    copy_into_bin(folder, &sandbox, SANDBOX)?;
     build_testkit(folder)?;
 
     let replays = folder.join("replays");
@@ -272,9 +271,15 @@ fn build_testkit(folder: &Path) -> anyhow::Result<PathBuf> {
         &CargoBuild { package: TESTKIT, target: None, profile: BuildProfile::Dev, features: &[], env: &env },
         TESTKIT,
     )?;
-    let to = bin(folder, TESTKIT);
+    copy_into_bin(folder, &built, TESTKIT)
+}
+
+/// Copies a built binary into the batch's `bin/` as `name`, making the folder first: whichever binary a
+/// command copies first finds none on a commit that was never prepared.
+fn copy_into_bin(folder: &Path, built: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    let to = bin(folder, name);
     fs::create_dir_all(folder.join("bin"))?;
-    fs::copy(&built, &to).with_context(|| format!("copying {} to {}", built.display(), to.display()))?;
+    fs::copy(built, &to).with_context(|| format!("copying {} to {}", built.display(), to.display()))?;
     Ok(to)
 }
 
@@ -360,6 +365,24 @@ mod tests {
         assert_eq!(without, Path::new("batch/content/budget/mobile-no-cell-levels"));
         let manifest = fs::read_to_string(workspace::root().join(MANIFEST)).expect("the committed manifest");
         assert!(manifest.contains(&format!("content: Some(\"{}\")", &CellLevels::Off.suffix()[1..])));
+    }
+
+    /// `prepare` copies the sandbox before the testkit, into a commit's folder that has no `bin/` yet.
+    #[test]
+    fn a_binary_is_copied_into_a_folder_with_no_bin_yet() {
+        let root = std::env::temp_dir().join(format!("xtask_copy_into_bin_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let folder = root.join("batch");
+        fs::create_dir_all(&folder).unwrap();
+        let built = root.join("built");
+        fs::write(&built, "a binary").unwrap();
+        let to = copy_into_bin(&folder, &built, SANDBOX).unwrap();
+        assert_eq!(to, bin(&folder, SANDBOX));
+        assert_eq!(fs::read_to_string(&to).unwrap(), "a binary");
+        // And again beside it, as the testkit follows the sandbox.
+        let second = copy_into_bin(&folder, &built, TESTKIT).unwrap();
+        assert_eq!(fs::read_to_string(second).unwrap(), "a binary");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

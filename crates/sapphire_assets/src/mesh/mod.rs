@@ -603,6 +603,8 @@ impl ArchivedMesh {
     /// A copy out of the archive, for tools, tests and meshes derived at runtime (the sandbox's
     /// stage splits a mesh by material slot).
     pub fn to_mesh(&self) -> Result<Mesh, MeshError> {
+        // A mesh's CPU side built from its decoded bytes (exit test 2's count).
+        sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
         rkyv::deserialize::<Mesh, rkyv::rancor::Error>(self).map_err(|error| MeshError::Cooked(error.into()))
     }
 }

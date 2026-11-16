@@ -10,9 +10,12 @@
 //!   no game frame does.
 //! - **A load** is the asset pipeline's own work, counted where every load passes, by [`LoadWork`]: a read of a
 //!   pack (`sapphire_assets`' server, where a read's bytes land, or where its caller waits for them), a
-//!   decompression (`Toc::decode_asset`), and an asset checked as its kind, which is all the fix-up a cooked
-//!   asset gets (`AssetKind::references`). Handing decoded bytes to the GPU is the frame's bounded upload, and
-//!   isn't one.
+//!   decompression (`Toc::decode_asset`), and an asset built from its decoded bytes: checked as its kind, which is
+//!   all the fix-up a cooked asset gets (`AssetKind::references`), a mesh's CPU copy (`ArchivedMesh::to_mesh`),
+//!   or a zone's day and rigs parsed from their text (`sapphire_stage`'s zone look, which a zone coming parses on
+//!   a job). Handing decoded bytes to the GPU is the frame's bounded upload, and isn't one.
+//! - **Not counted:** `dev` builds' hot reload, which reads edited documents from disk on the frame's thread, and
+//!   live link's pushes: development tools, which a shipped game never runs.
 //!
 //! The ledger is per thread, so only the frame's thread's own work counts, and a test's thread is its own. A
 //! count is a thread-local add on a path that already reads or decodes: nothing per frame, nothing allocated.
@@ -26,7 +29,8 @@ pub enum LoadWork {
     Read,
     /// An asset's blocks decompressed and hashed.
     Decode,
-    /// An asset checked as its kind: a cooked asset's whole fix-up, after which it's read in place.
+    /// An asset built from its decoded bytes: checked as its kind (a cooked asset's whole fix-up, after which
+    /// it's read in place), copied out of its archive, or parsed from text.
     Build,
 }
 

@@ -31,6 +31,7 @@
 //! tool's (`Scene::set_weather`, the sandbox's `--weather`). The simulation never reads it.
 
 use std::f32::consts::PI;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use sapphire_assets::material::Material;
 use sapphire_assets::probes::ProbeGrid;
@@ -125,6 +126,8 @@ enum Coming {
     Prewarming,
     /// The zone, and what it depends on.
     Zone(Handle<Zone>),
+    /// Its day and rigs, parsed on a job off the frame's thread (exit test 2), the zone in.
+    Reading(Handle<Zone>, Receiver<ParsedLook>),
     /// The meshes around where it's arrived at, boxed: a streamer is most of what a zone coming holds.
     Near(Box<Streamer<ZoneEntity>>),
     Failed(String),
@@ -230,41 +233,58 @@ impl NextZone {
                 }
             }
             Coming::Zone(zone) => {
-                let reflects = content.reflects_probes();
                 let (server, _) = content.streaming_parts();
                 match server.state(zone) {
                     LoadState::Ready => {
-                        self.focus = arrival(server, zone, self.target.arrive);
+                        // Its day and rigs are text, parsed on a job: nothing loads on the frame's thread.
                         let presentation = &server.get(zone).expect("the zone is ready").presentation;
-                        let reflections = presentation.reflections.as_ref().copied().filter(|_| reflects);
-                        let names = (
-                            presentation.probes.as_ref().copied(),
-                            presentation.sky.as_ref().copied(),
-                            reflections,
-                        );
-                        // Its wet surfaces, off the frame, if it may go wet (M5 L4): the pack's prewarm
-                        // couldn't say, with the zone unread.
-                        let wet = !tool_weather && may_be_wet(presentation);
-                        // Its day and rigs read now, so a look that doesn't read fails the trip before the
-                        // arrival switches anything (Z3 review F4).
-                        let read = ZoneLook::read(presentation).map_err(|error| format!("its look: {error}"));
-                        let priority = self.priority();
-                        self.coming = match read.and_then(|read| {
-                            ComingLook::ask(server, names, priority)
-                                .map(|look| ComingLook { read: Some(read), ..look })
-                        }) {
-                            Ok(look) => {
-                                self.look = look;
-                                Coming::Near(Box::new(Streamer::new(zone.clone(), self.settings)))
-                            }
-                            Err(error) => Coming::Failed(error),
-                        };
-                        if wet {
-                            content.queue_wet_prewarm(pack);
-                        }
+                        let day = presentation.day.as_ref().map(|text| text.as_str().to_owned());
+                        let rigs = presentation.rigs.as_ref().map(|text| text.as_str().to_owned());
+                        let (sender, receiver) = mpsc::sync_channel(1);
+                        sapphire_jobs::spawn_async(move || {
+                            let _ = sender.send(parse_look(day.as_deref(), rigs.as_deref()));
+                        });
+                        self.coming = Coming::Reading(zone.clone(), receiver);
                     }
                     LoadState::Failed(error) => self.coming = Coming::Failed(error.to_string()),
                     LoadState::Loading => {}
+                }
+            }
+            Coming::Reading(zone, parsed) => {
+                let parsed = match parsed.try_recv() {
+                    Ok(parsed) => parsed,
+                    Err(TryRecvError::Empty) => return,
+                    Err(TryRecvError::Disconnected) => Err("its read stopped".to_owned()),
+                };
+                let reflects = content.reflects_probes();
+                let (server, _) = content.streaming_parts();
+                self.focus = arrival(server, zone, self.target.arrive);
+                let presentation = &server.get(zone).expect("the zone is ready").presentation;
+                let reflections = presentation.reflections.as_ref().copied().filter(|_| reflects);
+                let names =
+                    (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied(), reflections);
+                // Its wet surfaces, off the frame, if it may go wet (M5 L4): the pack's prewarm
+                // couldn't say, with the zone unread.
+                let day_wet = matches!(&parsed, Ok((Some(day), _)) if day.may_be_wet());
+                let wet = !tool_weather && (weather_is_wet(presentation) || day_wet);
+                // Its day and rigs read before it's ready, so a look that doesn't read fails the trip
+                // before the arrival switches anything (Z3 review F4).
+                let read = parsed
+                    .map(|(day, rigs)| ZoneLook::with_air(presentation, day, rigs))
+                    .map_err(|error| format!("its look: {error}"));
+                let priority = self.priority();
+                self.coming = match read.and_then(|read| {
+                    ComingLook::ask(server, names, priority)
+                        .map(|look| ComingLook { read: Some(read), ..look })
+                }) {
+                    Ok(look) => {
+                        self.look = look;
+                        Coming::Near(Box::new(Streamer::new(zone.clone(), self.settings)))
+                    }
+                    Err(error) => Coming::Failed(error),
+                };
+                if wet {
+                    content.queue_wet_prewarm(pack);
                 }
             }
             Coming::Near(_) | Coming::Failed(_) => {}
@@ -373,16 +393,19 @@ impl ZoneLook {
     /// Reads `presentation`'s: its day must be complete, as a stage's must, and its rigs a valid library. A cook
     /// checked the day; the rigs only by their type (a content test reads the shipped zones'), so a zone coming
     /// reads its look before it's ready, and can't come if it doesn't read (Z3 review F4).
+    /// A zone coming parses its day and rigs on a job instead ([`parse_look`]).
     pub fn read(presentation: &ArchivedZonePresentation) -> Result<Self, String> {
-        let day = presentation.day.as_ref().map(|text| TodTimeline::from_ron(text.as_str()));
-        let day = match day.transpose().map_err(|error| format!("its day: {error}"))? {
-            Some(day) if !day.is_complete() => {
-                return Err("its day: it doesn't key every group a stage's day must".to_owned());
-            }
-            day => day,
-        };
-        let rigs =
-            presentation.rigs.as_ref().map(|text| LightRigLibrary::from_ron(text.as_str())).transpose();
+        let day = presentation.day.as_ref().map(|text| text.as_str());
+        let (day, rigs) = parse_look(day, presentation.rigs.as_ref().map(|text| text.as_str()))?;
+        Ok(Self::with_air(presentation, day, rigs))
+    }
+
+    /// `day` and `rigs`, parsed, with `presentation`'s wind, weather and fog, which are plain numbers.
+    fn with_air(
+        presentation: &ArchivedZonePresentation,
+        day: Option<TodTimeline>,
+        rigs: Option<LightRigLibrary>,
+    ) -> Self {
         let wind = presentation.wind.as_ref().map(|wind| {
             let wind = wind.to_native();
             Wind { direction: Vec3::from(wind.direction), strength: wind.strength, gustiness: wind.gustiness }
@@ -391,14 +414,28 @@ impl ZoneLook {
             let weather = weather.to_native();
             Weather { wetness: weather.wetness, puddles: weather.puddles }
         });
-        Ok(Self {
-            day,
-            rigs: rigs.map_err(|error| format!("its light rigs: {error}"))?,
-            wind,
-            weather,
-            fog: presentation.fog.as_ref().map(|fog| fog.to_native()),
-        })
+        Self { day, rigs, wind, weather, fog: presentation.fog.as_ref().map(|fog| fog.to_native()) }
     }
+}
+
+/// A zone's day and rigs, parsed on a job, or why they don't read.
+type ParsedLook = Result<(Option<TodTimeline>, Option<LightRigLibrary>), String>;
+
+/// Parses a zone's `day` and `rigs` texts: its day must be complete, as a stage's must, and its rigs a valid
+/// library. Building them from text is a load (exit test 2's count, `LoadWork::Build`), which a zone coming does
+/// on a job.
+fn parse_look(day: Option<&str>, rigs: Option<&str>) -> ParsedLook {
+    if day.is_some() || rigs.is_some() {
+        sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
+    }
+    let day = match day.map(TodTimeline::from_ron).transpose().map_err(|error| format!("its day: {error}"))? {
+        Some(day) if !day.is_complete() => {
+            return Err("its day: it doesn't key every group a stage's day must".to_owned());
+        }
+        day => day,
+    };
+    let rigs = rigs.map(LightRigLibrary::from_ron).transpose();
+    Ok((day, rigs.map_err(|error| format!("its light rigs: {error}"))?))
 }
 
 #[cfg(test)]
@@ -412,15 +449,24 @@ impl ZoneLook {
 /// Whether a zone's frames may draw wet (M5 L4): its own weather is, or its day keys any. What a load or a trip
 /// declares for it (`PipelineInventory::wet_surfaces`), so its first wet frame builds nothing.
 pub(crate) fn may_be_wet(presentation: &ArchivedZonePresentation) -> bool {
-    let own = presentation.weather.as_ref().is_some_and(|weather| {
-        let weather = weather.to_native();
-        Weather { wetness: weather.wetness, puddles: weather.puddles }.is_wet()
-    });
+    let own = weather_is_wet(presentation);
+    // A load's or a boot's: a zone coming parses its day on a job.
     let day = || {
-        let day = presentation.day.as_ref().map(|text| TodTimeline::from_ron(text.as_str()));
+        let day = presentation.day.as_ref().map(|text| {
+            sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
+            TodTimeline::from_ron(text.as_str())
+        });
         day.is_some_and(|day| day.is_ok_and(|day| day.may_be_wet()))
     };
     own || day()
+}
+
+/// Whether a zone's own weather is wet.
+fn weather_is_wet(presentation: &ArchivedZonePresentation) -> bool {
+    presentation.weather.as_ref().is_some_and(|weather| {
+        let weather = weather.to_native();
+        Weather { wetness: weather.wetness, puddles: weather.puddles }.is_wet()
+    })
 }
 
 /// What a zone's look leaves on the scene beyond its day and rigs (M5 M6), which the frame's packet takes, and

@@ -527,6 +527,15 @@ impl Run<'_> {
                     "fight pipelines",
                 );
                 report_texture_waits(phase, &self.stage.content.texture_streaming_stats());
+                // Loads after the phase's last drawn frame go to it, so none goes unlogged.
+                if let Some(every) = self.draw_every {
+                    let loads = sapphire_core::frame_loads::loads().total();
+                    let mut phase_frames =
+                        self.trace.iter_mut().rev().take_while(|traced| traced.phase == phase);
+                    if let Some(last) = phase_frames.find(|traced| traced.frame.is_multiple_of(every.get())) {
+                        last.counted.frame_thread_loads += loads - std::mem::replace(&mut self.loads, loads);
+                    }
+                }
                 return Ok(played);
             }
             if over {
@@ -630,9 +639,12 @@ impl Run<'_> {
         let memory = zone::Held::of(stage, after.live_bytes);
         let assets = stage.content.stats();
         let streaming = stage.content.texture_streaming_stats();
+        // Under `--draw-every` only drawn frames' counts are logged ([`counts::report_drawn`]): one takes the loads
+        // since the last, so none on a frame that wasn't drawn goes uncounted.
+        let drawn = self.draw_every.is_none_or(|every| frame.is_multiple_of(every.get()));
         let loads = sapphire_core::frame_loads::loads().total();
         let counted = counts::Counted {
-            frame_thread_loads: loads - std::mem::replace(&mut self.loads, loads),
+            frame_thread_loads: if drawn { loads - std::mem::replace(&mut self.loads, loads) } else { 0 },
             ..counts::Counted::of(&stats, &assets, &self.assets, &streaming).with_stage(stage)
         };
         self.assets = assets;

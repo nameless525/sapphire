@@ -1258,6 +1258,32 @@ fn a_recooked_zone_on_stage_brings_its_look_again() {
     assert_eq!(walk.scene.time_of_day().timeline(), &stage_day, "a day left out gives the stage's back");
 }
 
+/// Exit test 2: a zone coming parses its day and rigs on a job, so a trip into one that names both builds nothing
+/// on the frame's thread, and brings its look all the same.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_zone_coming_reads_its_look_off_the_frames_thread() {
+    use sapphire_core::frame_loads::{self, InPlay};
+
+    let settings = small_settings();
+    let looks = [
+        RoomLook { grid: Some(vec![6.0]), ..RoomLook::default() },
+        RoomLook { grid: Some(vec![12.0]), day: true, rigs: Some(LOOKDEV_RIGS), ..RoomLook::default() },
+    ];
+    let mut walk = Walk::dressed_rooms(SMALL, &looks, no_limits());
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    walk.trip(0, settings);
+    let start = frame_loads::loads();
+    let in_play = InPlay::begin();
+    walk.trip(1, settings);
+    walk.frame();
+    drop(in_play);
+    let loads = frame_loads::loads();
+    assert_eq!((loads.decodes, loads.builds), (start.decodes, start.builds), "{start:?} to {loads:?}");
+    assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "the zone's day");
+    assert_eq!(walk.scene.ecs.world().resource::<LightRigLibrary>(), &lookdev::light_rigs(), "and its rigs");
+}
+
 /// A pack that isn't there says so, and what's on stage stays. Asking again tries again.
 #[test]
 #[ignore = "needs a GPU"]

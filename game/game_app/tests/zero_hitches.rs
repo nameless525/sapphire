@@ -41,6 +41,12 @@
 //! - `SAPPHIRE_HITCH_WARM_UP_THREADS=<n>`: the warm-up pool's threads (default: as many as the compute pool has),
 //!   so that a run of cold boots can compare the frame's GPU waits with the pool's compiles taking fewer of the
 //!   cores (M5 X3). The lane fails if the job system started with another count.
+//! - `SAPPHIRE_HITCH_WARM_UP_CLASS=<class>`: the scheduling class the warm-up pool's threads set as each starts
+//!   (`user-interactive`, `user-initiated`, `default`, `utility` or `background`; unset, they keep what they
+//!   inherit), through `sapphire_jobs::init_with_warm_up_start` (M5 X3).
+//! - `SAPPHIRE_HITCH_FRAME_CLASS=<class>`: the class the frame's thread (the process's main thread) asks for before
+//!   the job system starts. macOS starts a process's main thread at user-interactive, the lane's exec'd from a
+//!   shell as an app's, and the pools' threads at default whatever it is (M5 X3), so this is for trying another.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -51,7 +57,7 @@ mod drive;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use drive::{Draw, Driver};
@@ -68,7 +74,8 @@ use sapphire_gameplay::{EncounterPhase, Simulation};
 use sapphire_math::Vec3;
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, CoreKind, CoreTicks, Event, Platform, ProcessReads, Scancode,
-    SystemInfo, core_ticks, current_core, process_memory, process_reads, thread_cpu_time,
+    SystemInfo, ThreadClass, core_ticks, current_core, process_memory, process_reads, set_thread_class,
+    thread_class, thread_cpu_time,
 };
 use sapphire_render::quality::{QualitySettings, TierId, TierTable};
 use sapphire_render::{PipelineStats, Renderer, WarmUpBuilds, warm_up_builds};
@@ -166,20 +173,86 @@ fn warm_up_threads() -> Result<Option<usize>, String> {
     }
 }
 
-/// Starts the job system with the warm-up pool `SAPPHIRE_HITCH_WARM_UP_THREADS` asks for, and says how many
-/// threads it has, asked for or not. Fails if the system was already running with another count.
+/// The class `var` names, if it's set.
+fn class_from(var: &str) -> Result<Option<ThreadClass>, String> {
+    const CLASSES: [ThreadClass; 5] = [
+        ThreadClass::UserInteractive,
+        ThreadClass::UserInitiated,
+        ThreadClass::Default,
+        ThreadClass::Utility,
+        ThreadClass::Background,
+    ];
+    let Ok(raw) = std::env::var(var) else {
+        return Ok(None);
+    };
+    let class = CLASSES.into_iter().find(|class| class.name() == raw);
+    class.map(Some).ok_or_else(|| format!("{var}: {raw:?} is no class"))
+}
+
+/// The class `SAPPHIRE_HITCH_WARM_UP_CLASS` asked for, which each warm-up thread sets as it starts.
+static WARM_UP_CLASS: OnceLock<ThreadClass> = OnceLock::new();
+
+/// Run first on each warm-up thread: sets the class asked for.
+fn warm_up_start() {
+    if let Some(&class) = WARM_UP_CLASS.get() {
+        set_thread_class(class);
+    }
+}
+
+/// A class as the lane's lines print it.
+fn class_name(class: Option<ThreadClass>) -> &'static str {
+    class.map_or("-", ThreadClass::name)
+}
+
+/// Starts the job system with the warm-up pool `SAPPHIRE_HITCH_WARM_UP_THREADS` and
+/// `SAPPHIRE_HITCH_WARM_UP_CLASS` ask for, the frame's thread first in `SAPPHIRE_HITCH_FRAME_CLASS`'s class, and
+/// says what each has, asked for or not: the warm-up thread's class as one of them reads it, and the frame's
+/// thread's class and core. Fails if the system was already running with another count, or a class asked for
+/// didn't take.
 fn start_jobs() -> Result<(), String> {
     let asked = warm_up_threads()?;
+    let warm_up_class = class_from("SAPPHIRE_HITCH_WARM_UP_CLASS")?;
+    if let Some(class) = class_from("SAPPHIRE_HITCH_FRAME_CLASS")?
+        && !set_thread_class(class)
+    {
+        return Err(format!("the frame's thread couldn't take the {} class", class.name()));
+    }
     let config = sapphire_jobs::JobConfig { warm_up_threads: asked, ..sapphire_jobs::JobConfig::default() };
-    let running = sapphire_jobs::init(config).warm_up_pool().thread_num();
+    let system = match warm_up_class {
+        Some(class) => {
+            WARM_UP_CLASS.set(class).map_err(|_| "the warm-up class was set twice")?;
+            sapphire_jobs::init_with_warm_up_start(config, warm_up_start)
+        }
+        None => sapphire_jobs::init(config),
+    };
+    let running = system.warm_up_pool().thread_num();
     if asked.is_some_and(|asked| asked != running) {
         return Err(format!(
             "SAPPHIRE_HITCH_WARM_UP_THREADS asked for {asked:?} warm-up threads; the job system was already \
              running with {running}"
         ));
     }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    sapphire_jobs::spawn_warm_up(move || {
+        let _ = sender.send(thread_class());
+    });
+    let warm_up_runs = receiver.recv_timeout(Duration::from_secs(10)).map_err(|error| error.to_string())?;
+    if warm_up_class.is_some_and(|class| warm_up_runs != Some(class)) {
+        return Err(format!(
+            "SAPPHIRE_HITCH_WARM_UP_CLASS asked for {}, and a warm-up thread runs at {}",
+            class_name(warm_up_class),
+            class_name(warm_up_runs)
+        ));
+    }
     let how = if asked.is_some() { "asked" } else { "default" };
-    eprintln!("zero_hitches: warm-up threads={running} ({how})");
+    let class_how = if warm_up_class.is_some() { "asked" } else { "inherited" };
+    eprintln!(
+        "zero_hitches: warm-up threads={running} ({how}) class={} ({class_how}); the frame's thread: class={} \
+         core={}",
+        class_name(warm_up_runs),
+        class_name(thread_class()),
+        current_core().map_or("-", CoreKind::name),
+    );
     Ok(())
 }
 
@@ -1005,7 +1078,8 @@ impl App for OutsideCaller {
 }
 
 fn main() -> ExitCode {
-    if let Err(error) = held_tier().and(size()).and(warm_up_threads()) {
+    let classes = class_from("SAPPHIRE_HITCH_WARM_UP_CLASS").and(class_from("SAPPHIRE_HITCH_FRAME_CLASS"));
+    if let Err(error) = held_tier().and(size()).and(warm_up_threads()).and(classes) {
         eprintln!("zero_hitches: {error}");
         return ExitCode::FAILURE;
     }

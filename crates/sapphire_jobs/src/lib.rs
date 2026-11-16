@@ -119,7 +119,7 @@ impl JobSystem {
         if on_warm_up_thread() { self.warm_up } else { self.compute }
     }
 
-    fn start(config: JobConfig) -> Self {
+    fn start(config: JobConfig, warm_up_start: Option<fn()>) -> Self {
         let topology = CpuTopology::detect();
         let form_factor = FormFactor::CURRENT;
         let compute_threads =
@@ -154,7 +154,12 @@ impl JobSystem {
         // Not one of bevy's globals: nothing but this crate spawns on it.
         let warm_up: &'static TaskPool = Box::leak(Box::new(
             pool_builder("sapphire-warm-up", warm_up_threads)
-                .on_thread_spawn(|| WARM_UP_THREAD.set(true))
+                .on_thread_spawn(move || {
+                    WARM_UP_THREAD.set(true);
+                    if let Some(start) = warm_up_start {
+                        start();
+                    }
+                })
                 .build(),
         ));
         tracing::info!(
@@ -193,10 +198,21 @@ static SYSTEM: OnceLock<JobSystem> = OnceLock::new();
 /// API has started the system with [`JobConfig::default`]) returns the existing system
 /// unchanged, logging a warning if `config` differs.
 pub fn init(config: JobConfig) -> &'static JobSystem {
+    start_once(config, None)
+}
+
+/// As [`init`], with `warm_up_start` run first on each warm-up thread as it starts: how an app sets those
+/// threads' scheduling class, say (`sapphire_platform::set_thread_class`), which this crate can't name, since
+/// the platform sits beside it, not under it. A system already running keeps its threads as they were.
+pub fn init_with_warm_up_start(config: JobConfig, warm_up_start: fn()) -> &'static JobSystem {
+    start_once(config, Some(warm_up_start))
+}
+
+fn start_once(config: JobConfig, warm_up_start: Option<fn()>) -> &'static JobSystem {
     let mut created = false;
     let system = SYSTEM.get_or_init(|| {
         created = true;
-        JobSystem::start(config)
+        JobSystem::start(config, warm_up_start)
     });
     if !created && system.config != config {
         tracing::warn!(
@@ -211,7 +227,7 @@ pub fn init(config: JobConfig) -> &'static JobSystem {
 
 /// The running job system, started with [`JobConfig::default`] if [`init`] has not run yet.
 pub fn system() -> &'static JobSystem {
-    SYSTEM.get_or_init(|| JobSystem::start(JobConfig::default()))
+    SYSTEM.get_or_init(|| JobSystem::start(JobConfig::default(), None))
 }
 
 /// How many waits from [`scope`], [`join`] and the parallel loops one thread may nest before

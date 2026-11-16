@@ -134,6 +134,32 @@ pub struct WaitReasons {
     pub fields: BTreeMap<String, f64>,
 }
 
+/// A GPU pass row on the frames with no upload in flight (M5 Z2, `fight row no upload`), in µs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoUpload {
+    pub samples: u64,
+    pub p50: f64,
+    pub p95: f64,
+    pub p99: f64,
+}
+
+/// The GPU phase's reading (M5 Z2, `fight gpu reading`): whether the backend overlaps its passes, the frames its
+/// pass rows are read on there, the uploads' cost and the display's 60 Hz lock.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GpuReading {
+    pub backend: String,
+    pub overlaps: bool,
+    pub timed_frames: u64,
+    pub no_upload_frames: u64,
+    pub in_flight_pct: f64,
+    /// The shares of frames slow (over 1.15 times the median) in TAA and in post, with an upload in flight and
+    /// with none, in %.
+    pub taa_slow: [f64; 2],
+    pub post_slow: [f64; 2],
+    /// The lock's figure, 0 to 1; `None` with too few slow frames to read it.
+    pub lock: Option<f64>,
+}
+
 /// A counting walk's end (M5 Z2, exit test 2's floor): the zone taken down and its pack unmounted, as a trip
 /// leaves one, and the mesh pool given back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -166,6 +192,10 @@ pub struct Log {
     pub waits: BTreeMap<String, Waits>,
     /// Each phase's `texture wait reasons` line, while streaming.
     pub wait_reasons: BTreeMap<String, WaitReasons>,
+    /// Each GPU pass row on the frames with no upload in flight, where the bench logged it.
+    pub no_upload: Vec<(Key, NoUpload)>,
+    /// The GPU phase's reading, where the bench logged one.
+    pub gpu_reading: Option<GpuReading>,
     /// A counting walk's `texture streaming cpu` line (M5 Z2): its fields that read as numbers, shown only.
     pub streaming_cpu: Option<BTreeMap<String, f64>>,
     /// A counting walk's `zone closed` line, at its end.
@@ -182,6 +212,11 @@ impl Log {
         self.timed.iter().find(|((p, r), _)| p == phase && r == row).map(|(_, entry)| *entry)
     }
 
+    /// The pass row `row` of `phase` on the frames with no upload in flight, if the log has it.
+    pub fn no_upload(&self, phase: &str, row: &str) -> Option<NoUpload> {
+        self.no_upload.iter().find(|((p, r), _)| p == phase && r == row).map(|(_, read)| *read)
+    }
+
     /// The count row `row` of `phase`, if the log has it.
     pub fn counted(&self, phase: &str, row: &str) -> Option<Entry<Counted>> {
         self.counted.iter().find(|((p, r), _)| p == phase && r == row).map(|(_, entry)| *entry)
@@ -196,7 +231,31 @@ impl Log {
             let float = |name: &str| field(name).and_then(|value| value.parse::<f64>().ok());
             let int = |name: &str| field(name).and_then(|value| value.parse::<u64>().ok());
             let key = || Some((field("phase")?.to_owned(), field("row")?.to_owned()));
-            if has(line, "texture streaming cpu") {
+            if has(line, "fight row no upload") {
+                let (Some(key), Some(samples), Some(p50), Some(p95), Some(p99)) =
+                    (key(), int("samples"), float("p50_us"), float("p95_us"), float("p99_us"))
+                else {
+                    continue;
+                };
+                log.no_upload.push((key, NoUpload { samples, p50, p95, p99 }));
+            } else if has(line, "fight gpu reading") {
+                log.gpu_reading = Some(GpuReading {
+                    backend: field("backend").unwrap_or_default().to_owned(),
+                    overlaps: field("overlaps") == Some("true"),
+                    timed_frames: int("timed_frames").unwrap_or(0),
+                    no_upload_frames: int("no_upload_frames").unwrap_or(0),
+                    in_flight_pct: float("in_flight_pct").unwrap_or(0.0),
+                    taa_slow: [
+                        float("taa_slow_in_flight_pct").unwrap_or(0.0),
+                        float("taa_slow_no_upload_pct").unwrap_or(0.0),
+                    ],
+                    post_slow: [
+                        float("post_slow_in_flight_pct").unwrap_or(0.0),
+                        float("post_slow_no_upload_pct").unwrap_or(0.0),
+                    ],
+                    lock: float("lock"),
+                });
+            } else if has(line, "texture streaming cpu") {
                 log.streaming_cpu = Some(
                     fields
                         .iter()
@@ -486,6 +545,36 @@ mod tests {
         assert_eq!((closed.frames, closed.capacity, closed.floor), (4, 8_388_608, 8_388_608));
         assert_eq!((closed.capacity_before, closed.floor_before), (50_331_648, 50_331_648));
         assert!(Log::parse("zone walk frames=3").zone_closed.is_none());
+    }
+
+    /// The GPU phase's reading, a pass row on the frames with no upload in flight, and the waits' reasons (M5 Z2).
+    #[test]
+    fn the_gpu_reading_the_no_upload_rows_and_the_wait_reasons_are_read() {
+        let log = Log::parse(
+            "x  INFO sapphire::sandbox: fight row no upload phase=\"gpu\" row=\"gpu taa\" samples=4100 \
+             p50_us=584.0 p95_us=591.0 p99_us=700.5\n\
+             x  INFO sapphire::sandbox: fight gpu reading phase=\"gpu\" backend=\"metal\" overlaps=true \
+             timed_frames=7599 no_upload_frames=4100 in_flight_pct=46.0 taa_slow_in_flight_pct=24.7 \
+             taa_slow_no_upload_pct=0.2 post_slow_in_flight_pct=23.9 post_slow_no_upload_pct=0.1 slow_frames=431 \
+             lock=0.065 lock_period_us=16663.600\n\
+             x  INFO sapphire::sandbox: texture wait reasons decode=3 decode_long=0 phase=\"drawn\" \
+             long_over_frames=30 raised_bytes=900 reraised_bytes=0 reraised_within_updates=60 tails_over_pool=0 \
+             arrival_waits=12 arrival_long=1 arrival_open=0 arrived_at_update=41",
+        );
+        assert_eq!(
+            log.no_upload("gpu", "gpu taa"),
+            Some(NoUpload { samples: 4100, p50: 584.0, p95: 591.0, p99: 700.5 })
+        );
+        assert!(log.timed("gpu", "gpu taa").is_none(), "not a fight row");
+        let reading = log.gpu_reading.expect("the reading");
+        assert!(reading.overlaps && reading.backend == "metal");
+        assert_eq!((reading.timed_frames, reading.no_upload_frames, reading.lock), (7599, 4100, Some(0.065)));
+        assert_eq!((reading.taa_slow, reading.post_slow), ([24.7, 0.2], [23.9, 0.1]));
+        let reasons = &log.wait_reasons["drawn"];
+        assert_eq!((reasons.tails_over_pool, reasons.arrived_at_update), (0, 41));
+        assert_eq!(reasons.fields.get("decode"), Some(&3.0));
+        let unread = Log::parse("x  INFO sapphire::sandbox: fight gpu reading phase=\"gpu\" lock=-");
+        assert_eq!(unread.gpu_reading.and_then(|reading| reading.lock), None);
     }
 
     #[test]

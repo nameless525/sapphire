@@ -108,6 +108,9 @@ struct GpuTimes {
     prepasses: Option<Duration>,
     character_prepass: Option<Duration>,
     shadows: Option<Duration>,
+    /// The prepasses and the shadow cascades that ran, together (M5 Z2): one depth-only row where the backend
+    /// overlaps them.
+    depth_only: Option<Duration>,
     skinning: Option<Duration>,
     sky_cube: Option<Duration>,
     /// Light clusters and the ambient pass: §3.3's "Light clustering, AO".
@@ -148,6 +151,7 @@ impl GpuTimes {
             prepasses: sum(&PREPASSES),
             character_prepass: sum(&[CHARACTER_PREPASS]),
             shadows: sum(&shadows::PASSES),
+            depth_only: sum(&PREPASSES.iter().chain(&shadows::PASSES).copied().collect::<Vec<_>>()),
             skinning: sum(&["skinning"]),
             sky_cube: sum(&["sky cube"]),
             // Either can sit a frame out: the clusters when the lights weren't binned again.
@@ -296,7 +300,7 @@ const fn low(desktop: u32, mobile: u32) -> [Option<u32>; 4] {
 const UNBUDGETED: [Option<u32>; 4] = [None; 4];
 
 /// What's logged, in the order of spec §3: the whole, §3.2's rows, what §3.2 has no row for, §3.3's.
-const ROWS: [Row; 33] = [
+const ROWS: [Row; 34] = [
     cpu_row("cpu frame", |t| Some(t.cpu), [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
     cpu_row("game side", |t| Some(t.cpu.saturating_sub(t.laps.prepare + t.laps.record)), low(6_000, 13_600)),
     cpu_row("simulation", |t| Some(t.laps.simulation), low(1_000, 3_000)),
@@ -329,6 +333,10 @@ const ROWS: [Row; 33] = [
     // A grouped row is held to the sum of its members' figures (M5 Z2): culling and the prepasses.
     gpu_row("gpu prepasses", |t| t.gpu.prepasses, low(1_500, 1_500)).proposing(1_200, 1_000),
     gpu_row("gpu shadows", |t| t.gpu.shadows, low(2_000, 3_000)).proposing(2_000, 1_600),
+    // The two depth-only rows as one, each frame's sum against the sum of their figures (M5 Z2): what the report
+    // judges in their place where the backend overlaps its passes, as Metal runs the scene prepass beside a
+    // shadow cascade, so how the frame's depth work splits between them isn't read.
+    gpu_row("gpu depth only", |t| t.gpu.depth_only, low(3_500, 4_500)).proposing(3_200, 2_600),
     // §3.3 gives Mobile-Low none, and it runs neither.
     gpu_row("gpu clustering and ao", |t| t.gpu.clustering_ao, [None, Some(1_500), None, None])
         .proposing(1_200, 800),
@@ -367,7 +375,7 @@ pub(crate) fn frame_length(rate: u32) -> Duration {
 }
 
 /// A row's spread over some frames.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Spread {
     p50: Duration,
     p95: Duration,
@@ -392,6 +400,114 @@ fn counts(row: &Row, frame: &Traced, phase: Phase) -> bool {
         && frame.restart.is_zero()
         && (!row.gpu || frame.gpu.timed)
         && (row.read)(frame).is_some()
+}
+
+impl Traced {
+    /// Bytes the frame uploaded, new assets and raised texture levels both.
+    fn uploaded(&self) -> u64 {
+        self.counted.uploaded + self.counted.raised
+    }
+}
+
+/// Each frame's: whether an upload was in flight, bytes uploaded in the frames from two before it to one after
+/// (M5 Z2). On a backend that overlaps its passes an upload's copies land in whichever pass is drawing, so a pass
+/// row is read on the frames with none.
+fn uploads_in_flight(uploaded: &[u64]) -> Vec<bool> {
+    (0..uploaded.len())
+        .map(|at| uploaded[at.saturating_sub(2)..(at + 2).min(uploaded.len())].iter().any(|&bytes| bytes > 0))
+        .collect()
+}
+
+/// A frame over this many times its round's median, in a pass of fixed cost, is slow (M5 Z2).
+const SLOW: f64 = 1.15;
+
+/// The fewest slow frames the display's lock is read from.
+const LOCK_FEWEST: usize = 20;
+
+/// The display's 60 Hz lock (M5 Z2): how closely the slow frames' GPU ends line up at one phase of a 60 Hz
+/// period, the mean resultant length of their phases (0 spread evenly, 1 all at one phase) at the period within
+/// 0.03% of 1/60 s that lines them up most, with that period in µs. A display or compositor drawing at 60 Hz
+/// beside the run (a video playing) slows the passes it lands on at its own beat, which a quiet sitting doesn't
+/// have. `None` with fewer than [`LOCK_FEWEST`] frames.
+fn display_lock(ends_us: &[f64]) -> Option<(f64, f64)> {
+    let &first = ends_us.first()?;
+    if ends_us.len() < LOCK_FEWEST {
+        return None;
+    }
+    (-300..=300)
+        .step_by(2)
+        .map(|ppm: i32| {
+            let period = 1e6 / 60.0 * (1.0 + f64::from(ppm) * 1e-6);
+            let (cos, sin) = ends_us.iter().fold((0.0, 0.0), |(cos, sin), &end| {
+                let angle = std::f64::consts::TAU * (end - first).rem_euclid(period) / period;
+                (cos + angle.cos(), sin + angle.sin())
+            });
+            (f64::hypot(cos, sin) / ends_us.len() as f64, period)
+        })
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+/// Of `frames`' values, the shares (in %) over [`SLOW`] times their median among the frames `in_flight` marks
+/// and among the others.
+fn slow_shares(values: &[(Duration, bool)]) -> (f64, f64) {
+    let mut sorted: Vec<Duration> = values.iter().map(|&(value, _)| value).collect();
+    sorted.sort_unstable();
+    let Some(&median) = sorted.get(sorted.len().saturating_sub(1) / 2) else { return (0.0, 0.0) };
+    let share = |flight: bool| {
+        let of: Vec<Duration> =
+            values.iter().filter(|&&(_, at)| at == flight).map(|&(value, _)| value).collect();
+        let slow = of.iter().filter(|value| value.as_secs_f64() > median.as_secs_f64() * SLOW).count();
+        100.0 * slow as f64 / of.len().max(1) as f64
+    };
+    (share(true), share(false))
+}
+
+/// The GPU phase's reading (M5 Z2), for the exit run's rules on a backend that overlaps its passes: the
+/// backend; the timed frames and those with no upload in flight, which its pass rows are read on; the uploads'
+/// cost, the share of frames slow in TAA and in post with an upload in flight and without; and the display's
+/// 60 Hz lock over the frames slow in either, which voids a round.
+fn gpu_reading(backend: wgpu::Backend, frames: &[&Traced], in_flight: &[bool]) {
+    let timed: Vec<usize> =
+        (0..frames.len()).filter(|&at| frames[at].gpu.timed && frames[at].restart.is_zero()).collect();
+    let quiet = timed.iter().filter(|&&at| !in_flight[at]).count();
+    let pass = |read: fn(&GpuTimes) -> Option<Duration>| -> Vec<(usize, Duration)> {
+        timed.iter().filter_map(|&at| Some((at, read(&frames[at].gpu)?))).collect()
+    };
+    let (taa, post) = (pass(|gpu| gpu.taa), pass(|gpu| gpu.post));
+    let shares = |values: &[(usize, Duration)]| {
+        slow_shares(&values.iter().map(|&(at, value)| (value, in_flight[at])).collect::<Vec<_>>())
+    };
+    let ((taa_flight, taa_quiet), (post_flight, post_quiet)) = (shares(&taa), shares(&post));
+    // The frames over the 95th percentile of TAA or of post, pooled, as one beat slows them both.
+    let over = |values: &[(usize, Duration)]| -> Vec<usize> {
+        let p95 =
+            spread(values.iter().map(|&(at, value)| (value, at as u64))).map_or(Duration::MAX, |s| s.p95);
+        values.iter().filter(|&&(_, value)| value > p95).map(|&(at, _)| at).collect()
+    };
+    let mut slow = over(&taa);
+    slow.extend(over(&post));
+    slow.sort_unstable();
+    slow.dedup();
+    let ends: Vec<f64> =
+        slow.iter().filter_map(|&at| frames[at].gpu.end).map(|end| end.as_secs_f64() * 1e6).collect();
+    let lock = display_lock(&ends);
+    tracing::info!(
+        target: LOG_TARGET,
+        phase = Phase::Gpu.name(),
+        backend = backend.to_str(),
+        overlaps = backend == wgpu::Backend::Metal,
+        timed_frames = timed.len(),
+        no_upload_frames = quiet,
+        in_flight_pct = format_args!("{:.1}", 100.0 * (timed.len() - quiet) as f64 / timed.len().max(1) as f64),
+        taa_slow_in_flight_pct = format_args!("{taa_flight:.1}"),
+        taa_slow_no_upload_pct = format_args!("{taa_quiet:.1}"),
+        post_slow_in_flight_pct = format_args!("{post_flight:.1}"),
+        post_slow_no_upload_pct = format_args!("{post_quiet:.1}"),
+        slow_frames = ends.len(),
+        lock = %lock.map_or_else(|| "-".to_owned(), |(lock, _)| format!("{lock:.3}")),
+        lock_period_us = %lock.map_or_else(|| "-".to_owned(), |(_, period)| format!("{period:.3}")),
+        "fight gpu reading",
+    );
 }
 
 /// What's mutable across the phases.
@@ -767,6 +883,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
     for phase in Phase::ALL {
         let frames = || run.trace.iter().filter(move |frame| frame.phase == phase);
         let measured = || frames().filter(|frame| frame.restart.is_zero());
+        let in_flight = uploads_in_flight(&frames().map(Traced::uploaded).collect::<Vec<_>>());
         for row in ROWS.iter().filter(|row| row.gpu == (phase == Phase::Gpu)) {
             // Each value with its frame's place in the phase, which names the worst frame's tick and where a
             // walk was.
@@ -798,6 +915,30 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
                 over_worst = budget.is_some_and(|budget| micros(spread.worst) > f64::from(budget)),
                 "fight row",
             );
+            if row.gpu && row.name != "gpu frame" {
+                // The pass row on the frames with no texture upload in flight (M5 Z2): what the report judges
+                // where the backend overlaps its passes, as an upload's copies land in whichever pass runs.
+                let quiet: Vec<(Duration, u64)> = frames()
+                    .enumerate()
+                    .filter(|&(at, frame)| !in_flight[at] && counts(row, frame, phase))
+                    .filter_map(|(at, frame)| Some(((row.read)(frame)?, at as u64)))
+                    .collect();
+                let samples = quiet.len();
+                let spread = self::spread(quiet.into_iter()).unwrap_or_default();
+                tracing::info!(
+                    target: LOG_TARGET,
+                    phase = phase.name(),
+                    row = row.name,
+                    samples,
+                    p50_us = format_args!("{:.1}", micros(spread.p50)),
+                    p95_us = format_args!("{:.1}", micros(spread.p95)),
+                    p99_us = format_args!("{:.1}", micros(spread.p99)),
+                    "fight row no upload",
+                );
+            }
+        }
+        if phase == Phase::Gpu {
+            gpu_reading(run.stage.gpu.caps().backend(), &frames().collect::<Vec<_>>(), &in_flight);
         }
         let count = measured().count().max(1) as u64;
         let allocations =
@@ -1257,8 +1398,10 @@ mod tests {
         assert_eq!(read.shadows, Some(Duration::from_micros(10)), "the cascades that ran");
         assert_eq!(read.main, Some(Duration::from_micros(10)));
         assert_eq!(read.taa, None, "nothing of it ran");
+        assert_eq!(read.depth_only, Some(Duration::from_micros(10)), "the depth passes that ran (M5 Z2)");
         timings.untimed.push(shadows::PASSES[1]);
-        assert_eq!(GpuTimes::of(&timings, 0, false).shadows, None, "a cascade ran untimed");
+        let untimed = GpuTimes::of(&timings, 0, false);
+        assert_eq!((untimed.shadows, untimed.depth_only), (None, None), "a cascade ran untimed");
         timings.every_timed_pass = false;
         let dropped = GpuTimes::of(&timings, 0, false);
         assert_eq!((dropped.span, dropped.shadows, dropped.end), (None, None, None), "a pair was dropped");
@@ -1316,5 +1459,65 @@ mod tests {
         );
         assert_eq!((line.pool_held, line.pool_p99.as_str(), line.pool_worst.as_str()), (1, "1024+", "1024+"));
         assert_eq!((line.open, line.longest_open, line.pool_open, line.pool_longest_open), (1, 500, 1, 500));
+    }
+
+    /// The depth-only row is each frame's prepasses and shadows together, against the sum of their figures (M5
+    /// Z2); `GpuTimes::of` sums the depth passes that ran.
+    #[test]
+    fn the_depth_only_row_is_the_prepasses_and_shadows_together() {
+        let row = ROWS.iter().find(|row| row.name == "gpu depth only").expect("the row");
+        let figures = |name: &str| ROWS.iter().find(|row| row.name == name).expect("a row").budget;
+        let (prepasses, shadows) = (figures("gpu prepasses"), figures("gpu shadows"));
+        for tier in [TierId::DesktopLow, TierId::MobileLow] {
+            let column = tier_column(tier);
+            assert_eq!(
+                row.budget[column],
+                prepasses[column].zip(shadows[column]).map(|(a, b)| a + b),
+                "{tier:?}"
+            );
+        }
+        let mut frame = traced(1, 100);
+        frame.gpu.depth_only = Some(Duration::from_micros(3_200));
+        assert_eq!((row.read)(&frame), Some(Duration::from_micros(3_200)));
+    }
+
+    /// A frame has an upload in flight when bytes went up in it, the two frames before or the one after (M5 Z2).
+    #[test]
+    fn an_upload_is_in_flight_from_two_frames_before_to_one_after() {
+        let flight = uploads_in_flight(&[0, 0, 0, 0, 7, 0, 0, 0, 0]);
+        assert_eq!(flight, [false, false, false, true, true, true, true, false, false]);
+        assert!(uploads_in_flight(&[]).is_empty());
+    }
+
+    /// The display's lock is near 1 for slow frames ending at one phase of a 60 Hz beat, and near 0 for ends
+    /// spread over it; too few frames read none (M5 Z2).
+    #[test]
+    fn slow_frames_at_one_phase_of_60_hz_read_as_the_displays_lock() {
+        let beat = 1e6 / 60.0;
+        let locked: Vec<f64> = (0..200).map(|frame| 5e9 + f64::from(frame * 7) * beat + 40.0).collect();
+        let (lock, period) = display_lock(&locked).expect("enough frames");
+        assert!(lock > 0.99 && (period - beat).abs() < 0.2, "{lock} at {period}");
+        // Ends a golden-ratio step apart in phase spread evenly over the beat.
+        let spread: Vec<f64> = (0..200).map(|frame| 5e9 + f64::from(frame) * beat * 7.618_034).collect();
+        let (lock, _) = display_lock(&spread).expect("enough frames");
+        assert!(lock < 0.1, "{lock}");
+        assert_eq!(display_lock(&locked[..LOCK_FEWEST - 1]), None);
+    }
+
+    /// The uploads' cost: the share of frames over 1.15 times the median, with an upload in flight and without.
+    #[test]
+    fn the_slow_shares_split_by_uploads_in_flight() {
+        let us = Duration::from_micros;
+        let values = [
+            (us(100), false),
+            (us(100), false),
+            (us(100), false),
+            (us(120), false),
+            (us(200), true),
+            (us(100), true),
+        ];
+        let (flight, quiet) = slow_shares(&values);
+        assert_eq!((flight, quiet), (50.0, 25.0));
+        assert_eq!(slow_shares(&[]), (0.0, 0.0));
     }
 }

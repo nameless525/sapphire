@@ -7,6 +7,13 @@
 //!   alternated and the least kept"); a worst frame over it fails nothing. A row with only a proposed figure
 //!   (M5 B4's Desktop-High and Mobile-High columns of §3.3) is shown against it, marked proposed, and fails
 //!   nothing: adopting a column is moving its figure into the bench's budget, data the sandbox logs.
+//! - **On a backend that overlaps its passes (Metal, M5 Z2)** the prepasses and shadows are judged as one
+//!   depth-only row, each frame's sum against the sum of their figures, and shown apart, unjudged; a GPU pass row
+//!   is read on the frames with no upload in flight (the bench's `fight row no upload`), and a round where fewer
+//!   than a tenth of the timed frames have none judges no pass row. The frame row and the CPU rows read every
+//!   frame. Elsewhere every row is judged as logged.
+//! - **A round with the display's 60 Hz lock is void** (M5 Z2): its GPU rows are left out of the least of the
+//!   rounds and shown as void with the lock's figure, and a row with every round void isn't judged.
 //! - **A count** fails on any round's worst frame over its budget.
 //! - **A wait for a texture's level** fails on a phase's 99th percentile over 30 frames (an `N+` bin is over), a
 //!   wait open at a run's end for 30 frames or more, the pool's too, or no line; its reasons line on the counting
@@ -19,7 +26,7 @@
 use std::fmt::Write as _;
 
 use super::{CountCell, Rounds, TimedCell, gather, ms, thousands, title};
-use crate::scale::log::{WaitFrames, Waits};
+use crate::scale::log::{Entry, WaitFrames, Waits};
 use crate::scale::manifest::{Read, Run, Tier, Unit};
 use crate::scale::status::Status;
 
@@ -353,8 +360,15 @@ pub(super) fn judge(test: u32, run: &Run, name: &str, tier: &Tier, rounds: &Roun
             }
         }
         5 => timed_rows(&mut findings, name, rounds, |row| {
-            ["animation and ik", "secondary motion", "gpu skinning", "gpu main", "gpu prepasses"]
-                .contains(&row)
+            [
+                "animation and ik",
+                "secondary motion",
+                "gpu skinning",
+                "gpu main",
+                "gpu prepasses",
+                "gpu depth only",
+            ]
+            .contains(&row)
         }),
         6 => {
             if run.timed {
@@ -369,7 +383,17 @@ pub(super) fn judge(test: u32, run: &Run, name: &str, tier: &Tier, rounds: &Roun
     findings
 }
 
-/// Every timed row `keep` takes, in the `cpu` and `gpu` phases: the least round's p95 against its budget.
+/// The display's lock (`fight gpu reading`'s `lock`) at or over which a round is void (M5 Z2). Quiet sittings on
+/// an M5 read 0.03 and 0.07; sittings with a video playing beside them 0.14 to 0.43, with 13 to 24% of their
+/// frames with no upload in flight slow in TAA against none quiet.
+pub(super) const LOCK_VOID: f64 = 0.10;
+
+/// The rows judged as one depth-only row where the backend overlaps its passes, and the row they're judged as.
+const DEPTH_ROWS: [&str; 2] = ["gpu prepasses", "gpu shadows"];
+const DEPTH_ONLY: &str = "gpu depth only";
+
+/// Every timed row `keep` takes, in the `cpu` and `gpu` phases: the least round's p95 against its budget, by the
+/// rules the module's doc gives for a backend that overlaps its passes and a void round.
 fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl Fn(&str) -> bool) {
     let Some(first) = rounds.rounds.first() else { return };
     let rows: Vec<(String, String)> = first
@@ -383,23 +407,102 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
         findings.fail(format!("{name}: no timed row logged"));
         return;
     }
-    for (phase, row) in rows {
-        let TimedCell::Read(timed) = rounds.timed(&phase, &row) else { continue };
-        if let Some(budget) = timed.budget {
-            if timed.p95 > budget {
-                findings.fail(format!("{name} {row} p95 {} ms over {} ms", ms(timed.p95), ms(budget)));
-            } else {
-                findings.pass();
+    let reading = |round: &super::Round| round.log.gpu_reading.clone().unwrap_or_default();
+    let overlaps = rounds.rounds.iter().any(|round| reading(round).overlaps);
+    let void = |round: &super::Round| reading(round).lock.is_some_and(|lock| lock >= LOCK_VOID);
+    if rows.iter().any(|(phase, _)| phase == "gpu") {
+        for round in &rounds.rounds {
+            let read = reading(round);
+            if let Some(lock) = read.lock.filter(|_| void(round)) {
+                let frame = match round.log.timed("gpu", "gpu frame") {
+                    Some(Entry::Read(timed)) => format!(", its GPU frame p95 {} ms", ms(timed.p95)),
+                    _ => String::new(),
+                };
+                findings.notes.push(format!(
+                    "{name} r{} void: the display's 60 Hz lock {lock:.3} (void at {LOCK_VOID:.2}){frame}",
+                    round.round
+                ));
             }
-        } else if let Some(proposed) = timed.proposed
-            && timed.p95 > proposed
-        {
-            findings.notes.push(format!(
-                "{name} {row} p95 {} ms over {} ms *proposed*",
-                ms(timed.p95),
-                ms(proposed)
-            ));
+            if read.overlaps {
+                findings.notes.push(format!(
+                    "{name} r{}: uploads in flight on {:.1}% of timed frames; slow in TAA on {:.1}% of those, \
+                     {:.1}% of the rest; in post {:.1}% and {:.1}%",
+                    round.round,
+                    read.in_flight_pct,
+                    read.taa_slow[0],
+                    read.taa_slow[1],
+                    read.post_slow[0],
+                    read.post_slow[1]
+                ));
+            }
         }
+    }
+    for (phase, row) in rows {
+        if phase == "cpu" {
+            let TimedCell::Read(timed) = rounds.timed(&phase, &row) else { continue };
+            against(findings, name, &row, timed.p95, timed.budget, timed.proposed);
+            continue;
+        }
+        if overlaps && DEPTH_ROWS.contains(&row.as_str()) || !overlaps && row == DEPTH_ONLY {
+            continue;
+        }
+        let pass_row = overlaps && row != "gpu frame";
+        let logged = |round: &super::Round| match round.log.timed(&phase, &row) {
+            Some(Entry::Read(timed)) => Some(timed),
+            _ => None,
+        };
+        // A row no round read (not exercised) judges nothing, as a row with no budget fails nothing.
+        let Some(first) = rounds.rounds.iter().find_map(logged) else { continue };
+        let (budget, proposed) = (first.budget, first.proposed);
+        let (mut read, mut few) = (Vec::new(), 0);
+        for round in rounds.rounds.iter().filter(|round| !void(round)) {
+            let Some(timed) = logged(round) else { continue };
+            if !pass_row {
+                read.push(timed.p95);
+                continue;
+            }
+            let frames = reading(round);
+            match round.log.no_upload(&phase, &row) {
+                Some(quiet) if frames.no_upload_frames * 10 >= frames.timed_frames && quiet.samples > 0 => {
+                    read.push(quiet.p95);
+                }
+                _ => few += 1,
+            }
+        }
+        let Some(least) = read.into_iter().reduce(f64::min) else {
+            if budget.is_some() {
+                findings.unjudged.push(if few > 0 {
+                    format!("{name} {row}: fewer than a tenth of the frames with no upload in flight")
+                } else {
+                    format!("{name} {row}: every round void")
+                });
+            }
+            continue;
+        };
+        let row = if pass_row { format!("{row} (no upload in flight)") } else { row };
+        against(findings, name, &row, least, budget, proposed);
+    }
+}
+
+/// A timed row's p95 against its budget, or shown against the figure proposed for it.
+fn against(
+    findings: &mut Findings,
+    name: &str,
+    row: &str,
+    p95: f64,
+    budget: Option<f64>,
+    proposed: Option<f64>,
+) {
+    if let Some(budget) = budget {
+        if p95 > budget {
+            findings.fail(format!("{name} {row} p95 {} ms over {} ms", ms(p95), ms(budget)));
+        } else {
+            findings.pass();
+        }
+    } else if let Some(proposed) = proposed
+        && p95 > proposed
+    {
+        findings.notes.push(format!("{name} {row} p95 {} ms over {} ms *proposed*", ms(p95), ms(proposed)));
     }
 }
 
@@ -661,6 +764,22 @@ mod tests {
         )
     }
 
+    fn no_upload(row: &str, samples: u32, p95: f64) -> String {
+        format!(
+            "x INFO sapphire::sandbox: fight row no upload phase=\"gpu\" row=\"{row}\" samples={samples} \
+             p50_us=1.0 p95_us={p95:.1} p99_us={p95:.1}\n"
+        )
+    }
+
+    fn reading(overlaps: bool, no_upload_frames: u32, lock: &str) -> String {
+        format!(
+            "x INFO sapphire::sandbox: fight gpu reading phase=\"gpu\" backend=\"metal\" overlaps={overlaps} \
+             timed_frames=1000 no_upload_frames={no_upload_frames} in_flight_pct=40.0 taa_slow_in_flight_pct=24.0 \
+             taa_slow_no_upload_pct=1.0 post_slow_in_flight_pct=23.0 post_slow_no_upload_pct=0.5 slow_frames=90 \
+             lock={lock} lock_period_us=16667.0\n"
+        )
+    }
+
     /// A timed row passes on the least of the rounds' p95 at or under its budget, whatever its worst frame; it
     /// fails when even the least round's p95 is over.
     #[test]
@@ -727,6 +846,82 @@ mod tests {
             ["counted-streaming r1: no texture waits line"],
             "a streaming run logs one"
         );
+    }
+
+    /// On a backend that overlaps its passes (M5 Z2) the prepasses and shadows are judged as one depth-only row,
+    /// and a pass row on the frames with no upload in flight; elsewhere the two rows are judged apart and the
+    /// depth-only row isn't.
+    #[test]
+    fn an_overlapping_backend_judges_depth_as_one_row_on_frames_with_no_upload() {
+        let manifest = manifest();
+        let (run, tier) = (manifest.run("exit-walk").expect("a run"), tier(&manifest, "desktop-low"));
+        let rows = [
+            timed("gpu", "gpu frame", 13_000.0, 20_000.0, "Some(14000)", "None"),
+            timed("gpu", "gpu prepasses", 2_600.0, 3_000.0, "Some(1500)", "None"),
+            timed("gpu", "gpu shadows", 1_100.0, 3_000.0, "Some(2000)", "None"),
+            timed("gpu", "gpu depth only", 3_400.0, 5_000.0, "Some(3500)", "None"),
+            timed("gpu", "gpu taa", 1_100.0, 2_000.0, "Some(800)", "None"),
+            no_upload("gpu prepasses", 600, 2_500.0),
+            no_upload("gpu shadows", 600, 1_000.0),
+            no_upload("gpu depth only", 600, 3_300.0),
+            no_upload("gpu taa", 600, 600.0),
+        ]
+        .concat();
+        let metal = format!("{rows}{}", reading(true, 600, "0.050"));
+        let findings = judge(1, run, "exit-walk", &tier, &rounds(&[&metal]));
+        assert!(findings.failed.is_empty(), "{findings:?}");
+        assert_eq!(
+            (findings.judged, Verdict::of(&findings)),
+            (3, Verdict::Pass),
+            "frame, depth only and TAA"
+        );
+        assert!(
+            findings.notes.iter().any(|note| note.contains("uploads in flight on 40.0%")),
+            "{findings:?}"
+        );
+        let other = format!("{rows}{}", reading(false, 600, "0.050"));
+        let findings = judge(1, run, "exit-walk", &tier, &rounds(&[&other]));
+        assert_eq!(
+            findings.failed,
+            [
+                "exit-walk gpu prepasses p95 2.600 ms over 1.500 ms",
+                "exit-walk gpu taa p95 1.100 ms over 0.800 ms"
+            ]
+        );
+        // Too few frames with no upload in flight judge no pass row: never a pass.
+        let few = format!("{rows}{}", reading(true, 90, "0.050"));
+        let findings = judge(1, run, "exit-walk", &tier, &rounds(&[&few]));
+        assert_eq!(Verdict::of(&findings), Verdict::NotJudged, "{findings:?}");
+        assert!(findings.unjudged[0].contains("fewer than a tenth"), "{findings:?}");
+    }
+
+    /// A round with the display's 60 Hz lock is void (M5 Z2): left out of the least of the rounds, shown with its
+    /// figure, and a row with every round void isn't judged.
+    #[test]
+    fn a_round_with_the_displays_lock_is_void() {
+        let manifest = manifest();
+        let (run, tier) = (manifest.run("exit-walk").expect("a run"), tier(&manifest, "desktop-low"));
+        let round = |p95: f64, lock: &str| {
+            format!(
+                "{}{}",
+                timed("gpu", "gpu frame", p95, 20_000.0, "Some(14000)", "None"),
+                reading(false, 0, lock)
+            )
+        };
+        let locked = round(13_000.0, "0.270");
+        let findings = judge(1, run, "exit-walk", &tier, &rounds(&[&locked, &round(14_500.0, "0.060")]));
+        assert_eq!(
+            findings.failed,
+            ["exit-walk gpu frame p95 14.50 ms over 14.00 ms"],
+            "the void round's 13 ms"
+        );
+        assert!(findings.notes[0].contains("r1 void: the display's 60 Hz lock 0.270"), "{findings:?}");
+        let findings = judge(1, run, "exit-walk", &tier, &rounds(&[&locked, &round(15_000.0, "0.100")]));
+        assert_eq!(Verdict::of(&findings), Verdict::NotJudged, "{findings:?}");
+        assert_eq!(findings.unjudged, ["exit-walk gpu frame: every round void"]);
+        // A lock too few frames read voids nothing.
+        let findings = judge(1, run, "exit-walk", &tier, &rounds(&[&round(13_000.0, "-")]));
+        assert_eq!(Verdict::of(&findings), Verdict::Pass, "{findings:?}");
     }
 
     /// Exit test 2's lines (M5 Z2): the pool's longest open wait, and on the counting walk the reasons line, the

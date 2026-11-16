@@ -14,7 +14,9 @@
 //!   budget it wasn't logged against; a Mac is none of §3.1's devices, which the report says once. §3.1's memory
 //!   figure and exit test 6's crowd are the manifest's tiers'.
 //! - **Verdicts** (the `verdict` module, M5 Z2): one line for each exit test and tier, by the exit run's rules,
-//!   and the report fails on any that fails.
+//!   and the report fails on any that fails. On Metal they read the bench's `fight row no upload` and
+//!   `fight gpu reading` lines beside its rows: the depth-only row, the frames with no upload in flight, the
+//!   uploads' cost and the display's lock.
 
 mod verdict;
 
@@ -207,7 +209,9 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
          differ between rounds, each round's shown and a round over its budget marked. {done} of {} units \
          complete. **This is a Mac:** none of spec §3.1's devices; every figure \
          is this machine at a tier's settings, size and cook, and each phone figure is still owed to a phone. On \
-         Metal passes overlap, so of the GPU rows only the frame is exact; a pass's figure is what it added. A unit \
+         Metal passes overlap, so of the GPU rows only the frame is exact; a pass's figure is what it added, and \
+         the verdicts judge the prepasses and shadows as one depth-only row and a pass on the frames with no \
+         upload in flight, and void a round with the display's 60 Hz lock (the exit run's rules). A unit \
          started above a load of {} is marked where it is read. Times in ms: p50 / p95 / worst @ metres along the \
          walk, the budget in brackets; **bold is over**, and the last column says by how much. §3.4's draw \
          budget is on the main view's draw calls after culling (a run of equal draws is one call), as m5-plan §3 \

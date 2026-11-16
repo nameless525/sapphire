@@ -71,9 +71,18 @@ pub struct GpuTimings {
     /// The graph passes that took no timestamps, in the order they ran: on Apple GPUs the ones
     /// that begin no render or compute pass, such as copies, and anywhere one that recorded nothing.
     pub untimed: Vec<&'static str>,
+    /// When the frame's first timed pass started, on the GPU's own clock (its zero is the device's, not the
+    /// process's), or `None` when no pass decoded. With [`Self::span`] it gives [`Self::end`], which lines
+    /// frames up against anything periodic on the GPU, such as a display's compositing (M5 Z2).
+    pub start: Option<Duration>,
 }
 
 impl GpuTimings {
+    /// When the frame's last timed pass ended, on the GPU's own clock ([`Self::start`]).
+    pub fn end(&self) -> Option<Duration> {
+        self.start.map(|start| start + self.span())
+    }
+
     /// From the first timed pass's start to the last one's end. On tile-based GPUs passes
     /// overlap, so this is less than the sum of their durations.
     pub fn span(&self) -> Duration {
@@ -260,6 +269,7 @@ impl PassTimer {
                     self.latest.every_pass = self.encoder_writes && complete;
                     self.latest.every_timed_pass = every_timed_pass(&readback.passes, &self.latest.passes);
                     self.latest.untimed.clone_from(&readback.untimed);
+                    self.latest.start = first_start(&bytes, &readback.passes, self.period);
                 }
             }
             readback.buffer.unmap();
@@ -332,6 +342,7 @@ impl FrameTimer for PassTimer {
             self.latest.every_pass = self.encoder_writes && readback.expected == 0;
             self.latest.every_timed_pass = false;
             self.latest.untimed.clone_from(&readback.untimed);
+            self.latest.start = None;
             return;
         }
         readback.state.store(MAPPING, Ordering::Release);
@@ -361,19 +372,10 @@ fn decode(
     out: &mut Vec<PassTime>,
 ) -> bool {
     out.clear();
-    let ticks = |offset: usize| {
-        let word: [u8; 8] = bytes[offset..offset + 8].try_into().expect("8 bytes");
-        u64::from_le_bytes(word)
-    };
-    let timed = || {
-        passes.iter().filter_map(move |pass| {
-            let offset = pass.offset() as usize;
-            let (start, end) = (ticks(offset), ticks(offset + 8));
-            (end >= start && end != u64::MAX).then_some((pass.name, start, end))
-        })
-    };
+    let timed =
+        || passes.iter().filter_map(|pass| pair(bytes, pass).map(|(start, end)| (pass.name, start, end)));
     let Some(origin) = timed().map(|(_, start, _)| start).min() else { return expected == 0 };
-    let nanos = |ticks: u64| Duration::from_nanos((ticks as f64 * f64::from(period)) as u64);
+    let nanos = |ticks: u64| nanos(ticks, period);
     let mut latest_end = origin;
     out.extend(timed().map(|(name, start, end)| {
         let exclusive = end.saturating_sub(start.max(latest_end));
@@ -386,6 +388,33 @@ fn decode(
         }
     }));
     out.len() == expected
+}
+
+/// `pass`'s start and end ticks from resolved `bytes`, unless a backend left the pair invalid (an end before
+/// the start, or an error value).
+fn pair(bytes: &[u8], pass: &ResolvedPass) -> Option<(u64, u64)> {
+    let ticks = |offset: usize| {
+        let word: [u8; 8] = bytes[offset..offset + 8].try_into().expect("8 bytes");
+        u64::from_le_bytes(word)
+    };
+    let offset = pass.offset() as usize;
+    let (start, end) = (ticks(offset), ticks(offset + 8));
+    (end >= start && end != u64::MAX).then_some((start, end))
+}
+
+/// `ticks` at `period` nanoseconds a tick.
+fn nanos(ticks: u64, period: f32) -> Duration {
+    Duration::from_nanos((ticks as f64 * f64::from(period)) as u64)
+}
+
+/// When the first of `passes`' valid pairs started, on the GPU's clock ([`GpuTimings::start`]).
+fn first_start(bytes: &[u8], passes: &[ResolvedPass], period: f32) -> Option<Duration> {
+    passes
+        .iter()
+        .filter_map(|pass| pair(bytes, pass))
+        .map(|(start, _)| start)
+        .min()
+        .map(|start| nanos(start, period))
 }
 
 fn create(device: &wgpu::Device, pairs: u32) -> (wgpu::QuerySet, wgpu::Buffer, Vec<Readback>) {
@@ -480,6 +509,25 @@ mod tests {
             bytes[offset + 8..offset + 16].copy_from_slice(&end.to_le_bytes());
         }
         bytes
+    }
+
+    /// A frame's start is its earliest valid pair's, on the GPU's own clock, and its end that plus the span.
+    #[test]
+    fn a_frame_starts_at_its_earliest_valid_pair_on_the_gpus_clock() {
+        let passes = [
+            ResolvedPass { name: "first", pair: 0 },
+            ResolvedPass { name: "second", pair: 1 },
+            ResolvedPass { name: "invalid", pair: 2 },
+        ];
+        let bytes = resolved(&[(1_000, 1_400), (900, 2_000), (10, 5)]);
+        let start = first_start(&bytes, &passes, 2.0);
+        assert_eq!(start, Some(Duration::from_nanos(1_800)), "the earliest valid pair, in nanoseconds");
+        let mut out = Vec::new();
+        decode(&bytes, &passes, 3, 2.0, &mut out);
+        let timings = GpuTimings { passes: out, start, ..GpuTimings::default() };
+        assert_eq!(timings.end(), Some(Duration::from_nanos(4_000)));
+        assert_eq!(first_start(&[], &[], 1.0), None);
+        assert_eq!(GpuTimings::default().end(), None);
     }
 
     #[test]

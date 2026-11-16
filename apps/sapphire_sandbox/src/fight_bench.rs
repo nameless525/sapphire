@@ -117,6 +117,9 @@ struct GpuTimes {
     post: Option<Duration>,
     vfx: Option<Duration>,
     ui: Option<Duration>,
+    /// When the frame's GPU work ended, on the GPU's own clock (`GpuTimings::end`), when its span reads: what
+    /// lines a round's slow frames up against a display's refresh (M5 Z2).
+    end: Option<Duration>,
 }
 
 impl GpuTimes {
@@ -157,6 +160,7 @@ impl GpuTimes {
                 effects + timings.get(DISTORTION_PASS).map_or(Duration::ZERO, |pass| pass.exclusive)
             }),
             ui: sum(&[UI_PASS]),
+            end: timings.every_timed_pass.then(|| timings.end()).flatten(),
         }
     }
 }
@@ -911,7 +915,7 @@ audio,mix,content,animation,springs,poses,joints,packet,camera,hud,vfx,streaming
 live_bytes,step_allocations,sim_allocations,animation_allocations,packet_allocations,packet_bytes,prepare_allocations,\
 prepare_bytes,record_allocations,record_bytes,sprites,ribbon_points,cues_read,effects,sounds,screens,layers,\
 hitstop_player,hitstop_enemy,world_scale,post_first_use,draws,gpu_timed,gpu_span,gpu_main,gpu_prepasses,\
-gpu_character_prepass,gpu_shadows,gpu_skinning,gpu_sky_cube,gpu_clustering_ao,gpu_taa,gpu_post,gpu_vfx,gpu_ui,\
+gpu_character_prepass,gpu_shadows,gpu_skinning,gpu_sky_cube,gpu_clustering_ao,gpu_taa,gpu_post,gpu_vfx,gpu_ui,gpu_end,\
 script,prefetch,trip,resident,mesh_pool,textures,entities,process,";
 
 /// One frame's line of `--bench-trace`'s file.
@@ -989,6 +993,7 @@ fn trace_line_into(frame: &Traced, line: &mut String) {
         gpu.post,
         gpu.vfx,
         gpu.ui,
+        gpu.end,
     ] {
         match time {
             Some(time) => {
@@ -1172,6 +1177,7 @@ mod tests {
             every_pass: true,
             every_timed_pass: false,
             untimed: Vec::new(),
+            start: None,
             passes: names
                 .iter()
                 .enumerate()
@@ -1216,9 +1222,15 @@ mod tests {
             every_timed_pass: true,
             untimed: vec!["uploads"],
             passes: vec![pass(shadows::PASSES[0], 0), pass(MAIN_PASS, 10)],
+            start: Some(Duration::from_secs(5)),
         };
         let read = GpuTimes::of(&timings, 0, false);
         assert_eq!(read.span, Some(Duration::from_micros(20)), "Metal's frames have a span");
+        assert_eq!(
+            read.end,
+            Some(Duration::from_secs(5) + Duration::from_micros(20)),
+            "and an end on the GPU's clock"
+        );
         assert_eq!(read.shadows, Some(Duration::from_micros(10)), "the cascades that ran");
         assert_eq!(read.main, Some(Duration::from_micros(10)));
         assert_eq!(read.taa, None, "nothing of it ran");
@@ -1226,7 +1238,7 @@ mod tests {
         assert_eq!(GpuTimes::of(&timings, 0, false).shadows, None, "a cascade ran untimed");
         timings.every_timed_pass = false;
         let dropped = GpuTimes::of(&timings, 0, false);
-        assert_eq!((dropped.span, dropped.shadows), (None, None), "a pair was dropped");
+        assert_eq!((dropped.span, dropped.shadows, dropped.end), (None, None, None), "a pair was dropped");
         assert_eq!(dropped.main, Some(Duration::from_micros(10)));
     }
 
@@ -1237,6 +1249,20 @@ mod tests {
         let header = format!("{TRACE_HEADER}{}", counts::TRACE_COLUMNS);
         assert_eq!(line.split(',').count(), header.split(',').count(), "{line}");
         assert!(line.starts_with("cpu,0,0,12,1,345.0,"), "{line}");
+    }
+
+    /// The trace's `gpu_end` column holds the frame's end on the GPU's clock in µs, and is empty untimed (M5 Z2).
+    #[test]
+    fn a_trace_line_holds_the_frames_gpu_end() {
+        let header = format!("{TRACE_HEADER}{}", counts::TRACE_COLUMNS);
+        let column = header.split(',').position(|name| name == "gpu_end").expect("a gpu_end column");
+        let end = Duration::from_secs(5) + Duration::from_nanos(123_456);
+        let timed = Traced {
+            gpu: GpuTimes { timed: true, end: Some(end), ..GpuTimes::default() },
+            ..traced(12, 345)
+        };
+        assert_eq!(trace_line(&timed).split(',').nth(column), Some("5000123.5"));
+        assert_eq!(trace_line(&traced(12, 345)).split(',').nth(column), Some(""));
     }
 
     /// The waits line reads the last bin as 32 or more, and no wait as none.

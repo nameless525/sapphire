@@ -6232,45 +6232,57 @@ mod tests {
         (top..=STREAMED_SIDE.ilog2()).map(|level| 4 * u64::from((STREAMED_SIDE >> level).pow(2))).sum()
     }
 
+    /// [`streamed_pack`]'s texture `strip` as cooked: its tail's KTX2 file and each level above it, finest first.
+    fn streamed_cooked(strip: u8) -> (Vec<u8>, Vec<Vec<u8>>) {
+        use sapphire_assets::texture::{Texture, TextureDesc, TextureFormat};
+        let format = TextureFormat::Rgba8UnormSrgb;
+        let texture = streamed(strip);
+        let shades: Vec<u8> =
+            (0..=STREAMED_SIDE.ilog2()).map(|level| 30 + 20 * level as u8 + strip).collect();
+        let levels = split_levels(&shades);
+        let tail_side = STREAMED_SIDE >> STREAMED_ABOVE;
+        let desc = TextureDesc {
+            format,
+            width: tail_side,
+            height: tail_side,
+            mip_level_count: levels.len() as u32 - STREAMED_ABOVE,
+            swizzle: Swizzle::IDENTITY,
+        };
+        let tail = TextureTail {
+            texture: Texture {
+                desc,
+                levels: levels[STREAMED_ABOVE as usize..].iter().map(Vec::as_slice).collect(),
+            },
+            above: STREAMED_ABOVE,
+        };
+        let above = (0..STREAMED_ABOVE)
+            .map(|level| {
+                let width = STREAMED_SIDE >> level;
+                let data = levels[level as usize].clone();
+                TextureLevel { texture, level, format: format.vk_format(), width, height: width, data }
+                    .to_cooked()
+                    .expect("cooked")
+                    .to_vec()
+            })
+            .collect();
+        (tail.to_ktx2().expect("a tail"), above)
+    }
+
     /// A pack whose character is a quad of three strips, each drawn through a material without an outline
     /// that binds its own texture as its base colour, cooked as a tail and [`STREAMED_ABOVE`] levels.
     fn streamed_pack() -> Vec<u8> {
         use sapphire_assets::material::Outline;
         use sapphire_assets::mesh::SlotMaterial;
-        use sapphire_assets::texture::{Texture, TextureDesc, TextureFormat};
-        let format = TextureFormat::Rgba8UnormSrgb;
         let mut assets = Vec::new();
         let (mut vertices, mut indices, mut submeshes, mut slots) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for strip in 0..3u8 {
             let texture = streamed(strip);
-            let shades: Vec<u8> =
-                (0..=STREAMED_SIDE.ilog2()).map(|level| 30 + 20 * level as u8 + strip).collect();
-            let levels = split_levels(&shades);
-            let tail_side = STREAMED_SIDE >> STREAMED_ABOVE;
-            let desc = TextureDesc {
-                format,
-                width: tail_side,
-                height: tail_side,
-                mip_level_count: levels.len() as u32 - STREAMED_ABOVE,
-                swizzle: Swizzle::IDENTITY,
-            };
-            let tail = TextureTail {
-                texture: Texture {
-                    desc,
-                    levels: levels[STREAMED_ABOVE as usize..].iter().map(Vec::as_slice).collect(),
-                },
-                above: STREAMED_ABOVE,
-            };
-            assets.push(packed(texture, AssetKind::Texture, &tail.to_ktx2().expect("a tail")));
-            for level in 0..STREAMED_ABOVE {
-                let width = STREAMED_SIDE >> level;
-                let data = levels[level as usize].clone();
-                let level =
-                    TextureLevel { texture, level, format: format.vk_format(), width, height: width, data };
-                let bytes = level.to_cooked().expect("cooked");
-                let id = TextureLevel::id(texture, level.level);
-                assets.push(packed_with(id, AssetKind::TextureLevel, &bytes, vec![texture]));
+            let (tail, levels) = streamed_cooked(strip);
+            assets.push(packed(texture, AssetKind::Texture, &tail));
+            for (level, bytes) in (0..).zip(&levels) {
+                let id = TextureLevel::id(texture, level);
+                assets.push(packed_with(id, AssetKind::TextureLevel, bytes, vec![texture]));
             }
             let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
             let document = AnimeCharacterMaterial {
@@ -6351,10 +6363,12 @@ mod tests {
             Scene::with_character(mesh, bounds, false)
         });
         let character = character.expect("the character");
-        let tails = 3 * streamed_bytes(STREAMED_ABOVE);
-        // Room above the tails for one texture's 8 × 8 level and half another's.
-        let level_4 = streamed_bytes(4) - streamed_bytes(STREAMED_ABOVE);
-        let pool = tails + level_4 * 3 / 2;
+        // The pool is the asset server's count of it (M5 Z2): each tail as its KTX2 file and each level as its
+        // cooked file, their headers and envelopes too, not the bytes the GPU holds. Room beside the tails as the
+        // server counts them for one texture's 8 × 8 level and half another's.
+        let (tail_file, level_files) = streamed_cooked(0);
+        let (tails_counted, level_4_file) = (3 * tail_file.len() as u64, level_files[4].len() as u64);
+        let pool = tails_counted + level_4_file * 3 / 2;
         stage.content.set_texture_pool(Some(pool));
         stage.content.set_texture_streaming(true);
         let (mut raised, mut lowered) = (0, 0);
@@ -6362,7 +6376,11 @@ mod tests {
             stage.frame();
             let stats = stage.check_streaming_counters();
             assert!(stats.streaming && stats.pool == pool);
-            assert!(stats.resident <= pool, "the pool is hard: {stats:?}");
+            let in_use = stage.content.server.in_use(AssetKind::Texture);
+            assert!(
+                in_use <= pool,
+                "the pool is hard as the server counts it: {in_use} of {pool}, {stats:?}"
+            );
             (raised, lowered) = (raised + stats.levels_raised, lowered + stats.levels_lowered);
         }
         let stats = stage.content.texture_streaming_stats();
@@ -6378,9 +6396,18 @@ mod tests {
             "the pool's waits: {stats:?}"
         );
         assert!(raised > 0, "raised {raised}, lowered {lowered}");
+        // Exactly one level fits: one texture holds its 8 × 8 level, and the server holds the tails and it.
+        let above_tail: Vec<_> = states.iter().filter(|(_, state)| state.resident < state.tail).collect();
+        assert!(
+            above_tail.len() == 1 && above_tail[0].1.resident == 4,
+            "one level in the pool's room: {states:?}"
+        );
+        assert_eq!(stage.content.server.in_use(AssetKind::Texture), tails_counted + level_4_file);
 
-        // A pool with room: every texture rises to what the views read, and the debt's paid.
-        stage.content.set_texture_pool(Some(3 * streamed_bytes(0)));
+        // A pool with room: every texture rises to what the views read, and the debt's paid. It holds the three
+        // whole as the server counts them, so the character held whole below fits too.
+        let whole_counted = 3 * level_files.iter().map(|file| file.len() as u64).sum::<u64>() + tails_counted;
+        stage.content.set_texture_pool(Some(whole_counted));
         stage.content.set_texture_streaming(true);
         stage.frames_until(|stage| stage.content.texture_streaming_stats().in_debt == 0);
         let stats = stage.check_streaming_counters();
@@ -6429,12 +6456,23 @@ mod tests {
         stage.content.set_texture_pool(Some(3 * streamed_bytes(0)));
         stage.content.texture_raise = 1;
         stage.content.set_texture_streaming(true);
+        // Paid once every texture is estimated (needed finer than its tail) and holds what it needs: until the
+        // views first read a texture it needs its tail and isn't in debt (M5 Z2), so the first frame owes nothing.
+        let paid = |stage: &Stage| {
+            stage
+                .content
+                .texture_levels()
+                .all(|(_, state)| state.wanted < state.tail && state.resident == state.wanted)
+        };
         let (mut raises, mut frames) = (0, 0);
-        while stage.content.texture_streaming_stats().in_debt > 0 || frames == 0 {
+        while !paid(&stage) {
             stage.frame();
             frames += 1;
             assert!(frames < 200, "the debt is never paid");
             let stats = stage.content.texture_streaming_stats();
+            if frames == 1 {
+                assert_eq!(stats.in_debt, 0, "no texture is in debt before its first estimate: {stats:?}");
+            }
             let mips = stage.renderer.stats().mip_streaming;
             assert_eq!(mips.budget, 1, "the stage hands the renderer its budget");
             assert!(mips.raises <= 1, "one raise a frame past the budget: {mips:?}");

@@ -321,6 +321,10 @@ pub(super) fn judge(test: u32, run: &Run, name: &str, tier: &Tier, rounds: &Roun
         findings.unjudged.push(format!("{name} not run"));
         return findings;
     }
+    if test == 2 {
+        // On every run, a stand-in too: a trip's arrival is where a hold reaches its bound.
+        arrivals(&mut findings, name, rounds);
+    }
     if let Some(stands_in) = &run.stands_in {
         // Read beside the runs that judge the test, never a pass of what it stands in for (M5 Z2): the trip's
         // floor is judged where the counting walk closes the district.
@@ -598,6 +602,25 @@ fn waits(findings: &mut Findings, name: &str, rounds: &Rounds) {
     }
 }
 
+/// Arrivals held to their bound (M5 Z2, the orchestrator's ruling): any phase's reasons line, in any round,
+/// with `arrival_held_to_bound` above 0 fails, a streamer fault that a wipe hid for its 300 updates. A line that
+/// doesn't print the field (a batch from before it) judges nothing here.
+fn arrivals(findings: &mut Findings, name: &str, rounds: &Rounds) {
+    for round in &rounds.rounds {
+        for (phase, reasons) in &round.log.wait_reasons {
+            match reasons.arrival_held_to_bound {
+                Some(held) if held > 0 => findings.fail(format!(
+                    "{name} r{} {phase}: {held} {}",
+                    round.round,
+                    if held == 1 { "arrival held to its bound" } else { "arrivals held to their bound" }
+                )),
+                // At 0 it fails nothing and passes nothing of its own: a stand-in stays judged on nothing.
+                Some(_) | None => {}
+            }
+        }
+    }
+}
+
 /// A line's numeric fields as `name value`, for a note.
 fn shown(fields: &std::collections::BTreeMap<String, f64>) -> String {
     fields.iter().map(|(name, value)| format!("{name} {value}")).collect::<Vec<_>>().join(", ")
@@ -761,6 +784,14 @@ mod tests {
              long_over_frames=30 raised_bytes=9 reraised_bytes=0 reraised_within_updates=60 \
              tails_over_pool={tails_over_pool} arrival_waits=3 arrival_long=0 arrival_open=0 \
              arrived_at_update={arrived_at_update}\n"
+        )
+    }
+
+    /// A reasons line as the bench prints it since the arrival's hold has a bound (M5 Z2).
+    fn held(phase: &str, held: u32) -> String {
+        reasons(0, 41).replace("phase=\"drawn\"", &format!("phase=\"{phase}\"")).replace(
+            "arrived_at_update=41\n",
+            &format!("arrived_at_update=41 arrival_held_to_bound={held}\n"),
         )
     }
 
@@ -963,6 +994,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An arrival held to its bound fails exit test 2 (M5 Z2, the orchestrator's ruling), named by run, round and
+    /// phase, on any run, a stand-in too; at 0 it passes, and a line from before the field judges as before.
+    #[test]
+    fn an_arrival_held_to_its_bound_fails_exit_test_2() {
+        let manifest = manifest();
+        let (run, tier) = (manifest.run("counted-streaming").expect("a run"), tier(&manifest, "mobile-low"));
+        let rows = [
+            count("bytes over budget in use", 0, "Some(0)"),
+            count("bytes decoded waiting", 1 << 20, "Some(67108864)"),
+            count("streamed texture bytes", 300 << 20, "Some(347078656)"),
+            count("frame thread loads", 0, "Some(0)"),
+            closed(true, 8 << 20, 8 << 20),
+        ]
+        .concat();
+        let line = waits("12", 0);
+        let waits_line =
+            &line[..line.find("x INFO sapphire::sandbox: texture wait reasons").expect("two lines")];
+        let judged = |reasons: &str| {
+            judge(2, run, "counted-streaming", &tier, &rounds(&[&format!("{rows}{waits_line}{reasons}")]))
+        };
+        let at_zero = judged(&held("drawn", 0));
+        assert!(at_zero.failed.is_empty(), "{at_zero:?}");
+        assert_eq!(Verdict::of(&at_zero), Verdict::Pass);
+        let held_once = judged(&held("drawn", 1));
+        assert_eq!(held_once.failed, ["counted-streaming r1 drawn: 1 arrival held to its bound"]);
+        let before = judged(&reasons(0, 41));
+        assert!(before.failed.is_empty(), "no field, judged as before: {before:?}");
+        assert_eq!(Verdict::of(&before), Verdict::Pass);
+        // A trip stands in for the walk's floor and is judged on nothing else, but its arrival held fails.
+        let trip = manifest.run("trip").expect("a run");
+        let findings = judge(2, trip, "trip", &tier, &rounds(&[&held("first", 2)]));
+        assert_eq!(findings.failed, ["trip r1 first: 2 arrivals held to their bound"]);
+        let findings = judge(2, trip, "trip", &tier, &rounds(&[&held("first", 0)]));
+        assert_eq!(Verdict::of(&findings), Verdict::NotJudged, "{findings:?}");
     }
 
     /// A count over its budget in any round fails, and the pool under a binding pool is the run's own.

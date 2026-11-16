@@ -907,8 +907,30 @@ fn streaming_notes(out: &mut String, rounds: &Rounds) {
     let _ = writeln!(
         out,
         "- **Nothing loaded on the frame's thread:** the `frame thread loads` row (budget 0, `not exercised` at 0), \
-         and the waits for a texture's level each phase's `texture waits` line holds; the verdicts judge both.\n"
+         and the waits for a texture's level each phase's `texture waits` line holds; the verdicts judge both."
     );
+    let _ = writeln!(
+        out,
+        "- **Arrivals held to their bound** (exit test 2 fails on any above 0): {}.\n",
+        held_arrivals(rounds)
+    );
+}
+
+/// Each round's and phase's `arrival_held_to_bound` (M5 Z2), bold above 0; "not printed" where its reasons line
+/// is from before the field, which is not 0.
+fn held_arrivals(rounds: &Rounds) -> String {
+    let read: Vec<String> = rounds
+        .rounds
+        .iter()
+        .flat_map(|round| {
+            round.log.wait_reasons.iter().map(move |(phase, reasons)| match reasons.arrival_held_to_bound {
+                Some(0) => format!("r{} {phase} 0", round.round),
+                Some(held) => format!("r{} {phase} **{held}**", round.round),
+                None => format!("r{} {phase} not printed", round.round),
+            })
+        })
+        .collect();
+    if read.is_empty() { "no texture wait reasons line".to_owned() } else { read.join(", ") }
 }
 
 fn trips(out: &mut String, rounds: &Rounds) {
@@ -1243,6 +1265,32 @@ mod tests {
         assert!(line.contains("**60 frames**, over 30"), "the column's worst is the bound: {line}");
         assert!(line.contains("the frames' 99th percentile 5"), "the percentile beside it, named: {line}");
         assert!(line.contains("warm lap"), "the worse lap: {line}");
+    }
+
+    /// The streaming section shows each round's arrivals held to their bound beside the waits (M5 Z2), bold above
+    /// 0, and "not printed" for a reasons line from before the field.
+    #[test]
+    fn the_waits_show_the_arrivals_held_to_their_bound() {
+        let manifest = manifest();
+        let (run, tier) = (&manifest.runs[0], &manifest.tiers[0]);
+        let line = |phase: &str, held: &str| {
+            format!(
+                "x INFO sapphire::sandbox: texture wait reasons decode=1 phase=\"{phase}\" tails_over_pool=0 \
+                 arrived_at_update=41{held}\n"
+            )
+        };
+        let walk = rounds(&[
+            &format!(
+                "{}{}",
+                line("first", " arrival_held_to_bound=0"),
+                line("cpu", " arrival_held_to_bound=1")
+            ),
+            &line("first", ""),
+        ]);
+        let mut out = String::new();
+        section(&mut out, &mut Vec::new(), &manifest, run, tier, &walk, None);
+        let held = out.lines().find(|line| line.contains("Arrivals held to their bound")).expect(&out);
+        assert!(held.ends_with("r1 cpu **1**, r1 first 0, r2 first not printed."), "{held}");
     }
 
     /// A timed walk's counts move between rounds; a row over its budget in any round stays marked, with how far

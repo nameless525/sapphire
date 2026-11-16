@@ -130,6 +130,9 @@ pub struct Waits {
 pub struct WaitReasons {
     pub tails_over_pool: u64,
     pub arrived_at_update: u64,
+    /// Arrivals let go at their hold's bound (`ARRIVAL_HOLD`), a streamer fault; `None` where the line doesn't
+    /// print the field (a batch from before it), which is not 0.
+    pub arrival_held_to_bound: Option<u64>,
     /// Every field the line logs that reads as a number, by name.
     pub fields: BTreeMap<String, f64>,
 }
@@ -269,6 +272,7 @@ impl Log {
                     WaitReasons {
                         tails_over_pool: int("tails_over_pool").unwrap_or(0),
                         arrived_at_update: int("arrived_at_update").unwrap_or(0),
+                        arrival_held_to_bound: int("arrival_held_to_bound"),
                         fields: fields
                             .iter()
                             .filter_map(|(name, value)| Some(((*name).to_owned(), value.parse().ok()?)))
@@ -573,6 +577,12 @@ mod tests {
         let reasons = &log.wait_reasons["drawn"];
         assert_eq!((reasons.tails_over_pool, reasons.arrived_at_update), (0, 41));
         assert_eq!(reasons.fields.get("decode"), Some(&3.0));
+        assert_eq!(reasons.arrival_held_to_bound, None, "a line from before the field: not printed, not 0");
+        let held = Log::parse(
+            "x  INFO sapphire::sandbox: texture wait reasons decode=3 phase=\"first\" tails_over_pool=0 \
+             arrived_at_update=41 arrival_held_to_bound=2",
+        );
+        assert_eq!(held.wait_reasons["first"].arrival_held_to_bound, Some(2));
         let unread = Log::parse("x  INFO sapphire::sandbox: fight gpu reading phase=\"gpu\" lock=-");
         assert_eq!(unread.gpu_reading.and_then(|reading| reading.lock), None);
     }

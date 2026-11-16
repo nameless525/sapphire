@@ -861,7 +861,7 @@ pub(crate) fn report_texture_waits(phase: &'static str, stats: &TextureStreaming
         pool_longest_open_frames = line.pool_longest_open,
         "texture waits",
     );
-    // Beside it, what held the waits longest and the churn (M5 Z2): read, never judged.
+    // Beside it, what held the waits longest, the churn and the arrival's waits (M5 Z2): read, never judged.
     let mut reasons = String::new();
     for reason in WaitReason::ALL {
         let index = reason as usize;
@@ -876,6 +876,11 @@ pub(crate) fn report_texture_waits(phase: &'static str, stats: &TextureStreaming
         reraised_bytes = stats.reraised_bytes,
         reraised_within_updates = RERAISE_WITHIN,
         tails_over_pool = stats.tails_over_pool,
+        // Opened before the zone arrived: the arrival's load, under the game's wipe, apart from the line above.
+        arrival_waits = stats.arrival.completed,
+        arrival_long = stats.arrival.long,
+        arrival_open = stats.arrival.open,
+        arrived_at_update = stats.arrival.arrived_at,
         "texture wait reasons{reasons}",
     );
 }

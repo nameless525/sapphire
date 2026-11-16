@@ -332,6 +332,11 @@ pub(crate) fn run(
     let counting_walk = drawn.is_some() && options.zone_walk.is_some();
     // Its waits for a texture's level from here, logged at its end as a fight's bench logs a phase's (M5 Z2).
     stage.content.start_texture_waits_over();
+    // The walk's first load is a zone's arrival, which a trip's wipe covers in the game (M5 Z2): until the first
+    // view's textures are first at their plan, waits that open are the arrival's, counted apart.
+    if counting_walk {
+        stage.content.open_textures_as_arrival();
+    }
     // `--bench-pace` (M5 Z2): each frame starts a frame's time after the last began, or late if that ran long.
     let mut pace = options.bench_pace.map(|rate| Pace::new(Duration::from_secs(1) / rate.get()));
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
@@ -349,6 +354,9 @@ pub(crate) fn run(
         stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
         let wait = stopwatch.lap();
         let after = alloc::stats();
+        if stage.content.textures_arriving() && stage.scene.zone_arrived(&stage.content) {
+            stage.content.end_texture_arrival();
+        }
         zone_walk.frame(&mut stage);
         if let Some(drawn) = &mut drawn {
             let measured = frame >= u64::from(WARMUP_FRAMES);

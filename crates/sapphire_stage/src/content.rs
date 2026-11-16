@@ -1545,6 +1545,26 @@ impl Content {
         self.gpu.levels.start_waits_over();
     }
 
+    /// Opens a bench's walk as a zone's arrival (M5 Z2): the game loads a zone's first view under a trip's wipe,
+    /// and a walk from its first tick has no wipe, so until [`Self::end_texture_arrival`] the levels raise at
+    /// the wipe's budget ([`crate::ARRIVAL_RAISE`]) and the waits that open are the arrival's, counted apart
+    /// ([`crate::TextureStreamingStats::arrival`]). Nothing is held: the walk's frames go on as they would.
+    pub fn open_textures_as_arrival(&mut self) {
+        self.gpu.levels.open_as_arrival();
+    }
+
+    /// Ends the arrival [`Self::open_textures_as_arrival`] opened, once the zone has arrived
+    /// ([`crate::Scene::zone_arrived`]): from here a wait is a surface newly in view.
+    pub fn end_texture_arrival(&mut self) {
+        self.gpu.levels.end_arrival();
+    }
+
+    /// Whether an arrival [`Self::open_textures_as_arrival`] opened goes on.
+    #[must_use]
+    pub fn textures_arriving(&self) -> bool {
+        self.gpu.levels.opening()
+    }
+
     /// Each texture on the renderer's wanted, resident and tail tops and its debt, in ID order: what the scale
     /// views show (m5-plan X1).
     pub fn texture_levels(&self) -> impl Iterator<Item = (AssetId, TextureLevelState)> + '_ {

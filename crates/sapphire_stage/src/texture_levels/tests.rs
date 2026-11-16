@@ -349,10 +349,76 @@ fn count_wait(
     required: u32,
     pool_held: bool,
 ) {
+    count_wait_arriving(choice, stats, top, required, pool_held, false);
+}
+
+/// [`count_wait`], while a zone arrives or not.
+fn count_wait_arriving(
+    choice: &mut Choice,
+    stats: &mut TextureStreamingStats,
+    top: u32,
+    required: u32,
+    pool_held: bool,
+    arriving: bool,
+) {
     for waits in [&mut stats.waits, &mut stats.pool_waits] {
         (waits.open, waits.longest_open) = (0, 0);
     }
-    wait(choice, top, required, pool_held, stats);
+    (stats.arrival.open, stats.arrival.longest_open) = (0, 0);
+    wait(choice, top, required, pool_held, arriving, stats);
+}
+
+/// The opening is an arrival (M5 Z2): a wait opened while a zone arrives is counted apart, in neither kind's
+/// histogram nor the reasons, however long it runs past the arrival's end; one opened after is judged as ever.
+#[test]
+fn a_wait_opened_before_the_zone_arrived_is_counted_apart() {
+    let mut stats = TextureStreamingStats::default();
+    let (mut before, mut after) = (Choice::default(), Choice::default());
+    count_wait_arriving(&mut before, &mut stats, 5, 5, false, true);
+    count_wait_arriving(&mut before, &mut stats, 5, 2, false, true);
+    assert_eq!((stats.arrival.open, stats.all_waits().open), (1, 0), "open, and the arrival's");
+    // The zone arrives; the wait opened before it goes on 40 frames and ends.
+    for _ in 0..40 {
+        count_wait_arriving(&mut before, &mut stats, 5, 2, true, false);
+    }
+    count_wait_arriving(&mut before, &mut stats, 2, 2, false, false);
+    assert_eq!((stats.arrival.completed, stats.arrival.long), (1, 1));
+    assert_eq!(stats.all_waits(), TextureWaits::default(), "in neither histogram");
+    assert_eq!(stats.reasons, WaitReasons::default(), "nor the reasons");
+    // One opened after the arrival is a surface newly in view.
+    count_wait_arriving(&mut after, &mut stats, 5, 5, false, false);
+    for _ in 0..3 {
+        count_wait_arriving(&mut after, &mut stats, 5, 2, false, false);
+    }
+    count_wait_arriving(&mut after, &mut stats, 2, 2, false, false);
+    assert_eq!((stats.waits.completed(), stats.waits.worst(), stats.arrival.completed), (1, Some(3), 1));
+    // And the texture that waited for the arrival, needed finer again later, waits as any other.
+    count_wait_arriving(&mut before, &mut stats, 2, 0, false, false);
+    count_wait_arriving(&mut before, &mut stats, 0, 0, false, false);
+    assert_eq!((stats.waits.completed(), stats.arrival.completed), (2, 1));
+    start_waits_over(&mut stats);
+    assert_eq!(stats.arrival, ArrivalWaits::default(), "they start over with the rest");
+}
+
+/// A bench's arrival ends at the first update the first view's textures are at their plan: before the views
+/// have read a texture, it isn't (its tail is only for want of a reading), and once ended it stays ended.
+#[test]
+fn a_benchs_arrival_ends_once_the_first_views_textures_are_at_their_plan() {
+    let whole = whole();
+    let mut levels = TextureLevels::default();
+    levels.bind(A, false);
+    let streaming = TextureStreaming { pool: u64::MAX, raise: 4 << 20 };
+    levels.set_streaming(Some(streaming));
+    levels.open_as_arrival();
+    let at = |top| move |_| Some(Shape { whole, top, above: ABOVE });
+    levels.plan(at(ABOVE), TextureCoverageFrame { frame: 0, textures: &[] }, streaming, u64::MAX, 0);
+    assert!(!levels.at_plan(at(ABOVE)), "not read yet: not at its plan");
+    let reads = [read(A, 0.2)];
+    levels.plan(at(ABOVE), TextureCoverageFrame { frame: 1, textures: &reads }, streaming, u64::MAX, 0);
+    assert!(levels.opening() && levels.at_plan(at(0)));
+    levels.end_arrival();
+    assert!(!levels.opening());
+    assert!(levels.stats.arrival.arrived_at > 0, "the update it arrived at");
 }
 
 /// m5-plan exit test 2's waits: a texture settled at its tail is needed two levels finer, and its levels
@@ -475,10 +541,10 @@ fn a_wait_open_across_a_start_over_lands_after_it_whole() {
     count_wait(&mut done, &mut stats, 5, 5, false);
     count_wait(&mut open, &mut stats, 5, 5, false);
     for _ in 0..3 {
-        wait(&mut done, 5, 2, false, &mut stats);
+        wait(&mut done, 5, 2, false, false, &mut stats);
         count_wait(&mut open, &mut stats, 5, 2, false);
     }
-    wait(&mut done, 2, 2, false, &mut stats);
+    wait(&mut done, 2, 2, false, false, &mut stats);
     count_wait(&mut open, &mut stats, 5, 2, true);
     assert_eq!((stats.waits.completed(), stats.pool_waits.open), (1, 1));
     start_waits_over(&mut stats);

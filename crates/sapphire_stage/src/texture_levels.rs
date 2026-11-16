@@ -249,6 +249,25 @@ pub struct TextureStreamingStats {
     /// holds beside them, since the streamer started: a pool too small for the content, a configuration error,
     /// logged at its first (M5 Z2). The pool is over by the rest, which no plan can take back.
     pub tails_over_pool: u32,
+    /// Waits opened while a zone arrived ([`crate::Content::open_textures_as_arrival`], or a trip's wipe): the
+    /// arrival's load, which the wipe covers, counted apart from [`Self::waits`] and [`Self::pool_waits`] and
+    /// never in their histograms or [`Self::reasons`] (M5 Z2). Exit test 2 reads "a surface newly in view".
+    pub arrival: ArrivalWaits,
+}
+
+/// Waits opened while a zone arrived (M5 Z2, [`TextureStreamingStats::arrival`]), counted from the same start
+/// as the other waits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArrivalWaits {
+    /// Completed, and of them over [`LONG_WAIT`] frames.
+    pub completed: u32,
+    pub long: u32,
+    /// Still open at the last update, and the longest of them, in frames.
+    pub open: u32,
+    pub longest_open: u32,
+    /// The update the first view's textures were first at their plan, ending the arrival a bench opened with
+    /// (`Content::end_texture_arrival`); 0 while it hasn't.
+    pub arrived_at: u32,
 }
 
 impl TextureStreamingStats {
@@ -361,6 +380,9 @@ pub(crate) struct TextureLevels {
     updates: u32,
     /// A zone is arriving under its wipe: raises go at [`ARRIVAL_RAISE`] a frame ([`Self::set_arriving`]).
     arriving: bool,
+    /// A bench opened as an arrival ([`Self::open_as_arrival`]), until the first view's textures are first at
+    /// their plan: arriving all the same.
+    opening: bool,
 }
 
 /// One texture's levels.
@@ -419,6 +441,8 @@ struct Choice {
     held_by: [u16; 3],
     /// The pool held it at a frame of its open wait while the views wanted more than the pool.
     held_over: bool,
+    /// Its open wait opened while a zone arrived: the arrival's ([`TextureStreamingStats::arrival`]).
+    arrival: bool,
 }
 
 /// A plan the pool held coarser than a texture's target: where the next frame's plan starts from.
@@ -777,7 +801,7 @@ impl TextureLevels {
         // A capture's finishing goes to the plan, unbudgeted, while streaming (a capture that streams), and
         // whole otherwise (the stage turns a whole capture's streamer off).
         let streaming = self.streaming;
-        let arriving = self.arriving;
+        let arriving = self.arriving || self.opening;
         renderer.set_mip_budget(
             streaming.map_or(DEFAULT_MIP_BUDGET, |streaming| raise_budget(streaming, arriving)),
         );
@@ -862,7 +886,7 @@ impl TextureLevels {
         add_pass(stats, !unlimited, [raised, lowered, started]);
         stats.raised_bytes += raised_bytes;
         stats.reraised_bytes += reraised_bytes;
-        count(wants, asked, textures, streaming, stats);
+        count(wants, asked, textures, streaming, arriving, stats);
         if !unlimited {
             stats.raising = raising;
             stats.time = stopwatch.elapsed();
@@ -1148,9 +1172,34 @@ impl TextureLevels {
         if self.streaming.is_none() || self.stats.tails_over_pool > 0 {
             return true;
         }
+        // One on the renderer the views haven't estimated yet plans its tail only for want of a reading: not at
+        // its plan until they have.
         self.textures.iter().all(|(&id, wanted)| {
-            shape(id).is_none_or(|texture| texture.top == wanted.choice.planned.min(texture.above))
+            shape(id).is_none_or(|texture| {
+                wanted.choice.target.is_some() && texture.top == wanted.choice.planned.min(texture.above)
+            })
         })
+    }
+
+    /// Opens a bench's walk as an arrival (M5 Z2): its first load is the one a trip's wipe covers in the game, so
+    /// until [`Self::end_arrival`] the levels raise at [`ARRIVAL_RAISE`] and waits that open are the arrival's
+    /// ([`TextureStreamingStats::arrival`]).
+    pub(crate) fn open_as_arrival(&mut self) {
+        self.opening = true;
+        self.stats.arrival.arrived_at = 0;
+    }
+
+    /// Ends the arrival [`Self::open_as_arrival`] opened, noting the update it ended at.
+    pub(crate) fn end_arrival(&mut self) {
+        if self.opening {
+            self.opening = false;
+            self.stats.arrival.arrived_at = self.updates.max(1);
+        }
+    }
+
+    /// Whether an arrival [`Self::open_as_arrival`] opened goes on.
+    pub(crate) fn opening(&self) -> bool {
+        self.opening
     }
 
     /// A zone is arriving, under its wipe ([`crate::Content::textures_at_plan`]): the raise budget is the wipe's,
@@ -1223,6 +1272,7 @@ fn count(
     asked: &BTreeMap<AssetId, u32>,
     textures: &HashMap<AssetId, Held<GpuTexture>>,
     streaming: Option<TextureStreaming>,
+    arriving: bool,
     stats: &mut TextureStreamingStats,
 ) {
     let (mut resident, mut tails, mut count, mut held_whole) = (0, 0, 0, 0);
@@ -1230,6 +1280,7 @@ fn count(
     for waits in [&mut stats.waits, &mut stats.pool_waits] {
         (waits.open, waits.longest_open) = (0, 0);
     }
+    (stats.arrival.open, stats.arrival.longest_open) = (0, 0);
     // The views want more than the pool: this frame's plan, made before the count.
     let views_over = streaming.is_some() && stats.wanted > stats.pool;
     for (&id, wanted) in wants.iter_mut() {
@@ -1265,7 +1316,7 @@ fn count(
                 choice.held_by[by] = choice.held_by[by].saturating_add(1);
             }
         }
-        if wait(&mut wanted.choice, top, required, pool_held, stats) {
+        if wait(&mut wanted.choice, top, required, pool_held, arriving, stats) {
             in_debt += 1;
             worst_debt = worst_debt.max(wanted.choice.debt);
             over_pool += u32::from(pool_held);
@@ -1291,37 +1342,59 @@ fn start_waits_over(stats: &mut TextureStreamingStats) {
         waits.frames = [0; WAIT_BINS];
     }
     (stats.reasons, stats.raised_bytes, stats.reraised_bytes) = (WaitReasons::default(), 0, 0);
+    (stats.arrival.completed, stats.arrival.long) = (0, 0);
 }
 
 /// Counts a texture's debt at an update, with its top at `top` and what it needs at `required`, and its wait
 /// ([`TextureWaits`]): in debt, an open wait, of the pool's kind if `pool_held` this frame or any frame
 /// before in the wait; out of it, a wait completed if it was in debt or is needed finer than it held at
-/// the last count. Returns whether it's in debt.
+/// the last count. A wait that opens while `arriving` is the arrival's, counted apart from both kinds. Returns
+/// whether it's in debt.
 fn wait(
     choice: &mut Choice,
     top: u32,
     required: u32,
     pool_held: bool,
+    arriving: bool,
     stats: &mut TextureStreamingStats,
 ) -> bool {
     let in_debt = top > required;
+    // A wait opens at its first frame in debt, or when it's needed finer than it held with its levels come at
+    // once (a wait of 0 frames).
+    if choice.debt == 0 && (in_debt || required < choice.counted_top) {
+        choice.arrival = arriving;
+    }
     if in_debt {
         choice.debt = choice.debt.saturating_add(1);
         choice.debt_held |= pool_held;
     }
-    let waits = if choice.debt_held { &mut stats.pool_waits } else { &mut stats.waits };
-    if in_debt {
-        waits.still_open(choice.debt);
+    if choice.arrival {
+        let arrival = &mut stats.arrival;
+        if in_debt {
+            arrival.open += 1;
+            arrival.longest_open = arrival.longest_open.max(choice.debt);
+        } else if choice.debt > 0 || required < choice.counted_top {
+            arrival.completed = arrival.completed.saturating_add(1);
+            arrival.long += u32::from(choice.debt > LONG_WAIT);
+        }
     } else {
-        if choice.debt > 0 || required < choice.counted_top {
-            waits.complete(choice.debt);
+        let waits = if choice.debt_held { &mut stats.pool_waits } else { &mut stats.waits };
+        if in_debt {
+            waits.still_open(choice.debt);
+        } else {
+            if choice.debt > 0 || required < choice.counted_top {
+                waits.complete(choice.debt);
+            }
+            if choice.debt > 0 {
+                let reason = choice.reason();
+                stats.reasons.waited[reason as usize] += 1;
+                stats.reasons.long[reason as usize] += u32::from(choice.debt > LONG_WAIT);
+            }
         }
-        if choice.debt > 0 {
-            let reason = choice.reason();
-            stats.reasons.waited[reason as usize] += 1;
-            stats.reasons.long[reason as usize] += u32::from(choice.debt > LONG_WAIT);
-        }
+    }
+    if !in_debt {
         (choice.debt, choice.debt_held, choice.held_by, choice.held_over) = (0, false, [0; 3], false);
+        choice.arrival = false;
     }
     choice.counted_top = top;
     in_debt

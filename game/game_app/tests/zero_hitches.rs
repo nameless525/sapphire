@@ -16,6 +16,14 @@
 //! machine (`docs/m4-plan.md` H4). Anywhere else the times are only read. Asked to run timed without
 //! `--ignored`, the lane fails rather than skip: a timed run is judged by its exit code (M4 H6).
 //!
+//! A timed run traces the boot screen's frames too (M5 X3): each frame says where its time went on its
+//! thread (`Boot::trace_frames`: the step's own work, the screen's layout and uploads, its submit, each in wall
+//! and CPU time), how long it waited for its own submit on the GPU and then for what other threads submitted
+//! after it, whether the queue held another thread's work as it started, how many pipelines the warm-up's
+//! threads were building as it started and ended, what the process read from the disk meanwhile, how busy the
+//! machine's cores were and which kind the frame's thread ended on. Every frame past the tier's interval prints
+//! a `boot frame` line, the worst among them always, and a `boot trace` line sums the boot up.
+//!
 //! The process's footprint (`sapphire_platform::process_memory`) is read after every frame too, and the most
 //! each part of the walk held is reported with the process's own most: the boot, the title, the walk, a fight,
 //! the pause, a load screen and the title again (spec §3.7, M4 Z1).
@@ -28,6 +36,8 @@
 //! - `SAPPHIRE_HITCH_DRAW_EVERY=<n>`: one frame in `n` drawn (default 1). The rest are prepared and recorded but
 //!   not run (`Stage::lose_frames`), so their first uses still count: CI's lavapipe can't draw them all in its
 //!   job's time. Load screens and the frames the tier or a rung changes on are always drawn.
+//! - `SAPPHIRE_HITCH_BOOT_ONLY=1`: the boot alone, reported (and traced, if timed), then the lane ends: what a
+//!   run of many cold boots times, a few seconds each where the walk takes minutes (M5 X3).
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -44,7 +54,7 @@ use std::time::Duration;
 use drive::{Draw, Driver};
 use game_app::tiers::{Graphics, TierFollower};
 use game_app::{GameApp, GameShow};
-use game_flow::boot::Boot;
+use game_flow::boot::{Boot, BootFrameTrace, BootLap};
 use game_flow::flow::FlowState;
 use game_flow::game::GameSetup;
 use game_ui::menus::{MenuDocument, PlayerSettings, QualityChoice, Setting};
@@ -54,10 +64,11 @@ use sapphire_core::thermal::{ThermalReading, ThermalState};
 use sapphire_gameplay::{EncounterPhase, Simulation};
 use sapphire_math::Vec3;
 use sapphire_platform::{
-    App, AppControl, AppInitError, AppMetadata, Event, Platform, Scancode, SystemInfo, process_memory,
+    App, AppControl, AppInitError, AppMetadata, CoreKind, CoreTicks, Event, Platform, ProcessReads, Scancode,
+    SystemInfo, core_ticks, current_core, process_memory, process_reads, thread_cpu_time,
 };
 use sapphire_render::quality::{QualitySettings, TierId, TierTable};
-use sapphire_render::{PipelineStats, Renderer};
+use sapphire_render::{PipelineStats, Renderer, WarmUpBuilds, warm_up_builds};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_stage::audio::SoundsLoad;
 use sapphire_stage::{FrameLaps, Stage, headless_gpu};
@@ -134,6 +145,11 @@ fn draw_every() -> u32 {
 
 fn timed() -> bool {
     std::env::var("SAPPHIRE_HITCH_TIMED").is_ok_and(|raw| raw == "1")
+}
+
+/// `SAPPHIRE_HITCH_BOOT_ONLY=1`: the boot alone.
+fn boot_only() -> bool {
+    std::env::var("SAPPHIRE_HITCH_BOOT_ONLY").is_ok_and(|raw| raw == "1")
 }
 
 /// Whether a frame built or waited for a pipeline: exit test 1's counts, all three.
@@ -221,6 +237,150 @@ impl LoadScreen {
             self.worst_in = Some(step);
         }
         self.frame(took, waited);
+    }
+
+    /// Prints its line, saying whether a timed run fails on it.
+    fn report(&self) -> bool {
+        let ms = |duration: Duration| duration.as_secs_f64() * 1e3;
+        let step = match (self.worst_in, self.worst_laps) {
+            (Some(step), _) => format!(" in the boot's {step} step"),
+            (None, Some(laps)) => format!(
+                " (content {:.1}, packet {:.1}, prepare {:.1}, record and submit {:.1})",
+                ms(laps.content),
+                ms(laps.packet),
+                ms(laps.prepare),
+                ms(laps.record)
+            ),
+            (None, None) => String::new(),
+        };
+        eprintln!(
+            "zero_hitches: {}: {} frames, the worst {:.1} ms{step} ({:.1} of it waiting for the GPU) against \
+             {:.1} ms{}",
+            self.name,
+            self.frames,
+            ms(self.worst),
+            ms(self.worst_waited),
+            ms(self.limit),
+            if self.held { "" } else { ", reported only" }
+        );
+        self.held && self.worst > self.limit
+    }
+}
+
+/// What a traced boot frame reads before it starts and after its GPU work is done (M5 X3).
+#[derive(Clone, Copy)]
+struct Around {
+    builds: WarmUpBuilds,
+    reads: Option<ProcessReads>,
+    ticks: Option<CoreTicks>,
+    /// The frame's thread's CPU time.
+    cpu: Option<Duration>,
+}
+
+impl Around {
+    fn read() -> Self {
+        Self { builds: warm_up_builds(), reads: process_reads(), ticks: core_ticks(), cpu: thread_cpu_time() }
+    }
+}
+
+/// One boot screen frame, traced.
+struct TracedFrame {
+    frame: u32,
+    took: Duration,
+    laps: BootFrameTrace,
+    /// The queue held work another thread submitted, as the frame started: the frame before waited for all of
+    /// its own.
+    queue_busy: bool,
+    /// Waiting for the frame's own submit, the step's uploads before it among it; then for whatever other
+    /// threads submitted after it.
+    own_wait: Duration,
+    rest_wait: Duration,
+    before: Around,
+    after: Around,
+    /// The kind of core the frame's thread was on as it ended.
+    core: Option<CoreKind>,
+}
+
+impl TracedFrame {
+    /// Its `boot frame` line: `key=value` fields, times in ms, a lap as its wall time and its thread's CPU time.
+    fn line(&self, worst: bool) -> String {
+        let ms = |duration: Duration| format!("{:.2}", duration.as_secs_f64() * 1e3);
+        let lap = |lap: BootLap| format!("{}/{}", ms(lap.wall), lap.cpu.map_or("-".to_owned(), ms));
+        let (before, after) = (self.before, self.after);
+        let reads = after.reads.zip(before.reads).map(|(after, before)| after.since(before));
+        let ticks = after.ticks.zip(before.ticks).map(|(after, before)| after.since(before));
+        let share = |share: Option<f32>| share.map_or("-".to_owned(), |share| format!("{share:.2}"));
+        let cpu = after.cpu.zip(before.cpu).map(|(after, before)| after.saturating_sub(before));
+        format!(
+            "zero_hitches: boot frame {}: step={} left_in={} took={} advance={} prepare={} submit={} own_wait={} \
+             rest_wait={} queue_busy={} building={}/{} started={} finished={} disk_kib={} page_ins={} \
+             thread_cpu={} p_busy={} e_busy={} core={}{}",
+            self.frame,
+            self.laps.step,
+            self.laps.left_in,
+            ms(self.took),
+            lap(self.laps.advance),
+            lap(self.laps.prepare),
+            lap(self.laps.submit),
+            ms(self.own_wait),
+            ms(self.rest_wait),
+            u8::from(self.queue_busy),
+            before.builds.building,
+            after.builds.building,
+            after.builds.started.saturating_sub(before.builds.started),
+            after.builds.finished().saturating_sub(before.builds.finished()),
+            reads.map_or("-".to_owned(), |reads| (reads.disk_bytes / 1024).to_string()),
+            reads.map_or("-".to_owned(), |reads| reads.page_ins.to_string()),
+            cpu.map_or("-".to_owned(), ms),
+            share(ticks.and_then(|ticks| ticks.performance.busy_share())),
+            share(ticks.and_then(|ticks| ticks.efficiency.busy_share())),
+            self.core.map_or("-", CoreKind::name),
+            if worst { " worst=1" } else { "" },
+        )
+    }
+}
+
+/// The boot screen's frames, traced (M5 X3): a timed run's.
+struct BootTrace {
+    frames: Vec<TracedFrame>,
+    /// The tier's interval: a frame past it prints its line.
+    interval: Duration,
+    limit: Duration,
+}
+
+impl BootTrace {
+    /// Prints every frame past the tier's interval, the worst always, and the boot's sum.
+    fn report(&self) {
+        let worst =
+            self.frames.iter().enumerate().max_by_key(|(_, frame)| frame.took).map(|(index, _)| index);
+        for (index, frame) in self.frames.iter().enumerate() {
+            let is_worst = Some(index) == worst;
+            if frame.took > self.interval || is_worst {
+                eprintln!("{}", frame.line(is_worst));
+            }
+        }
+        let count = |over: Duration| self.frames.iter().filter(|frame| frame.took > over).count();
+        let busy = self.frames.iter().filter(|frame| frame.queue_busy).count();
+        let most_building = self
+            .frames
+            .iter()
+            .map(|frame| frame.before.builds.building.max(frame.after.builds.building))
+            .max();
+        let read = |frame: &TracedFrame| frame.after.reads.zip(frame.before.reads).map(|(a, b)| a.since(b));
+        let disk: u64 = self.frames.iter().filter_map(read).map(|reads| reads.disk_bytes).sum();
+        let page_ins: u64 = self.frames.iter().filter_map(read).map(|reads| reads.page_ins).sum();
+        let ms = |duration: Duration| duration.as_secs_f64() * 1e3;
+        eprintln!(
+            "zero_hitches: boot trace: frames={} over_interval={} over_limit={} interval_ms={:.2} limit_ms={:.2} \
+             queue_busy_frames={busy} most_building={} disk_kib={} page_ins={page_ins}",
+            self.frames.len(),
+            count(self.interval),
+            count(self.limit),
+            ms(self.interval),
+            ms(self.limit),
+            most_building.unwrap_or(0),
+            disk / 1024,
+        );
     }
 }
 
@@ -383,22 +543,60 @@ fn simulation(walk: &Walk) -> &Simulation {
 }
 
 /// Boots the game as its window does, a frame at a time into `target`, each timed and its ledger read, to the
-/// stage it hands back.
+/// stage it hands back; each frame traced into `trace`, if given.
 fn boot(
     boot: &mut Boot,
     target: &wgpu::TextureView,
     screen: &mut LoadScreen,
     memory: &mut Memory,
+    mut trace: Option<&mut BootTrace>,
 ) -> Result<Stage<GameShow>, AppInitError> {
     let dt = (Duration::from_secs(1) / DEFAULT_RATE).as_secs_f32();
+    boot.trace_frames(trace.is_some());
     loop {
+        // Read before the frame's clock starts, so a traced frame times what an untraced one does.
+        let before = trace.is_some().then(|| {
+            // Without waiting: the frame before waited for everything, so work here is another thread's.
+            let polled = boot.gpu().device().poll(wgpu::PollType::Poll);
+            (Around::read(), !polled.is_ok_and(|status| status.is_queue_empty()))
+        });
         let began = Stopwatch::start();
         let step = boot.step().name();
         let stood = boot.frame(Some(target), dt)?;
         let renderer = stood.as_ref().map(|stage| &stage.renderer).or(boot.renderer());
         let recorded = began.elapsed();
-        finish_gpu(boot.gpu());
+        let (mut own_wait, mut rest_wait) = (Duration::ZERO, Duration::ZERO);
+        match boot.last_frame().filter(|_| trace.is_some()).and_then(|laps| laps.submission.clone()) {
+            Some(own) => {
+                let waiting = Stopwatch::start();
+                let own = wgpu::PollType::Wait { submission_index: Some(own), timeout: None };
+                let polled = boot.gpu().device().poll(own);
+                own_wait = waiting.elapsed();
+                if !polled.is_ok_and(|status| status.is_queue_empty()) {
+                    let waiting = Stopwatch::start();
+                    finish_gpu(boot.gpu());
+                    rest_wait = waiting.elapsed();
+                }
+            }
+            None => finish_gpu(boot.gpu()),
+        }
         let took = began.elapsed();
+        if let (Some(trace), Some((before, queue_busy))) = (trace.as_deref_mut(), before) {
+            let frame = trace.frames.len() as u32;
+            let laps = boot.last_frame().cloned().unwrap_or_default();
+            let (after, core) = (Around::read(), current_core());
+            trace.frames.push(TracedFrame {
+                frame,
+                took,
+                laps,
+                queue_busy,
+                own_wait,
+                rest_wait,
+                before,
+                after,
+                core,
+            });
+        }
         screen.boot_frame(took, took.saturating_sub(recorded), step);
         memory.read("the boot");
         if let Some(renderer) = renderer
@@ -648,12 +846,43 @@ impl App for OutsideCaller {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut booted =
-            LoadScreen::new("load screen the boot screen".to_owned(), booting.report().interval_limit);
+        let limit = booting.report().interval_limit;
+        let mut booted = LoadScreen::new("load screen the boot screen".to_owned(), limit);
         let mut memory = Memory::default();
-        let stage = boot(&mut booting, &view, &mut booted, &mut memory)?;
+        let mut trace = timed().then(|| BootTrace { frames: Vec::new(), interval: limit / 2, limit });
+        let mut stage = boot(&mut booting, &view, &mut booted, &mut memory, trace.as_mut())?;
         let report = booting.report().clone();
         assert_eq!(stage.quality.active().id, tier, "the boot made the held tier's renderer");
+        // Said now, so a failure later in the walk keeps it.
+        if let Some(trace) = &trace {
+            trace.report();
+        }
+        let ms = |duration: Duration| duration.as_secs_f64() * 1e3;
+        if boot_only() {
+            eprintln!(
+                "zero_hitches: {tier} at {}x{}: booted in {:.0} ms ({} frames, longest {:.1} ms in its {} step, \
+                 {:.1} of it drawing), the boot alone; the renderer made by {:.0} ms, the packs warm by {:.0}, the \
+                 stage stood by {:.0}; {} pipelines prewarmed, {} of them off the frame",
+                size.0,
+                size.1,
+                ms(report.warm),
+                report.frames,
+                ms(report.longest_frame),
+                report.longest_in,
+                ms(report.longest_drawing),
+                ms(report.renderer),
+                ms(report.packs),
+                ms(report.stood),
+                report.pipelines.prewarmed,
+                report.pipelines.warmed_off_frame,
+            );
+            let over = booted.report();
+            if timed() && over {
+                return Err(AppInitError::msg("the boot screen had a frame over twice the interval"));
+            }
+            stage.show.finish().map_err(AppInitError::msg)?;
+            return Ok(Self);
+        }
         let target = stage.target(size.0, size.1, wgpu::TextureUsages::empty());
         let pages = stage.target(size.0.max(PAGES.0), size.1.max(PAGES.1), wgpu::TextureUsages::empty());
         let watch = Watch {
@@ -680,7 +909,6 @@ impl App for OutsideCaller {
         a_hitch_fails(&mut walk);
 
         let seconds = platform.now().saturating_duration_since(started).as_secs_f32();
-        let ms = |duration: Duration| duration.as_secs_f64() * 1e3;
         eprintln!(
             "zero_hitches: {tier} at {}x{}: booted in {:.0} ms ({} frames, longest {:.1} ms in its {} step, {:.1} of it drawing); won at \
              tick {} after {} steps; the ladder climbed back in {climb} frames; {} frames, {} drawn, in \
@@ -715,28 +943,7 @@ impl App for OutsideCaller {
         eprintln!("zero_hitches: the longest frame of play drawn, {:.1} ms, at {at}", ms(*worst));
         let mut over = Vec::new();
         for screen in &walk.draw.screens {
-            let step = match (screen.worst_in, screen.worst_laps) {
-                (Some(step), _) => format!(" in the boot's {step} step"),
-                (None, Some(laps)) => format!(
-                    " (content {:.1}, packet {:.1}, prepare {:.1}, record and submit {:.1})",
-                    ms(laps.content),
-                    ms(laps.packet),
-                    ms(laps.prepare),
-                    ms(laps.record)
-                ),
-                (None, None) => String::new(),
-            };
-            eprintln!(
-                "zero_hitches: {}: {} frames, the worst {:.1} ms{step} ({:.1} of it waiting for the GPU) against \
-                 {:.1} ms{}",
-                screen.name,
-                screen.frames,
-                ms(screen.worst),
-                ms(screen.worst_waited),
-                ms(screen.limit),
-                if screen.held { "" } else { ", reported only" }
-            );
-            if screen.held && screen.worst > screen.limit {
+            if screen.report() {
                 over.push(screen.name.as_str());
             }
         }

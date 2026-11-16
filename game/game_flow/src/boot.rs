@@ -44,6 +44,14 @@
 //!
 //! Then [`Boot::frame`] hands the stage back, and the title is the next frame. [`BootReport`] says what it took.
 //!
+//! # Tracing a frame
+//!
+//! With [`Boot::trace_frames`] on, each frame keeps where its time went on its thread ([`BootFrameTrace`],
+//! M5 X3): the step's own work, the screen's layout and uploads, and its recording and submit, each in wall
+//! time and in the thread's CPU time, with the submit itself, so a caller can wait for the frame's own GPU work
+//! apart from what other threads submitted. A timed lane turns it on to say what a long frame waited for. Off,
+//! a frame reads no clock more than it did.
+//!
 //! # Adding a step
 //!
 //! A step is a variant of [`Step`] with a key under `boot-step-` in both languages' `game_ui.ftl`, its share of
@@ -60,7 +68,7 @@ use std::time::Duration;
 use game_combat::combat::{Combat, CombatOption};
 use game_combat::fight::{FightStand, PreparedRun, StandPlan, fight_stage};
 use game_ui::boot::{BOOT_SCREEN, BootScreen};
-use sapphire_platform::{AppInitError, ContentFs, Host};
+use sapphire_platform::{AppInitError, ContentFs, Host, thread_cpu_time};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::quality::{Quality, QualitySettings, TierId};
 use sapphire_render::{
@@ -200,6 +208,59 @@ pub struct BootReport {
     pub fell_back_from: Vec<TierId>,
 }
 
+/// One call of a traced boot frame ([`BootFrameTrace`]): how long it took, and how much of that its thread was on
+/// a core. The rest it waited: on a lock, a file, the driver, or for a core other work held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BootLap {
+    pub wall: Duration,
+    /// `None` where the OS doesn't say ([`sapphire_platform::thread_cpu_time`]).
+    pub cpu: Option<Duration>,
+}
+
+impl BootLap {
+    /// How long it was off its core, if the OS says.
+    #[must_use]
+    pub fn off_core(self) -> Option<Duration> {
+        self.cpu.map(|cpu| self.wall.saturating_sub(cpu))
+    }
+}
+
+/// A lap started.
+struct Lap {
+    wall: Stopwatch,
+    cpu: Option<Duration>,
+}
+
+impl Lap {
+    /// Started if `on`: a frame that isn't traced reads no clock for it.
+    fn start(on: bool) -> Option<Self> {
+        on.then(|| Self { wall: Stopwatch::start(), cpu: thread_cpu_time() })
+    }
+
+    fn end(self) -> BootLap {
+        let cpu = self.cpu.zip(thread_cpu_time()).map(|(before, after)| after.saturating_sub(before));
+        BootLap { wall: self.wall.elapsed(), cpu }
+    }
+}
+
+/// Where the last frame's time went on its thread, while [`Boot::trace_frames`] is on (M5 X3).
+#[derive(Clone, Debug, Default)]
+pub struct BootFrameTrace {
+    /// The step the frame moved on ([`Step::name`]), and the step it left the boot in.
+    pub step: &'static str,
+    pub left_in: &'static str,
+    /// The step's own work ([`Step`]'s): the renderer taken and the packs asked for, a warm-up taken in, the
+    /// stage made, a part stood, the screens loaded.
+    pub advance: BootLap,
+    /// The screen laid out and the interface's uploads written to the queue: zero with nowhere to draw.
+    pub prepare: BootLap,
+    /// Its graph recorded and submitted.
+    pub submit: BootLap,
+    /// That submit, to wait for alone: what the GPU did of this frame's own, apart from what other threads
+    /// submitted since. `None` with nowhere to draw.
+    pub submission: Option<wgpu::SubmissionIndex>,
+}
+
 /// What makes a boot's renderer on the warm-up pool, for a tier: `Renderer::new`, or a test's that refuses one
 /// (M4 H9, [`Boot::start_making`]).
 pub type MakeRenderer = Arc<
@@ -266,6 +327,8 @@ pub struct Boot {
     /// Since the last frame started, from the first.
     since_frame: Option<Stopwatch>,
     report: BootReport,
+    /// The last frame's, while frames are traced ([`Self::trace_frames`]).
+    trace: Option<Box<BootFrameTrace>>,
 }
 
 impl Boot {
@@ -355,6 +418,7 @@ impl Boot {
             started,
             since_frame: None,
             report,
+            trace: None,
         })
     }
 
@@ -419,6 +483,17 @@ impl Boot {
         lower.or(quality.settings().ceiling)
     }
 
+    /// Keeps where each frame's time went from the next frame on, or stops ([`BootFrameTrace`], M5 X3).
+    pub fn trace_frames(&mut self, on: bool) {
+        self.trace = on.then(Box::default);
+    }
+
+    /// Where the last frame's time went, while frames are traced: `None` before the first traced frame.
+    #[must_use]
+    pub fn last_frame(&self) -> Option<&BootFrameTrace> {
+        self.trace.as_deref().filter(|trace| !trace.step.is_empty())
+    }
+
     /// The renderer, once it's built and until the stage is handed back: its ledger says what a frame built or
     /// waited for (exit test 1's counts), so a lane can name the step a hitch came in.
     #[must_use]
@@ -445,12 +520,31 @@ impl Boot {
             return Err(AppInitError::msg("the GPU device was lost while the game booted"));
         }
         let step = self.step.name();
+        let traced = self.trace.is_some();
+        let lap = Lap::start(traced);
         self.advance()?;
+        let advance = lap.map(Lap::end);
         let drawing = Stopwatch::start();
+        let (mut prepare, mut submit) = (None, None);
         if let Some(view) = view {
-            self.draw(view, dt)?;
+            let lap = Lap::start(traced);
+            let size = self.lay_out(view, dt);
+            prepare = lap.map(Lap::end);
+            let lap = Lap::start(traced);
+            self.submit(view, size)?;
+            submit = lap.map(Lap::end);
         }
         let drawing = drawing.elapsed();
+        if let Some(trace) = self.trace.as_deref_mut() {
+            *trace = BootFrameTrace {
+                step,
+                left_in: self.step.name(),
+                advance: advance.unwrap_or_default(),
+                prepare: prepare.unwrap_or_default(),
+                submit: submit.unwrap_or_default(),
+                submission: view.and(self.executor.submitted().cloned()),
+            };
+        }
         self.report.frames += 1;
         let took = stopwatch.elapsed();
         if took > self.report.longest_frame {
@@ -869,8 +963,9 @@ impl Boot {
         Ok(())
     }
 
-    /// Draws the boot screen into `view`.
-    fn draw(&mut self, view: &wgpu::TextureView, dt: f32) -> Result<(), AppInitError> {
+    /// Lays the boot screen out for `view` and writes the interface's uploads to the queue, giving the size it
+    /// laid out for: the first half of drawing it.
+    fn lay_out(&mut self, view: &wgpu::TextureView, dt: f32) -> (u32, u32) {
         let progress = self.progress();
         // Forward only, and eased, since a step's warm-up says how far it's got in a few big steps.
         self.shown = (self.shown + (progress - self.shown).max(0.0) * (dt * 6.0).min(1.0)).max(self.shown);
@@ -881,6 +976,11 @@ impl Boot {
         self.list.reset();
         self.screen.draw(size, dt, &mut self.list);
         self.interface.prepare(&self.gpu, &self.list);
+        size
+    }
+
+    /// Records the laid-out boot screen into `view`, `size` pixels, and submits it: the second half.
+    fn submit(&mut self, view: &wgpu::TextureView, size: (u32, u32)) -> Result<(), AppInitError> {
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("boot screen", view);
         self.interface.record(&mut graph, target, size);
@@ -978,6 +1078,24 @@ mod tests {
     /// stands its show from inside them, on the thread SDL runs the app on: 1 MiB on iOS and about that on
     /// Android. At 116 KiB, with the show and the stage in it, the install's launch overflowed an Android
     /// emulator's (M4 H4, exit test 2). Box the next field rather than raise this.
+    /// A traced lap's time off its core is its wall time less its CPU time, never below none, and unknown
+    /// where the OS doesn't say; a lap that sleeps is off its core, where the OS says.
+    #[test]
+    fn a_lap_says_how_long_its_thread_was_off_its_core() {
+        let ms = Duration::from_millis;
+        assert_eq!(BootLap { wall: ms(30), cpu: Some(ms(4)) }.off_core(), Some(ms(26)));
+        assert_eq!(BootLap { wall: ms(3), cpu: Some(ms(4)) }.off_core(), Some(Duration::ZERO));
+        assert_eq!(BootLap { wall: ms(3), cpu: None }.off_core(), None);
+        assert!(Lap::start(false).is_none(), "an untraced frame reads no clock");
+        let started = Lap::start(true).expect("traced");
+        std::thread::sleep(ms(20));
+        let lap = started.end();
+        assert!(lap.wall >= ms(20), "{lap:?}");
+        if let Some(off) = lap.off_core() {
+            assert!(off >= ms(15), "a sleep is off the core: {lap:?}");
+        }
+    }
+
     #[test]
     fn a_boot_is_small_enough_to_move_on_the_main_thread() {
         let size = size_of::<Boot>();

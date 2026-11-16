@@ -104,10 +104,12 @@
             // Exit test 2: the streamer under a pool that binds, the district's textures twice it: exactly half of
             // what each cook's walk holds whole, in whole MiB, rounded down (M5 Z2). That whole is the `texture pool
             // bytes` the counting walk with whole textures (`counted`) holds at the tour's end, the same on both
-            // tiers of a cook (ce7707fd9's batch): the desktop cook's 2,733,906,860 bytes, half 1,366,953,430, so
-            // 1303 MiB, which holds the views' worst ask of 1,362,595,306 bytes; the mobile cook's 699,285,048,
-            // half 349,642,524, so 333 MiB. The mobile cook's sets are 1K (`MOBILE_SET_SIZE`), so against the
-            // phones' own 600 and 400 MiB its whole is only ×1.1 and ×1.66.
+            // tiers of a cook: the desktop cook's 2,733,906,860 bytes, half 1,366,953,430, so 1303 MiB, which holds
+            // the views' worst ask (`texture bytes wanted`) of 1,263,504,874 bytes on Desktop-High, 8% under it; the mobile cook's 699,285,048, half
+            // 349,642,524, so 333 MiB. Read on B7's district (thirteen materials a desktop cell, whose palette draws
+            // from the same texture sets as sixteen did, so the desktop whole didn't move; the mobile cook's pack is
+            // unchanged). The mobile cook's sets are 1K (`MOBILE_SET_SIZE`), so against the phones' own 600 and
+            // 400 MiB its whole is only ×1.1 and ×1.66.
             (
                 name: "streaming",
                 about: "memory and streaming along the tour, the pool binding",

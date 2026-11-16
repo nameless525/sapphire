@@ -98,7 +98,7 @@ pub fn plan(manifest: &ScaleBench, smoke: Option<Smoke>, paths: Option<&Paths>) 
     }
     let _ = writeln!(text, "by tier:");
     for (tier, (count, seconds, left)) in manifest.tiers.iter().zip(by_tier) {
-        // What the tier's own runs add, such as exit test 2's pools: `streaming: --texture-pool 331`.
+        // What the tier's own runs add, such as exit test 2's pools: `streaming: --texture-pool 333`.
         let own: Vec<String> = manifest
             .runs
             .iter()

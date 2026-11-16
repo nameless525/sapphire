@@ -778,7 +778,7 @@ mod tests {
     /// A phone draws its tier's capped scene onto a native panel and upscales it (spec §3.1's "~1600×740 →
     /// native"), so every phone unit is at a panel's size, never the scene's; and exit test 2's runs give every
     /// tier a pool of exactly half what its cook's district holds whole, in whole MiB rounded down (M5 Z2): the
-    /// `texture pool bytes` `counted` holds at the tour's end in ce7707fd9's batch, as bench/scale.ron says.
+    /// `texture pool bytes` `counted` holds at the tour's end on B7's district, as bench/scale.ron says.
     #[test]
     fn the_phones_draw_at_a_panel_and_every_tier_streams_under_half_its_cook() {
         let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
@@ -804,9 +804,9 @@ mod tests {
                     run.name,
                     tier.name
                 );
-                // The desktops' pool holds the views' worst ask on the desktop cook.
+                // The desktops' pool holds the views' worst ask on the desktop cook (Desktop-High's, B7's district).
                 if tier.cook == Cook::Desktop {
-                    assert!(pool.is_some_and(|pool| pool << 20 >= 1_362_595_306), "{}", tier.name);
+                    assert!(pool.is_some_and(|pool| pool << 20 >= 1_263_504_874), "{}", tier.name);
                 }
             }
         }

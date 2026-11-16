@@ -1,0 +1,135 @@
+# lavapipe's differences from the counts table (M5 X4): the rows where CI's lane, on lavapipe on x86-64 Linux,
+# counts differently from tests/counts/district-ci.txt, which an M5's Metal (aarch64) takes. The lane holds each
+# walk to the table's figure plus the difference below (`sapphire_testkit counts --differences`); every other row
+# to the table's. A line naming a walk or row the table doesn't hold, a difference of zero, or a line with no
+# reason above it fails, so the file can't rot (sapphire_testkit::counts::differences).
+#
+# Why the two differ: results identical across architectures are a non-goal (sapphire_math/src/det.rs). glam's
+# SIMD types sum and normalize in another order on SSE2 than on NEON, and presentation code calls the platform's
+# libm (glibc against Apple's), so the last bit of a crowd member's place, heading or posed bounds differs, and the
+# crowd's walk, integrating its heading step by step, grows one such bit into a character on the other side of a
+# frustum plane now and then. The camera and every static draw agree: draws considered, level 0 and every shadow
+# and cascade row hold the table's figure on both.
+#
+# A change that moves a row the same on both machines is written in the table alone. Refresh this file from CI's
+# artifacts (each `scale-lane-<walk>` folder holds the run's counts.txt), walking nothing:
+#   sapphire_testkit counts --table tests/counts/district-ci.txt \
+#     --differences tests/counts/district-ci-vulkan-lavapipe.txt --refresh <folder>...
+# It keeps each line's reason, and writes a new difference under a placeholder that fails until it has one.
+#
+# Bootstrapped from the scheduled run 43941132946 at f4efa213e (the lane's first). Not here, on purpose:
+# `animation jobs`, which the walks' fixed worker count (`--compute-threads 3`) makes the same on both; and
+# `pipelines set`, +82 on every desktop walk, which no reason explains yet (the walks log `pipelines set by pass`
+# beside their rows to find it), so the lane fails on it until it is explained.
+
+# The crowd's characters a frame's view culls (sapphire_stage/src/scene/ambient.rs `place_of` and
+# `animate_ambient`, std atan2, sin and cos; sapphire_render/src/skinning.rs `posed_bounds`; the view cull's
+# `Frustum::intersects_sphere`): on lavapipe 11 crowd-character frames on Desktop-High and 24 on Desktop-Low fall
+# outside the view that Metal draws, each five draws (its surface and outline hull in the main view and the scene
+# prepass, and the character prepass), so 55 and 120 draws move from drawn to culled, the same at dusk and at
+# night (the main view's cull doesn't follow the sun), and the rows those draws make up follow: calls, instances,
+# triangles, levels above 0, the skinned instances with their joints and vertices.
+desktop-high-dusk | character prepass draws | total -11
+desktop-high-dusk | culled by view | total +55
+desktop-high-dusk | draw calls | total -55 worst +5 p50 +1
+desktop-high-dusk | draw instances | total -55 worst +5 p95 -2 p50 +5
+desktop-high-dusk | joints | total -253
+desktop-high-dusk | lod1+ draws | total -55 worst +5
+desktop-high-dusk | main draws | total -22 p95 +2
+desktop-high-dusk | main draws above level 0 | total -22 p95 -2
+desktop-high-dusk | main instances | total -22 p95 +2
+desktop-high-dusk | main triangles | total -32976 worst +3507 p95 +475 p50 -2300
+desktop-high-dusk | outline draws | total -22
+desktop-high-dusk | scene prepass draws | total -22 p95 +1
+desktop-high-dusk | skinned instances | total -11
+desktop-high-dusk | skinned instances above level 0 | total -11
+desktop-high-dusk | skinned vertices | total -18653
+desktop-high-dusk | triangles | total -82440 p95 -847 p50 +7152
+desktop-high-night | character prepass draws | total -11
+desktop-high-night | culled by view | total +55
+desktop-high-night | draw calls | total -55 worst +5 p50 -5
+desktop-high-night | draw instances | total -55 worst +5
+desktop-high-night | joints | total -253
+desktop-high-night | lod1+ draws | total -55 worst +5 p95 +5
+desktop-high-night | main draws | total -22 p95 +2
+desktop-high-night | main draws above level 0 | total -22 p95 -2
+desktop-high-night | main instances | total -22 p95 +2
+desktop-high-night | main triangles | total -32976 worst +3507 p95 +475 p50 -2300
+desktop-high-night | outline draws | total -22
+desktop-high-night | scene prepass draws | total -22 p95 +1
+desktop-high-night | skinned instances | total -11
+desktop-high-night | skinned instances above level 0 | total -11
+desktop-high-night | skinned vertices | total -18653
+desktop-high-night | triangles | total -82440 worst +18200 p95 +10840
+desktop-low-dusk | character prepass draws | total -24
+desktop-low-dusk | culled by view | total +120
+desktop-low-dusk | draw calls | total -120
+desktop-low-dusk | draw instances | total -120
+desktop-low-dusk | joints | total -552
+desktop-low-dusk | lod1+ draws | total -120
+desktop-low-dusk | main draws | total -48 worst -2
+desktop-low-dusk | main draws above level 0 | total -48 worst -2
+desktop-low-dusk | main instances | total -48 worst -2
+desktop-low-dusk | main triangles | total -117312 worst -3600 p95 +1472 p50 -1664
+desktop-low-dusk | outline draws | total -48
+desktop-low-dusk | scene prepass draws | total -48
+desktop-low-dusk | skinned instances | total -24
+desktop-low-dusk | skinned instances above level 0 | total -24
+desktop-low-dusk | skinned vertices | total -84670 p50 -435
+desktop-low-dusk | triangles | total -293280
+desktop-low-night | character prepass draws | total -24
+desktop-low-night | culled by view | total +120
+desktop-low-night | draw calls | total -120 p95 -5
+desktop-low-night | draw instances | total -120 p50 -2
+desktop-low-night | joints | total -552
+desktop-low-night | lod1+ draws | total -120
+desktop-low-night | main draws | total -48 worst -2
+desktop-low-night | main draws above level 0 | total -48 worst -2
+desktop-low-night | main instances | total -48 worst -2
+desktop-low-night | main triangles | total -117312 worst -3600 p95 +1472 p50 -1664
+desktop-low-night | outline draws | total -48
+desktop-low-night | scene prepass draws | total -48
+desktop-low-night | skinned instances | total -24
+desktop-low-night | skinned instances above level 0 | total -24
+desktop-low-night | skinned vertices | total -84670 p50 -435
+desktop-low-night | triangles | total -293280 p50 +6574
+
+# The same crowd through the CPU's animation levels (sapphire_stage/src/anim_levels.rs `LevelView::shows` and
+# `pace`): a character shows if it or the shadow it casts along the sun is in view, so these differ by hour as
+# well as by tier. More shown on lavapipe means fewer held off screen (their sum is the crowd's), more poses
+# evaluated against fewer held (their sum too), and the shadow and occlusion capsules binned with the posed crowd
+# (`capsule_bins`) follow.
+desktop-high-dusk | ambient characters in view | total +334
+desktop-high-dusk | ambient in the far band | total +214 worst +1 p95 +1 p50 +1
+desktop-high-dusk | ambient in the middle band | total +120
+desktop-high-dusk | capsule bits in fullest cluster | total +25 worst -1 p95 +1 p50 -1
+desktop-high-dusk | capsule bits set | total +1190
+desktop-high-dusk | capsule clusters marked | total +649
+desktop-high-dusk | held off screen | total -334
+desktop-high-dusk | poses evaluated | total +117
+desktop-high-dusk | poses held | total -117
+desktop-high-night | ambient characters in view | total +43
+desktop-high-night | ambient in the far band | total +50 worst +1
+desktop-high-night | ambient in the middle band | total -7
+desktop-high-night | capsule bits in fullest cluster | total +104 p95 +2
+desktop-high-night | capsule bits set | total +1577
+desktop-high-night | capsule clusters marked | total +762
+desktop-high-night | held off screen | total -43
+desktop-high-night | poses evaluated | total +13 p95 +1
+desktop-high-night | poses held | total -13
+desktop-low-dusk | ambient characters in view | total +295
+desktop-low-dusk | ambient in the far band | total +295 p95 +1
+desktop-low-dusk | capsule bits in fullest cluster | total +25 worst -1
+desktop-low-dusk | capsule bits set | total +1263 p50 +8
+desktop-low-dusk | capsule clusters marked | total +445 p50 -3
+desktop-low-dusk | held off screen | total -295
+desktop-low-dusk | poses evaluated | total +78
+desktop-low-dusk | poses held | total -78
+desktop-low-night | ambient characters in view | total +12
+desktop-low-night | ambient in the far band | total +12
+desktop-low-night | capsule bits in fullest cluster | total +104 p95 +1
+desktop-low-night | capsule bits set | total +1618 p50 -1
+desktop-low-night | capsule clusters marked | total +501
+desktop-low-night | held off screen | total -12
+desktop-low-night | poses evaluated | total +8 p50 -1
+desktop-low-night | poses held | total -8 p50 +1

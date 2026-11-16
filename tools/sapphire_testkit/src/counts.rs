@@ -30,9 +30,12 @@
 //!   taken on an M5's Metal (aarch64), and lavapipe on x86-64 Linux counts a few rows differently by design (the
 //!   crowd's presentation arithmetic, `sapphire_math::det`'s scope), each written down with its reason in
 //!   `tests/counts/district-ci-<family>.txt`. Without `--differences` the table holds exactly.
-//! - Each walk's sandbox writes `<out>/<walk>.log`, has a deadline, and the run writes what it saw as a table,
-//!   `<out>/counts.txt`, which CI uploads. [`Mode::Update`] rewrites the table's rows for the walks it ran, and
-//!   [`refresh_differences`] a differences file from such a folder, walking nothing.
+//! - Each walk's sandbox writes `<out>/<walk>.log` and every frame it measured to `<out>/<walk>.csv`
+//!   (`--bench-trace`, [`Walk::trace`]: its counts frame by frame, the pipelines each mesh pass set among
+//!   them, so two families' walks can be told apart by frame), has a deadline, and the run writes what it saw
+//!   as a table, `<out>/counts.txt`, which CI uploads with the logs and traces. [`Mode::Update`] rewrites the
+//!   table's rows for the walks it ran, and [`refresh_differences`] a differences file from such a folder,
+//!   walking nothing.
 
 pub mod differences;
 pub mod table;
@@ -144,6 +147,11 @@ impl Walk {
         .to_vec()
     }
 
+    /// Where the walk writes its trace, every frame it measured (`--bench-trace`): beside its log in `out`.
+    pub fn trace(&self, out: &Path) -> PathBuf {
+        out.join(format!("{}.csv", self.name))
+    }
+
     /// Whether it walks a phone tier, which reads the mobile cook.
     pub fn is_phone(&self) -> bool {
         self.tier.starts_with("mobile")
@@ -241,7 +249,11 @@ pub fn run(paths: &Paths, mode: Mode, walks: &[String], timeout: Duration) -> Re
         let log = paths.out.join(format!("{}.log", walk.name));
         let mut command = Command::new(&paths.sandbox);
         let content = walk.content(paths).expect("a phone walk's cook was checked above");
-        command.env(CONTENT_DIR_ENV, content).args(walk.args());
+        command
+            .env(CONTENT_DIR_ENV, content)
+            .args(walk.args())
+            .arg("--bench-trace")
+            .arg(walk.trace(&paths.out));
         let exit = run_with_deadline(&mut command, &log, timeout)
             .map_err(|e| format!("failed to run the sandbox for {} ({}): {e}", walk.name, log.display()))?;
         let failed = |what: String| {
@@ -689,6 +701,17 @@ mod tests {
         assert!(new.is_empty(), "{new:?}");
         assert_eq!(fs::read_to_string(&file).unwrap(), "# d\n\n# Why.\ndh | draw calls | total -7\n");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Each walk writes its trace beside its log, named for the walk (M5 X4), in the folder CI uploads.
+    #[test]
+    fn each_walk_traces_beside_its_log() {
+        for walk in WALKS {
+            let trace = walk.trace(Path::new("out"));
+            assert_eq!(trace, Path::new("out").join(format!("{}.csv", walk.name)));
+            let args = walk.args();
+            assert!(!args.iter().any(|arg| arg == "--bench-trace"), "the run adds it, with its folder");
+        }
     }
 
     /// The lane's walks count the crowd as the timed walks draw it: the proving hub's crowd mounted, the ambient

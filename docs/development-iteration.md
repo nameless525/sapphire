@@ -221,7 +221,11 @@ desktop-high-dusk | draw calls: total 720479 -> 720483 (up), worst 1758 -> 1762 
 why each row did; a row that moved and shouldn't have is the bug. The table's header names the district's
 sources by digest, so a change to the generator or to `bench/` fails `cargo xtask counts` until the table is rewritten
 with it (`bench/README.md` lists what else such a change moves). Each walk's log is `target/counts/<walk>.log`,
-and what every walk counted is `target/counts/counts.txt`, which CI uploads from each job.
+its trace `target/counts/<walk>.csv` (`--bench-trace`: every frame measured, `drawn` 1 or 0, then its counts,
+ending with the pipelines each mesh pass set, `pipelines_<pass>`; a frame the walk doesn't draw reads 0 in
+what its passes count, the draws and the pipelines among them), and what every walk counted is
+`target/counts/counts.txt`; CI uploads all three from each job, so two families' walks can be compared frame by
+frame.
 
 **On CI** the lane runs on every pull request and push, a job for each desktop walk on lavapipe (the phones'
 ASTC textures can't load there; they are walked here and by `bench-scale device`). Every walk runs with three

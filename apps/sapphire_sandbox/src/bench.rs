@@ -383,9 +383,10 @@ pub(crate) fn run(
     // graph, so a pipeline any of them builds still counts, on the frame it's built or the next one drawn.
     let draw_every = options.draw_every.map(|every| u64::from(every.get()));
     // What a zone stage's drawn frames submitted, as count rows, walking (M5 X4) or held (M5 C11).
-    let mut drawn = draw_every
-        .filter(|_| options.zone.is_some())
-        .map(|every| DrawnCounts::new(&stage, (u64::from(frames) / every + 1) as usize));
+    let mut drawn = draw_every.filter(|_| options.zone.is_some()).map(|every| {
+        // `--bench-trace` on a counting walk writes every frame measured, drawn or not (M5 X4).
+        DrawnCounts::new(&stage, (u64::from(frames) / every + 1) as usize, options.bench_trace.is_some())
+    });
     // A counting walk (M5 Z3) holds at its start through the warm-up and draws its first step.
     let counting_walk = drawn.is_some() && options.zone_walk.is_some();
     // Its waits for a texture's level from here, logged at its end as a fight's bench logs a phase's (M5 Z2).
@@ -418,6 +419,9 @@ pub(crate) fn run(
         zone_walk.frame(&mut stage);
         if let Some(drawn) = &mut drawn {
             let measured = frame >= u64::from(WARMUP_FRAMES);
+            if measured {
+                drawn.trace(&stage, frame, !stage.lose_frames);
+            }
             drawn.frame(&stage, frame, measured && !stage.lose_frames);
         }
         if holds_at_start(frame, counting_walk) {
@@ -484,6 +488,11 @@ pub(crate) fn run(
     zone_walk.log(&stage, options);
     if let Some(drawn) = &drawn {
         drawn.log(&stage);
+        if let Some(path) = &options.bench_trace {
+            drawn
+                .write_trace(path)
+                .map_err(|error| AppInitError::msg(format!("--bench-trace {}: {error}", path.display())))?;
+        }
         streamer.log();
         // Exit test 2's waits over the counting walk, as its one phase, `drawn` (while streaming).
         crate::fight_bench::report_texture_waits("drawn", &stage.content.texture_streaming_stats());

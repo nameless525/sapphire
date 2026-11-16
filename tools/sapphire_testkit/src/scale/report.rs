@@ -849,7 +849,7 @@ fn cell_worst(cell: &CountCell) -> u64 {
 /// The GPU frame's timestamps are its passes', so the streamer's copies, submitted before the frame's first
 /// pass, aren't in it. What a copy costs shows, if anywhere, in the wait past the GPU frame: this prints it on the
 /// `gpu` lap's frames that raised a texture level against those that raised none, the rounds pooled, from the
-/// trace (none on a counting walk).
+/// trace (none where the manifest takes none).
 fn copies_note(out: &mut String, rounds: &Rounds) {
     let (mut raised, mut none) = (Vec::new(), Vec::new());
     for trace in rounds.rounds.iter().filter_map(|round| round.trace.as_deref()) {
@@ -916,9 +916,8 @@ fn streaming_notes(out: &mut String, rounds: &Rounds) {
                     format!("{worst:.0} frames")
                 }
             ),
-            None =>
-                "no trace (a counting walk writes none): the worst texture debt frames row's worst bounds it"
-                    .to_owned(),
+            None => "no trace (the run takes none): the worst texture debt frames row's worst bounds it"
+                .to_owned(),
         }
     );
     let _ = writeln!(

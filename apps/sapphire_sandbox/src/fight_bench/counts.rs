@@ -40,6 +40,10 @@ pub(crate) struct Counted {
     pub passes: FrameCounts,
     /// The pipelines, materials and mesh streams the mesh passes set (M5 D1).
     pub state_changes: StateChanges,
+    /// Of them, the pipelines each mesh pass set, in `sapphire_render::PIPELINE_PASSES`' order (M5 X4):
+    /// set by [`Self::with_stage`], so the overlay's counts (`with_scene` alone) leave them 0. A pass counts
+    /// as it runs, so a frame whose graph never ran (`--draw-every`'s lost frames) reads 0 in every one.
+    pub pipelines_by_pass: [u32; PIPELINE_PASSES.len()],
     /// The ambient pass's compute dispatches, and of them the reflection probes' composition and prefilter
     /// (`AmbientStats::dispatches`, `AmbientStats::probe_dispatches`): compute work, which draws nothing.
     pub ambient_dispatches: u32,
@@ -144,9 +148,10 @@ pub(crate) struct Counted {
 
 impl Counted {
     /// These counts with the stage's own in its last frame: what animation did (`Scene::anim_stats`) and
-    /// which of a zone's ambient characters stood (`Scene::ambient_stats`).
+    /// which of a zone's ambient characters stood (`Scene::ambient_stats`), and the pipelines its renderer's
+    /// mesh passes set, by pass.
     pub(super) fn with_stage(self, stage: &Stage) -> Self {
-        self.with_scene(&stage.scene)
+        Self { pipelines_by_pass: stage.renderer.pipelines_by_pass(), ..self.with_scene(&stage.scene) }
     }
 
     /// These counts with `scene`'s own in its last frame (as [`Self::with_stage`]), for the overlay's
@@ -580,18 +585,46 @@ pub(crate) struct DrawnCounts {
     /// The pipelines the frames drawn set, by pass (`sapphire_render::PIPELINE_PASSES`): logged beside the
     /// rows, not one, so two backends' `pipelines set` can be told apart by pass (M5 X4).
     pipelines: [u64; PIPELINE_PASSES.len()],
+    /// Under `--bench-trace`, a line for every frame measured, drawn or not ([`WALK_TRACE_HEADER`]), so two
+    /// backends' walks can be told apart frame by frame (M5 X4).
+    trace: Option<String>,
 }
 
+/// The header of a counting walk's `--bench-trace` file (M5 X4): the frame, whether it ran its graph (1) or
+/// was lost (0, `--draw-every`), then [`TRACE_COLUMNS`]. A lost frame's passes never ran, so what they count
+/// reads 0 on it (the draws, triangles, culling and levels, and every `pipelines_` column); the rest
+/// (skinning, animation, the ambient crowd, the asset server and streaming) count as on a drawn frame. `core`
+/// is empty: the walk samples no core.
+const WALK_TRACE_HEADER: &str = "frame,drawn,";
+
 impl DrawnCounts {
-    /// Before the bench's first frame, with room for `frames` drawn.
-    pub(crate) fn new(stage: &Stage, frames: usize) -> Self {
+    /// Before the bench's first frame, with room for `frames` drawn, and a trace of every frame measured if
+    /// `trace`.
+    pub(crate) fn new(stage: &Stage, frames: usize, trace: bool) -> Self {
         let loads = sapphire_core::frame_loads::loads().total();
         Self {
             frames: Vec::with_capacity(frames),
             assets: stage.content.stats(),
             loads,
             pipelines: [0; PIPELINE_PASSES.len()],
+            trace: trace.then(String::new),
         }
+    }
+
+    /// Traces frame `frame`, measured, which ran its graph if `drawn`; called before [`Self::frame`], which
+    /// moves the asset server's reading on. Nothing without a trace.
+    pub(crate) fn trace(&mut self, stage: &Stage, frame: u64, drawn: bool) {
+        use std::fmt::Write as _;
+        let Some(trace) = &mut self.trace else {
+            return;
+        };
+        let assets = stage.content.stats();
+        let streaming = stage.content.texture_streaming_stats();
+        let counted =
+            Counted::of(&stage.renderer.stats(), &assets, &self.assets, &streaming).with_stage(stage);
+        let _ = write!(trace, "{frame},{}", u8::from(drawn));
+        counted_into(stage.scene.zone_walked(), None, &counted, trace);
+        trace.push('\n');
     }
 
     /// After frame `frame`, which ran its graph if `drawn`.
@@ -604,12 +637,20 @@ impl DrawnCounts {
                 frame_thread_loads: loads - std::mem::replace(&mut self.loads, loads),
                 ..Counted::of(&stage.renderer.stats(), &assets, &self.assets, &streaming).with_stage(stage)
             };
-            self.frames.push((counted, frame, stage.scene.zone_walked()));
-            for (total, pass) in self.pipelines.iter_mut().zip(stage.renderer.pipelines_by_pass()) {
+            for (total, pass) in self.pipelines.iter_mut().zip(counted.pipelines_by_pass) {
                 *total += u64::from(pass);
             }
+            self.frames.push((counted, frame, stage.scene.zone_walked()));
         }
         self.assets = assets;
+    }
+
+    /// Writes the trace, if there is one, to `path`.
+    pub(crate) fn write_trace(&self, path: &std::path::Path) -> std::io::Result<()> {
+        match &self.trace {
+            Some(trace) => std::fs::write(path, format!("{WALK_TRACE_HEADER}{TRACE_COLUMNS}\n{trace}")),
+            None => Ok(()),
+        }
     }
 
     /// Logs each count row over the frames drawn, as a phase of its own, `drawn`.
@@ -634,29 +675,38 @@ impl DrawnCounts {
     }
 }
 
-/// `--bench-trace`'s columns from `walked`.
+/// `--bench-trace`'s columns from `walked`. The last eight are the pipelines each mesh pass set, in
+/// `sapphire_render::PIPELINE_PASSES`' order (M5 X4), after every older column so a reader by position keeps
+/// its own; 0 on a frame that ran no graph ([`Counted::pipelines_by_pass`]).
 pub(super) const TRACE_COLUMNS: &str = "walked,core,draw_calls,triangles,draw_instances,considered,culled_view,\
 culled_pass,culled_cutoff,culled_distance,culled_size,lod0,lod1_up,main_draws,prepass_draws,shadow_draws,post_draws,ui_draws,skinned,joints,\
 skinned_vertices,lights,admitted,decoded_waiting,reads_held,texture_pool,mesh_pool,over_budget,uploaded,raised,\
 given_back,mesh_pool_capacity,mesh_pool_floor,ambient_dispatches,probe_dispatches,animated,posed,held,thinned,\
 off_screen,animation_jobs,ambient_spawned,ambient_in_view,textures_in_debt,worst_texture_debt,levels_raised,\
-levels_lowered,streamed_bytes,streaming_us,lowers_waiting,texture_wanted,raising_us,coverage_us,texture_starts";
+levels_lowered,streamed_bytes,streaming_us,lowers_waiting,texture_wanted,raising_us,coverage_us,\
+texture_starts,pipelines_character_prepass,pipelines_scene_prepass,pipelines_main,pipelines_cascades,\
+pipelines_character_maps,pipelines_insets,pipelines_spots,pipelines_debug";
 
 /// A frame's `--bench-trace` columns, from `walked`.
 pub(super) fn trace_into(frame: &Traced, line: &mut String) {
+    counted_into(frame.walked, frame.core, &frame.counted, line);
+}
+
+/// [`TRACE_COLUMNS`] for a frame that walked `walked`, on a core of kind `core`, and counted `c`, each after
+/// a comma.
+fn counted_into(walked: Option<f32>, core: Option<CoreKind>, c: &Counted, line: &mut String) {
     use std::fmt::Write as _;
-    match frame.walked {
+    match walked {
         Some(walked) => {
             let _ = write!(line, ",{walked:.2}");
         }
         None => line.push(','),
     }
-    let core = match frame.core {
+    let core = match core {
         Some(CoreKind::Performance) => "p",
         Some(CoreKind::Efficiency) => "e",
         None => "",
     };
-    let c = &frame.counted;
     let total = c.passes.total();
     let passes = &c.passes;
     let _ = write!(
@@ -719,11 +769,32 @@ pub(super) fn trace_into(frame: &Traced, line: &mut String) {
         c.coverage_us,
         c.texture_starts,
     );
+    for pipelines in c.pipelines_by_pass {
+        let _ = write!(line, ",{pipelines}");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A counting walk's trace line has its header's fields, and the pipelines by pass come last, in
+    /// `PIPELINE_PASSES`' order (M5 X4), so the columns before them keep their places.
+    #[test]
+    fn a_walk_trace_line_ends_with_the_pipelines_by_pass() {
+        let header = format!("{WALK_TRACE_HEADER}{TRACE_COLUMNS}");
+        let counted = Counted { pipelines_by_pass: [1, 2, 3, 4, 5, 6, 7, 8], ..Counted::default() };
+        let mut line = String::from("40,1");
+        counted_into(Some(1.5), None, &counted, &mut line);
+        assert_eq!(line.split(',').count(), header.split(',').count(), "{line}");
+        assert!(line.starts_with("40,1,1.50,,"), "{line}");
+        let names: Vec<&str> = header.split(',').rev().take(PIPELINE_PASSES.len()).collect();
+        let column = |pass: &&str| format!("pipelines_{}", pass.replace(' ', "_"));
+        let passes: Vec<String> = PIPELINE_PASSES.iter().rev().map(column).collect();
+        assert_eq!(names, passes);
+        assert!(line.ends_with(",1,2,3,4,5,6,7,8"), "{line}");
+        assert!(header.starts_with("frame,drawn,walked,core,draw_calls,"), "the older columns keep places");
+    }
 
     #[test]
     fn count_rows_run_in_their_groups_order() {

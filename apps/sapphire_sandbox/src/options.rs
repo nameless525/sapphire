@@ -530,7 +530,9 @@ pub(crate) struct Options {
     /// one, to frame and light a cut-in without a build.
     pub cutin_library: Option<PathBuf>,
     /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`), and under
-    /// `--draw-every` its one phase's, a frame that ran no graph counting nothing drawn (M5 B5).
+    /// `--draw-every` its one phase's, a frame that ran no graph counting nothing drawn (M5 B5). A counting
+    /// walk (`--zone-walk` with `--draw-every`) writes every frame it measures, without times, a lost frame's
+    /// passes counting nothing (`DrawnCounts`, M5 X4).
     pub bench_trace: Option<PathBuf>,
     /// `--draw-every <n>`: every frame steps, animates, prepares and records, and only every `n`th runs its
     /// graph, the first among them, losing the rest as a frame whose surface was lost. It's for a long run on a
@@ -2084,18 +2086,6 @@ impl Options {
                 "--bench-trace needs {BENCH_FLAG} of a fight or a walk: --replay, --fight with --script, or \
                  --zone-walk"
             ));
-        }
-        // A counting walk (M5 Z3) runs the plain bench, which keeps no frames to trace: refused, not ignored (M5 Z2).
-        if options.bench_trace.is_some()
-            && options.zone_walk.is_some()
-            && options.draw_every.is_some()
-            && !matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. }))
-        {
-            return Err(
-                "--bench-trace with --zone-walk and --draw-every: a counting walk times nothing and writes \
-                        no trace; drop --draw-every for a timed walk's"
-                    .to_owned(),
-            );
         }
         if options.zone_walk.is_some() && options.zone.is_none() {
             return Err("--zone-walk needs --zone".to_owned());
@@ -4083,22 +4073,12 @@ mod tests {
             &["--capture", "x.png", "--replay", "x", "--bench-trace", "t.csv"],
             &["--capture", "x.png", "--zone", "district", "--zone-walk", "tour", "--bench-trace", "t.csv"],
             &["--bench", "1", "--record", "x", "--scenario", "y", "--script", "z", "--bench-trace", "t.csv"],
-            // A counting walk writes no trace, so it refuses one rather than ignore it (M5 Z2).
-            &[
-                "--bench",
-                "1",
-                "--zone",
-                "district",
-                "--zone-walk",
-                "tour",
-                "--draw-every",
-                "7",
-                "--bench-trace",
-                "t.csv",
-            ],
         ] {
             assert!(parse(args).unwrap_err().contains("--bench-trace"), "{args:?}");
         }
+        // A counting walk writes every frame it measures, drawn or not (M5 X4): the scale lane keeps it.
+        let counting = [&["--bench", "1", "--draw-every", "7", "--bench-trace", "t.csv"], walk].concat();
+        assert_eq!(parse(&counting).unwrap().0.bench_trace, Some(PathBuf::from("t.csv")));
         // A fight's bench under --draw-every still writes its trace (the district's fight test reads it).
         let fight = ["--bench", "1", "--replay", "x", "--draw-every", "25", "--bench-trace", "t.csv"];
         assert_eq!(parse(&fight).unwrap().0.bench_trace, Some(PathBuf::from("t.csv")));

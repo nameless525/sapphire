@@ -94,13 +94,13 @@ The statistic is ruled (M5 Z2): a timed row passes on the p95 of the least round
 
 The test (§1): "The district's textures come to twice the tier's pool. Through the walk the pool never exceeds its budget and the process stays under §3.1's memory. A surface newly in view reaches the level it asks for within 30 frames at the tier's rate (99th percentile; a proposal M5 sets). Nothing loads on the frame's thread, bytes decoded and waiting for the GPU stay under a cap, and after a trip the mesh pool returns to its floor."
 
-`streaming` (timed) and `counted-streaming` (counted) give each tier a pool of half what its cook's walk holds whole, so the district's textures come to twice it: `--texture-pool 1280` on the desktop tiers, `331` on the phones (MiB). `trip` plays the committed zone-trip replay, a stand-in for a trip from the district.
+`streaming` (timed) and `counted-streaming` (counted) give each tier a pool of exactly half what its cook's walk holds whole, in whole MiB rounded down, so the district's textures come to twice it: `--texture-pool 1303` on the desktop tiers, `333` on the phones (MiB). The whole is the `texture pool bytes` the `counted` walk holds at the tour's end: 2,733,906,860 bytes on the desktop cook, the same on B7's district of thirteen materials a cell as on sixteen (its palette draws from the same texture sets), and 699,285,048 on the mobile cook. The desktop pool holds the views' worst ask on the walk with 8% to spare (`texture bytes wanted`, 1,263,504,874 bytes on Desktop-High and 1,201,966,570 on Desktop-Low, against 1,366,294,528; on the district of sixteen materials a cell it was 1,362,595,306, 0.3% under, and 57 long waits were the pool's). `counted-streaming` is paced at the tier's frame rate (`--bench-pace 60` on three tiers, `30` on Mobile-Low), so a wait's frames are each a frame's time, as a game's are: paced, it is timed work, planned into the sittings, though it reads only counts and a quiet machine moves none of them (two walks a sitting apart read the same). `trip` plays the committed zone-trip replay, a stand-in for a trip from the district.
 
 **What proves it:**
 
-- **The pool, counted** (`cargo xtask bench-scale run --counts`, `logs/counted-streaming.<tier>.r<n>.log`, and the report's streaming table):
+- **The pool, counted** (`counted-streaming`, paced, so run in the sittings by `cargo xtask bench-scale run`, not `run --counts`; `logs/counted-streaming.<tier>.r<n>.log`, and the report's streaming table):
   - `count row … row="bytes over budget in use"`: worst 0, or `count row not exercised … row="bytes over budget in use"`.
-  - `row="streamed texture bytes"` worst at or under the run's pool: its budget is the pool the run's asset server holds, `--texture-pool` where given (1280 MiB = 1,342,177,280; 331 MiB = 347,078,656), else the tier's. `texture pool bytes` carries the tier's §3.4 pool as its budget, not the run's, so it is read and not judged here.
+  - `row="streamed texture bytes"` worst at or under the run's pool: its budget is the pool the run's asset server holds, `--texture-pool` where given (1303 MiB = 1,366,294,528; 333 MiB = 349,175,808), else the tier's. `texture pool bytes` carries the tier's §3.4 pool as its budget, not the run's, so it is read and not judged here.
   - `row="bytes decoded waiting"`: worst at or under its budget, the admission cap the run's asset server holds, 256 MiB on the desktop tiers and 64 MiB on the phones (`AssetBudgets::admission`, M2), or not exercised.
   - `row="frame thread loads"`: worst 0 (its budget).
 - **The process, timed** (`streaming`'s Memory table in the report: the cold lap (`first`) and the warm one (`cpu`), start / most / end in MiB, with §3.1's figure beside them from the manifest's tiers). The verdict takes the Process row's "most" over both laps.
@@ -110,10 +110,18 @@ The test (§1): "The district's textures come to twice the tier's pool. Through 
   texture waits phase="…" completed= p50_frames= p99_frames= worst_frames= pool_held= pool_held_p99_frames= pool_held_worst_frames= open= longest_open_frames= pool_open= pool_longest_open_frames=
   ```
 
-  An empty histogram prints `-`, and the last bin prints `32+`. A counting walk logs one line too, phase `drawn`, over the frames it drew. The report reads every phase's line and fails a `p99_frames` over 30 or a `longest_open_frames` of 30 or more; a run whose log has no line fails as well. To read them by hand:
+  The histogram holds 0 to 1,023 frames and 1,024 or more, so a p99 is read as a number; an empty histogram prints `-`, and the last bin prints `1024+`. A counting walk logs one line too, phase `drawn`, over the frames it drew. Beside each it logs what held the waits:
+
+  ```
+  texture wait reasons start_budget= start_budget_long= loading= loading_long= raise_budget= raise_budget_long= pool_views_fit= pool_views_fit_long= pool_views_over= pool_views_over_long= phase="…" long_over_frames=30 raised_bytes= reraised_bytes= reraised_within_updates=300 tails_over_pool= arrival_waits= arrival_long= arrival_open= arrived_at_update=
+  ```
+
+  Each completed wait counts once, under what held it longest: the start budget (16 starts a frame within the tier's raise budget), its levels loading, the raise budget, or the pool, split by whether the views' asks fit the pool that frame; `_long` counts those over 30 frames. `tails_over_pool` counts the updates where the tails and what sits beside them didn't fit the pool, so no plan could. **The opening is an arrival** (the orchestrator's ruling, M5 Z2): a counting walk starts from nothing, with no wipe, where a game's zone arrives under one (`Scene::zone_arrived` holds the wipe until the first view's textures are at their plan). So until the walk's first view's textures are first at their plan, the streamer raises at the wipe's budget, and a wait that opens before then is counted apart (`arrival_waits`, `_long`, `_open`), in neither histogram nor the reasons, and the update it arrived at is `arrived_at_update`. The walk itself is the same: no frame is held, and the count rows keep their ticks.
+
+  The report reads every phase's `texture waits` line and fails a `p99_frames` over 30 (a `1024+` too), a `longest_open_frames` or `pool_longest_open_frames` of 30 or more, or a run whose log has no line. On the reasons line it fails `tails_over_pool` above 0 or an `arrived_at_update` of 0 (the walk never arrived); the reasons, the bytes raised and re-raised and the arrival's counts are shown and fail nothing. The `texture streaming cpu` line (the counting walk's streamer, p50 and p99 of its total, coverage, choosing and raising in µs) is shown only. To read them by hand:
 
   ```bash
-  grep -h 'texture waits phase=' target/bench-scale/<commit>/logs/counted-streaming.*.log target/bench-scale/<commit>/logs/streaming.*.log
+  grep -h 'texture waits phase=\|texture wait reasons' target/bench-scale/<commit>/logs/counted-streaming.*.log target/bench-scale/<commit>/logs/streaming.*.log
   ```
 
   The report's line "**A surface newly in view at its level within 30 frames (exit test 2):**", a bound from the trace's `worst_texture_debt` column, stays beside it as a note.
@@ -127,25 +135,26 @@ The test (§1): "The district's textures come to twice the tier's pool. Through 
   The verdict reads it on `counted-streaming`, every round: it fails on no line, a pack that didn't unmount, or `at_floor=false` (a capacity over its floor). On the `ci` district the pool came back in two frames, from 84 MiB to 6.75 MiB on Desktop-Low and from 46 MiB to 3.75 MiB on Mobile-High.
 - **The trip, timed** (`trip`'s section): "at the lap's last frame the mesh pool is back at its floor", the ward's zone-trip, read beside the district's close and judged on nothing.
 
-**Passes when**, on each tier (desktop pools 1280 MiB on both desktop tiers, phones 331 MiB):
+**Passes when**, on each tier (desktop pools 1303 MiB on both desktop tiers, phones 333 MiB):
 
 | | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
 |---|---|---|---|---|
 | `bytes over budget in use`, `counted-streaming` | 0 or not exercised | 0 or not exercised | 0 or not exercised | 0 or not exercised |
-| `streamed texture bytes` worst ≤ the run's pool | ≤ 1280 MiB | ≤ 1280 MiB | ≤ 331 MiB | ≤ 331 MiB |
+| `streamed texture bytes` worst ≤ the run's pool | ≤ 1303 MiB | ≤ 1303 MiB | ≤ 333 MiB | ≤ 333 MiB |
 | Process "most", `streaming` | ≤ 10 GB | ≤ 6 GB | ≤ 2.8 GB | ≤ 1.6 GB |
-| `texture waits`, each phase, each run (from the waits counter) | `p99_frames` ≤ 30 and `longest_open_frames` < 30 | the same | the same | the same |
+| `texture waits`, each phase, each run (from the waits counter) | `p99_frames` ≤ 30, `longest_open_frames` and `pool_longest_open_frames` < 30 | the same | the same | the same |
+| `texture wait reasons`, each run | `tails_over_pool=0`, `arrived_at_update` > 0 | the same | the same | the same |
 | `bytes decoded waiting` worst | ≤ 256 MiB | ≤ 256 MiB | ≤ 64 MiB | ≤ 64 MiB |
 | `frame thread loads` worst | 0 | 0 | 0 | 0 |
 | `zone closed`, `counted-streaming`, every round | `unmounted`, `at_floor=true` | the same | the same | the same |
 | `trip` | back at its floor (read beside) | the same | the same | the same |
 
-A `p99_frames` of `32+` fails; `-` (no wait completed) passes. §3.1's figures are taken at 1,024 MiB a GB (10,240 / 6,144 / 2,867 / 1,638 MiB). On unified memory the process's footprint holds what the GPU allocates too, so it stands for RAM and VRAM together against §3.1's RAM figure; a discrete GPU's VRAM (6 GB and 3 GB on the desktops) is owed to one.
+A `p99_frames` of `1024+` fails; `-` (no wait completed) passes. §3.1's figures are taken at 1,024 MiB a GB (10,240 / 6,144 / 2,867 / 1,638 MiB). On unified memory the process's footprint holds what the GPU allocates too, so it stands for RAM and VRAM together against §3.1's RAM figure; a discrete GPU's VRAM (6 GB and 3 GB on the desktops) is owed to one.
 
-**On the Simulator and the emulator, by counts (M5 Z2):** `slot --device cargo xtask bench-scale device --platform ios-sim`, then `--platform android` ("The Simulator and the emulator", above). Each walks `device-streaming`, which is `counted-streaming`'s walk (a frame in seven drawn, the crowd on, `--texture-streaming on`) on the **`ci` district**: the budget's is gigabytes, too much to bundle and install on a device each run. Its phone tree with the shipped mobile cook holds 28,932,504 bytes (27.6 MiB) of textures whole on both phones (`texture pool bytes` in [tests/counts/district-ci.txt](../tests/counts/district-ci.txt)), so by the batch's own rule its pool is **13 MiB** (`--texture-pool 13`, 13,631,488 bytes), half that rounded down as 331 is, and its textures come to 2.1 times the pool. The command reads each walk's log by this test's counted rules above, and exit test 7's pipelines:
+**On the Simulator and the emulator, by counts (M5 Z2):** `slot --device cargo xtask bench-scale device --platform ios-sim`, then `--platform android` ("The Simulator and the emulator", above). Each walks `device-streaming`, which is `counted-streaming`'s walk (a frame in seven drawn, the crowd on, `--texture-streaming on`) on the **`ci` district**: the budget's is gigabytes, too much to bundle and install on a device each run. Its phone tree with the shipped mobile cook holds 28,932,504 bytes (27.6 MiB) of textures whole on both phones (`texture pool bytes` in [tests/counts/district-ci.txt](../tests/counts/district-ci.txt)), and its views ask for 28,903,381 bytes at worst. Its pool is **28 MiB** (`--texture-pool 28`, 29,360,128 bytes), the orchestrator's ruling (M5 Z2): the `ci` district puts everything it places in view, so no pool under the views' worst ask can pass, and half its whole (13 MiB, by the batch's rule) only proves that. At 28 MiB the pool doesn't bind: the device rows prove the streamer's waits, uploads and counters on each device's backend, and the pool's pressure is proved on this Mac's `budget` walks; `budget` on a device is owed to the maintainer. The walk is paced as `counted-streaming` is. The command reads each walk's log by this test's counted rules above, and exit test 7's pipelines:
 
-- `bytes over budget in use` worst 0 or not exercised; `streamed texture bytes` worst at or under 13 MiB; `bytes decoded waiting` at or under 64 MiB, the phones' admission cap; `frame thread loads` 0;
-- every phase's `texture waits` line: `p99_frames` at or under 30 and `longest_open_frames` under 30; the `zone closed` line unmounted and at its floor;
+- `bytes over budget in use` worst 0 or not exercised; `streamed texture bytes` worst at or under 28 MiB; `bytes decoded waiting` at or under 64 MiB, the phones' admission cap; `frame thread loads` 0;
+- every phase's `texture waits` line: `p99_frames` at or under 30, `longest_open_frames` and `pool_longest_open_frames` under 30; the reasons line's `tails_over_pool` 0 and `arrived_at_update` above 0; the `zone closed` line unmounted and at its floor;
 - exit test 7's line, the walk's `zone walk` pipelines: `first_use=0 rebuilt=0 frame_thread=0 frame_waits=0`.
 
 It prints a line for each exit test and tier, **pass**, **fail** or **not run**, and `report` shows them as lines of their own beside this Mac's ("Mobile-High, the iOS Simulator"). **Counts only:** no time read on either device is judged, and none is a phone's; the process's memory is the Mac's row alone. The Simulator draws on the Mac's GPU through Apple's simulated Metal, without indirect draws, which the engine never uses; the emulator draws through gfxstream on the host's Vulkan. On Android a scoped allocation count is process-wide, which no row here reads.

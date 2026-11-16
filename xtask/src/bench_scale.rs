@@ -17,19 +17,25 @@
 //!   runs play;
 //! - `logs/` (or `smoke/` for `--smoke`): each run's log, trace and status, and `report.md`.
 //!
-//! It never takes a gate slot itself: run `prepare` and `--smoke` through `q`, and timed sittings through
-//! `slot --all --load 8` on a quiet machine.
+//! `device --platform ios-sim|android` (M5 Z2) walks the manifest's runs that name a device there: it puts the
+//! mobile cook and the device's preset's district together in `content/<preset>/mobile/`, bundles the release
+//! `dev` sandbox with them, boots a device of its own (a private simulator, or the headless emulator), installs
+//! the bundle and has the testkit walk each unit through `launch` into `logs/`, beside this Mac's, then shuts the
+//! device down. The device's verdicts are by counts alone.
+//!
+//! It never takes a gate slot itself: run `prepare` and `--smoke` through `q`, timed sittings through
+//! `slot --all --load 8` on a quiet machine, and `device` inside the device slot.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, bail};
+use anyhow::{Context, bail, ensure};
 
 use crate::bench::{self, CellLevels, Preset};
 use crate::cli::Args;
 use crate::content::{self, Cook};
-use crate::platforms;
+use crate::platforms::{self, App, Platform};
 use crate::replay;
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
@@ -107,8 +113,80 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             }
             workspace::run(&mut testkit)
         }
-        other => bail!("bench-scale expects `prepare`, `plan`, `run` or `report`, not `{other}`"),
+        "device" => {
+            ensure!(preset.is_none(), "a device's preset is the manifest's, in its `devices`");
+            let platform = args.required::<Platform>("--platform")?;
+            let mut tiers = Vec::new();
+            while let Some(tier) = args.value::<String>("--tier")? {
+                tiers.push(tier);
+            }
+            let dry_run = args.flag("--dry-run");
+            args.finish(false)?;
+            device(&folder, platform, &tiers, smoke, dry_run)
+        }
+        // The testkit's launcher for a device's units: `device` passes it, with the device it booted.
+        "launch" => {
+            let platform = args.required::<Platform>("--platform")?;
+            let device = args.required::<String>("--device")?;
+            let app_args = args.finish(true)?;
+            platforms::launch_on(platform, &device, &App::load(platforms::SANDBOX)?, &app_args)
+        }
+        other => bail!("bench-scale expects `prepare`, `plan`, `run`, `report` or `device`, not `{other}`"),
     }
+}
+
+/// Walks the manifest's runs for a device on it (M5 Z2): puts the mobile cook and the device's preset's district
+/// together, bundles the release `dev` sandbox for `platform` with them, boots a device of its own headless
+/// (a private simulator, or the emulator) and installs it, then has the testkit run each of the device's units
+/// through `bench-scale launch` into the batch's `logs/` and print the device's verdicts, and shuts the device
+/// down, however that went. With `dry_run`, it stops before booting.
+fn device(
+    folder: &Path,
+    platform: Platform,
+    tiers: &[String],
+    smoke: bool,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    ensure!(
+        matches!(platform, Platform::IosSim | Platform::Android),
+        "the benches at scale walk on `--platform ios-sim` or `android`, not `{platform}`"
+    );
+    let testkit = build_testkit(folder)?;
+    let mut ask = Command::new(&testkit);
+    ask.args(["scale", "preset", "--manifest"]).arg(workspace::root().join(MANIFEST));
+    ask.args(["--device", platform.name()]);
+    let preset: Preset = workspace::output(&mut ask)?.trim().parse()?;
+    put_together(folder, preset, Cook::Mobile, &[CellLevels::On])?;
+
+    let app = App::load(platforms::SANDBOX)?;
+    let options = platforms::Options {
+        release: true,
+        features: vec!["dev".to_owned()],
+        content: Some(content_folder(folder, preset, Cook::Mobile, CellLevels::On)),
+        ..platforms::Options::default()
+    };
+    let bundle = platforms::bundle(platform, &app, &options)?;
+    if dry_run {
+        eprintln!(
+            "dry run: bundled {} with the {} district; no device booted",
+            bundle.path.display(),
+            preset.name()
+        );
+        return Ok(());
+    }
+    let device = platforms::boot(platform, &app, &bundle)?;
+    drop(bundle); // The device has its own copy now.
+    let launcher = std::env::current_exe().context("finding xtask's own executable, the units' launcher")?;
+    let mut walks = self::testkit(folder, "run", smoke)?;
+    walks.args(["--device", platform.name()]);
+    for tier in tiers {
+        walks.args(["--tier", tier]);
+    }
+    walks.arg("--launch").arg(launcher).args(["bench-scale", "launch", "--platform", platform.name()]);
+    walks.args(["--device", device.id()]);
+    let walked = workspace::run(&mut walks);
+    drop(device);
+    walked
 }
 
 /// Cooks both cooks of the content at the preset (with its kinds past `ci`) and of the preset's district, with
@@ -117,25 +195,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
 fn prepare(folder: &Path, preset: Preset) -> anyhow::Result<()> {
     fs::create_dir_all(folder)?;
     for cook in [Cook::Desktop, Cook::Mobile] {
-        // Held, each under its lock, while both districts are put beside it.
-        let kinds = bench::has_kinds(preset).then(|| bench::cook_kinds(preset, cook)).transpose()?;
-        let shipped = if kinds.is_none() { Some(content::cook(cook)?) } else { None };
-        let content_dir = match (&kinds, &shipped) {
-            (Some(kinds), _) => &kinds.dir,
-            (None, Some(shipped)) => &shipped.dir,
-            (None, None) => unreachable!("one of the two is cooked"),
-        };
-        for cells in [CellLevels::On, CellLevels::Off] {
-            let district = bench::cook_with(preset, cook, cells)?;
-            let out = content_folder(folder, preset, cook, cells);
-            bench::put_beside(content_dir, &district.dir, &out, cook)?;
-            eprintln!(
-                "put the content and the {} district{} together for {cook} in {}",
-                preset.name(),
-                if cells == CellLevels::Off { " (its cells with one level)" } else { "" },
-                out.display()
-            );
-        }
+        put_together(folder, preset, cook, &[CellLevels::On, CellLevels::Off])?;
     }
 
     let env = platforms::host_build_env()?;
@@ -150,15 +210,9 @@ fn prepare(folder: &Path, preset: Preset) -> anyhow::Result<()> {
         },
         SANDBOX,
     )?;
-    let testkit = workspace::build_binary(
-        &CargoBuild { package: TESTKIT, target: None, profile: BuildProfile::Dev, features: &[], env: &env },
-        TESTKIT,
-    )?;
-    fs::create_dir_all(folder.join("bin"))?;
-    for (built, name) in [(sandbox, SANDBOX), (testkit, TESTKIT)] {
-        let to = bin(folder, name);
-        fs::copy(&built, &to).with_context(|| format!("copying {} to {}", built.display(), to.display()))?;
-    }
+    let to = bin(folder, SANDBOX);
+    fs::copy(&sandbox, &to).with_context(|| format!("copying {} to {}", sandbox.display(), to.display()))?;
+    build_testkit(folder)?;
 
     let replays = folder.join("replays");
     fs::create_dir_all(&replays)?;
@@ -184,6 +238,44 @@ fn prepare(folder: &Path, preset: Preset) -> anyhow::Result<()> {
     fs::write(folder.join(PREPARED), preset.name())?;
     eprintln!("prepared the benches at scale ({} preset) in {}", preset.name(), folder.display());
     Ok(())
+}
+
+/// Puts the content at `preset` (the shipped cook of `content/` for `ci`, past it the shipped content with the
+/// kinds) and the preset's district for `cook` together in [`content_folder`], once for each of `cells`.
+fn put_together(folder: &Path, preset: Preset, cook: Cook, cells: &[CellLevels]) -> anyhow::Result<()> {
+    // Held, each under its lock, while the districts are put beside it.
+    let kinds = bench::has_kinds(preset).then(|| bench::cook_kinds(preset, cook)).transpose()?;
+    let shipped = if kinds.is_none() { Some(content::cook(cook)?) } else { None };
+    let content_dir = match (&kinds, &shipped) {
+        (Some(kinds), _) => &kinds.dir,
+        (None, Some(shipped)) => &shipped.dir,
+        (None, None) => unreachable!("one of the two is cooked"),
+    };
+    for &cells in cells {
+        let district = bench::cook_with(preset, cook, cells)?;
+        let out = content_folder(folder, preset, cook, cells);
+        bench::put_beside(content_dir, &district.dir, &out, cook)?;
+        eprintln!(
+            "put the content and the {} district{} together for {cook} in {}",
+            preset.name(),
+            if cells == CellLevels::Off { " (its cells with one level)" } else { "" },
+            out.display()
+        );
+    }
+    Ok(())
+}
+
+/// Builds the testkit and copies it into `bin/`, where every command but `prepare`'s cooks runs it from.
+fn build_testkit(folder: &Path) -> anyhow::Result<PathBuf> {
+    let env = platforms::host_build_env()?;
+    let built = workspace::build_binary(
+        &CargoBuild { package: TESTKIT, target: None, profile: BuildProfile::Dev, features: &[], env: &env },
+        TESTKIT,
+    )?;
+    let to = bin(folder, TESTKIT);
+    fs::create_dir_all(folder.join("bin"))?;
+    fs::copy(&built, &to).with_context(|| format!("copying {} to {}", built.display(), to.display()))?;
+    Ok(to)
 }
 
 /// `sapphire_testkit scale <command>` from `bin/`, over the manifest and the logs folder.

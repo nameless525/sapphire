@@ -289,6 +289,10 @@ pub struct Options {
     pub device: Option<String>,
     /// `run`: build, cook and bundle, then print the launch instead of performing it.
     pub dry_run: bool,
+    /// A phone's bundle: a folder of cooked content to carry in place of the mobile cook, made by the caller
+    /// (`bench-scale device`'s, M5 Z2). Only a `dev` build takes one, since a shipping build mounts what its
+    /// release names and nothing a player installs is made this way.
+    pub content: Option<PathBuf>,
 }
 
 /// An assembled bundle, and this run's claim on where it lies: its path holds this run's build, whole,
@@ -400,6 +404,10 @@ fn check_build_options(platform: Platform, options: &Options) -> anyhow::Result<
             "--incremental applies only to --platform desktop and macos"
         );
     }
+    ensure!(
+        options.content.is_none() || matches!(platform, Platform::IosSim | Platform::Android),
+        "only the Simulator's and the emulator's bundles carry other content"
+    );
     Ok(())
 }
 
@@ -430,6 +438,71 @@ fn executable(
             },
             &app.package,
         ),
+    }
+}
+
+/// The content a phone's bundle carries: the mobile cook, held while it's bundled, or the folder
+/// [`Options::content`] names.
+enum PhoneContent {
+    Cooked(content::Cooked),
+    Given(PathBuf),
+}
+
+impl PhoneContent {
+    fn of(options: &Options) -> anyhow::Result<Self> {
+        match &options.content {
+            None => Ok(Self::Cooked(content::cook(content::Cook::Mobile)?)),
+            Some(dir) => {
+                ensure!(takes_recooks(options), "a bundle carries other content only in a `dev` build");
+                ensure!(dir.is_dir(), "the content to bundle, {}, is not a folder", dir.display());
+                Ok(Self::Given(dir.clone()))
+            }
+        }
+    }
+
+    fn dir(&self) -> &Path {
+        match self {
+            Self::Cooked(cooked) => &cooked.dir,
+            Self::Given(dir) => dir,
+        }
+    }
+}
+
+/// A device [`boot`] made for the length of a run of walks (M5 Z2): a private iOS Simulator, deleted when this
+/// drops, or the headless Android emulator, killed when this drops, with the bundle installed fresh.
+pub enum Device {
+    Simulator(ios_sim::Private),
+    Emulator(android::Emulator),
+}
+
+impl Device {
+    /// What [`launch_on`] names it by: the simulator's UDID or the emulator's serial.
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Simulator(simulator) => simulator.udid(),
+            Self::Emulator(emulator) => emulator.serial(),
+        }
+    }
+}
+
+/// Boots a device of its own for `platform`, headless, and installs `bundle` (the `app`'s) on it, fresh: a
+/// private simulator made for it, or the emulator after `app` is uninstalled. Only one device should be up
+/// on the machine at once; the caller keeps that rule.
+pub fn boot(platform: Platform, app: &App, bundle: &Bundle) -> anyhow::Result<Device> {
+    match platform {
+        Platform::IosSim => Ok(Device::Simulator(ios_sim::Private::boot(app, &bundle.path)?)),
+        Platform::Android => Ok(Device::Emulator(android::Emulator::boot(app, &bundle.path)?)),
+        other => bail!("`--platform {other}` has no device to boot: ios-sim or android"),
+    }
+}
+
+/// Launches `app`, installed on the booted device `device` ([`Device::id`]), with `args`, prints its log on
+/// stdout as it runs, and returns once it has exited: an error unless its main function returned 0.
+pub fn launch_on(platform: Platform, device: &str, app: &App, args: &[String]) -> anyhow::Result<()> {
+    match platform {
+        Platform::IosSim => ios_sim::launch(device, app, args),
+        Platform::Android => android::launch(device, app, args),
+        other => bail!("`--platform {other}` has no device to launch on: ios-sim or android"),
     }
 }
 
@@ -555,6 +628,29 @@ mod tests {
         assert!(check_build_options(Platform::IosSim, &options(false)).is_err());
         assert!(check_build_options(Platform::Desktop, &options(true)).is_err());
         assert!(check_build_options(Platform::Android, &Options::default()).is_ok());
+    }
+
+    /// Only the Simulator's and the emulator's `dev` bundles carry content other than the mobile cook (M5 Z2's
+    /// district), so nothing a player installs or a store takes is made that way.
+    #[test]
+    fn only_a_dev_phone_bundle_carries_other_content() {
+        let dir = std::env::temp_dir();
+        let options = |features: &[&str]| Options {
+            features: features.iter().map(|feature| (*feature).to_owned()).collect(),
+            content: Some(dir.clone()),
+            ..Options::default()
+        };
+        for platform in [Platform::IosSim, Platform::Android] {
+            assert!(check_build_options(platform, &options(&["dev"])).is_ok(), "{platform}");
+        }
+        for platform in [Platform::Desktop, Platform::MacOs, Platform::Ios] {
+            assert!(check_build_options(platform, &options(&["dev"])).is_err(), "{platform}");
+        }
+        assert!(PhoneContent::of(&options(&[])).is_err(), "a shipping build mounts what its release names");
+        let given = PhoneContent::of(&options(&["dev"])).unwrap();
+        assert_eq!(given.dir(), dir);
+        let missing = Options { content: Some(dir.join("no-such-content")), ..options(&["dev"]) };
+        assert!(PhoneContent::of(&missing).is_err());
     }
 
     #[test]

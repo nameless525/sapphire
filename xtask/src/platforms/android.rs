@@ -31,8 +31,7 @@ use std::{env, thread};
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 
-use super::{App, Bundle, BundleClaim, Options, Platform, aab};
-use crate::content::{self, Cook};
+use super::{App, Bundle, BundleClaim, Options, PhoneContent, Platform, aab};
 use crate::version;
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
@@ -68,11 +67,11 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     require_java()?;
     let claim = BundleClaim::take(Platform::Android)?;
     let library = build_library(app, &ndk, BuildProfile::app(options.release), &options.features, &[])?;
-    let content = content::cook(Cook::Mobile)?;
+    let content = PhoneContent::of(options)?;
     let task = if options.release { GradleTask::AssembleProfile } else { GradleTask::AssembleDebug };
     let build_dir = super::bundle_dir(Platform::Android).join("build").join(&app.bundle_name);
     let gradle = Gradle { sdk: &sdk, ndk: &ndk, build_dir: &build_dir };
-    let built = gradle.build(app, version::development_number(), &library, &content.dir, task)?;
+    let built = gradle.build(app, version::development_number(), &library, content.dir(), task)?;
     drop(content);
     let apk = claim.staging(&format!("{}.apk", app.bundle_name))?;
     fs::copy(&built, &apk).with_context(|| format!("failed to copy {}", built.display()))?;
@@ -287,20 +286,11 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     let apk = bundle(app, options)?;
     let sdk = sdk_dir()?;
     let program = sdk.join("platform-tools/adb");
-    // `-S` stops a running instance first: the activity is single-instance, so a running
-    // one would get the new intent, and its arguments, only through `onNewIntent`.
-    let component = activity(app).component();
-    let start_args = |command: &mut Command| {
-        command.args(["shell", "am", "start", "-S", "-W", "-n", &component]);
-        if !args.is_empty() {
-            command.args(["--es", ARGS_EXTRA, &encode_args(args)]);
-        }
-    };
     if options.dry_run {
         let mut install = Command::new(&program);
         install.args(["install", "-r"]).arg(&apk.path);
         let mut start = Command::new(&program);
-        start_args(&mut start);
+        start_args(&mut start, app, args);
         for command in [&install, &start] {
             eprintln!("dry run: {}", workspace::shell_line(command));
         }
@@ -310,8 +300,21 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     let adb = Adb::connect(&sdk, program)?;
     workspace::run(adb.command().args(["install", "-r"]).arg(&apk.path))?;
     drop(apk); // The device has its own copy now.
+    start_and_follow(&adb, app, args)
+}
+
+/// Launches `app`, already installed on the booted device `serial`, with `args`, and streams its logcat
+/// until its main function returns, judged as [`run`] judges it (M5 Z2: `bench-scale device`'s walks).
+pub fn launch(serial: &str, app: &App, args: &[String]) -> anyhow::Result<()> {
+    let adb = Adb { program: adb()?, serial: serial.to_owned() };
+    start_and_follow(&adb, app, args)
+}
+
+/// Starts `app`'s activity with `args` and follows its logcat to the end ([`follow_logcat`]).
+fn start_and_follow(adb: &Adb, app: &App, args: &[String]) -> anyhow::Result<()> {
+    let component = activity(app).component();
     let mut start = adb.command();
-    start_args(&mut start);
+    start_args(&mut start, app, args);
     eprintln!("launching {component} on {}", adb.serial);
     // `am` prints its report, errors included, on stdout, and some versions exit 0 on errors.
     let launch = start.stderr(Stdio::inherit()).output().context("failed to run adb")?;
@@ -326,7 +329,75 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
         _ => bail!("{} runs as several processes ({})", app.bundle_id, pids.join(", ")),
     };
     eprintln!("streaming logcat for pid {pid}; Ctrl-C detaches and leaves the app running");
-    follow_logcat(&adb, &app.bundle_id, pid)
+    follow_logcat(adb, &app.bundle_id, pid)
+}
+
+/// `am start`'s arguments for `app` with `args`. `-S` stops a running instance first: the activity is
+/// single-instance, so a running one would get the new intent, and its arguments, only through
+/// `onNewIntent`.
+fn start_args(command: &mut Command, app: &App, args: &[String]) {
+    command.args(["shell", "am", "start", "-S", "-W", "-n", &activity(app).component()]);
+    if !args.is_empty() {
+        command.args(["--es", ARGS_EXTRA, &encode_args(args)]);
+    }
+}
+
+/// The headless emulator booted for a run of walks (M5 Z2), with an app installed fresh on it, killed when
+/// this drops: [`AVD`] started as `run` starts it, but saving no snapshot, so it keeps nothing.
+pub struct Emulator {
+    adb: Adb,
+    /// The emulator process this started, and its log.
+    process: (Child, PathBuf),
+}
+
+impl Emulator {
+    /// Boots [`AVD`] headless (`-no-window -gpu host`), waits for Android to finish booting, then installs
+    /// `apk`, `app` uninstalled first so its pipeline cache starts cold. Refuses to start beside a device
+    /// already connected or an emulator already starting: a run of walks is on the emulator it boots, alone.
+    pub fn boot(app: &App, apk: &Path) -> anyhow::Result<Self> {
+        let sdk = sdk_dir()?;
+        let program = sdk.join("platform-tools/adb");
+        ensure!(program.is_file(), "adb not found; install the SDK's platform-tools");
+        let connected = list_devices(&workspace::output(Command::new(&program).arg("devices"))?);
+        if let Some(device) = connected.first() {
+            bail!("{} is already connected: a run of walks boots its own emulator, alone", device.serial);
+        }
+        let (serial, process) = start_avd(&sdk, &program, &["-no-snapshot-save"])?;
+        let Some(process) = process else {
+            bail!("{AVD} was already starting: a run of walks boots its own emulator, alone");
+        };
+        let mut emulator = Self { adb: Adb { program, serial }, process };
+        emulator.adb.wait_for_boot(Some(&mut emulator.process))?;
+        // Uninstalling fails when it isn't installed, which a fresh emulator's state may well be.
+        let _ = emulator.adb.command().args(["uninstall", &app.bundle_id]).output();
+        workspace::run(emulator.adb.command().arg("install").arg(apk))?;
+        Ok(emulator)
+    }
+
+    pub fn serial(&self) -> &str {
+        &self.adb.serial
+    }
+}
+
+impl Drop for Emulator {
+    /// Kills the emulator through its console, and waits a minute at most for it to go.
+    fn drop(&mut self) {
+        eprintln!("stopping {}", self.adb.serial);
+        let _ = self.adb.command().args(["emu", "kill"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        let (child, log) = &mut self.process;
+        for _ in 0..60 {
+            if !matches!(child.try_wait(), Ok(None)) {
+                return;
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+        eprintln!(
+            "the emulator was still up a minute after `emu kill`; killing it (its log: {})",
+            log.display()
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 /// SDLActivity logs this once `SDL_main` has returned, whatever it returned.
@@ -819,7 +890,7 @@ impl Adb {
                                 device.state
                             );
                         }
-                        let (serial, child) = start_avd(sdk, &program)?;
+                        let (serial, child) = start_avd(sdk, &program, &[])?;
                         emulator = child;
                         serial
                     }
@@ -834,7 +905,7 @@ impl Adb {
             }
         };
         let adb = Self { program, serial };
-        adb.wait_for_boot(emulator)?;
+        adb.wait_for_boot(emulator.as_mut())?;
         Ok(adb)
     }
 
@@ -846,7 +917,7 @@ impl Adb {
 
     /// Waits until `sys.boot_completed` is set. `emulator` is the process this run started,
     /// if any, so its early exit is reported instead of waited out.
-    fn wait_for_boot(&self, mut emulator: Option<(Child, PathBuf)>) -> anyhow::Result<()> {
+    fn wait_for_boot(&self, mut emulator: Option<&mut (Child, PathBuf)>) -> anyhow::Result<()> {
         for second in 0..BOOT_TIMEOUT_SECS {
             if self.boot_completed() {
                 return Ok(());
@@ -854,7 +925,7 @@ impl Adb {
             if second == 0 {
                 eprintln!("waiting for {} to finish booting...", self.serial);
             }
-            if let Some((child, log)) = &mut emulator
+            if let Some((child, log)) = emulator.as_deref_mut()
                 && let Some(status) = child.try_wait()?
             {
                 bail!("the emulator exited during boot ({status}); see {}", log.display());
@@ -940,8 +1011,8 @@ fn list_devices(adb_devices: &str) -> Vec<Device> {
 /// Returns the serial of the emulator running [`AVD`], starting one if none is. An
 /// emulator that already holds the AVD's lock but hasn't reached `adb devices` yet is
 /// waited for: a second instance would fail on the lock. Also returns the process this
-/// call started, with its log, if any.
-fn start_avd(sdk: &Path, adb: &Path) -> anyhow::Result<(String, Option<(Child, PathBuf)>)> {
+/// call started, with its log, if any. `extra` are arguments the emulator takes besides `run`'s.
+fn start_avd(sdk: &Path, adb: &Path, extra: &[&str]) -> anyhow::Result<(String, Option<(Child, PathBuf)>)> {
     if avd_dir()?.join("hardware-qemu.ini.lock").exists() {
         eprintln!("an emulator for {AVD} is already starting; waiting for it");
         for _ in 0..REGISTER_TIMEOUT_SECS {
@@ -973,7 +1044,7 @@ fn start_avd(sdk: &Path, adb: &Path) -> anyhow::Result<(String, Option<(Child, P
     let mut command = Command::new(&emulator);
     // Headless, always. `host` gives the guest hardware Vulkan: gfxstream over the host's
     // Vulkan (MoltenVK on macOS). `auto` would pick the lavapipe software renderer.
-    command.args(["-avd", AVD, "-no-window", "-gpu", "host", "-no-audio", "-no-boot-anim"]);
+    command.args(["-avd", AVD, "-no-window", "-gpu", "host", "-no-audio", "-no-boot-anim"]).args(extra);
     command.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
     // Its own process group, so Ctrl-C on the logcat stream leaves the emulator running.
     #[cfg(unix)]

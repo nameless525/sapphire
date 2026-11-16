@@ -12,8 +12,7 @@ use anyhow::Context as _;
 use serde::Deserialize;
 
 use super::apple::{self, BundleLayout};
-use super::{App, Bundle, BundleClaim, Options, Platform};
-use crate::content::{self, Cook};
+use super::{App, Bundle, BundleClaim, Options, PhoneContent, Platform};
 use crate::{version, workspace};
 
 const TARGET: &str = "aarch64-apple-ios-sim";
@@ -25,7 +24,7 @@ const MINIMUM_IOS: (u32, u32) = (17, 0);
 pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     super::require_macos_host(Platform::IosSim)?;
     let claim = BundleClaim::take(Platform::IosSim)?;
-    let content = content::cook(Cook::Mobile)?;
+    let content = PhoneContent::of(options)?;
     // No extra environment: the deployment target comes from .cargo/config.toml, and
     // cargo and CMake pick the simulator SDK for the target, so SDKROOT stays unset.
     let executable = super::executable(app, Some(TARGET), &[], options)?;
@@ -35,7 +34,7 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
     let layout = BundleLayout::ios(claim.staging(&format!("{}.app", app.bundle_name))?);
-    apple::assemble(&layout, app, &info_plist, &executable, &content.dir)?;
+    apple::assemble(&layout, app, &info_plist, &executable, content.dir())?;
     apple::codesign_ad_hoc(&layout.root)?;
     claim.publish(&layout.root)
 }
@@ -66,6 +65,60 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
         "launching {} on {} (iOS {}.{}); Ctrl-C detaches",
         app.bundle_id, simulator.name, simulator.runtime.0, simulator.runtime.1
     );
+    workspace::run(&mut launch)
+}
+
+/// A simulator made for a run of walks (M5 Z2), so installing on it kills nobody else's app and its Metal
+/// cache starts cold: created and booted headless with an app installed, shut down and deleted when this
+/// drops. Never shown in Simulator.app.
+pub struct Private {
+    udid: String,
+}
+
+/// The model a private simulator is: the one `run` prefers, and the M4 recipes'.
+const PRIVATE_MODEL: &str = "iPhone 17 Pro";
+
+impl Private {
+    /// Creates a simulator of [`PRIVATE_MODEL`] on the newest iOS runtime, boots it headless, waits for it
+    /// to finish booting and installs `bundle`, `app`'s.
+    pub fn boot(app: &App, bundle: &std::path::Path) -> anyhow::Result<Self> {
+        super::require_macos_host(Platform::IosSim)?;
+        let name = format!("sapphire-walks-{}", std::process::id());
+        let udid = workspace::output(Command::new("xcrun").args(["simctl", "create", &name, PRIVATE_MODEL]))?
+            .trim()
+            .to_owned();
+        anyhow::ensure!(!udid.is_empty(), "`simctl create` named no device");
+        // Deleted on drop from here on, whatever fails next.
+        let simulator = Self { udid };
+        eprintln!("booting a private {PRIVATE_MODEL} simulator, {}, headless...", simulator.udid);
+        workspace::output(Command::new("xcrun").args(["simctl", "bootstatus", &simulator.udid, "-b"]))?;
+        workspace::run(Command::new("xcrun").args(["simctl", "install", &simulator.udid]).arg(bundle))?;
+        eprintln!("installed {} on {}", app.bundle_id, simulator.udid);
+        Ok(simulator)
+    }
+
+    pub fn udid(&self) -> &str {
+        &self.udid
+    }
+}
+
+impl Drop for Private {
+    fn drop(&mut self) {
+        eprintln!("shutting down and deleting the private simulator {}", self.udid);
+        for step in ["shutdown", "delete"] {
+            let _ = Command::new("xcrun").args(["simctl", step, &self.udid]).output();
+        }
+    }
+}
+
+/// Launches `app`, installed on the booted simulator `udid`, with `args`, and prints its log on stdout until
+/// it exits (M5 Z2: `bench-scale device`'s walks).
+pub fn launch(udid: &str, app: &App, args: &[String]) -> anyhow::Result<()> {
+    let mut launch = Command::new("xcrun");
+    launch
+        .args(["simctl", "launch", "--console-pty", "--terminate-running-process", udid])
+        .arg(&app.bundle_id)
+        .args(args);
     workspace::run(&mut launch)
 }
 

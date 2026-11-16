@@ -170,7 +170,7 @@ On a phone, use `xcrun simctl io booted screenshot <png>` on the iOS Simulator, 
 
 ## Replays
 
-The simulation is deterministic. A replay (`tests/replays/*.sreplay`, 39 of them) records a fight's or a zone's input, and holds the state's checksums tick by tick.
+The simulation is deterministic. A replay (`tests/replays/*.sreplay`, each with its checksums in `checksums.aarch64.txt` and `checksums.x86_64.txt` beside them) records a fight's or a zone's input, and holds the state's checksums tick by tick.
 
 ```bash
 cargo xtask replay                      # every replay; no GPU needed

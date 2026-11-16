@@ -12,6 +12,7 @@ use super::{
     AssetServer, AssetSlot, Handle, LOG_TARGET, LoadError, MountError, MountKey, Slot, SlotState, Version,
     error_chain, mounts,
 };
+use crate::mesh::Mesh;
 use crate::pack::{Entry, Toc};
 use crate::{Asset, AssetId, AssetKind};
 
@@ -47,6 +48,8 @@ pub(super) struct Next {
     pub stage: NextStage,
     /// Decoded bytes, once read.
     pub data: Option<Arc<AlignedVec>>,
+    /// The mesh's CPU copy its decode made, until its upload hands it over ([`AssetServer::keep_mesh_copy`]).
+    pub copy: Option<Mesh>,
     /// Its dependencies, from the new table of contents; linked as the asset's children too, so
     /// a failing one fails this version.
     pub children: Vec<UntypedHandle>,
@@ -326,6 +329,7 @@ impl AssetServer {
                 let next = Next {
                     stage: NextStage::Loading,
                     data: None,
+                    copy: None,
                     children,
                     size: entry.size,
                     hash: entry.hash,
@@ -409,6 +413,7 @@ impl AssetServer {
                     slot.next = Some(Next {
                         stage: NextStage::Waiting,
                         data: Some(data),
+                        copy: None,
                         children: slot.children.clone(),
                         size: slot.size,
                         hash: slot.hash,
@@ -472,11 +477,11 @@ impl AssetServer {
             // Its read in flight now completes the main state.
             NextStage::Loading => {
                 slot.state = SlotState::Loading;
-                slot.data = None;
+                (slot.data, slot.copy) = (None, None);
             }
             NextStage::Waiting | NextStage::Queued => {
                 slot.state = SlotState::Waiting;
-                slot.data = next.data;
+                (slot.data, slot.copy) = (next.data, next.copy);
             }
         }
         let old = std::mem::replace(&mut slot.children, next.children);

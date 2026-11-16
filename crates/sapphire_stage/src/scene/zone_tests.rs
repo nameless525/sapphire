@@ -1284,6 +1284,33 @@ fn a_zone_coming_reads_its_look_off_the_frames_thread() {
     assert_eq!(walk.scene.ecs.world().resource::<LightRigLibrary>(), &lookdev::light_rigs(), "and its rigs");
 }
 
+/// Exit test 2 on a trip (M5 Z2): a zone coming with a mesh whose copy is kept (an ambient cast's, which it keeps
+/// as its section comes) brings the copy built off the frame's thread, with its decode, and the copy is what the
+/// mesh's bytes make.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_zone_coming_copies_a_kept_mesh_off_the_frames_thread() {
+    use sapphire_core::frame_loads::{self, InPlay};
+
+    let settings = small_settings();
+    let mut walk = Walk::rooms(SMALL, 2, no_limits(), Vec::new());
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    walk.trip(0, settings);
+    let kept = SyntheticZone::room_instance_mesh(1);
+    walk.content.keep_mesh_copy(kept);
+    let start = frame_loads::loads();
+    let in_play = InPlay::begin();
+    walk.trip(1, settings);
+    walk.frame();
+    drop(in_play);
+    let loads = frame_loads::loads();
+    assert_eq!((loads.decodes, loads.builds), (start.decodes, start.builds), "{start:?} to {loads:?}");
+    let copy = walk.content.mesh_copy(kept).expect("the kept copy");
+    let mut bytes = sapphire_assets::material::AlignedVec::<16>::new();
+    bytes.extend_from_slice(&SyntheticZone::instance_patch_bytes(1));
+    assert_eq!(copy, &Mesh::read(&bytes).expect("a mesh").to_mesh().expect("its copy"), "the same mesh");
+}
+
 /// A pack that isn't there says so, and what's on stage stays. Asking again tries again.
 #[test]
 #[ignore = "needs a GPU"]

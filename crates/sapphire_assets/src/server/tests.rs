@@ -1300,3 +1300,53 @@ fn a_load_forced_onto_the_frames_thread_counts_by_kind() {
     server.finish(&mesh, |_| Ok(())).unwrap();
     assert_eq!(since(start), (3, 1, 1), "out of play again");
 }
+
+/// Exit test 2 (M5 Z2): a mesh whose copy is kept comes to its uploader with the copy its decode made on a job,
+/// what `to_mesh` of its bytes gives, and nothing built on the frame's thread; one not asked for comes without,
+/// and so does one whose read was issued before it was asked for.
+#[test]
+fn a_kept_meshs_copy_is_made_with_its_decode() {
+    use sapphire_core::frame_loads::{self, InPlay};
+
+    let mut cooked = AlignedVec::<16>::new();
+    cooked.extend_from_slice(&mesh_bytes(id(MATERIAL)));
+    let expected = Mesh::read(&cooked).unwrap().to_mesh().unwrap();
+    let copy_of = |keep: bool| {
+        let (mut server, _) = serve(character(), unlimited());
+        if keep {
+            server.keep_mesh_copy(id(MESH));
+        }
+        let start = frame_loads::loads();
+        let in_play = InPlay::begin();
+        let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
+        let mut copy = None;
+        server
+            .finish(&mesh, |upload| {
+                if upload.id() == id(MESH) {
+                    copy = upload.take_mesh_copy();
+                    assert!(upload.take_mesh_copy().is_none(), "taken once");
+                } else {
+                    assert!(upload.take_mesh_copy().is_none(), "only a mesh asked for");
+                }
+                Ok(())
+            })
+            .unwrap();
+        drop(in_play);
+        assert_eq!(frame_loads::loads().builds, start.builds, "nothing built on this thread");
+        copy
+    };
+    assert_eq!(copy_of(true), Some(expected));
+    assert_eq!(copy_of(false), None);
+
+    let (mut server, _) = serve(character(), unlimited());
+    let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
+    server.keep_mesh_copy(id(MESH));
+    let mut copy = None;
+    server
+        .finish(&mesh, |upload| {
+            copy = copy.take().or(upload.take_mesh_copy());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(copy, None, "its read was issued before");
+}

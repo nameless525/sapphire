@@ -560,9 +560,12 @@ impl GpuAssets {
             if self.meshes.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
                 return Ok(());
             }
-            let copy = (id == self.character && self.keep_character).then(|| mesh.to_mesh()).transpose()?;
-            let kept_copy =
-                self.kept_meshes.iter().any(|(kept, _)| *kept == id).then(|| mesh.to_mesh()).transpose()?;
+            // The copies kept of it come made with its decode, off the frame's thread (`keep_mesh_copy`); one made
+            // here, for a read issued before it was asked for or a second copy of one mesh, counts as the frame's.
+            let mut made = upload.take_mesh_copy();
+            let mut copy_of = || made.take().map_or_else(|| mesh.to_mesh(), Ok);
+            let copy = (id == self.character && self.keep_character).then(&mut copy_of).transpose()?;
+            let kept_copy = self.kept_meshes.iter().any(|(kept, _)| *kept == id).then(copy_of).transpose()?;
             let materials = &self.materials;
             let resolve = |material| materials.get(&material).map(|held| held.object);
             let bounds = scene::mesh_bounds(mesh);
@@ -1666,6 +1669,8 @@ impl Content {
     /// (the stage's figure and pedestal). Call before [`Self::character`].
     pub fn keep_character_mesh(&mut self) {
         self.gpu.keep_character = true;
+        // Its decodes make it, off the frame's thread, from the next read on.
+        self.server.keep_mesh_copy(self.character_id);
     }
 
     /// Shows `watcher` what's uploaded from now on. Call before [`Self::character`].
@@ -2506,6 +2511,8 @@ impl Content {
         if !self.gpu.kept_meshes.iter().any(|(kept, _)| *kept == id) {
             self.gpu.kept_meshes.push((id, None));
         }
+        // Its decodes make it, off the frame's thread, from the next read on.
+        self.server.keep_mesh_copy(id);
     }
 
     /// The copy [`Self::keep_mesh_copy`] kept of the mesh `id`, as last uploaded.
@@ -4098,6 +4105,33 @@ mod tests {
         assert_eq!(stage.joints(), HumanBone::REQUIRED.len());
         assert!(stage.content.playable_versions(KIND).is_none());
         assert!(stage.content.playable_versions(OTHER_KIND).is_some());
+    }
+
+    /// Exit test 2 (M5 Z2): the character's kept copy comes with its mesh's decode, off the frame's thread, when
+    /// a new renderer (a lost device, a tier change) takes every asset again in play, and it is the copy the
+    /// first upload made.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_renderer_takes_the_characters_copy_off_the_frames_thread() {
+        use sapphire_core::frame_loads::{self, InPlay};
+
+        let mut stage = Stage::new();
+        let before = stage.content.character_mesh().cloned().expect("the character's copy");
+        let start = frame_loads::loads();
+        let in_play = InPlay::begin();
+        let _previous = stage.content.renderer_rebuilt();
+        let mut renderer = Renderer::new(&stage.gpu, FORMAT, RenderSettings::default()).expect("renderer");
+        let mut frames = 0;
+        while stage.content.mesh_on_renderer(MESH).is_none() {
+            stage.content.update(&mut renderer, &stage.gpu);
+            frames += 1;
+            assert!(frames < 100_000, "it never came");
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+        drop(in_play);
+        let loads = frame_loads::loads();
+        assert_eq!((loads.decodes, loads.builds), (start.decodes, start.builds), "{start:?} to {loads:?}");
+        assert_eq!(stage.content.character_mesh(), Some(&before), "the same copy");
     }
 
     /// Two kinds held at once, as a party of two kinds holds them (M5 C8), each answer only to their own kind:

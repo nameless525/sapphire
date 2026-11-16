@@ -7,6 +7,7 @@ mod mounts;
 mod reload;
 mod source;
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ pub use self::reload::{AssetChange, RemountReport};
 use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};
 use crate::manifest::{Manifest, ReleasedPack};
+use crate::mesh::Mesh;
 use crate::pack::{Decoder, Entry, PackError, PackMetadataBudget, PackMetadataRead, Toc};
 use crate::{AssetId, AssetKind, PipelineKey};
 
@@ -296,6 +298,8 @@ pub struct Upload<'a> {
     slot: AssetSlot,
     generation: u32,
     data: &'a Arc<AlignedVec>,
+    /// The mesh's CPU copy its decode made ([`AssetServer::keep_mesh_copy`]), until the uploader takes it.
+    copy: &'a Cell<Option<Mesh>>,
 }
 
 impl<'a> Upload<'a> {
@@ -342,6 +346,13 @@ impl<'a> Upload<'a> {
     pub fn keep<T: Asset>(&self) -> Option<CpuResident<T>> {
         (self.kind == T::KIND)
             .then(|| CpuResident { data: Arc::clone(self.data), kind: std::marker::PhantomData })
+    }
+
+    /// The mesh's CPU copy, [`ArchivedMesh::to_mesh`](crate::mesh::ArchivedMesh::to_mesh) of its bytes, made with
+    /// its decode on the server's worker if [`AssetServer::keep_mesh_copy`] asked for the mesh before its read
+    /// was issued; `None` otherwise, and once taken.
+    pub fn take_mesh_copy(&self) -> Option<Mesh> {
+        self.copy.take()
     }
 }
 
@@ -508,6 +519,8 @@ struct Slot {
     request: u32,
     /// Decoded bytes, while it has them.
     data: Option<Arc<AlignedVec>>,
+    /// The mesh's CPU copy its decode made, until its upload hands it over ([`AssetServer::keep_mesh_copy`]).
+    copy: Option<Mesh>,
     /// Its dependencies, kept loaded by these handles.
     children: Vec<UntypedHandle>,
     /// The assets that depend on it, which may be waiting for it, or bind it.
@@ -572,7 +585,7 @@ enum Version {
 /// Something that finished off the server's thread.
 enum Completion {
     /// A decode job's result.
-    Asset { key: SlotKey, request: u32, result: Result<Arc<AlignedVec>, LoadError> },
+    Asset { key: SlotKey, request: u32, result: Result<Decoded, LoadError> },
     /// A pack opened, with its header and table of contents read and checked ([`AssetServer::mount`]).
     Mount { request: u64, result: Result<(OpenPack, Toc), MountError>, metadata: PackMetadataRead },
 }
@@ -812,6 +825,8 @@ pub struct AssetServer {
     /// Hot reload's changes since the last [`Self::take_changes`].
     changes: Vec<AssetChange>,
     last_upload: UploadReport,
+    /// The meshes whose decode makes a CPU copy for the uploader ([`Self::keep_mesh_copy`]).
+    mesh_copies: HashSet<AssetId>,
     loads: u64,
     unloads: u64,
     failures: u64,
@@ -875,6 +890,7 @@ impl AssetServer {
             eviction_scratch: Vec::new(),
             changes: Vec::new(),
             last_upload: UploadReport::default(),
+            mesh_copies: HashSet::new(),
             loads: 0,
             unloads: 0,
             failures: 0,
@@ -992,6 +1008,7 @@ impl AssetServer {
             state: SlotState::Loading,
             request: 0,
             data: None,
+            copy: None,
             children: Vec::new(),
             parents: Vec::new(),
             pins: 0,
@@ -1239,6 +1256,15 @@ impl AssetServer {
         }
     }
 
+    /// Makes a CPU copy of the mesh `id` ([`ArchivedMesh::to_mesh`](crate::mesh::ArchivedMesh::to_mesh)) with
+    /// each decode of it from now on, on the decode's job, and hands it to the uploader with the mesh
+    /// ([`Upload::take_mesh_copy`]): an app that keeps a copy of a mesh as it uploads takes it there instead of
+    /// making it on the frame's thread (exit test 2, M5 Z2). A read already issued makes none. The copy is held
+    /// from the decode until the upload, beside the decoded bytes.
+    pub fn keep_mesh_copy(&mut self, id: AssetId) {
+        self.mesh_copies.insert(id);
+    }
+
     /// Hands queued assets to `upload`, oldest first, until the frame's upload budget is spent
     /// (see [the load pipeline](AssetServer#the-load-pipeline)). An asset `upload` accepts is
     /// ready, and may let assets that depend on it join the queue, in this call too; one it
@@ -1267,11 +1293,16 @@ impl AssetServer {
             }
             self.upload_queue.pop_front();
             let data = data.expect("queued versions hold their bytes");
-            let handle = &self.slots[key].handle;
-            let (id, kind) = (handle.id(), handle.kind());
+            let slot = &mut self.slots[key];
+            let copy = Cell::new(match version {
+                Version::Main => slot.copy.take(),
+                Version::Next => slot.next.as_mut().and_then(|next| next.copy.take()),
+            });
+            let (id, kind) = (slot.handle.id(), slot.handle.kind());
             report.assets += 1;
             report.bytes += size;
-            let result = upload(Upload { id, kind, slot: AssetSlot(key), generation, data: &data });
+            let result =
+                upload(Upload { id, kind, slot: AssetSlot(key), generation, data: &data, copy: &copy });
             let error = |error: UploadError| LoadError::Upload { id, message: error_chain(&*error) };
             match (version, result) {
                 (Version::Main, Ok(())) => self.uploaded(key),
@@ -1472,7 +1503,7 @@ impl AssetServer {
     fn request_read(&mut self, key: SlotKey) {
         let slot = &mut self.slots[key];
         slot.state = SlotState::Loading;
-        slot.data = None;
+        (slot.data, slot.copy) = (None, None);
         self.read(key);
     }
 
@@ -1485,6 +1516,7 @@ impl AssetServer {
         let (file, toc) = (mount.file.file(), mount.toc.clone());
         let entry = toc.entries()[slot.entry.expect("only assets their pack holds are read") as usize];
         let range = toc.stored_range(&entry);
+        let copy = entry.kind == AssetKind::Mesh && self.mesh_copies.contains(&entry.id);
         let sender = self.sender.clone();
         self.reads_in_flight += 1;
         let done: ReadDone = Box::new(move |result| {
@@ -1493,8 +1525,9 @@ impl AssetServer {
             frame_loads::count(LoadWork::Read);
             match result {
                 Ok(stored) => sapphire_jobs::spawn_async(move || {
-                    let result = std::panic::catch_unwind(AssertUnwindSafe(|| decode(&toc, &entry, &stored)))
-                        .unwrap_or(Err(LoadError::Panicked { id: entry.id }));
+                    let result =
+                        std::panic::catch_unwind(AssertUnwindSafe(|| decode(&toc, &entry, &stored, copy)))
+                            .unwrap_or(Err(LoadError::Panicked { id: entry.id }));
                     // A closed channel means the server is gone, and the result with it.
                     let _ = sender.send(Completion::Asset { key, request, result });
                 }),
@@ -1524,14 +1557,14 @@ impl AssetServer {
 
     /// Applies a decode job's result, to the main state or the next version, whichever waits
     /// for it.
-    fn complete_read(&mut self, key: SlotKey, request: u32, result: Result<Arc<AlignedVec>, LoadError>) {
+    fn complete_read(&mut self, key: SlotKey, request: u32, result: Result<Decoded, LoadError>) {
         // A newer read replaced this one, or the version it was for failed or went meanwhile (a
         // dependency failed, a remount superseded it, the asset was unloaded).
         let Some(slot) = self.slots.get_mut(key).filter(|slot| slot.request == request) else { return };
         if slot.state == SlotState::Loading {
             match result {
-                Ok(data) => {
-                    slot.data = Some(data);
+                Ok(Decoded { data, copy }) => {
+                    (slot.data, slot.copy) = (Some(data), copy);
                     slot.state = SlotState::Waiting;
                     self.try_queue(key);
                 }
@@ -1539,8 +1572,8 @@ impl AssetServer {
             }
         } else if let Some(next) = slot.next.as_mut().filter(|next| next.stage == NextStage::Loading) {
             match result {
-                Ok(data) => {
-                    next.data = Some(data);
+                Ok(Decoded { data, copy }) => {
+                    (next.data, next.copy) = (Some(data), copy);
                     next.stage = NextStage::Waiting;
                     self.try_queue_next(key);
                 }
@@ -1583,6 +1616,7 @@ impl AssetServer {
         let admitted = slot.admitted.take();
         self.release(admitted);
         let slot = &mut self.slots[key];
+        slot.copy = None;
         if !slot.handle.kind().keeps_bytes() {
             slot.data = None;
         }
@@ -1600,7 +1634,7 @@ impl AssetServer {
         let slot = &mut self.slots[key];
         tracing::warn!(target: LOG_TARGET, id = %slot.handle.id(), kind = %slot.handle.kind(), %error, "asset failed to load");
         slot.state = SlotState::Failed(error);
-        slot.data = None;
+        (slot.data, slot.copy) = (None, None);
         let admitted = slot.admitted.take();
         self.release(admitted);
         self.failures += 1;
@@ -1809,8 +1843,15 @@ impl AssetServer {
     }
 }
 
-/// A decode job: blocks to asset, checked (see [the load pipeline](AssetServer#the-load-pipeline)).
-fn decode(toc: &Toc, entry: &Entry, stored: &[u8]) -> Result<Arc<AlignedVec>, LoadError> {
+/// What a decode job makes: the asset's checked bytes, and a mesh's CPU copy if one was asked for.
+struct Decoded {
+    data: Arc<AlignedVec>,
+    copy: Option<Mesh>,
+}
+
+/// A decode job: blocks to asset, checked (see [the load pipeline](AssetServer#the-load-pipeline)), and with
+/// `copy` a mesh's CPU copy made from it ([`AssetServer::keep_mesh_copy`]), on the job's thread, not the frame's.
+fn decode(toc: &Toc, entry: &Entry, stored: &[u8], copy: bool) -> Result<Decoded, LoadError> {
     profiling::scope!("asset decode");
     // A decoder per job rather than per worker: its zstd context lives only while it decodes, so
     // idle workers hold no decoding memory.
@@ -1823,7 +1864,19 @@ fn decode(toc: &Toc, entry: &Entry, stored: &[u8]) -> Result<Arc<AlignedVec>, Lo
     if references != toc.dependencies(entry) {
         return Err(LoadError::References { id: entry.id });
     }
-    Ok(Arc::new(bytes))
+    // A copy that can't be made fails the mesh, as its upload did when the uploader made it.
+    let copy = (copy && entry.kind == AssetKind::Mesh)
+        .then(|| {
+            // SAFETY: `references` just ran the mesh's full check on these bytes, unchanged since.
+            let mesh = unsafe { <Mesh as Asset>::view(&bytes) };
+            mesh.to_mesh().map_err(|error| LoadError::Invalid {
+                id: entry.id,
+                kind: entry.kind,
+                message: error_chain(&error),
+            })
+        })
+        .transpose()?;
+    Ok(Decoded { data: Arc::new(bytes), copy })
 }
 
 /// An error and its sources, as one line.

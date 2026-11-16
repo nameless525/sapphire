@@ -99,6 +99,18 @@ impl SyntheticZone {
         room_root(room).sub_asset("zone")
     }
 
+    /// The mesh the instances share in the zone numbered `room` ([`Self::room_id`]).
+    #[must_use]
+    pub fn room_instance_mesh(room: u32) -> AssetId {
+        room_root(room).sub_asset("instance")
+    }
+
+    /// The cooked bytes of [`Self::room_instance_mesh`], as its pack holds them.
+    #[must_use]
+    pub fn instance_patch_bytes(room: u32) -> Vec<u8> {
+        patch([0.0; 3], 1.0, 1, room_root(room).sub_asset("material"))
+    }
+
     /// The pack of the zone [`Self::room_id`] names, with its `exits`, and `extra` besides.
     ///
     /// # Panics

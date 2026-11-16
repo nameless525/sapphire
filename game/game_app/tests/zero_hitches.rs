@@ -38,6 +38,9 @@
 //!   job's time. Load screens and the frames the tier or a rung changes on are always drawn.
 //! - `SAPPHIRE_HITCH_BOOT_ONLY=1`: the boot alone, reported (and traced, if timed), then the lane ends: what a
 //!   run of many cold boots times, a few seconds each where the walk takes minutes (M5 X3).
+//! - `SAPPHIRE_HITCH_WARM_UP_THREADS=<n>`: the warm-up pool's threads (default: as many as the compute pool has),
+//!   so that a run of cold boots can compare the frame's GPU waits with the pool's compiles taking fewer of the
+//!   cores (M5 X3). The lane fails if the job system started with another count.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content: `cargo xtask content`, then
@@ -150,6 +153,34 @@ fn timed() -> bool {
 /// `SAPPHIRE_HITCH_BOOT_ONLY=1`: the boot alone.
 fn boot_only() -> bool {
     std::env::var("SAPPHIRE_HITCH_BOOT_ONLY").is_ok_and(|raw| raw == "1")
+}
+
+/// `SAPPHIRE_HITCH_WARM_UP_THREADS`, if set: the warm-up pool's threads.
+fn warm_up_threads() -> Result<Option<usize>, String> {
+    let Ok(raw) = std::env::var("SAPPHIRE_HITCH_WARM_UP_THREADS") else {
+        return Ok(None);
+    };
+    match raw.parse() {
+        Ok(threads) if threads > 0 => Ok(Some(threads)),
+        _ => Err(format!("SAPPHIRE_HITCH_WARM_UP_THREADS: {raw:?}")),
+    }
+}
+
+/// Starts the job system with the warm-up pool `SAPPHIRE_HITCH_WARM_UP_THREADS` asks for, and says how many
+/// threads it has, asked for or not. Fails if the system was already running with another count.
+fn start_jobs() -> Result<(), String> {
+    let asked = warm_up_threads()?;
+    let config = sapphire_jobs::JobConfig { warm_up_threads: asked, ..sapphire_jobs::JobConfig::default() };
+    let running = sapphire_jobs::init(config).warm_up_pool().thread_num();
+    if asked.is_some_and(|asked| asked != running) {
+        return Err(format!(
+            "SAPPHIRE_HITCH_WARM_UP_THREADS asked for {asked:?} warm-up threads; the job system was already \
+             running with {running}"
+        ));
+    }
+    let how = if asked.is_some() { "asked" } else { "default" };
+    eprintln!("zero_hitches: warm-up threads={running} ({how})");
+    Ok(())
 }
 
 /// Whether a frame built or waited for a pipeline: exit test 1's counts, all three.
@@ -820,6 +851,7 @@ impl App for OutsideCaller {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
+        start_jobs().map_err(AppInitError::msg)?;
         let tier = held_tier().map_err(AppInitError::msg)?;
         let size = size().map_err(AppInitError::msg)?;
         let held = choice_of(tier);
@@ -973,7 +1005,7 @@ impl App for OutsideCaller {
 }
 
 fn main() -> ExitCode {
-    if let Err(error) = held_tier().and(size()) {
+    if let Err(error) = held_tier().and(size()).and(warm_up_threads()) {
         eprintln!("zero_hitches: {error}");
         return ExitCode::FAILURE;
     }

@@ -654,11 +654,7 @@ fn waits(findings: &mut Findings, name: &str, rounds: &Rounds, pace: Option<u32>
             if pace.is_none() {
                 // The 30 frames are at the tier's rate (M5 Z2, the orchestrator's ruling): an unpaced run's frames
                 // are as short as the Mac draws them, so its waits are shown beside the verdict, judged on nothing.
-                // The GPU phase times no CPU rows: its frames are the warm lap's.
-                let frame = frame_ms(&round.log, phase).or_else(|| frame_ms(&round.log, "cpu")).map_or_else(
-                    || "a frame time not logged".to_owned(),
-                    |frame| format!("frames of about {frame:.1} ms"),
-                );
+                let frame = frame_text(&round.log, phase);
                 findings.notes.push(format!(
                     "{name} r{} {phase} waits, not judged: the run isn't paced at the tier's rate ({frame}), so 30 of \
                      its frames aren't the rule's; p99 {} frames, worst {}, longest open {}, the pool's longest open {}",
@@ -736,11 +732,36 @@ fn arrivals(findings: &mut Findings, name: &str, rounds: &Rounds) {
 /// About how long a phase's frames took, in ms: its `cpu frame` and `gpu wait` rows' p50 together, the frame's
 /// CPU and its wait for the GPU.
 fn frame_ms(log: &crate::scale::log::Log, phase: &str) -> Option<f64> {
-    let p50 = |row: &str| match log.timed(phase, row) {
+    Some((p50_us(log, phase, "cpu frame")? + p50_us(log, phase, "gpu wait").unwrap_or(0.0)) / 1000.0)
+}
+
+/// A timed row's p50 in a phase, in µs.
+fn p50_us(log: &crate::scale::log::Log, phase: &str, row: &str) -> Option<f64> {
+    match log.timed(phase, row) {
         Some(Entry::Read(timed)) => Some(timed.p50),
         _ => None,
-    };
-    Some((p50("cpu frame")? + p50("gpu wait").unwrap_or(0.0)) / 1000.0)
+    }
+}
+
+/// A phase's frame time for its waits' note, its own where the log gives one: the CPU's frame and its wait for
+/// the GPU, or in the `gpu` phase, which times no CPU row, the GPU's frame. Failing those, another lap's, named
+/// as that lap's.
+fn frame_text(log: &crate::scale::log::Log, phase: &str) -> String {
+    if let Some(frame) = frame_ms(log, phase) {
+        return format!("frames of about {frame:.1} ms");
+    }
+    if let Some(gpu) = p50_us(log, phase, "gpu frame") {
+        return format!("the GPU's frames of about {:.1} ms, this lap timing no CPU frame", gpu / 1000.0);
+    }
+    ["cpu", "first", "drawn"]
+        .into_iter()
+        .filter(|&other| other != phase)
+        .find_map(|other| {
+            frame_ms(log, other).map(|frame| {
+                format!("frames of about {frame:.1} ms in the {other} lap, this lap timing none")
+            })
+        })
+        .unwrap_or_else(|| "a frame time not logged".to_owned())
 }
 
 /// A line's numeric fields as `name value`, for a note.
@@ -1225,6 +1246,33 @@ mod tests {
             findings.failed.contains(&"counted-streaming r1 drawn waits: p99 53 frames".to_owned()),
             "{findings:?}"
         );
+    }
+
+    /// An unpaced run's `gpu` phase, which times no CPU frame, shows its waits with its own GPU frame, and a lap
+    /// with no frame of its own names the lap whose frame it shows.
+    #[test]
+    fn the_gpu_phases_waits_carry_its_own_frame_time() {
+        let manifest = manifest();
+        let (run, tier) = (manifest.run("streaming").expect("a run"), tier(&manifest, "desktop-high"));
+        let frame = |phase: &str, row: &str, p50: f64| {
+            format!(
+                "x INFO sapphire::sandbox: fight row phase=\"{phase}\" row=\"{row}\" samples=100 p50_us={p50:.1} \
+                 p95_us={p50:.1} p99_us={p50:.1} worst_us={p50:.1} worst_tick=1 budget_us=None proposed_us=None\n"
+            )
+        };
+        let gpu_waits = waits("28", 0).replace("drawn", "gpu");
+        let log = [frame("cpu", "cpu frame", 7_000.0), frame("cpu", "gpu wait", 3_000.0), gpu_waits.clone()]
+            .concat();
+        let own = [log.as_str(), &frame("gpu", "gpu frame", 9_100.0)].concat();
+        let findings = judge(2, run, "streaming", &tier, &rounds(&[&own]));
+        let shown = findings.notes.iter().find(|note| note.contains("gpu waits, not judged")).expect("shown");
+        assert!(
+            shown.contains("(the GPU's frames of about 9.1 ms, this lap timing no CPU frame)"),
+            "{shown}"
+        );
+        let findings = judge(2, run, "streaming", &tier, &rounds(&[&log]));
+        let shown = findings.notes.iter().find(|note| note.contains("gpu waits, not judged")).expect("shown");
+        assert!(shown.contains("(frames of about 10.0 ms in the cpu lap, this lap timing none)"), "{shown}");
     }
 
     /// Exit test 6 (M5 Z2, the orchestrator's ruling): a held bench, which its log says logs no fight rows, is

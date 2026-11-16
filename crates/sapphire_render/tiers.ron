@@ -100,8 +100,10 @@
 //   level in at 1/√2 of the distance: Desktop-Low and Mobile-Low.
 // - `texture_raise_kib` (M5 M5): the bytes of texture levels a frame may write raising streamed textures,
 //   which bounds what a raise costs a frame (copying a level into staging is most of it); the first raise
-//   of a frame goes whatever its size. PLACEHOLDERS (4096, 4096, 2048, 2048) until the district's timed
-//   walks on every tier choose them against §3.2's streaming row (spec §5.10, "As built (M5 M5)").
+//   of a frame goes whatever its size. The desktops' 8192 is M5 Z2's: the district's paced walks under
+//   the binding pool left about a sixth of 4096's long waits on the start budget (subject to the orchestrator's
+//   timed sitting with levels copied in 1 MiB pieces). The phones' 2048 are still PLACEHOLDERS until their
+//   timed walks choose them against §3.2's streaming row (spec §5.10, "As built (M5 M5)").
 // - Read by later packages: `volumetric_fog`, `screen_space_outlines` (C4) and `max_particles`
 //   (sapphire_vfx, M2).
 //
@@ -178,7 +180,7 @@
                 volumetric_fog: true,
                 screen_space_outlines: true,
                 texture_pool_mib: 2560,
-                texture_raise_kib: 4096,
+                texture_raise_kib: 8192,
                 max_particles: 50000,
                 lod_bias: 0.0,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
@@ -228,7 +230,7 @@
                 volumetric_fog: true,
                 screen_space_outlines: false,
                 texture_pool_mib: 2560,
-                texture_raise_kib: 4096,
+                texture_raise_kib: 8192,
                 max_particles: 50000,
                 lod_bias: 0.5,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),

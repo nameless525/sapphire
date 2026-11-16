@@ -1759,7 +1759,8 @@ mod tests {
         assert_eq!(invalid_field(edited(MobileLow, |tier| tier.texture_pool_mib = 0)), "texture_pool_mib");
         let raises =
             [DesktopHigh, DesktopLow, MobileHigh, MobileLow].map(|id| table.get(id).texture_raise_kib);
-        assert_eq!(raises, [4096, 4096, 2048, 2048]);
+        // The desktops' 8 MiB is M5 Z2's paced walks' (the phones' 2 MiB still placeholders).
+        assert_eq!(raises, [8192, 8192, 2048, 2048]);
         assert_eq!(invalid_field(edited(MobileLow, |tier| tier.texture_raise_kib = 0)), "texture_raise_kib");
     }
 

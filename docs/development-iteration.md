@@ -196,7 +196,7 @@ unchanged. This optimization helps the comparison stage; it does not accelerate 
 
 ## The scale lane
 
-CI's nightly scale lane (M5 X4) walks the benchmark district's `ci` preset, the tour at each tier's settings at
+CI's scale lane (M5 X4) walks the benchmark district's `ci` preset, the tour at each tier's settings at
 dusk and at night, and holds what each walk counted to [`tests/counts/district-ci.txt`](../tests/counts/district-ci.txt):
 draws and instances, triangles, each pass's draws, the pipelines, materials and vertex buffers the mesh passes
 set, the ambient pass's dispatches, what animation posed, held and thinned, what was looked at and culled, the levels drawn, lights kept
@@ -221,7 +221,23 @@ desktop-high-dusk | draw calls: total 720479 -> 720483 (up), worst 1758 -> 1762 
 why each row did; a row that moved and shouldn't have is the bug. The table's header names the district's
 sources by digest, so a change to the generator or to `bench/` fails `cargo xtask counts` until the table is rewritten
 with it (`bench/README.md` lists what else such a change moves). Each walk's log is `target/counts/<walk>.log`,
-and what every walk counted is `target/counts/counts.txt`, which CI uploads from each night's jobs.
+and what every walk counted is `target/counts/counts.txt`, which CI uploads from each job.
+
+**On CI** the lane runs on every pull request and push, a job for each desktop walk on lavapipe (the phones'
+ASTC textures can't load there; they are walked here and by `bench-scale device`). Every walk runs with three
+compute threads, so its animation jobs are the scene's, not the machine's. lavapipe on x86-64 counts a few rows
+differently from this table, which an M5's Metal takes (the crowd's arithmetic: results identical across
+architectures are a non-goal), so CI holds each walk to the table plus
+[`tests/counts/district-ci-vulkan-lavapipe.txt`](../tests/counts/district-ci-vulkan-lavapipe.txt): each
+difference with its reason. A change that moves a row the same on both needs only the table. When the CI job
+fails on a row the table holds here, the difference moved: refresh the file from the jobs' artifacts
+(`scale-lane-<walk>`), walking nothing, and give any new line its reason:
+
+```sh
+gh run download <run> -n scale-lane-desktop-high-dusk -D target/lane/desktop-high-dusk  # and the other three
+cargo run -p sapphire_testkit -- counts --table tests/counts/district-ci.txt \
+  --differences tests/counts/district-ci-vulkan-lavapipe.txt --refresh target/lane/desktop-high-dusk ...
+```
 
 ## CI setup and cache identity
 

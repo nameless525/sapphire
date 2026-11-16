@@ -171,7 +171,7 @@ Then whatever the change itself must prove. [docs/development-iteration.md](docs
 | No heap allocation inside the fixed step (R6, gate 4) | `cargo xtask replay` with a counting allocator |
 | Replays reach their per-architecture checksums | CI's Replays job on Linux, Windows (x86-64, one file) and macOS (aarch64) |
 | Golden images within FLIP gates on Metal, lavapipe and WARP | CI's Golden images jobs; `cargo xtask golden` |
-| The benchmark district's counts held exactly | CI's nightly Scale lane (lavapipe); `cargo xtask counts` |
+| The benchmark district's counts held exactly | CI's Scale lane on every PR (lavapipe, the desktop walks, with its differences file); `cargo xtask counts` |
 | GPU tests pass on a CPU rasterizer | CI's GPU tests (lavapipe) per PR; `gpu-tests-warp.yml` on `main` |
 | No boss is named in any `.rs` file, comments included; the commit that adds one to a zone touches only `content/`, `tests/replays/`, `tests/golden/` | `crates/sapphire_gameplay/tests/bosses_are_content.rs` (Linux reads the whole history) |
 | Every source under `content/` has a committed `.meta` sidecar | CI cooks with `cargo --locked xtask --locked content` |

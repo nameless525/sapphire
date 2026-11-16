@@ -119,6 +119,55 @@ pub(crate) const MAX_STARTS: usize = 16;
 /// rest wait their turn, the most wanted lowered first, and what the pool can't hold yet doesn't start.
 pub(crate) const MAX_LOWERS: usize = 32;
 
+/// Levels a texture can have above its smallest, for [`Wanted::lowered_at`]: a side of 32,768 texels.
+const MAX_LEVELS: usize = 16;
+
+/// Updates within which a level raised again after it was lowered off counts as churn
+/// ([`TextureStreamingStats::reraised_bytes`]): five seconds at 60 frames a second (M5 Z2).
+pub const RERAISE_WITHIN: u32 = 300;
+
+/// Frames past which a wait fails exit test 2's rule ("within 30 frames"), for [`WaitReasons::long`].
+pub const LONG_WAIT: u32 = 30;
+
+/// What held a wait for a texture's level longest (M5 Z2), for [`WaitReasons`]: the frame's start budget (its
+/// levels not yet asked for: [`MAX_STARTS`], the bytes a frame may start, or the pool's room for them), the
+/// loading (asked for, being read, decoded or queued for upload), the raise budget (come, and waiting for the
+/// frame's bytes of raises); or the pool, while the views' needs fit it, or while they want more than it holds.
+/// A wait the pool held at any frame is the pool's, of the second kind if the views wanted more at any of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitReason {
+    StartBudget,
+    Loading,
+    RaiseBudget,
+    PoolViewsFit,
+    PoolViewsOver,
+}
+
+impl WaitReason {
+    pub const ALL: [Self; 5] =
+        [Self::StartBudget, Self::Loading, Self::RaiseBudget, Self::PoolViewsFit, Self::PoolViewsOver];
+
+    /// Its name on the bench's lines.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::StartBudget => "start_budget",
+            Self::Loading => "loading",
+            Self::RaiseBudget => "raise_budget",
+            Self::PoolViewsFit => "pool_views_fit",
+            Self::PoolViewsOver => "pool_views_over",
+        }
+    }
+}
+
+/// Completed waits that took a frame or more, by what held them longest ([`WaitReason`], by index), all of them
+/// and those over [`LONG_WAIT`] frames; counted as [`TextureWaits`] are, from the same start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WaitReasons {
+    pub waited: [u32; 5],
+    pub long: [u32; 5],
+}
+
 /// How the streamer chooses ([`crate::Content::set_texture_streaming`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextureStreaming {
@@ -178,6 +227,12 @@ pub struct TextureStreamingStats {
     pub waits: TextureWaits,
     /// Waits the pool held at any frame: long because the pool kept the texture coarser, not the loads.
     pub pool_waits: TextureWaits,
+    /// What held the completed waits of both kinds longest, counted from the same start (M5 Z2).
+    pub reasons: WaitReasons,
+    /// Bytes of levels raised from the same start, on the GPU's count, and of them the levels raised again within
+    /// [`RERAISE_WITHIN`] updates of being lowered off: the churn, levels traded back and forth (M5 Z2).
+    pub raised_bytes: u64,
+    pub reraised_bytes: u64,
 }
 
 impl TextureStreamingStats {
@@ -284,6 +339,9 @@ pub(crate) struct TextureLevels {
     /// Levels the last [`Self::follow`] raised or lowered, and textures it started loading levels for: none,
     /// and with nothing on its way a capture's finishing is as settled as it gets.
     progress: u32,
+    /// Budgeted updates on this renderer, from 1, for when each level was lowered off
+    /// ([`Wanted::lowered_at`]).
+    updates: u32,
 }
 
 /// One texture's levels.
@@ -307,6 +365,9 @@ struct Wanted {
     failed: Option<u32>,
     /// The deepest level the server let go of while it was on the GPU: the texture goes under it.
     lost: Option<u32>,
+    /// The update each level was last lowered off (0 for never), by level: what a raise reads to count the
+    /// churn ([`TextureStreamingStats::reraised_bytes`]).
+    lowered_at: [u32; MAX_LEVELS],
 }
 
 /// What the streamer chose for one texture.
@@ -335,6 +396,10 @@ struct Choice {
     start: Option<LoadPriority>,
     /// It may lower to its plan this frame ([`MAX_LOWERS`]).
     lower: bool,
+    /// Frames of its open wait each loads' reason held it: the start budget, the loading, the raise budget.
+    held_by: [u16; 3],
+    /// The pool held it at a frame of its open wait while the views wanted more than the pool.
+    held_over: bool,
 }
 
 /// A plan the pool held coarser than a texture's target: where the next frame's plan starts from.
@@ -346,6 +411,25 @@ struct PoolLowered {
 }
 
 impl Choice {
+    /// What held its open wait longest: the pool if it held it at any frame, else the loads' reason that held it
+    /// the most frames, the earliest of a tie.
+    fn reason(&self) -> WaitReason {
+        match (self.debt_held, self.held_over) {
+            (true, true) => WaitReason::PoolViewsOver,
+            (true, false) => WaitReason::PoolViewsFit,
+            (false, _) => {
+                let [start, loading, raise] = self.held_by;
+                if start >= loading && start >= raise {
+                    WaitReason::StartBudget
+                } else if loading >= raise {
+                    WaitReason::Loading
+                } else {
+                    WaitReason::RaiseBudget
+                }
+            }
+        }
+    }
+
     /// The top it would plan with the pool's room: its target, under the level `floor` that failed, no deeper
     /// than `above`.
     fn base(&self, above: u32, floor: u32) -> u32 {
@@ -683,8 +767,13 @@ impl TextureLevels {
             }
             None => 0,
         };
+        if !unlimited {
+            self.updates = self.updates.wrapping_add(1).max(1);
+        }
+        let update = self.updates;
         let Self { textures: wants, asked, give_back, .. } = self;
         let (mut raised, mut lowered) = (0, 0);
+        let (mut raised_bytes, mut reraised_bytes) = (0, 0);
         let mut raising = std::time::Duration::ZERO;
         let mut change = 0;
         wants.retain(|&id, wanted| {
@@ -722,6 +811,21 @@ impl TextureLevels {
             }
             change += texture.bytes() as i64 - before.0 as i64;
             let after = texture.top();
+            // Which levels went and came, for the churn's count: the update each level was lowered off, and the
+            // bytes of those raised again within `RERAISE_WITHIN` updates of it.
+            for index in before.1..after {
+                if let Some(stamp) = wanted.lowered_at.get_mut(index as usize) {
+                    *stamp = update;
+                }
+            }
+            for index in after..before.1 {
+                let bytes = texture.whole().level_byte_len(index);
+                raised_bytes += bytes;
+                let lowered_at = wanted.lowered_at.get(index as usize).copied().unwrap_or(0);
+                if lowered_at > 0 && update.wrapping_sub(lowered_at) <= RERAISE_WITHIN {
+                    reraised_bytes += bytes;
+                }
+            }
             raised += before.1.saturating_sub(after);
             lowered += after.saturating_sub(before.1);
             // Nothing binds it and nothing's held of it: it's at its tail, with nothing left to do.
@@ -731,6 +835,8 @@ impl TextureLevels {
         let Self { textures: wants, asked, stats, .. } = self;
         // The budgeted pass is a frame's first, its update's; an unbudgeted one finishes the same frame.
         add_pass(stats, !unlimited, [raised, lowered, started]);
+        stats.raised_bytes += raised_bytes;
+        stats.reraised_bytes += reraised_bytes;
         count(wants, asked, textures, streaming, stats);
         if !unlimited {
             stats.raising = raising;
@@ -1046,6 +1152,8 @@ fn count(
     for waits in [&mut stats.waits, &mut stats.pool_waits] {
         (waits.open, waits.longest_open) = (0, 0);
     }
+    // The views want more than the pool: this frame's plan, made before the count.
+    let views_over = streaming.is_some() && stats.wanted > stats.pool;
     for (&id, wanted) in wants.iter_mut() {
         let Some(texture) = textures.get(&id).map(|held| &held.object) else { continue };
         let above = texture.above();
@@ -1063,6 +1171,22 @@ fn count(
         let floor = wanted.failed.map_or(0, |failed| failed + 1).min(above);
         let required = need.max(floor);
         let pool_held = streaming.is_some() && wanted.choice.planned > required;
+        // What holds it this frame, if it's waiting: its next level come and not raised, asked for and not come,
+        // or not asked for yet; or the pool, while the views want more than it holds.
+        if top > required {
+            let choice = &mut wanted.choice;
+            if pool_held {
+                choice.held_over |= views_over;
+            } else {
+                let next = top - 1;
+                let by = if wanted.arrived.contains_key(&next) {
+                    2
+                } else {
+                    usize::from(wanted.handles.contains_key(&next))
+                };
+                choice.held_by[by] = choice.held_by[by].saturating_add(1);
+            }
+        }
         if wait(&mut wanted.choice, top, required, pool_held, stats) {
             in_debt += 1;
             worst_debt = worst_debt.max(wanted.choice.debt);
@@ -1088,6 +1212,7 @@ fn start_waits_over(stats: &mut TextureStreamingStats) {
     for waits in [&mut stats.waits, &mut stats.pool_waits] {
         waits.frames = [0; WAIT_BINS];
     }
+    (stats.reasons, stats.raised_bytes, stats.reraised_bytes) = (WaitReasons::default(), 0, 0);
 }
 
 /// Counts a texture's debt at an update, with its top at `top` and what it needs at `required`, and its wait
@@ -1113,7 +1238,12 @@ fn wait(
         if choice.debt > 0 || required < choice.counted_top {
             waits.complete(choice.debt);
         }
-        (choice.debt, choice.debt_held) = (0, false);
+        if choice.debt > 0 {
+            let reason = choice.reason();
+            stats.reasons.waited[reason as usize] += 1;
+            stats.reasons.long[reason as usize] += u32::from(choice.debt > LONG_WAIT);
+        }
+        (choice.debt, choice.debt_held, choice.held_by, choice.held_over) = (0, false, [0; 3], false);
     }
     choice.counted_top = top;
     in_debt

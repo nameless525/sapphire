@@ -130,7 +130,8 @@ pub use scene::Scene;
 pub use show::{ContentChanges, SceneShow};
 pub use showcase::{InsetShot, Showcased};
 pub use texture_levels::{
-    TextureLevelState, TextureStreaming, TextureStreamingStats, TextureWaits, WAIT_BINS,
+    LONG_WAIT, RERAISE_WITHIN, TextureLevelState, TextureStreaming, TextureStreamingStats, TextureWaits,
+    WAIT_BINS, WaitReason, WaitReasons,
 };
 
 /// Log target for the stage.

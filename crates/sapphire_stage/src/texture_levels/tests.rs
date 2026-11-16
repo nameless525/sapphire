@@ -343,6 +343,36 @@ fn a_wait_lands_in_the_bin_of_the_frames_it_took() {
     assert_eq!(stats.waits.completed(), 5);
 }
 
+/// A completed wait's reason is what held it longest (M5 Z2): the pool at any frame makes it the pool's, of the
+/// views-over kind if the views wanted more than the pool then; else the loads' reason with the most frames. A
+/// wait over `LONG_WAIT` frames counts as long too.
+#[test]
+fn a_waits_reason_is_what_held_it_longest() {
+    let mut stats = TextureStreamingStats::default();
+    let mut waited = |held_by: [u16; 3], held: (bool, bool), frames: u32| {
+        let mut choice = Choice::default();
+        count_wait(&mut choice, &mut stats, 2, 2, false);
+        for _ in 0..frames {
+            count_wait(&mut choice, &mut stats, 5, 2, held.0);
+        }
+        (choice.held_by, choice.held_over) = (held_by, held.1);
+        count_wait(&mut choice, &mut stats, 2, 2, false);
+    };
+    waited([3, 1, 0], (false, false), 4);
+    waited([1, 5, 0], (false, false), 40);
+    waited([0, 2, 2], (false, false), 4);
+    waited([0, 0, 3], (false, false), 3);
+    waited([9, 0, 0], (true, false), 9);
+    waited([0, 0, 0], (true, true), 31);
+    let [start, loading, raise, fit, over] = WaitReason::ALL.map(|reason| reason as usize);
+    let reasons = stats.reasons;
+    assert_eq!([reasons.waited[start], reasons.waited[loading], reasons.waited[raise]], [1, 2, 1]);
+    assert_eq!([reasons.waited[fit], reasons.waited[over]], [1, 1]);
+    assert_eq!(reasons.long, [0, 1, 0, 0, 1], "40 and 31 frames are over 30");
+    start_waits_over(&mut stats);
+    assert_eq!(stats.reasons, WaitReasons::default(), "they start over with the waits");
+}
+
 /// The percentile of completed waits at the bins' edges.
 #[test]
 fn a_percentile_of_waits_reads_its_bin() {

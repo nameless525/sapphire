@@ -68,7 +68,7 @@ use game_combat::combat::CombatOption;
 use game_combat::fight::trip::TripPhase;
 use sapphire_stage::FrameLaps;
 use sapphire_stage::audio::OfflineAudio;
-use sapphire_stage::{TextureStreamingStats, WAIT_BINS};
+use sapphire_stage::{LONG_WAIT, RERAISE_WITHIN, TextureStreamingStats, WAIT_BINS, WaitReason};
 
 pub(crate) mod counts;
 mod zone;
@@ -860,6 +860,22 @@ pub(crate) fn report_texture_waits(phase: &'static str, stats: &TextureStreaming
         pool_open = line.pool_open,
         pool_longest_open_frames = line.pool_longest_open,
         "texture waits",
+    );
+    // Beside it, what held the waits longest and the churn (M5 Z2): read, never judged.
+    let mut reasons = String::new();
+    for reason in WaitReason::ALL {
+        let index = reason as usize;
+        let (waited, long) = (stats.reasons.waited[index], stats.reasons.long[index]);
+        let _ = write!(reasons, " {}={waited} {}_long={long}", reason.name(), reason.name());
+    }
+    tracing::info!(
+        target: LOG_TARGET,
+        phase,
+        long_over_frames = LONG_WAIT,
+        raised_bytes = stats.raised_bytes,
+        reraised_bytes = stats.reraised_bytes,
+        reraised_within_updates = RERAISE_WITHIN,
+        "texture wait reasons{reasons}",
     );
 }
 

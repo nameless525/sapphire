@@ -259,6 +259,60 @@ impl Pace {
     }
 }
 
+/// A counting walk's texture streamer CPU per measured frame while streaming, by its parts (M5 Z2): the
+/// estimate of the frame's coverage, the choosing (the plan over every texture, the lowers and the asks: the
+/// update's time less its raising) and the raising. Read, never judged: a counting walk times nothing else.
+struct TexturePartsWalk {
+    coverage: Vec<Duration>,
+    choosing: Vec<Duration>,
+    raising: Vec<Duration>,
+}
+
+impl TexturePartsWalk {
+    fn with_capacity(frames: usize) -> Self {
+        let parts = || Vec::with_capacity(frames);
+        Self { coverage: parts(), choosing: parts(), raising: parts() }
+    }
+
+    fn push(&mut self, stats: &sapphire_stage::TextureStreamingStats) {
+        if stats.streaming && self.coverage.len() < self.coverage.capacity() {
+            self.coverage.push(stats.coverage_time);
+            self.choosing.push(stats.time.saturating_sub(stats.raising));
+            self.raising.push(stats.raising);
+        }
+    }
+
+    fn log(mut self) {
+        if self.coverage.is_empty() {
+            return;
+        }
+        let mut total: Vec<Duration> = self
+            .coverage
+            .iter()
+            .zip(&self.choosing)
+            .zip(&self.raising)
+            .map(|((a, b), c)| *a + *b + *c)
+            .collect();
+        let micros = |parts: &mut Vec<Duration>, p: usize| {
+            parts.sort_unstable();
+            parts[(parts.len() - 1) * p / 100].as_secs_f64() * 1e6
+        };
+        tracing::info!(
+            target: LOG_TARGET,
+            frames = total.len(),
+            total_us_p50 = format_args!("{:.1}", micros(&mut total, 50)),
+            total_us_p99 = format_args!("{:.1}", micros(&mut total, 99)),
+            coverage_us_p50 = format_args!("{:.1}", micros(&mut self.coverage, 50)),
+            coverage_us_p99 = format_args!("{:.1}", micros(&mut self.coverage, 99)),
+            choosing_us_p50 = format_args!("{:.1}", micros(&mut self.choosing, 50)),
+            choosing_us_p99 = format_args!("{:.1}", micros(&mut self.choosing, 99)),
+            raising_us_p50 = format_args!("{:.1}", micros(&mut self.raising, 50)),
+            raising_us_p99 = format_args!("{:.1}", micros(&mut self.raising, 99)),
+            "texture streaming cpu"
+        );
+    }
+}
+
 /// What's left of a paced frame `since` after it began: none once it has run its `period` or longer.
 fn pace_left(since: Duration, period: Duration) -> Duration {
     period.saturating_sub(since)
@@ -314,6 +368,10 @@ pub(crate) fn run(
     // And spring bones' within it, and the sub-steps they ran.
     let mut springs = Vec::with_capacity(cpu.capacity());
     let mut spring_substeps = 0_u64;
+    // The texture streamer's CPU per measured frame while streaming, by its parts (M5 Z2): the estimate, the
+    // choosing (planning over every texture), the raising.
+    let walking = options.draw_every.is_some() && options.zone.is_some() && options.zone_walk.is_some();
+    let mut streamer = TexturePartsWalk::with_capacity(if walking { cpu.capacity() } else { 0 });
     let mut anim_ik = 0_u64;
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
@@ -391,6 +449,9 @@ pub(crate) fn run(
             anim_evaluated += u64::from(stats.evaluated);
             anim_joints += u64::from(stats.joints);
             springs.push(stats.spring_time);
+            if counting_walk {
+                streamer.push(&stage.content.texture_streaming_stats());
+            }
             spring_substeps += u64::from(stats.spring_substeps);
             anim_teleports = stats.teleports;
             anim_ik += u64::from(stats.ik);
@@ -423,6 +484,7 @@ pub(crate) fn run(
     zone_walk.log(&stage, options);
     if let Some(drawn) = &drawn {
         drawn.log(&stage);
+        streamer.log();
         // Exit test 2's waits over the counting walk, as its one phase, `drawn` (while streaming).
         crate::fight_bench::report_texture_waits("drawn", &stage.content.texture_streaming_stats());
     }

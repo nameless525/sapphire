@@ -335,7 +335,9 @@ impl AssetServer {
                     hash: entry.hash,
                     admitted: None,
                 };
+                let before = self.resident(key);
                 self.slots[key].next = Some(next);
+                self.recount(key, before);
                 self.read(key);
             }
             Err(error) => self.reload_failed(key, error),
@@ -376,11 +378,13 @@ impl AssetServer {
     /// current one behind every handle, and the dependencies only the old version had are
     /// released.
     pub(super) fn swap(&mut self, key: SlotKey) {
+        let before = self.resident(key);
         let slot = &mut self.slots[key];
         let next = slot.next.take().expect("only a slot with a next version swaps");
         slot.data = if slot.handle.kind().keeps_bytes() { next.data } else { None };
         (slot.size, slot.hash) = (next.size, next.hash);
         let old = std::mem::replace(&mut slot.children, next.children);
+        self.recount(key, before);
         self.release(next.admitted);
         self.unlink(key, &old);
         self.replaced(key);
@@ -453,7 +457,9 @@ impl AssetServer {
     /// had and the bytes it was admitted with. A read of it in flight is ignored when it completes,
     /// and one still held back is dropped.
     pub(super) fn cancel_next(&mut self, key: SlotKey) {
+        let before = self.resident(key);
         if let Some(next) = self.slots[key].next.take() {
+            self.recount(key, before);
             // Only a ready asset has a next version, so a read held back was the next version's.
             self.unhold(key);
             self.release(next.admitted);
@@ -465,6 +471,7 @@ impl AssetServer {
     /// ([`Self::reupload_all`]): its pack may no longer hold the version the asset has. Uploading
     /// it makes the next generation.
     pub(super) fn promote(&mut self, key: SlotKey) {
+        let before = self.resident(key);
         let slot = &mut self.slots[key];
         let next = slot.next.take().expect("only a slot with a next version is promoted");
         (slot.size, slot.hash) = (next.size, next.hash);
@@ -485,6 +492,7 @@ impl AssetServer {
             }
         }
         let old = std::mem::replace(&mut slot.children, next.children);
+        self.recount(key, before);
         self.unlink(key, &old);
     }
 }

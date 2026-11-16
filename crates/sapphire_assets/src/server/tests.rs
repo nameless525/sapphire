@@ -519,7 +519,31 @@ fn residency_unloads_the_least_recently_used_and_never_what_is_used_or_pinned() 
     server.update();
     assert_eq!(unloaded(&mut server), [id(3)]);
     assert_eq!(server.stats().resident[AssetKind::Texture.index()], 3 * size);
+    assert_eq!(server.in_use(AssetKind::Texture), 3 * size, "the running sum, as the update counted");
     drop((d, e, f));
+}
+
+/// The pool's bytes in use are a running sum (M5 Z2): a load counts from its request, before any update,
+/// an eviction takes it off, and each update checks the sum against a walk of every slot (debug builds).
+#[test]
+fn the_pools_bytes_in_use_count_from_the_load_to_the_unload() {
+    let assets = textures(3);
+    let size = assets[0].size;
+    let mut budgets = unlimited();
+    budgets.resident[AssetKind::Texture.index()] = 2 * size;
+    let (mut server, _) = serve(assets, budgets);
+    let a: Handle<TextureAsset> = server.load(id(1)).unwrap();
+    assert_eq!(server.in_use(AssetKind::Texture), size, "from its load");
+    let b: Handle<TextureAsset> = server.load(id(2)).unwrap();
+    server.finish(&b, |_| Ok(())).unwrap();
+    assert_eq!(server.in_use(AssetKind::TextureLevel), 2 * size, "levels share the textures' pool");
+    server.finish(&a, |_| Ok(())).unwrap();
+    drop(a);
+    server.update();
+    let c: Handle<TextureAsset> = server.load(id(3)).unwrap();
+    server.finish(&c, |_| Ok(())).unwrap();
+    assert_eq!(server.in_use(AssetKind::Texture), 2 * size, "A, unused, went for C");
+    drop((b, c));
 }
 
 #[test]

@@ -814,6 +814,9 @@ pub struct AssetServer {
     /// Reused while choosing what to admit.
     admission_scratch: Vec<ReadOrder>,
     resident_peak: [u64; AssetKind::ALL.len()],
+    /// Each pool's bytes in use now, by its kind's index ([`Self::in_use`]): kept as each slot's resident size
+    /// changes, at its load, its read, its failure, its next version and its removal (M5 Z2).
+    in_use: [u64; AssetKind::ALL.len()],
     sender: Sender<Completion>,
     receiver: Receiver<Completion>,
     reads_in_flight: u32,
@@ -882,6 +885,7 @@ impl AssetServer {
             given_back: 0,
             admission_scratch: Vec::new(),
             resident_peak: [0; AssetKind::ALL.len()],
+            in_use: [0; AssetKind::ALL.len()],
             sender,
             receiver,
             reads_in_flight: 0,
@@ -905,15 +909,33 @@ impl AssetServer {
 
     /// Bytes `kind`'s pool ([`AssetBudgets::pool`]) holds now, every asset in it from its load on, as the
     /// residency count at [`Self::update`] takes them ([`AssetStats::over_budget`]): the one count of the pool
-    /// that a streamer within it plans by (M5 Z2). It walks every slot.
+    /// that a streamer within it plans by (M5 Z2). A running sum, kept as each slot's resident size changes;
+    /// each [`Self::update`] checks it against a walk of every slot in debug builds.
     #[must_use]
     pub fn in_use(&self, kind: AssetKind) -> u64 {
+        self.in_use[AssetBudgets::pool(kind).index()]
+    }
+
+    /// [`Self::in_use`] by a walk of every slot: what the running sum must equal.
+    fn in_use_walked(&self, kind: AssetKind) -> u64 {
         let pool = AssetBudgets::pool(kind);
         self.slots
             .values()
             .filter(|slot| AssetBudgets::pool(slot.handle.kind()) == pool)
             .map(Slot::resident_size)
             .sum()
+    }
+
+    /// Keeps [`Self::in_use`] as the slot in `key`'s resident size goes from `before` to what it is now.
+    pub(super) fn recount(&mut self, key: SlotKey, before: u64) {
+        let slot = &self.slots[key];
+        let pool = &mut self.in_use[AssetBudgets::pool(slot.handle.kind()).index()];
+        *pool = (*pool + slot.resident_size()).saturating_sub(before);
+    }
+
+    /// The slot in `key`'s resident size, before a change [`Self::recount`] keeps.
+    pub(super) fn resident(&self, key: SlotKey) -> u64 {
+        self.slots[key].resident_size()
     }
 
     /// Holds every mount and remount from here on to `release`: a pack it doesn't name, or whose file isn't
@@ -1033,6 +1055,7 @@ impl AssetServer {
             replaces: false,
             next: None,
         });
+        self.recount(key, 0);
         self.by_id.insert(id, key);
         self.loads += 1;
         self.resolve(key);
@@ -1056,10 +1079,12 @@ impl AssetServer {
         match self.load_dependencies(key, toc.dependencies(&entry)) {
             Ok(children) => {
                 self.set_children(key, children);
+                let before = self.resident(key);
                 let slot = &mut self.slots[key];
                 // Other bytes than the last version's are a new generation for an app holding it.
                 slot.replaces |= slot.loaded && slot.hash != entry.hash;
                 (slot.size, slot.hash) = (entry.size, entry.hash);
+                self.recount(key, before);
                 self.request_read(key);
             }
             Err(error) => self.fail(key, error),
@@ -1514,9 +1539,11 @@ impl AssetServer {
 
     /// Starts reading and decoding the asset in `key` into its main state.
     fn request_read(&mut self, key: SlotKey) {
+        let before = self.resident(key);
         let slot = &mut self.slots[key];
         slot.state = SlotState::Loading;
         (slot.data, slot.copy) = (None, None);
+        self.recount(key, before);
         self.read(key);
     }
 
@@ -1644,10 +1671,13 @@ impl AssetServer {
 
     /// Fails an asset, and every asset loading or waiting on it, or reloading with it.
     fn fail(&mut self, key: SlotKey, error: LoadError) {
+        let before = self.resident(key);
         let slot = &mut self.slots[key];
         tracing::warn!(target: LOG_TARGET, id = %slot.handle.id(), kind = %slot.handle.kind(), %error, "asset failed to load");
         slot.state = SlotState::Failed(error);
         (slot.data, slot.copy) = (None, None);
+        self.recount(key, before);
+        let slot = &mut self.slots[key];
         let admitted = slot.admitted.take();
         self.release(admitted);
         self.failures += 1;
@@ -1725,6 +1755,12 @@ impl AssetServer {
                 excess = left;
             }
             self.over_budget[kind.index()] = excess;
+        }
+        // The running sums each pool's streamer plans by are a walk's (M5 Z2).
+        if cfg!(debug_assertions) {
+            for kind in AssetKind::ALL.into_iter().filter(|&kind| AssetBudgets::pool(kind) == kind) {
+                assert_eq!(self.in_use(kind), self.in_use_walked(kind), "{kind}'s pool's running sum");
+            }
         }
     }
 
@@ -1841,6 +1877,9 @@ impl AssetServer {
     /// if that was their last.
     fn remove(&mut self, key: SlotKey) {
         self.unhold(key);
+        let before = self.resident(key);
+        let pool = AssetBudgets::pool(self.slots[key].handle.kind()).index();
+        self.in_use[pool] = self.in_use[pool].saturating_sub(before);
         let slot = self.slots.remove(key).expect("removing a live slot");
         self.release(slot.admitted);
         self.release(slot.next.as_ref().and_then(|next| next.admitted));

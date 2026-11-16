@@ -8,14 +8,14 @@ It is run three times: a rehearsal before the last packages land ("Rehearsal at 
 
 | Exit test | Who answers it | Needs | Where it stands |
 |---|---|---|---|
-| 1. The district holds the frame | This Mac: counted walks for draws and lights, timed walks for §3.2 and §3.3; CI's scale lane by counts | Every reference device; exclusive GPU pass times on a Vulkan or DX12 GPU | Not yet run |
-| 2. Memory holds under a hard pool | This Mac by the engine's counters; the Simulator and the emulator by the same counters on the `ci` district (`bench-scale device`) | A phone's memory limit and its kill, a discrete GPU's VRAM, a person judging a late level | Not yet run |
-| 3. The look survives scale | Metal here, lavapipe and WARP in CI | A person's eye on motion | Not yet run |
-| 4. The picture's missing parts | Metal here, lavapipe and WARP in CI, the budget rows timed here | An artist's eye, Zenless Zone Zero references | Not yet run |
-| 5. Characters at budget | This Mac, timed and counted; the anim and pipeline tests | Authored characters, clips and voice; a person's verdict on cloth and faces | Not yet run |
-| 6. A crowd | This Mac and CI | Nothing | Not yet run |
-| 7. No hitches at scale | This Mac cold and warm, CI by counts | A phone driver's cold compile | Not yet run |
-| 8. Still authorable | This Mac | Nothing | Not yet run |
+| 1. The district holds the frame | This Mac: counted walks for draws and lights, timed walks for §3.2 and §3.3; CI's scale lane by counts | Every reference device; exclusive GPU pass times on a Vulkan or DX12 GPU | Rehearsed at ce7707fd9: **fails** on the desktops' counted draws; the timed rows not run |
+| 2. Memory holds under a hard pool | This Mac by the engine's counters; the Simulator and the emulator by the same counters on the `ci` district (`bench-scale device`) | A phone's memory limit and its kill, a discrete GPU's VRAM, a person judging a late level | Rehearsed: **fails** on the waits for a texture's level, every tier, and the desktops' bytes over budget; the timed rows not run |
+| 3. The look survives scale | Metal here, lavapipe and WARP in CI | A person's eye on motion | Rehearsed: passes, two moved references waiting on a ruling |
+| 4. The picture's missing parts | Metal here, lavapipe and WARP in CI, the budget rows timed here | An artist's eye, Zenless Zone Zero references | Rehearsed: passes; the timed pairs not run |
+| 5. Characters at budget | This Mac, timed and counted; the anim and pipeline tests | Authored characters, clips and voice; a person's verdict on cloth and faces | Rehearsed: the tests pass; the timed rows not run |
+| 6. A crowd | This Mac and CI | Nothing | Rehearsed: the count and the replays pass; the timed row not run |
+| 7. No hitches at scale | This Mac cold and warm, CI by counts | A phone driver's cold compile | Rehearsed: passes, by counts and tests |
+| 8. Still authorable | This Mac | Nothing | Rehearsed: all ten recipes walked with no Rust |
 
 **The shortest path:** "Before anything", then `cargo xtask bench-scale run --counts`, `bench-scale device` on each device, and `report` (the counted halves of exit tests 1, 2, 6 and 7), the GPU tests and goldens under exit test 3, and the replays under exit tests 6 and 7. That's everything but the timed sittings, in an afternoon once prepared. The timed sittings (exit tests 1, 2 and 5, and the crowd's row in 6) need the machine to themselves, about ten minutes each.
 
@@ -297,30 +297,49 @@ git diff --stat main -- '*.rs'    # empty: no Rust
 
 **Can't prove here:** nothing §1 names.
 
-## Rehearsal at <commit>
+## Rehearsal at ce7707fd9
 
-The date, the commit, the machine (model, macOS, Xcode), the load, and how the timed sittings were run. Then a row a test and tier:
+2026-11-16, at ce7707fd9 (the line being landed, ahead of `main`), in agent worktrees; the machine an Apple M5 with 24 GB, macOS 27.0.1, Xcode 26.2. **Every reading below is a count or a test's pass, none a time,** and none was taken on a quiet machine. `prepare` took 832 s on a warm `target/bench/cache` (four `budget` cooks and the release build), in a plain gate slot at a load of 20 to 30; `run --counts` took 1,141 s for its 40 units (two rounds each), and the named tests ran beside it, at loads from 9 to 168 (the 1-minute average) while seven other agents built; the recipes ran later the same night, one plain gate slot at a time, at loads of 3 to 12. **No timed sitting was run:** every timed row reads "timed sitting: not run in this pass", and its sittings wait for the orchestrator's quiet window, from a worktree left at ce7707fd9. `plan` leaves 54 sittings, 431 minutes by the units' stated lengths. The goldens, the GPU suites and the replays are the line's gate at ce7707fd9, which passed whole: 463 Metal goldens, 452 renderer GPU tests, the GPU library suites (112, 9 and 102), 21 viewport tests, the replays, `cargo xtask counts` and 6,442 tests. `report` exits 1 on the fails below. On disk: `target/bench-scale/ce7707fd9/` 3.0 GB (its content hard-linked from `target/bench/`), `target/bench/` 18 GB (the `budget` cooks 12 GB, the cache 5.5 GB, `ci` 0.3 GB).
 
 | Exit test | Tier | What was read | Measured | Budget | Verdict | Evidence |
 |---|---|---|---|---|---|---|
-| 1, `main draws` | Desktop-High | `counted`, `counted-night`, `counted-fight`, worst | | 2,500 | | `logs/counted.desktop-high.r1.log` and beside it |
-| 1, `main draws` | Desktop-Low | | | 2,500 | | |
-| 1, `main draws` | Mobile-High | | | 700 | | |
-| 1, `main draws` | Mobile-Low | | | 700 | | |
-| 1, `lights` | each tier | | | 64 / 64 / 8 / 8 | | |
-| 1, `cpu frame`, `gpu frame` | each tier, each timed run | | | §3.1 | | `report.md` |
-| 1, §3.2 / §3.3 rows | Desktop-Low, Mobile-Low | | | §3.2, §3.3 | | |
-| 2, pool and process | each tier | | | the run's pool; §3.1 | | |
-| 2, `texture waits` | each tier, each phase | | | 30 frames | | |
-| 2, decoded waiting; the pool's floor | each tier | `counted-streaming`'s `zone closed` | | 256 / 64 MiB; the floor | | |
-| 2, the iOS Simulator, counts only | Mobile-High, Mobile-Low | `device-streaming` on the `ci` district | | 13 MiB pool; 64 MiB; 30 frames; pipelines 0 | | `logs/device-streaming.mobile-high.ios-sim.r1.log` and beside it |
-| 2, the Android emulator, counts only | Mobile-High, Mobile-Low | `device-streaming` on the `ci` district | | 13 MiB pool; 64 MiB; 30 frames; pipelines 0 | | `logs/device-streaming.mobile-high.android.r1.log` and beside it |
-| 3 | all | goldens, on/off tests, switch | | | | |
-| 4 | all | eight features' checklist | | | | |
-| 5 | each tier | Cast rows; tests | | §3.2, §3.3 | | |
-| 6 | each tier | spawned; `animation and ik`; replays | | 60 / 60 / 30 / 30 | | |
-| 7 | each tier | `zone walk` counts; district fight; `zero_hitches` | | 0 | | |
-| 8 | all | ten recipes | | no Rust | | |
+| 1, `main draws` | Desktop-High | `counted`, `counted-night`, `counted-fight`, worst | 2,622 (`counted` and both `counted-night`, at the tour's 1.5 m); 1,665 (`counted-fight`); the same each round | 2,500 | **fail** | `logs/counted.desktop-high.r1.log` and beside it; the report's Verdicts |
+| 1, `main draws` | Desktop-Low | the same | 2,626; 1,665 | 2,500 | **fail** | `logs/counted.desktop-low.r1.log` and beside it |
+| 1, `main draws` | Mobile-High | the same | 588; 391 | 700 | pass (counts) | `logs/counted.mobile-high.r1.log` and beside it |
+| 1, `main draws` | Mobile-Low | the same | 583; 482 | 700 | pass (counts) | `logs/counted.mobile-low.r1.log` and beside it |
+| 1, `lights` | each tier | the same, worst | 64 / 64 / 8 / 8 on every walk, exactly the cap (`lights dropped` up to 320 on Desktop-High: the cap holds the row) | 64 / 64 / 8 / 8 | pass | the counted logs |
+| 1, `cpu frame`, `gpu frame` | each tier, each timed run | the timed runs | timed sitting: not run in this pass | §3.1 | not judged | `report.md` |
+| 1, §3.2 / §3.3 rows | Desktop-Low, Mobile-Low | the timed runs | timed sitting: not run in this pass | §3.2, §3.3 | not judged | `report.md` |
+| 2, pool and process | each tier | `counted-streaming`'s `bytes over budget in use` and `streamed texture bytes`; `streaming`'s Process | over budget in use, worst: 3,428,652 (r1) and 2,179,076 (r2) bytes on Desktop-High, 23,612,804 and 287,460 on Desktop-Low, not exercised on the phones; streamed bytes, worst: 1,342,148,074 / 1,342,148,074 / 315,963,541 / 255,146,133, under each run's pool; the process: timed sitting: not run in this pass | 0; 1280 / 1280 / 331 / 331 MiB; §3.1 | **fail** on the desktops (bytes over budget in use); streamed bytes pass | `logs/counted-streaming.<tier>.r<n>.log` |
+| 2, `texture waits` | each tier, each phase | `counted-streaming`'s `drawn` line; `streaming`'s phases | `p99_frames=32+` on every tier and round (p50 24, 9, 2 and 2 frames; 10,710, 10,327, 8,081 and 4,187 waits completed in r1); `longest_open_frames` 0, 0, 0 and 2; `streaming`: timed sitting: not run in this pass | 30 frames | **fail**, every tier | the same |
+| 2, decoded waiting; the pool's floor | each tier | `counted-streaming`'s `bytes decoded waiting`, `frame thread loads` and `zone closed` | decoded waiting not exercised on the desktops, 1,048,864 and 2,097,296 bytes worst on the phones; `frame thread loads` not exercised, `frame_thread_loads=0`; `zone closed` `unmounted`, `at_floor=true` every round, 163.6 MB to 7.1 MB on the desktops and 98.6 MB to 3.9 MB on the phones in 2 frames | 256 / 64 MiB; 0; the floor | pass | the same |
+| 2, the iOS Simulator, counts only | Mobile-High, Mobile-Low | `device-streaming` on the `ci` district | `bench-scale device`: not run in this pass (its first walks, 2026-11-15, are under exit test 2) | 13 MiB pool; 64 MiB; 30 frames; pipelines 0 | not run | `logs/device-streaming.mobile-high.ios-sim.r1.log` and beside it |
+| 2, the Android emulator, counts only | Mobile-High, Mobile-Low | `device-streaming` on the `ci` district | `bench-scale device`: not run in this pass (its first walks, 2026-11-15, are under exit test 2) | 13 MiB pool; 64 MiB; 30 frames; pipelines 0 | not run | `logs/device-streaming.mobile-high.android.r1.log` and beside it |
+| 3 | all | goldens, on/off tests, switch; the moved references | 140 existing scenes' references moved since v0.1.0, 390 files (140 Metal, 125 lavapipe, 125 WARP): L17's cumulus 137 Metal scenes (64ed04e3a) and 124 on each of lavapipe and WARP (71cfab7f1); L9's effects pack `arena-boss` on all three; the eight `game-ward-*` Metal scenes D4 captured again (bf4067481); `foliage-ground` by the material-level fix (28736718a); and `game-character-tablet-en` and `-ja` on Metal, one pixel one code value apart (e49c7fddd), which no row names. Goldens, the GPU suite and `level_switches`: the line's gate at ce7707fd9: pass | byte-identical, or named as the rule says | pass but for the two character screens, which need a ruling; D4's eight are a stated deviation inside their gates (worst tile 0.047), owed to a person's eye | `git diff --name-only --diff-filter=M v0.1.0..ce7707fd9 -- 'tests/golden/*.png'`; the line's gate |
+| 4 | all | eight features' checklist | every feature's goldens have references on all three backends (reflect and wet 11 scenes, vfxmesh and distort 8, decal 2, dof 2, effects and cutin 14, dissolve 2, shadows 4, shafts 1); goldens and off tests: the line's gate at ce7707fd9: pass; each part's figure as its row cites it; recipes: exit test 8 | | pass (goldens, off tests, recipes); the timed pairs not run | `ls tests/golden/<scene>.*.png`; the line's gate |
+| 5 | each tier | the cast's rows; tests | `every_budget_figure_cooks_at_its_row`, the conversation's two tests, the cloth's soak and `the_cloth_switching_at_its_distance_never_pops` pass (one test each); the rows: timed sitting: not run in this pass | §3.2, §3.3 | the tests pass; the rows not judged | the named tests' `q` logs |
+| 6 | each tier | spawned; `animation and ik`; replays | spawned 60 / 60 / 30 / 30 on every counted walk; the four replays tests pass; `cargo xtask replay`: the line's gate at ce7707fd9: pass; `animation and ik`: timed sitting: not run in this pass | 60 / 60 / 30 / 30 | spawned and the replays pass; the row not judged | `logs/counted.<tier>.r1.log`; the replays test's log |
+| 7 | each tier | `zone walk` counts; district fight; `zero_hitches` | every `zone walk` and `fight pipelines` line reads `first_use=0 rebuilt=0 frame_thread=0 frame_waits=0`, both rounds, all four tiers; the report lists no pipeline built after a load; `the_district_encounter_plays_with_no_hitch_cold_and_warm` passes; `zero_hitches` passes on Desktop-High after a fresh build (booted in 4,305 ms, 111 pipelines prewarmed off the frame) and again warm (320 ms) | 0 | pass (counts and tests); CI's three `zero_hitches` lanes are CI's | the counted logs; the `zero_hitches` logs |
+| 8 | all | ten recipes, each cooked (`cargo xtask content`), its check run, and the Rust diffed against the commit its scratch branch was cut from | all ten walked with no Rust step, each diff empty: a playable kind (the cook refused the rig and named the right one, as step 5 says; `party-kestrel` recorded; the figure and strings tests; its look-dev capture, which the first pass's script missed for want of the content folder, taken again on the second scratch branch); a cloth (Wren's bangs as a second, open sheet, in a motion of its own named from the kind; the look-dev capture running); a reflection probe (a lamp's open place in the proving ground: baked, `zone_baked`, the capture differing with `--no-reflection-probes`); the zone's weather (`zone_baked`; wet against `--weather dry`); ambient characters (a post and a walk of two: `zone_ambient`, `zone_baked`, on against `--ambient off`); the cells' levels (the zone's sidecar asks for two: `zone_baked` holds the simulation's copies; `--debug-view levels`); a face track and a focus key (the court gate's timeline at versions 2 and 3: both cook, and the focus key blurs the court 330 frames into `--arena --timeline`); an effect mesh and a decal (layers on `heavy_spark` and `heavy_land`: `sapphire_vfx`'s 91 tests). `cargo xtask replay` after the ten: pass, nothing moved | no Rust | pass; two look steps need words (found, 13 and 14) | the scratch branches `m5-z2-recipes-scratch` and `m5-z2-recipes-scratch-2`, never pushed |
+
+### Found in rehearsal
+
+One line a finding, most serious first, with what closes it.
+
+1. **Exit test 1 fails on the desktops' draws:** `main draws` worst 2,622 on Desktop-High and 2,626 on Desktop-Low, at the tour's first metres, against 2,500. The district is the project's own and is meant to sit at the row; its desktop density is being trimmed. Closed by that change and a counted run at the new top.
+2. **Exit test 2 fails on every tier:** `texture waits` p99 32+ frames on all four, and bytes over budget in use on the desktops; the devices' walks read the same. Under diagnosis: the walks run unpaced, so a wait's frames may not be the tier's. Closed by that fix and a run at the new top.
+3. **`counted-streaming`'s streaming rows aren't exact between rounds** (nor, on the phones, a few upload and mesh-pool totals of the other counted walks): "Which counts are exact", above, says which rows hold. Whether the report should fail on one that moves is decided with exit test 2's fix.
+4. **Exit test 3's moved references:** two sets come from outside the look packages, D4's eight `game-ward-*` scenes and the material-level fix's; ruled, and the rule under exit test 3 names both, with D4's row naming the eight. Closed by those words. The count is 140 scenes and 390 files at ce7707fd9, not 139.
+5. **Two more moved references no row names:** `game-character-tablet-en` and `-ja` on Metal, one pixel a code value apart, re-captured by "Re-baseline the character screen's 4:3 Metal goldens by one pixel" (e49c7fddd), which landed with D1's stack. Needs a ruling: named by D1's row, or held as the one-pixel noise every golden run allows.
+6. **`sapphire_replay record` panics on a bad playable document** (`crates/sapphire_gameplay/src/replay/document.rs`, `read_all`) where it must return an error. Closed by `m5-fix-replay-record-bad-document`: the kinds are read as a scenario sets up, and a bad one is that set-up's error, naming the member, the document and what is wrong.
+7. **The batch is keyed by `HEAD` and reads its manifest from the working tree,** so a docs commit in the batch's worktree left it unprepared. Closed by "Run the batch from a worktree left at the prepared commit", above.
+8. **`prepare` cooks `budget` four times in a plain slot,** where a `budget` cook needs the machine. Closed by running it with nothing else running, above.
+9. **The runbook's sizes were wrong:** `plan` counts 54 sittings, about seven hours of a quiet machine, not an afternoon. Corrected in "The shortest path".
+10. **Exit test 8's `git diff --stat main` was the wrong base:** `main` was 110 commits behind, so it listed 192 Rust files on an untouched tree. Corrected: the diff is against the commit the scratch branch was cut from.
+11. **Scene names that don't exist:** `shafts-golden`, `dof`, `debug-runs`, `debug-culling` and `debug-textures`. Corrected to `shafts-golden-hour`, `dof-closeup-upsampled` and the `*-district` views.
+12. **`zero_hitches` "cold and warm" names no tier and no way to make a cold run** (exit test 7). Another branch rewrites that step.
+13. **A recipe's look step run by `cargo run -p sapphire_sandbox` reads the content beside the binary,** `target/debug/content/`, which nothing writes: "A reflection probe", step 3, fails as written ("failed to read pack shared") until `SAPPHIRE_CONTENT_DIR=<checkout>/target/content/desktop/` is set, as the walk set it. Closed by those words in the recipes (the next handoff's "How to add").
+14. **A timeline's look step, `--arena --timeline <id>`, plays it in the arena's space and by drawn frames:** the court gate's shots, framed on the ward's places, show no fighter in the arena, so a face track's faces can't be seen there, and a capture by `--capture-ticks 330` alone drew the street with none of the timeline; `--capture-frames 330` drew the focus key's blur. Closed by a line in "A face track" and "A focus key" saying how to look at a zone's timeline, and to capture it by frames.
 
 ## Final run at <commit>
 

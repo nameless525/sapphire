@@ -1,6 +1,7 @@
 //! `cargo xtask bench-scale prepare|plan|run|report`: the benches at scale (M5 Z1).
 //!
-//! One batch measures every row exit tests 1, 2, 5, 6 and 7 ask for, on each tier, at any commit. The runs
+//! One batch measures every row exit tests 1, 2, 5, 6 and 7 ask for, and the packages' costs on and off beside
+//! exit test 3, on each tier, at any commit, and its report gives a verdict for each exit test and tier. The runs
 //! are data, `bench/scale.ron`; `sapphire_testkit scale` plans them into sittings, runs them and writes the
 //! report, since nothing may depend on a tool crate (rule R1). This command makes what the testkit runs
 //! against, all under `target/bench-scale/<commit>/`:

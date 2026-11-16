@@ -204,7 +204,8 @@ Commands:
       for more. Walks' logs and what they counted are in target/counts/.
   bench-scale prepare|plan|run|report [--preset ci|budget|double] [--smoke] [--sitting <n>]
       [--counts] [--baseline <dir>]
-      The benches at scale (M5 Z1): every row exit tests 1, 2, 5, 6 and 7 measure, on each tier,
+      The benches at scale (M5 Z1): every row exit tests 1, 2, 5, 6 and 7 measure, and the packages'
+      costs on and off beside exit test 3, on each tier,
       run from bench/scale.ron by sapphire_testkit scale, all under target/bench-scale/<commit>/.
       prepare cooks both cooks of content/ (past ci, with the kinds part, as bench-content does) and
       of the preset's district (the manifest's, budget: check the disk first), puts each pair together, builds the release dev sandbox and records

@@ -25,6 +25,10 @@ pub struct ScaleBench {
     /// its line out.
     #[serde(default)]
     pub gaps: Vec<String>,
+    /// Where the batch measures an exit test otherwise than its words say, by a ruling: each said in a line of
+    /// its own beside the verdicts.
+    #[serde(default)]
+    pub deviations: Vec<String>,
     /// The tiers, in the order the batch runs them.
     pub tiers: Vec<Tier>,
     /// The runs, in the order each tier's sittings run them.
@@ -52,6 +56,14 @@ pub struct Tier {
     pub frames_a_second: u32,
     /// Seconds a unit takes before its first frame: the load and the warm-up.
     pub startup_seconds: u32,
+    /// Spec §3.1's memory budget for the tier, in MiB (its RAM on a desktop, the whole on a phone): what exit test
+    /// 2 holds the process's most to. None judges nothing.
+    #[serde(default)]
+    pub memory_mib: Option<u32>,
+    /// The ambient characters exit test 6 asks the district to hold on the tier (m5-plan §1: 60 on a desktop, 30
+    /// on a phone). None judges nothing.
+    #[serde(default)]
+    pub crowd: Option<u32>,
 }
 
 /// Which cook a tier mounts.

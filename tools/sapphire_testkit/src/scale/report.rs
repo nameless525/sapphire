@@ -11,7 +11,12 @@
 //! - **Nothing is zero that wasn't read:** a row a run should have and no round logged says `missing`, and a row
 //!   the bench logged as not exercised says so.
 //! - **Budgets** are the bench's own (spec §3.1 to §3.4, logged beside each row), so nothing is compared with a
-//!   budget it wasn't logged against; a Mac is none of §3.1's devices, which the report says once.
+//!   budget it wasn't logged against; a Mac is none of §3.1's devices, which the report says once. §3.1's memory
+//!   figure and exit test 6's crowd are the manifest's tiers'.
+//! - **Verdicts** (the `verdict` module, M5 Z2): one line for each exit test and tier, by the exit run's rules,
+//!   and the report fails on any that fails.
+
+mod verdict;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -142,6 +147,7 @@ impl Rounds {
             worst: worst.worst,
             walked: worst.walked,
             budget: first.budget,
+            proposed: first.proposed,
         })
     }
 
@@ -258,6 +264,7 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
         let _ = writeln!(out);
         failures.extend(failed);
     }
+    verdict::section(&mut out, &mut failures, inputs, &units, &statuses);
     if !manifest.gaps.is_empty() {
         let _ = writeln!(out, "**What this batch can't measure yet:**\n");
         for gap in &manifest.gaps {
@@ -379,7 +386,7 @@ fn section(
                 count_rows(out, failures, run, tier, rounds, None, &CAST_COUNTED, false);
                 let _ = writeln!(out);
             }
-            Read::Memory => memory_table(out, rounds, beside, beside_name),
+            Read::Memory => memory_table(out, tier, rounds, beside, beside_name),
             Read::Trips => trips(out, rounds),
             Read::Pipelines => pipelines(out, failures, run, tier, rounds),
         }
@@ -627,32 +634,63 @@ fn count_text(cell: &CountCell) -> (String, String) {
     }
 }
 
-fn memory_table(out: &mut String, rounds: &Rounds, beside: Option<&Rounds>, beside_name: &str) {
+/// The process's most through either lap in any round, in MiB: what exit test 2 holds to §3.1.
+fn process_most(rounds: &Rounds) -> Option<f64> {
+    rounds
+        .rounds
+        .iter()
+        .flat_map(|round| {
+            LAPS.iter().filter_map(|(phase, _)| round.log.memory.get(*phase)?.fields.get("process_mib"))
+        })
+        .map(|values| values[1])
+        .reduce(f64::max)
+}
+
+fn memory_table(out: &mut String, tier: &Tier, rounds: &Rounds, beside: Option<&Rounds>, beside_name: &str) {
     let _ = writeln!(
         out,
-        "Memory through the cold walk (`first` phase), MiB, start / most / end, the most of the rounds:\n"
+        "Memory through the cold lap (`first`) and the warm lap (`cpu`), MiB, start / most / end, the most of the \
+         rounds, the process's most against spec §3.1. On unified memory the process's footprint holds what the GPU \
+         allocates too, so it stands for RAM and VRAM together against §3.1's RAM figure; a discrete GPU's VRAM (6 \
+         and 3 GB on the desktops) is owed to one:\n"
     );
-    let _ = writeln!(out, "| | Read | {beside_name} |");
-    let _ = writeln!(out, "|---|---|---|");
-    let memory = |rounds: &Rounds, field: &str| -> String {
+    let _ = writeln!(out, "| | Cold lap | Warm lap | {beside_name} (cold) | §3.1 |");
+    let _ = writeln!(out, "|---|---|---|---|---|");
+    let memory = |rounds: &Rounds, phase: &str, field: &str| -> String {
         let read: Vec<[f64; 3]> = rounds
             .rounds
             .iter()
-            .filter_map(|round| round.log.memory.get("first")?.fields.get(field).copied())
+            .filter_map(|round| round.log.memory.get(phase)?.fields.get(field).copied())
             .collect();
         if read.is_empty() {
             return "missing".to_owned();
         }
         let most = |index: usize| read.iter().map(|values| values[index]).fold(f64::MIN, f64::max);
-        format!("{:.1} / {:.1} / {:.1}", most(0), most(1), most(2))
+        let budget = tier.memory_mib.filter(|_| field == "process_mib").map(f64::from);
+        let peak = most(1);
+        let peak = if budget.is_some_and(|budget| peak > budget) {
+            format!("**{peak:.1}**")
+        } else {
+            format!("{peak:.1}")
+        };
+        format!("{:.1} / {peak} / {:.1}", most(0), most(2))
     };
     for (field, name) in MEMORY {
-        let base = beside.map_or_else(|| "none".to_owned(), |beside| memory(beside, field));
-        let _ = writeln!(out, "| {name} | {} | {base} |", memory(rounds, field));
+        let base = beside.map_or_else(|| "none".to_owned(), |beside| memory(beside, "first", field));
+        let budget = match (field, tier.memory_mib) {
+            ("process_mib", Some(budget)) => thousands(u64::from(budget)),
+            _ => String::new(),
+        };
+        let _ = writeln!(
+            out,
+            "| {name} | {} | {} | {base} | {budget} |",
+            memory(rounds, "first", field),
+            memory(rounds, "cpu", field)
+        );
     }
     let budget = rounds.rounds.iter().find_map(|round| round.log.memory.get("first")?.texture_budget_mib);
     if let Some(budget) = budget {
-        let _ = writeln!(out, "| Texture pool's budget | {budget:.1} | |");
+        let _ = writeln!(out, "| Texture pool's budget | {budget:.1} | | | |");
     }
     let startup = |rounds: &Rounds| -> String {
         rounds
@@ -663,7 +701,7 @@ fn memory_table(out: &mut String, rounds: &Rounds, beside: Option<&Rounds>, besi
             .map_or_else(|| "missing".to_owned(), |ms| format!("{:.2} s", ms / 1000.0))
     };
     let base = beside.map_or_else(|| "none".to_owned(), startup);
-    let _ = writeln!(out, "| Load, warm (the least of the rounds) | {} | {base} |\n", startup(rounds));
+    let _ = writeln!(out, "| Load, warm (the least of the rounds) | {} | | {base} | |\n", startup(rounds));
 }
 
 /// The laps a timed walk's streaming and trips are read over (M5 Z3): the cold one, where every surface comes into
@@ -811,8 +849,8 @@ fn streaming_notes(out: &mut String, rounds: &Rounds) {
     );
     let _ = writeln!(
         out,
-        "- **Nothing loaded on the frame's thread:** by construction (reads and decodes run on the asset server's \
-         workers), not counted.\n"
+        "- **Nothing loaded on the frame's thread:** the `frame thread loads` row (budget 0, `not exercised` at 0), \
+         and the waits for a texture's level each phase's `texture waits` line holds; the verdicts judge both.\n"
     );
 }
 
@@ -1246,7 +1284,10 @@ mod tests {
             "{text}"
         );
         assert!(!failures.iter().any(|failure| failure.contains("different hours")), "{failures:?}");
-        assert!(text.contains("by construction"), "the frame thread's loads are named as uncounted");
+        assert!(
+            text.contains("the `frame thread loads` row"),
+            "the frame thread's loads are read from their row"
+        );
         // The fixture's warm lap reads 41 frames and its cold lap 90: the bound is the cold lap's (M5 Z3, F3).
         assert!(text.contains("90 frames**, over 30"), "the debt bound from the trace: {text}");
         assert!(text.contains("on the cold lap, the worse"), "the lap is named: {text}");

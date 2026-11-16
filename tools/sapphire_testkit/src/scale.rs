@@ -1,5 +1,6 @@
 //! The benches at scale, behind `cargo xtask bench-scale` (M5 Z1): one batch that measures everything exit tests
-//! 1, 2, 5, 6 and 7 ask to be measured, on each tier, at any commit, and one report of it for spec §3.8.
+//! 1, 2, 5, 6 and 7 ask to be measured, and the packages' costs on and off beside exit test 3, on each tier, at any
+//! commit, and one report of it for spec §3.8, with a verdict for each exit test and tier (M5 Z2).
 //!
 //! - **The manifest** ([`manifest`], `bench/scale.ron`) lists every run as data: its sandbox arguments, tiers,
 //!   frames, rounds, what it's read for, a pair's variants and the baseline run it stands beside. Adding a run

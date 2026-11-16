@@ -1,6 +1,7 @@
 // The benches at scale (M5 Z1): every run of the batch that measures what exit tests 1, 2, 5, 6 and 7 ask
-// for (m5-plan §1), on each tier. `cargo xtask bench-scale prepare|plan|run|report` runs it through
-// `sapphire_testkit scale`; docs/development-iteration.md says how to run the batch and read its report.
+// for (m5-plan §1), and the packages' costs on and off beside exit test 3, on each tier.
+// `cargo xtask bench-scale prepare|plan|run|report` runs it through `sapphire_testkit scale`;
+// docs/development-iteration.md says how to run the batch and read its report.
 //
 // Each run is one line of data. Its fields, as `sapphire_testkit::scale::manifest::Run` takes them:
 //
@@ -16,8 +17,12 @@
 //   `rows` are the rows the pair's table shows (a bench row, a count row or a plain bench's field).
 // - `timed: false`: a run of counts alone (`--draw-every`), run in an ordinary slot by `run --counts`, whose
 //   rounds must count the same.
-// - `beside`: the baseline's run it stands beside; `serves`: the exit tests it's read for; `stands_in`: what
-//   it stands in for, where the exit test's own run can't be made yet, which the report never reads as a pass.
+// - `beside`: the baseline's run it stands beside; `serves`: the exit tests it's read for, by m5-plan §1's
+//   numbers, whose verdicts read it (a pair serving 3 is a cost read beside its other side, judged by none);
+//   `stands_in`: what it stands in for, where the exit test's own run can't be made yet, which the report never
+//   reads as a pass.
+// - A tier's `memory_mib` is spec §3.1's memory budget in MiB (a GB taken as 1,024 MiB, as §3.4's pools are), and
+//   `crowd` the ambient characters exit test 6 asks for on it.
 //
 // Planning figures (`frames_a_second`, `startup_seconds`) are B4's walks on the M5 Mac: about 265 s a desktop
 // walk of three phases and 147 s a phone one. They size the sittings and measure nothing.
@@ -30,22 +35,23 @@
         sitting_seconds: 600,
         load_bound: 8.0,
         gaps: [
-            "Exit test 1: weather that moves along one walk. The night lap held wet stands beside the dry one instead.",
             "Exit test 2: a trip from the district to another zone and back: the district has no exits, so the ward's zone-trip replay stands in for the mesh pool's floor.",
-            "Exit test 2: the 30-frame p99 of a texture's wait has no counter of its own: the worst texture debt in frames bounds it from above.",
-            "Exit test 2: loads on the frame's thread are excluded by construction and not counted.",
-            "Exit test 6: the cells' levels before and after (D6) need a cook without them, so they aren't in this batch.",
-            "Exit test 7: zero_hitches plays the ward, since a shipping build can't stand a zone code builds: the counting walks and the fight's pipeline rows (no pipeline built after the load, or the bench fails) stand in on the district.",
+            "Exit test 3: the cells' levels before and after (D6) need a cook without them, so they aren't in this batch.",
+        ],
+        // Where the batch measures an exit test otherwise than its words, by the orchestrator's rulings (M5 Z2).
+        deviations: [
+            "Exit test 1: three runs stand for the plan's one walk. exit-walk walks dusk into night with the crowd about, night-weather holds the night wet against dry (weather doesn't move along one walk), and district-fight is the encounter of twelve against the party of three; the counting walks count draws and lights at dusk.",
+            "Exit test 7: zero_hitches plays the ward, since a shipping build can't stand a zone code builds: the counting walks' pipeline counts (no first use, none rebuilt, none on the frame's thread, no frame waiting) and B5's fight test stand in on the district.",
         ],
         // The phones draw onto a phone's panel, 2532x1170, and their tier caps the scene at 740 and 590 rows and
         // upscales it, as spec §3.1's "~1600×740 → native" ships: the upscale, the interface at the panel's size and
         // the levels and size culling a panel's rows pick are all in the frame. B4's baseline drew them at
         // 1600x740 and 1280x590, the scenes' sizes, so a phone row's baseline column isn't the same frame.
         tiers: [
-            (name: "desktop-high", size: "2560x1440", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12),
-            (name: "desktop-low", size: "1920x1080", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12),
-            (name: "mobile-high", size: "2532x1170", cook: mobile, lap: 7600, frames_a_second: 170, startup_seconds: 12),
-            (name: "mobile-low", size: "2532x1170", cook: mobile, lap: 3800, frames_a_second: 85, startup_seconds: 12),
+            (name: "desktop-high", size: "2560x1440", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12, memory_mib: Some(10240), crowd: Some(60)),
+            (name: "desktop-low", size: "1920x1080", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12, memory_mib: Some(6144), crowd: Some(60)),
+            (name: "mobile-high", size: "2532x1170", cook: mobile, lap: 7600, frames_a_second: 170, startup_seconds: 12, memory_mib: Some(2867), crowd: Some(30)),
+            (name: "mobile-low", size: "2532x1170", cook: mobile, lap: 3800, frames_a_second: 85, startup_seconds: 12, memory_mib: Some(1638), crowd: Some(30)),
         ],
         runs: [
             // B4's baseline, by its exact flags: the tour at dusk and at night.
@@ -56,7 +62,7 @@
                 frames: Lap,
                 read: [Cpu, Gpu, Counts, Memory],
                 beside: Some("tour-dusk"),
-                serves: [1, 6],
+                serves: [1],
             ),
             (
                 name: "tour-night",
@@ -65,7 +71,7 @@
                 frames: Lap,
                 read: [Cpu, Gpu, Counts, Memory],
                 beside: Some("tour-night"),
-                serves: [1, 6],
+                serves: [1],
             ),
             // Exit test 1's walk: dusk into night along the lap (3.25 hours over 126.67 s), the crowd about.
             (
@@ -141,7 +147,7 @@
                 read: [Cpu, Gpu],
                 variants: [(name: "on", args: ["--ambient", "on"]), (name: "off", args: ["--ambient", "off"])],
                 rows: ["cpu_us_p50", "cpu_us_p99", "anim_us_p50", "spring_us_p50", "gpu_frame_us", "gpu_main_us", "gpu_skinning_us", "surface_draws"],
-                serves: [5],
+                serves: [6],
             ),
             (
                 name: "crowd-tour",
@@ -154,7 +160,7 @@
                 read: [Cpu, Gpu, Cast],
                 variants: [(name: "on", args: ["--ambient", "on"]), (name: "off", args: ["--ambient", "off"])],
                 rows: ["cpu frame", "animation and ik", "secondary motion", "gpu frame", "gpu main", "gpu skinning", "ambient characters in view", "skinned vertices"],
-                serves: [5],
+                serves: [5, 6],
             ),
             // Exit tests 1 and 5 at once: the district's encounter (M5 B5), its party of three kinds up the avenue
             // into the plaza's twelve Ember Lancers at night, the hub's people about. Its scenario stands on a zone
@@ -198,7 +204,7 @@
                 read: [Cpu, Gpu, Counts],
                 variants: [(name: "on", args: ["--lods", "on"]), (name: "off", args: ["--lods", "off"])],
                 rows: ["gpu frame", "gpu main", "gpu shadows", "gpu prepasses", "triangles", "lod1+ draws", "level switches"],
-                serves: [6],
+                serves: [3],
             ),
             (
                 name: "character-lods",
@@ -211,7 +217,7 @@
                 read: [Gpu, Cast],
                 variants: [(name: "on", args: ["--character-lods", "on"]), (name: "off", args: ["--character-lods", "off"])],
                 rows: ["gpu main", "gpu skinning", "gpu prepasses", "skinned vertices", "skinned instances"],
-                serves: [5, 6],
+                serves: [3],
             ),
             (
                 name: "character-lods-crowd",
@@ -221,7 +227,7 @@
                 read: [Gpu, Cast],
                 variants: [(name: "on", args: ["--character-lods", "on"]), (name: "off", args: ["--character-lods", "off"])],
                 rows: ["gpu main", "gpu skinning", "animation and ik", "skinned vertices", "skinned instances"],
-                serves: [5, 6],
+                serves: [3],
             ),
             (
                 name: "draw-runs",
@@ -231,7 +237,7 @@
                 read: [Cpu, Gpu, Counts],
                 variants: [(name: "off", args: ["--draw-runs", "off"]), (name: "shadows", args: ["--draw-runs", "shadows"])],
                 rows: ["cpu frame", "render", "gpu frame", "gpu shadows", "draw calls", "draw instances"],
-                serves: [6],
+                serves: [3],
             ),
             (
                 name: "shadow-cache",
@@ -241,7 +247,7 @@
                 read: [Cpu, Gpu, Counts],
                 variants: [(name: "held", args: ["--shadow-cache", "held"]), (name: "turns", args: ["--shadow-cache", "turns"])],
                 rows: ["cpu frame", "render", "gpu frame", "gpu shadows", "shadow triangles", "cascades drawn"],
-                serves: [6],
+                serves: [3],
             ),
             (
                 name: "capsule-bins",
@@ -254,7 +260,7 @@
                 read: [Gpu],
                 variants: [(name: "on", args: ["--capsule-bins", "on"]), (name: "off", args: ["--capsule-bins", "off"])],
                 rows: ["gpu frame", "gpu main", "gpu clustering and ao"],
-                serves: [5],
+                serves: [3],
             ),
             (
                 name: "capsule-bins-hub",
@@ -265,7 +271,7 @@
                 read: [Gpu],
                 variants: [(name: "on", args: ["--capsule-bins", "on"]), (name: "off", args: ["--capsule-bins", "off"])],
                 rows: ["gpu_frame_us", "gpu_main_us", "gpu_clustering_ao_us"],
-                serves: [5],
+                serves: [3],
             ),
             (
                 name: "upscaler",
@@ -278,7 +284,7 @@
                 read: [Gpu],
                 variants: [(name: "edge", args: ["--upscaler", "edge"]), (name: "bilinear", args: ["--upscaler", "bilinear"])],
                 rows: ["gpu_frame_us", "gpu_upscale_us", "gpu_post_total_us"],
-                serves: [6],
+                serves: [3],
             ),
             // Exit test 7 by counts: a frame in seven drawn along the lap fails on any pipeline built after the
             // load, with whole textures and with the streamer binding, where a frame could wait on a level.
@@ -294,7 +300,7 @@
                 phases: 1,
                 read: [Counts, Pipelines],
                 timed: false,
-                serves: [6, 7],
+                serves: [1, 6, 7],
             ),
             (
                 name: "counted-streaming",

@@ -14,6 +14,9 @@ pub struct Timed {
     /// Metres along the walk at the worst frame, on a walk.
     pub walked: Option<f64>,
     pub budget: Option<f64>,
+    /// A figure proposed where the spec has adopted none (M5 B4's Desktop-High and Mobile-High columns of §3.3):
+    /// shown beside the row, never failed on.
+    pub proposed: Option<f64>,
 }
 
 /// A count row over a phase's frames, with where its worst frame fell and its budget.
@@ -59,7 +62,64 @@ pub struct Pipelines {
     pub first_use: u64,
     pub frame_thread: u64,
     pub frame_waits: u64,
+    /// Pipelines built again after the load (a counting walk's and a fight's line both log it).
+    pub rebuilt: u64,
     pub first_hour: Option<f64>,
+}
+
+/// A bin of a `texture waits` line, in frames: none completed (`-`), a bin, or the last bin (`32+`), which holds
+/// every longer wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitFrames {
+    None,
+    Frames(u32),
+    AtLeast(u32),
+}
+
+impl WaitFrames {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "-" => Some(Self::None),
+            _ => match value.strip_suffix('+') {
+                Some(bin) => bin.parse().ok().map(Self::AtLeast),
+                None => value.parse().ok().map(Self::Frames),
+            },
+        }
+    }
+
+    /// Whether it's more than `frames`: the last bin is, past its own.
+    pub fn over(self, frames: u32) -> bool {
+        match self {
+            Self::None => false,
+            Self::Frames(bin) => bin > frames,
+            Self::AtLeast(bin) => bin >= frames,
+        }
+    }
+}
+
+impl std::fmt::Display for WaitFrames {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("-"),
+            Self::Frames(bin) => write!(f, "{bin}"),
+            Self::AtLeast(bin) => write!(f, "{bin}+"),
+        }
+    }
+}
+
+/// A phase's `texture waits` line (m5-plan exit test 2): every wait for a texture's level completed in it, both
+/// kinds, and those still open at its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Waits {
+    pub completed: u32,
+    pub p50: WaitFrames,
+    pub p99: WaitFrames,
+    pub worst: WaitFrames,
+    /// The pool's share: waits a texture's level spent held by the pool.
+    pub pool_held: u32,
+    pub pool_p99: WaitFrames,
+    pub open: u32,
+    pub longest_open: u32,
 }
 
 /// A phase and a row: `("cpu", "cpu frame")`.
@@ -74,6 +134,8 @@ pub struct Log {
     pub memory: BTreeMap<String, Memory>,
     pub trips: BTreeMap<String, Vec<Trip>>,
     pub pipelines: BTreeMap<String, Pipelines>,
+    /// Each phase's `texture waits` line, while streaming.
+    pub waits: BTreeMap<String, Waits>,
     /// The load's time, from the bench's first line.
     pub startup_ms: Option<f64>,
     /// A plain bench's `bench` and `bench gpu` fields, numbers only.
@@ -114,8 +176,9 @@ impl Log {
                     continue;
                 };
                 let budget = field("budget_us").and_then(some).and_then(|value| value.parse().ok());
+                let proposed = field("proposed_us").and_then(some).and_then(|value| value.parse().ok());
                 let walked = float("worst_walked_m");
-                log.timed.push((key, Entry::Read(Timed { p50, p95, p99, worst, walked, budget })));
+                log.timed.push((key, Entry::Read(Timed { p50, p95, p99, worst, walked, budget, proposed })));
             } else if has(line, "count row") {
                 let (Some(key), Some(p50), Some(p95), Some(worst)) =
                     (key(), int("p50"), int("p95"), int("worst"))
@@ -161,7 +224,44 @@ impl Log {
                         first_use: int("first_use").unwrap_or(0),
                         frame_thread: int("frame_thread").unwrap_or(0),
                         frame_waits: int("frame_waits").unwrap_or(0),
+                        rebuilt: int("rebuilt").unwrap_or(0),
                         first_hour: None,
+                    },
+                );
+            } else if has(line, "texture waits") {
+                let bin = |name: &str| field(name).and_then(WaitFrames::parse);
+                let count = |name: &str| field(name).and_then(|value| value.parse::<u32>().ok());
+                let (
+                    Some(phase),
+                    Some(completed),
+                    Some(p50),
+                    Some(p99),
+                    Some(worst),
+                    Some(open),
+                    Some(longest_open),
+                ) = (
+                    field("phase"),
+                    count("completed"),
+                    bin("p50_frames"),
+                    bin("p99_frames"),
+                    bin("worst_frames"),
+                    count("open"),
+                    count("longest_open_frames"),
+                )
+                else {
+                    continue;
+                };
+                log.waits.insert(
+                    phase.to_owned(),
+                    Waits {
+                        completed,
+                        p50,
+                        p99,
+                        worst,
+                        pool_held: count("pool_held").unwrap_or(0),
+                        pool_p99: bin("pool_held_p99_frames").unwrap_or(WaitFrames::None),
+                        open,
+                        longest_open,
                     },
                 );
             } else if has(line, "fight pipelines") {
@@ -172,6 +272,7 @@ impl Log {
                         first_use: int("first_use").unwrap_or(0),
                         frame_thread: int("frame_thread").unwrap_or(0),
                         frame_waits: int("frame_waits").unwrap_or(0),
+                        rebuilt: int("rebuilt").unwrap_or(0),
                         first_hour: float("first_hour"),
                     },
                 );
@@ -287,6 +388,24 @@ mod tests {
         assert_eq!(log.memory["first"].texture_budget_mib, Some(2560.0));
         assert_eq!(log.pipelines["gpu"].first_hour, Some(19.7667));
         assert_eq!(log.startup_ms, Some(10337.3));
+    }
+
+    /// The completed waits' line (M5 Z2): a bin, the last bin's `32+` and an empty histogram's `-`.
+    #[test]
+    fn a_phases_texture_waits_are_read_with_their_bins() {
+        let log = Log::parse(
+            "2026-11-16T00:00:00.000000Z  INFO sapphire::sandbox: texture waits phase=\"drawn\" completed=40 \
+             p50_frames=2 p99_frames=32+ worst_frames=32+ pool_held=3 pool_held_p99_frames=- \
+             pool_held_worst_frames=- open=1 longest_open_frames=12 pool_open=0 pool_longest_open_frames=0",
+        );
+        let waits = log.waits["drawn"];
+        assert_eq!(
+            (waits.completed, waits.p50, waits.p99),
+            (40, WaitFrames::Frames(2), WaitFrames::AtLeast(32))
+        );
+        assert_eq!((waits.pool_p99, waits.open, waits.longest_open), (WaitFrames::None, 1, 12));
+        assert!(waits.p99.over(30) && !waits.p50.over(30) && !WaitFrames::None.over(0));
+        assert!(!WaitFrames::Frames(30).over(30) && WaitFrames::Frames(31).over(30));
     }
 
     #[test]

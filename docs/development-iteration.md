@@ -270,7 +270,8 @@ A release the boot installs makes the game's show again from inside the boot's f
 
 ## The benches at scale
 
-M5's batch (Z1) measures every row exit tests 1, 2, 5, 6 and 7 ask for, on each tier, at any commit: B4's
+M5's batch (Z1) measures every row exit tests 1, 2, 5, 6 and 7 ask for, on each tier, at any commit, with the
+packages' costs on and off beside exit test 3: B4's
 eight walks of the budget district by their exact flags, exit test 1's walk under a running day with the
 crowd about, the night held wet against dry, the streamer under a binding pool, the crowd held at its
 densest and walked, the cast, each package's on/off pair and the counting walks. The runs are data,
@@ -304,9 +305,12 @@ its start and end, and the report marks one above the manifest's bound (8) rathe
 `--smoke` runs every unit at 200 frames and 320x180 into `smoke/` with the preset `prepare --preset ci`
 made: it proves the batch runs and its logs parse, in an ordinary slot, and measures nothing.
 
-**Reading the report.** One section a tier: CPU rows against spec §3.2, GPU rows against §3.3, counts against
+**Reading the report.** First the verdicts (M5 Z2): one line for each exit test and tier, pass, fail, or
+not judged here with why, by [m5-exit-run.md](m5-exit-run.md)'s rules, which say each one; the report exits
+non-zero on any fail. Then one section a tier: CPU rows against spec §3.2, GPU rows against §3.3, counts against
 §3.4 (its draws on `main draws`, the main view's calls after culling, as m5-plan §3 decided; `draw calls`, every
-pass's, has no budget), memory against §3.1, streaming against exit test 2, load times and trips. A timed walk's
+pass's, has no budget), memory on both laps against §3.1 (the manifest's tiers hold its figures), streaming against exit test 2, load
+times and trips. A timed walk's
 streaming rows, its 30-frame bound and its trips read both laps, the cold one (`first`) and the warm one (`cpu`),
 each labelled, and judge the worse: the cold lap is where surfaces come into view from their tails. The 30-frame
 line's bound is the trace column's worst frame, since the column is each frame's longest debt and its worst

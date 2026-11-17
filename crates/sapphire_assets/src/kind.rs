@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::AssetId;
 use crate::clip::{CLIP_EXTENSION, Clip, ClipError};
 use crate::cue::{CUE_EXTENSION, Cue, CueError};
+use crate::effects::{EFFECTS_EXTENSION, Effects, EffectsError};
 use crate::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains, FontError};
 use crate::graph::{AnimGraph, GRAPH_EXTENSION, GraphError};
 use crate::material::{MATERIAL_EXTENSION, Material, MaterialError};
@@ -126,11 +127,15 @@ pub enum AssetKind {
     /// A game's mix (`.smix`, M6 U2): [`Mix`], its buses, sends, snapshots, ducking and output profiles. It
     /// names buses by path and sounds not at all, so it depends on nothing. CPU data, never uploaded.
     Mix = 31,
+    /// An effects library (`.seffects`, M6 N1): [`Effects`], `sapphire_vfx`'s library as its document, what a
+    /// game's cues and sword trails play. It names effects by name and assets not at all, so it depends on
+    /// nothing. CPU data, never uploaded.
+    Effects = 32,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -162,6 +167,7 @@ impl AssetKind {
         Self::Motion,
         Self::Ambient,
         Self::Mix,
+        Self::Effects,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -204,6 +210,7 @@ impl AssetKind {
             Self::Motion => MOTION_EXTENSION,
             Self::Ambient => AMBIENT_EXTENSION,
             Self::Mix => MIX_EXTENSION,
+            Self::Effects => EFFECTS_EXTENSION,
         }
     }
 
@@ -241,18 +248,20 @@ impl AssetKind {
             Self::Motion => "character motion",
             Self::Ambient => "ambient characters",
             Self::Mix => "mix",
+            Self::Effects => "effects library",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
     /// string table, a font, font chains, a navmesh, a timeline, a UI document, an encounter, a script, a
-    /// dialogue, an enemy, a score, voice lines, a playable kind, a character motion or a mix is ready once it and
-    /// its dependencies are decoded.
+    /// dialogue, an enemy, a score, voice lines, a playable kind, a character motion, a mix or an effects library
+    /// is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
             Self::Mix
+                | Self::Effects
                 | Self::Rig
                 | Self::Skeleton
                 | Self::Clip
@@ -289,11 +298,12 @@ impl AssetKind {
     /// skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
     /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores, voice lines, playable
-    /// kinds, character motions and mixes are read on the CPU only, so they stay.
+    /// kinds, character motions, mixes and effects libraries are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
             Self::Mix
+                | Self::Effects
                 | Self::Material
                 | Self::ProbeGrid
                 | Self::Rig
@@ -389,6 +399,7 @@ impl AssetKind {
             29 => Some(Self::Motion),
             30 => Some(Self::Ambient),
             31 => Some(Self::Mix),
+            32 => Some(Self::Effects),
             _ => None,
         }
     }
@@ -410,7 +421,7 @@ impl AssetKind {
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
     /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
     /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`,
-    /// `Ambient::read`, `Mix::read`), and
+    /// `Ambient::read`, `Mix::read`, `Effects::read`), and
     /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
@@ -541,6 +552,11 @@ impl AssetKind {
                 Mix::read(bytes)?;
                 Vec::new()
             }
+            // Its effects are named by name, and its shapes and patterns are generated.
+            Self::Effects => {
+                Effects::read(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -660,4 +676,6 @@ pub enum AssetError {
     Motion(#[from] MotionError),
     #[error("invalid mix")]
     Mix(#[from] MixError),
+    #[error("invalid effects library")]
+    Effects(#[from] EffectsError),
 }

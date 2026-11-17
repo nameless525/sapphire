@@ -151,7 +151,7 @@ fn round(
                     AssetKind::Playable => unreachable!("playable kinds never go to the uploader"),
                     AssetKind::Motion => unreachable!("character motions never go to the uploader"),
                     AssetKind::Ambient => unreachable!("ambient characters never go to the uploader"),
-                    AssetKind::Score | AssetKind::VoiceLines | AssetKind::Mix => {
+                    AssetKind::Score | AssetKind::VoiceLines | AssetKind::Mix | AssetKind::Effects => {
                         unreachable!("music and voice never go to the uploader")
                     }
                     AssetKind::TextureLevel => unreachable!("these textures stay whole"),
@@ -183,7 +183,7 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
         resident: [
             600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
             1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source, budgets);

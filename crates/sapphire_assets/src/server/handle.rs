@@ -16,6 +16,7 @@ use sapphire_zone::{ArchivedEncounter, ArchivedZone, Encounter, Zone};
 
 use crate::clip::{ArchivedClip, Clip};
 use crate::cue::{ArchivedCue, Cue};
+use crate::effects::{ArchivedEffects, Effects};
 use crate::font::{ArchivedFont, ArchivedFontChains, Font, FontChains};
 use crate::graph::{AnimGraph, ArchivedAnimGraph};
 use crate::material::{ArchivedMaterial, Material};
@@ -83,6 +84,7 @@ mod sealed {
     impl Sealed for crate::score::Score {}
     impl Sealed for crate::voice::VoiceLines {}
     impl Sealed for crate::mix::Mix {}
+    impl Sealed for crate::effects::Effects {}
     impl Sealed for sapphire_moves::MoveSet {}
     impl Sealed for crate::graph::AnimGraph {}
     impl Sealed for sapphire_strings::StringTable {}
@@ -310,6 +312,17 @@ impl Asset for Mix {
     unsafe fn view(bytes: &[u8]) -> &ArchivedMix {
         // SAFETY: as for meshes: `Mix::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Mix>(bytes) }.expect("the envelope was checked when the mix was decoded")
+    }
+}
+
+impl Asset for Effects {
+    const KIND: AssetKind = AssetKind::Effects;
+    type View<'a> = &'a ArchivedEffects;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedEffects {
+        // SAFETY: as for meshes: `Effects::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Effects>(bytes) }
+            .expect("the envelope was checked when the effects library was decoded")
     }
 }
 

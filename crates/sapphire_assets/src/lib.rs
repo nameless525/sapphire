@@ -55,6 +55,8 @@
 //!   linking a mixer (`sapphire_audio`, which plays them). Music and voice (M3 A1) likewise: [`score`],
 //!   stems by a fight's phase (`.sscore`), and [`voice`], one language's lines by key (`.svoice`). A voice
 //!   sound's [`mouth`] curve (M5 C6) is cooked into its `.ssound`, for a face to say it with.
+//! - Effects libraries ([`effects`], `.seffects`, M6 N1): `sapphire_vfx`'s library, kept as the document that
+//!   crate reads, so its schema has one home; here only its envelope and type are checked.
 //! - Animation graphs (M2 N3, spec §5.13): [`graph`], the RON documents (cooked to `.sgraph`) that say
 //!   how a character's clips play: which layers, which states, what plays for which move. Plain
 //!   data, with its clips as dependencies; `sapphire_anim` runs it.
@@ -119,6 +121,7 @@ pub mod character_maps;
 pub mod clip;
 pub mod cue;
 pub mod documents;
+pub mod effects;
 pub mod font;
 pub mod graph;
 mod kind;

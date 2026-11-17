@@ -200,7 +200,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Ambient
         | AssetKind::Score
         | AssetKind::VoiceLines
-        | AssetKind::Mix => Codec::Lz4,
+        | AssetKind::Mix
+        | AssetKind::Effects => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }

@@ -155,6 +155,7 @@ use std::thread;
 
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
 use sapphire_assets::cue::{CUE_EXTENSION, Cue};
+use sapphire_assets::effects::{EFFECTS_EXTENSION, Effects};
 use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains};
 use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{AnyMaterialDocument, MATERIAL_EXTENSION, Material};
@@ -204,6 +205,7 @@ use crate::clip::{
 };
 use crate::colliders::{self, ColliderCookError};
 use crate::dialogue::{self, DialogueCookError, MissingKey, Registry, RegistryError};
+use crate::effects::{self, EffectsCookError};
 use crate::encounter::{self, EncounterCookError};
 use crate::enemy::{self, EnemyCookError};
 use crate::font::{self, FontCookError};
@@ -421,6 +423,12 @@ impl Recipe {
                 format: Motion::VERSION,
                 extension: MOTION_EXTENSION,
             },
+            ImportSettings::Effects(_) => Self {
+                importer: effects::IMPORTER,
+                cooker: effects::COOKER,
+                format: Effects::VERSION,
+                extension: EFFECTS_EXTENSION,
+            },
             ImportSettings::Sound(_) => Self {
                 importer: audio::SOUND_IMPORTER,
                 cooker: audio::SOUND_COOKER,
@@ -625,6 +633,8 @@ impl Recipe {
             playable::output_path(relative, self.extension)
         } else if motion::is_source(relative) {
             motion::output_path(relative, self.extension)
+        } else if effects::is_source(relative) {
+            effects::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
         } else if audio::is_score_source(relative) {
@@ -805,6 +815,13 @@ pub enum CookError {
         /// Boxed, as material errors are.
         #[source]
         source: Box<MotionCookError>,
+    },
+    #[error("failed to cook effects library {}", path.display())]
+    Effects {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<EffectsCookError>,
     },
     #[error("failed to cook locale {}", path.display())]
     Locale {
@@ -1833,6 +1850,7 @@ fn sub_assets(
         | ImportSettings::Score(_)
         | ImportSettings::VoiceLines(_)
         | ImportSettings::Mix(_)
+        | ImportSettings::Effects(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
@@ -2933,6 +2951,8 @@ fn cook_source(
         }
         ImportSettings::Motion(_) => motion::cook(bytes)
             .map_err(|source| CookError::Motion { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::Effects(_) => effects::cook(bytes)
+            .map_err(|source| CookError::Effects { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Timeline(_) => timeline::cook(bytes)
@@ -3563,6 +3583,8 @@ fn source_dependencies(
         ImportSettings::Playable(_) => playable_references(path, bytes, assets).map(|()| Vec::new()),
         // It reads nothing besides itself.
         ImportSettings::Motion(_) => Ok(Vec::new()),
+        // It names effects by name and assets not at all (M6 N1).
+        ImportSettings::Effects(_) => Ok(Vec::new()),
         ImportSettings::CharacterMap(settings, _) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -4216,6 +4238,7 @@ pub(crate) fn imported_mesh(
         | ImportSettings::Score(_)
         | ImportSettings::VoiceLines(_)
         | ImportSettings::Mix(_)
+        | ImportSettings::Effects(_)
         | ImportSettings::Font(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)

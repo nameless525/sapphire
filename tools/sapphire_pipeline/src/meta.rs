@@ -149,6 +149,7 @@ use crate::check::Budget;
 use crate::clip::ClipSettings;
 use crate::colliders::{self, ColliderSettings};
 use crate::dialogue::{self, DialogueSettings};
+use crate::effects::{self, EffectsSettings};
 use crate::encounter::{self, EncounterSettings};
 use crate::enemy::{self, EnemySettings};
 use crate::font::{self, FontChainsSettings, FontSettings};
@@ -258,6 +259,8 @@ pub enum ImportSettings {
     VoiceLines(VoiceLinesSettings),
     /// A mix document (`.mix.ron`), a game's buses, snapshots and ducking (M6 U2).
     Mix(MixSettings),
+    /// An effects library (`.effects.ron`), what a game's cues and sword trails play (M6 N1).
+    Effects(EffectsSettings),
     /// A font file (`.ttf`, `.otf`), cut down for each pack that shows it (M3 U3).
     Font(FontSettings),
     /// A font chains document (`.fontchains.ron`): which fonts answer for each use and script (M3 U3).
@@ -331,6 +334,9 @@ impl ImportSettings {
         }
         if motion::is_source(source) {
             return Some(Self::Motion(MotionSettings::default()));
+        }
+        if effects::is_source(source) {
+            return Some(Self::Effects(EffectsSettings::default()));
         }
         if zone::is_source(source) {
             return Some(Self::Zone(ZoneSettings::default()));
@@ -423,6 +429,7 @@ impl ImportSettings {
             | Self::Score(_)
             | Self::VoiceLines(_)
             | Self::Mix(_)
+            | Self::Effects(_)
             | Self::Font(_)
             | Self::FontChains(_)
             | Self::MoveSet(_)
@@ -461,6 +468,7 @@ impl ImportSettings {
             | Self::Score(_)
             | Self::VoiceLines(_)
             | Self::Mix(_)
+            | Self::Effects(_)
             | Self::Font(_)
             | Self::FontChains(_)
             | Self::MoveSet(_)

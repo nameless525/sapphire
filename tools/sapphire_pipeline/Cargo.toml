@@ -17,6 +17,9 @@ path = "src/main.rs"
 # no cook (`tests/character_springs.rs`), and a move's tables against the pose on screen, use it too.
 sapphire_anim.workspace = true
 sapphire_assets.workspace = true
+# Effects libraries (M6 N1): their checks are `EffectLibrary`'s, and the cook keeps the library as that crate
+# writes it back. No GPU: the effects crate only simulates.
+sapphire_vfx.workspace = true
 # Collider documents' checks and cooked format. Plain data: the tool links no collision library.
 sapphire_colliders.workspace = true
 # The navmesh bake (M3 P0). Cooks to plain tiles; the runtime never links it.

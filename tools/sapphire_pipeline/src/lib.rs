@@ -144,6 +144,7 @@ pub mod combat;
 pub mod cook;
 pub mod dialogue;
 pub mod documents;
+pub mod effects;
 pub mod encounter;
 pub mod enemy;
 pub mod extract;

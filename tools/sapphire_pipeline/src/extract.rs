@@ -316,6 +316,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Score(_)
         | ImportSettings::VoiceLines(_)
         | ImportSettings::Mix(_)
+        | ImportSettings::Effects(_)
         | ImportSettings::Font(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::GltfClips(_)

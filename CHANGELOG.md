@@ -2,9 +2,9 @@
 
 Sapphire's releases. Each release is tagged `v<version>` on `main`, and its version is the workspace's (`[workspace.package]` in [Cargo.toml](Cargo.toml)), which every package and app carries. Until 1.0, each milestone that lands is a minor release.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-17
 
-Milestone M5, fidelity at scale, which lands as 0.2.0. It asks whether the engine can hold the reference games' picture at their density on every tier: it builds a generated benchmark at the spec's content budgets, measures 0.1.0 on it, then builds what the measurement and the look ask for. It adds no game and tunes no fight; the Lantern Ward is as 0.1.0 left it. [The M5 plan](docs/m5-plan.md) has every package's "As built" note, and [the M6 handoff](docs/m6-handoff.md) what is deferred and owed.
+Milestone M5, fidelity at scale. It asks whether the engine can hold the reference games' picture at their density on every tier: it builds a generated benchmark at the spec's content budgets, measures 0.1.0 on it, then builds what the measurement and the look ask for. It adds no game and tunes no fight; the Lantern Ward is as 0.1.0 left it. [The M5 plan](docs/m5-plan.md) has every package's "As built" note, and [the M6 handoff](docs/m6-handoff.md) what is deferred and owed.
 
 ### The benchmark
 - `bench/` holds a generated district and cast as documents only, and `cargo xtask bench-content` cooks them into `target/`: never committed cooked, never shipped, and repeated byte for byte.
@@ -43,12 +43,15 @@ Milestone M5, fidelity at scale, which lands as 0.2.0. It asks whether the engin
 
 ### Tools and CI
 - Debug views for the level drawn, a texture's wanted and resident levels, culling, instanced runs and overdraw, and a counts panel against the spec's budgets.
-- A scale lane that walks the small district's desktop tiers on lavapipe on every pull request and holds every count row, with lavapipe's few differences and their reasons beside the table.
+- A scale lane that walks the small district's desktop tiers on lavapipe on every pull request and holds every count row, with lavapipe's few differences and their reasons beside the table, and keeps each walk's counts frame by frame, with the pipelines each mesh pass set.
 - The cold boot's long frames traced, frame by frame: the stand no longer reads its zone's look on the frame's thread, and what is left is a frame waiting on its own GPU work while the warm-up compiles.
 - When each frame's GPU work ended, on the GPU's clock, in the timed trace.
 - The benchmark report's rules for Metal, which overlaps its passes: the prepasses and shadows judged as one row, a pass read on frames with no upload in flight, and a round with the display's 60 Hz lock void for its GPU rows; exit test 2 judged by each wait's frames and what held it, its 30 frames only on runs paced at the tier's rate, and failed by an arrival held to its bound; exit test 6 judged on the crowd's walk, with the held crowd shown.
 - WARP's GPU tests in eight shards in CI.
 - "How to add" recipes, with no Rust step, for a playable kind, cloth, a reflection probe, a zone's weather, ambient characters, a level-of-detail setting, a face track, a focus key, an effect mesh and a decal.
+
+### Known at release
+- Exit test 1 is not met on Desktop-High: the district fight's GPU frame read p95 12.03 ms against its 12.00 ms row on the final run's one valid round. Every other verdict the run judged passes. Some units on Desktop-High, Mobile-High and Mobile-Low have no valid round, because the display's 60 Hz lock voided each, so they are not judged. The maintainer finished M5 there; [the M6 handoff](docs/m6-handoff.md) carries both, and [the exit run](docs/m5-exit-run.md) has the verdicts.
 
 ### Known limitations
 - Nobody has played anything yet, and nothing has run on a physical phone, a Steam Deck, or Windows or Linux hardware. Every figure at scale is this Mac's.
@@ -103,5 +106,5 @@ The first release: milestones M0 to M4, from bring-up to ship readiness. The ren
 - The game's identity is a placeholder (`com.example.sapphire.game` in [platform/identity.toml](platform/identity.toml)). The release keys and patch host in `platform/patch.toml` are the maintainer's to set. No store has seen a build.
 - [The M5 handoff](docs/m5-handoff.md) and the spec's [milestones](docs/engine-spec.md#10-milestones) list what each exit test still needs from a device, an account or a person.
 
-[Unreleased]: https://github.com/nameless525/sapphire/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/nameless525/sapphire/releases/tag/v0.2.0
 [0.1.0]: https://github.com/nameless525/sapphire/releases/tag/v0.1.0

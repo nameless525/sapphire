@@ -48,5 +48,8 @@
             ),
             version: Some(V1),
         )),
+        budget: (
+            role: Hero,
+        ),
     ),
 )

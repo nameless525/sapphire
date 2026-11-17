@@ -55,5 +55,8 @@
             ),
             skeleton: "41e229ad-28a3-41f9-aeb8-ba214e06be6a",
         )),
+        budget: (
+            role: Enemy,
+        ),
     ),
 )

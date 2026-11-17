@@ -48,5 +48,14 @@
             ),
             version: Some(V1),
         )),
+        budget: (
+            role: Hero,
+            waive: [
+                (
+                    rule: Joints,
+                    why: "built at the hero row's 200 joints, 60 over the phones' 140: M6 C8 cuts the deepest spring joints on the mobile cook",
+                ),
+            ],
+        ),
     ),
 )

@@ -55,5 +55,8 @@
                 },
             ),
         )),
+        budget: (
+            role: Enemy,
+        ),
     ),
 )

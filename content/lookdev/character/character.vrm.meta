@@ -44,5 +44,18 @@
             ),
             version: Some(V1),
         )),
+        budget: (
+            role: Hero,
+            waive: [
+                (
+                    rule: Slots,
+                    why: "pixiv's sample keeps VRoid's 13 materials as authored: its face, eyes and hair can't merge (M5 L15), and it is the look-dev reference",
+                ),
+                (
+                    rule: Joints,
+                    why: "VRoid's 155 joints, 15 over the phones' 140: M6 C8 cuts the deepest spring joints on the mobile cook",
+                ),
+            ],
+        ),
     ),
 )

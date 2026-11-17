@@ -55,7 +55,7 @@
 //!
 //! # Arguments
 //!
-//! - `--version`: prints `Sapphire Sandbox 0.1.0` and exits before platform initialization, as `--help` does
+//! - `--version`: prints `Sapphire Sandbox 0.2.0` and exits before platform initialization, as `--help` does
 //!   (0.1.0). The sandbox is never packaged, so it has no build number.
 //! - `--frames N`: exit after N presented frames, for unattended runs; fails if they can't be
 //!   presented in time.

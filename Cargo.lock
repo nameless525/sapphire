@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "game_app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "embed-resource",
  "game_combat",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "game_combat"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "profiling",
@@ -1614,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "game_flow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "game_combat",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "game_ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "game_combat",
@@ -4224,7 +4224,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_anim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "sapphire_assets",
@@ -4240,7 +4240,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_assets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "blake3",
@@ -4278,7 +4278,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cpal",
  "kira",
@@ -4293,7 +4293,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_body_pose"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "insta",
@@ -4309,7 +4309,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_bytecode"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "mlua",
@@ -4321,7 +4321,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_camera"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "profiling",
@@ -4338,7 +4338,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_colliders"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "glam 0.33.12",
@@ -4352,7 +4352,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_controls"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "profiling",
  "sapphire_assets",
@@ -4373,7 +4373,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glam 0.33.12",
  "mimalloc",
@@ -4386,7 +4386,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_crash"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crash-handler",
  "libc",
@@ -4398,7 +4398,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_cues"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "profiling",
@@ -4424,7 +4424,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_debug"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -4444,7 +4444,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_dialogue"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "rkyv",
@@ -4459,7 +4459,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_document"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "getrandom 0.4.3",
@@ -4478,7 +4478,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_ecs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "bevy_tasks",
@@ -4489,7 +4489,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_editor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bevy_reflect",
@@ -4531,7 +4531,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_gameplay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "bevy_reflect",
@@ -4562,7 +4562,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_hot_reload"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sapphire_assets",
  "sapphire_render",
@@ -4573,7 +4573,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_input"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "profiling",
@@ -4588,7 +4588,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_jobs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_tasks",
  "libc",
@@ -4599,7 +4599,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_livelink"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4618,7 +4618,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_loc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "icu_decimal",
  "icu_locale_core",
@@ -4633,7 +4633,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_look"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "glam 0.33.12",
@@ -4642,7 +4642,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_math"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glam 0.33.12",
  "libm",
@@ -4650,7 +4650,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_moves"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "rkyv",
@@ -4666,7 +4666,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_nav"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glam 0.33.12",
  "sapphire_navmesh",
@@ -4676,7 +4676,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_navmesh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "rkyv",
@@ -4687,7 +4687,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_patch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -4703,7 +4703,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_physics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glam 0.33.12",
  "parry3d",
@@ -4718,7 +4718,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_pipeline"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bevy_reflect",
@@ -4776,7 +4776,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_platform"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block2",
  "jni-sys 0.4.1",
@@ -4798,7 +4798,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_playtest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "sapphire_core",
@@ -4816,7 +4816,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_reflect"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "ron",
@@ -4826,7 +4826,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "bytemuck",
@@ -4858,7 +4858,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_replay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "sapphire_core",
@@ -4871,7 +4871,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_rhi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "objc2-quartz-core",
  "pollster",
@@ -4887,7 +4887,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_sandbox"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "game_combat",
@@ -4932,7 +4932,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_save"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "sapphire_jobs",
@@ -4947,7 +4947,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_script"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "mlua",
@@ -4964,7 +4964,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_sequencer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glam 0.33.12",
  "profiling",
@@ -4977,7 +4977,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_serialize"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "blake3",
@@ -4991,7 +4991,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_soundgen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bevy_reflect",
@@ -5005,7 +5005,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_stage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "bevy_reflect",
@@ -5042,7 +5042,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_strings"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "sapphire_reflect",
@@ -5053,7 +5053,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_symbols"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5074,7 +5074,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_synthetic_zone"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sapphire_assets",
  "sapphire_colliders",
@@ -5088,7 +5088,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "nv-flip",
@@ -5103,7 +5103,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_text"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "epaint_default_fonts",
  "etagere",
@@ -5117,14 +5117,14 @@ dependencies = [
 
 [[package]]
 name = "sapphire_time"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "sapphire_timeline"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "rkyv",
@@ -5139,7 +5139,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_tod"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "sapphire_look",
@@ -5152,7 +5152,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "bytemuck",
@@ -5175,7 +5175,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_vfx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "glam 0.33.12",
@@ -5192,7 +5192,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_watch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "notify",
  "sapphire_time",
@@ -5202,7 +5202,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_world"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "bevy_reflect",
@@ -5228,7 +5228,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire_zone"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_reflect",
  "glam 0.33.12",
@@ -6769,7 +6769,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",

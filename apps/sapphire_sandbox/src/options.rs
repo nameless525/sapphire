@@ -75,7 +75,7 @@ pub(crate) fn build_version() -> game_ui::version::BuildVersion<'static> {
     game_ui::version::BuildVersion { version: env!("CARGO_PKG_VERSION"), build: None }
 }
 
-/// `--version`'s line: `Sapphire Sandbox 0.1.0`.
+/// `--version`'s line: `Sapphire Sandbox 0.2.0`.
 pub(crate) fn version_line() -> String {
     use sapphire_platform::App as _;
     build_version().line(crate::SandboxApp::METADATA.name)

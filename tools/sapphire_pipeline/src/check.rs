@@ -14,7 +14,10 @@
 //! (spec §3.4 has an enemy's 8,000 triangles and a boss's 20,000 on desktop, and says a phone draws the
 //! desktop's LOD1, which the mobile cook keeps by skipping LOD0; nothing about the ambient cast): the
 //! per-character rows, joints, slots and maps, are every role's, and an ambient figure, drawn by the crowd,
-//! is held to less.
+//! is held to less. A tree (M6 G6a) is no character: its row is proposed for the generated species, a mesh of
+//! bark and leaf cards with no skin, its two slots, and a leaf atlas of 1024 a side, 512 on the phones. Its
+//! triangles are the same on both cooks, since a tree's levels are off (simplification would merge its
+//! cards) until G3's card-thinned levels give the phones one of their own.
 //!
 //! Each role mesh is cooked to memory on both cooks as a cook of its tree would cook it, merges included
 //! ([`cook::cook_mesh_in`]'s way), and measured there: LOD0's triangles, the skin's joints, and the material
@@ -99,11 +102,13 @@ pub enum Role {
     Boss,
     /// A zone's ambient cast, the crowd.
     Ambient,
+    /// A tree a foliage field places (M6 G6a): bark and leaf cards, no skin.
+    Tree,
 }
 
 impl Role {
     /// Every role, in [`ROWS`]' order.
-    pub const ALL: [Self; 4] = [Self::Hero, Self::Enemy, Self::Boss, Self::Ambient];
+    pub const ALL: [Self; 5] = [Self::Hero, Self::Enemy, Self::Boss, Self::Ambient, Self::Tree];
 
     /// The role's name in reports.
     pub fn name(self) -> &'static str {
@@ -112,6 +117,7 @@ impl Role {
             Self::Enemy => "enemy",
             Self::Boss => "boss",
             Self::Ambient => "ambient",
+            Self::Tree => "tree",
         }
     }
 
@@ -145,12 +151,13 @@ const fn limits(triangles: u32, joints: u32, slots: u32, map: u32) -> Limits {
 /// Each role's row, in [`Role::ALL`]'s order, desktop then mobile: spec §3.4's hero; the enemy's and the
 /// boss's desktop triangles are its proposals, and their mobile ones the same, since spec §3.4's phone draws
 /// the desktop's LOD1 (a level the mobile cook keeps by skipping LOD0, so under the same number); the ambient
-/// row is proposed here (M6 C1), for the maintainer.
-pub const ROWS: [[Limits; 2]; 4] = [
+/// row is proposed here (M6 C1), and the tree's (M6 G6a), for the maintainer.
+pub const ROWS: [[Limits; 2]; 5] = [
     [limits(80_000, 200, 6, 2048), limits(30_000, 140, 4, 1024)],
     [limits(8_000, 200, 6, 2048), limits(8_000, 140, 4, 1024)],
     [limits(20_000, 200, 6, 2048), limits(20_000, 140, 4, 1024)],
     [limits(4_000, 64, 2, 1024), limits(4_000, 64, 1, 512)],
+    [limits(12_000, 0, 2, 1024), limits(12_000, 0, 2, 512)],
 ];
 
 /// The longest side a character's map may store on mobile, whatever its role (spec §3.4's part budget):

@@ -4462,6 +4462,7 @@ name = "sapphire_document"
 version = "0.2.0"
 dependencies = [
  "bevy_reflect",
+ "blake3",
  "getrandom 0.4.3",
  "ron",
  "sapphire_assets",

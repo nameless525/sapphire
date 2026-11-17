@@ -19,7 +19,8 @@ use sapphire_timeline::TimelineDocument;
 use sapphire_vfx::EffectLibrary;
 use sapphire_zone::ZoneDocument;
 
-use crate::set::{DocumentSet, SetError};
+use crate::journal::JournalEntry;
+use crate::set::{DocumentSet, Noticed, SetError};
 
 /// How a type of document reads, and what's wrong with one that does.
 pub struct Schema<T> {
@@ -194,6 +195,19 @@ impl Kind {
             Self::Timeline => set.open(path, timeline(), Arc::new(registry_of::<TimelineDocument>())),
             Self::Ui => set.open(path, ui(), Arc::new(registry_of::<UiDocument>())),
             Self::Zone => set.open(path, zone(), Arc::new(registry_of::<ZoneDocument>())),
+        }
+    }
+
+    /// Opens a journal's entry as a document of this kind ([`DocumentSet::recover`]).
+    pub fn recover(self, set: &mut DocumentSet, entry: &JournalEntry) -> Result<Vec<Noticed>, SetError> {
+        match self {
+            Self::Moves => set.recover(entry, moves(), Arc::new(registry_of::<MoveSetDocument>())),
+            Self::Graph => set.recover(entry, graph(), Arc::new(registry_of::<AnimGraph>())),
+            Self::Cue => set.recover(entry, cue(), Arc::new(registry_of::<Cue>())),
+            Self::Effects => set.recover(entry, effects(), Arc::new(registry_of::<EffectLibrary>())),
+            Self::Timeline => set.recover(entry, timeline(), Arc::new(registry_of::<TimelineDocument>())),
+            Self::Ui => set.recover(entry, ui(), Arc::new(registry_of::<UiDocument>())),
+            Self::Zone => set.recover(entry, zone(), Arc::new(registry_of::<ZoneDocument>())),
         }
     }
 }

@@ -165,6 +165,26 @@ where
         }
     }
 
+    /// A document as a journal kept it ([`crate::journal`]): `text` over `disk`, the bytes the file held, with
+    /// `unsaved` the steps from the one to the other, oldest first. `None` when history couldn't say which
+    /// edits weren't saved, so a rebase lays nothing back, as it wouldn't have before.
+    pub(crate) fn recovered(
+        text: String,
+        schema: Schema<T>,
+        registry: Arc<TypeRegistry>,
+        disk: Vec<u8>,
+        unsaved: Option<Vec<HistoryStep>>,
+    ) -> Self {
+        let mut document = Self::open(text, schema, registry);
+        document.disk = disk;
+        match unsaved {
+            Some(steps) => document.undo = steps,
+            None => document.saved_at = None,
+        }
+        document.forget_past_limit();
+        document
+    }
+
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
@@ -822,6 +842,25 @@ where
         {
             self.set_raw_text(gesture.start);
         }
+    }
+
+    /// What history holds past the last save, oldest first, with a gesture under way as the last step, so
+    /// undoing them all from the text gives [`Self::disk`]. `None` where history can't say: after an undo past
+    /// the save and a new edit, after [`Self::keep_mine`], or once the cap took the save point.
+    #[must_use]
+    pub fn unsaved(&self) -> Option<Vec<HistoryStep>> {
+        let saved = self.saved_at.filter(|saved| *saved <= self.undo.len())?;
+        let mut steps = self.undo[saved..].to_vec();
+        if let Some(gesture) = &self.gesture
+            && gesture.start != self.text
+        {
+            steps.push(HistoryStep {
+                label: gesture.label.clone(),
+                change: Change::between(&gesture.start, &self.text),
+                records: gesture.records.clone(),
+            });
+        }
+        Some(steps)
     }
 
     /// The last step of undo.

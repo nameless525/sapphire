@@ -10,6 +10,8 @@ license.workspace = true
 [dependencies]
 # Types with `Reflect` are its values, and its tests derive their own, which finds the crate by this name.
 bevy_reflect.workspace = true
+# What a journal's entry says the file held, by its hash.
+blake3.workspace = true
 # A new document's ID.
 getrandom.workspace = true
 ron.workspace = true

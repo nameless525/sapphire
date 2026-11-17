@@ -29,8 +29,10 @@ use sapphire_assets::AssetId;
 use crate::disk::{self, Temporary};
 use crate::document::{Document, Outcome, Rebased, Refused};
 use crate::identity::{self, IdentityError, Sidecars};
+use crate::journal::JournalEntry;
 use crate::kinds::Schema;
 use crate::path::PropertyPath;
+use crate::record::HistoryStep;
 use crate::walk::Property;
 
 /// A document, whatever its kind.
@@ -76,6 +78,8 @@ pub trait AnyDocument: Any {
     fn history(&self) -> (usize, usize);
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// [`Document::unsaved`].
+    fn unsaved(&self) -> Option<Vec<HistoryStep>>;
     #[doc(hidden)]
     fn disk(&self) -> &[u8];
     #[doc(hidden)]
@@ -200,6 +204,10 @@ where
         self
     }
 
+    fn unsaved(&self) -> Option<Vec<HistoryStep>> {
+        Self::unsaved(self)
+    }
+
     fn disk(&self) -> &[u8] {
         Self::disk(self)
     }
@@ -246,6 +254,12 @@ pub enum SetError {
     ChangedOnDisk { path: PathBuf },
     #[error("no document with the ID {0} is open")]
     NotOpen(AssetId),
+    /// A journal's entry doesn't agree with itself: it's left where it is, for a person to read.
+    #[error("{}: the journal's entry can't be taken: {why}", path.display())]
+    Journal { path: PathBuf, why: String },
+    /// A journal's entry is of a document open here with edits of its own, which taking it would lose.
+    #[error("{} is open with edits of its own: save or undo them first", path.display())]
+    OpenWithEdits { path: PathBuf },
 }
 
 /// What a look at the files found.
@@ -671,6 +685,93 @@ impl DocumentSet {
                 None
             }
         }
+    }
+
+    /// Opens a journal's entry as the document it was: its text over the bytes its edits were made over, those
+    /// edits its undo, and so dirty. A document open here with no edits gives way to it. Then the file is
+    /// looked at as [`Self::refresh`] looks: one that moved on since the entry's edits began is a
+    /// [`Noticed::Conflict`], settled by taking the file, laying the edits back on it ([`Self::rebase`]) or
+    /// keeping the entry's text; one holding the entry's text already is clean; and one that's gone is
+    /// looked for by its ID. Nothing here writes a source.
+    pub fn recover<T>(
+        &mut self,
+        entry: &JournalEntry,
+        schema: Schema<T>,
+        registry: Arc<TypeRegistry>,
+    ) -> Result<Vec<Noticed>, SetError>
+    where
+        T: Reflect + FromReflect + Typed + GetTypeRegistration + Clone + PartialEq,
+    {
+        let base = entry.base().map_err(|why| SetError::Journal { path: entry.path.clone(), why })?;
+        let id = entry.id;
+        if let Some(open) = self.files.get(&id)
+            && open.document.is_dirty()
+        {
+            return Err(SetError::OpenWithEdits { path: open.path.clone() });
+        }
+        let mut noticed = Vec::new();
+        let path = match self.files.get(&id) {
+            Some(open) => open.path.clone(),
+            None => self.whereabouts(id, &entry.path, &mut noticed),
+        };
+        let steps = match &entry.unsaved {
+            crate::journal::Unsaved::Steps(steps) => Some(steps.clone()),
+            crate::journal::Unsaved::Over(_) => None,
+        };
+        let document = Document::recovered(entry.text.clone(), schema, registry, base.into_bytes(), steps);
+        let file = OpenFile {
+            path,
+            importer: schema.importer,
+            document: Box::new(document),
+            conflict: None,
+            gone: false,
+            duplicated: false,
+        };
+        self.files.insert(id, file);
+        let file = self.files.get_mut(&id).expect("it's just gone in");
+        match fs::read(&file.path) {
+            Ok(on_disk) => settle(id, file, on_disk, Some(&mut noticed)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                file.gone = true;
+                noticed.push(Noticed::Gone { id });
+            }
+            // Unreadable just now: the next look, or a save, says what it holds.
+            Err(_) => {}
+        }
+        Ok(noticed)
+    }
+
+    /// Where the file with this ID is now: where it was, if its sidecar there still says so, or where a look
+    /// finds its sidecar. Neither, and it's where it was, gone or someone else's: a save checks its sidecar.
+    fn whereabouts(&mut self, id: AssetId, was: &Path, noticed: &mut Vec<Noticed>) -> PathBuf {
+        let sidecar = identity::sidecar_path(was);
+        if identity::read_id(&sidecar).is_ok_and(|there| there == id) {
+            self.sidecars.note(sidecar, id);
+            return was.to_owned();
+        }
+        if self.look().is_ok()
+            && let Some(now) = self.sidecars.source_of(id)
+        {
+            noticed.push(Noticed::Moved { id, from: was.to_owned(), to: now.clone() });
+            return now;
+        }
+        was.to_owned()
+    }
+
+    /// The journal's entry for a document with unsaved bytes, as it stands: `None` if it hasn't any.
+    #[must_use]
+    pub fn journal_entry(&self, id: AssetId) -> Option<JournalEntry> {
+        let file = self.files.get(&id)?;
+        let document = &file.document;
+        document.is_dirty().then(|| {
+            JournalEntry::new(
+                id,
+                file.path.clone(),
+                document.disk(),
+                document.text().to_owned(),
+                document.unsaved(),
+            )
+        })
     }
 
     /// Moves a document and its sidecar together, so it keeps its ID, and leaves what's being edited alone. It

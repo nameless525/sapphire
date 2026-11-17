@@ -7,8 +7,10 @@
 use std::fmt;
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+
 /// One step down.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Step {
     /// A struct's field, or the field of an enum's variant.
     Field(String),
@@ -22,7 +24,8 @@ pub enum Step {
 
 /// A way down from a document's root. Prints as `moves["light_1"].hitboxes[0].attack?.damage`, and parses
 /// back from that.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct PropertyPath {
     steps: Vec<Step>,
 }

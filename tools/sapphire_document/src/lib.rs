@@ -19,6 +19,7 @@ pub mod blank;
 pub mod disk;
 pub mod document;
 pub mod identity;
+pub mod journal;
 pub mod kinds;
 pub mod layout;
 pub mod patch;
@@ -31,6 +32,7 @@ pub mod write;
 
 pub use document::{Document, Outcome, ReadFailure, Rebased, Refused, RefusedRecord};
 pub use identity::IdentityError;
+pub use journal::{Journal, JournalEntry, JournalStats, Offer};
 pub use kinds::{Kind, Schema, registry_of};
 pub use patch::RonPatch;
 pub use path::{PropertyPath, Step};

@@ -7,12 +7,14 @@
 use std::fmt;
 
 use sapphire_assets::AssetId;
+use serde::{Deserialize, Serialize};
 
 use crate::path::PropertyPath;
 
 /// The smallest splice between two texts: what a record does to a file's bytes, so undoing it is giving
 /// those bytes back, whatever they spelled.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Change {
     pub at: usize,
     pub removed: String,
@@ -70,7 +72,8 @@ fn common_suffix(a: &str, b: &str) -> usize {
 }
 
 /// What a record did.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Op {
     /// Set the property at the record's path.
     Set,
@@ -83,7 +86,8 @@ pub enum Op {
 }
 
 /// What must still hold for a record to go on top of a file that changed under it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Guard {
     pub owner: PropertyPath,
     /// What was there, canonically, so that a change of spelling or a comment doesn't count. `None` if
@@ -108,7 +112,8 @@ impl fmt::Display for ObjectId {
 
 /// One edit: the spec's `(object, property, old, new)`. The object is the document and
 /// [`PropertyPath::object`], and old and new are RON, as a clipboard or a device would take them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChangeRecord {
     pub path: PropertyPath,
     pub op: Op,
@@ -145,7 +150,8 @@ impl ChangeRecord {
 }
 
 /// A step of undo: one edit, or everything in one gesture.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HistoryStep {
     pub label: String,
     /// What it did to the bytes, all of it.

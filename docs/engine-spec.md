@@ -3048,16 +3048,18 @@ Nobody has heard any of it: the placeholder sounds are the project's own synthes
     - **Goldens:** five new Metal goldens, `cutin-band`, `cutin-full`, `cutin-enter`, `cutin-phone` and `cutin-reduced`. Every other Metal capture matched the stack's own reference set but for its known run-to-run wobble.
     - **Replays:** all 40 replays reached their checksums.
     - **Flash tests:** the ultimate's pass unchanged: 6 transitions in its worst second by default (the limit is 6) and 3 with flashes reduced. With `--cutins off` the default is 4. The panel's darkening entry and brightening exit add the 2; with no lines, slower lines (4 a second) or no border it stays 6.
-  - **Costs:** a release sandbox `--bench 1` of `arena-ultimate` at 1920 × 1080 on the M5, with cut-ins on and off, two alternating rounds, the lower of each, on L10's first base (before L8, L13, L14 and the levels of detail under it). The load average was 7.8 at the start and 6.1 at the end. Over the cut-in's frames (ticks 66 to 110), against the same frames with `--cutins off`:
+  - **Costs:** measured at f4efa213e (M5's final run), with the Mac idle and its display asleep: a release sandbox's `--bench` of `arena-ultimate` at 1920 × 1080 on the M5, with cut-ins on (`--cues`) and off (`--cues --cutins off`), two rounds an arm, over the cut-in's frames (ticks 66 to 110: 45 timed frames a run, 22 or 23 on Mobile-Low), the least of an arm's rounds. A round whose display lock reads 0.10 or more voids its GPU and UI pass figures only, and the CPU figures are the least of every round: Desktop-High keeps one GPU round an arm, Mobile-High's figures are from a second run (its first run's arm without cut-ins read void twice), and Mobile-Low reads no lock and keeps both. Off → on (rise), in ms:
 
-    | Tier | GPU p50 (ms) | GPU worst (ms) | CPU p50 (ms) |
-    |---|---|---|---|
-    | Desktop-High | 5.0 → 6.1 | 6.9 → 7.9 | 1.5 → 2.5 |
-    | Desktop-Low | 4.8 → 5.5 | 7.3 → 7.1 | 0.73 → 0.88 |
-    | Mobile-High | 2.6 → 2.9 | 4.2 → 4.6 | 0.62 → 0.79 |
-    | Mobile-Low | 1.8 → 2.1 | 2.5 → 3.5 | 0.65 → 1.3 (two steps a frame) |
+    | Tier | GPU p50 | GPU p95 | GPU worst | UI pass p50 | CPU p50 | CPU worst | First cut-in, CPU worst |
+    |---|---|---|---|---|---|---|---|
+    | Desktop-High | 4.76 → 5.78 (+1.02) | 5.19 → 6.21 (+1.02) | 5.23 → 6.26 (+1.03) | 0.02 → 0.12 | 1.48 → 2.53 (+1.05) | 1.92 → 2.85 (+0.94) | 1.88 → 2.91 (+1.03) |
+    | Desktop-Low | 4.53 → 5.15 (+0.61) | 4.80 → 5.44 (+0.64) | 4.81 → 5.46 (+0.65) | 0.02 → 0.12 | 0.50 → 0.87 (+0.37) | 0.93 → 1.67 (+0.74) | 0.96 → 1.64 (+0.69) |
+    | Mobile-High | 2.56 → 2.85 (+0.28) | 2.66 → 2.94 (+0.28) | 2.66 → 2.95 (+0.28) | 0.02 → 0.11 | 0.43 → 0.75 (+0.32) | 0.84 → 1.61 (+0.77) | 0.82 → 1.58 (+0.76) |
+    | Mobile-Low | 1.78 → 2.01 (+0.23) | 1.84 → 2.06 (+0.22) | 1.86 → 2.12 (+0.26) | 0.02 → 0.11 | 0.68 → 1.38 (+0.70) (two steps a frame) | 1.05 → 2.87 (+1.82) | 0.92 → 2.57 (+1.65) |
 
-    The UI pass takes 0.12 ms with the panel (0.02 without). The CPU is the stand's springs at the tier's quality: Desktop-High solves clearance every tick, as it does for the fighter. No tier builds a pipeline on first use. The frame that stands it takes at most 3.4 ms of CPU, against 35.6 ms before its springs were readied off the frame. A frame that draws one makes about 130 more allocations (869 against 737 on Desktop-High), not yet traced to their sites.
+    On L10's first base (before L8, L13, L14 and the levels of detail under it, at load 6 to 8) the GPU p50 rose 1.03, 0.79, 0.38 and 0.27 ms and the CPU p50 1.05, 0.15, 0.17 and 0.63. No cut-in row is in §3.3: the one L10 proposed (a cut-in while one plays, 1.0 ms on Desktop-Low and 1.5 on Mobile-Low) was never adopted, and the cost sits within it, Desktop-Low's GPU p50 rising 0.61 ms and its worst 0.65, Mobile-Low's 0.23 and 0.26.
+
+    The CPU is the stand's springs at the tier's quality: Desktop-High solves clearance every tick, as it does for the fighter. No tier builds a pipeline on first use. On the first base, the frame that stands it took at most 3.4 ms of CPU, against 35.6 ms before its springs were readied off the frame. A frame that draws one makes about 130 more allocations (869 against 737 on Desktop-High), not yet traced to their sites.
   - **Limits:** one character, no sword, no depth of field, and no painted or 2D cut-in. Phones were proved on the Mac's Metal only.
 - **As built (M3 U2, the glyph atlas, `sapphire_text`):** a crate of its own, because `parley` brings about 60 crates that what only draws a HUD shouldn't build.
   - **Layering:** `GlyphAtlas::draw` writes glyph quads and new texels into the frame's `UiDrawList` (`runs`, `page_uploads`, `upload_texels`), and the renderer applies them (R4). A quad marked `UI_COVERAGE` reads coverage rather than a distance field, on the interface's one pipeline (negative softness said so until M3 U8 gave `UiQuad` its `texels`). A run of quads on a page keeps its place among the HUD's, so the HUD's goldens don't move.

@@ -99,6 +99,8 @@ All numbers in this section are **Proposals**. Set them in M2 by measuring on th
 
 The device floor is the Mobile-Low column. Raise it rather than compromise the look.
 
+**As built (dynamic resolution's default):** a tier's GPU frame is its `gpu_frame_ms` in [crates/sapphire_render/tiers.ron](../crates/sapphire_render/tiers.ron), the time dynamic resolution holds frames under by lowering the render scale. Dynamic resolution is off by default on every tier: the player's setting starts off (`dynamic_resolution: false` in `game_ui`'s settings, `QualitySettings::dynamic_resolution`), and `r.dynamic_resolution` follows it unless set. So as shipped the column is a budget the benches judge, not a deadline any frame is held to; a frame over it lowers nothing until the player turns dynamic resolution on.
+
 - **As built (M1 R6, `sapphire_render::quality`):**
   - The four rows are data: `crates/sapphire_render/tiers.ron`, one entry per tier, compiled into the renderer (§5.12, "Quality tiers"). Each entry carries its row's internal resolution as a render scale of 1, capped in height on mobile (Mobile-High 740; Mobile-Low 590, "~1280×590 → native" on any phone). The desktop tiers render at native height until R7 brings an upscaler, because a bilinear upscale would soften the outlines and hard two-tone edges the anime look depends on; R7 restores their caps (Desktop-High 1440 rows, 4K upscaled; Desktop-Low 1080). Each entry also carries its target frame rate (60, 60, 60, 30) and GPU frame (12, 14, 13, 26 ms, the upper ends), and §3.4's light and particle budgets.
   - A device gets the highest tier of its class whose rules it meets, from its GPU's kind and API (`GpuCaps`) and its RAM (the memory column): Desktop-High needs a discrete GPU, or Apple silicon (an integrated GPU on Metal), with 16 GB; Mobile-High an 8 GB phone (at least 7,000 MiB reported). Software and paravirtual GPUs, the golden-image runners among them, get Desktop-Low. These rules are a first heuristic: they can't see VRAM, so a GTX 1060 machine with 16 GB of RAM counted as Desktop-High until M4 T4's table of desktop GPUs (below).
@@ -150,6 +152,8 @@ Each figure is wall time on the critical path.
 
 Distortion's share of "Particles, distortion" (M5 L6, measured on an Apple M5, §5.16): the effects' bends add 0.10 to 0.21 ms to Desktop-Low's GPU frame at 1080p, one landing to its cap of 8, and nothing on Mobile-Low, which draws none (Mobile-High: 0.04 to 0.08 ms at 1280×720).
 
+**No adopted row names the screen effects:** the effects pack's (M5 L9) run in post's fused pass, so their cost lands in "Bloom + tonemap + LUT", whose figures predate them, and depth of field's row sits outside the total; B4's proposed columns below fold screen effects into post's row. Whether to give them a share is owed ([m6-handoff.md](m6-handoff.md), "Everything deferred").
+
 **Proposed columns and rows (M5 B4), not yet adopted.** The two columns above leave Desktop-High and Mobile-High without a per-pass budget, and two kinds of work have no row (depth of field's and reflection probes', above, are measured). Each figure below is a **proposal** sized from the two columns above and §3.8's walk (Desktop-High's GPU frame reads ×1.36 Desktop-Low's at p50 on the district, Mobile-High's ×1.63 Mobile-Low's), not a measurement on either tier's reference hardware, and this M5's GPU sits below Desktop-High's reference class. They are for the maintainer to adopt or change, and for the overlay to show once they are adopted (X1).
 
 | Pass | Desktop-High, 1440p @ 60 fps (ms) | Mobile-High, ~1600×740 @ 60 fps (ms) |
@@ -190,6 +194,8 @@ Distortion's share of "Particles, distortion" (M5 L6, measured on an Apple M5, �
 | Draw calls | 2,500 | 700 |
 | Zone texture pool | 2.5 GB | 600 MB; 400 MB on Mobile-Low (WuWa's mobile pool is reportedly 400 MB) |
 | Story flags (`content/flags.ron`, §5.23) | 256 | 256 |
+
+**As built beside two rows:** GPU particles aren't built (§5.16): effects are CPU particles, capped at 4,096, 2,048, 1,024 and 512 by tier (`VfxBudget`, [crates/sapphire_vfx/src/budget.rs](../crates/sapphire_vfx/src/budget.rs)), so nothing runs against the live GPU particles row. And the benchmark's fights (`district-fight` and `party-kinds` in [bench/scale.ron](../bench/scale.ron)) field twelve Ember Lancers on every tier, the phones' too, twice their active enemies row. What either row should say is owed ([m6-handoff.md](m6-handoff.md), "Everything deferred").
 
 **The enemy row is a proposal (M3 C2):** the generated figures sit far under it, measured from each cook's sidecar settings (`every_figure_cooks_under_its_budget` holds it):
 
@@ -2855,7 +2861,7 @@ Nobody has heard any of it: the placeholder sounds are the project's own synthes
 - **Screen effects:** published as `PostParams`.
 - **Effect assets:** emitters with modules and curves, as reflected data. Effects are spawned by cues and timeline-synced, and previewed in the editor.
 - **Clocks:** effects run on the owner's clock, so hitstop freezes the attacker's and victim's effects while world effects keep running.
-- **Budgets:** per-tier caps on particle count and an overdraw estimate. Large smoke and fog effects render at half resolution on mobile.
+- **Budgets:** per-tier caps on particle count and an overdraw estimate. Half-resolution smoke and fog on mobile is planned and not built: the phones draw every effect at the end of the main pass, at the scene's size ([crates/sapphire_render/src/vfx.rs](../crates/sapphire_render/src/vfx.rs), "Where they draw").
 - **As built (M2 E2):**
   - **Crates:** `sapphire_vfx` (L3) holds the simulation and no GPU. It resolves to `sapphire_look`'s plain `VfxFrame` (`VfxSprite`, `VfxRibbonPoint`, `VfxStats`), which `FramePacket::vfx` carries (R4), so it has no edge to `sapphire_render` and needs no `[allow]`. Decals, GPU particles, distortion and mesh particles are later work.
   - **Clocks:** `VfxWorld::advance` takes the world's step and each `OwnerId`'s (`OwnerSteps`), whatever rate the caller runs at. A step of 0 holds an owner's particles, trails and emitters while the world's go on. `write_frame` reads each effect `alpha` of the way along its owner's last step, as poses draw (review WA-3, §4.5): a particle back along its straight line, no further than its birth, and a trail's strip to where the frame falls between two samples, on the spline the next frame draws. At alpha 1 it writes what it always did. Nothing reads a clock, so the simulation can't time itself: the caller measures it into `VfxStats::simulation`. It's outside the simulation's checksum, reads no gameplay state and is seeded (PCG32, a stream per effect).
@@ -5033,6 +5039,7 @@ A change can't merge if any of these fail:
 4. **Allocations:** the zero-allocation assertion (R6, simulation thread inside the fixed step) during the replay suite.
 5. **Budgets:** no budget in §3 regresses by more than 10% on the nightly device run without a recorded waiver.
 
+- **As built (gate 5):** no nightly device run exists, so gate 5 runs nowhere today. Beside it, CI's nightly scale lane (M5 X4) walks the benchmark's `ci` district on lavapipe and holds its count rows exactly ([tests/counts/district-ci.txt](../tests/counts/district-ci.txt)), which fails a moved count and times nothing, and timed rows are read by hand on this Mac in an exit run's quiet sittings (`cargo xtask bench-scale`). Restating the gate is owed ([m6-handoff.md](m6-handoff.md), "Everything deferred").
 - **M3 narrows gate 4 for scripts:** a hook's VM allocations count against their own budget, because `mlua` allows no custom allocator ([m3-plan.md](m3-plan.md) §3, §5.24). Every other step, and every Rust allocation in a binding, still fails it.
 - **As built (M2 D2, gates 2 and 4):** CI's `Replays` job plays `tests/replays/` on Linux, Windows and macOS with no GPU: each reaches its architecture's checksums with `SimStats::allocations` at zero in every step (`cargo xtask replay`, §5.22). A test holds the gate to biting on a system that allocates, naming the first tick.
 - **As built (own review DV-2, the golden gates):**

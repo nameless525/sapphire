@@ -561,6 +561,17 @@ Each was the orchestrator's ruling during the exit run, written where it applies
 - **WARP's GPU tests run in eight shards** of 80 minutes each (`.github/workflows/gpu-tests-warp.yml`; "Tools, goldens and CI", below).
 - **No Metal golden re-capture pass and no fix to the figure generator,** decided on 2026-11-16: both are M6's. The goldens are inside their gates as they are ("Tools, goldens and CI"), and the control maps' bleed is mended at the material level ("The look").
 
+### Budget rows and gates the code doesn't meet as written
+
+Each is a fact the spec now states beside its row; what the row or gate should say is the maintainer's.
+
+- **Gate 5 runs nowhere** (spec §9): there is no nightly device run. The nightly scale lane holds counts on lavapipe and times nothing, and timed rows are read by hand in an exit run. Restate the gate as what runs, with a device run as what is owed, or build the device run.
+- **The live GPU particles row** (spec §3.4): GPU particles aren't built, and the CPU particles are capped at 4,096 to 512 by tier. Restate the row for the CPU path, or keep it for GPU particles when they come.
+- **The phones' active enemies row** (spec §3.4): six, while the benchmark's fights field twelve on every tier. Change the row, or the phones' fights.
+- **No share for the screen effects** (spec §3.3): the effects pack runs inside post's row, sized before it, and depth of field sits outside the total. Give them a share, or measure post's row with them on.
+- **The GPU frame column is a budget, not a deadline, as shipped** (spec §3.1): dynamic resolution, which holds frames under it, is off by default on every tier. Decide whether a tier turns it on by default.
+- **`Combat::restart` runs in the game** (spec §3.7, "Starting over"): the title's new game restarts a fight once one has been played, a median of 8.4 to 9.2 ms and about 6,800 allocations on this Mac. Hold the tables, or measure the game's path on a phone.
+
 ### Rust steps left in the "How to add" recipes
 
 M3's first pillar counts each of these as a bug.

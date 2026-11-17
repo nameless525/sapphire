@@ -43,7 +43,7 @@ Milestone M5, fidelity at scale, which lands as 0.2.0. It asks whether the engin
 
 ### Tools and CI
 - Debug views for the level drawn, a texture's wanted and resident levels, culling, instanced runs and overdraw, and a counts panel against the spec's budgets.
-- A nightly scale lane that walks the small district on lavapipe and holds every count row.
+- A scale lane that walks the small district's desktop tiers on lavapipe on every pull request and holds every count row, with lavapipe's few differences and their reasons beside the table.
 - The cold boot's long frames traced, frame by frame: the stand no longer reads its zone's look on the frame's thread, and what is left is a frame waiting on its own GPU work while the warm-up compiles.
 - When each frame's GPU work ended, on the GPU's clock, in the timed trace.
 - The benchmark report's rules for Metal, which overlaps its passes: the prepasses and shadows judged as one row, a pass read on frames with no upload in flight, and a round with the display's 60 Hz lock void for its GPU rows; exit test 2 judged by each wait's frames and what held it, its 30 frames only on runs paced at the tier's rate, and failed by an arrival held to its bound; exit test 6 judged on the crowd's walk, with the held crowd shown.

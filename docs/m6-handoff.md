@@ -81,7 +81,8 @@ M5 added no crate: 48 in `crates/`, four in `game/`, the sandbox and the tools, 
 - **`bench/`** ([bench/README.md](../bench/README.md)): the district (`district/district.ron`), the cast (`cast/`), the kinds at the hero's row (`kinds.ron`) and the batch's manifest (`scale.ron`). `sapphire_pipeline gen-bench` generates it byte for byte on `sapphire_math::det`, and a test pins the `ci` tree's digests (B1).
 - **`cargo xtask bench-content --preset ci|budget|double [--cook desktop|mobile] [--with-content]`** cooks it into `target/bench/<preset>/`; `rm -rf target/bench` takes all of it. A `budget` cook is about 1.1 GB of packs a cook and minutes of the whole machine, and `target/bench/` held 18 GB at the rehearsal. A shipping build refuses the district's pack: a `dev` sandbox opens it (`--zone district --zone-walk tour`).
 - **`cargo xtask bench-scale prepare|plan|run|report|device`** is exit tests 1, 2 and 7's batch: counted walks in any gate slot (`run --counts`), timed walks alone on the machine, the report's verdicts, and the `ci` district on the Simulator and the emulator ([m5-exit-run.md](m5-exit-run.md), "Before anything").
-- **`cargo xtask counts [--update]`** is CI's nightly scale lane locally: eight walks of the `ci` district held row by row to `tests/counts/district-ci.txt` (X4). A change that moves a draw, a cull, a level, a light, a shadow's redraw or a texture's size moves its rows, and nothing else in a pull request's CI will say so.
+- **`cargo xtask counts [--update]`** walks the `ci` district eight ways (four tiers, dusk and night), each held row by row to `tests/counts/district-ci.txt` (X4). A change that moves a draw, a cull, a level, a light, a shadow's redraw or a texture's size moves its rows.
+- **The scale lane as it runs** ([development-iteration.md](development-iteration.md), "The scale lane"): CI walks the four desktop walks on lavapipe on every pull request and push, a job each with a 15-minute limit and three compute threads (`--compute-threads 3`, so a walk's animation jobs are the scene's, not the runner's). lavapipe on x86-64 counts a few rows differently from the table, which an M5's Metal takes, so each walk is held to the table plus `tests/counts/district-ci-vulkan-lavapipe.txt`, every difference with its reason. The phones' walks read the mobile cook's ASTC textures, which lavapipe can't sample, so they are walked on Metal here and on the Simulator and the emulator (`bench-scale device`). Each walk's artifact keeps its trace of every frame, so two machines' walks compare frame by frame.
 - **The counters** (B4): `sapphire_render::counts` counts what each pass submits; the asset server its pools, admission and evictions; and the overlay's `counts` panel sets the frame against §3.4. §3.4's draw budget is on `main draws`, the main view's calls after culling, a run of equal draws one call; `draw calls`, every pass's, has no budget (M5 Z3).
 
 ### Draws
@@ -115,7 +116,7 @@ Each feature has its tiers, its goldens and its document in its spec section, an
 ### Tools and CI
 
 - **Scale views** (X1): `--debug-view levels|textures|culling|runs|overdraw`, `--debug-cull-from`, and the `counts` overlay panel.
-- **CI:** the nightly scale lane (X4); the `district-play` app lane, which plays the district's encounter on the `ci` district (B5); WARP's goldens in 8 shards and lavapipe's in 5; and lavapipe's GPU tests from one build in two shards.
+- **CI:** the scale lane on every pull request (X4, above); the `district-play` app lane, which plays the district's encounter on the `ci` district (B5); WARP's goldens in 8 shards and lavapipe's in 5; and lavapipe's GPU tests from one build in two shards.
 
 ## How to add
 
@@ -565,7 +566,7 @@ Each was the orchestrator's ruling during the exit run, written where it applies
 
 Each is a fact the spec now states beside its row; what the row or gate should say is the maintainer's.
 
-- **Gate 5 runs nowhere** (spec §9): there is no nightly device run. The nightly scale lane holds counts on lavapipe and times nothing, and timed rows are read by hand in an exit run. Restate the gate as what runs, with a device run as what is owed, or build the device run.
+- **Gate 5 runs nowhere** (spec §9): there is no nightly device run. The scale lane holds counts on lavapipe and times nothing, and timed rows are read by hand in an exit run. Restate the gate as what runs, with a device run as what is owed, or build the device run.
 - **The live GPU particles row** (spec §3.4): GPU particles aren't built, and the CPU particles are capped at 4,096 to 512 by tier. Restate the row for the CPU path, or keep it for GPU particles when they come.
 - **The phones' active enemies row** (spec §3.4): six, while the benchmark's fights field twelve on every tier. Change the row, or the phones' fights.
 - **No share for the screen effects** (spec §3.3): the effects pack runs inside post's row, sized before it, and depth of field sits outside the total. Give them a share, or measure post's row with them on.

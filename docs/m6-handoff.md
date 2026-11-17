@@ -2,11 +2,11 @@
 
 What milestone 6 inherits from M5, for whoever starts it. Like [m5-handoff.md](m5-handoff.md), it's a map. Each item gets a line or two and a pointer to where the detail lives: the spec ([engine-spec.md](engine-spec.md)) by section, the plan ([m5-plan.md](m5-plan.md)) by package ID, the runbook ([m5-exit-run.md](m5-exit-run.md)), or the code.
 
-**Written on 2026-11-16** (M5 Z4) on the line being landed ahead of `main`, before M5's final timed batch; the commit that batch measures is the one [m5-exit-run.md](m5-exit-run.md) records. The line has M5's packages, its reviews (Z3), the exit run's rehearsals (Z2, [m5-exit-run.md](m5-exit-run.md), "Rehearsal at ce7707fd9"), the cold boot's trace (X3), exit test 2's waits, the streamer's cheaper update and the report's rules (Z2).
+**Written on 2026-11-16 and 17** (M5 Z4), as M5 ended. Its final timed batch measured the commit [m5-exit-run.md](m5-exit-run.md) records in "Final run at f4efa213e". The line has M5's packages, its reviews (Z3), the exit run's rehearsals (Z2, [m5-exit-run.md](m5-exit-run.md), "Rehearsal at ce7707fd9"), the cold boot's trace (X3), exit test 2's waits, the streamer's cheaper update and the report's rules (Z2).
 
 **What M6 is, is the maintainer's to choose.** Spec §10 names no milestone after M5. M5's plan sends one track to "the next milestone": the simulation's data from packs, a save across zones and a run-wide `tables_hash`, which belong with game systems that need several zones ([m5-plan.md](m5-plan.md) §3, "The simulation's data" and "Waiting"). "Everything deferred" below is the rest of what's waiting, each with what would reopen it.
 
-**M5 lands as release 0.2.0** ([CHANGELOG.md](../CHANGELOG.md)). Whatever M6 is, it starts from that tag, and its release is 0.3.0: raise the workspace version in the change that finishes it ([spec §7.4](engine-spec.md#74-xtask-commands), "Releases").
+**M5 finished on 2026-11-17 as release 0.2.0** ([CHANGELOG.md](../CHANGELOG.md)), **with exit test 1 not met on Desktop-High:** the district fight's GPU frame read p95 12.03 ms against its 12.00 ms row on the run's one valid round. Every other verdict the batch judged passes. The maintainer decided to finish M5 there and carry the rest to M6 ("What M6 inherits from the exit run", below). Whatever M6 is, it starts from that tag, and its release is 0.3.0: raise the workspace version in the change that finishes it ([spec §7.4](engine-spec.md#74-xtask-commands), "Releases").
 
 **Nobody has played anything.** As of 2026-11-16 nobody has played M2's fight, M3's slice, M4's packaged game or the fight M5 stands in its district, so review 3 from [m2-exit-run.md](m2-exit-run.md) has still never run. M5 tuned no fight and added no game ([m5-plan.md](m5-plan.md) §1, "Feel stays unknown"). Whether any of it is fun is still the largest risk in the project.
 
@@ -30,6 +30,22 @@ M5 changed no step of [m5-handoff.md](m5-handoff.md)'s "Before a first upload", 
 
 - **The phones' upscaler follows AMD's FSR 1** (MIT), written from the method; its notice is at the shader's head and in `content/third_party/amd_fsr1/` (L14). Whatever page lists the game's licences carries it.
 - **A patch asks for room before it fetches** (M5 Z3): a download fetches no block unless the disk holds what is left to stage, what the install writes and a reserve, and the boot's update check waits at most 3 s. A player with no room starts on the release they have, and only the log says why ("Everything deferred").
+
+## What M6 inherits from the exit run
+
+The final run's verdicts and the rule for running a round again are in [m5-exit-run.md](m5-exit-run.md), "Final run at f4efa213e". The maintainer closed M5 with these open:
+
+- **Desktop-High's exit test 1.** The district fight's GPU frame was 0.03 ms over its row on its only valid round; the other round, and one or both rounds of `exit-walk`, `night-weather` (dry and wet) and `tour-night`, were void by the display's lock. **To do:** run those void rounds again with the Mac idle and the display asleep, by the runbook's rule, or find the 0.03 ms: the report's stage and pass rows for that run say where the frame goes. **Done when** `cargo xtask bench-scale report` passes exit test 1 on Desktop-High.
+- **Units with no valid round,** every round void by the display's lock, so their figures judge nothing:
+  - Desktop-High: `capsule-bins` on, `cell-levels` off and on, `character-lods-crowd` off and on, `character-lods` off and on, `draw-runs` off and shadows, `lods` off and on, `party-kinds`, `shadow-cache` turns and `tour-night`;
+  - Mobile-High: `character-lods-crowd` off, `draw-runs` shadows and `shadow-cache` held;
+  - Mobile-Low: `character-lods-crowd` off and `trip`.
+
+  **To do:** run each again on an idle Mac. **Done when** each has a round under the lock's limit in the report.
+- **Not run again at the commit measured.** The ten recipes (exit test 8), `zero_hitches` cold and warm on Metal (exit test 7), and on Metal the sandbox's replays tests and the district's fight cold and warm (exit tests 6 and 7). CI ran the last two on lavapipe at f4efa213e and they passed; for the rest the rehearsal's passes at ce7707fd9 stand, and the runbook says so beside each. **To do:** run each at M6's first rehearsal. **Done when** the runbook gives each a result at the commit its batch measured.
+- **The report's per-run tables read a GPU row's least over every round, void rounds too;** its verdicts read the valid rounds. No verdict moved in the final run: Mobile-Low's `district-fight` shows 3.63 ms at p95 from its void round where its valid round read 3.65. **To do:** have a table leave out a void round's GPU rows, or mark them. **Done when** every GPU figure a table prints is one a verdict could rest on.
+- **Which prepasses row exit test 5 judges.** The runbook's exit test 5 table judges `gpu prepasses` against 1.5 ms on the Low tiers; the report, and the runbook's own rule for Metal, judge the prepasses and shadows as one depth-only row against 3.5 ms (Desktop-Low) and 4.5 ms (Mobile-Low). The final run's verdicts used the report's. **To do:** settle which is meant. **Done when** the table and the report judge the same row.
+- **Already carried below, with what to do:** the lock's floor on short units ("A round is void on a fixed lock, not on its significance"), the device command's lost launch ("`bench-scale device` can lose a launch on the Android emulator"), both under "The benchmark and its measurement", and the crowd's cell edge ("A camera on a cell edge picks its crowd by the sign of a residue", under "Characters").
 
 ## Device checks still owed
 
@@ -662,7 +678,7 @@ Each item names the package and why it waits.
 **Tools, goldens and CI:**
 
 - **The committed Metal goldens aren't all their tree's own captures:** earlier packages moved scenes inside their gates without capturing them again, 137 of 462 at one gate before L17's re-capture of the sky's scenes and 44 of 463 after. No gate needs them re-captured; a re-capture pass would make every Metal golden its tree's own picture, at the cost of PNG churn.
-- **The eight `game-ward-*` Metal scenes D4 captured again** are inside their gates (worst tile 0.047) and owe a person's eye, as do `game-character-tablet-en` and `-ja`, captured again a pixel a code value apart (e49c7fddd) with no row naming them; exit test 3's rule is where each is named.
+- **The eight `game-ward-*` Metal scenes D4 captured again** are inside their gates (worst tile 0.047) and owe a person's eye. `game-character-tablet-en` and `-ja`, captured again a pixel a code value apart (e49c7fddd), are named in exit test 3's rule under the same stated gate, and owe none for one code value in one pixel.
 - **Some Metal captures differ run to run on this Mac,** by a code value or two in a few pixels, on any base: a full golden run against a single-scene capture (`tier-face-desktop-low-floor`, `tier-face-desktop-high-rung-three`, `lookdev-town-day`, `game-ward-gate-ultrawide-en`, `zone-ward-hub`, `arena-skirmish`), and a character under temporal AA (`lookdev-town-hero`, `dof-closeup`). Why a capture depends on what ran before it in the process is unknown.
 - **The sandbox's `--game` capture drops every render override but `--shadow-cache`** (D8's finding), silently; and a tier change in the stage rebuilds the renderer without any command-line override. Refuse them for `--game`, or pass them all.
 - **Scenario documents panic in `read_all`** on their own parse or check errors (Z2): compiled-in content, so a bad one fails the build's tests, never a player, but it should be an error.

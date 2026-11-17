@@ -72,7 +72,7 @@ use crate::cook::{self, Cook, CookError};
 use crate::import::image::{SourceFormat, header_size};
 use crate::import::vrm::{self, vroid_eye_layer, vroid_region_gi};
 use crate::material;
-use crate::meta::{ImportSettings, SourceAsset};
+use crate::meta::{ImportSettings, Resolved, SourceAsset};
 use crate::procedural::ProceduralTexture;
 use crate::texture::{self, TextureSettings};
 
@@ -380,6 +380,12 @@ pub enum CheckError {
 pub fn check(root: &Path) -> Result<Report, CheckError> {
     let resolved = cook::resolve_tree(root)
         .map_err(|source| CheckError::Cook { path: root.to_owned(), source: Box::new(source) })?;
+    check_resolved(root, &resolved)
+}
+
+/// [`check()`], of the tree under `root` as `resolved` already says it resolves: what a cook's asset index
+/// records ([`crate::index`]).
+pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckError> {
     let assets: Vec<&SourceAsset> = resolved.assets.iter().filter(|asset| asset.meta.cook).collect();
     let by_id: HashMap<AssetId, &SourceAsset> = assets.iter().map(|asset| (asset.meta.id, *asset)).collect();
     let mut check = Checker { root, by_id: &by_id, maps: HashMap::new(), findings: Vec::new() };

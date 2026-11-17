@@ -314,6 +314,15 @@ pub enum Written {
     UpToDate,
 }
 
+/// What [`write()`] did: the report's path, whether it wrote it, and the report, which the asset index folds
+/// in ([`crate::index`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Audited {
+    pub path: PathBuf,
+    pub written: Written,
+    pub audit: CookAudit,
+}
+
 /// Audits the cook `report` describes, of the sources under `source_root` into `out_root`, and writes
 /// [`FILE_NAME`] into `out_root` unless it already holds those bytes. With a `cache`, each mesh's and
 /// material's audit is kept there, and so is the whole report.
@@ -323,26 +332,30 @@ pub fn write(
     cook: Cook,
     cache: Option<&Path>,
     report: &CookReport,
-) -> Result<(PathBuf, Written), AuditError> {
+) -> Result<Audited, AuditError> {
     let cache = cache.map(Cache::new);
-    let text = report_text(source_root, out_root, cook, cache.as_ref(), report)?;
+    let audit = whole(source_root, out_root, cook, cache.as_ref(), report)?;
     let path = out_root.join(FILE_NAME);
+    let text = audit.to_ron().map_err(|error| AuditError::Invalid {
+        path: path.clone(),
+        why: format!("the report doesn't write as RON: {error}"),
+    })?;
     if fs::read(&path).is_ok_and(|bytes| bytes == text.as_bytes()) {
-        return Ok((path, Written::UpToDate));
+        return Ok(Audited { path, written: Written::UpToDate, audit });
     }
     cook::write_atomically(&path, text.as_bytes())
         .map_err(|source| AuditError::Write { path: path.clone(), source: Box::new(source) })?;
-    Ok((path, Written::Written))
+    Ok(Audited { path, written: Written::Written, audit })
 }
 
-/// The report's text, from the cache where it has the whole report.
-fn report_text(
+/// The whole report, from the cache where it has it.
+fn whole(
     source_root: &Path,
     out_root: &Path,
     cook: Cook,
     cache: Option<&Cache>,
     report: &CookReport,
-) -> Result<String, AuditError> {
+) -> Result<CookAudit, AuditError> {
     let names = Names { source_root, out_root };
     let mut assets: Vec<(AssetId, CacheKey, String, String)> = report
         .assets
@@ -350,22 +363,8 @@ fn report_text(
         .map(|asset| (asset.id, asset.key, names.source(&asset.source), names.output(&asset.output)))
         .collect();
     assets.sort();
-    let key = CacheKey::audit(AUDITOR, "report", &(cook.name(), assets));
-    if let Some(cache) = cache
-        && let Some(bytes) = cache.get(&key)?
-        && let Ok(text) = String::from_utf8(bytes)
-    {
-        return Ok(text);
-    }
-    let audit = audit(source_root, out_root, cook, cache, report)?;
-    let text = audit.to_ron().map_err(|error| AuditError::Invalid {
-        path: out_root.join(FILE_NAME),
-        why: format!("the report doesn't write as RON: {error}"),
-    })?;
-    if let Some(cache) = cache {
-        cache.put(&key, text.as_bytes())?;
-    }
-    Ok(text)
+    let key = CacheKey::audit(AUDITOR, "whole", &(cook.name(), assets));
+    cached(cache, key, || audit(source_root, out_root, cook, cache, report))
 }
 
 /// Relative names, with `/` between their parts on every host.
@@ -384,7 +383,9 @@ impl Names<'_> {
     }
 }
 
-fn relative(path: &Path, root: &Path) -> String {
+/// `path` under `root`, with `/` between its parts on every host: how the audit and the asset index name
+/// sources and cooked files.
+pub(crate) fn relative(path: &Path, root: &Path) -> String {
     let relative = path.strip_prefix(root).unwrap_or(path);
     relative.components().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
 }

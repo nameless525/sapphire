@@ -70,6 +70,7 @@ const PIPELINE_KEYS_CONTEXT: &str = "sapphire_pipeline 2026-11-03 pack pipeline 
 const PARSED_CONTEXT: &str = "sapphire_pipeline 2026-11-03 parsed document key";
 const TILE_CONTEXT: &str = "sapphire_pipeline 2026-11-03 navigation tile key";
 const AUDIT_CONTEXT: &str = "sapphire_pipeline 2026-11-17 cook audit key";
+const INDEX_CONTEXT: &str = "sapphire_pipeline 2026-11-17 asset index key";
 
 /// A pipeline stage as cache keys know it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -194,9 +195,15 @@ impl CacheKey {
     }
 
     /// The key a part of the cook audit is kept under ([`crate::audit`]): the auditor's stage, which part
-    /// (`report`, `mesh`, `material`), and what it reads, the cook keys of the assets it audits among them.
+    /// (`whole`, `mesh`, `material`), and what it reads, the cook keys of the assets it audits among them.
     pub fn audit(auditor: Stage, part: &str, inputs: &impl Serialize) -> Self {
         Self::derive(AUDIT_CONTEXT, &((auditor.name, auditor.version), part, inputs))
+    }
+
+    /// The key a cook's asset index is kept under ([`crate::index`]): the indexer's stage and what it reads,
+    /// every asset's cook key and cooked bytes and every sidecar among them.
+    pub fn index(indexer: Stage, inputs: &impl Serialize) -> Self {
+        Self::derive(INDEX_CONTEXT, &((indexer.name, indexer.version), inputs))
     }
 
     /// The key a pack's hash is recorded under: the packer's stage, the pack's name, and its

@@ -307,7 +307,7 @@ pub fn check_code_names(
 ) -> Result<(), PackError> {
     let cache = cache.map(Cache::new);
     let (font_packs, _) = fonts(report)?;
-    let groups = groups(report, &font_packs, cache.as_ref())?;
+    let groups = groups(report, &font_packs, cache.as_ref(), None)?;
     let by_id: HashMap<AssetId, &CodeName> = names.iter().map(|name| (name.id, name)).collect();
     let is_zone = |asset: &&CookedAsset| kind(&asset.output) == Some(AssetKind::Zone);
     let zone_packs: HashSet<String> = report
@@ -364,7 +364,7 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
     check_move_set_names(report)?;
     let ids: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
     let (font_packs, licenses) = fonts(report)?;
-    let groups = groups(report, &font_packs, cache.as_ref())?;
+    let groups = groups(report, &font_packs, cache.as_ref(), None)?;
     let mut packs = Vec::with_capacity(groups.len());
     let workers = std::thread::available_parallelism().map_or(1, usize::from).min(4);
     for (name, assets) in groups {
@@ -448,12 +448,76 @@ fn fonts(report: &CookReport) -> Result<(FontPacks, BTreeSet<License>), PackErro
     Ok((packs, licenses))
 }
 
+/// Where a cook's assets go and what they reach, as packing reads them: what the asset index records
+/// ([`crate::index`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Layout {
+    /// The pack each asset goes in.
+    pub packs: HashMap<AssetId, String>,
+    /// What each asset that reaches anything reaches, by ID ([`AssetKind::reach`], and a texture its levels):
+    /// a zone's ambient characters only what this cook holds, as another tree's cast ships with that tree.
+    pub reach: Reach,
+}
+
+/// The pack each asset of `report` goes in and what each reaches, as [`pack_cooked`] packs them, from the
+/// content cache at `cache` where it has what an asset reaches.
+pub fn layout(report: &CookReport, cache: Option<&Path>) -> Result<Layout, PackError> {
+    let cache = cache.map(Cache::new);
+    let (font_packs, _) = fonts(report)?;
+    let reach = reach_map(report, cache.as_ref())?;
+    let packs = groups(report, &font_packs, cache.as_ref(), Some(&reach))?
+        .into_iter()
+        .flat_map(|(name, assets)| assets.into_iter().map(move |asset| (asset.id, name.clone())))
+        .collect();
+    Ok(Layout { packs, reach })
+}
+
+/// What each asset reaches, by ID.
+pub type Reach = HashMap<AssetId, Vec<AssetId>>;
+
+/// What each asset of `report` that reaches anything reaches (see [`Layout::reach`]).
+fn reach_map(report: &CookReport, cache: Option<&Cache>) -> Result<Reach, PackError> {
+    let by_id: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
+    let mut reach = HashMap::new();
+    for asset in &report.assets {
+        // A kind that may depend on nothing reaches nothing, but for a zone's ambient characters (M5 C10): it
+        // needn't be read.
+        let reaches = kind(&asset.output)
+            .filter(|&of| of == AssetKind::Ambient || AssetKind::ALL.iter().any(|&to| of.may_depend_on(to)));
+        if let Some(of) = reaches {
+            let mut reached = reach_of(asset, of, cache)?;
+            // Ambient characters may name another tree's cast and graph: the benchmark's district names the
+            // shipped content's, which its walk mounts beside its own (`zone`'s "Ambient characters"). What this
+            // tree has ships with the zone.
+            if of == AssetKind::Ambient {
+                reached.retain(|id| by_id.contains_key(id));
+            }
+            reach.insert(asset.id, reached);
+        }
+        // A texture's levels go where it goes: what reaches a texture reaches its levels (M5 M3).
+        if kind(&asset.output) == Some(AssetKind::Texture) {
+            let levels: Vec<AssetId> = (0..texture_level::MAX_LEVELS)
+                .map(|level| TextureLevel::id(asset.id, level))
+                .take_while(|id| {
+                    by_id.get(id).is_some_and(|level| kind(&level.output) == Some(AssetKind::TextureLevel))
+                })
+                .collect();
+            if !levels.is_empty() {
+                reach.insert(asset.id, levels);
+            }
+        }
+    }
+    Ok(reach)
+}
+
 /// Which pack each asset of `report` goes in (see the [module docs](self)), given the fonts' from
-/// [`fonts`]. A tree without zones reads no further asset for this.
+/// [`fonts`], and what its assets reach where the caller has read it already. A tree without zones reads no
+/// further asset for this.
 fn groups<'a>(
     report: &'a CookReport,
     font_packs: &FontPacks,
     cache: Option<&Cache>,
+    reach: Option<&Reach>,
 ) -> Result<BTreeMap<String, Vec<&'a CookedAsset>>, PackError> {
     // Where an asset goes if no one zone holds it.
     let voices = voice_packs(report, cache)?;
@@ -486,35 +550,14 @@ fn groups<'a>(
     }
 
     let by_id: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
-    let mut reach = HashMap::new();
-    for asset in &report.assets {
-        // A kind that may depend on nothing reaches nothing, but for a zone's ambient characters (M5 C10): it
-        // needn't be read.
-        let reaches = kind(&asset.output)
-            .filter(|&of| of == AssetKind::Ambient || AssetKind::ALL.iter().any(|&to| of.may_depend_on(to)));
-        if let Some(of) = reaches {
-            let mut reached = reach_of(asset, of, cache)?;
-            // Ambient characters may name another tree's cast and graph: the benchmark's district names the
-            // shipped content's, which its walk mounts beside its own (`zone`'s "Ambient characters"). What this
-            // tree has ships with the zone.
-            if of == AssetKind::Ambient {
-                reached.retain(|id| by_id.contains_key(id));
-            }
-            reach.insert(asset.id, reached);
+    let read;
+    let reach = match reach {
+        Some(reach) => reach,
+        None => {
+            read = reach_map(report, cache)?;
+            &read
         }
-        // A texture's levels go where it goes: what reaches a texture reaches its levels (M5 M3).
-        if kind(&asset.output) == Some(AssetKind::Texture) {
-            let levels: Vec<AssetId> = (0..texture_level::MAX_LEVELS)
-                .map(|level| TextureLevel::id(asset.id, level))
-                .take_while(|id| {
-                    by_id.get(id).is_some_and(|level| kind(&level.output) == Some(AssetKind::TextureLevel))
-                })
-                .collect();
-            if !levels.is_empty() {
-                reach.insert(asset.id, levels);
-            }
-        }
-    }
+    };
     let walk = |from: Vec<AssetId>| -> Result<HashSet<AssetId>, PackError> {
         let mut seen: HashSet<AssetId> = from.iter().copied().collect();
         let mut stack = from;

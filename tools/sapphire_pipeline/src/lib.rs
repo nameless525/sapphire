@@ -64,6 +64,9 @@
 //!   census, which control-map channels are constant per region, the simplifier's locks and their cost.
 //! - [`check`]: `sapphire_pipeline check` (M6 C1): each character against its role's row of spec §3.4, and the
 //!   content rules, with the waivers sidecars give, for the content tests, CI and an artist's tools alike.
+//! - [`index`]: the asset index every cook writes beside its cooked files (M6 C2), `index.json`: each asset's
+//!   kind, source, pack, bytes, dependencies both ways, texture thumbnail, mesh levels, the audit's records
+//!   and the check's results; what `sapphire_pipeline graph` walks.
 //! - [`release`]: the release manifest a cook writes beside its packs, and signing a release and laying it
 //!   out for a static host (M4 P1). The only code that signs one: no build of the game links it.
 //! - [`cache`]: the cache key over everything that determines a cooked output or a pack, and the
@@ -156,6 +159,7 @@ pub mod generators;
 mod gltf_writer;
 pub mod icon;
 pub mod import;
+pub mod index;
 pub mod keypose;
 pub mod loc;
 pub mod lookdev;

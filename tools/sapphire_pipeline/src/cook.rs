@@ -5499,12 +5499,20 @@ mod tests {
         for cook in [Cook::Desktop, Cook::Mobile] {
             let report = scratch.cook_with(cook, true);
             let out = scratch.out_for(cook);
-            let (path, written) = audit::write(&scratch.source(), &out, cook, Some(&cache), &report).unwrap();
-            assert_eq!((&path, written), (&out.join(audit::FILE_NAME), audit::Written::Written));
-            let first = fs::read_to_string(&path).unwrap();
+            let audited = audit::write(&scratch.source(), &out, cook, Some(&cache), &report).unwrap();
+            assert_eq!(
+                (&audited.path, audited.written),
+                (&out.join(audit::FILE_NAME), audit::Written::Written)
+            );
+            let first = fs::read_to_string(&audited.path).unwrap();
             let again = scratch.cook_with(cook, true);
-            let (_, written) = audit::write(&scratch.source(), &out, cook, Some(&cache), &again).unwrap();
-            assert_eq!(written, audit::Written::UpToDate, "{cook}: the cache's report is the one written");
+            let cached = audit::write(&scratch.source(), &out, cook, Some(&cache), &again).unwrap();
+            assert_eq!(
+                cached.written,
+                audit::Written::UpToDate,
+                "{cook}: the cache's report is the one written"
+            );
+            assert_eq!(cached.audit, audited.audit, "{cook}: the cache keeps the whole report");
             let made = audit::audit(&scratch.source(), &out, cook, None, &again).unwrap();
             assert!(made.to_ron().unwrap() == first, "{cook}: made again, the report has the same bytes");
 
@@ -5532,6 +5540,113 @@ mod tests {
             let family = &made.alpha.families["anime character"];
             assert!(family.opaque >= 1 && made.alpha.alpha_tested.is_empty());
         }
+    }
+
+    /// Copies the tree at `from` to `to`, file by file.
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let path = entry.unwrap().path();
+            let target = to.join(path.file_name().unwrap());
+            if path.is_dir() {
+                copy_tree(&path, &target);
+            } else {
+                fs::copy(&path, &target).unwrap();
+            }
+        }
+    }
+
+    /// Every cook's asset index (M6 C2) lands beside its audit, byte for byte on a second cook and from a copy
+    /// of the tree at another root, and says what uses a texture all the way up to the mesh that draws it.
+    #[test]
+    fn every_cook_writes_its_index_byte_for_byte_from_any_root() {
+        use crate::check::{Budget, Role};
+        use crate::index::{self, AssetIndex};
+        use sapphire_assets::texture::TextureTail;
+
+        let scratch = Scratch::new("cook_index");
+        scratch.add_hair();
+        let mannequin = scratch.add_mannequin("samples/mannequin.glb");
+        let mut settings = MeshSettings::default();
+        settings.materials.insert("Hair".into(), id(HAIR));
+        let mut meta = AssetMeta::new(meta::new_id().unwrap(), ImportSettings::Gltf(settings));
+        meta.budget = Some(Budget { role: Some(Role::Ambient), waive: Vec::new() });
+        fs::write(sidecar_path(&mannequin), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+        let cache = scratch.dir.path().join("cache");
+
+        let cook = Cook::Desktop;
+        let index_of = |source: &Path, out: &Path, cache: Option<&Path>, report: &CookReport| {
+            let audited = audit::write(source, out, cook, cache, report).unwrap();
+            index::write(source, out, cook, cache, report, &audited.audit).unwrap()
+        };
+        let report = scratch.cook_with(cook, true);
+        let out = scratch.out_for(cook);
+        let (path, written) = index_of(&scratch.source(), &out, Some(&cache), &report);
+        assert_eq!((&path, written), (&out.join(index::FILE_NAME), audit::Written::Written));
+        let first = fs::read_to_string(&path).unwrap();
+        let again = scratch.cook_with(cook, true);
+        let (_, written) = index_of(&scratch.source(), &out, Some(&cache), &again);
+        assert_eq!(written, audit::Written::UpToDate, "the cache's index is the one written");
+
+        // The same tree at another root, cooked with no cache, indexes to the same bytes.
+        let elsewhere = TempDir::new("cook_index_elsewhere");
+        let (source, loose) = (elsewhere.path().join("checkout/content"), elsewhere.path().join("loose"));
+        copy_tree(&scratch.source(), &source);
+        let options = CookOptions { cook, cache: None, locked: true, editor: false };
+        let report = cook_dir(&source, &loose, &options).unwrap();
+        let (moved, _) = index_of(&source, &loose, None, &report);
+        assert!(fs::read_to_string(&moved).unwrap() == first, "another root's index has the same bytes");
+
+        let index = AssetIndex::read(&path).unwrap();
+        assert_eq!((index.version, index.cook.as_str()), (index::VERSION, "desktop"));
+        assert_eq!(index.tiers, ["desktop-high", "desktop-low"]);
+        let albedo = &index.assets[&id(ALBEDO)];
+        assert_eq!(
+            (albedo.kind.as_str(), albedo.source.as_str(), albedo.part),
+            ("texture", "hair/albedo.png", false)
+        );
+        assert_eq!(albedo.used_by, [id(HAIR)]);
+        assert_eq!(index.assets[&id(HAIR)].used_by, [meta.id], "the mannequin draws its hair slot with it");
+        let walked: Vec<AssetId> = index.graph(id(ALBEDO), true).iter().map(|step| step.id).collect();
+        assert_eq!(walked, [id(ALBEDO), id(HAIR), meta.id], "what uses the albedo, all the way up");
+        assert_eq!(index.find("hair/albedo.png"), Some(id(ALBEDO)));
+
+        // Its thumbnail is a level its cooked file already holds.
+        let texture = albedo.texture.as_ref().expect("a texture's entry");
+        assert_eq!((texture.width, texture.height, texture.split), (16, 16, 0));
+        let thumbnail = texture.thumbnail;
+        assert_eq!((thumbnail.level, thumbnail.width, thumbnail.height), (0, 16, 16));
+        let bytes = fs::read(out.join(&albedo.output)).unwrap();
+        let tail = TextureTail::from_ktx2(&bytes).unwrap();
+        let range = thumbnail.offset as usize..(thumbnail.offset + thumbnail.bytes) as usize;
+        assert!(bytes[range] == *tail.texture.levels[0]);
+        assert_eq!(texture.vk_format, tail.texture.desc.format.vk_format());
+
+        // The mesh: its levels as the audit has them, its cooked slots, and the check at its role.
+        let mesh = &index.assets[&meta.id];
+        let entry = mesh.mesh.as_ref().expect("a mesh's entry");
+        let cooked = read_mesh(&out.join(&mesh.output));
+        assert_eq!(entry.levels.len(), cooked.lods.len());
+        assert_eq!(entry.slots.len(), cooked.materials.len());
+        assert!(entry.slots.iter().any(|slot| slot == "Hair"));
+        assert!(mesh.uses.contains(&id(HAIR)));
+        let check = mesh.check.as_ref().expect("a role mesh's check");
+        assert_eq!((check.role.as_deref(), check.cooks.len()), (Some("ambient"), 2));
+        assert!(check.findings.iter().any(|finding| finding.rule == "unbound-slot"), "{check:?}");
+        assert!(index.assets[&id(HAIR)].material.is_some(), "the audit's record of the material");
+
+        // Every ID either way is an asset of the index, and each edge is held at both ends.
+        for (&from, asset) in &index.assets {
+            for to in &asset.uses {
+                assert!(index.assets[to].used_by.contains(&from), "{from} uses {to}");
+            }
+            for by in &asset.used_by {
+                assert!(index.assets[by].uses.contains(&from), "{by} uses {from}");
+            }
+        }
+        let shared = index.packs["shared"];
+        assert_eq!(shared.assets as usize, index.assets.len());
+        assert_eq!(shared.bytes, index.assets.values().map(|asset| asset.bytes).sum::<u64>());
     }
 
     /// A playable kind whose moves, mesh, rig or graph no source under the root is fails its cook, naming the

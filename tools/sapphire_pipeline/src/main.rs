@@ -21,6 +21,7 @@ use sapphire_pipeline::extract::{self, ExtractOptions};
 use sapphire_pipeline::figure;
 use sapphire_pipeline::generators::{GENERATORS, generate_missing};
 use sapphire_pipeline::icon;
+use sapphire_pipeline::index::{self, AssetIndex};
 use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
@@ -95,7 +96,13 @@ Usage:
       assets into --packs (shared.spack, audio.spack, vo_<locale>.spack, fonts.spack, NOTICES.txt). Outputs are written only when they change, and
       stale cooked files under --out, and files no pack claims under --packs, are removed.
       The game's documents (game.documents.ron under --source, if there's one) go beside the packs, under
-      documents/, and an unsigned release.smanifest names everything there.
+      documents/, and an unsigned release.smanifest names everything there. Beside the cooked files under
+      --out go the cook audit (cook_audit.ron) and the asset index (index.json), which never ship.
+  sapphire_pipeline graph <ASSET> --index <FILE> [--reverse]
+      Print what ASSET uses, all the way down, or with --reverse what uses it, from the asset index a cook
+      wrote (FILE: index.json beside its cooked files, target/content/loose/<cook>/index.json for cargo
+      xtask content). ASSET is an asset ID, or a source's path under the cooked tree for the asset its
+      sidecar names.
   sapphire_pipeline release --packs <DIR> --out <DIR> --release-version <N>
                             --expires <YYYY-MM-DD> --min-build <N> [--next-keys <HEX>[,<HEX>...]]
                             [--patch-from <MANIFEST>]
@@ -141,6 +148,8 @@ Options:
   --all                      extract-materials: every material, not only textured ones.
   --check                    vo: write nothing, and fail on any file an import would change.
   --json                     check: the report as JSON on stdout.
+  --index <FILE>             graph: the asset index to read.
+  --reverse                  graph: what uses the asset, rather than what it uses.
   --force                    gen-samples, gen-lookdev, gen-combat, gen-figures: also replace generated files that
                              differ from what the generator makes, after changing it.
   --cook <COOK>              Target cook: desktop or mobile.
@@ -246,6 +255,12 @@ enum Command {
     Check {
         source: PathBuf,
         json: bool,
+    },
+    /// `graph`: what an asset uses, or what uses it, from a cook's asset index.
+    Graph {
+        index: PathBuf,
+        asset: String,
+        reverse: bool,
     },
     /// `vo`: the voice over's import, or with `check`, whether it's current.
     Vo {
@@ -387,9 +402,14 @@ fn run(command: Command) -> anyhow::Result<()> {
             let options = CookOptions { cook, cache: cache.as_deref(), locked, editor };
             let report = cook::cook_dir(&source, &out, &options)?;
             print_report(&report, cook, &source, &out);
-            let (path, written) = audit::write(&source, &out, cook, cache.as_deref(), &report)?;
+            let audited = audit::write(&source, &out, cook, cache.as_deref(), &report)?;
+            if audited.written == audit::Written::Written {
+                eprintln!("{cook}: wrote the cook audit {}", audited.path.display());
+            }
+            let (path, written) =
+                index::write(&source, &out, cook, cache.as_deref(), &report, &audited.audit)?;
             if written == audit::Written::Written {
-                eprintln!("{cook}: wrote the cook audit {}", path.display());
+                eprintln!("{cook}: wrote the asset index {}", path.display());
             }
             if let Some(packs) = packs {
                 if let Some(code) = code {
@@ -425,6 +445,17 @@ fn run(command: Command) -> anyhow::Result<()> {
                     report.failures().count()
                 );
             }
+        }
+        Command::Graph { index, asset, reverse } => {
+            let read = AssetIndex::read(&index)?;
+            let id = read.find(&asset).with_context(|| {
+                format!(
+                    "{asset} is neither an asset ID nor a source of the {} cook {}",
+                    read.cook,
+                    index.display()
+                )
+            })?;
+            println!("{}", read.show(&read.graph(id, reverse), reverse));
         }
         Command::Manifest { packs, cook } => match release::write_manifest(&packs, cook)? {
             Some(path) => println!("wrote {}", path.display()),
@@ -739,6 +770,12 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             let [source] = options.positional()?;
             Command::Check { source: source.into(), json }
         }
+        "graph" => {
+            let index = options.required("--index")?;
+            let reverse = options.flag("--reverse");
+            let [asset] = options.positional()?;
+            Command::Graph { index, asset, reverse }
+        }
         "vo" => Command::Vo { content: options.required("--content")?, check: options.flag("--check") },
         "release-key" => {
             let [action, file] = options.positional()?;
@@ -1017,6 +1054,12 @@ mod tests {
             Command::Check { source: "content".into(), json: true }
         );
         assert!(parse(&["check"]).is_err(), "missing the tree");
+        assert_eq!(
+            parse(&["graph", "lookdev/body.png", "--index", "index.json", "--reverse"]).unwrap(),
+            Command::Graph { index: "index.json".into(), asset: "lookdev/body.png".into(), reverse: true }
+        );
+        assert!(parse(&["graph", "lookdev/body.png"]).is_err(), "missing the index");
+        assert!(parse(&["graph", "--index", "index.json"]).is_err(), "missing the asset");
         let patch = parse(&[
             "release",
             "--packs",

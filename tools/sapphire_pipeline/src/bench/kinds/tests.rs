@@ -62,7 +62,7 @@ fn ship(content: &Path, figure: &Figure) {
         sidecars.push((ilm, ImportSettings::CharacterMap(MapKind::Ilm.default_settings(), MaxSize::NONE)));
     }
     for (path, importer) in sidecars {
-        let asset = AssetMeta { id: asset_id("shipped", &path), importer, cook: true };
+        let asset = AssetMeta { id: asset_id("shipped", &path), importer, cook: true, budget: None };
         let text = sapphire_serialize::to_ron(&asset).unwrap();
         fs::write(meta::sidecar_path(&content.join(path)), text).unwrap();
     }

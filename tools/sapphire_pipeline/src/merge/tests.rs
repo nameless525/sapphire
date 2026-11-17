@@ -36,7 +36,7 @@ impl Tree {
         let id = AssetId::from_bytes([self.next; 16]);
         let path = self.dir.path().join(name);
         fs::write(&path, bytes).unwrap();
-        self.sources.insert(id, SourceAsset { path, meta: AssetMeta { id, importer, cook: true } });
+        self.sources.insert(id, SourceAsset { path, meta: AssetMeta::new(id, importer) });
         id
     }
 

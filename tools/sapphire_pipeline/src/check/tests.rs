@@ -1,0 +1,339 @@
+use std::num::NonZeroU32;
+
+use sapphire_assets::material::AnimeCharacterMaterial;
+use serde_json::json;
+
+use super::*;
+use crate::cook::{CookOptions, CookReport, CookStatus, cook_dir};
+use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet};
+use crate::import::vrm::{VrmSettings, VrmVersion, samples};
+use crate::meta::{self, AssetMeta, MeshSettings};
+use crate::test_util::TempDir;
+use crate::texture::{ColorSettings, MaxSize, TextureClass};
+
+/// A source tree being written.
+struct Tree(TempDir);
+
+impl Tree {
+    fn new(name: &str) -> Self {
+        Self(TempDir::new(&format!("check_{name}")))
+    }
+
+    fn root(&self) -> &Path {
+        self.0.path()
+    }
+
+    /// Writes `path` (under the root) with a sidecar holding `importer` and `budget`; returns its ID.
+    fn source(&self, path: &str, bytes: &[u8], importer: ImportSettings, budget: Option<Budget>) -> AssetId {
+        let id = meta::new_id().unwrap();
+        let path = self.root().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        let sidecar = AssetMeta { budget, ..AssetMeta::new(id, importer) };
+        fs::write(meta::sidecar_path(&path), sapphire_serialize::to_ron(&sidecar).unwrap()).unwrap();
+        id
+    }
+
+    /// A PNG texture of one colour, `size` a side.
+    fn texture(&self, path: &str, size: u32, max_size: MaxSize, budget: Option<Budget>) -> AssetId {
+        let png = samples::png(size, |_, _| [200, 120, 80, 255]);
+        let settings = TextureSettings { class: TextureClass::Color(ColorSettings::default()), max_size };
+        self.source(path, &png, ImportSettings::Texture(settings), budget)
+    }
+
+    /// An anime character material whose base colour is `map`.
+    fn material(&self, path: &str, map: AssetId) -> AssetId {
+        let document = AnyMaterialDocument::AnimeCharacter(AnimeCharacterMaterial {
+            base_color_map: Some(map),
+            ..AnimeCharacterMaterial::default()
+        });
+        let importer = ImportSettings::for_source(Path::new(path)).unwrap();
+        self.source(path, document.to_ron().unwrap().as_bytes(), importer, None)
+    }
+
+    /// Gives the sidecar of `path` the budget `budget`, keeping everything else.
+    fn set_budget(&self, path: &str, budget: Option<Budget>) {
+        let sidecar = meta::sidecar_path(&self.root().join(path));
+        let meta = AssetMeta { budget, ..meta::read(&sidecar).unwrap() };
+        fs::write(sidecar, sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+    }
+
+    fn check(&self) -> Report {
+        check(self.root()).unwrap()
+    }
+}
+
+fn role(role: Role) -> Option<Budget> {
+    Some(Budget { role: Some(role), waive: Vec::new() })
+}
+
+fn waiving(rule: Rule, why: &str) -> Option<Budget> {
+    Some(Budget { role: None, waive: vec![Waiver { rule, why: why.to_owned() }] })
+}
+
+/// Each finding as (source, rule, cook, waived).
+fn found(report: &Report) -> Vec<(&str, Rule, Option<Cook>, bool)> {
+    report
+        .findings
+        .iter()
+        .map(|finding| (finding.source.as_str(), finding.rule, finding.cook, finding.waived.is_some()))
+        .collect()
+}
+
+/// A skinned glTF: a grid of `side` × `side` quads in the XY plane, split across `slots` materials
+/// (`slot0`, `slot1`, …) by rows, every vertex on the first of a chain of `joints` joints. The chain hangs
+/// under a `root` node, which the cooked skin keeps as a joint: it measures `joints + 1`.
+fn figure(side: u32, slots: usize, joints: usize) -> Vec<u8> {
+    let mut writer = GltfWriter::default();
+    let materials: Vec<usize> =
+        (0..slots).map(|slot| writer.add_material(json!({ "name": format!("slot{slot}") }))).collect();
+    let rows_per_slot = side.div_ceil(slots as u32);
+    let parts: Vec<Geometry> = (0..slots as u32)
+        .map(|slot| {
+            let rows = (slot * rows_per_slot)..((slot + 1) * rows_per_slot).min(side);
+            let mut geometry = Geometry::default();
+            let mut set = InfluenceSet::default();
+            for y in rows.start..=rows.end {
+                for x in 0..=side {
+                    let at = [x as f32 / side as f32, y as f32 / side as f32];
+                    geometry.positions.push([at[0], at[1], 0.0]);
+                    geometry.normals.push([0.0, 0.0, 1.0]);
+                    geometry.uvs.push(at);
+                    set.joints.push([0; 4]);
+                    set.weights.push([1.0, 0.0, 0.0, 0.0]);
+                }
+            }
+            let width = side + 1;
+            for row in 0..rows.len() as u32 {
+                for x in 0..side {
+                    let corner = row * width + x;
+                    let quad =
+                        [corner, corner + 1, corner + width, corner + 1, corner + width + 1, corner + width];
+                    geometry.indices.extend(quad);
+                }
+            }
+            geometry.influences.push(set);
+            geometry
+        })
+        .collect();
+    let primitives: Vec<(&Geometry, Option<usize>)> =
+        parts.iter().zip(&materials).map(|(geometry, &material)| (geometry, Some(material))).collect();
+    let mesh = writer.add_mesh("figure", &primitives);
+    // The chain from its tip: each joint the parent of the one added before it.
+    let mut chain: Vec<usize> = Vec::with_capacity(joints);
+    for joint in (0..joints).rev() {
+        let mut node = json!({ "name": format!("joint{joint}"), "translation": [0.0, 0.01, 0.0] });
+        if let Some(&child) = chain.last() {
+            node["children"] = json!([child]);
+        }
+        chain.push(writer.add_node(node));
+    }
+    chain.reverse();
+    let skin = writer.add_skin(&chain, None);
+    let body = writer.add_node(json!({ "name": "body", "mesh": mesh, "skin": skin }));
+    let root = writer.add_node(json!({ "name": "root", "children": [chain[0], body] }));
+    writer.add_root(root);
+    writer.to_glb()
+}
+
+#[test]
+fn a_figure_over_its_role_s_row_fails_each_row_by_name_on_each_cook() {
+    let tree = Tree::new("rows");
+    // 2 × 46² = 4,232 triangles, over the ambient row's 4,000 on desktop; 71 joints (the chain's 70 and
+    // its root), over its 64; 3 slots, over its 2 and 1; and a 2048 map, over its 1024 and 512.
+    let map = tree.texture("figure/figure_palette.png", 2048, MaxSize::NONE, None);
+    let material = tree.material("figure/figure.material.ron", map);
+    let mut settings = MeshSettings::default();
+    settings.materials.insert("slot0".to_owned(), material);
+    tree.source("figure/figure.glb", &figure(46, 3, 70), ImportSettings::Gltf(settings), role(Role::Ambient));
+
+    let report = tree.check();
+    let mesh = "figure/figure.glb";
+    let (desktop, mobile) = (Some(Cook::Desktop), Some(Cook::Mobile));
+    let errors: Vec<_> =
+        report.failures().map(|finding| (finding.source.as_str(), finding.rule, finding.cook)).collect();
+    assert_eq!(
+        errors,
+        [
+            (mesh, Rule::Triangles, desktop),
+            (mesh, Rule::Joints, desktop),
+            (mesh, Rule::Joints, mobile),
+            (mesh, Rule::Slots, desktop),
+            (mesh, Rule::Slots, mobile),
+            (mesh, Rule::MapSize, desktop),
+            (mesh, Rule::MapSize, mobile),
+            ("figure/figure_palette.png", Rule::UncappedMap, mobile),
+        ],
+        "{report}"
+    );
+    // The two slots no document is bound to draw what the importer made.
+    assert_eq!(report.of(mesh, Rule::UnboundSlot).count(), 2, "{report}");
+    assert!(!report.passes());
+
+    let [desktop, mobile] = [&report.meshes[0].cooks[0], &report.meshes[0].cooks[1]];
+    assert_eq!((desktop.triangles, desktop.joints, desktop.slots, desktop.map), (4_232, 71, 3, 2048));
+    assert!(mobile.triangles < desktop.triangles, "the mobile cook skips LOD0: {mobile:?}");
+    assert_eq!((mobile.joints, mobile.slots, mobile.map), (71, 3, 2048));
+    assert_eq!(report.character_maps, 1);
+}
+
+#[test]
+fn a_figure_within_its_row_passes_and_its_map_cap_counts() {
+    let tree = Tree::new("within");
+    // At the hero's row, a 2048 map capped to 1024 on mobile fits both cooks.
+    let map = tree.texture(
+        "hero/palette.png",
+        2048,
+        MaxSize { desktop: None, mobile: NonZeroU32::new(1024) },
+        None,
+    );
+    let material = tree.material("hero/hero.material.ron", map);
+    let mut settings = MeshSettings::default();
+    settings.materials.insert("slot0".to_owned(), material);
+    tree.source("hero/hero.glb", &figure(8, 1, 3), ImportSettings::Gltf(settings), role(Role::Hero));
+    let report = tree.check();
+    assert!(report.passes() && report.findings.is_empty(), "{report}");
+    let maps: Vec<u32> = report.meshes[0].cooks.iter().map(|measured| measured.map).collect();
+    assert_eq!(maps, [2048, 1024]);
+}
+
+#[test]
+fn a_vrm_s_unrecognized_vroid_names_and_shared_chain_names_warn() {
+    let tree = Tree::new("vroid");
+    let mut vrm = samples::vrm1();
+    // Named as VRoid Studio names its parts, but an eye part the importer doesn't know, and skin whose group
+    // isn't written as VRoid writes it.
+    vrm.document["materials"][samples::material::HAIR]["name"] = json!("EyeExtra_00_EYE");
+    vrm.document["materials"][samples::material::SKIN]["name"] = json!("Body_00_skin");
+    // A second chain, under the first's name.
+    let springs = &mut vrm.document["extensions"]["VRMC_springBone"]["springs"];
+    let mut second = springs[0].clone();
+    second["joints"] = json!([{ "node": samples::node::HAIR_SIDE }]);
+    springs.as_array_mut().unwrap().push(second);
+    let importer =
+        ImportSettings::Vrm(VrmSettings { mesh: MeshSettings::default(), version: Some(VrmVersion::V1) });
+    tree.source("character/a.vrm", &vrm.to_glb(), importer, None);
+
+    let report = tree.check();
+    let source = "character/a.vrm";
+    assert_eq!(
+        found(&report),
+        [
+            (source, Rule::VroidEyeLayer, None, false),
+            (source, Rule::VroidRegionLight, None, false),
+            (source, Rule::DuplicateSpringName, None, false),
+        ],
+        "{report}"
+    );
+    // Warnings, all: no role, so no row and no unbound slots.
+    assert!(report.passes() && report.meshes.is_empty(), "{report}");
+    assert!(report.findings.iter().all(|finding| finding.severity == Severity::Warning));
+}
+
+#[test]
+fn paths_copies_misplaced_roles_and_waivers_are_found_by_name() {
+    let tree = Tree::new("hygiene");
+    tree.texture("maps/a.png", 4, MaxSize::NONE, None);
+    // The same bytes again: once waived, once not.
+    tree.texture("maps/b.png", 4, MaxSize::NONE, waiving(Rule::DuplicateTexture, "the ward's own copy"));
+    tree.texture("maps/c.png", 4, MaxSize::NONE, None);
+    tree.texture("maps/\u{82b1}.png", 8, MaxSize::NONE, None);
+    tree.texture("maps/hero.png", 16, MaxSize::NONE, role(Role::Hero));
+    // A waiver nothing needs, and one without its reason.
+    tree.texture("maps/stale.png", 32, MaxSize::NONE, waiving(Rule::MapSize, "too big"));
+    tree.texture("maps/unexplained.png", 32, MaxSize::NONE, waiving(Rule::DuplicateTexture, " "));
+
+    let report = tree.check();
+    assert_eq!(
+        found(&report),
+        [
+            ("maps/b.png", Rule::DuplicateTexture, None, true),
+            ("maps/c.png", Rule::DuplicateTexture, None, false),
+            ("maps/hero.png", Rule::MisplacedRole, None, false),
+            ("maps/stale.png", Rule::StaleWaiver, None, false),
+            ("maps/unexplained.png", Rule::DuplicateTexture, None, true),
+            ("maps/unexplained.png", Rule::UnexplainedWaiver, None, false),
+            ("maps/\u{82b1}.png", Rule::NonAsciiPath, None, false),
+        ],
+        "{report}"
+    );
+    let failing: Vec<Rule> = report.failures().map(|finding| finding.rule).collect();
+    assert_eq!(
+        failing,
+        [Rule::MisplacedRole, Rule::StaleWaiver, Rule::UnexplainedWaiver, Rule::NonAsciiPath]
+    );
+}
+
+#[test]
+fn a_waived_row_passes_and_a_cook_lists_the_waiver() {
+    let tree = Tree::new("waived");
+    let budget = Budget {
+        role: Some(Role::Ambient),
+        waive: vec![Waiver { rule: Rule::Joints, why: "a test of seventy".to_owned() }],
+    };
+    tree.source("a/a.glb", &figure(4, 1, 70), ImportSettings::Gltf(MeshSettings::default()), Some(budget));
+    let report = tree.check();
+    let waived: Vec<_> =
+        report.findings.iter().filter(|finding| finding.waived.is_some()).map(|f| (f.rule, f.cook)).collect();
+    assert_eq!(waived, [(Rule::Joints, Some(Cook::Desktop)), (Rule::Joints, Some(Cook::Mobile))], "{report}");
+    assert!(report.passes(), "{report}");
+    assert!(report.to_string().contains(
+        "waived[joints] a/a.glb (mobile): 71 joints, over the ambient row's 64\n  waived: a test of seventy"
+    ));
+
+    let out = TempDir::new("check_waived_out");
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
+    let cooked = cook_dir(tree.root(), out.path(), &options).unwrap();
+    assert_eq!(
+        cooked.waivers,
+        [Waived {
+            source: tree.root().join("a/a.glb"),
+            rule: Rule::Joints,
+            why: "a test of seventy".to_owned()
+        }]
+    );
+}
+
+/// A sidecar's `budget` is the check's alone: it's written only when set, reads back as it was written, and
+/// changes no cache key and no cooked byte, so committed sidecars key as they did before it existed.
+#[test]
+fn a_budget_changes_no_key_and_no_cooked_byte() {
+    let id = meta::new_id().unwrap();
+    let plain = AssetMeta::new(id, ImportSettings::Gltf(MeshSettings::default()));
+    assert!(!sapphire_serialize::to_ron(&plain).unwrap().contains("budget"));
+    let budget = Budget {
+        role: Some(Role::Enemy),
+        waive: vec![Waiver { rule: Rule::Slots, why: "a reason".to_owned() }],
+    };
+    let with = AssetMeta { budget: Some(budget), ..plain.clone() };
+    let text = sapphire_serialize::to_ron(&with).unwrap();
+    assert!(text.contains("budget: Some((\n            role: Some(Enemy),"), "{text}");
+    assert_eq!(sapphire_serialize::from_ron::<AssetMeta>(&text).unwrap(), with);
+
+    // A tree cooked, then given budgets on a mesh, a material and a map: the second cook, on the same
+    // cache, keys every asset as the first did and cooks nothing.
+    let tree = Tree::new("keys");
+    let map = tree.texture("a/palette.png", 64, MaxSize::NONE, None);
+    let material = tree.material("a/a.material.ron", map);
+    let mut settings = MeshSettings::default();
+    settings.materials.insert("slot0".to_owned(), material);
+    tree.source("a/a.glb", &figure(4, 1, 3), ImportSettings::Gltf(settings), None);
+    let (out, cache) = (TempDir::new("check_keys_out"), TempDir::new("check_keys_cache"));
+    let cook = || {
+        let options =
+            CookOptions { cook: Cook::Desktop, cache: Some(cache.path()), locked: true, editor: false };
+        cook_dir(tree.root(), out.path(), &options).unwrap()
+    };
+    let keys = |report: &CookReport| -> Vec<_> {
+        report.assets.iter().map(|asset| (asset.output.clone(), asset.key, asset.output_hash)).collect()
+    };
+    let first = cook();
+    let reason = |rule| Some(Budget { role: None, waive: vec![Waiver { rule, why: "a reason".to_owned() }] });
+    tree.set_budget("a/a.glb", Some(Budget { role: Some(Role::Hero), waive: Vec::new() }));
+    tree.set_budget("a/a.material.ron", reason(Rule::StaleWaiver));
+    tree.set_budget("a/palette.png", reason(Rule::DuplicateTexture));
+    let second = cook();
+    assert_eq!(keys(&second), keys(&first));
+    assert!(second.assets.iter().all(|asset| asset.status == CookStatus::UpToDate), "{:?}", second.assets);
+    assert_eq!(second.waivers.len(), 2);
+}

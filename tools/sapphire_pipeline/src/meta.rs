@@ -145,6 +145,7 @@ use crate::audio::{self, CueSettings, MixSettings, ScoreSettings, SoundSettings,
 use crate::bake::OutlineSettings;
 use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
+use crate::check::Budget;
 use crate::clip::ClipSettings;
 use crate::colliders::{self, ColliderSettings};
 use crate::dialogue::{self, DialogueSettings};
@@ -183,12 +184,18 @@ pub struct AssetMeta {
     /// [module docs](self)). Written out only when false.
     #[serde(default = "cooked", skip_serializing_if = "is_cooked")]
     pub cook: bool,
+    /// What `sapphire_pipeline check` holds the source to (M6 C1): a mesh's role, whose row of spec §3.4 it
+    /// must meet, and the rules it waives, each with its reason (`budget: (role: Hero, waive: [(rule: Slots,
+    /// why: "…")])`, [`crate::check`]). Only the check reads it, and a cook lists its waivers: no cache
+    /// key holds it, so setting it recooks nothing. Written out only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<Budget>,
 }
 
 impl AssetMeta {
     /// A sidecar for a source that cooks.
     pub fn new(id: AssetId, importer: ImportSettings) -> Self {
-        Self { id, importer, cook: true }
+        Self { id, importer, cook: true, budget: None }
     }
 }
 

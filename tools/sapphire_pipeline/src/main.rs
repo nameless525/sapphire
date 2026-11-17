@@ -12,6 +12,7 @@ use sapphire_pipeline::audit;
 use sapphire_pipeline::bake::OutlineSettings;
 use sapphire_pipeline::bench::{self, Preset};
 use sapphire_pipeline::character_maps::{self, MapKind};
+use sapphire_pipeline::check;
 use sapphire_pipeline::code_names;
 use sapphire_pipeline::combat;
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
@@ -111,6 +112,14 @@ Usage:
       Write the unsigned release.smanifest of what DIR holds, as cook --packs does last: for a
       folder put together from more than one cook, such as the shipped packs with the benchmark
       district's pack beside them, which a shipping build then mounts (cargo xtask counts).
+  sapphire_pipeline check <DIR> [--json]
+      Check the source tree DIR as a locked cook reads it, writing nothing: each mesh whose sidecar names
+      a role (`budget: (role: Hero)`) against that role's row of spec §3.4 on both cooks (triangles
+      at LOD0, joints, material slots after merges, map sizes), and every source against the content
+      rules (maps over 1K with no mobile cap, unbound slots, VRoid-style names the importer didn't
+      recognize, duplicate spring-chain names, non-ASCII paths, duplicate texture bytes). Prints each
+      role mesh's numbers and every finding, waived ones with their reasons, as text or, with --json, as
+      JSON; fails on an error no sidecar waives (`waive: [(rule: Slots, why: \"...\")]`).
   sapphire_pipeline release-key new <FILE>
       Write a new release key to FILE, which mustn't be there: an ed25519 seed from the OS's
       generator, in hex, readable only by its owner, as SAPPHIRE_RELEASE_KEY takes it
@@ -122,6 +131,7 @@ Usage:
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
+  --json                     check: the report as JSON on stdout.
   --force                    gen-samples, gen-lookdev, gen-combat, gen-figures: also replace generated files that
                              differ from what the generator makes, after changing it.
   --cook <COOK>              Target cook: desktop or mobile.
@@ -222,6 +232,11 @@ enum Command {
     Manifest {
         packs: PathBuf,
         cook: Cook,
+    },
+    /// `check`: a source tree against its roles and the content rules.
+    Check {
+        source: PathBuf,
+        json: bool,
     },
     Help,
     Version,
@@ -382,6 +397,21 @@ fn run(command: Command) -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Check { source, json } => {
+            let report = check::check(&source)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).context("writing the report as JSON")?);
+            } else {
+                println!("{report}");
+            }
+            if !report.passes() {
+                bail!(
+                    "{} failed the check: {} error(s) no sidecar waives",
+                    source.display(),
+                    report.failures().count()
+                );
+            }
+        }
         Command::Manifest { packs, cook } => match release::write_manifest(&packs, cook)? {
             Some(path) => println!("wrote {}", path.display()),
             None => println!("{}'s manifest already names what's there", packs.display()),
@@ -515,6 +545,9 @@ fn print_report(report: &CookReport, cook: Cook, source: &Path, out: &Path) {
     }
     for path in &report.uncooked {
         eprintln!("not cooked: {} (its sidecar says `cook: false`)", relative(path, source));
+    }
+    for waived in &report.waivers {
+        eprintln!("waived {} for {}: {}", waived.rule, relative(&waived.source, source), waived.why);
     }
     for Untranslated { locale, key, served_by } in &report.localization.untranslated {
         eprintln!("untranslated in {locale}: {key} (shows {served_by}'s)");
@@ -656,6 +689,11 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
         },
         "manifest" => {
             Command::Manifest { packs: options.required("--packs")?, cook: options.required("--cook")? }
+        }
+        "check" => {
+            let json = options.flag("--json");
+            let [source] = options.positional()?;
+            Command::Check { source: source.into(), json }
         }
         "release-key" => {
             let [action, file] = options.positional()?;
@@ -925,6 +963,15 @@ mod tests {
             Command::Manifest { packs: "p".into(), cook: Cook::Desktop }
         );
         assert!(parse(&["manifest", "--packs", "p"]).is_err(), "missing --cook");
+        assert_eq!(
+            parse(&["check", "content"]).unwrap(),
+            Command::Check { source: "content".into(), json: false }
+        );
+        assert_eq!(
+            parse(&["check", "--json", "content"]).unwrap(),
+            Command::Check { source: "content".into(), json: true }
+        );
+        assert!(parse(&["check"]).is_err(), "missing the tree");
         let patch = parse(&[
             "release",
             "--packs",

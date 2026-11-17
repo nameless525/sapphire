@@ -562,7 +562,8 @@ mod tests {
             let path = root.join(&source.path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             if let Some((importer, cook)) = source.sidecar {
-                let meta = crate::meta::AssetMeta { id: asset_id(PART, &source.path), importer, cook };
+                let meta =
+                    crate::meta::AssetMeta { id: asset_id(PART, &source.path), importer, cook, budget: None };
                 let text = sapphire_serialize::to_ron(&meta).unwrap();
                 std::fs::write(crate::meta::sidecar_path(&path), text).unwrap();
             }

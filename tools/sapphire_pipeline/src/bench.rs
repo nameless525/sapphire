@@ -313,7 +313,7 @@ pub fn generate_with(
                 return Err(BenchError::Path { part, path: source.path });
             }
             if let Some((importer, cook)) = source.sidecar {
-                let meta = AssetMeta { id: asset_id(part, &source.path), importer, cook };
+                let meta = AssetMeta { id: asset_id(part, &source.path), importer, cook, budget: None };
                 let text = sapphire_serialize::to_ron(&meta).expect("a sidecar serializes");
                 let sidecar = meta::sidecar_path(Path::new(&name)).to_string_lossy().replace('\\', "/");
                 written.insert(sidecar.clone());

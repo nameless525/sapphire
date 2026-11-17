@@ -194,6 +194,7 @@ use crate::audio::{self, AudioCookError, SoundSettings};
 use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
+use crate::check::{self, Waived};
 use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
 use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
@@ -1029,6 +1030,10 @@ pub struct CookReport {
     pub removed: Vec<PathBuf>,
     /// What's untranslated, and what's translated from nothing ([`loc::check()`]).
     pub localization: LocReport,
+    /// Every rule a cooked source's sidecar waives, with its reason, in source path order ([`check`], M6 C1).
+    /// A cook never judges a source by the rules: `sapphire_pipeline check` does, and fails on a finding no
+    /// sidecar waives.
+    pub waivers: Vec<Waived>,
 }
 
 impl CookReport {
@@ -1166,6 +1171,7 @@ fn cook_dir_through(
     let resolved = meta::resolve(&tree, options.locked)?;
     let (cooked_assets, uncooked): (Vec<SourceAsset>, Vec<SourceAsset>) =
         resolved.assets.into_iter().partition(|asset| asset.meta.cook);
+    let waivers = check::waivers(&cooked_assets);
     let prefabs = zone::prefab_sources(cooked_assets.iter().chain(&uncooked));
     let mut zones: HashMap<PathBuf, ZonePlan> = HashMap::new();
     let cache = options.cache.map(Cache::new);
@@ -1386,6 +1392,7 @@ fn cook_dir_through(
         uncooked: uncooked.into_iter().map(|asset| asset.path).collect(),
         removed,
         localization,
+        waivers,
     })
 }
 
@@ -4233,10 +4240,21 @@ pub fn cook_mesh_in(source_root: &Path, source: &Path, cook: Cook) -> Result<Mes
         resolved.assets.iter().map(|asset| (asset.meta.id, asset)).collect();
     let unsupported = || CookError::UnsupportedSource { path: source.to_owned() };
     let asset = resolved.assets.iter().find(|asset| asset.path == source).ok_or_else(unsupported)?;
-    let settings = asset.meta.importer.mesh().ok_or_else(unsupported)?;
-    let lookup = |id| sources.get(&id).copied();
-    let merge = mesh_merge(source, asset.meta.id, settings, cook, &lookup)?;
-    let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
+    cook_mesh_of(asset, &|id| sources.get(&id).copied(), cook)
+}
+
+/// [`cook_mesh_in`] of a source already resolved, its tree's other sources found by `lookup`: what
+/// `sapphire_pipeline check` measures each character by ([`crate::check`]).
+pub(crate) fn cook_mesh_of(
+    asset: &SourceAsset,
+    lookup: &merge::Lookup<'_>,
+    cook: Cook,
+) -> Result<Mesh, CookError> {
+    let source = &asset.path;
+    let settings =
+        asset.meta.importer.mesh().ok_or_else(|| CookError::UnsupportedSource { path: source.clone() })?;
+    let merge = mesh_merge(source, asset.meta.id, settings, cook, lookup)?;
+    let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.clone(), source: e })?;
     guarded(source, || import_mesh(source, &bytes, &asset.meta.importer, cook, None, None, merge.as_ref()))
 }
 

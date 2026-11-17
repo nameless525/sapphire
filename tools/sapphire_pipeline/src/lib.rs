@@ -62,6 +62,8 @@
 //!   with the grouping rules and the codec each kind is compressed with.
 //! - [`audit`]: the report every cook writes beside its cooked files (M6 K1): maps' bytes by class, the alpha
 //!   census, which control-map channels are constant per region, the simplifier's locks and their cost.
+//! - [`check`]: `sapphire_pipeline check` (M6 C1): each character against its role's row of spec §3.4, and the
+//!   content rules, with the waivers sidecars give, for the content tests, CI and an artist's tools alike.
 //! - [`release`]: the release manifest a cook writes beside its packs, and signing a release and laying it
 //!   out for a static host (M4 P1). The only code that signs one: no build of the game links it.
 //! - [`cache`]: the cache key over everything that determines a cooked output or a pack, and the
@@ -133,6 +135,7 @@ pub mod bake;
 pub mod bench;
 pub mod cache;
 pub mod character_maps;
+pub mod check;
 pub mod clip;
 pub mod code_names;
 pub mod colliders;

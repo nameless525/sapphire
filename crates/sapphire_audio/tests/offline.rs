@@ -6,7 +6,7 @@ use std::path::Path;
 use cpal::Sample;
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
-use sapphire_assets::sound::{DecodedSound, Sound};
+use sapphire_assets::sound::{DecodedSound, Sound, decode_vorbis};
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioSystem, BusParams, CueRequest, CueRng, CueTarget, DeviceState,
     KiraBackend, Listener, OfflineOutput, SnapshotTuning, VoiceParams, VoiceSlot,
@@ -18,7 +18,7 @@ const RATE: u32 = 48_000;
 const GAME_FRAME: usize = RATE as usize / 60;
 const SOUND: AssetId = AssetId::from_text("4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5c");
 const CUE: AssetId = AssetId::from_text("11111111-2222-4333-8444-555555555555");
-const NEUTRAL: VoiceParams = VoiceParams { gain_db: 0.0, pan: 0.0, pitch: 1.0 };
+const NEUTRAL: VoiceParams = VoiceParams::NEUTRAL;
 
 /// Sine tones at these frequencies, summed at a quarter of full scale each, for this long.
 fn tones(hz: &[f32], seconds: f32) -> DecodedSound {
@@ -341,6 +341,77 @@ fn stereo_sounds_stay_stereo() {
     let out = render(&mut backend, 0.25);
     let last = out.as_chunks::<2>().0[GAME_FRAME];
     assert!((last[0] - 0.5).abs() < 0.01 && (last[1] + 0.25).abs() < 0.01, "{last:?}");
+}
+
+/// A voice's own low-pass (M6 U1), on a bus with none, closed on a live voice.
+#[test]
+fn a_voices_own_low_pass_takes_out_the_high_frequencies() {
+    const LOW: f32 = 300.0;
+    const HIGH: f32 = 8_000.0;
+    let sound = tones(&[LOW, HIGH], 1.0);
+    let mut backend = mixer(&sound);
+    backend.start_voice(VoiceSlot(0), SOUND, Bus::Ui, NEUTRAL, false).unwrap();
+    let _settle = render(&mut backend, 0.05);
+    let open = left(&render(&mut backend, 0.2));
+    assert!(db(energy_at(&open, HIGH) / 0.25).abs() < 1.0, "open, the sound as authored");
+    backend.set_voice(VoiceSlot(0), VoiceParams { low_pass_hz: 500.0, ..NEUTRAL });
+    let _tween = render(&mut backend, 0.1);
+    let closed = left(&render(&mut backend, 0.3));
+    // One pole at 500 Hz: about 24 dB down at 8 kHz, and a little over 1 at 300 Hz.
+    let high_drop = db(energy_at(&open, HIGH) / energy_at(&closed, HIGH));
+    let low_drop = db(energy_at(&open, LOW) / energy_at(&closed, LOW));
+    assert!(high_drop > 20.0, "8 kHz only fell {high_drop} dB under a 500 Hz low-pass");
+    assert!(low_drop < 2.0, "300 Hz fell {low_drop} dB under a 500 Hz low-pass");
+}
+
+/// Decoded PCM (M6 U1): the sounds the shipped cues, score and voice lines play, held in their authored
+/// channels, take at most half of what kira's two `f32`s a frame took, by the backend's own counter.
+#[test]
+fn the_shipped_sounds_take_half_the_memory_or_less() {
+    const SOUNDS: [&str; 20] = [
+        "third_party/kenney_impact_sounds/Audio/footstep_concrete_000.ogg",
+        "third_party/kenney_impact_sounds/Audio/impactBell_heavy_000.ogg",
+        "third_party/kenney_impact_sounds/Audio/impactGlass_light_000.ogg",
+        "third_party/kenney_impact_sounds/Audio/impactMetal_heavy_000.ogg",
+        "third_party/kenney_impact_sounds/Audio/impactPunch_heavy_000.ogg",
+        "third_party/kenney_impact_sounds/Audio/impactPunch_medium_000.ogg",
+        "third_party/kenney_impact_sounds/Audio/impactSoft_heavy_000.ogg",
+        "third_party/kenney_interface_sounds/Audio/click_001.ogg",
+        "third_party/kenney_rpg_audio/Audio/knifeSlice.ogg",
+        "audio/generated/music/lantern_bells.ogg",
+        "audio/generated/music/lantern_drums.ogg",
+        "audio/generated/music/lantern_pad.ogg",
+        "audio/generated/music/lantern_pulse.ogg",
+        "audio/generated/music/lantern_toll.ogg",
+        "audio/generated/voice/en/guide_greet.ogg",
+        "audio/generated/voice/en/perfect-dodge.ogg",
+        "audio/generated/voice/en/swap-in.ogg",
+        "audio/generated/voice/ja/guide_greet.ogg",
+        "audio/generated/voice/ja/perfect-dodge.ogg",
+        "audio/generated/voice/ja/swap-in.ogg",
+    ];
+    let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let mut backend = KiraBackend::<OfflineOutput>::new(RATE).expect("an offline mixer");
+    let mut as_kira_frames = 0_u64;
+    for (n, name) in SOUNDS.iter().enumerate() {
+        let vorbis = std::fs::read(content.join(name)).expect("the sound is in the tree");
+        let sound = decode_vorbis(&vorbis).expect("it decodes");
+        as_kira_frames += sound.frames() as u64 * 8;
+        backend.add_sound(format!("5c0e0000-0000-4000-8000-{n:012x}").parse().unwrap(), &sound);
+    }
+    let held = backend.decoded_bytes();
+    #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
+    {
+        println!("the shipped sounds: {held} bytes decoded, {as_kira_frames} as kira's frames");
+    }
+    assert!(held * 2 <= as_kira_frames, "{held} bytes against {as_kira_frames}");
+    // Replacing a sound counts it once, and removing it takes it away.
+    let first: AssetId = "5c0e0000-0000-4000-8000-000000000000".parse().unwrap();
+    let footstep = decode_vorbis(&std::fs::read(content.join(SOUNDS[0])).unwrap()).unwrap();
+    backend.add_sound(first, &footstep);
+    assert_eq!(backend.decoded_bytes(), held);
+    backend.remove_sound(first);
+    assert!(backend.decoded_bytes() < held);
 }
 
 /// The whole path, frame by frame, as a game drives it.

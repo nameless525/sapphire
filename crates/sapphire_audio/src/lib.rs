@@ -6,7 +6,7 @@
 //! AudioSystem: picks variation, attenuates and pans, drives the snapshot and hitstop, routes lines
 //!     │        by the voice language, fades stems on the bar, ducks the music under a line
 //!     │  AudioBackend: plain numbers per voice and bus
-//!     ├── KiraBackend<CpalOutput>: kira's mixer on the audio device
+//!     ├── KiraBackend<CpalOutput>: kira's mixer on the audio device, each voice the engine's own
 //!     ├── KiraBackend<OfflineOutput>: the same mixer, rendered by a test with no device
 //!     └── MockBackend: writes down what was asked
 //! ```
@@ -15,6 +15,9 @@
 //!
 //! - The [`AudioBackend`] trait, kira's backend and the mock, and what pulls kira's audio
 //!   ([`CpalOutput`], [`OfflineOutput`]).
+//! - **The voice** (M6 U1): every sound plays as the engine's own sound on kira's public `Sound` trait,
+//!   holding its samples in their authored channels as 16-bit integers where they fit, with its own
+//!   low-pass, and counted in [`AudioStats::decoded_bytes`].
 //! - **Cue playback** ([`AudioSystem`]): a [`Cue`](sapphire_assets::cue::Cue)'s variation, picked
 //!   from randomness the caller owns ([`CueRandom`], [`CueRng`]), and voices placed by distance and
 //!   side from the [`Listener`], following their [`Emitter`] by [`EmitterId`].
@@ -52,7 +55,8 @@
 //! writes lock-free commands to it. Nothing here runs until an app makes a system: an app without
 //! audio has no thread, no device and no cost but the code's size.
 //!
-//! A warmed cue allocates a little on the calling thread, all of it kira's per-sound state: see
+//! A warmed cue allocates a little on the calling thread, all of it a voice's command buffers and kira's
+//! box for it: see
 //! `tests/allocations.rs`, which holds it to a bound, and holds the mixing path to none. Cues fired
 //! from a fixed step (rule R6) should be queued for the frame's update rather than played there.
 
@@ -65,6 +69,7 @@ mod rng;
 mod snapshot;
 mod system;
 mod voice;
+mod voice_sound;
 
 pub use backend::{
     AudioBackend, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,

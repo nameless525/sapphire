@@ -778,7 +778,7 @@ mod tests {
     fn playing<O: Output>(mut backend: KiraBackend<O>) -> KiraBackend<O> {
         let samples = (0..RATE / 2).map(|frame| (frame as f32 * 0.05).sin() * 0.75).collect();
         backend.add_sound(SOUND, &DecodedSound { sample_rate: RATE, channels: 1, samples });
-        let params = VoiceParams { gain_db: 0.0, pan: 0.0, pitch: 1.0 };
+        let params = VoiceParams::NEUTRAL;
         backend.start_voice(VoiceSlot(0), SOUND, Bus::Ui, params, false).expect("a voice");
         backend
     }

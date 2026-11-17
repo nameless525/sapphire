@@ -8,8 +8,8 @@ use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopRespo
 use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
-    AudioFrame, AudioSystem, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend, Listener,
-    MockBackend, MockCall, MusicRequest, OfflineOutput,
+    AudioBackend, AudioFrame, AudioSystem, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend,
+    Listener, MAX_VOICES, MockBackend, MockCall, MusicRequest, OfflineOutput, VoiceParams, VoiceSlot,
 };
 use sapphire_core::alloc::{EngineAllocator, PER_THREAD_COUNTS, count_in_scope, engine_allocator};
 use sapphire_math::Vec3;
@@ -23,10 +23,10 @@ const SOUND: AssetId = AssetId::from_text("4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5c"
 const CUE: AssetId = AssetId::from_text("11111111-2222-4333-8444-555555555555");
 const ACTOR: EmitterId = EmitterId(1);
 
-/// What kira may take for one sound on the calling thread: its handle's shared state, a command
-/// buffer per parameter and the box it travels in. A rise means kira's playing changed, or a cost
-/// of ours crept in; see the numbers this test prints with `--nocapture`.
-const KIRA_PLAY_ALLOCATIONS: u64 = 32;
+/// What a voice may take on the calling thread as it starts (M6 U1): its three command buffers, the
+/// state its handle reads and the box kira carries it in. kira's own static sound took 11. A rise means a
+/// cost crept in; see the numbers this test prints with `--nocapture`.
+const PLAY_ALLOCATIONS: u64 = 5;
 
 fn sound() -> DecodedSound {
     DecodedSound { sample_rate: RATE, channels: 1, samples: vec![0.25; RATE as usize / 30] }
@@ -119,12 +119,46 @@ fn what_a_cue_allocates_on_the_calling_thread() {
         println!("a frame with a voice moving: {} allocations", moving.allocations);
         println!("a block of the mix: {} allocations", mixing.allocations);
     }
-    assert!(play.allocations <= KIRA_PLAY_ALLOCATIONS, "a warmed play allocated {} times", play.allocations);
+    assert!(play.allocations <= PLAY_ALLOCATIONS, "a warmed play allocated {} times", play.allocations);
     assert_eq!(moving.allocations, 0, "moving a voice allocated");
     assert_eq!(mixing.allocations, 0, "the mix allocated, which the audio callback must never do");
     assert_eq!(converting.allocations, 0, "converting the mix allocated, on the audio callback");
 
+    every_voice_filtering_mixes_with_no_allocation();
     music_changes_phase_with_no_allocation();
+}
+
+/// The engine voice (M6 U1) with all it can do at once: every slot playing, each through its own closed
+/// low-pass, a pitch and a pan, a stereo sound and a mono one, and parameters moving between blocks.
+fn every_voice_filtering_mixes_with_no_allocation() {
+    let mut backend = KiraBackend::<OfflineOutput>::new(RATE).unwrap();
+    let stereo: AssetId = "4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5d".parse().unwrap();
+    backend.add_sound(SOUND, &DecodedSound { samples: vec![0.25; RATE as usize], ..sound() });
+    backend.add_sound(
+        stereo,
+        &DecodedSound { sample_rate: RATE, channels: 2, samples: vec![0.25; 2 * RATE as usize] },
+    );
+    let params =
+        |n: u32| VoiceParams { gain_db: -6.0, pan: 0.5, pitch: 0.9 + 0.01 * n as f32, low_pass_hz: 800.0 };
+    for n in 0..MAX_VOICES as u32 {
+        let sound = if n % 2 == 0 { SOUND } else { stereo };
+        backend.start_voice(VoiceSlot(n), sound, Bus::Sfx, params(n), false).unwrap();
+    }
+    let mut buffer = vec![0.0; GAME_FRAME * 2];
+    backend.output_mut().render_into(&mut buffer);
+    let ((), mixing) = count_in_scope(|| {
+        for round in 0..8 {
+            for n in 0..MAX_VOICES as u32 {
+                backend.set_voice(
+                    VoiceSlot(n),
+                    VoiceParams { low_pass_hz: 400.0 + 100.0 * round as f32, ..params(n) },
+                );
+            }
+            backend.output_mut().render_into(&mut buffer);
+        }
+    });
+    assert!(buffer.iter().any(|sample| *sample != 0.0), "they play");
+    assert_eq!(mixing.allocations, 0, "every voice filtering, moved and mixed, allocated");
 }
 
 const SCORE: AssetId = AssetId::from_text("5c0e0000-0000-4000-8000-000000000001");

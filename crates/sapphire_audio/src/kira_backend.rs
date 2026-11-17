@@ -1,10 +1,11 @@
 //! [`KiraBackend`]: the [`AudioBackend`] on kira's mixer, over whichever [`Output`] pulls its audio.
 //!
 //! The mix is a sub-track for each [`Bus`], each with room for every voice; the world's buses
-//! carry a low-pass filter, out of the signal until a snapshot asks for it. A voice is a kira
-//! static sound on its bus's track.
+//! carry a low-pass filter, out of the signal until a snapshot asks for it. A voice is the engine's own
+//! sound on kira's public `Sound` trait (M6 U1, `voice_sound`), on its bus's track: it keeps each sound
+//! in its authored channels and filters on its own.
 //!
-//! Music (M3 A1) is a score's stems, looping static sounds on the music track, all started by one
+//! Music (M3 A1) is a score's stems, looping voices on the music track, all started by one
 //! kira clock that counts the score's beats: a stem's fade waits on the clock for its beat, so it
 //! lands on the bar in the mixer's own time, to within one internal buffer, however late the frame
 //! that asked.
@@ -20,13 +21,8 @@ use kira::clock::{ClockHandle, ClockSpeed, ClockTime};
 use kira::effect::filter::{FilterBuilder, FilterHandle, FilterMode};
 use kira::effect::{Effect, EffectBuilder};
 use kira::info::Info;
-use kira::sound::PlaybackState;
-use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings};
 use kira::track::{MainTrackBuilder, TrackBuilder, TrackHandle};
-use kira::{
-    AudioManager, AudioManagerSettings, Capacities, Decibels, Frame, Mix, Panning, PlaybackRate, StartTime,
-    Tween,
-};
+use kira::{AudioManager, AudioManagerSettings, Capacities, Decibels, Frame, Mix, StartTime, Tween};
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Bus;
 use sapphire_assets::score::MAX_STEMS;
@@ -36,6 +32,7 @@ use crate::LOG_TARGET;
 use crate::backend::{AudioBackend, BusParams, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot};
 use crate::output::Output;
 use crate::system::MAX_VOICES;
+use crate::voice_sound::{LoopRegion, SoundStorage, Start, Voice, VoiceHandle, VoiceSettings};
 
 /// Frames between the mixer's parameter updates: kira's default, about 3 ms.
 const INTERNAL_BUFFER_FRAMES: usize = 128;
@@ -60,14 +57,14 @@ struct BusTrack {
 /// The music: the clock its stems start on and their fades wait on, and the stems.
 struct Music {
     clock: ClockHandle,
-    stems: Vec<StaticSoundHandle>,
+    stems: Vec<VoiceHandle>,
 }
 
 impl Music {
     /// Ends the stems over `fade`. A dropped handle would leave its stem looping.
     fn end(&mut self, fade: Duration) {
         for stem in &mut self.stems {
-            stem.stop(tween(fade));
+            stem.stop(fade);
         }
         self.stems.clear();
         self.clock.stop();
@@ -78,8 +75,10 @@ impl Music {
 pub struct KiraBackend<O: Output> {
     manager: AudioManager<O>,
     buses: Vec<BusTrack>,
-    sounds: HashMap<AssetId, StaticSoundData>,
-    voices: Vec<Option<StaticSoundHandle>>,
+    sounds: HashMap<AssetId, Arc<SoundStorage>>,
+    /// What `sounds` hold, in bytes.
+    decoded_bytes: u64,
+    voices: Vec<Option<VoiceHandle>>,
     music: Music,
     /// Whether the main track folds to mono, which its effect reads in the mixer's own time.
     mono: Arc<AtomicBool>,
@@ -119,6 +118,7 @@ impl<O: Output> KiraBackend<O> {
             manager,
             buses,
             sounds: HashMap::new(),
+            decoded_bytes: 0,
             voices: std::iter::repeat_with(|| None).take(MAX_VOICES).collect(),
             music: Music { clock, stems: Vec::with_capacity(MAX_STEMS) },
             mono,
@@ -130,7 +130,7 @@ impl<O: Output> KiraBackend<O> {
         self.manager.backend_mut()
     }
 
-    fn voice(&mut self, slot: VoiceSlot) -> Option<&mut StaticSoundHandle> {
+    fn voice(&mut self, slot: VoiceSlot) -> Option<&mut VoiceHandle> {
         self.voices.get_mut(slot.0 as usize)?.as_mut()
     }
 }
@@ -194,34 +194,19 @@ fn tween(duration: Duration) -> Tween {
     Tween { duration, ..Tween::default() }
 }
 
-/// A decoded sound as kira's frames: left and right, mono in both.
-fn frames_of(sound: &DecodedSound) -> Arc<[Frame]> {
-    match sound.channels {
-        1 => sound.samples.iter().map(|&sample| Frame::from_mono(sample)).collect(),
-        _ => sound.samples.as_chunks::<2>().0.iter().map(|&[left, right]| Frame::new(left, right)).collect(),
-    }
-}
-
-fn settings_of(params: VoiceParams) -> StaticSoundSettings {
-    StaticSoundSettings::new()
-        .volume(Decibels(params.gain_db))
-        .panning(Panning(params.pan))
-        .playback_rate(PlaybackRate(f64::from(params.pitch)))
-}
-
 impl<O: Output> AudioBackend for KiraBackend<O> {
     fn add_sound(&mut self, id: AssetId, sound: &DecodedSound) {
-        let data = StaticSoundData {
-            sample_rate: sound.sample_rate,
-            frames: frames_of(sound),
-            settings: StaticSoundSettings::new(),
-            slice: None,
-        };
-        self.sounds.insert(id, data);
+        let storage = SoundStorage::new(sound);
+        self.decoded_bytes += storage.bytes();
+        if let Some(old) = self.sounds.insert(id, Arc::new(storage)) {
+            self.decoded_bytes -= old.bytes();
+        }
     }
 
     fn remove_sound(&mut self, id: AssetId) {
-        self.sounds.remove(&id);
+        if let Some(old) = self.sounds.remove(&id) {
+            self.decoded_bytes -= old.bytes();
+        }
     }
 
     fn start_voice(
@@ -232,47 +217,35 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
         params: VoiceParams,
         frozen: bool,
     ) -> Result<(), StartError> {
-        let data = self.sounds.get(&sound).ok_or(StartError::UnknownSound(sound))?;
-        // A clone shares the frames.
-        let mut data = data.clone();
-        data.settings = settings_of(params);
+        let storage = Arc::clone(self.sounds.get(&sound).ok_or(StartError::UnknownSound(sound))?);
+        let voice = Voice { storage, settings: VoiceSettings::once(params, frozen) };
         let track = &mut self.buses[bus.index()].track;
-        let mut handle = track.play(data).map_err(|error| {
+        let handle = track.play(voice).map_err(|error| {
             tracing::warn!(target: LOG_TARGET, %error, "the mixer refused a sound");
             StartError::MixerFull
         })?;
-        if frozen {
-            handle.pause(tween(Duration::ZERO));
-        }
         self.voices[slot.0 as usize] = Some(handle);
         Ok(())
     }
 
     fn set_voice(&mut self, slot: VoiceSlot, params: VoiceParams) {
         let Some(voice) = self.voice(slot) else { return };
-        let moving = tween(VOICE_TWEEN);
-        voice.set_volume(Decibels(params.gain_db), moving);
-        voice.set_panning(Panning(params.pan), moving);
-        voice.set_playback_rate(PlaybackRate(f64::from(params.pitch)), moving);
+        voice.set(params, tween(VOICE_TWEEN));
     }
 
     fn freeze_voice(&mut self, slot: VoiceSlot, frozen: bool) {
         let Some(voice) = self.voice(slot) else { return };
-        if frozen {
-            voice.pause(tween(FREEZE_TWEEN));
-        } else {
-            voice.resume(tween(FREEZE_TWEEN));
-        }
+        voice.freeze(frozen, FREEZE_TWEEN);
     }
 
     fn stop_voice(&mut self, slot: VoiceSlot) {
         if let Some(voice) = self.voice(slot) {
-            voice.stop(tween(FREEZE_TWEEN));
+            voice.stop(FREEZE_TWEEN);
         }
     }
 
     fn voice_finished(&mut self, slot: VoiceSlot) -> bool {
-        let finished = self.voice(slot).is_none_or(|voice| voice.state() == PlaybackState::Stopped);
+        let finished = self.voice(slot).is_none_or(|voice| voice.finished());
         if finished {
             self.voices[slot.0 as usize] = None;
         }
@@ -302,14 +275,23 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
         // Stopped before the stems go in, so none can start on the last score's clock.
         self.music.end(fade);
         self.music.clock.set_speed(ClockSpeed::TicksPerMinute(f64::from(tempo_bpm)), tween(Duration::ZERO));
-        let first_beat = StartTime::ClockTime(ClockTime::from_ticks_u64(&self.music.clock, 0));
+        let first_beat = Start::OnClock(ClockTime::from_ticks_u64(&self.music.clock, 0));
         for stem in stems {
-            let Some(data) = self.sounds.get(&stem.sound) else {
+            let Some(storage) = self.sounds.get(&stem.sound) else {
                 self.music.end(Duration::ZERO);
                 return Err(StartError::UnknownSound(stem.sound));
             };
-            let data = data.loop_region(..).start_time(first_beat).volume(Decibels(stem.gain_db));
-            match self.buses[Bus::Music.index()].track.play(data) {
+            let voice = Voice {
+                storage: Arc::clone(storage),
+                settings: VoiceSettings {
+                    params: stem_params(stem.gain_db),
+                    start: first_beat,
+                    from: 0,
+                    looped: Some(LoopRegion { start: 0, end: storage.frames() }),
+                    frozen: false,
+                },
+            };
+            match self.buses[Bus::Music.index()].track.play(voice) {
                 Ok(handle) => self.music.stems.push(handle),
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, %error, "the mixer refused a stem");
@@ -328,7 +310,7 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
     fn fade_stem(&mut self, stem: usize, gain_db: f32, beat: u64, fade: Duration) {
         let at = StartTime::ClockTime(ClockTime::from_ticks_u64(&self.music.clock, beat));
         if let Some(stem) = self.music.stems.get_mut(stem) {
-            stem.set_volume(Decibels(gain_db), Tween { start_time: at, duration: fade, ..Tween::default() });
+            stem.set(stem_params(gain_db), Tween { start_time: at, duration: fade, ..Tween::default() });
         }
     }
 
@@ -359,4 +341,13 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
     fn set_mono(&mut self, mono: bool) {
         self.mono.store(mono, Ordering::Relaxed);
     }
+
+    fn decoded_bytes(&self) -> u64 {
+        self.decoded_bytes
+    }
+}
+
+/// A stem at `gain_db`, as authored otherwise.
+fn stem_params(gain_db: f32) -> VoiceParams {
+    VoiceParams { gain_db, ..VoiceParams::NEUTRAL }
 }

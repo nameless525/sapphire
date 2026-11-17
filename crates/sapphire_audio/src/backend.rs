@@ -27,6 +27,14 @@ pub struct VoiceParams {
     pub pan: f32,
     /// Playback rate: 1 is the sound as authored.
     pub pitch: f32,
+    /// The voice's own low-pass cutoff in hertz (M6 U1): one pole, so 6 dB an octave. Any value that isn't
+    /// finite, [`f32::INFINITY`] as [`Self::NEUTRAL`] has it, takes the filter out.
+    pub low_pass_hz: f32,
+}
+
+impl VoiceParams {
+    /// The sound as authored: full gain, centred, at its own pitch, unfiltered.
+    pub const NEUTRAL: Self = Self { gain_db: 0.0, pan: 0.0, pitch: 1.0, low_pass_hz: f32::INFINITY };
 }
 
 /// What a bus does to everything on it.
@@ -211,4 +219,8 @@ pub trait AudioBackend {
 
     /// Folds the whole mix to mono, or back to stereo (M4 A2), smoothly enough not to click.
     fn set_mono(&mut self, mono: bool);
+
+    /// The bytes of decoded sound the backend holds for [`Self::add_sound`]'s sounds (M6 U1): what playing
+    /// them costs in memory, beside their cooked bytes in the asset server's ledger.
+    fn decoded_bytes(&self) -> u64;
 }

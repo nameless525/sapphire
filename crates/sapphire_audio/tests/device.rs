@@ -49,7 +49,7 @@ fn whatever_the_device_the_output_runs_or_says_why_not() {
     assert_eq!(device_opens(), opens + 1, "one output, one count");
     backend.add_sound(SOUND, &tone());
     backend.set_bus(Bus::Sfx, BusParams::OPEN);
-    let quiet = VoiceParams { gain_db: -60.0, pan: 0.0, pitch: 1.0 };
+    let quiet = VoiceParams { gain_db: -60.0, ..VoiceParams::NEUTRAL };
     backend.start_voice(VoiceSlot(0), SOUND, Bus::Sfx, quiet, false).expect("a voice starts");
 
     let settled = |status: &DeviceStatus| status.state != DeviceState::Starting;

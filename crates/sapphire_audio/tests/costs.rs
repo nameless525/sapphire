@@ -165,6 +165,8 @@ fn what_audio_costs() {
         );
     }
 
+    voice_against_kiras_static_sound(&sound);
+
     // Decoding real sounds, against their length.
     let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/third_party");
     for name in
@@ -188,6 +190,93 @@ fn what_audio_costs() {
     }
 
     music_costs();
+}
+
+/// U1's kill line (m6-plan): the engine voice's mix at [`MAX_VOICES`] against kira's own static sound, as
+/// v0.2.0 played every voice, on the same bus track with the same parameters, the voice's low-pass open and
+/// then closed. Both mixes are timed in alternate rounds, so a load that comes and goes falls on both.
+fn voice_against_kiras_static_sound(sound: &DecodedSound) {
+    use std::sync::Arc;
+
+    use kira::effect::filter::{FilterBuilder, FilterMode};
+    use kira::sound::static_sound::{StaticSoundData, StaticSoundSettings};
+    use kira::track::TrackBuilder;
+    use kira::{AudioManager, AudioManagerSettings, Decibels, Frame, Mix, Panning, PlaybackRate};
+    use sapphire_audio::{AudioBackend, VoiceParams, VoiceSlot};
+
+    let params = |n: usize, low_pass_hz: f32| VoiceParams {
+        gain_db: -9.0,
+        pan: 0.3,
+        pitch: 0.95 + 0.003 * n as f32,
+        low_pass_hz,
+    };
+    let kira_frames: Arc<[Frame]> = sound.samples.iter().map(|&sample| Frame::from_mono(sample)).collect();
+    let kiras = || {
+        let Ok(mut manager) = AudioManager::<OfflineOutput>::new(AudioManagerSettings {
+            internal_buffer_size: 128,
+            backend_settings: RATE,
+            ..AudioManagerSettings::default()
+        });
+        let mut builder = TrackBuilder::new().sound_capacity(MAX_VOICES);
+        builder.add_effect(FilterBuilder::new().mode(FilterMode::LowPass).cutoff(20_000.0).mix(Mix::DRY));
+        let mut track = manager.add_sub_track(builder).expect("a track");
+        for n in 0..MAX_VOICES {
+            let voice = params(n, f32::INFINITY);
+            let data = StaticSoundData {
+                sample_rate: RATE,
+                frames: Arc::clone(&kira_frames),
+                settings: StaticSoundSettings::new()
+                    .volume(Decibels(voice.gain_db))
+                    .panning(Panning(voice.pan))
+                    .playback_rate(PlaybackRate(f64::from(voice.pitch))),
+                slice: None,
+            };
+            track.play(data).expect("room for the voice");
+        }
+        (manager, track)
+    };
+    let ours = |low_pass_hz: f32| {
+        let Ok(mut backend) = KiraBackend::<OfflineOutput>::new(RATE);
+        backend.add_sound(SOUND, sound);
+        for n in 0..MAX_VOICES {
+            backend.start_voice(VoiceSlot(n as u32), SOUND, Bus::Sfx, params(n, low_pass_hz), false).unwrap();
+        }
+        backend
+    };
+    let mut block = vec![0.0; BLOCK * 2];
+    let (mut kira_times, mut open_times, mut closed_times) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..ROUNDS {
+        let (mut manager, _track) = kiras();
+        let (mut open, mut closed) = (ours(f32::INFINITY), ours(2_000.0));
+        for _ in 0..64 {
+            let timer = Stopwatch::start();
+            manager.backend_mut().render_into(&mut block);
+            kira_times.push(timer.elapsed());
+            let timer = Stopwatch::start();
+            open.output_mut().render_into(&mut block);
+            open_times.push(timer.elapsed());
+            let timer = Stopwatch::start();
+            closed.output_mut().render_into(&mut block);
+            closed_times.push(timer.elapsed());
+        }
+    }
+    let ratio = |ours: Duration, kiras: Duration| ours.as_secs_f64() / kiras.as_secs_f64();
+    let (kira_fastest, kira) = min_and_median(&mut kira_times);
+    let (open_fastest, open) = min_and_median(&mut open_times);
+    let (closed_fastest, closed) = min_and_median(&mut closed_times);
+    println!(
+        "mix of {BLOCK} frames, {MAX_VOICES} voices, minimum and median: kira's static sound {:.1}/{:.1} us; the engine voice {:.1}/{:.1} us open ({:.2}x/{:.2}x), {:.1}/{:.1} us through its low-pass ({:.2}x/{:.2}x); the kill line is 1.5x",
+        micros(kira_fastest),
+        micros(kira),
+        micros(open_fastest),
+        micros(open),
+        ratio(open_fastest, kira_fastest),
+        ratio(open, kira),
+        micros(closed_fastest),
+        micros(closed),
+        ratio(closed_fastest, kira_fastest),
+        ratio(closed, kira),
+    );
 }
 
 const SCORE: AssetId = AssetId::from_text("5c0e0000-0000-4000-8000-000000000001");

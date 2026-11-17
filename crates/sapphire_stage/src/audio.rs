@@ -363,6 +363,7 @@ impl DeviceAudio {
             lines = stats.lines_asked,
             lines_missing = stats.lines_missing,
             phase_changes = stats.music_phase_changes,
+            decoded_bytes = stats.decoded_bytes,
             update_us = stats.update.as_micros() as u64,
             update_peak_us = peak.as_micros() as u64,
             mix_load = format_args!("{:.4}", device.mix_load()),

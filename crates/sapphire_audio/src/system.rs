@@ -168,6 +168,9 @@ pub struct AudioStats {
     pub music_unknown_phases: u64,
     /// The output's own counters.
     pub device: DeviceStatus,
+    /// The bytes of decoded sound the mixer holds (M6 U1): [`AudioBackend::decoded_bytes`], kept with each
+    /// [`AudioSystem::add_sound`].
+    pub decoded_bytes: u64,
 }
 
 /// A voice's position, as it was asked for.
@@ -311,6 +314,7 @@ impl<B: AudioBackend> AudioSystem<B> {
     /// Makes a decoded sound playable.
     pub fn add_sound(&mut self, id: AssetId, sound: &DecodedSound) {
         self.backend.add_sound(id, sound);
+        self.stats.decoded_bytes = self.backend.decoded_bytes();
     }
 
     /// Makes a score playable, once its stems' sounds are added. Load-time work.
@@ -429,6 +433,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         profiling::scope!("AudioSystem::update");
         let timer = Stopwatch::start();
         self.stats.device = self.backend.status();
+        self.stats.decoded_bytes = self.backend.decoded_bytes();
         // What was asked comes first: `CpalOutput` stops on a thread of its own and reads `Running` for
         // a while after, when a voice started now would sound, or wait to sound on the way back. The
         // stats keep the output's own word.
@@ -628,7 +633,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             hitstop: cue.hitstop,
             gain_db: quiet + (loud - quiet) * volume,
             pitch: slow + (fast - slow) * pitch,
-            sent: VoiceParams { gain_db: 0.0, pan: 0.0, pitch: 1.0 },
+            sent: VoiceParams::NEUTRAL,
             frozen: false,
             held,
             stopped: false,
@@ -736,7 +741,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             gain_db += db;
         }
         let pitch = if voice.bus.follows_world_clock() { voice.pitch * self.mix.pitch } else { voice.pitch };
-        VoiceParams { gain_db, pan, pitch }
+        VoiceParams { gain_db, pan, pitch, ..VoiceParams::NEUTRAL }
     }
 }
 
@@ -849,7 +854,7 @@ mod tests {
         let mut system = system_with(plain_cue());
         let mut rng = CueRng::new(1);
         system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
-        assert_eq!(started(&mut system), VoiceParams { gain_db: 0.0, pan: 0.0, pitch: 1.0 });
+        assert_eq!(started(&mut system), VoiceParams::NEUTRAL);
         assert_eq!(system.stats().cues_played, 1);
         assert_eq!(system.stats().voices, 1);
     }
@@ -1167,7 +1172,7 @@ mod tests {
             [
                 MockCall::SetVoice {
                     slot: VoiceSlot(1),
-                    params: VoiceParams { gain_db: -12.0, pan: 0.0, pitch: 1.0 }
+                    params: VoiceParams { gain_db: -12.0, ..VoiceParams::NEUTRAL }
                 },
                 MockCall::FreezeVoice { slot: VoiceSlot(2), frozen: true },
             ]
@@ -1193,10 +1198,7 @@ mod tests {
         system.update(&frame(&calm, &[]), &mut rng);
         let calls = system.backend_mut().take_calls();
         assert!(calls.contains(&MockCall::FreezeVoice { slot: VoiceSlot(2), frozen: false }), "{calls:?}");
-        assert!(calls.contains(&MockCall::SetVoice {
-            slot: VoiceSlot(1),
-            params: VoiceParams { gain_db: 0.0, pan: 0.0, pitch: 1.0 }
-        }));
+        assert!(calls.contains(&MockCall::SetVoice { slot: VoiceSlot(1), params: VoiceParams::NEUTRAL }));
     }
 
     #[test]

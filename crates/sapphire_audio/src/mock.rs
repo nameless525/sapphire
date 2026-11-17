@@ -1,6 +1,6 @@
 //! [`MockBackend`]: records what was asked, so game logic is tested with no device and no mixer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
@@ -64,11 +64,13 @@ pub enum MockCall {
 }
 
 /// A backend that plays nothing and writes everything down. Voices last until [`Self::finish`], and
-/// the music's clock reads what [`Self::set_music_beats`] says.
+/// the music's clock reads what [`Self::set_music_beats`] says. It says it holds each sound as it was
+/// given, `f32` samples.
 #[derive(Debug, Default)]
 pub struct MockBackend {
     calls: Vec<MockCall>,
-    sounds: HashSet<AssetId>,
+    /// Each sound's bytes, as given.
+    sounds: HashMap<AssetId, u64>,
     finished: HashSet<VoiceSlot>,
     state: DeviceState,
     stems: Vec<StemStart>,
@@ -117,8 +119,8 @@ impl MockBackend {
 }
 
 impl AudioBackend for MockBackend {
-    fn add_sound(&mut self, id: AssetId, _sound: &DecodedSound) {
-        self.sounds.insert(id);
+    fn add_sound(&mut self, id: AssetId, sound: &DecodedSound) {
+        self.sounds.insert(id, size_of_val::<[f32]>(&sound.samples) as u64);
         self.calls.push(MockCall::AddSound(id));
     }
 
@@ -135,7 +137,7 @@ impl AudioBackend for MockBackend {
         params: VoiceParams,
         frozen: bool,
     ) -> Result<(), StartError> {
-        if !self.sounds.contains(&sound) {
+        if !self.sounds.contains_key(&sound) {
             return Err(StartError::UnknownSound(sound));
         }
         self.finished.remove(&slot);
@@ -168,7 +170,7 @@ impl AudioBackend for MockBackend {
     }
 
     fn load_music(&mut self, tempo_bpm: f32, stems: &[StemStart], fade: Duration) -> Result<(), StartError> {
-        if let Some(stem) = stems.iter().find(|stem| !self.sounds.contains(&stem.sound)) {
+        if let Some(stem) = stems.iter().find(|stem| !self.sounds.contains_key(&stem.sound)) {
             return Err(StartError::UnknownSound(stem.sound));
         }
         self.stems.clear();
@@ -209,5 +211,9 @@ impl AudioBackend for MockBackend {
 
     fn set_mono(&mut self, mono: bool) {
         self.calls.push(MockCall::SetMono(mono));
+    }
+
+    fn decoded_bytes(&self) -> u64 {
+        self.sounds.values().sum()
     }
 }

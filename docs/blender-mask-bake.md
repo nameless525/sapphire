@@ -100,22 +100,27 @@ The masks are part of their document's asset: they get no `.meta` sidecar and no
 
 ## Ramps
 
-Ramps aren't baked: they're color stops in a `.ramp.ron` next to the character, one entry per material ID (the first is ID 0):
+Ramps aren't baked from the mesh: each is typed as color stops or painted as a row of an image, in a `.ramp.ron` next to the character, one entry per material ID (the first is ID 0):
 
 ```ron
 (
     type: "sapphire::pipeline::RampMap",
-    version: 1,
+    version: 2,
     data: (
         materials: [
             (
                 name: "skin",
-                day: (stops: [(at: 0.0, color: "#b8616a"), (at: 0.55, color: "#e5927c"), (at: 1.0, color: "#f6c3a6")]),
-                night: (stops: [(at: 0.0, color: "#4e3f6e"), (at: 1.0, color: "#9a86b8")]),
+                day: Stops((stops: [(at: 0.0, color: "#b8616a"), (at: 0.55, color: "#e5927c"), (at: 1.0, color: "#f6c3a6")])),
+                night: Stops((stops: [(at: 0.0, color: "#4e3f6e"), (at: 1.0, color: "#9a86b8")])),
             ),
             (
                 name: "metal",
-                day: (interpolation: Step, stops: [(at: 0.0, color: "#3a3440"), (at: 0.4, color: "#8a8094"), (at: 0.8, color: "#d8d2e0")]),
+                day: Stops((interpolation: Step, stops: [(at: 0.0, color: "#3a3440"), (at: 0.4, color: "#8a8094"), (at: 0.8, color: "#d8d2e0")])),
+            ),
+            (
+                name: "cloth",
+                day: Image((path: "ramps/cloth.png", row: 0)),
+                night: Image((path: "ramps/cloth.png", row: 1)),
             ),
         ],
     ),
@@ -123,3 +128,5 @@ Ramps aren't baked: they're color stops in a `.ramp.ron` next to the character, 
 ```
 
 `at` runs from the deepest shadow (0) to the lit edge of the terminator (1). Stops blend in OkLab unless the document, a ramp or a stop says `Linear`, `Srgb` (an image editor's gradient) or `Step` (bands). A material without a night ramp uses its day ramp for both. Warm, saturated shadow colors are the look; never a darkened grey.
+
+A painted ramp is a PNG strip, deepest shadow on the left, one ramp a row: paint it in any image editor, sRGB as you see it, and name its row from 0 at the top. Paint it as wide as the bake (256 texels, the sidecar's `width`) to have it copied texel for texel; a narrower strip is blended between its texels' centers in the document's interpolation (OkLab unless the document says otherwise; `Srgb` matches the editor's own gradients), and a wider one is refused, as is a row the image doesn't have. Like a mask, the strip is part of the ramp's asset: it gets no sidecar, and editing it recooks only the ramps that read it. Version 1 documents, all stops written as `day: (stops: [...])`, still read as they are.

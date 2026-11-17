@@ -112,12 +112,8 @@
 //!   needed no overlay mounts to push only what changed: its source serves the new pack whole,
 //!   assembled on the device from the changed assets it received and the rest of the pack it had.)
 //! - Letting packs a signed release manifest names skip bytecheck (spec §5.9).
-//! - Memory-mapped packs, so raw blocks are read in place; cancelling the reads of assets dropped
-//!   before they load; pinning by group (party, encounter) rather than by handle.
-//! - Texture mip streaming (M5 M4, M5): a large texture is already a tail and levels, each an asset
-//!   (M5 M3), but the server loads every level with whatever holds the texture
-//!   ([`AssetServer`]'s "Texture levels"); raising and lowering levels by distance and budget replaces
-//!   that.
+//! - Cancelling the reads of assets dropped before they load; pinning by group (party, encounter)
+//!   rather than by handle. Packs stay read, not memory-mapped (spec §5.1, "File system").
 
 pub mod character_maps;
 pub mod clip;

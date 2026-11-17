@@ -676,9 +676,11 @@ The layer numbers were revised in ADR 0001 so that the platform layer can use `s
 
 ```
             ┌──────────── frame N ─────────────────────────────────────────────┐
-Main thread │ SDL_AppIterate: pump events → input snapshot → kick jobs → present │
-Workers     │   fixed steps (sim N) → presentation (anim/cloth/VFX/camera) → extract(N)
-Workers     │ ◄─ prepare + record render(N-1) in parallel ─► submit(N-1)         │
+Main thread │ SDL_AppIterate: events → input snapshot → fixed steps (sim N) →    │
+            │   content → presentation (anim/cloth/VFX/camera) → extract(N) →    │
+            │   prepare + record(N) → submit(N) → present                        │
+Workers     │ each step's parallel loops (animation jobs, culling chunks)        │
+GPU         │ draws N while the main thread makes N+1 (two frames in flight)     │
 IO thread   │ positioned reads → decode jobs → GPU upload queue → activation    │
 Audio       │ (the audio backend's own mixer callback)                           │
             └──────────────────────────────────────────────────────────────────┘
@@ -688,10 +690,10 @@ Audio       │ (the audio backend's own mixer callback)                        
 2. **Fixed steps.** Run 0–4 fixed 60 Hz simulation steps using an accumulator. The cap of 4 prevents a spiral of death.
 3. **Presentation update.** Run at the variable frame rate: pose evaluation, secondary motion, VFX and camera, each on its owner's clock, interpolated between the last two fixed states.
 4. **Extract.** Build the `FramePacket` (§4.6). This is the only sync point between simulation and rendering.
-5. **Render.** Prepare and record frame N on worker threads while frame N+1 simulates.
+5. **Render.** Prepare and record frame N on the thread that simulated it, after its extract, with the step's parallel loops on the workers (`Stage`'s fixed steps, then `Stage::render`, in [crates/sapphire_stage/src/frame.rs](../crates/sapphire_stage/src/frame.rs)). There is no render thread: the overlap is the GPU's, drawing frame N while the CPU makes N+1.
 6. **Submit.** One `queue.submit` per frame, then present.
 
-**Latency.** Pipelining adds about one frame of latency. Sample input as late as possible, measure end-to-end latency in M2, and keep `desired_maximum_frame_latency = 2`.
+**Latency.** The GPU drawing one frame while the CPU makes the next adds up to a frame of latency. Sample input as late as possible, measure end-to-end latency in M2, and keep `desired_maximum_frame_latency = 2`, which allows that overlap and no more.
 
 ### 4.3 Threading
 

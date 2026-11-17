@@ -299,7 +299,7 @@ impl RenderSurface {
             width: 0,
             height: 0,
             present_mode: policy.resolve(&caps.present_modes),
-            // One frame of CPU/GPU overlap, matching the frame pipeline (spec §4.2).
+            // One frame of CPU/GPU overlap: the CPU makes frame N+1 while the GPU draws N (spec §4.2).
             desired_maximum_frame_latency: 2,
             alpha_mode: choose_alpha(&caps.alpha_modes),
             view_formats: if view_format == format { Vec::new() } else { vec![view_format] },

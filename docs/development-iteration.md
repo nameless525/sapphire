@@ -147,6 +147,8 @@ To see it with no window: `cargo run -p sapphire_editor -- <file> --capture <png
 
 Everything the window does is a named command (`sapphire_editor::commands`, spec §5.28 "As built (M6 T1)"): Cmd+P lists them, and a script of them, a `.commands.ron` file, runs with no window: `cargo run -p sapphire_editor -- [<file>] --run <script.commands.ron> [--capture <png> [--size <w>x<h>]]`. A refused command stops the run, naming it and why. To make one, do it by hand once: `cargo xtask editor <file> --record target/<name>.commands.ron` keeps every command the session runs, with its documents named from the script's folder, and `--run` plays it back. `tests/scripts.rs` has a script for each of the interface's kittests.
 
+What isn't saved is kept after each command in a journal, `target/editor_journal/` (spec §5.28 "As built (M6 T3)"), so a crash or a kill loses none of it: the next editor's top bar offers each document an editor that stopped without saving had, to take back (`Recover`), unsaved and with its steps to undo, or let go (`DropRecovered`). One whose file someone saved meanwhile comes back in conflict with it, and the top bar's three answers settle it as any other; nothing writes a source until you save. Quitting with nothing unsaved, or choosing to lose it, leaves nothing behind. `--journal <folder>` keeps it somewhere else, and a script keeps one only when told, so `--run` can take and let go of offers too.
+
 No test can show:
 
 - that the window opens at all, on any OS: `window.rs` is the one part nothing runs, with its surface, device loss, resizing, HiDPI scale and text input;
@@ -158,6 +160,7 @@ No test can show:
 - whether playback looks right at 60 Hz (its timing is tested on a synthetic clock, not seen);
 - the real keyboard and mouse: each key's translation from SDL is tested, but on a real layout (a non-US one's `[`, say) it hasn't been pressed;
 - the system's own Close and Quit, which should ask first with edits unsaved, and save instead while a lost GPU leaves the window black;
+- the journal's offer after a real crash of the window: a child process killed mid-drag is what the tests stop, and the window's own `target/editor_journal/` has never been offered back in a window;
 - the figure against the game's own look: it's flat clay for reading a pose, with no materials, outlines, springs or IK;
 - the viewport on a real surface: its first frame on the window's own device and format, its tab bringing up a stage without a hitch that matters, its drag and scroll at a real pointer's rate, a resize by the window's corner, and a Retina scale, all of which are driven by events or drawn into a texture here;
 - a real device loss under the viewport (a driver reset, a GPU switch): `Device::destroy` and `Recovery` stand in for one, and a surface's own report of it has never run;

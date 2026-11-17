@@ -79,6 +79,8 @@
 //!   masks.
 //! - [`figure`]: figures built from specs (M3 C2): an enemy's skinned model and the maps its
 //!   material reads, from `tools/figures/`.
+//! - [`tree`]: trees grown from species specs (M6 G6a): a model an age by space colonization, a leaf
+//!   atlas painted in brush strokes and the foliage materials, for the benchmark's `trees` part.
 //! - [`bench`](mod@bench): the benchmark's content (M5 B1), a source tree generated from `bench/`'s documents at a
 //!   preset's scale for a cook under `target/`, never committed and never shipped.
 //! - [`samples`]: procedurally generated source assets used to bring up the renderer: the
@@ -186,6 +188,7 @@ mod test_util;
 pub mod texture;
 pub mod timeline;
 pub mod timing;
+pub mod tree;
 pub mod ui;
 pub mod vo;
 pub mod zone;

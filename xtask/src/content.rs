@@ -117,6 +117,12 @@ pub struct Cooked {
 /// Generates whatever sources are missing, then cooks all of `content/` for `cook`. Keep the
 /// result alive while copying from or running against its directory.
 pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
+    cook_reporting(cook, false)
+}
+
+/// [`cook`], and with `report` the pipeline prints how long each phase of its cook took and the slowest
+/// stages and assets (M6 C12): `cargo xtask content --report`.
+pub fn cook_reporting(cook: Cook, report: bool) -> anyhow::Result<Cooked> {
     let pipeline = pipeline()?;
 
     let source = workspace::root().join(SOURCE_DIR);
@@ -131,7 +137,7 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
         File::lock,
         &format!("to finish with the {cook} content"),
     )?;
-    run_cook(&pipeline, &source, &loose_dir(cook), &out, cook)?;
+    run_cook(&pipeline, &source, &loose_dir(cook), &out, cook, report)?;
     // Another run may recook in the gap before the shared lock; its output is the same.
     lock.unlock()?;
     workspace::wait_for_lock(
@@ -165,11 +171,18 @@ pub fn generate(pipeline: &Path) -> anyhow::Result<()> {
 /// the shared cache: what `cargo xtask patch rehearse` cooks its edited release from (M4 P4). Nothing else
 /// cooks into `packs`, so it takes no lock.
 pub fn cook_copy(source: &Path, loose: &Path, packs: &Path, cook: Cook) -> anyhow::Result<()> {
-    run_cook(&pipeline()?, source, loose, packs, cook)
+    run_cook(&pipeline()?, source, loose, packs, cook, false)
 }
 
-/// Runs the pipeline's cook of `source` into `loose` and `packs`.
-fn run_cook(pipeline: &Path, source: &Path, loose: &Path, packs: &Path, cook: Cook) -> anyhow::Result<()> {
+/// Runs the pipeline's cook of `source` into `loose` and `packs`, printing its times with `report`.
+fn run_cook(
+    pipeline: &Path,
+    source: &Path,
+    loose: &Path,
+    packs: &Path,
+    cook: Cook,
+    report: bool,
+) -> anyhow::Result<()> {
     let code = workspace::root();
     let run = CookRun {
         source,
@@ -179,6 +192,7 @@ fn run_cook(pipeline: &Path, source: &Path, loose: &Path, packs: &Path, cook: Co
         cache: &cache_dir(),
         code: Some(&code),
         locked: workspace::locked(),
+        report,
     };
     run_pipeline_cook(pipeline, &run)
 }
@@ -194,6 +208,8 @@ pub struct CookRun<'a> {
     pub code: Option<&'a Path>,
     /// Fail on a source without a sidecar.
     pub locked: bool,
+    /// Print how long the cook's phases, stages and slowest assets took.
+    pub report: bool,
 }
 
 /// Runs the pipeline's `cook` as `run` says.
@@ -218,6 +234,9 @@ pub fn run_pipeline_cook(pipeline: &Path, run: &CookRun<'_>) -> anyhow::Result<(
     }
     if run.cook == Cook::Editor {
         command.arg("--editor");
+    }
+    if run.report {
+        command.arg("--report");
     }
     workspace::run(&mut command)
 }

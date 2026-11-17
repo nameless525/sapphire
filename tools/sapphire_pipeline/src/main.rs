@@ -29,7 +29,9 @@ use sapphire_pipeline::pack::{self, PackReport, PackStatus};
 use sapphire_pipeline::procedural::{self, ProceduralTexture, SurfaceMap};
 use sapphire_pipeline::release::{self, ReleaseOptions};
 use sapphire_pipeline::samples::{self, Existing, Generated};
+use sapphire_pipeline::timing::{self, Phase, Slowest};
 use sapphire_pipeline::vo;
+use sapphire_time::Stopwatch;
 
 const USAGE: &str = "\
 Sapphire asset pipeline: generate, import, bake and cook source assets.
@@ -89,7 +91,7 @@ Usage:
       compression: 16-bit linear values for face SDF and ILM maps, 8-bit sRGB for ramps and a
       procedural texture's colour, 8-bit linear for its normal and mask (colour without a sidecar).
   sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--packs <DIR>]
-                         [--cache <DIR>] [--locked] [--editor]
+                         [--cache <DIR>] [--locked] [--editor] [--report]
       Cook every source asset under --source (skipping hidden entries, and sources whose
       sidecars say `cook: false`) into mirrored paths under --out, creating missing .meta
       sidecars next to the sources, then pack the cooked
@@ -98,6 +100,8 @@ Usage:
       The game's documents (game.documents.ron under --source, if there's one) go beside the packs, under
       documents/, and an unsigned release.smanifest names everything there. Beside the cooked files under
       --out go the cook audit (cook_audit.ron) and the asset index (index.json), which never ship.
+      With --report, it then prints how long each phase took and the slowest stages and assets, which no
+      file it writes holds.
   sapphire_pipeline graph <ASSET> --index <FILE> [--reverse]
       Print what ASSET uses, all the way down, or with --reverse what uses it, from the asset index a cook
       wrote (FILE: index.json beside its cooked files, target/content/loose/<cook>/index.json for cargo
@@ -161,6 +165,7 @@ Options:
   --locked                   Fail on a source without a sidecar instead of creating one (CI).
   --editor                   Also cook what only an editor reads (each zone's shapes): never for packs
                              that ship.
+  --report                   cook: print each phase's time and the slowest stages and assets.
   --weld-tolerance <METERS>  Vertices closer than this share one outline normal.
   --release-version <N>      release: the release's version.
   --expires <YYYY-MM-DD>     release: the day, at midnight UTC, it stops being offered as current.
@@ -235,6 +240,8 @@ enum Command {
         cache: Option<PathBuf>,
         locked: bool,
         editor: bool,
+        /// Print the cook's times.
+        report: bool,
     },
     /// `release-key new` (`new: true`) or `release-key public`, on a key file.
     ReleaseKey {
@@ -398,19 +405,22 @@ fn run(command: Command) -> anyhow::Result<()> {
                 extraction.written.len()
             );
         }
-        Command::Cook { source, out, packs, code, cook, cache, locked, editor } => {
+        Command::Cook { source, out, packs, code, cook, cache, locked, editor, report: show } => {
             let options = CookOptions { cook, cache: cache.as_deref(), locked, editor };
-            let report = cook::cook_dir(&source, &out, &options)?;
+            let mut report = cook::cook_dir(&source, &out, &options)?;
             print_report(&report, cook, &source, &out);
+            let mut watch = Stopwatch::start();
             let audited = audit::write(&source, &out, cook, cache.as_deref(), &report)?;
             if audited.written == audit::Written::Written {
                 eprintln!("{cook}: wrote the cook audit {}", audited.path.display());
             }
+            report.timings.ended(Phase::Audit, &mut watch);
             let (path, written) =
                 index::write(&source, &out, cook, cache.as_deref(), &report, &audited.audit)?;
             if written == audit::Written::Written {
                 eprintln!("{cook}: wrote the asset index {}", path.display());
             }
+            report.timings.ended(Phase::Index, &mut watch);
             if let Some(packs) = packs {
                 if let Some(code) = code {
                     let names = code_names::scan(&code)
@@ -418,6 +428,7 @@ fn run(command: Command) -> anyhow::Result<()> {
                     pack::check_code_names(&report, cache.as_deref(), &names)?;
                 }
                 let packed = pack::pack_cooked(&report, &packs, cache.as_deref())?;
+                report.timings.ended(Phase::Pack, &mut watch);
                 print_packs(&packed, cook);
                 let shipped = documents::ship_documents(&source, &packs)?;
                 for path in &shipped.written {
@@ -429,6 +440,11 @@ fn run(command: Command) -> anyhow::Result<()> {
                 if let Some(path) = release::write_manifest(&packs, cook)? {
                     println!("  wrote {}", path.display());
                 }
+                report.timings.ended(Phase::Ship, &mut watch);
+            }
+            if show {
+                let count = timing::SLOWEST;
+                eprint!("{}", Slowest { report: &report, cook, source: &source, out: &out, count });
             }
         }
         Command::Check { source, json } => {
@@ -747,6 +763,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             cache: options.value("--cache")?,
             locked: options.flag("--locked"),
             editor: options.flag("--editor"),
+            report: options.flag("--report"),
         },
         "release" => Command::Release {
             packs: options.required("--packs")?,
@@ -965,9 +982,10 @@ mod tests {
                 cache: None,
                 locked: true,
                 editor: false,
+                report: false,
             }
         );
-        let Command::Cook { cache, locked, packs, .. } = parse(&[
+        let Command::Cook { cache, locked, packs, report, .. } = parse(&[
             "cook",
             "--source=a",
             "--out=b",
@@ -976,11 +994,13 @@ mod tests {
             "target/cache",
             "--packs",
             "p",
+            "--report",
         ])
         .unwrap() else {
             panic!("expected cook");
         };
         assert_eq!((cache, locked, packs), (Some("target/cache".into()), false, Some("p".into())));
+        assert!(report, "the cook's times printed");
         assert_eq!(parse(&["cook", "--help"]).unwrap(), Command::Help);
         assert_eq!(parse(&["-V"]).unwrap(), Command::Version);
     }

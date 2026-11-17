@@ -43,13 +43,15 @@ Usage: cargo xtask [--locked] <command> [options]
 Commands:
   check-layers
       Check crate layering against xtask/layers.toml (spec §4.1, rules R1 and R8).
-  content [--cook desktop|mobile|editor]
+  content [--cook desktop|mobile|editor] [--report]
       Generate missing sample sources under content/, then cook content/ into
       target/content/loose/<cook>/ and pack it into target/content/<cook>/ (default cook:
       desktop). Only assets whose inputs changed are cooked or compressed again (cache:
       target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
       `editor` is the desktop cook with what only an editor reads (each zone's shapes), in
       target/content/editor/, which no app ships.
+      --report prints how long each phase of the pipeline's cook took, and its slowest stages and
+      assets (M6 C12), which no file it writes holds.
   bench-content [--preset ci|budget|double] [--cook desktop|mobile] [--with-content]
       Generate the benchmark's sources from the documents in bench/ at a preset's scale into
       target/bench/<preset>/sources/ (the phones' into sources-mobile/, their district's cells
@@ -337,8 +339,9 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
         }
         "content" => {
             let cook = args.value::<Cook>("--cook")?.unwrap_or(Cook::Desktop);
+            let report = args.flag("--report");
             args.finish(false)?;
-            let cooked = content::cook(cook)?;
+            let cooked = content::cook_reporting(cook, report)?;
             eprintln!("cooked content for {cook} into {}", cooked.dir.display());
             Ok(())
         }

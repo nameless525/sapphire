@@ -200,6 +200,7 @@ pub fn cook_with(preset: Preset, cook: Cook, cells: CellLevels) -> anyhow::Resul
         cache: &cache_dir(),
         code: None,
         locked: true,
+        report: false,
     };
     content::run_pipeline_cook(&pipeline, &run)?;
     lock.unlock()?;

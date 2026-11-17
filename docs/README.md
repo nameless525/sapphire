@@ -64,6 +64,7 @@ Each milestone has a plan (work packages and their "As built" notes), an exit ru
 | [m5-plan.md](m5-plan.md) | M5, fidelity at scale, finished as 0.2.0 with exit test 1 not met on Desktop-High: a benchmark at the content budgets, exit tests (§1), decisions (§3), work packages by track (§4), what's needed from the maintainer (§7) |
 | [m5-exit-run.md](m5-exit-run.md) | M5's exit-test runbook: for each test, what is run (counted, timed or in CI), the line read and the rule that passes it on each tier, and what only a device proves |
 | [m6-handoff.md](m6-handoff.md) | What the next milestone inherits from M5 (also under "Working in the code") |
+| [m6-plan.md](m6-plan.md) | M6, performance and production, approved and not started: where the frame goes at 0.2.0, what a one-genre engine may assume and what the production tracks add (§1), exit tests (§1), decisions, what not to do and what waits on a trigger (§3), work packages by track, the performance tracks and the editor, pipeline, world's look, animation, audio, foliage, water, weather, environment effects and particles tracks, each with its measured row or proof and its kill criterion (§4), the order, critical paths and minimal slices, which are the landing order (§5), what's needed from the maintainer (§7) |
 
 `docs/media/` holds screenshots the older docs show.
 

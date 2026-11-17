@@ -111,7 +111,7 @@ Each frame, the fixed step advances the simulation, then resolves everything the
 | **M4** Ship readiness | Pipeline warm-up, signed patches, quality tiers and heat, crash symbols, accessibility, store packages and playtests |
 | **M5** Fidelity at scale | A generated benchmark at the content budgets; draw lists, instancing, culling and levels of detail; texture streaming inside a hard pool; reflection probes, wet streets, effect meshes, decals and depth of field; playable kinds, chain cloth, faces and a crowd |
 
-The spec's [milestones](docs/engine-spec.md#10-milestones) have each one's exit tests and results, and [the M6 handoff](docs/m6-handoff.md) says what the next one inherits from M5.
+The spec's [milestones](docs/engine-spec.md#10-milestones) have each one's exit tests and results, [the M6 handoff](docs/m6-handoff.md) says what the next one inherits from M5, and [the M6 plan](docs/m6-plan.md), approved and not yet started, says what it builds: performance and production.
 
 ## Documentation
 

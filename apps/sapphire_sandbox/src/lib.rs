@@ -498,6 +498,36 @@
 //!
 //! Desktop runs need cooked content: `cargo xtask run --platform macos` cooks and launches.
 //!
+//! # Measuring the character pixel
+//!
+//! M6 B6's switches and counters, in `dev` builds alone (a shipping build refuses them): what prices the anime
+//! character pixel's terms on a bench, an arm of a probe each (m6-plan B9), and never a look anyone ships. Each
+//! switch is one of the renderer's pipeline constants (`RenderSettings::character_switches`, `sapphire_render`'s
+//! `measure` module); left out, every pipeline is the shipping one. They change the anime character family's
+//! surfaces, outline hulls and eyes through hair on every tier, and add or leave out no pipeline.
+//!
+//! - `--measure-no-rim`: no depth-offset rim.
+//! - `--measure-no-local-lights`: characters skip the local lights' loop; `--measure-light-cap <n>` walks at most
+//!   `n` lights a character pixel (0, 8 and 64 are m6-plan P6's sweep).
+//! - `--measure-one-received-slot`: another character's shadow from the first received slot alone (P1).
+//! - `--measure-no-hull-shadow`: outline hulls take no cast or received shadow (P2); `--measure-unlit-hulls`:
+//!   they are their line's color, unlit.
+//! - `--measure-one-ramp-row`: a frame at full night reads one ramp row (P3).
+//! - `--measure-material-read two-levels|fractional|whole`: how material textures are read: the shipping two
+//!   whole levels, one read at the fractional level or one at the nearest whole level (P4).
+//! - `--measure-one-hair-style`: hair takes its own highlight style's coordinate alone, on a branch (P3).
+//! - `--measure-face-light-constant`: a face's light in head space is a constant, as if the CPU gave it (P3);
+//!   the face is lit as by a fixed light.
+//! - `--measure-control-unbound`: no control map is read, as if unbound (K4's probe); it acts on every character,
+//!   so it stands for K4 only where every figure's control map is constant per region, as the benchmark's are.
+//! - `--measure-pixels`: counts, on the GPU, the character and outline-hull pixels the main view shows and the
+//!   phones' edge upscaler's wholly flat 32-pixel groups (F1), as the bench's count rows `character pixels`,
+//!   `hull pixels`, `upscale groups` and `flat upscale groups`. It builds two compute pipelines and adds their
+//!   passes, so it is for a counted run (`--draw-every`), never a timed one. A frame's reading arrives a few
+//!   frames late, so a row's spread is the pixel's and its total isn't a sum of frames.
+//!
+//! The character triangles by pass (`main character triangles` and the rest) are count rows in every build.
+//!
 //! # The sky
 //!
 //! The zone's sky is the sky material `samples/sky.material.ron` (`content::SKY`), loaded with its

@@ -145,6 +145,13 @@ pub(crate) struct Counted {
     pub cascades_drawn: u32,
     pub cached_cascades_redrawn: u32,
     pub moving_shadow_casters: u32,
+    /// The character pixel's counters (M6 B6, `RenderStats::measured`, a dev sandbox's `--measure-pixels`):
+    /// the newest frame the GPU counted, a few frames before this one, so a row's spread is the pixel's and its
+    /// total counts a reading once a frame. 0 where they aren't built.
+    pub character_pixels: u32,
+    pub hull_pixels: u32,
+    pub upscale_groups: u32,
+    pub flat_upscale_groups: u32,
 }
 
 impl Counted {
@@ -257,6 +264,10 @@ impl Counted {
             cascades_drawn: render.shadows.cascades_drawn,
             cached_cascades_redrawn: render.shadows.cached_redrawn,
             moving_shadow_casters: render.shadows.moving_casters,
+            character_pixels: render.measured.character_pixels,
+            hull_pixels: render.measured.hull_pixels,
+            upscale_groups: render.measured.upscale_groups,
+            flat_upscale_groups: render.measured.flat_upscale_groups,
             ..Self::default()
         }
     }
@@ -331,19 +342,32 @@ const ANIMATION: &str = "animation";
 const CROWD: &str = "a zone's crowd";
 const STREAMING: &str = "texture streaming";
 const CAPSULES: &str = "capsules by cluster";
+const CHARACTER_PIXEL: &str = "the character pixel";
 /// Every group, in the rows' order (a test holds `COUNT_ROWS` to it).
 #[cfg(test)]
-const GROUPS: [&str; 13] = [
-    FRAME, PASSES, CULLING, LEVELS, STATE, RUNS, SKINNING, LIGHTS, ASSETS, ANIMATION, CROWD, STREAMING,
+const GROUPS: [&str; 14] = [
+    FRAME,
+    PASSES,
+    CULLING,
+    LEVELS,
+    STATE,
+    RUNS,
+    SKINNING,
+    LIGHTS,
+    ASSETS,
+    ANIMATION,
+    CROWD,
+    STREAMING,
     CAPSULES,
+    CHARACTER_PIXEL,
 ];
 
 /// What's logged, the frame's whole first, then pass by pass (spot lights' shadow tiles among them), the
 /// ambient pass's dispatches, then what culled, the levels drawn (the main view's and the shadows' apart,
 /// and the main view's switches, M5 D4), the state the mesh passes changed, the instanced runs,
-/// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's and the
-/// characters' capsules by cluster.
-pub(crate) const COUNT_ROWS: [CountRow; 90] = [
+/// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's, the
+/// characters' capsules by cluster, and the character pixel's (M6 B6).
+pub(crate) const COUNT_ROWS: [CountRow; 98] = [
     // Every call the frame submitted, across all passes: m5-plan §3's second row, with no budget.
     row(FRAME, "draw calls", |c| u64::from(c.passes.total().draws)),
     row(FRAME, "triangles", |c| c.passes.total().triangles),
@@ -493,6 +517,17 @@ pub(crate) const COUNT_ROWS: [CountRow; 90] = [
     row(CAPSULES, "capsule clusters marked", |c| u64::from(c.capsule_clusters)),
     row(CAPSULES, "capsule bits set", |c| u64::from(c.capsule_bits)),
     row(CAPSULES, "capsule bits in fullest cluster", |c| u64::from(c.capsule_fullest)),
+    // The character pixel (M6 B6): the anime character family's triangles by pass, in every build, then what a dev
+    // sandbox's `--measure-pixels` counts on the GPU: the main view's character pixels, the hull lines among them
+    // outside every silhouette, and the phones' edge upscaler's 32-pixel groups and the wholly flat ones.
+    row(CHARACTER_PIXEL, "main character triangles", |c| c.passes.main.character_triangles),
+    row(CHARACTER_PIXEL, "character prepass triangles", |c| c.passes.character_prepass.character_triangles),
+    row(CHARACTER_PIXEL, "scene prepass character triangles", |c| c.passes.scene_prepass.character_triangles),
+    row(CHARACTER_PIXEL, "shadow character triangles", |c| c.passes.shadows().character_triangles),
+    row(CHARACTER_PIXEL, "character pixels", |c| u64::from(c.character_pixels)),
+    row(CHARACTER_PIXEL, "hull pixels", |c| u64::from(c.hull_pixels)),
+    row(CHARACTER_PIXEL, "upscale groups", |c| u64::from(c.upscale_groups)),
+    row(CHARACTER_PIXEL, "flat upscale groups", |c| u64::from(c.flat_upscale_groups)),
 ];
 
 /// A frame's counts, the tick it was drawn at and the metres walked by then.

@@ -10,9 +10,9 @@ use sapphire_render::quality::{
     OcclusionSetting, OptionalPass, OptionalPasses, QualitySettings, Switch, TierId,
 };
 use sapphire_render::{
-    CascadeCache, ColorVision, CullPose, CullingMode, CullingThresholds, DebugView, DrawRuns, EffectScale,
-    LevelSettings, LevelsMode, LightPath, MIN_RENDER_SCALE, MainDepth, MaterialDrive, Msaa, PostVariants,
-    RenderSettings, ShadowSettings, Upscaler, Weather, Wind,
+    CascadeCache, CharacterSwitches, ColorVision, CullPose, CullingMode, CullingThresholds, DebugView,
+    DrawRuns, EffectScale, LevelSettings, LevelsMode, LightPath, MIN_RENDER_SCALE, MainDepth, MaterialDrive,
+    MaterialRead, Msaa, PostVariants, RenderSettings, ShadowSettings, Upscaler, Weather, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -61,6 +61,20 @@ Common options:
   --scenario <name>         Scenario for a recording or fight
   --script <name>           Script driving a recording or fight
   --fight                   Run a scripted fight
+
+Measuring the character pixel (dev builds; never a shipping look):
+  --measure-no-rim               No depth-offset rim
+  --measure-no-local-lights      No local lights on characters
+  --measure-light-cap <n>        At most n local lights a character pixel
+  --measure-one-received-slot    Another character's shadow from the first slot alone
+  --measure-no-hull-shadow       Outline hulls take no shadow
+  --measure-unlit-hulls          Outline hulls unlit
+  --measure-one-ramp-row         One ramp row at full night
+  --measure-material-read <how>  two-levels, fractional or whole
+  --measure-one-hair-style       Hair's own highlight style alone
+  --measure-face-light-constant  A face's light a constant
+  --measure-control-unbound      Control maps never read
+  --measure-pixels               Count character, hull and flat upscale pixels
 
 The sapphire_sandbox crate's Arguments documentation lists all scene, capture,
 benchmark, animation, HUD and development options (cargo doc -p sapphire_sandbox).";
@@ -443,6 +457,12 @@ pub(crate) struct Options {
     /// `Equal`. `prepass` holds only with temporal AA and one sample (the desktop tiers); elsewhere it is
     /// `own`, and the log says so once.
     pub main_depth: Option<MainDepth>,
+    /// The anime character pixel's measurement switches (M6 B6, `RenderSettings::character_switches`), one
+    /// `--measure-*` flag each, in `dev` builds alone: see the crate docs' "Measuring the character pixel".
+    pub character_switches: CharacterSwitches,
+    /// `--measure-pixels` (`dev` builds): count the character and hull pixels and the edge upscaler's flat groups
+    /// (M6 B6, `RenderSettings::measure_pixels`), for a counted run, never a timed one.
+    pub measure_pixels: bool,
     /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
     /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
     /// the default.
@@ -892,6 +912,8 @@ impl Options {
             main_depth: self.main_depth.unwrap_or(tier.main_depth),
             upscaler: if self.bilinear_upscale { Upscaler::Bilinear } else { tier.upscaler },
             capsule_bins: self.capsule_bins.unwrap_or(tier.capsule_bins),
+            character_switches: self.character_switches,
+            measure_pixels: self.measure_pixels,
             shafts: tier.shafts && self.shafts != Some(Switch::Off),
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
@@ -1522,6 +1544,52 @@ impl Options {
                             return Err(format!("--character-lods expects on, off or hero, got {other:?}"));
                         }
                     };
+                }
+                "--measure-no-rim"
+                | "--measure-no-local-lights"
+                | "--measure-light-cap"
+                | "--measure-one-received-slot"
+                | "--measure-no-hull-shadow"
+                | "--measure-unlit-hulls"
+                | "--measure-one-ramp-row"
+                | "--measure-material-read"
+                | "--measure-one-hair-style"
+                | "--measure-face-light-constant"
+                | "--measure-control-unbound"
+                | "--measure-pixels" => {
+                    if cfg!(not(feature = "dev")) {
+                        return Err(format!(
+                            "{name} prices the character pixel, which only `dev` builds measure (`--features dev`)"
+                        ));
+                    }
+                    let switches = &mut options.character_switches;
+                    match name {
+                        "--measure-no-rim" => switches.no_rim = true,
+                        "--measure-no-local-lights" => switches.no_local_lights = true,
+                        "--measure-light-cap" => {
+                            switches.light_cap = Some(number(&value(name)?, name)?);
+                        }
+                        "--measure-one-received-slot" => switches.one_received_slot = true,
+                        "--measure-no-hull-shadow" => switches.no_hull_shadow = true,
+                        "--measure-unlit-hulls" => switches.unlit_hulls = true,
+                        "--measure-one-ramp-row" => switches.one_ramp_row = true,
+                        "--measure-material-read" => {
+                            switches.material_read = match value(name)?.as_str() {
+                                "two-levels" => MaterialRead::TwoLevels,
+                                "fractional" => MaterialRead::Fractional,
+                                "whole" => MaterialRead::Whole,
+                                other => {
+                                    return Err(format!(
+                                        "{name} expects two-levels, fractional or whole, got {other:?}"
+                                    ));
+                                }
+                            };
+                        }
+                        "--measure-one-hair-style" => switches.one_hair_style = true,
+                        "--measure-face-light-constant" => switches.face_light_constant = true,
+                        "--measure-control-unbound" => switches.control_unbound = true,
+                        _ => options.measure_pixels = true,
+                    }
                 }
                 "--capsule-bins" => {
                     options.capsule_bins = Some(match value("--capsule-bins")?.as_str() {
@@ -4263,5 +4331,55 @@ mod tests {
                 && is_offscreen_flag("--capture")
                 && !is_offscreen_flag("--benchmark")
         );
+    }
+
+    /// M6 B6: each `--measure-*` flag sets its one switch in a dev build, the default is the shipping pixel, and
+    /// a build without `dev` refuses them all.
+    #[test]
+    fn each_measure_flag_sets_its_one_switch_in_dev_builds_alone() {
+        let flags: [&[&str]; 12] = [
+            &["--measure-no-rim"],
+            &["--measure-no-local-lights"],
+            &["--measure-light-cap", "8"],
+            &["--measure-one-received-slot"],
+            &["--measure-no-hull-shadow"],
+            &["--measure-unlit-hulls"],
+            &["--measure-one-ramp-row"],
+            &["--measure-material-read", "whole"],
+            &["--measure-one-hair-style"],
+            &["--measure-face-light-constant"],
+            &["--measure-control-unbound"],
+            &["--measure-pixels"],
+        ];
+        let (plain, _) = parse(&[]).expect("no flags");
+        assert!(plain.character_switches.is_shipping() && !plain.measure_pixels);
+        for flag in flags {
+            let parsed = parse(flag);
+            if cfg!(not(feature = "dev")) {
+                let error = parsed.expect_err("a shipping build refuses it");
+                assert!(error.contains(flag[0]) && error.contains("dev"), "{error}");
+                continue;
+            }
+            let (options, unknown) = parsed.expect("a dev build takes it");
+            assert!(unknown.is_empty(), "{flag:?}");
+            let on =
+                usize::from(!options.character_switches.is_shipping()) + usize::from(options.measure_pixels);
+            assert_eq!(on, 1, "{flag:?} sets one thing");
+        }
+        if cfg!(feature = "dev") {
+            let switches = |args: &[&str]| parse(args).expect("good arguments").0.character_switches;
+            assert_eq!(switches(&["--measure-light-cap", "0"]).light_cap, Some(0));
+            assert_eq!(
+                switches(&["--measure-material-read", "fractional"]).material_read,
+                MaterialRead::Fractional
+            );
+            assert_eq!(
+                switches(&["--measure-material-read", "two-levels"]).material_read,
+                MaterialRead::TwoLevels
+            );
+            assert!(parse(&["--measure-material-read", "bilinear"]).unwrap_err().contains("fractional"));
+            let both = switches(&["--measure-no-rim", "--measure-unlit-hulls"]);
+            assert!(both.no_rim && both.unlit_hulls && !both.no_hull_shadow);
+        }
     }
 }

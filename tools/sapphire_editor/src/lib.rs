@@ -6,7 +6,8 @@
 //! [`figure`], [`preview`]), an asset browser, a reflection inspector and a cvar panel (all in [`app`]),
 //! talking to a device ([`link`]), the real renderer in a pane ([`viewport`]), a screen's preview on values typed
 //! in ([`screen`]) and a run from a snapshot of the documents ([`play`]). [`app::Editor`] holds them
-//! together, and [`app::Editor::ui`] is the whole interface.
+//! together, and [`app::Editor::ui`] is the whole interface. Everything the interface does is a named command
+//! ([`commands`]) run by [`app::Editor::run`]: a button, a shortcut, a drag's end and a script alike.
 //!
 //! It owns no rules. What's wrong with a document is what `sapphire_moves`' `check` and `compile` say; what
 //! a move does at a tick is what `sapphire_gameplay`'s `Simulation` does; what a device takes is what live
@@ -15,7 +16,8 @@
 //! Nothing depends on it, and it stays out of the cooker.
 //!
 //! Everything but the binary's `window` module runs with no window: tests drive [`app::Editor::ui`] through
-//! `egui_kittest`, [`cli::run_capture`] and [`capture`] draw a frame to a PNG on the CPU, and a viewport's tests
+//! `egui_kittest`, [`cli::run_capture`] and [`capture`] draw a frame to a PNG on the CPU, [`cli::run_script`] runs a
+//! script of commands, and a viewport's tests
 //! draw on a device with no surface. Only a person at the machine opens the window: `cargo xtask editor <file>`
 //! (`docs/development-iteration.md`).
 

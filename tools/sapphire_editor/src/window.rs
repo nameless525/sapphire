@@ -2,10 +2,11 @@
 //! the sandbox's overlay draws. No test opens it, and agents never launch it: everything worth testing is
 //! in [`sapphire_editor::Editor`], which this only hands a `Ui` and frames.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sapphire_editor::cli::Command;
+use sapphire_editor::cli::Launch;
 use sapphire_editor::input::WindowInput;
 use sapphire_editor::recovery::Recovery;
 use sapphire_editor::viewport::StageView;
@@ -83,10 +84,10 @@ impl App for EditorApp {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let Command::Window(options) =
+        let Launch::Window { options, record } =
             sapphire_editor::cli::parse_command_line(platform.args()).map_err(AppInitError::msg)?
         else {
-            return Err(AppInitError::msg("a capture opens no window"));
+            return Err(AppInitError::msg("a capture or a script opens no window"));
         };
         let window = platform.create_window(&WindowDesc {
             title: Self::METADATA.name.to_owned(),
@@ -94,7 +95,7 @@ impl App for EditorApp {
             ..WindowDesc::default()
         })?;
         let device = Device::new(&window)?;
-        Ok(Self::new(options, window, device))
+        Ok(Self::new(options, record, window, device))
     }
 
     fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
@@ -145,12 +146,15 @@ impl Drop for EditorApp {
 }
 
 impl EditorApp {
-    fn new(options: Options, window: Window, device: Device) -> Self {
+    fn new(options: Options, record: Option<PathBuf>, window: Window, device: Device) -> Self {
         Self {
             editor: {
                 let mut editor = Editor::new(options);
                 if let Some(path) = sapphire_editor::app::layout_path() {
                     editor.keep_layout_at(path);
+                }
+                if let Some(path) = record {
+                    editor.record_to(path);
                 }
                 editor
             },

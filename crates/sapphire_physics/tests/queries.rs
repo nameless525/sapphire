@@ -168,6 +168,29 @@ fn a_ray_starting_inside_hits_at_once() {
     }
 }
 
+#[test]
+fn the_floor_below_is_the_first_scenery_straight_down() {
+    // A plane at y = -4 and a unit box on it at x = 10, so its top is at y = -2.
+    let mut world = world(vec![plane_mesh(1, -4.0), collider(2, UNIT_BOX, Vec3::new(10.0, -3.0, 0.0))]);
+    assert_close(world.floor_below(Vec3::new(0.0, 0.0, 0.0), 256.0).expect("the plane"), -4.0);
+    assert_close(world.floor_below(Vec3::new(10.0, 0.0, 0.0), 256.0).expect("the box"), -2.0);
+    // A swimmer between the origin and the bed doesn't stand in for it.
+    world.add_body(character(5, Vec3::new(0.0, -2.0, 0.0))).expect("fits");
+    assert_close(world.floor_below(Vec3::ZERO, 256.0).expect("the plane"), -4.0);
+    // Its reach includes its end, and stops there.
+    assert_close(world.floor_below(Vec3::ZERO, 4.0).expect("at the end"), -4.0);
+    assert!(world.floor_below(Vec3::ZERO, 3.5).is_none());
+    // Under everything there's nothing.
+    assert!(world.floor_below(Vec3::new(0.0, -5.0, 0.0), 256.0).is_none());
+    // Starting inside the box, the floor is where the ray starts.
+    assert_close(world.floor_below(Vec3::new(10.0, -2.5, 0.0), 256.0).expect("inside"), -2.5);
+    // A camera blocker isn't a floor.
+    let mut blocker = collider(3, UNIT_BOX, Vec3::new(-10.0, -3.0, 0.0));
+    blocker.memberships = Group::CameraBlocker.mask();
+    let world = self::world(vec![plane_mesh(1, -4.0), blocker]);
+    assert_close(world.floor_below(Vec3::new(-10.0, 0.0, 0.0), 256.0).expect("the plane"), -4.0);
+}
+
 // --- A query's range ---
 
 fn in_the_world(id: u32, shape: Shape, position: Vec3) -> BodyDesc {

@@ -8,7 +8,7 @@ use parry3d::math::Pose as ParryPose;
 use parry3d::partitioning::{BvhLeafCost, BvhNode};
 use parry3d::query::{self, Ray, RayCast};
 use parry3d::shape::{Shape as ParryShape, TriMesh};
-use sapphire_colliders::{CollisionGroups, GroupMask};
+use sapphire_colliders::{CollisionGroups, Group, GroupMask};
 
 use crate::narrow::{self, Contact, Core, Sweep};
 use crate::shape::{Convex, Pose, Shape};
@@ -230,6 +230,15 @@ impl PhysicsWorld {
             point: origin + direction * distance,
             normal: normal.try_normalize().unwrap_or(-direction),
         })
+    }
+
+    /// The height of the first scenery straight down from `origin` within `reach` metres, its end included:
+    /// the floor under a water body's surface, which `sapphire_zone`'s water query measures depth to (M6 W2).
+    /// Only static colliders in [`Group::World`] count, never a body, so a swimmer under the surface doesn't
+    /// stand in for the bed. A ray that starts inside a solid collider meets it at `origin`.
+    pub fn floor_below(&self, origin: Vec3, reach: f32) -> Option<f32> {
+        let scenery = QueryFilter::new(Group::World.mask()).excluding_groups(GroupMask::ALL);
+        self.cast_ray(origin, Vec3::NEG_Y, reach, &scenery).map(|hit| hit.point.y)
     }
 
     /// The first thing `shape` hits, swept from `pose` along `direction` for `max_distance`. A

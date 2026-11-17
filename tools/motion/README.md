@@ -32,6 +32,7 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 | `rig.py` | Reads the character's rest skeleton from its VRM, so nothing derived from it is committed. |
 | `sheet.py` | Writes the key-pose documents, cooks them, and runs the sandbox's `--contact-sheet` (`--blade on`, springs off) at chosen ticks and views. |
 | `figure_pose.py` | The same posing for a generated figure (M3 C2, `tools/figures/`): its rest from its `.glb`, a key's feet in the clip's world and its weapon's slot, aim and roll in the model's, a free or holding left hand, and `--write`. A hand lets go of the weapon as a blend starts and takes it again as one ends. |
+| `capture.py` | A synthetic motion capture for the pipeline's BVH importer (M6 A3): two strides of a walk from an A-pose hierarchy at 30 frames a second, with noise and a 5 cm slide injected on the left foot's frames 34 to 44, deterministic to the byte. `--write` writes `tools/sapphire_pipeline/fixtures/bvh/synthetic_walk.bvh`; `test_capture.py` holds the committed file to it and reads its feet back. |
 | `lancer.py`, `knell_colossus.py` | Each figure's clips as keys, named as its spec: `python3 tools/motion/lancer.py` checks, `--write` writes `content/combat/lancer/`'s documents. `test_figure_pose.py` holds what's committed to them. |
 
 ## Working on a move

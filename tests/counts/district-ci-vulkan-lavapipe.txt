@@ -4,12 +4,19 @@
 # to the table's. A line naming a walk or row the table doesn't hold, a difference of zero, or a line with no
 # reason above it fails, so the file can't rot (sapphire_testkit::counts::differences).
 #
-# Why the two differ: results identical across architectures are a non-goal (sapphire_math/src/det.rs). glam's
-# SIMD types sum and normalize in another order on SSE2 than on NEON, and presentation code calls the platform's
-# libm (glibc against Apple's), so the last bit of a crowd member's place, heading or posed bounds differs, and the
-# crowd's walk, integrating its heading step by step, grows one such bit into a character on the other side of a
-# frustum plane now and then. The camera and every static draw agree: draws considered, level 0 and every shadow
-# and cascade row hold the table's figure on both.
+# Why the two differ: which of the district's people stand. The crowd stands the people of the cells nearest the
+# focus by ring around the focus's own cell, `floor(focus / 32 m)` (sapphire_stage/src/scene/ambient.rs
+# `choose_ambient`), and the tour's camera walks the avenue on x = 0, which is a cell edge. On an M5 its eye's x is
+# -1.6e-6, the residue of the orbit camera's `yaw.sin()` (sapphire_stage/src/orbit.rs `OrbitCamera::eye`), so
+# its own cell is the one west of the edge; on lavapipe it is the one east of it. Every ring then differs, so a
+# different set of people stands (the same number: `ambient_spawned` agrees on every frame) for as long as the
+# camera stays on that line, and the same again a lap later. Proved on an M5: taking the focus's x as its
+# magnitude on that line (one sign flip of a residue of 1.6e-6) makes all four desktop walks' traces equal
+# lavapipe's on all 3,720 frames in every column, and their counts.txt equal lavapipe's on every row. Which of x86's
+# operations leaves a non-negative residue (the sine, or the yaw it is taken of) is not proved. Nothing else
+# differs: the camera's path, every static draw and every shadow and cascade row hold the table's figure on both,
+# and each machine draws and culls correctly the crowd it chose (results identical across architectures are a
+# non-goal, sapphire_math/src/det.rs, and this is a last-bit difference that a floor turns into a choice).
 #
 # A change that moves a row the same on both machines is written in the table alone. Refresh this file from CI's
 # artifacts (each `scale-lane-<walk>` folder holds the run's counts.txt), walking nothing:
@@ -18,18 +25,16 @@
 # It keeps each line's reason, and writes a new difference under a placeholder that fails until it has one.
 #
 # Bootstrapped from the scheduled run 43941132946 at f4efa213e (the lane's first); `animation jobs` added from
-# #416's first run. The walks' fixed worker count (`--compute-threads 3`) takes the machine out of that row: what
-# it leaves is the crowd's, so it is in the second block. Not here, on purpose: `pipelines set`, +82 on every
-# desktop walk, which no reason explains yet (each walk's trace, `<walk>.csv` beside its log, has the pipelines
-# set by pass on every frame to find it), so the lane fails on it until it is explained.
+# #416's first run, `pipelines set` from its second, whose per-frame traces (`<walk>.csv` beside each log) found
+# the cause above. The walks' fixed worker count (`--compute-threads 3`) takes the machine out of `animation jobs`:
+# what it leaves is the crowd's, so it is in the second block.
 
-# The crowd's characters a frame's view culls (sapphire_stage/src/scene/ambient.rs `place_of` and
-# `animate_ambient`, std atan2, sin and cos; sapphire_render/src/skinning.rs `posed_bounds`; the view cull's
-# `Frustum::intersects_sphere`): on lavapipe 11 crowd-character frames on Desktop-High and 24 on Desktop-Low fall
-# outside the view that Metal draws, each five draws (its surface and outline hull in the main view and the scene
-# prepass, and the character prepass), so 55 and 120 draws move from drawn to culled, the same at dusk and at
-# night (the main view's cull doesn't follow the sun), and the rows those draws make up follow: calls, instances,
-# triangles, levels above 0, the skinned instances with their joints and vertices.
+# The crowd the main view draws: with other people standing, other crowd characters are in view on each frame
+# drawn, each five draws (its surface and outline hull in the main view and the scene prepass, and the character
+# prepass). Over the walk lavapipe draws a net 11 fewer crowd-character frames on Desktop-High and 24 fewer on
+# Desktop-Low, so 55 and 120 draws move from drawn to culled, the same at dusk and at night (the main view's cull
+# doesn't follow the sun), and the rows those draws make up follow: calls, instances, triangles, levels above 0,
+# the skinned instances with their joints and vertices.
 desktop-high-dusk | character prepass draws | total -11
 desktop-high-dusk | culled by view | total +55
 desktop-high-dusk | draw calls | total -55 worst +5 p50 +1
@@ -95,7 +100,7 @@ desktop-low-night | skinned instances above level 0 | total -24
 desktop-low-night | skinned vertices | total -84670 p50 -435
 desktop-low-night | triangles | total -293280 p50 +6574
 
-# The same crowd through the CPU's animation levels (sapphire_stage/src/anim_levels.rs `LevelView::shows` and
+# The other people through the CPU's animation levels (sapphire_stage/src/anim_levels.rs `LevelView::shows` and
 # `pace`): a character shows if it or the shadow it casts along the sun is in view, so these differ by hour as
 # well as by tier. More shown on lavapipe means fewer held off screen (their sum is the crowd's), more poses
 # evaluated against fewer held (their sum too), and the shadow and occlusion capsules binned with the posed crowd
@@ -140,3 +145,13 @@ desktop-low-night | capsule clusters marked | total +501
 desktop-low-night | held off screen | total -12
 desktop-low-night | poses evaluated | total +8 p50 -1
 desktop-low-night | poses held | total -8 p50 +1
+
+# The pipelines the mesh passes set, from the same crowd: on 27 drawn frames of every desktop walk (564 to 655 and,
+# a lap later, 3679 to 3777) lavapipe draws one more crowd character in the main view, whose surface and outline
+# hull set 2 more pipelines in the main pass (54); on 14 of them (613 to 655, 3735 to 3777) Metal draws no skinned
+# character at all, so each prepass sets its character pipeline once more on lavapipe (14 in the scene prepass,
+# 14 in the character prepass). 82 in all, on all four walks.
+desktop-high-dusk | pipelines set | total +82
+desktop-high-night | pipelines set | total +82 p95 +1
+desktop-low-dusk | pipelines set | total +82
+desktop-low-night | pipelines set | total +82

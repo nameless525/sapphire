@@ -33,9 +33,9 @@ use sapphire_assets::material::{
 };
 use sapphire_serialize::to_ron;
 
+use crate::character_maps::IlmMap;
 use crate::character_maps::ilm::{ChannelInput, Encoding, ImageChannel, MaterialIdInput};
-use crate::character_maps::ramp::{ColorStop, Interpolation, MaterialRamps, Ramp, SrgbColor};
-use crate::character_maps::{IlmMap, RampMap};
+use crate::character_maps::ramp::{ColorStop, Interpolation, RampMap, SrgbColor, StopRamp, v1};
 
 /// File names, in the samples directory.
 pub const RAMP_FILE_NAME: &str = "swatch.ramp.ron";
@@ -63,9 +63,11 @@ const BIAS_STRIPE_OFFSET: f32 = 0.5;
 const BIAS_PATCHES: [([f32; 2], [f32; 2], f32); 2] =
     [([0.24, 0.32], [0.55, 0.7], 0.0), ([0.04, 0.12], [0.3, 0.45], 1.0)];
 
-/// The ramp document: day and night ramps for IDs 0 to 3; IDs past the last repeat it.
+/// The ramp document: day and night ramps for IDs 0 to 3; IDs past the last repeat it. Written at
+/// version 1, as committed: its stops read the same at version 2, which would only move its cache
+/// key (`character_maps::ramp`'s "Versions").
 pub fn ramp_document() -> String {
-    let ramp = |interpolation, stops: &[(f32, &str)]| Ramp {
+    let ramp = |interpolation, stops: &[(f32, &str)]| StopRamp {
         interpolation,
         stops: stops
             .iter()
@@ -76,8 +78,9 @@ pub fn ramp_document() -> String {
             })
             .collect(),
     };
-    let material = |name: &str, day, night| MaterialRamps { name: name.to_owned(), day, night: Some(night) };
-    let document = RampMap {
+    let material =
+        |name: &str, day, night| v1::MaterialRamps { name: name.to_owned(), day, night: Some(night) };
+    let document = v1::RampMap {
         interpolation: Interpolation::OkLab,
         materials: vec![
             material(
@@ -102,7 +105,7 @@ pub fn ramp_document() -> String {
             ),
         ],
     };
-    document.validate().expect("the swatch ramps are valid");
+    RampMap::from(document.clone()).validate().expect("the swatch ramps are valid");
     to_ron(&document).expect("a ramp document serializes")
 }
 

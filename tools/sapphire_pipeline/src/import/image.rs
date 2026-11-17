@@ -32,7 +32,8 @@ use crate::cache::Stage;
 use crate::color::srgb_to_linear;
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
-/// for the same file.
+/// for the same file, and `character_maps::ramp::IMPORTER` with it: a ramp's painted strips
+/// are decoded here, and that stage doesn't carry this version (M6 C7).
 /// 2: sRGB decodes through `sapphire_math::det`, the same on every OS (M4 C3).
 pub const IMPORTER: Stage = Stage { name: "image", version: 2 };
 

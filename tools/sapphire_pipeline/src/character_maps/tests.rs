@@ -11,7 +11,7 @@ use sapphire_serialize::{from_ron, to_ron};
 
 use super::face_sdf::ThresholdMask;
 use super::ilm::{ChannelInput, Encoding, ImageChannel, MaterialIdInput};
-use super::ramp::{ColorStop, Interpolation, MaterialRamps, Ramp, SrgbColor};
+use super::ramp::{ColorStop, ImageRamp, Interpolation, MaterialRamps, Ramp, SrgbColor, StopRamp};
 use super::*;
 use crate::cook::{CookError, CookOptions, CookReport, CookStatus, cook_dir};
 use crate::meta::{self, AssetMeta, ImportSettings, sidecar_path};
@@ -128,7 +128,7 @@ impl Tree {
 
 fn ramp_document() -> RampMap {
     let stop = |at, color: &str| ColorStop { at, color: color.parse().unwrap(), interpolation: None };
-    let ramp = |stops| Ramp { interpolation: None, stops };
+    let ramp = |stops| Ramp::Stops(StopRamp { interpolation: None, stops });
     RampMap {
         interpolation: Interpolation::OkLab,
         materials: vec![
@@ -213,7 +213,38 @@ fn documents_round_trip_and_read_as_documented() {
     )
     .unwrap();
     assert_eq!(ramp.interpolation, Interpolation::OkLab);
-    assert_eq!(ramp.materials[0].night.as_ref().unwrap().stops[0].color, SrgbColor([0x50, 0x40, 0x70, 0x80]));
+    let Some(Ramp::Stops(night)) = &ramp.materials[0].night else { panic!("{ramp:?}") };
+    assert_eq!(night.stops[0].color, SrgbColor([0x50, 0x40, 0x70, 0x80]));
+    // Version 2 writes each ramp's kind; version 1's stops read as the same document.
+    let current: RampMap = from_ron(
+        r##"(type: "sapphire::pipeline::RampMap", version: 2, data: (
+            materials: [(
+                day: Stops((stops: [(at: 0.0, color: "#c07060"), (at: 1.0, color: "#f0b090", interpolation: Step)])),
+                night: Stops((interpolation: Linear, stops: [(at: 0.5, color: "#50407080")])),
+            ), (
+                name: "cloth",
+                day: Image((path: "ramps/cloth.png", row: 3)),
+            )],
+        ))"##,
+    )
+    .unwrap();
+    assert_eq!(current.materials[0], ramp.materials[0]);
+    assert_eq!(current.materials[1].day, Ramp::Image(ImageRamp { path: "ramps/cloth.png".into(), row: 3 }));
+    assert_eq!(current.inputs(), ["ramps/cloth.png"]);
+    assert!(ramp.inputs().is_empty(), "stops read no images");
+    // An image row names its row: left out, it's an error naming the field.
+    let error = from_ron::<RampMap>(
+        r#"(type: "sapphire::pipeline::RampMap", version: 2, data: (materials: [(day: Image((path: "a.png")))]))"#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("row"), "{error}");
+    // A version 1 document can't hold an image.
+    assert!(
+        from_ron::<RampMap>(
+            r#"(type: "sapphire::pipeline::RampMap", version: 1, data: (materials: [(day: Image((path: "a.png", row: 0)))]))"#,
+        )
+        .is_err()
+    );
     let ilm: IlmMap = from_ron(
         r#"(type: "sapphire::pipeline::IlmMap", version: 1, data: (
             shadow_bias: Image(path: "ao.png", range: (0.0, 0.5)),
@@ -730,4 +761,234 @@ fn previews_are_pngs_of_the_generated_values() {
             }
         }
     }
+}
+
+/// The committed painted strip, `fixtures/ramp/painted.png`: [`painted_ramps`] baked at
+/// [`STRIP`] texels, a row each, as an artist would export a gradient from an image editor.
+fn painted_strip_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/ramp/painted.png")
+}
+
+/// The painted strip's width: narrower than the default bake, so a bake at that default blends
+/// between its texels.
+const STRIP: u32 = 32;
+
+/// The ramps the painted strip is painted from: a three-stop skin ramp, a warm-to-cool cloth
+/// ramp, bands (`Step`), and one with alpha.
+fn painted_ramps() -> Vec<StopRamp> {
+    let stop = |at, color: &str| ColorStop { at, color: color.parse().unwrap(), interpolation: None };
+    vec![
+        StopRamp {
+            interpolation: None,
+            stops: vec![stop(0.0, "#8a4a4f"), stop(0.55, "#c8796c"), stop(1.0, "#f2b8a0")],
+        },
+        StopRamp { interpolation: None, stops: vec![stop(0.1, "#e0784a"), stop(0.9, "#4a78e0")] },
+        StopRamp {
+            interpolation: Some(Interpolation::Step),
+            stops: vec![stop(0.0, "#3a6a5a"), stop(0.5, "#6aa88a"), stop(0.8, "#b8e0c0")],
+        },
+        StopRamp { interpolation: None, stops: vec![stop(0.0, "#2a1a4080"), stop(1.0, "#d080c0")] },
+    ]
+}
+
+/// [`painted_ramps`] as 8-bit sRGB texels at their centers, a row each: what the fixture holds.
+fn painted_strip() -> image::RgbaImage {
+    let ramps = painted_ramps();
+    image::RgbaImage::from_fn(STRIP, ramps.len() as u32, |x, y| {
+        let [r, g, b, a] = ramps[y as usize].evaluate((x as f32 + 0.5) / STRIP as f32, Interpolation::OkLab);
+        let srgb = |v: f32| crate::color::unorm8(crate::color::linear_to_srgb(v));
+        image::Rgba([srgb(r), srgb(g), srgb(b), crate::color::unorm8(a)])
+    })
+}
+
+/// A document of one material a ramp, each ramp from `ramp(index)`.
+fn ramps_document(count: usize, interpolation: Interpolation, ramp: impl Fn(usize) -> Ramp) -> RampMap {
+    RampMap {
+        interpolation,
+        materials: (0..count)
+            .map(|index| MaterialRamps { name: format!("m{index}"), day: ramp(index), night: None })
+            .collect(),
+    }
+}
+
+/// The texels of the day rows of IDs `0..count` of a cooked ramp map, desktop.
+fn cooked_rows(document: &RampMap, width: u32, count: usize) -> Vec<Vec<[u8; 4]>> {
+    let path = painted_strip_path().with_file_name("painted.ramp.ron");
+    let settings = MapSettings::Ramp(RampBakeSettings { width, row_height: 1, mips: false });
+    let bytes = to_ron(document).unwrap();
+    let cooked = cook_source(&path, bytes.as_bytes(), &settings, MaxSize::NONE, Cook::Desktop).unwrap();
+    let texture = Texture::from_ktx2(&cooked).unwrap();
+    assert_eq!(texture.desc.format, TextureFormat::Rgba8UnormSrgb);
+    let texels = texture.levels[0].as_chunks::<4>().0.to_vec();
+    (0..count)
+        .map(|k| {
+            let at = (row(MaterialId::new(k as u8).unwrap(), Half::Day) * width) as usize;
+            texels[at..at + width as usize].to_vec()
+        })
+        .collect()
+}
+
+/// Whether two rows of texels are within one code value everywhere.
+fn within_one(a: &[Vec<[u8; 4]>], b: &[Vec<[u8; 4]>]) -> bool {
+    a.iter().flatten().zip(b.iter().flatten()).all(|(a, b)| a.iter().zip(b).all(|(a, b)| a.abs_diff(*b) <= 1))
+}
+
+/// The fixture strip is what [`painted_strip`] makes; if this test's ramps change, save
+/// `painted_strip()` over it as a PNG.
+#[test]
+fn the_painted_strip_fixture_is_its_stops_baked() {
+    let committed = image::open(painted_strip_path()).unwrap();
+    assert_eq!(committed.color(), image::ColorType::Rgba8);
+    assert!(committed.into_rgba8() == painted_strip(), "the fixture's texels differ from painted_strip()'s");
+}
+
+/// A ramp painted as a strip cooks as the stops it was painted from (M6 C7): at the strip's own
+/// width, within one code value of the typed ramp (each texel is that ramp's color at the texel's
+/// center, rounded once); and at any width, within one code value of the strip's own texels as
+/// stops at their centers, in every blend space.
+#[test]
+fn a_painted_strip_cooks_as_its_stops() {
+    let ramps = painted_ramps();
+    let count = ramps.len();
+    let image = |index: usize| Ramp::Image(ImageRamp { path: "painted.png".into(), row: index as u32 });
+    let painted = ramps_document(count, Interpolation::OkLab, image);
+    let typed = ramps_document(count, Interpolation::OkLab, |index| Ramp::Stops(ramps[index].clone()));
+    let strip = cooked_rows(&painted, STRIP, count);
+    assert!(within_one(&strip, &cooked_rows(&typed, STRIP, count)), "the strip is its ramps");
+    let fixture = painted_strip();
+    for (y, row) in strip.iter().enumerate() {
+        let expected: Vec<[u8; 4]> = (0..STRIP).map(|x| fixture.get_pixel(x, y as u32).0).collect();
+        assert_eq!(*row, expected, "row {y}: at the strip's width, texel for texel");
+    }
+
+    // The strip's texels as stops at their centers, the strip's equivalent in any bake.
+    let texel_stops = |index: usize| {
+        let stops = (0..STRIP)
+            .map(|x| {
+                let [r, g, b, a] = fixture.get_pixel(x, index as u32).0;
+                ColorStop {
+                    at: (x as f32 + 0.5) / STRIP as f32,
+                    color: SrgbColor([r, g, b, a]),
+                    interpolation: None,
+                }
+            })
+            .collect();
+        Ramp::Stops(StopRamp { interpolation: None, stops })
+    };
+    for interpolation in
+        [Interpolation::OkLab, Interpolation::Linear, Interpolation::Srgb, Interpolation::Step]
+    {
+        for width in [STRIP, 100, 256] {
+            let painted = cooked_rows(&ramps_document(count, interpolation, image), width, count);
+            let stops = cooked_rows(&ramps_document(count, interpolation, texel_stops), width, count);
+            assert!(within_one(&painted, &stops), "{interpolation:?} at {width}");
+            if interpolation == Interpolation::Step {
+                assert_eq!(painted, stops, "bands are exact");
+            }
+        }
+    }
+    // Between texel centers the strip blends in the document's space: across the bands' first
+    // edge (texels 15 and 16 of row 2), three quarters of the way, at twice the strip's width.
+    let wide = cooked_rows(&ramps_document(count, Interpolation::Srgb, image), STRIP * 2, count);
+    let [a, b] = [fixture.get_pixel(15, 2).0, fixture.get_pixel(16, 2).0];
+    assert_ne!(a, b, "an edge");
+    let expected: Vec<f32> = (0..3).map(|c| f32::from(a[c]) * 0.25 + f32::from(b[c]) * 0.75).collect();
+    let found = wide[2][32];
+    assert!((0..3).all(|c| (f32::from(found[c]) - expected[c]).abs() <= 1.0), "{found:?} {expected:?}");
+}
+
+/// A version 1 document and its rewrite at version 2 bake the same rows: the upgrade keeps
+/// every stop, interpolation and night ramp.
+#[test]
+fn a_version_1_document_bakes_as_its_version_2_rewrite() {
+    let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/samples");
+    let path = samples.join("swatch.ramp.ron");
+    let old = fs::read_to_string(&path).unwrap();
+    assert!(old.contains("version: 1"), "the swatch is committed at version 1");
+    let rewritten = to_ron(&from_ron::<RampMap>(&old).unwrap()).unwrap();
+    assert!(rewritten.contains("version: 2") && rewritten.contains("Stops(("), "{rewritten}");
+    let settings = MapKind::Ramp.default_settings();
+    let bake = |text: &str| generate(&path, text.as_bytes(), &settings).unwrap();
+    assert_eq!(bake(&old), bake(&rewritten));
+}
+
+/// A ramp's painted strip is an input like a mask (M6 C7): claimed out of the cook, a dependency
+/// of the ramp's key and of nothing else's, and held to the bake's width and its own rows.
+#[test]
+fn a_ramps_painted_strip_is_its_input() {
+    let tree = Tree::new("maps_ramp_strip");
+    let body = tree.source().join("body");
+    let strip = body.join("ramps/painted.png");
+    write_png(&strip, painted_strip().into());
+    let ramp_path = body.join("body.ramp.ron");
+    let mut document = ramp_document();
+    let image = |row| Ramp::Image(ImageRamp { path: "ramps/painted.png".into(), row });
+    document.materials[1].day = image(1);
+    document.materials[1].night = Some(image(3));
+    tree.write_document(&ramp_path, &document);
+    let first = tree.cook(Cook::Desktop);
+    let names: Vec<String> = statuses(&first).into_iter().map(|(name, _)| name).collect();
+    assert_eq!(names, ["body.ilm.ron", "body.ramp.ron", "face.facesdf.ron", "albedo.png"], "no strip");
+    assert!(!sidecar_path(&strip).exists());
+    let key = |report: &CookReport| {
+        report.assets.iter().find(|asset| asset.source == ramp_path).map(|asset| asset.key).unwrap()
+    };
+
+    // The cloth's rows are the strip's, blended up to the bake's 256 texels.
+    let (_, level0) = texture(&tree.out(Cook::Desktop).join("body/body.ramp.ktx2"));
+    let texel = |x: u32, row: u32| {
+        let at = (((row_center(row) * 64.0) as u32 * 256 + x) * 4) as usize;
+        [level0[at], level0[at + 1], level0[at + 2], level0[at + 3]]
+    };
+    let id = |k| MaterialId::new(k).unwrap();
+    let painted = painted_strip();
+    assert_eq!(texel(0, row(id(1), Half::Day)), painted.get_pixel(0, 1).0, "held before the first center");
+    assert_eq!(texel(255, row(id(1), Half::Night)), painted.get_pixel(STRIP - 1, 3).0);
+
+    // Editing the strip recooks the ramp alone, and putting it back finds the first key.
+    let mut edited = painted_strip();
+    edited.put_pixel(5, 3, image::Rgba([255, 0, 0, 255]));
+    write_png(&strip, edited.into());
+    let report = tree.cook(Cook::Desktop);
+    let cooked: Vec<String> = statuses(&report)
+        .into_iter()
+        .filter(|(_, status)| *status == CookStatus::Cooked)
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(cooked, ["body.ramp.ron"]);
+    assert_ne!(key(&report), key(&first));
+    write_png(&strip, painted_strip().into());
+    assert_eq!(key(&tree.cook(Cook::Desktop)), key(&first));
+
+    // A row the strip doesn't have, and a strip wider than the bake, are errors naming the ramp.
+    let ramp_error = |document: &RampMap, settings: RampBakeSettings| {
+        tree.write_document(&ramp_path, document);
+        let bytes = fs::read(&ramp_path).unwrap();
+        generate(&ramp_path, &bytes, &MapSettings::Ramp(settings)).unwrap_err().to_string()
+    };
+    let mut missing = document.clone();
+    missing.materials[1].night = Some(image(4));
+    assert_eq!(
+        ramp_error(&missing, RampBakeSettings::default()),
+        "material 1 (cloth), night ramp: `row: 4` is past the last row of \"ramps/painted.png\", which is 4 \
+         texels tall"
+    );
+    let narrow = RampBakeSettings { width: STRIP - 1, ..RampBakeSettings::default() };
+    let error = ramp_error(&document, narrow);
+    assert!(
+        error.starts_with(
+            "material 1 (cloth), day ramp: \"ramps/painted.png\" is 32 texels wide, wider than \
+             the bake's 31"
+        ),
+        "{error}"
+    );
+    // A strip that isn't there fails the cook, naming it.
+    let mut absent = document.clone();
+    absent.materials[0].day = Ramp::Image(ImageRamp { path: "ramps/skin.png".into(), row: 0 });
+    tree.write_document(&ramp_path, &absent);
+    let error = tree.try_cook(Cook::Desktop).unwrap_err();
+    assert!(
+        matches!(&error, CookError::Map { source, .. } if matches!(&**source, MapError::MissingInput(path) if path.ends_with("ramps/skin.png"))),
+        "{error:?}"
+    );
 }

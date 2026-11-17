@@ -9,7 +9,7 @@
 //! | Document | Type | Inputs | Generates | Texture class |
 //! |---|---|---|---|---|
 //! | `<name>.facesdf.ron` | [`FaceSdfMap`] | Threshold masks per light angle | The face's threshold map ([`face_sdf`]) | SDF: R16 or RG16 on desktop, R8 or RG8 on mobile |
-//! | `<name>.ramp.ron` | [`RampMap`] | None: color stops | Day and night rows per material ID ([`ramp`]) | Ramp: RGBA8 sRGB |
+//! | `<name>.ramp.ron` | [`RampMap`] | None for color stops; painted strips for image rows (M6 C7) | Day and night rows per material ID ([`ramp`]) | Ramp: RGBA8 sRGB |
 //! | `<name>.ilm.ron` | [`IlmMap`] | Grayscale masks per channel | The four channels packed ([`ilm`]) | ILM: BC7, ASTC 4×4 |
 //! | `<name>.layers.ron` | [`LayerMaskMap`] | Grayscale masks, or color textures' channels, per channel | The four channels packed ([`layer_mask`]) | Mask: BC7, ASTC 4×4 |
 //!
@@ -25,7 +25,9 @@
 //! sources, so they get no sidecar and no cooked texture of their own, as a glTF's external
 //! buffers don't. Inputs are decoded as linear data, but for the ILM and layer mask channels
 //! that say their image is sRGB-encoded ([`ilm::Encoding`]), and must all have the document's
-//! size: maps are generated at their inputs' resolution.
+//! size: maps are generated at their inputs' resolution. A ramp's painted strips are the
+//! exception to both: they are sRGB color, and only their rows' width is held to the bake's
+//! ([`ramp`]).
 //!
 //! # Recipes and the cache key
 //!
@@ -37,8 +39,9 @@
 //! ("Size per cook" in [`texture`]; `importer: CharacterMap(Ilm((mips: true)), (desktop: None, mobile:
 //! Some(1024)))`, written only when a cook has a cap). The inputs are file dependencies of the key, by the
 //! path the document names them with, so editing a mask recooks exactly the maps that read
-//! it, and moving a document together with its inputs keeps its key. Importers that decode
-//! images embed the image importer's version in theirs ([`with_image_importer`]).
+//! it, and moving a document together with its inputs keeps its key. Importers that always decode
+//! images embed the image importer's version in theirs ([`with_image_importer`]); the ramp's,
+//! whose stop documents decode none, is bumped with it instead ([`ramp`]'s "Versions").
 //!
 //! `sapphire_pipeline bake-map` writes a document's generated map as a PNG before
 //! compression ([`to_png`]), for checking a map without cooking the tree.
@@ -250,7 +253,7 @@ pub fn generate(path: &Path, bytes: &[u8], settings: &MapSettings) -> Result<Gen
     let kind = settings.kind();
     match settings {
         MapSettings::FaceSdf(settings) => face_sdf::generate(&read_document(kind, bytes)?, settings, &inputs),
-        MapSettings::Ramp(settings) => ramp::generate(&read_document(kind, bytes)?, settings),
+        MapSettings::Ramp(settings) => ramp::generate(&read_document(kind, bytes)?, settings, &inputs),
         MapSettings::Ilm(settings) => ilm::generate(&read_document(kind, bytes)?, settings, &inputs),
         MapSettings::LayerMask(settings) => {
             layer_mask::generate(&read_document(kind, bytes)?, settings, &inputs)
@@ -278,7 +281,7 @@ pub fn cook_source(
 pub fn inputs(kind: MapKind, bytes: &[u8]) -> Result<Vec<String>, MapError> {
     Ok(match kind {
         MapKind::FaceSdf => read_document::<FaceSdfMap>(kind, bytes)?.inputs(),
-        MapKind::Ramp => Vec::new(),
+        MapKind::Ramp => read_document::<RampMap>(kind, bytes)?.inputs(),
         MapKind::Ilm => read_document::<IlmMap>(kind, bytes)?.inputs(),
         MapKind::LayerMask => read_document::<LayerMaskMap>(kind, bytes)?.inputs(),
     })

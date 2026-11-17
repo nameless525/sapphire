@@ -1,11 +1,13 @@
-//! Ramps: shadow-color gradients per material ID, authored as color stops and baked to rows.
+//! Ramps: shadow-color gradients per material ID, authored as color stops or painted as image
+//! strips, and baked to rows.
 //!
 //! The anime character shader's ramp mode (Genshin, Star Rail, WuWa) takes the shadow side's
 //! color from a ramp row picked by material ID, with a day and a night row that time of day
-//! blends between (spec §5.12). A `.ramp.ron` document lists each material's ramps as color
-//! stops, and the bake writes them into the row layout of `sapphire_assets::character_maps`:
-//! day rows for IDs 0 to 7, then night rows, each [`RampBakeSettings::row_height`] texels
-//! tall and [`RampBakeSettings::width`] wide.
+//! blends between (spec §5.12). A `.ramp.ron` document lists each material's ramps, and the bake
+//! writes them into the row layout of `sapphire_assets::character_maps`: day rows for IDs 0 to 7,
+//! then night rows, each [`RampBakeSettings::row_height`] texels tall and
+//! [`RampBakeSettings::width`] wide. A ramp is color stops, `Stops((stops: […]))`, or one row of
+//! a painted image, `Image((path: "skin_ramp.png", row: 0))`.
 //!
 //! - **Stops** sit at positions `at` from 0 (the deepest shadow) to 1 (the lit edge of the
 //!   terminator), in order; two stops at one position make a hard edge. Before the first stop
@@ -16,15 +18,35 @@
 //!   the document's, which defaults to OkLab: equal steps along the ramp look like equal
 //!   steps of lightness and color, where blending the encoded sRGB values darkens the middle
 //!   of a warm-to-cool shadow and blending linear light washes it out. `Linear` and `Srgb`
-//!   are those two blends (`Srgb` matches an image editor's gradient, for a painted ramp),
-//!   and `Step` holds a stop's color up to the next stop, for banded ramps.
+//!   are those two blends (`Srgb` matches an image editor's gradient), and `Step` holds a
+//!   stop's color up to the next stop, for banded ramps.
+//! - **Images** (M6 C7): a row of a PNG, TGA or EXR, named relative to the document as a mask
+//!   is (the [parent module](super)'s "Inputs"), so it is part of the ramp's asset and a
+//!   dependency of its cache key: editing the strip recooks the ramps that read it, and nothing
+//!   else. Its RGB is sRGB-encoded color and its alpha linear, as a painted texture's are. Its
+//!   texels are stops at their centers, `(i + 0.5) / image width`, blended in the document's
+//!   interpolation, so a strip as wide as the bake copies texel for texel and a narrower one is
+//!   blended between its texels as stops are. A strip wider than the bake, which would skip
+//!   painted texels, and a row past the image's last are errors naming the ramp; one image may
+//!   hold the rows of many ramps.
 //! - **Rows** come from materials in order: the first is ID 0. A material without a night
 //!   ramp uses its day ramp for both, and IDs past the last material repeat the last one, so
 //!   any ID the shader reads (stray ones included, where filtering blends IDs) finds a ramp.
 //!
 //! Each texel is the ramp evaluated at its center, `u = (x + 0.5) / width`, so linear
 //! filtering between texel centers follows the ramp.
+//!
+//! # Versions
+//!
+//! Version 2 (M6 C7) writes each ramp as `Stops((…))` or `Image((…))`. A version 1 document
+//! (M1 A7), whose ramps are all stops written as `(stops: […])`, reads as it did and bakes the
+//! same rows. Its cache key is its bytes', as every source's, so the committed version 1
+//! documents keep their keys: this importer's stage didn't move, since no document's rows did.
+//! It doesn't carry the image importer's version as the stages that always decode masks do
+//! ([`super::with_image_importer`]), which would have moved every stop ramp's key; a change to
+//! the image importer's output bumps this stage with it.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -32,17 +54,18 @@ use bevy_reflect::TypePath;
 use sapphire_assets::character_maps::ramp::{Half, ROWS, row};
 use sapphire_assets::character_maps::{MATERIAL_IDS, MaterialId};
 use sapphire_assets::texture::MAX_TEXTURE_DIMENSION;
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{GeneratedMap, MapError};
+use super::{GeneratedMap, Inputs, MapError};
 use crate::cache::Stage;
 use crate::color::{linear_srgb_to_oklab, linear_to_srgb, oklab_to_linear_srgb, srgb_to_linear};
-use crate::import::image::{ChannelLayout, SourceImage};
+use crate::import::image::{ChannelLayout, SourceImage, Transfer};
 use crate::texture::{RampSettings, TextureClass};
 
 /// This importer, as cache keys know it: reading the document and baking its rows. Bump the
-/// version whenever the rows change for the same document.
+/// version whenever the rows change for the same document, or the image importer's output
+/// changes (an image ramp's rows are decoded by it).
 /// 2: colors decode and encode through `sapphire_math::det` (M4 C3).
 pub const IMPORTER: Stage = Stage { name: "ramp", version: 2 };
 
@@ -51,7 +74,7 @@ pub const IMPORTER: Stage = Stage { name: "ramp", version: 2 };
 #[type_path = "sapphire::pipeline"]
 #[serde(deny_unknown_fields)]
 pub struct RampMap {
-    /// How stops blend unless a ramp or stop says otherwise.
+    /// How stops blend unless a ramp or stop says otherwise, and how an image's texels blend.
     #[serde(default)]
     pub interpolation: Interpolation,
     /// Material ID 0's ramps first, then ID 1's, and so on.
@@ -59,7 +82,16 @@ pub struct RampMap {
 }
 
 impl Versioned for RampMap {
-    const VERSION: u32 = 1;
+    /// 1: M1 A7, every ramp stops. 2: M6 C7, a ramp is stops or a row of an image; a version 1
+    /// document reads as it is.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode::<v1::RampMap>().map(Into::into).map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
 }
 
 /// One material ID's day/night pair.
@@ -75,14 +107,33 @@ pub struct MaterialRamps {
     pub night: Option<Ramp>,
 }
 
-/// One ramp: color stops along `u`.
+/// One ramp: what its row holds along `u`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Ramp {
+    /// Color stops.
+    Stops(StopRamp),
+    /// A row of a painted image (M6 C7).
+    Image(ImageRamp),
+}
+
+/// A ramp of color stops along `u`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Ramp {
+pub struct StopRamp {
     /// Overrides the document's interpolation for this ramp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interpolation: Option<Interpolation>,
     pub stops: Vec<ColorStop>,
+}
+
+/// A ramp painted as a row of an image: see the [module docs](self).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRamp {
+    /// The image, relative to the document's directory, `/`-separated.
+    pub path: String,
+    /// Which of its rows, from 0 at the top.
+    pub row: u32,
 }
 
 /// A color at a position along a ramp.
@@ -205,7 +256,7 @@ impl fmt::Display for RampName {
     }
 }
 
-/// Errors in a ramp document or its bake settings.
+/// Errors in a ramp document, its images or its bake settings.
 #[derive(Debug, thiserror::Error)]
 pub enum RampError {
     #[error("the document lists no materials")]
@@ -220,6 +271,13 @@ pub enum RampError {
         "{ramp}: stop {index} at {at} comes before the stop before it at {previous}: list stops in order"
     )]
     StopOrder { ramp: RampName, index: usize, at: f32, previous: f32 },
+    #[error("{ramp}: `row: {row}` is past the last row of {path:?}, which is {height} texels tall")]
+    ImageRow { ramp: RampName, path: String, row: u32, height: u32 },
+    #[error(
+        "{ramp}: {path:?} is {width} texels wide, wider than the bake's {bake}, which would skip painted \
+         texels: paint it at most {bake} wide, or set the sidecar's `width` to {width}"
+    )]
+    ImageWidth { ramp: RampName, path: String, width: u32, bake: u32 },
     #[error(
         "a width of {width} and rows {row_height} texels tall don't fit a texture: both must be at least 1, \
          the width at most {MAX_TEXTURE_DIMENSION} and {ROWS} rows at most {MAX_TEXTURE_DIMENSION} tall"
@@ -227,7 +285,7 @@ pub enum RampError {
     Size { width: u32, row_height: u32 },
 }
 
-impl Ramp {
+impl StopRamp {
     /// The color at `u`, in linear light with alpha, blending with `default` where neither the
     /// stop nor the ramp says how.
     pub fn evaluate(&self, u: f32, default: Interpolation) -> [f32; 4] {
@@ -243,7 +301,7 @@ impl Ramp {
         let stop = &stops[i];
         let t = (u - stop.at) / (next.at - stop.at);
         let interpolation = stop.interpolation.or(self.interpolation).unwrap_or(default);
-        blend(stop.color, next.color, t, interpolation)
+        blend(stop.color.to_linear(), next.color.to_linear(), t, interpolation)
     }
 
     fn validate(&self, ramp: impl Fn() -> RampName) -> Result<(), RampError> {
@@ -264,10 +322,9 @@ impl Ramp {
     }
 }
 
-/// `a` blended toward `b` by `t`, in linear light with alpha. Alpha always blends linearly,
+/// Linear `la` blended toward linear `lb` by `t`, with alpha. Alpha always blends linearly,
 /// except under `Step`.
-fn blend(a: SrgbColor, b: SrgbColor, t: f32, interpolation: Interpolation) -> [f32; 4] {
-    let (la, lb) = (a.to_linear(), b.to_linear());
+fn blend(la: [f32; 4], lb: [f32; 4], t: f32, interpolation: Interpolation) -> [f32; 4] {
     let mix = |x: f32, y: f32| x + (y - x) * t;
     let alpha = mix(la[3], lb[3]);
     let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
@@ -288,7 +345,8 @@ fn blend(a: SrgbColor, b: SrgbColor, t: f32, interpolation: Interpolation) -> [f
 }
 
 impl RampMap {
-    /// Checks the material list and every ramp's stops.
+    /// Checks the material list and every ramp's stops. An image ramp is checked as its image
+    /// is read.
     pub fn validate(&self) -> Result<(), RampError> {
         match self.materials.len() {
             0 => return Err(RampError::NoMaterials),
@@ -297,46 +355,192 @@ impl RampMap {
         }
         for (material, ramps) in self.materials.iter().enumerate() {
             let name = |half| RampName { material, name: ramps.name.clone(), half };
-            ramps.day.validate(|| name(Half::Day))?;
-            if let Some(night) = &ramps.night {
-                night.validate(|| name(Half::Night))?;
+            for (half, ramp) in [(Half::Day, Some(&ramps.day)), (Half::Night, ramps.night.as_ref())] {
+                if let Some(Ramp::Stops(stops)) = ramp {
+                    stops.validate(|| name(half))?;
+                }
             }
         }
         Ok(())
     }
 
-    /// The ramp in `id`'s `half` row: see the [module docs](self) for unlisted IDs and
-    /// missing night ramps.
-    pub fn ramp(&self, id: MaterialId, half: Half) -> &Ramp {
-        let ramps = &self.materials[usize::from(id.get()).min(self.materials.len() - 1)];
-        match half {
-            Half::Day => &ramps.day,
-            Half::Night => ramps.night.as_ref().unwrap_or(&ramps.day),
+    /// The images the document's ramps read, as it names them (relative to its directory), in
+    /// document order. Repeats are kept.
+    pub fn inputs(&self) -> Vec<String> {
+        let ramps = self.materials.iter().flat_map(|ramps| std::iter::once(&ramps.day).chain(&ramps.night));
+        ramps
+            .filter_map(|ramp| match ramp {
+                Ramp::Image(image) => Some(image.path.clone()),
+                Ramp::Stops(_) => None,
+            })
+            .collect()
+    }
+}
+
+/// A ramp ready to bake: its stops, or its image's row read.
+enum Baking<'a> {
+    Stops(&'a StopRamp),
+    /// The row's texels, linear with alpha, at most as many as the bake is wide.
+    Texels(Vec<[f32; 4]>),
+}
+
+impl Baking<'_> {
+    /// Texel `x` of a row `width` texels wide: the ramp at the texel's center, blended with
+    /// `default`, the document's interpolation, where nothing else says how.
+    fn texel(&self, x: u32, width: u32, default: Interpolation) -> [f32; 4] {
+        match self {
+            Self::Stops(stops) => stops.evaluate((x as f32 + 0.5) / width as f32, default),
+            Self::Texels(texels) => {
+                // The center's place among the image's texel centers, in image texels: exact when
+                // the widths are equal, so the strip is copied texel for texel.
+                let at = (f64::from(x) + 0.5) * texels.len() as f64 / f64::from(width) - 0.5;
+                let i = at.max(0.0).floor() as usize;
+                let t = (at - i as f64) as f32;
+                match texels.get(i + 1) {
+                    Some(&next) if t > 0.0 => blend(texels[i], next, t, default),
+                    _ => texels[i.min(texels.len() - 1)],
+                }
+            }
         }
     }
 }
 
-/// Bakes `map`'s rows.
-pub(super) fn generate(map: &RampMap, settings: &RampBakeSettings) -> Result<GeneratedMap, MapError> {
+/// The images a document's ramps read, each decoded once.
+#[derive(Default)]
+struct Images(BTreeMap<String, SourceImage>);
+
+impl Images {
+    /// `ramp` ready to bake `width` texels wide; `name` names it for errors.
+    fn bake<'a>(
+        &mut self,
+        ramp: &'a Ramp,
+        inputs: &Inputs<'_>,
+        width: u32,
+        name: impl Fn() -> RampName,
+    ) -> Result<Baking<'a>, MapError> {
+        Ok(match ramp {
+            Ramp::Stops(stops) => Baking::Stops(stops),
+            Ramp::Image(image) => Baking::Texels(self.row(inputs, image, width, name)?),
+        })
+    }
+
+    /// The row `image` names, checked against the bake's `width`; `ramp` names the ramp for errors.
+    fn row(
+        &mut self,
+        inputs: &Inputs<'_>,
+        image: &ImageRamp,
+        width: u32,
+        ramp: impl Fn() -> RampName,
+    ) -> Result<Vec<[f32; 4]>, MapError> {
+        if !self.0.contains_key(&image.path) {
+            // Painted colors, as a color texture's: sRGB-encoded RGB, linear alpha.
+            let (_, decoded) = inputs.image_as(&image.path, Transfer::Srgb)?;
+            self.0.insert(image.path.clone(), decoded);
+        }
+        let decoded = &self.0[&image.path];
+        let path = image.path.clone();
+        if image.row >= decoded.height {
+            let (row, height) = (image.row, decoded.height);
+            return Err(RampError::ImageRow { ramp: ramp(), path, row, height }.into());
+        }
+        if decoded.width > width {
+            return Err(
+                RampError::ImageWidth { ramp: ramp(), path, width: decoded.width, bake: width }.into()
+            );
+        }
+        let start = image.row as usize * decoded.width as usize;
+        Ok(decoded.pixels[start..start + decoded.width as usize].to_vec())
+    }
+}
+
+/// Bakes `map`'s rows, reading the images its ramps name through `inputs`.
+pub(super) fn generate(
+    map: &RampMap,
+    settings: &RampBakeSettings,
+    inputs: &Inputs<'_>,
+) -> Result<GeneratedMap, MapError> {
     map.validate()?;
     let RampBakeSettings { width, row_height, mips } = *settings;
     let height = row_height.saturating_mul(ROWS);
     if !(1..=MAX_TEXTURE_DIMENSION).contains(&width) || row_height == 0 || height > MAX_TEXTURE_DIMENSION {
         return Err(RampError::Size { width, row_height }.into());
     }
+    let mut images = Images::default();
+    let mut materials = Vec::with_capacity(map.materials.len());
+    for (material, ramps) in map.materials.iter().enumerate() {
+        let name = |half| move || RampName { material, name: ramps.name.clone(), half };
+        let day = images.bake(&ramps.day, inputs, width, name(Half::Day))?;
+        let night = ramps.night.as_ref().map(|night| images.bake(night, inputs, width, name(Half::Night)));
+        materials.push((day, night.transpose()?));
+    }
     let mut rows = vec![Vec::new(); ROWS as usize];
     for half in [Half::Day, Half::Night] {
         for id in MaterialId::ALL {
-            let ramp = map.ramp(id, half);
-            rows[row(id, half) as usize] = (0..width)
-                .map(|x| ramp.evaluate((x as f32 + 0.5) / width as f32, map.interpolation))
-                .collect();
+            // IDs past the list repeat the last material; a missing night ramp is the day's.
+            let (day, night) = &materials[usize::from(id.get()).min(materials.len() - 1)];
+            let ramp = match half {
+                Half::Day => day,
+                Half::Night => night.as_ref().unwrap_or(day),
+            };
+            rows[row(id, half) as usize] =
+                (0..width).map(|x| ramp.texel(x, width, map.interpolation)).collect();
         }
     }
     let pixels =
         rows.iter().flat_map(|texels| (0..row_height).flat_map(move |_| texels.iter().copied())).collect();
     let image = SourceImage::new(width, height, ChannelLayout::Rgba, pixels).expect("one texel per pixel");
     Ok(GeneratedMap { image, class: TextureClass::Ramp(RampSettings { mips }) })
+}
+
+impl From<v1::RampMap> for RampMap {
+    fn from(old: v1::RampMap) -> Self {
+        let materials = old
+            .materials
+            .into_iter()
+            .map(|material| MaterialRamps {
+                name: material.name,
+                day: Ramp::Stops(material.day),
+                night: material.night.map(Ramp::Stops),
+            })
+            .collect();
+        Self { interpolation: old.interpolation, materials }
+    }
+}
+
+/// Version 1 (M1 A7 to M6 C7): every ramp is stops, written as `(stops: […])`. Its documents
+/// read as they are, and the swatch sample, whose committed bytes key its cook, is still written
+/// at it.
+pub(crate) mod v1 {
+    use bevy_reflect::TypePath;
+    use sapphire_reflect::Versioned;
+    use serde::{Deserialize, Serialize};
+
+    use super::{Interpolation, StopRamp};
+
+    /// A version 1 `.ramp.ron` document.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
+    #[type_path = "sapphire::pipeline"]
+    #[serde(deny_unknown_fields)]
+    pub struct RampMap {
+        #[serde(default)]
+        pub interpolation: Interpolation,
+        pub materials: Vec<MaterialRamps>,
+    }
+
+    impl Versioned for RampMap {
+        const VERSION: u32 = 1;
+    }
+
+    /// A version 1 material: stops by day, and at night when given.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct MaterialRamps {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pub name: String,
+        pub day: StopRamp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub night: Option<StopRamp>,
+    }
 }
 
 #[cfg(test)]
@@ -352,8 +556,13 @@ mod tests {
         ColorStop { at, color: color(text), interpolation: None }
     }
 
-    fn ramp(stops: Vec<ColorStop>) -> Ramp {
-        Ramp { interpolation: None, stops }
+    fn ramp(stops: Vec<ColorStop>) -> StopRamp {
+        StopRamp { interpolation: None, stops }
+    }
+
+    /// Bakes a document that names no images.
+    fn bake(map: &RampMap, settings: &RampBakeSettings) -> Result<GeneratedMap, MapError> {
+        generate(map, settings, &Inputs { document: std::path::Path::new("stops.ramp.ron") })
     }
 
     /// 8-bit sRGB of a linear color, as the cook stores it.
@@ -435,8 +644,8 @@ mod tests {
     fn material(name: &str, day: &str, night: Option<&str>) -> MaterialRamps {
         MaterialRamps {
             name: name.to_owned(),
-            day: ramp(vec![stop(0.0, day)]),
-            night: night.map(|night| ramp(vec![stop(0.0, night)])),
+            day: Ramp::Stops(ramp(vec![stop(0.0, day)])),
+            night: night.map(|night| Ramp::Stops(ramp(vec![stop(0.0, night)]))),
         }
     }
 
@@ -451,7 +660,7 @@ mod tests {
             ],
         };
         let settings = RampBakeSettings { width: 8, row_height: 3, mips: false };
-        let GeneratedMap { image, class } = generate(&map, &settings).unwrap();
+        let GeneratedMap { image, class } = bake(&map, &settings).unwrap();
         assert_eq!((image.width, image.height, image.layout), (8, 48, ChannelLayout::Rgba));
         assert_eq!(class, TextureClass::Ramp(RampSettings { mips: false }));
         let row_color = |row: u32| {
@@ -482,12 +691,12 @@ mod tests {
             interpolation: Interpolation::Linear,
             materials: vec![MaterialRamps {
                 name: String::new(),
-                day: ramp(vec![stop(0.0, "#000000"), stop(1.0, "#ffffff")]),
+                day: Ramp::Stops(ramp(vec![stop(0.0, "#000000"), stop(1.0, "#ffffff")])),
                 night: None,
             }],
         };
         let settings = RampBakeSettings { width: 4, row_height: 1, mips: true };
-        let GeneratedMap { image, class } = generate(&map, &settings).unwrap();
+        let GeneratedMap { image, class } = bake(&map, &settings).unwrap();
         let reds: Vec<f32> = image.pixels[..4].iter().map(|p| p[0]).collect();
         assert_eq!(reds, [0.125, 0.375, 0.625, 0.875]);
         assert_eq!(class, TextureClass::Ramp(RampSettings { mips: true }));
@@ -497,10 +706,14 @@ mod tests {
     fn invalid_documents_and_sizes_are_errors() {
         let one = |stops| RampMap {
             interpolation: Interpolation::OkLab,
-            materials: vec![MaterialRamps { name: "hair".into(), day: ramp(stops), night: None }],
+            materials: vec![MaterialRamps {
+                name: "hair".into(),
+                day: Ramp::Stops(ramp(stops)),
+                night: None,
+            }],
         };
         let settings = RampBakeSettings::default();
-        let error = |map: &RampMap| generate(map, &settings).unwrap_err().to_string();
+        let error = |map: &RampMap| bake(map, &settings).unwrap_err().to_string();
         assert_eq!(
             error(&RampMap { interpolation: Interpolation::OkLab, materials: Vec::new() }),
             "the document lists no materials"
@@ -522,7 +735,7 @@ mod tests {
         for (width, row_height) in
             [(0, 4), (256, 0), (MAX_TEXTURE_DIMENSION + 1, 4), (256, MAX_TEXTURE_DIMENSION / 8)]
         {
-            let result = generate(&valid, &RampBakeSettings { width, row_height, mips: false });
+            let result = bake(&valid, &RampBakeSettings { width, row_height, mips: false });
             assert!(matches!(result, Err(MapError::Ramp(RampError::Size { .. }))), "{width} x {row_height}");
         }
     }

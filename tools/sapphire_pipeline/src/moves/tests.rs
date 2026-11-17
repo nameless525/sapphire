@@ -20,7 +20,7 @@ use crate::clip::retarget::tests::{
     Kaykit, as_cooked, character, character_rig, sidecar_options, third_party, warrior,
 };
 use crate::clip::retarget::{Rig, retarget};
-use crate::clip::{ClipTarget, ReductionError, SampledRoot};
+use crate::clip::{ClipOptions, ClipTarget, SampledRoot};
 use crate::cook::{Cook, CookError, CookOptions, CookStatus, cook_dir};
 use crate::keypose;
 
@@ -496,6 +496,17 @@ fn walk_as_cooked() -> SampledClip {
     as_cooked(&Kaykit::open("MovementBasic"), "Walking_B")
 }
 
+/// KayKit's right dodge as the sidecar cooks it on the character: its left dodge mirrored, then
+/// retargeted with the right dodge's options. Mirroring is on a table's path wherever a move names one.
+fn mirrored_side_dodge() -> SampledClip {
+    let kaykit = Kaykit::open("MovementAdvanced");
+    let (skeleton, map) = character();
+    let the_character = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
+    let mirrored = clip::mirror::mirror(&kaykit.sampled("Dodge_Left"), kaykit.rig()).unwrap();
+    let options = sidecar_options(&kaykit, "Dodge_Right", the_character);
+    retarget(&mirrored, kaykit.rig(), Rig { skeleton, map }, &options).unwrap()
+}
+
 /// A chop on the enemy's warrior as the sidecars cook it, and that rig: their `follow`.
 fn chop_as_cooked() -> (SampledClip, Skeleton, HumanMap) {
     const CHOP: &str = "Melee_1H_Attack_Chop";
@@ -517,7 +528,7 @@ fn warrior_blade_tracks_the_existing_attack_capsules() {
         .unwrap()
         .compile()
         .unwrap();
-    let target = ClipTarget { skeleton: Some((id, &skeleton)), morph_defaults: &[] };
+    let target = ClipTarget { skeleton: Some((id, &skeleton)), morph_defaults: &[], map: None };
     let hand = skeleton.names.iter().position(|name| name == "handslot.r").unwrap();
     let cooked_skeleton = skeleton.to_cooked().unwrap();
     let mut pose = CharacterPose::new(Skeleton::read(&cooked_skeleton).unwrap(), &[], &[], Vec::new());
@@ -527,7 +538,7 @@ fn warrior_blade_tracks_the_existing_attack_capsules() {
         let document = keypose::read(&fs::read(folder.join(format!("{name}.keypose.ron"))).unwrap()).unwrap();
         let current = keypose::sample(&document, name, &skeleton, &map, &[]).unwrap();
         assert_eq!(u32::from(current.ticks), movement.ticks(), "{name}");
-        let cooked = clip::cook(&current, &target, &ReductionError::default()).to_cooked().unwrap();
+        let cooked = clip::cook(&current, &target, &ClipOptions::default()).to_cooked().unwrap();
         let clip = Clip::read(&cooked).unwrap();
         for tick in movement.startup..=movement.startup + movement.active {
             let sample = expected.at(sapphire_time::SimDuration::from_ticks(u64::from(tick)));
@@ -586,15 +597,26 @@ const SOCKET_TURN: [f32; 4] = [0.5, -0.5, 0.5, 0.5];
 fn baked_tables_and_clips_hash_the_same_on_every_architecture() {
     let (skeleton, map) = character();
     let hash = |bytes: &[u8]| blake3::hash(bytes).to_hex().to_string();
-    let target = ClipTarget { skeleton: Some((AssetId::from_bytes([1; 16]), skeleton)), morph_defaults: &[] };
-    let clip_hash = |sampled: &SampledClip| {
-        hash(&clip::cook(sampled, &target, &ReductionError::default()).to_cooked().unwrap())
+    // With the map, so every clip here carries its feet's contacts and its report.
+    let target = ClipTarget {
+        skeleton: Some((AssetId::from_bytes([1; 16]), skeleton)),
+        morph_defaults: &[],
+        map: Some(map),
     };
+    let cooked = |sampled: &SampledClip| clip::cook(sampled, &target, &ClipOptions::default());
+    let clip_hash = |sampled: &SampledClip| hash(&cooked(sampled).to_cooked().unwrap());
     let input = |sampled| TableInput { sampled, skeleton, map: Some(map), constraints: &[] };
     let table_hash = |sampled| hash(&bake(&every_bone(map), &input(sampled)).unwrap().to_cooked().unwrap());
 
     let (signature, dodge, spin) = (signature(), dodge(), spin());
     let (run, walk) = (run_as_cooked(), walk_as_cooked());
+    let mirrored = mirrored_side_dodge();
+    // The run's feet land and lift, so its clip's pin holds markers; the dodge slides with both feet
+    // off the ground, so its pin holds both feet's tracks with none.
+    let (run_clip, mirrored_clip) = (cooked(&run), cooked(&mirrored));
+    assert_eq!(run_clip.contacts.len(), 2);
+    assert!(run_clip.contacts.iter().all(|foot| !foot.markers.is_empty()), "{:?}", run_clip.contacts);
+    assert_eq!(mirrored_clip.contacts.len(), 2);
 
     // `follow` turns joints no bone names, so a path has to follow one by name to see it.
     let (chop, warrior_skeleton, warrior_map) = chop_as_cooked();
@@ -607,8 +629,11 @@ fn baked_tables_and_clips_hash_the_same_on_every_architecture() {
     });
     let on_the_warrior =
         TableInput { sampled: &chop, skeleton: &warrior_skeleton, map: Some(&warrior_map), constraints: &[] };
-    let warrior_target =
-        ClipTarget { skeleton: Some((AssetId::from_bytes([2; 16]), &warrior_skeleton)), morph_defaults: &[] };
+    let warrior_target = ClipTarget {
+        skeleton: Some((AssetId::from_bytes([2; 16]), &warrior_skeleton)),
+        morph_defaults: &[],
+        map: Some(&warrior_map),
+    };
 
     let found = [
         ("key-pose table", table_hash(&signature), SIGNATURE_TABLE),
@@ -628,9 +653,11 @@ fn baked_tables_and_clips_hash_the_same_on_every_architecture() {
         ),
         (
             "following clip",
-            hash(&clip::cook(&chop, &warrior_target, &ReductionError::default()).to_cooked().unwrap()),
+            hash(&clip::cook(&chop, &warrior_target, &ClipOptions::default()).to_cooked().unwrap()),
             CHOP_CLIP,
         ),
+        ("mirrored table", table_hash(&mirrored), MIRRORED_TABLE),
+        ("mirrored clip", clip_hash(&mirrored), MIRRORED_CLIP),
     ];
     let wrong: Vec<String> = found
         .iter()
@@ -642,16 +669,18 @@ fn baked_tables_and_clips_hash_the_same_on_every_architecture() {
 
 const SIGNATURE_TABLE: &str = "43a13fa907351097b59c0884df22132a33163ae7744d84067253b5f7b9d3c4e4";
 const DODGE_TABLE: &str = "5c85c8686d55e72dbaf5aaa0db5120c3b6ab3af119735259a8524f5a9ddfe77b";
-const SIGNATURE_CLIP: &str = "45c52425cdd270d7996c7227fcb58da71bd774ab52fa136b0e0e7614aee3dee0";
-const DODGE_CLIP: &str = "025d2b57737a7896bbf2795a372788a47328d3aa38dddbfaaa397948ff912b2d";
+const SIGNATURE_CLIP: &str = "3dc7a3197966015f6c3ea3cbd946754d12a17c3f1500fa386672ad3ddc6a842e";
+const DODGE_CLIP: &str = "b7f89e184c1b5ed08bbc00f8cc5949ab8afec0e2860df4981c8719dece2037f7";
 const SPIN_TABLE: &str = "20194ffbf790bbd46345cb28ebf6c4e48994ef6fc769353240653eefc3499653";
-const SPIN_CLIP: &str = "8907b4559fdf81ecca4479aa5807629e0ed50ba8118f172224c3746e64ab5204";
+const SPIN_CLIP: &str = "a03aeea8d61965722a816ef0fa6d3c22a30d80dc0771e2fcc6df1e8470f830b6";
 const RUN_TABLE: &str = "890b9c7d65a08ea41af3c1cdcd0edefd98b78cc1f24e71ff5beaae4023776d57";
-const RUN_CLIP: &str = "d0074377f507954b29d2ef1eabd7c914e73df59b2531a452e163ca752ca46812";
+const RUN_CLIP: &str = "870f4ee0bfca84bbdcf2b966c6c3fe66ca9fa3f0b69d13bec5c43ac300b1c5e5";
 const WALK_TABLE: &str = "cc25a6ce65e82bd7171f598338caa76a9ef61bd6118c3232af5b76bafd641e01";
-const WALK_CLIP: &str = "316c24894c9238bcca22efa52be576c277228c8a0c22770a537740a73315e139";
+const WALK_CLIP: &str = "e5b3a50d6ed83417a30f08ddf78584ca4ef2894c9bd651e36750e8937ba75a59";
 const CHOP_TABLE: &str = "51dd4432e0d1ce128208107574ba1b67bfebff46cbe8bdd63daa8a354cf0040e";
-const CHOP_CLIP: &str = "96470e2dbaf9ff89d3d9d468c8a3b17a6a2e886caf2456fee85ddeca104784b3";
+const CHOP_CLIP: &str = "73245c7e4d99db0626027ea8a43db1579bda963f924eaa96022a2b8b7b5918ff";
+const MIRRORED_TABLE: &str = "55f852a02384ea16f83aae2c17ee2954eb8c3212d47067b4bef34ec1db028566";
+const MIRRORED_CLIP: &str = "4f815c2e0a5e6b9ec9a3826a57a4b3629bfad14ff2c0d0e4d1224c66bd9be3f6";
 
 /// Each pinned clip above that stands for a retarget option really uses it, as the sidecars ship.
 #[test]
@@ -675,8 +704,12 @@ fn strays_from_the_pose(sampled: &SampledClip) -> (f32, f32, f32, f32) {
     let input = TableInput { sampled, skeleton, map: Some(map), constraints: &rig.constraints };
     let tables = bake(&every_bone(map), &input).expect("no bone goes through a twist helper");
 
-    let target = ClipTarget { skeleton: Some((AssetId::from_bytes([1; 16]), skeleton)), morph_defaults: &[] };
-    let cooked = clip::cook(sampled, &target, &ReductionError::default()).to_cooked().unwrap();
+    let target = ClipTarget {
+        skeleton: Some((AssetId::from_bytes([1; 16]), skeleton)),
+        morph_defaults: &[],
+        map: None,
+    };
+    let cooked = clip::cook(sampled, &target, &ClipOptions::default()).to_cooked().unwrap();
     let clip = Clip::read(&cooked).unwrap();
     let cooked_skeleton = skeleton.to_cooked().unwrap();
     let mut pose =

@@ -11,6 +11,7 @@ use sapphire_moves::{
     Playable, PlayableError,
 };
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh, NavMeshError};
+use sapphire_serialize::cooked::AlignedVec;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable, StringsError};
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline, TimelineError};
 use sapphire_zone::{
@@ -392,6 +393,16 @@ impl AssetKind {
         }
     }
 
+    /// Cooked bytes of this kind at a version it still reads but no longer writes, as its current
+    /// version's; any other bytes as they are. Only clips have one (version 1, M6 A1). Decode jobs
+    /// call it before [`Self::references`], so what the runtime reads in place is always current.
+    pub fn upgrade(self, bytes: AlignedVec) -> Result<AlignedVec, AssetError> {
+        Ok(match self {
+            Self::Clip => Clip::upgrade(&bytes)?.unwrap_or(bytes),
+            _ => bytes,
+        })
+    }
+
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`, `Skeleton::read`,
     /// `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`, `MoveSet::from_cooked`,
@@ -404,7 +415,8 @@ impl AssetKind {
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
     /// set. The packer records these as the asset's dependencies, and decode jobs check that a decoded asset
-    /// references exactly what its pack says it does.
+    /// references exactly what its pack says it does. Bytes of a version a kind still reads but no
+    /// longer writes go through [`Self::upgrade`] first.
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {

@@ -195,9 +195,13 @@ use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
 use crate::check::{self, Waived};
+use crate::clip::contacts::ContactSettings;
 use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
 use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
-use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
+use crate::clip::{
+    self, ClipCookError, ClipOptions, ClipSettings, ClipTarget, EventSettings, ReductionError, SampledClip,
+    mirror,
+};
 use crate::colliders::{self, ColliderCookError};
 use crate::dialogue::{self, DialogueCookError, MissingKey, Registry, RegistryError};
 use crate::encounter::{self, EncounterCookError};
@@ -1950,34 +1954,48 @@ fn clip_parts(
         }
         HumanMap::from_names(&settings.humanoid, &Skeleton::new(joints))?;
     }
-    let files = clip_files(names);
-    let index_of = |name: &str| {
-        names
+    // The file's animations, then the mirrors it doesn't have under their names: what a clip may be
+    // called, each with a file of its own.
+    let mut all_names = names.to_vec();
+    all_names.extend(settings.mirror.keys().filter(|name| !names.contains(name)).cloned());
+    let files = clip_files(&all_names);
+    let in_file = |name: &str| names.iter().position(|candidate| candidate == name);
+    for (name, from) in &settings.mirror {
+        if settings.mirror.contains_key(from) || in_file(from).is_none() {
+            return Err(ClipCookError::MirrorSource { name: name.clone(), from: from.clone() });
+        }
+    }
+    if let Some(name) = settings.events.keys().find(|name| !all_names.contains(name)) {
+        return Err(ClipCookError::UnknownEventClip { name: name.clone() });
+    }
+    // Where a clip's file is among `all_names`, and which of the file's animations it samples: a
+    // mirror samples what it mirrors.
+    let place_of = |name: &str| -> Result<(usize, usize), ClipCookError> {
+        let file = all_names
             .iter()
             .position(|candidate| candidate == name)
-            .ok_or_else(|| ClipCookError::UnknownClip { name: name.to_owned() })
+            .ok_or_else(|| ClipCookError::UnknownClip { name: name.to_owned() })?;
+        let sampled = settings.mirror.get(name).map_or(Some(file), |from| in_file(from));
+        Ok((file, sampled.expect("a mirror's source was checked above")))
     };
     let mut seen = HashSet::new();
     let mut parts = Vec::new();
-    let own: Vec<usize> = match &settings.names {
-        None => (0..names.len()).collect(),
-        Some(list) => list.iter().map(|name| index_of(name)).collect::<Result<_, _>>()?,
-    };
-    for index in own {
-        let name = names[index].clone();
-        if !seen.insert((index, None)) {
+    let own: Vec<String> = settings.names.clone().unwrap_or_else(|| all_names.clone());
+    for name in own {
+        let (file, index) = place_of(&name)?;
+        if !seen.insert((name.clone(), None)) {
             return Err(ClipCookError::DuplicateClip { name });
         }
         parts.push(PlannedPart {
             id: sapphire_assets::graph::imported_clip_id(id, &name, None),
-            part: Part::Clip { index, name, file: files[index].clone(), target: None },
+            part: Part::Clip { index, name, file: files[file].clone(), target: None },
             recipe,
         });
     }
     for (entry, retarget) in settings.retarget.iter().enumerate() {
         for name in &retarget.names {
-            let index = index_of(name)?;
-            if !seen.insert((index, Some(retarget.target))) {
+            let (file, index) = place_of(name)?;
+            if !seen.insert((name.clone(), Some(retarget.target))) {
                 return Err(ClipCookError::DuplicateClip { name: name.clone() });
             }
             parts.push(PlannedPart {
@@ -1985,7 +2003,7 @@ fn clip_parts(
                 part: Part::Clip {
                     index,
                     name: name.clone(),
-                    file: format!("{}.{}", files[index], retarget.target),
+                    file: format!("{}.{}", files[file], retarget.target),
                     target: Some(entry),
                 },
                 recipe: recipe.retargeted(),
@@ -2432,6 +2450,8 @@ struct ClipSamples {
     /// What the clip names as its skeleton.
     skeleton_id: Option<AssetId>,
     morph_defaults: Vec<f32>,
+    /// The skeleton's humanoid map, where it has one: where the clip's feet are.
+    map: Option<HumanMap>,
 }
 
 impl ClipSamples {
@@ -2440,14 +2460,29 @@ impl ClipSamples {
         ClipTarget {
             skeleton: self.skeleton_id.zip(self.skeleton.as_ref()),
             morph_defaults: &self.morph_defaults,
+            map: self.map.as_ref(),
         }
+    }
+
+    /// The clip, cooked with `contacts` and `events`, as bytes the runtime reads.
+    fn cook(
+        &self,
+        error: ReductionError,
+        contacts: ContactSettings,
+        events: &[EventSettings],
+    ) -> Result<Vec<u8>, ClipCookError> {
+        if !contacts.is_valid() || !events.iter().all(EventSettings::is_valid) {
+            return Err(ClipCookError::Settings);
+        }
+        clip::check_events(&self.sampled, events)?;
+        written_clip(&clip::cook(&self.sampled, &self.target(), &ClipOptions { error, contacts, events }))
     }
 }
 
 /// The samples of the clip `planned`, whose source's contents are `bytes`.
 fn clip_samples(planned: &Planned, bytes: &[u8], assets: &Assets<'_>) -> Result<ClipSamples, ClipCookError> {
     let SourceAsset { path, meta } = &planned.asset;
-    if let Part::Clip { index, target, .. } = &planned.part {
+    if let Part::Clip { index, name, target, .. } = &planned.part {
         let clips = meta.importer.clips().ok_or(ClipCookError::NoSkeleton)?;
         let input = ClipInput {
             path,
@@ -2455,6 +2490,7 @@ fn clip_samples(planned: &Planned, bytes: &[u8], assets: &Assets<'_>) -> Result<
             importer: &meta.importer,
             clips,
             index: *index,
+            name,
             skeleton: planned.skeleton,
         };
         return source_samples(&input, target.map(|entry| &clips.retarget[entry]), assets);
@@ -2806,9 +2842,9 @@ fn cook_source(
             Skeleton::read(&cooked).map_err(|error| clip_error(error.into()))?;
             return Ok(cooked.into_vec());
         }
-        Part::Clip { index, target, .. } => {
+        Part::Clip { index, name, target, .. } => {
             let clips = settings.clips().expect("clips are planned from these settings");
-            let input = ClipInput { path, bytes, importer: settings, clips, index: *index, skeleton };
+            let input = ClipInput { path, bytes, importer: settings, clips, index: *index, name, skeleton };
             return cook_clip(&input, target.map(|entry| &clips.retarget[entry]), assets).map_err(clip_error);
         }
         Part::MergedMap { group, map, .. } => {
@@ -3114,7 +3150,7 @@ fn cook_key_pose(
     assets: &Assets<'_>,
 ) -> Result<Vec<u8>, ClipCookError> {
     let samples = key_pose_samples(path, bytes, rig, assets)?;
-    written_clip(&clip::cook(&samples.sampled, &samples.target(), &settings.error))
+    samples.cook(settings.error, settings.contacts, &settings.events)
 }
 
 /// The samples of the document in `bytes`, for the rig of source `rig`.
@@ -3135,6 +3171,7 @@ fn key_pose_samples(
         skeleton: Some(joints),
         skeleton_id: Some(source.skeleton_id),
         morph_defaults: targets.iter().map(|target| target.default_weight).collect(),
+        map: Some(map),
     })
 }
 
@@ -3180,8 +3217,10 @@ struct ClipInput<'a> {
     bytes: &'a [u8],
     importer: &'a ImportSettings,
     clips: &'a ClipSettings,
-    /// The animation in the file.
+    /// The animation in the file it samples: for a mirror, the one it mirrors.
     index: usize,
+    /// What the clip is called.
+    name: &'a str,
     /// What the plan says the source's clips name: its skeleton's ID, or the one it shares.
     skeleton: Option<AssetId>,
 }
@@ -3193,7 +3232,8 @@ fn cook_clip(
     assets: &Assets<'_>,
 ) -> Result<Vec<u8>, ClipCookError> {
     let samples = source_samples(input, retarget, assets)?;
-    written_clip(&clip::cook(&samples.sampled, &samples.target(), &input.clips.error))
+    let clips = input.clips;
+    samples.cook(clips.error, clips.contacts, clips.events_of(input.name))
 }
 
 /// The samples of animation `input.index`, for the source's own rig or for `retarget`'s. The file
@@ -3204,19 +3244,31 @@ fn source_samples(
     assets: &Assets<'_>,
 ) -> Result<ClipSamples, ClipCookError> {
     let source = assets.clip_sources.get(input.path, input.bytes, input.importer)?;
-    let sampled = source.sample(input.index, input.clips)?;
+    let mut sampled = source.sample(input.index, input.clips)?;
     let joints = (!source.joints.is_empty()).then(|| Skeleton::new(&source.joints));
+    let map = joints.as_ref().map(|joints| source_map(input, &source, joints, assets)).transpose()?.flatten();
+    if input.clips.mirror.contains_key(input.name) {
+        let name = input.name.to_owned();
+        let (Some(joints), Some(map)) = (&joints, &map) else {
+            return Err(ClipCookError::NoMirrorHumanoid { name });
+        };
+        sampled = mirror::mirror(&sampled, Rig { skeleton: joints, map })
+            .map_err(|source| ClipCookError::Mirror { name: name.clone(), source })?;
+        sampled.name = name;
+    }
     let Some(retarget) = retarget else {
         return match input.importer.shared_rig() {
             Some(id) => {
                 let shared = assets.shared_rig_source(id)?;
                 let skeleton = shared.read_skeleton()?;
                 let remap = joint_remap(&source.joints, &skeleton)?;
+                let map = shared.map(&skeleton)?;
                 Ok(ClipSamples {
                     sampled: remap_tracks(sampled, &remap),
                     skeleton: Some(skeleton),
                     skeleton_id: Some(shared.skeleton_id),
                     morph_defaults: source.morph_defaults.clone(),
+                    map,
                 })
             }
             None => Ok(ClipSamples {
@@ -3224,11 +3276,12 @@ fn source_samples(
                 skeleton: joints,
                 skeleton_id: input.skeleton,
                 morph_defaults: source.morph_defaults.clone(),
+                map,
             }),
         };
     };
     let joints = joints.ok_or(ClipCookError::NoSkeleton)?;
-    let map = source_map(input, &source, &joints, assets)?;
+    let map = map.ok_or(ClipCookError::NoHumanoid)?;
     let id = retarget.target;
     let target_rig =
         assets.rig_source(id).filter(RigSource::has_map).ok_or(ClipCookError::UnknownTarget { id })?;
@@ -3251,25 +3304,26 @@ fn source_samples(
         skeleton: Some(target_joints),
         skeleton_id: Some(target_rig.skeleton_id),
         morph_defaults: Vec::new(),
+        map: Some(target_map),
     })
 }
 
-/// The humanoid map a source retargets from, on its own joints: a VRMA's, its sidecar's, or the
-/// sidecar's of the source whose rig it shares.
+/// The humanoid map a source retargets and mirrors by, on its own joints: a VRMA's, its sidecar's, or
+/// the sidecar's of the source whose rig it shares; `None` if it has none.
 fn source_map(
     input: &ClipInput<'_>,
     source: &ClipSource,
     joints: &Skeleton,
     assets: &Assets<'_>,
-) -> Result<HumanMap, ClipCookError> {
+) -> Result<Option<HumanMap>, ClipCookError> {
     if let Some(map) = &source.map {
-        return Ok(map.clone());
+        return Ok(Some(map.clone()));
     }
     let names = match input.importer.shared_rig() {
         Some(id) => assets.shared_rig_source(id)?.names,
         None => Some(&input.clips.humanoid).filter(|names| !names.is_empty()),
     };
-    Ok(HumanMap::from_names(names.ok_or(ClipCookError::NoHumanoid)?, joints)?)
+    Ok(names.map(|names| HumanMap::from_names(names, joints)).transpose()?)
 }
 
 /// Wraps a sound or cue error as the cook error for the source at `path`.

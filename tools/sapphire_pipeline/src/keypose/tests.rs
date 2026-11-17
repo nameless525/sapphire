@@ -13,7 +13,7 @@ use sapphire_serialize::cooked::AlignedVec;
 use super::*;
 use crate::anim_graph::LocomotionBounds;
 use crate::clip::tests::{angle_between, model_of, root_of, sample_pose};
-use crate::clip::{ClipTarget, cook};
+use crate::clip::{ClipOptions, ClipTarget, cook};
 use crate::import::vrm;
 use crate::meta;
 
@@ -92,9 +92,12 @@ struct Cooked {
 impl Cooked {
     fn new(document: &KeyPoseClip, skeleton: &Skeleton, rig: &CharacterRig) -> Self {
         let sampled = sample(document, "test", skeleton, rig).expect("it samples");
-        let target =
-            ClipTarget { skeleton: Some((AssetId::from_bytes([7; 16]), skeleton)), morph_defaults: &[] };
-        let clip = cook(&sampled, &target, &ReductionError::default()).to_cooked().expect("cooked");
+        let target = ClipTarget {
+            skeleton: Some((AssetId::from_bytes([7; 16]), skeleton)),
+            morph_defaults: &[],
+            map: None,
+        };
+        let clip = cook(&sampled, &target, &ClipOptions::default()).to_cooked().expect("cooked");
         Clip::read(&clip).expect("a valid clip");
         Self { clip, skeleton: skeleton.to_cooked().expect("cooked") }
     }
@@ -787,9 +790,12 @@ fn graph_show_strike_root_follows_the_key_pose() {
     let strike = show.find(sapphire_core::Name::new("strike")).expect("the strike").1;
     assert_eq!(root.translation.len(), 61, "the authored 60-tick fixture");
     assert_eq!(strike.tables.root_samples().len(), root.translation.len());
-    let target =
-        ClipTarget { skeleton: Some((AssetId::from_bytes([1; 16]), &skeleton)), morph_defaults: &[] };
-    let bytes = cook(&sampled, &target, &ReductionError::default()).to_cooked().expect("the runtime clip");
+    let target = ClipTarget {
+        skeleton: Some((AssetId::from_bytes([1; 16]), &skeleton)),
+        morph_defaults: &[],
+        map: None,
+    };
+    let bytes = cook(&sampled, &target, &ClipOptions::default()).to_cooked().expect("the runtime clip");
     let clip = Clip::read(&bytes).expect("the runtime clip reads");
     // Keep regeneration usable from a normal checkout, without an external authoring tool.
     // Every mismatched coordinate is a copyable per-tick MotionDocument root key.

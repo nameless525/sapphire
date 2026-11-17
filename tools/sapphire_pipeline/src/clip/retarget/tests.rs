@@ -15,7 +15,7 @@ use super::*;
 use crate::anim_graph::LocomotionBounds;
 use crate::clip::source::ClipSource;
 use crate::clip::tests::{angle_between, root_of};
-use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, ReductionError};
+use crate::clip::{self, ClipCookError, ClipOptions, ClipSettings, ClipTarget};
 use crate::import::gltf::clips;
 use crate::import::gltf::clips::ClipImportError;
 use crate::import::vrm;
@@ -246,9 +246,12 @@ fn a_rest_pose_is_the_targets_rest_and_cooks_to_no_tracks() {
         let rest = Vec3::from(skeleton.rest[usize::from(TARGET_HIPS)].translation);
         assert!(sample.abs_diff_eq(rest, 1e-5), "{sample} against {rest}");
     }
-    let target =
-        ClipTarget { skeleton: Some((AssetId::from_bytes([1; 16]), &skeleton)), morph_defaults: &[] };
-    let cooked = clip::cook(&out, &target, &ReductionError::default());
+    let target = ClipTarget {
+        skeleton: Some((AssetId::from_bytes([1; 16]), &skeleton)),
+        morph_defaults: &[],
+        map: None,
+    };
+    let cooked = clip::cook(&out, &target, &ClipOptions::default());
     assert!(cooked.rotations.is_empty(), "{:?}", cooked.rotations);
     assert!(cooked.translations.is_empty(), "{:?}", cooked.translations);
 }
@@ -844,11 +847,15 @@ fn kaykits_legs_are_about_half_the_characters() {
 #[test]
 fn a_t_pose_clip_cooks_to_the_characters_rest() {
     let (skeleton, _) = character();
-    let target = ClipTarget { skeleton: Some((AssetId::from_bytes([1; 16]), skeleton)), morph_defaults: &[] };
+    let target = ClipTarget {
+        skeleton: Some((AssetId::from_bytes([1; 16]), skeleton)),
+        morph_defaults: &[],
+        map: None,
+    };
     for file in FILES {
         let kaykit = Kaykit::open(file);
         let (_, out) = kaykit.on_character("T-Pose");
-        let cooked = clip::cook(&out, &target, &ReductionError::default());
+        let cooked = clip::cook(&out, &target, &ClipOptions::default());
         assert!(cooked.rotations.is_empty(), "{file}: {:?}", cooked.rotations);
         assert!(cooked.translations.is_empty(), "{file}: {:?}", cooked.translations);
         // The sidecar lifts root motion, and there's none to lift.
@@ -1028,8 +1035,12 @@ fn a_spin_of_the_root_carries_over_and_the_body_turns_with_it() {
         }
     }
 
-    let target = ClipTarget { skeleton: Some((AssetId::from_bytes([1; 16]), skeleton)), morph_defaults: &[] };
-    let cooked = clip::cook(&out, &target, &ReductionError::default()).to_cooked().unwrap();
+    let target = ClipTarget {
+        skeleton: Some((AssetId::from_bytes([1; 16]), skeleton)),
+        morph_defaults: &[],
+        map: None,
+    };
+    let cooked = clip::cook(&out, &target, &ClipOptions::default()).to_cooked().unwrap();
     let cooked = sapphire_assets::clip::Clip::read(&cooked).unwrap();
     for (tick, turn) in to.rotation.iter().enumerate() {
         let (_, played, _) = root_of(cooked, tick as f32).to_scale_rotation_translation();

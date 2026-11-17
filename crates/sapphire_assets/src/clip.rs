@@ -54,12 +54,36 @@
 //! track rather than the clip (spec §5.13), and the graph ignores it where a move's root motion
 //! doesn't apply.
 //!
+//! # Contacts, events and the report (version 2, M6 A1)
+//!
+//! None of these changes a pose: they are what presentation and tools read beside it, and the
+//! simulation reads none of them.
+//!
+//! - **Contacts** ([`Clip::contacts`]): for a clip on a rig whose humanoid map names its feet, one
+//!   [`ContactTrack`] a foot, left before right, saying whether the foot is planted at tick 0 and
+//!   the ticks it lands ([`Marker::Down`]) and lifts ([`Marker::Up`]) on. The cook detects them
+//!   from the clip's own motion (`sapphire_pipeline::clip::contacts`). A marker at a tick means the
+//!   state from that tick on, so a foot is planted on tick `t` exactly when
+//!   [`ArchivedContactTrack::is_planted`] says so. Graph sync and footsteps read these.
+//! - **Events** ([`Clip::events`]): notifies a sidecar places on ticks, by name, for presentation
+//!   to act on (a swish, a small effect). They are never a simulation cue.
+//! - **The report** ([`Clip::report`] and each contact track's `slide`): what the cook measured,
+//!   for the content checks and the clip inspector: how far a planted foot slides, how far the last
+//!   tick's pose is from the first (a loop's seam) and how far any joint reaches from the model's
+//!   origin.
+//!
 //! # Reading
 //!
 //! [`Clip::read`] checks the envelope, validates the archive with bytecheck, then checks what a
 //! sampler relies on ([`ClipError`]): ranges inside the key arrays, ticks increasing from 0 to the
 //! clip's end, tracks in order and naming joints and targets that exist, every rotation key
-//! decoding to a unit quaternion. After that a sampler needs no checks of its own.
+//! decoding to a unit quaternion, contacts and events in order and inside the clip. After that a
+//! sampler needs no checks of its own.
+//!
+//! **Version 1 is still read** (cooker rule 2, for one release): [`Clip::upgrade`] turns a v1
+//! clip's bytes into v2's, with no contacts, no events and no report, and the asset server does
+//! so as it decodes one ([`AssetKind::upgrade`](crate::AssetKind::upgrade)). [`Clip::read`] itself
+//! reads only the current version in place.
 
 use bevy_reflect::TypePath;
 use bytemuck::{Pod, Zeroable};
@@ -70,7 +94,10 @@ use sapphire_serialize::cooked::{AlignedVec, CookedError};
 use crate::AssetId;
 use crate::mesh::ArchivedMesh;
 use crate::mesh::encoding::packed;
+use crate::rig::HumanBone;
 use crate::skeleton::ArchivedSkeleton;
+
+pub(crate) mod v1;
 
 /// Conventional file extension for cooked clips.
 pub const CLIP_EXTENSION: &str = "sclip";
@@ -129,11 +156,88 @@ pub struct Clip {
     /// Every weight track's keys' ticks, parallel to [`Self::weight_keys`].
     pub weight_ticks: Vec<u16>,
     pub weight_keys: Vec<u16>,
+    /// One track a foot, left before right, for a clip whose rig maps its feet; none otherwise.
+    pub contacts: Vec<ContactTrack>,
+    /// By increasing tick, and by name on one tick, each at most once.
+    pub events: Vec<ClipEvent>,
+    /// What the cook measured: `None` for a clip without a skeleton, or one read from version 1.
+    pub report: Option<ClipReport>,
 }
 
 impl Versioned for Clip {
     /// 1: the first (M2 N1).
-    const VERSION: u32 = 1;
+    /// 2: contacts, events and the report (M6 A1). Version 1 still reads ([`Clip::upgrade`]).
+    const VERSION: u32 = 2;
+}
+
+/// The longest [`ClipEvent::name`], in bytes.
+pub const MAX_EVENT_NAME: usize = 32;
+
+/// Where one foot is planted over a clip. See the [module docs](self).
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct ContactTrack {
+    /// [`HumanBone::LeftFoot`] or [`HumanBone::RightFoot`].
+    pub foot: HumanBone,
+    /// The foot's joint in the clip's skeleton.
+    pub joint: u16,
+    /// Whether it is planted at tick 0.
+    pub planted: bool,
+    /// Where it lands and lifts, by increasing tick from 1 to the clip's end, each the other of the
+    /// one before: the first a lift if it starts planted, a landing if not.
+    pub markers: Vec<FootMarker>,
+    /// The furthest the foot strays across the ground while it is planted, in meters, in the clip's
+    /// own travel (`sapphire_pipeline::clip::contacts` says how it's measured).
+    pub slide: f32,
+}
+
+/// A foot landing or lifting, from `tick` on.
+#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct FootMarker {
+    pub tick: u16,
+    pub marker: Marker,
+}
+
+/// What a [`FootMarker`] says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
+pub enum Marker {
+    /// The foot lands: planted from this tick.
+    Down,
+    /// The foot lifts: off the ground from this tick.
+    Up,
+}
+
+/// A notify on a tick, for presentation: a sound, a small effect, by name.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct ClipEvent {
+    /// From 0 to the clip's end.
+    pub tick: u16,
+    /// Printable ASCII with no spaces, from 1 to [`MAX_EVENT_NAME`] bytes.
+    pub name: String,
+}
+
+/// What a clip's cook measured of its motion, in meters. See the [module docs](self).
+#[derive(Clone, Copy, Debug, Default, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct ClipReport {
+    /// The furthest any joint is, at the last tick, from where it was at the first, root motion left
+    /// out: 0 for a clip that loops cleanly.
+    pub seam: f32,
+    /// The furthest any joint gets from the model's origin across the clip, root motion left out.
+    pub radius: f32,
+}
+
+impl ArchivedContactTrack {
+    /// Whether the foot is planted on `tick`.
+    #[must_use]
+    pub fn is_planted(&self, tick: u16) -> bool {
+        // Markers alternate from the starting state, so the count at or before the tick says it.
+        let passed = self.markers.partition_point(|marker| marker.tick.to_native() <= tick);
+        self.planted == passed.is_multiple_of(2)
+    }
 }
 
 /// One joint's rotation over a clip.
@@ -457,6 +561,12 @@ pub enum ClipError {
     Root,
     #[error("the clip expects {expected}, but it has {found}")]
     Mismatch { expected: String, found: String },
+    #[error("contact track {index} {problem}")]
+    Contact { index: usize, problem: &'static str },
+    #[error("event {index} {problem}")]
+    Event { index: usize, problem: &'static str },
+    #[error("the report holds a value that isn't finite or is below 0")]
+    Report,
 }
 
 impl Clip {
@@ -473,11 +583,30 @@ impl Clip {
         Ok(clip)
     }
 
-    /// [`Self::read`], then a copy out of the archive, for tools and tests.
+    /// [`Self::read`], then a copy out of the archive, for tools and tests. Reads version 1 too,
+    /// through [`Self::upgrade`].
     pub fn from_cooked(bytes: &[u8]) -> Result<Self, ClipError> {
-        let archived = Self::read(bytes)?;
+        let upgraded = Self::upgrade(bytes)?;
+        let archived = Self::read(upgraded.as_deref().unwrap_or(bytes))?;
         rkyv::deserialize::<Self, rkyv::rancor::Error>(archived)
             .map_err(|error| ClipError::Cooked(error.into()))
+    }
+
+    /// Cooked clip bytes of an older version as this version's, checked by [`Self::read`]; `None`
+    /// for bytes already at this version, which are left for the reader to check. Version 1 reads
+    /// as a clip with no contacts, no events and no report. Any other version is
+    /// [`CookedError::Stale`].
+    pub fn upgrade(bytes: &[u8]) -> Result<Option<AlignedVec>, ClipError> {
+        let found = sapphire_serialize::cooked::schema_version::<Self>(bytes)?;
+        if found == Self::VERSION {
+            return Ok(None);
+        }
+        if found != v1::VERSION {
+            return Err(CookedError::Stale { found, current: Self::VERSION }.into());
+        }
+        let cooked = v1::read(bytes)?.to_cooked()?;
+        Self::read(&cooked)?;
+        Ok(Some(cooked))
     }
 }
 
@@ -612,7 +741,84 @@ impl ArchivedClip {
                 return Err(ClipError::Root);
             }
         }
+        self.validate_contacts(joints, end)?;
+        self.validate_events(end)?;
+        if let Some(report) = self.report.as_ref() {
+            let values = [report.seam.to_native(), report.radius.to_native()];
+            if !values.iter().all(|value| value.is_finite() && *value >= 0.0) {
+                return Err(ClipError::Report);
+            }
+        }
         Ok(())
+    }
+
+    fn validate_contacts(&self, joints: u32, end: u16) -> Result<(), ClipError> {
+        let mut previous = None;
+        for (index, track) in self.contacts.iter().enumerate() {
+            let fault = |problem| Err(ClipError::Contact { index, problem });
+            let order = match track.foot {
+                HumanBone::LeftFoot => 0,
+                HumanBone::RightFoot => 1,
+                _ => return fault("isn't a foot's"),
+            };
+            if previous.is_some_and(|previous| previous >= order) {
+                return fault("repeats a foot, or comes before the left foot's");
+            }
+            previous = Some(order);
+            if u32::from(track.joint.to_native()) >= joints {
+                return fault("names a joint past the skeleton's");
+            }
+            let slide = track.slide.to_native();
+            if !(slide.is_finite() && slide >= 0.0) {
+                return fault("has a slide that isn't finite or is below 0");
+            }
+            let mut planted = track.planted;
+            let mut last = 0;
+            for marker in track.markers.iter() {
+                let tick = marker.tick.to_native();
+                if tick <= last || tick > end {
+                    return fault("has markers that don't increase from tick 1 to the clip's end");
+                }
+                if (marker.marker == ArchivedMarker::Down) == planted {
+                    return fault("has two landings or two lifts in a row");
+                }
+                (last, planted) = (tick, !planted);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_events(&self, end: u16) -> Result<(), ClipError> {
+        let mut previous: Option<(u16, &str)> = None;
+        for (index, event) in self.events.iter().enumerate() {
+            let (tick, name) = (event.tick.to_native(), event.name.as_str());
+            if tick > end {
+                return Err(ClipError::Event { index, problem: "is past the clip's end" });
+            }
+            if !is_event_name(name) {
+                return Err(ClipError::Event {
+                    index,
+                    problem: "has a name that isn't 1 to 32 bytes of printable ASCII with no spaces",
+                });
+            }
+            if previous.is_some_and(|previous| previous >= (tick, name)) {
+                return Err(ClipError::Event { index, problem: "is out of order, or repeats one" });
+            }
+            previous = Some((tick, name));
+        }
+        Ok(())
+    }
+
+    /// The track of `foot`, [`HumanBone::LeftFoot`] or [`HumanBone::RightFoot`], if the clip has one.
+    #[must_use]
+    pub fn contact(&self, foot: HumanBone) -> Option<&ArchivedContactTrack> {
+        self.contacts.iter().find(|track| track.foot == foot)
+    }
+
+    /// The furthest any foot slides while planted, in meters: 0 for a clip without contacts.
+    #[must_use]
+    pub fn slide(&self) -> f32 {
+        self.contacts.iter().map(|track| track.slide.to_native()).fold(0.0, f32::max)
     }
 
     /// Checks that `skeleton` is the one this clip was cooked for, as far as its tracks go: the
@@ -645,6 +851,13 @@ impl ArchivedClip {
 /// How far root motion's first value may be from the identity: what a key's rounding leaves of it,
 /// past a translation's own step, and of a rotation.
 const ROOT_START_TOLERANCE: f32 = 0.01;
+
+/// Whether `name` can name a [`ClipEvent`]: 1 to [`MAX_EVENT_NAME`] bytes of printable ASCII with no
+/// spaces, so it reads the same in any tool and log.
+#[must_use]
+pub fn is_event_name(name: &str) -> bool {
+    (1..=MAX_EVENT_NAME).contains(&name.len()) && name.bytes().all(|byte| byte.is_ascii_graphic())
+}
 
 /// Each axis's highest value in `range`, which must be finite too.
 fn top(range: &ArchivedVectorRange) -> [f32; 3] {
@@ -867,7 +1080,66 @@ mod tests {
             ],
             weight_ticks: vec![0, 30],
             weight_keys: vec![weight.encode(0.0), weight.encode(1.0)],
+            contacts: vec![
+                ContactTrack {
+                    foot: HumanBone::LeftFoot,
+                    joint: 1,
+                    planted: true,
+                    markers: vec![
+                        FootMarker { tick: 10, marker: Marker::Up },
+                        FootMarker { tick: 20, marker: Marker::Down },
+                    ],
+                    slide: 0.002,
+                },
+                ContactTrack {
+                    foot: HumanBone::RightFoot,
+                    joint: 2,
+                    planted: false,
+                    markers: vec![FootMarker { tick: 15, marker: Marker::Down }],
+                    slide: 0.0,
+                },
+            ],
+            events: vec![
+                ClipEvent { tick: 0, name: "start".into() },
+                ClipEvent { tick: 12, name: "swish".into() },
+                ClipEvent { tick: 12, name: "whoosh".into() },
+            ],
+            report: Some(ClipReport { seam: 0.5, radius: 2.0 }),
         }
+    }
+
+    #[test]
+    fn contacts_say_where_a_foot_is_planted_and_events_read_in_place() {
+        let bytes = sample().to_cooked().unwrap();
+        let clip = Clip::read(&bytes).unwrap();
+        let left = clip.contact(HumanBone::LeftFoot).unwrap();
+        let planted: Vec<u16> = (0..=30).filter(|&tick| left.is_planted(tick)).collect();
+        assert_eq!(planted, [(0..10).collect::<Vec<_>>(), (20..=30).collect()].concat());
+        let right = clip.contact(HumanBone::RightFoot).unwrap();
+        assert!(!right.is_planted(14) && right.is_planted(15) && right.is_planted(30));
+        assert_eq!(clip.slide(), 0.002);
+        let names: Vec<&str> = clip.events.iter().map(|event| event.name.as_str()).collect();
+        assert_eq!(names, ["start", "swish", "whoosh"]);
+        assert_eq!(clip.report.as_ref().map(|report| report.radius.to_native()), Some(2.0));
+    }
+
+    /// A clip version 1 wrote reads as version 2 with no contacts, events or report, and plays the
+    /// same: its tracks and keys come across as they were.
+    #[test]
+    fn a_version_1_clip_is_still_read() {
+        let old = v1::write(&sample());
+        assert!(matches!(
+            Clip::read(&old),
+            Err(ClipError::Cooked(CookedError::Stale { found: 1, current: 2 }))
+        ));
+        let upgraded = Clip::upgrade(&old).unwrap().expect("version 1 bytes are rewritten");
+        let clip = Clip::read(&upgraded).unwrap();
+        assert!(clip.contacts.is_empty() && clip.events.is_empty() && clip.report.is_none());
+        let expected = Clip { contacts: Vec::new(), events: Vec::new(), report: None, ..sample() };
+        assert_eq!(Clip::from_cooked(&old).unwrap(), expected);
+        assert_eq!(Clip::from_cooked(&upgraded).unwrap(), expected);
+        let current = sample().to_cooked().unwrap();
+        assert!(Clip::upgrade(&current).unwrap().is_none(), "today's version is read as it is");
     }
 
     #[test]
@@ -1019,6 +1291,76 @@ mod tests {
                 "root motion that starts turned",
                 |c| c.rotation_keys[3] = PackedRotation::encode([0.70710677, 0.0, 0.0, 0.70710677]),
                 |e| matches!(e, ClipError::Root),
+            ),
+            (
+                "a contact track on a hand",
+                |c| c.contacts[0].foot = HumanBone::LeftHand,
+                |e| matches!(e, ClipError::Contact { index: 0, .. }),
+            ),
+            (
+                "contact tracks out of order",
+                |c| c.contacts.swap(0, 1),
+                |e| matches!(e, ClipError::Contact { index: 1, .. }),
+            ),
+            (
+                "a foot's joint past the skeleton's",
+                |c| c.contacts[1].joint = 3,
+                |e| matches!(e, ClipError::Contact { index: 1, .. }),
+            ),
+            (
+                "a marker on tick 0",
+                |c| c.contacts[1].markers[0].tick = 0,
+                |e| matches!(e, ClipError::Contact { index: 1, .. }),
+            ),
+            (
+                "a marker past the end",
+                |c| c.contacts[1].markers[0].tick = 31,
+                |e| matches!(e, ClipError::Contact { index: 1, .. }),
+            ),
+            (
+                "two lifts in a row",
+                |c| c.contacts[0].markers[1].marker = Marker::Up,
+                |e| matches!(e, ClipError::Contact { index: 0, .. }),
+            ),
+            (
+                "a planted foot landing",
+                |c| c.contacts[0].planted = false,
+                |e| matches!(e, ClipError::Contact { index: 0, .. }),
+            ),
+            (
+                "a slide that isn't finite",
+                |c| c.contacts[0].slide = f32::NAN,
+                |e| matches!(e, ClipError::Contact { index: 0, .. }),
+            ),
+            (
+                "an event past the end",
+                |c| c.events[1].tick = 31,
+                |e| matches!(e, ClipError::Event { index: 1, .. }),
+            ),
+            (
+                "events out of order",
+                |c| c.events.swap(1, 2),
+                |e| matches!(e, ClipError::Event { index: 2, .. }),
+            ),
+            (
+                "a repeated event",
+                |c| c.events[2].name = "swish".into(),
+                |e| matches!(e, ClipError::Event { index: 2, .. }),
+            ),
+            (
+                "an event with no name",
+                |c| c.events[0].name = String::new(),
+                |e| matches!(e, ClipError::Event { index: 0, .. }),
+            ),
+            (
+                "an event with a space",
+                |c| c.events[0].name = "a b".into(),
+                |e| matches!(e, ClipError::Event { index: 0, .. }),
+            ),
+            (
+                "a report below 0",
+                |c| c.report = Some(ClipReport { seam: -1.0, radius: 1.0 }),
+                |e| matches!(e, ClipError::Report),
             ),
         ];
         let mut failures = Vec::new();

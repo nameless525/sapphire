@@ -126,8 +126,8 @@ fn read(clip: &Clip) -> sapphire_serialize::cooked::AlignedVec {
 }
 
 fn cooked(sampled: &SampledClip, skeleton: &Skeleton, error: &ReductionError) -> Clip {
-    let target = ClipTarget { skeleton: Some((id(), skeleton)), morph_defaults: &[0.0, 0.0] };
-    cook(sampled, &target, error)
+    let target = ClipTarget { skeleton: Some((id(), skeleton)), morph_defaults: &[0.0, 0.0], map: None };
+    cook(sampled, &target, &ClipOptions { error: *error, ..ClipOptions::default() })
 }
 
 /// How the stated bound reads in a test: what the module docs promise for this track's joint.

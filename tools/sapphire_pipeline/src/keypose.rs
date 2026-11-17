@@ -85,8 +85,9 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::Stage;
+use crate::clip::contacts::ContactSettings;
 use crate::clip::retarget::HumanMap;
-use crate::clip::{self, ReductionError, SampledClip, SampledRoot};
+use crate::clip::{self, EventSettings, ReductionError, SampledClip, SampledRoot};
 
 /// Reads documents, as cache keys know it. Bump the version whenever sampling changes output for
 /// the same document.
@@ -133,6 +134,12 @@ pub struct KeyPoseSettings {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also: Vec<AssetId>,
     pub error: ReductionError,
+    /// How the clip's foot contacts are found ([`crate::clip::contacts`]).
+    #[serde(skip_serializing_if = "ContactSettings::is_default")]
+    pub contacts: ContactSettings,
+    /// Events placed on the clip's ticks, for every rig it cooks for.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventSettings>,
 }
 
 /// A key-pose document: see the [module docs](self).

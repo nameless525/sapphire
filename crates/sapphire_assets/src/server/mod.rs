@@ -382,6 +382,7 @@ impl<T: Asset> CpuResident<T> {
 
     /// Checks and keeps an immutable cooked asset without a server or a renderer.
     pub fn from_cooked(bytes: AlignedVec) -> Result<Self, crate::AssetError> {
+        let bytes = T::KIND.upgrade(bytes)?;
         T::KIND.references(&bytes)?;
         Ok(Self { data: Arc::new(bytes), kind: std::marker::PhantomData })
     }
@@ -1913,11 +1914,14 @@ fn decode(toc: &Toc, entry: &Entry, stored: &[u8], copy: bool) -> Result<Decoded
     // A decoder per job rather than per worker: its zstd context lives only while it decodes, so
     // idle workers hold no decoding memory.
     let bytes = toc.decode_asset(entry, stored, &mut Decoder::default())?;
-    let references = entry.kind.references(&bytes).map_err(|error| LoadError::Invalid {
+    let invalid = |error: crate::AssetError| LoadError::Invalid {
         id: entry.id,
         kind: entry.kind,
         message: error_chain(&error),
-    })?;
+    };
+    // An older version a kind still reads becomes its current one here, before it's checked.
+    let bytes = entry.kind.upgrade(bytes).map_err(invalid)?;
+    let references = entry.kind.references(&bytes).map_err(invalid)?;
     if references != toc.dependencies(entry) {
         return Err(LoadError::References { id: entry.id });
     }

@@ -74,6 +74,14 @@
 //! A track within tolerance of the skeleton's rest (or a morph target's default) at every tick
 //! needs no track at all; within tolerance of one value, one key.
 //!
+//! # Contacts, events, mirroring and the report (M6 A1)
+//!
+//! A clip on a rig whose humanoid map names its feet carries where each foot is planted
+//! ([`contacts`]), found from its samples by height and speed; a sidecar may place events on its ticks
+//! ([`EventSettings`]) and cook one clip as another's mirror image ([`mirror`]); and every clip with a
+//! skeleton carries its [`report`]. None of these changes a track, so a clip's poses, and every table
+//! a move bakes from its samples, stay as they were.
+//!
 //! # Root motion ([`lift_root`])
 //!
 //! See `sapphire_assets::clip` for what the track means. The named bone's motion in model space
@@ -88,15 +96,18 @@ use std::collections::BTreeMap;
 use glam::{Affine3, Quat, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{
-    Clip, DEFAULT_RATE, MAX_RATE, PackedRotation, RootMotion, RotationTrack, VectorRange, VectorTrack,
-    WeightRange, WeightTrack, lerp3, nlerp,
+    Clip, ClipEvent, DEFAULT_RATE, MAX_RATE, PackedRotation, RootMotion, RotationTrack, VectorRange,
+    VectorTrack, WeightRange, WeightTrack, is_event_name, lerp3, nlerp,
 };
 use sapphire_assets::rig::HumanBone;
 use sapphire_assets::skeleton::{NO_PARENT, Skeleton};
 use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
-use self::retarget::{HumanMapError, RetargetError, RetargetSettings};
+use self::contacts::ContactSettings;
+use self::mirror::MirrorError;
+use self::report::Positions;
+use self::retarget::{HumanMap, HumanMapError, RetargetError, RetargetSettings};
 use self::source::RigMismatch;
 use crate::cache::Stage;
 use crate::import::gltf::clips as gltf_clips;
@@ -113,7 +124,8 @@ use crate::keypose;
 /// review's IMP-003).
 /// 6: root motion's turn holds its bound on a rig off the origin, and a joint named by a name two joints
 /// share is an error, where it took the first.
-pub const COOKER: Stage = Stage { name: "sclip", version: 6 };
+/// 7: contacts, events and the report, in a version 2 clip (M6 A1).
+pub const COOKER: Stage = Stage { name: "sclip", version: 7 };
 
 /// The `.sskel` writer. Bump its version whenever it changes output for the same import.
 pub const SKELETON_COOKER: Stage = Stage { name: "sskel", version: 1 };
@@ -195,6 +207,17 @@ pub struct ClipSettings {
     /// Clips to carry onto other rigs, each entry one target: see [`retarget`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub retarget: Vec<RetargetSettings>,
+    /// Clips made as the mirror image of another of the file's animations, by name: `{ "Dodge_Right":
+    /// "Dodge_Left" }` cooks `Dodge_Right` from `Dodge_Left`, in place of any animation of that name,
+    /// for the source's rig and every retarget. Needs a humanoid map: see [`mirror`].
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub mirror: BTreeMap<String, String>,
+    /// How its clips' foot contacts are found: see [`contacts`].
+    #[serde(skip_serializing_if = "ContactSettings::is_default")]
+    pub contacts: ContactSettings,
+    /// Events placed on its clips' ticks, by clip name, for every rig the clip cooks for.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub events: BTreeMap<String, Vec<EventSettings>>,
 }
 
 impl Default for ClipSettings {
@@ -207,16 +230,44 @@ impl Default for ClipSettings {
             humanoid: BTreeMap::new(),
             rig: None,
             retarget: Vec::new(),
+            mirror: BTreeMap::new(),
+            contacts: ContactSettings::default(),
+            events: BTreeMap::new(),
         }
     }
 }
 
 impl ClipSettings {
-    /// Whether the rate, the error bounds and the retargets' scales are ones a cook can honor.
+    /// Whether the rate, the error bounds, the retargets' scales, the contact thresholds and the
+    /// events' names are ones a cook can honor.
     pub fn is_valid(&self) -> bool {
         (1..=MAX_RATE).contains(&self.rate)
             && self.error.is_valid()
             && self.retarget.iter().all(RetargetSettings::is_valid)
+            && self.contacts.is_valid()
+            && self.events.values().flatten().all(EventSettings::is_valid)
+    }
+
+    /// The events placed on the clip called `name`.
+    pub fn events_of(&self, name: &str) -> &[EventSettings] {
+        self.events.get(name).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// An event a sidecar places on a clip's tick: `(tick: 12, name: "swish")`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventSettings {
+    /// From 0 to the clip's end.
+    pub tick: u16,
+    /// 1 to 32 bytes of printable ASCII with no spaces.
+    pub name: String,
+}
+
+impl EventSettings {
+    /// Whether its name can name an event.
+    pub fn is_valid(&self) -> bool {
+        is_event_name(&self.name)
     }
 }
 
@@ -298,8 +349,8 @@ pub enum ClipCookError {
     #[error("the sidecar's `clips` settings are for glTF and FBX; {importer} sources don't cook clips")]
     ClipsUnsupported { importer: &'static str },
     #[error(
-        "the sidecar's `clips` settings are out of range: a rate from 1 to {MAX_RATE}, errors at least 0, \
-         a retarget's scale above 0"
+        "the sidecar's clip settings are out of range: a rate from 1 to {MAX_RATE}, errors at least 0, \
+         a retarget's scale above 0, contact thresholds above 0, event names of 1 to 32 printable bytes"
     )]
     Settings,
     #[error("the sidecar says `rig` on a mesh source: a mesh names a shared rig with `skeleton`")]
@@ -322,14 +373,40 @@ pub enum ClipCookError {
     UnknownTarget { id: AssetId },
     #[error("the source has no humanoid map to retarget from: add `humanoid` to its sidecar")]
     NoHumanoid,
+    #[error("the source has no humanoid map to mirror {name:?} by: add `humanoid` to its sidecar")]
+    NoMirrorHumanoid { name: String },
+    #[error("mirroring {name:?}")]
+    Mirror {
+        name: String,
+        #[source]
+        source: MirrorError,
+    },
+    #[error("the sidecar mirrors {name:?} from {from:?}, which is a mirror itself or not in the file")]
+    MirrorSource { name: String, from: String },
+    #[error("the sidecar places events on {name:?}, which it doesn't cook")]
+    UnknownEventClip { name: String },
+    #[error("the sidecar places event {event:?} at tick {tick}, past {name:?}'s end at {ticks}")]
+    EventPastEnd { name: String, event: String, tick: u16, ticks: u16 },
 }
 
 /// What a clip's tracks index: the skeleton (and its ID), for a clip that animates joints, and the
-/// default weight of each of the mesh's morph targets, for one that animates those.
+/// default weight of each of the mesh's morph targets, for one that animates those; and the
+/// skeleton's humanoid map, if it has one, which says where its feet are.
 #[derive(Clone, Copy, Debug)]
 pub struct ClipTarget<'a> {
     pub skeleton: Option<(AssetId, &'a Skeleton)>,
     pub morph_defaults: &'a [f32],
+    pub map: Option<&'a HumanMap>,
+}
+
+/// How [`cook`] makes a clip of its samples: key reduction's bound, how contacts are found, and the
+/// events it carries.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClipOptions<'a> {
+    pub error: ReductionError,
+    pub contacts: ContactSettings,
+    /// In any order; [`cook`] sorts them.
+    pub events: &'a [EventSettings],
 }
 
 /// The reach of each joint: the longest chain of bones below it at rest, in model space, plus
@@ -743,8 +820,23 @@ impl Carries {
     }
 }
 
-/// Reduces and packs `sampled` for `target`: see the [module docs](self).
-pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionError) -> Clip {
+/// Every event of `events` at or before `sampled`'s end, or the first that isn't.
+pub fn check_events(sampled: &SampledClip, events: &[EventSettings]) -> Result<(), ClipCookError> {
+    match events.iter().find(|event| event.tick > sampled.ticks) {
+        None => Ok(()),
+        Some(event) => Err(ClipCookError::EventPastEnd {
+            name: sampled.name.clone(),
+            event: event.name.clone(),
+            tick: event.tick,
+            ticks: sampled.ticks,
+        }),
+    }
+}
+
+/// Reduces and packs `sampled` for `target`, with its contacts, events and report: see the
+/// [module docs](self).
+pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, options: &ClipOptions<'_>) -> Clip {
+    let error = &options.error;
     let skeleton = target.skeleton.map(|(_, skeleton)| skeleton);
     let carries = skeleton.map_or_else(Carries::default, |skeleton| Carries::of(sampled, skeleton));
     let rest = |joint: u16| skeleton.map(|skeleton| skeleton.rest[usize::from(joint)]);
@@ -798,6 +890,16 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionErr
             rotation: rotation.expect("a track with no rest is always kept"),
         }
     });
+    let positions = skeleton.map(|skeleton| Positions::of(sampled, skeleton));
+    let contacts = match (skeleton, target.map, positions.as_ref()) {
+        (Some(skeleton), Some(map), Some(positions)) => {
+            contacts::contacts(sampled, skeleton, map, positions, &options.contacts)
+        }
+        _ => Vec::new(),
+    };
+    let mut events: Vec<ClipEvent> =
+        options.events.iter().map(|event| ClipEvent { tick: event.tick, name: event.name.clone() }).collect();
+    events.sort_by(|a, b| (a.tick, &a.name).cmp(&(b.tick, &b.name)));
     Clip {
         name: sampled.name.clone(),
         skeleton: target.skeleton.map(|(id, _)| id),
@@ -816,9 +918,15 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionErr
         vector_keys: keys.vector_keys,
         weight_ticks: keys.weight_ticks,
         weight_keys: keys.weight_keys,
+        contacts,
+        events,
+        report: positions.as_ref().map(report::report),
     }
 }
 
+pub mod contacts;
+pub mod mirror;
+pub mod report;
 pub mod retarget;
 pub mod source;
 

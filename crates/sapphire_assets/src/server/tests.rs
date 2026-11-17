@@ -1011,6 +1011,37 @@ fn skeletons_and_clips_load_with_what_names_them() {
     assert_eq!(server.state(&clip), LoadState::Ready);
 }
 
+/// A clip cooked at version 1 and packed before version 2 still loads, read as version 2 with no
+/// contacts, events or report (M6 A1, cooker rule 2).
+#[test]
+fn a_version_1_clip_in_a_pack_loads_as_version_2() {
+    use crate::clip::{Clip, DEFAULT_RATE, PackedRotation, RotationTrack};
+    use crate::skeleton::{Joint, JointTransform, Skeleton};
+
+    let (skeleton_id, clip_id) = (id(40), id(41));
+    let old = crate::clip::v1::write(&Clip {
+        name: "held".into(),
+        skeleton: Some(skeleton_id),
+        joint_count: 1,
+        rate: DEFAULT_RATE,
+        rotations: vec![RotationTrack { joint: 0, count: 1, first: 0 }],
+        rotation_ticks: vec![0],
+        rotation_keys: vec![PackedRotation::encode([0.0, 0.0, 0.0, 1.0])],
+        ..Clip::default()
+    });
+    assert!(Clip::read(&old).is_err(), "the reader in place takes only today's version");
+    let joint = Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY };
+    let skeleton = packed(skeleton_id, AssetKind::Skeleton, &Skeleton::new(&[joint]).to_cooked().unwrap());
+    let clip = PackAsset::encode(clip_id, AssetKind::Clip, Codec::Lz4, &old, vec![skeleton_id], 3).unwrap();
+    let (mut server, _) = serve(vec![skeleton, clip], unlimited());
+    let clip: Handle<Clip> = server.load(clip_id).unwrap();
+    server.finish(&clip, record(&mut Vec::new())).unwrap();
+    let view = server.get(&clip).expect("it loaded");
+    assert_eq!(view.skeleton.as_ref().copied(), Some(skeleton_id));
+    assert!(view.contacts.is_empty() && view.events.is_empty() && view.report.is_none());
+    assert_eq!(view.rotations.len(), 1);
+}
+
 #[test]
 fn only_meshes_and_clips_may_depend_on_a_skeleton_and_a_skeleton_on_nothing() {
     for kind in AssetKind::ALL {

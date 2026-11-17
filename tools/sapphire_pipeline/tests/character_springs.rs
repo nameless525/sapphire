@@ -19,7 +19,7 @@ use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig, HumanBone};
 use sapphire_math::{Affine3A, Vec3};
 use sapphire_pipeline::clip::retarget::{HumanMap, RetargetOptions, Rig, retarget};
 use sapphire_pipeline::clip::source::ClipSource;
-use sapphire_pipeline::clip::{ClipTarget, ReductionError, cook};
+use sapphire_pipeline::clip::{ClipOptions, ClipTarget, cook};
 use sapphire_pipeline::import::gltf::clips;
 use sapphire_pipeline::import::vrm;
 use sapphire_pipeline::keypose;
@@ -54,9 +54,12 @@ impl Character {
         let document = keypose::read(&document).expect("it reads");
         let sampled = keypose::sample(&document, "strike", &skeleton, &HumanMap::from_rig(&rig), &[])
             .expect("it samples");
-        let target =
-            ClipTarget { skeleton: Some((AssetId::from_bytes([7; 16]), &skeleton)), morph_defaults: &[] };
-        let clip = cook(&sampled, &target, &ReductionError::default()).to_cooked().expect("cooked");
+        let target = ClipTarget {
+            skeleton: Some((AssetId::from_bytes([7; 16]), &skeleton)),
+            morph_defaults: &[],
+            map: None,
+        };
+        let clip = cook(&sampled, &target, &ClipOptions::default()).to_cooked().expect("cooked");
         Self {
             rig: rig.to_cooked().expect("cooked"),
             skeleton: skeleton.to_cooked().expect("cooked"),
@@ -80,9 +83,12 @@ impl Character {
         let skeleton = Skeleton::from_cooked(&self.skeleton).expect("a valid skeleton");
         let sampled = keypose::sample(&document_read, document, &skeleton, &HumanMap::from_rig(&rig), &[])
             .expect("it samples");
-        let target =
-            ClipTarget { skeleton: Some((AssetId::from_bytes([7; 16]), &skeleton)), morph_defaults: &[] };
-        cook(&sampled, &target, &ReductionError::default()).to_cooked().expect("cooked")
+        let target = ClipTarget {
+            skeleton: Some((AssetId::from_bytes([7; 16]), &skeleton)),
+            morph_defaults: &[],
+            map: None,
+        };
+        cook(&sampled, &target, &ClipOptions::default()).to_cooked().expect("cooked")
     }
 
     /// One of KayKit's clips on the character, cooked as its sidecars say.
@@ -122,9 +128,14 @@ impl Character {
             },
         )
         .expect("it retargets");
-        let target =
-            ClipTarget { skeleton: Some((AssetId::from_bytes([7; 16]), &character)), morph_defaults: &[] };
-        cook(&out, &target, &settings.error).to_cooked().expect("cooked")
+        let target = ClipTarget {
+            skeleton: Some((AssetId::from_bytes([7; 16]), &character)),
+            morph_defaults: &[],
+            map: None,
+        };
+        cook(&out, &target, &ClipOptions { error: settings.error, ..ClipOptions::default() })
+            .to_cooked()
+            .expect("cooked")
     }
 
     fn rig(&self) -> &ArchivedCharacterRig {

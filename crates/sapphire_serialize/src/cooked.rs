@@ -7,7 +7,8 @@
 //! pack whose blake3 hash matched its signed manifest (spec §5.9).
 //!
 //! Versions must match exactly. Cooked data is rebuilt from its sources when its type
-//! changes, so there are no upgrades; older data is [`CookedError::Stale`].
+//! changes, so there are no upgrades here; older data is [`CookedError::Stale`]. A type that keeps
+//! reading an older layout for a release does so itself, choosing by [`schema_version`] (a clip, M6 A1).
 //!
 //! The format is rkyv's default: little-endian, aligned, 32-bit relative pointers, the same
 //! on every target. The bytes must start 16-byte aligned, as memory maps and
@@ -87,6 +88,13 @@ where
     Ok(unsafe { rkyv::access_unchecked::<T::Archived>(payload) })
 }
 
+/// The schema version cooked `T` data was written at, from its header alone: what a type that still
+/// reads an older layout looks at before choosing how to read it.
+pub fn schema_version<T: TypePath>(bytes: &[u8]) -> Result<u32, CookedError> {
+    let (version, _) = header::read::<T>(MAGIC, bytes)?;
+    Ok(version)
+}
+
 /// The archive inside cooked `T` data, once the header and alignment check out.
 fn payload<T: Versioned + TypePath>(bytes: &[u8]) -> Result<&[u8], CookedError> {
     if !(bytes.as_ptr() as usize).is_multiple_of(ALIGN) {
@@ -148,6 +156,7 @@ mod tests {
     fn stale_misaligned_and_corrupt_data_are_errors() {
         let old = to_cooked(&OldClip { name: "dodge".into() }).expect("cook");
         assert!(matches!(access::<Clip>(&old), Err(CookedError::Stale { found: 3, current: 4 })));
+        assert_eq!(schema_version::<Clip>(&old).expect("a header"), 3, "the header says which layout");
 
         let bytes = to_cooked(&clip()).expect("cook");
         let mut shifted = AlignedVec::<16>::new();

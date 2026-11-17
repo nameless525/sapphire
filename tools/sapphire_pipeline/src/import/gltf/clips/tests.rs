@@ -11,7 +11,9 @@ use serde_json::json;
 
 use super::*;
 use crate::clip::tests::{angle_between, model_of, root_of, sample_pose};
-use crate::clip::{ClipTarget, ReductionError, RootMotionSettings, RootRotation, RootTranslation};
+use crate::clip::{
+    ClipOptions, ClipTarget, ReductionError, RootMotionSettings, RootRotation, RootTranslation,
+};
 use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet, MorphGeometry};
 
 /// A channel: the node it animates, the property, and its sampler's interpolation, times and values.
@@ -97,8 +99,12 @@ impl Cooked {
         let target = ClipTarget {
             skeleton: skeleton.as_ref().map(|skeleton| (AssetId::from_bytes([3; 16]), skeleton)),
             morph_defaults: &defaults,
+            map: None,
         };
-        let clip = clip::cook(&sampled, &target, &settings.error).to_cooked().unwrap();
+        let clip =
+            clip::cook(&sampled, &target, &ClipOptions { error: settings.error, ..ClipOptions::default() })
+                .to_cooked()
+                .unwrap();
         Clip::read(&clip).unwrap();
         Self { clip, skeleton: skeleton.map(|skeleton| skeleton.to_cooked().unwrap()) }
     }

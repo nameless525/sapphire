@@ -13,7 +13,9 @@ use sapphire_assets::skeleton::Skeleton;
 use sapphire_assets::{AssetBudgets, AssetId, AssetKind, AssetServer, Handle, MemoryPackSource};
 
 use super::*;
-use crate::clip::{ClipSettings, ReductionError, RootMotionSettings};
+use std::collections::BTreeMap;
+
+use crate::clip::{ClipSettings, EventSettings, ReductionError, RootMotionSettings};
 use crate::gltf_writer::GltfWriter;
 use crate::import::gltf::clips::tests::{ARM, HIPS, Track, animate, figure};
 use crate::import::vrm::samples;
@@ -543,4 +545,87 @@ fn a_cook_is_byte_identical_run_to_run() {
         assert!(a == b, "{id} differs between runs");
     }
     assert!(first_pack == second_pack, "the packs differ");
+}
+
+/// A key-pose clip on a humanoid carries both feet's contacts, its report and its sidecar's events, in
+/// tick order (M6 A1).
+#[test]
+fn a_humanoid_clip_cooks_with_contacts_a_report_and_its_events() {
+    let (tree, _, character_id, document, document_id) = key_pose_tree("cook_keypose_contacts");
+    let events = vec![
+        EventSettings { tick: 10, name: "swish".into() },
+        EventSettings { tick: 0, name: "start".into() },
+    ];
+    let settings = KeyPoseSettings { rig: Some(character_id), events, ..KeyPoseSettings::default() };
+    tree.sidecar(&document, document_id, ImportSettings::KeyPose(settings));
+    let report = tree.cook();
+    let bytes = read_aligned(&by_id(&report, document_id).output);
+    let clip = Clip::read(&bytes).unwrap();
+    let feet: Vec<HumanBone> = clip.contacts.iter().map(|track| track.foot).collect();
+    assert_eq!(feet, [HumanBone::LeftFoot, HumanBone::RightFoot]);
+    // The swing lunges half a meter in 10 ticks with its legs at rest: the root carries both feet over
+    // the ground far faster than a foot lands, so neither is ever planted, and neither slides.
+    for track in clip.contacts.iter() {
+        assert!(!track.planted && track.markers.is_empty(), "{:?}: {track:?}", track.foot);
+        assert!((0..=clip.ticks.to_native()).all(|tick| !track.is_planted(tick)), "{:?}", track.foot);
+        assert_eq!(track.slide.to_native(), 0.0, "{:?}", track.foot);
+    }
+    let events: Vec<(u16, &str)> =
+        clip.events.iter().map(|event| (event.tick.to_native(), event.name.as_str())).collect();
+    assert_eq!(events, [(0, "start"), (10, "swish")]);
+    let measured = clip.report.as_ref().expect("a clip with a skeleton is measured");
+    assert!(measured.radius.to_native() > 1.0, "the head reaches over a meter: {measured:?}");
+}
+
+/// A sidecar's events and mirrors must name clips it cooks and ticks they have, and a mirror needs a
+/// humanoid map to mirror by; each is an error saying what's wrong.
+#[test]
+fn events_and_mirrors_that_cant_cook_are_errors() {
+    let chain = |error: &CookError| {
+        let mut message = error.to_string();
+        let mut source = std::error::Error::source(error);
+        while let Some(cause) = source {
+            message = format!("{message}: {cause}");
+            source = cause.source();
+        }
+        message
+    };
+    let events = |clip: &str, tick, name: &str| {
+        BTreeMap::from([(clip.to_owned(), vec![EventSettings { tick, name: name.into() }])])
+    };
+    let mirror = |name: &str, from: &str| BTreeMap::from([(name.to_owned(), from.to_owned())]);
+    let rows = [
+        (
+            "unknown_clip",
+            ClipSettings { events: events("Run", 0, "step"), ..ClipSettings::default() },
+            "doesn't cook",
+        ),
+        (
+            "past_the_end",
+            ClipSettings { events: events("Hit", 99, "step"), ..ClipSettings::default() },
+            "past \"Hit\"",
+        ),
+        (
+            "bad_name",
+            ClipSettings { events: events("Hit", 0, "a b"), ..ClipSettings::default() },
+            "out of range",
+        ),
+        (
+            "mirror_of_nothing",
+            ClipSettings { mirror: mirror("Back", "Run"), ..ClipSettings::default() },
+            "not in the file",
+        ),
+        (
+            "no_humanoid",
+            ClipSettings { mirror: mirror("Back", "Walk"), ..ClipSettings::default() },
+            "no humanoid map",
+        ),
+    ];
+    for (name, settings, expected) in rows {
+        let tree = Tree::new(&format!("cook_clip_markup_{name}"));
+        let source = tree.write("figure.glb", &animated_figure());
+        tree.sidecar(&source, AssetId::from_bytes([0x67; 16]), clips_on(settings));
+        let error = chain(&tree.try_cook(false).expect_err(name));
+        assert!(error.contains(expected), "{name}: {error}");
+    }
 }

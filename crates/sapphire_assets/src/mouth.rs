@@ -359,7 +359,7 @@ mod tests {
     /// voices' curves don't move for a few ulps either way on every sample.
     #[test]
     fn the_curves_ignore_a_decoders_last_bits() {
-        let voices = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/audio/generated/voice");
+        let voices = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/vo");
         let mut state = 0x0B0E_5EED_u64;
         for line in ["perfect-dodge", "swap-in", "guide_greet"] {
             for language in ["en", "ja"] {

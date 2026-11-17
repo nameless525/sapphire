@@ -179,4 +179,5 @@ mod test_util;
 pub mod texture;
 pub mod timeline;
 pub mod ui;
+pub mod vo;
 pub mod zone;

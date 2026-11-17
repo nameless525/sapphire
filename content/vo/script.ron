@@ -1,0 +1,39 @@
+// The voice script (M6 U11): every voiced line, what it says and how it's read. `sapphire_pipeline vo
+// --content content` imports the masters in each language's folder beside this, and writes from both the
+// recording script a studio reads (`<language>/script.csv`), the import report (`<language>/import.csv`),
+// each line's Ogg and cue, and each language's voice lines (`<language>.voice.ron`). A line's key is its
+// masters' file name and what a game asks for: the fight's cue table's `line`, a conversation's `vo`.
+//
+// - `text` and `speaker` are Fluent messages, in every language; a fight's line has no speaker, since
+//   whoever is in play says it. A conversation's voiced line must have its node's speaker and line.
+// - `context` and `direction` are for the actor and the director, in the source language.
+// - `approved` lists the languages whose takes are signed off; a generated master never is.
+(
+    type: "sapphire::pipeline::VoiceScript",
+    version: 1,
+    data: (
+        source: "en",
+        languages: ["en", "ja"],
+        lines: [
+            (
+                key: "perfect-dodge",
+                text: "subtitle-perfect-dodge",
+                context: "A fight: said as a perfect dodge lands, while the world slows (the cue table's `perfect_dodge` row).",
+                direction: "Quick and pleased, half under the breath: the attack was read before it came. Under a second.",
+            ),
+            (
+                key: "swap-in",
+                text: "subtitle-swap-in",
+                context: "A fight: said by the party member stepping in as another steps out (the cue table's `swap_in` row).",
+                direction: "Bright and sure, cutting through the fight. Under a second.",
+            ),
+            (
+                key: "guide_greet",
+                text: "dialogue-guide-greet",
+                speaker: Some("dialogue-guide-name"),
+                context: "The Lantern Ward at dusk, after the court's gate: the guide's first words, as the conversation opens (`content/dialogue/ward_guide.dialogue.ron`, node `greet`).",
+                direction: "Worried but steady, an older voice; a breath before the second sentence. About three seconds.",
+            ),
+        ],
+    ),
+)

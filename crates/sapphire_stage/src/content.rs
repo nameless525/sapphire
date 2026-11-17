@@ -106,7 +106,7 @@ use sapphire_assets::sound::{AUDIO_PACK, Sound};
 use sapphire_assets::texture::TextureTail;
 use sapphire_assets::texture_level::TextureLevel;
 use sapphire_assets::ui::{UI_PACK, UiDocument};
-use sapphire_assets::voice::VoiceLines;
+use sapphire_assets::voice::{self, VoiceLines};
 use sapphire_assets::{
     Asset, AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, AssetStats, CpuResident, Handle,
     LoadError, LoadPriority, MountError, NamedAsset, PackFile, PackSource, ReadDone, Unloaded, Upload,
@@ -165,6 +165,11 @@ pub const LOCALES: [AssetId; 2] = [
     AssetId::from_text("536862fe-0efd-4937-a7c4-25c9b0652f62"),
     AssetId::from_text("ef0a6207-aa10-4499-8e64-2e089c4f8b3c"),
 ];
+
+/// The languages the content voices (M6 U11): each one's lines, cues and sounds are its own pack,
+/// `vo_<locale>` ([`voice::pack_name`]), which [`Content::load_voice_lines`] mounts. U13 mounts only the one a
+/// player chose.
+pub const VOICE_LANGUAGES: [&str; 2] = ["en", "ja"];
 
 /// What loading screens hands back, as plain data ([`Content::load_screens`]).
 pub struct ScreenAssets {
@@ -2838,7 +2843,8 @@ impl Content {
         Ok((score, sounds))
     }
 
-    /// Loads one language's voice lines `id` (M3 A1). Their cues are loaded as any cue is.
+    /// Loads one language's voice lines `id` (M3 A1), mounting the audio pack and every voice pack of
+    /// [`VOICE_LANGUAGES`] first (M6 U11). Their cues are loaded as any cue is.
     pub(crate) fn load_voice_lines(
         &mut self,
         id: AssetId,
@@ -2848,6 +2854,14 @@ impl Content {
         let failed =
             |error: &dyn std::fmt::Display| AppInitError::msg(format!("the voice lines {id}: {error}"));
         self.mount_audio().map_err(|error| failed(&error))?;
+        for language in VOICE_LANGUAGES {
+            let pack = voice::pack_name(language);
+            if !self.server.is_mounted(&pack) {
+                self.server
+                    .mount_now(&pack)
+                    .map_err(|error| failed(&format!("the pack `{pack}`: {error}")))?;
+            }
+        }
         let assets = &mut self.gpu;
         let handle = self
             .server

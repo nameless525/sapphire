@@ -11,7 +11,9 @@
 //! this content tree that cooks. A score's stems must be sounds as long as its loop, to the frame, and
 //! a voice line's cue must play on the voice bus; both are read from their sources on every cook too.
 //!
-//! Sounds, cues, scores and voice lines go in a pack of their own ([`crate::pack::AUDIO`]).
+//! Sounds, cues, scores and voice lines go in a pack of their own ([`crate::pack::AUDIO`]), but for a
+//! language's voice lines and what they alone play, which go in its own (`vo_<locale>`, M6 U11). The voice
+//! over's masters, encode and documents are [`crate::vo`]'s.
 
 use std::path::{Path, PathBuf};
 
@@ -511,7 +513,7 @@ mod tests {
     /// bumps [`SOUND_COOKER`].
     #[test]
     fn the_generated_lines_mouths_cook_to_pinned_bytes() {
-        let voices = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/audio/generated/voice");
+        let voices = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/vo");
         let pinned: [(&str, usize, u64); 6] = [
             ("en/perfect-dodge", 52, 4565562129575115727),
             ("en/swap-in", 49, 3905336652525319422),
@@ -570,14 +572,24 @@ mod tests {
         let (score_id, lines_id) = (tree.id_of("fight.score.ron"), tree.id_of("ja.voice.ron"));
         assert_eq!(report.assets.len(), 5);
 
+        // The lines and their cue go in their language's pack (M6 U11); the stem stays with the score that
+        // plays it too, since the audio pack can't lean on a language's.
         let packs = tree.dir.path().join("packs");
         let packed = pack_cooked(&report, &packs, None).unwrap();
         let names: BTreeSet<&str> = packed.packs.iter().map(|pack| pack.name.as_str()).collect();
-        assert_eq!(names, BTreeSet::from([pack::AUDIO]), "music and voice go with the sounds");
+        assert_eq!(
+            names,
+            BTreeSet::from([pack::AUDIO, "vo_ja"]),
+            "music goes with the sounds, voice by language"
+        );
+        let held = |name: &str| packed.packs.iter().find(|pack| pack.name == name).unwrap().assets;
+        assert_eq!((held(pack::AUDIO), held("vo_ja")), (3, 2));
         let source = Arc::new(MemoryPackSource::new());
         source.insert(pack::AUDIO, fs::read(packs.join("audio.spack")).unwrap());
+        source.insert("vo_ja", fs::read(packs.join("vo_ja.spack")).unwrap());
         let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
         server.mount_now(pack::AUDIO).unwrap();
+        server.mount_now("vo_ja").unwrap();
         let score: Handle<Score> = server.load(score_id).unwrap();
         server.finish(&score, |upload| panic!("{} was sent to the uploader", upload.kind())).unwrap();
         assert_eq!(server.get(&score).expect("loaded").to_owned_score().stems[0].sound, sound);

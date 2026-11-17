@@ -15,9 +15,10 @@
 //   here can feel it: every number is a guess for someone with a pad.
 // - `line`: a voice line by its key, said in the player's voice language from one of `voices` (M3 A1).
 //
-// `music` is the fight's `Score`, whose phase the fight's encounters choose, and `voices` its
-// `VoiceLines`, one a language, all in `content/audio/generated/` by their sidecars' IDs. `mix` is the
-// `Mix` everything plays through (M6 U2), `content/audio/game.mix.ron`.
+// `music` is the fight's `Score`, whose phase the fight's encounters choose, in `content/audio/generated/`,
+// and `voices` its `VoiceLines`, one a language, which `sapphire_pipeline vo` writes in `content/vo/` (M6
+// U11): a row's `line` is a key of `content/vo/script.ron`. Both by their sidecars' IDs. `mix` is the `Mix`
+// everything plays through (M6 U2), `content/audio/game.mix.ron`.
 //
 // Every number is a starting point for T2's tuning, and nobody here can hear or feel the last two.
 (

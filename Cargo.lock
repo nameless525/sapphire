@@ -4771,6 +4771,7 @@ dependencies = [
  "swash",
  "thiserror 2.0.21",
  "ufbx",
+ "vorbis_rs",
  "vrm-spec",
 ]
 

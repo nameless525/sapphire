@@ -406,22 +406,28 @@ mod tests {
         }
     }
 
-    /// The shipped table's score and voice lines are documents in `content/audio/generated`, by their
-    /// sidecars' IDs, and its rows speak lines.
+    /// The shipped table's score is a document in `content/audio/generated` and its voice lines are the
+    /// voice over's in `content/vo` (M6 U11), by their sidecars' IDs, and every line its rows speak is in
+    /// the voice script, and so in each language's recording script.
     #[test]
     fn the_music_and_voices_are_documents() {
-        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/audio/generated");
-        let sidecar = |path: &str| std::fs::read_to_string(folder.join(path)).expect("reads");
+        let content = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let read = |path: &str| std::fs::read_to_string(content.join(path)).expect("reads");
         let table = CueTable::default_table();
         let score = table.music().expect("the fight has a score").to_string();
-        assert!(sidecar("music/lantern.score.ron.meta").contains(&score));
+        assert!(read("audio/generated/music/lantern.score.ron.meta").contains(&score));
         let voices: Vec<String> = table.voices().iter().map(ToString::to_string).collect();
         assert_eq!(voices.len(), 2);
-        assert!(sidecar("voice/en.voice.ron.meta").contains(&voices[0]));
-        assert!(sidecar("voice/ja.voice.ron.meta").contains(&voices[1]));
-        assert!(table.rows().iter().any(|row| row.line.is_some()));
+        assert!(read("vo/en.voice.ron.meta").contains(&voices[0]));
+        assert!(read("vo/ja.voice.ron.meta").contains(&voices[1]));
+        let script = read("vo/script.ron");
+        let lines: Vec<&str> = table.rows().iter().filter_map(|row| row.line.as_deref()).collect();
+        assert!(!lines.is_empty());
+        for line in lines {
+            assert!(script.contains(&format!("key: \"{line}\"")), "`{line}` isn't in content/vo/script.ron");
+        }
         let mix = table.mix().expect("the fight has a mix").to_string();
-        assert!(sidecar("../game.mix.ron.meta").contains(&mix));
+        assert!(read("audio/game.mix.ron.meta").contains(&mix));
     }
 
     #[test]

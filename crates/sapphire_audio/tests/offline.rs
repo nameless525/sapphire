@@ -393,12 +393,12 @@ fn the_shipped_sounds_take_half_the_memory_or_less() {
         "audio/generated/music/lantern_pad.ogg",
         "audio/generated/music/lantern_pulse.ogg",
         "audio/generated/music/lantern_toll.ogg",
-        "audio/generated/voice/en/guide_greet.ogg",
-        "audio/generated/voice/en/perfect-dodge.ogg",
-        "audio/generated/voice/en/swap-in.ogg",
-        "audio/generated/voice/ja/guide_greet.ogg",
-        "audio/generated/voice/ja/perfect-dodge.ogg",
-        "audio/generated/voice/ja/swap-in.ogg",
+        "vo/en/guide_greet.ogg",
+        "vo/en/perfect-dodge.ogg",
+        "vo/en/swap-in.ogg",
+        "vo/ja/guide_greet.ogg",
+        "vo/ja/perfect-dodge.ogg",
+        "vo/ja/swap-in.ogg",
     ];
     let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let mut backend = KiraBackend::<OfflineOutput>::new(RATE).expect("an offline mixer");

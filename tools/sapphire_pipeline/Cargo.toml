@@ -83,6 +83,9 @@ skera.workspace = true
 fdsm.workspace = true
 skrifa_for_skera.workspace = true
 thiserror.workspace = true
+# The voice-over tool (M6 U11) encodes WAV masters with libvorbis, at `sapphire_soundgen`'s settings: in `vo`
+# only, never in a cook, since its floating point differs across machines.
+vorbis_rs.workspace = true
 # FBX meshes, skins, blend shapes and materials (M1 A10).
 ufbx.workspace = true
 vrm-spec.workspace = true

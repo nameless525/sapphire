@@ -1,10 +1,10 @@
 # Generated audio
 
-The fight's placeholder score and voice lines (M3 A1). Not third-party: every sound here is the
-project's own work, synthesized by [`tools/sapphire_soundgen`](../../../tools/sapphire_soundgen) from
-a spec each in [`tools/sounds/`](../../../tools/sounds) (M4 R4), with no recordings, samples, downloads
-or text-to-speech voices. The voices are formant babble in each language's syllable shapes, with no
-words. Licensed with the rest of the workspace.
+The fight's placeholder score (M3 A1); its voice lines moved to [`content/vo/`](../../vo) as masters
+(M6 U11). Not third-party: every sound here is the project's own work, synthesized by
+[`tools/sapphire_soundgen`](../../../tools/sapphire_soundgen) from a spec each in
+[`tools/sounds/`](../../../tools/sounds) (M4 R4), with no recordings, samples, downloads or
+text-to-speech voices. Licensed with the rest of the workspace.
 
 | | |
 |---|---|
@@ -29,16 +29,9 @@ here: the tests check that this table names every file a spec makes.
 | `music/lantern_drums.ogg` | Synthesized kick, snare and hat, the same length | `adaf9706ed47cdedba1c6d8f82c02283c6056a2109f69f1b860ea3899e1fdf3d` |
 | `music/lantern_bells.ogg` | A pentatonic bell tune, the same length | `e22fb1e2c6386c24aa7f421be216c28e4a321f981a7fa8c243d98b3b09c810d5` |
 | `music/lantern_toll.ogg` | A great bell tolled on each bar's root, the same length, for a boss's `tolling` phase (M3 Z5a) | `7670287d921863973dca1c948a3994a3b6fe4e91748d5ab27ef35817828ed2d8` |
-| `voice/en/perfect-dodge.ogg` | The `perfect-dodge` line's English placeholder | `74ff4edf829615bb23b6d4b52644f6169edf1876f504be1ed404608e96687c9d` |
-| `voice/en/swap-in.ogg` | The `swap-in` line's English placeholder | `753abb716222b6afd638e28d0314c2aa127ee1e7ad1536d8b7aac5363d7c2d98` |
-| `voice/ja/perfect-dodge.ogg` | The `perfect-dodge` line's Japanese placeholder | `21eadfb5bd0f709d9e4a5787baa51e917cd5a77bfe9007a288100aa66a035150` |
-| `voice/ja/swap-in.ogg` | The `swap-in` line's Japanese placeholder | `4cd63a88077b1581c5a39162b12c1dd9ff4867206e7f281127734d7df0b9a916` |
-| `voice/en/guide_greet.ogg` | The ward guide's greeting, `guide_greet`, in English: a conversation's voiced line (M5 C6), made 2026-11-13 | `5fcdf276ae53bf44aa04e654884b76678bba210d55fa36ddcdbbf77b08d6b9f0` |
-| `voice/ja/guide_greet.ogg` | The same greeting's Japanese placeholder, made 2026-11-13 | `0bd96beb4143df0930556582537af91b567c712266151cf49b60cbe74ac1ea27` |
 
-The `.ron` documents beside them (the score, the line cues and each language's voice lines) and every
-`.meta` sidecar are written by hand or by the cook, not by the generator. Each voice's sidecar asks the
-cook for its mouth curve (`Sound((mouth: true))`, M5 C6), which the voice lines' cook requires.
+The score's `.ron` document beside them and every `.meta` sidecar are written by hand or by the cook, not
+by the generator.
 
-Nobody has listened to these. They prove the music and voice paths with numbers; every level, note
-and timbre is a guess for someone who can hear them, and a real score and real voices replace them.
+Nobody has listened to these. They prove the music path with numbers; every level, note and timbre is a
+guess for someone who can hear them, and a real score replaces them.

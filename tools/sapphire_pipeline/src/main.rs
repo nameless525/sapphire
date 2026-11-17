@@ -28,6 +28,7 @@ use sapphire_pipeline::pack::{self, PackReport, PackStatus};
 use sapphire_pipeline::procedural::{self, ProceduralTexture, SurfaceMap};
 use sapphire_pipeline::release::{self, ReleaseOptions};
 use sapphire_pipeline::samples::{self, Existing, Generated};
+use sapphire_pipeline::vo;
 
 const USAGE: &str = "\
 Sapphire asset pipeline: generate, import, bake and cook source assets.
@@ -91,7 +92,7 @@ Usage:
       Cook every source asset under --source (skipping hidden entries, and sources whose
       sidecars say `cook: false`) into mirrored paths under --out, creating missing .meta
       sidecars next to the sources, then pack the cooked
-      assets into --packs (shared.spack, audio.spack, fonts.spack, NOTICES.txt). Outputs are written only when they change, and
+      assets into --packs (shared.spack, audio.spack, vo_<locale>.spack, fonts.spack, NOTICES.txt). Outputs are written only when they change, and
       stale cooked files under --out, and files no pack claims under --packs, are removed.
       The game's documents (game.documents.ron under --source, if there's one) go beside the packs, under
       documents/, and an unsigned release.smanifest names everything there.
@@ -125,12 +126,20 @@ Usage:
       generator, in hex, readable only by its owner, as SAPPHIRE_RELEASE_KEY takes it
       (SAPPHIRE_RELEASE_KEY=$(cat FILE)). Prints its public half as platform/patch.toml's
       release-keys takes it. Keep FILE offline, and never in the repository.
+  sapphire_pipeline vo --content <DIR> [--check]
+      Import the voice over under DIR/vo (M6 U11): encode each language's WAV masters that changed to
+      Ogg Vorbis, with their sidecars and a cue each for a new line, and write each language's voice
+      lines, its recording script (script.csv) and its import report (import.csv), all to commit. A
+      master the script (vo/script.ron) doesn't list is an error; a line with no master fails the run
+      once the rest is written, naming it. With --check, nothing is written, and any file an import
+      would change is an error.
   sapphire_pipeline release-key public <FILE>
       Print the public half of the release key in FILE, as platform/patch.toml's release-keys
       takes it; --next-keys takes the quoted digits. The seed is never printed.
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
+  --check                    vo: write nothing, and fail on any file an import would change.
   --json                     check: the report as JSON on stdout.
   --force                    gen-samples, gen-lookdev, gen-combat, gen-figures: also replace generated files that
                              differ from what the generator makes, after changing it.
@@ -237,6 +246,11 @@ enum Command {
     Check {
         source: PathBuf,
         json: bool,
+    },
+    /// `vo`: the voice over's import, or with `check`, whether it's current.
+    Vo {
+        content: PathBuf,
+        check: bool,
     },
     Help,
     Version,
@@ -416,6 +430,36 @@ fn run(command: Command) -> anyhow::Result<()> {
             Some(path) => println!("wrote {}", path.display()),
             None => println!("{}'s manifest already names what's there", packs.display()),
         },
+        Command::Vo { content, check } => {
+            let mode = if check { vo::Mode::Check } else { vo::Mode::Write };
+            let imported = vo::import(&content, mode)?;
+            let (encoded, stale) = if check { ("to encode", "stale") } else { ("encoded", "wrote") };
+            for (language, key, seconds) in &imported.recorded {
+                eprintln!("  {language} `{key}`: {seconds:.3} s");
+            }
+            for path in &imported.encoded {
+                eprintln!("{encoded} {}", path.display());
+            }
+            for path in &imported.stale {
+                eprintln!("{stale} {}", path.display());
+            }
+            if !imported.missing.is_empty() {
+                let lines: Vec<String> =
+                    imported.missing.iter().map(|(language, key)| format!("{language} `{key}`")).collect();
+                bail!("{} lines have no master: {}", lines.len(), lines.join(", "));
+            }
+            if check && !imported.stale.is_empty() {
+                bail!(
+                    "the voice over is out of date: run `sapphire_pipeline vo --content {}`",
+                    content.display()
+                );
+            }
+            eprintln!(
+                "voice over: {} takes, {} files {stale}",
+                imported.recorded.len(),
+                imported.stale.len()
+            );
+        }
         Command::Release { packs, out, options } => {
             let keys = release::keys_from_env(std::env::var(release::KEY_VAR).ok().as_deref())?;
             let published = release::publish(&packs, &out, &options, &keys)?;
@@ -695,6 +739,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             let [source] = options.positional()?;
             Command::Check { source: source.into(), json }
         }
+        "vo" => Command::Vo { content: options.required("--content")?, check: options.flag("--check") },
         "release-key" => {
             let [action, file] = options.positional()?;
             let new = match action.as_str() {

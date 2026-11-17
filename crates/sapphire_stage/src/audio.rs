@@ -895,8 +895,8 @@ mod tests {
 
         const DT: f32 = 1.0 / 60.0;
         const ASKED: usize = 10;
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../content/audio/generated/voice/en/guide_greet.ogg");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/vo/en/guide_greet.ogg");
         let sound = Sound::from_vorbis(std::fs::read(path).unwrap()).unwrap().with_mouth().unwrap();
         let curve = sound.mouth.clone().unwrap();
         let [sound_id, cue_id] =

@@ -476,7 +476,7 @@
 //!   - `--cues`, with either: fire that simulation's cues as a game does (M2 E3, `cues.rs`), on the
 //!     scene's character, or in `--arena` where its actors are: effects, screen effects and camera
 //!     shakes, and in the windowed app its
-//!     sounds and rumble, which load `audio.spack`. A capture and a bench stay silent. `--decals off`
+//!     sounds and rumble, which load `audio.spack` and the `vo_<locale>` packs. A capture and a bench stay silent. `--decals off`
 //!     keeps the cues' ground decals (M5 L7) from drawing, as the goldens from before them pin, and
 //!     `--distortion off` their bends (M5 L6), as a `--vfx` show's too.
 //!     Its cut-ins (M5 L10, the ultimate's close-up) play too; `--cutins off` plays none, as the goldens

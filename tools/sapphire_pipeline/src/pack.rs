@@ -34,7 +34,10 @@
 //! only that zone has ships in its pack; what they name from another tree (the benchmark's district names
 //! the shipped content's) is left out of the walk.
 //!
-//! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1), and scores and voice lines with them (M3 A1).
+//! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1), and scores and voice lines with them (M3 A1), but
+//! for each language's voice: its lines are a root of `vo_<locale>` (M6 U11, [`voice::pack_name`]), which
+//! holds them, their cues and their sounds, so an app mounts the language it speaks and a patch to one
+//! language's voice moves no other pack. What two languages' lines share stays in [`AUDIO`].
 //! The content tree holds about 280 sounds, about 3 MB against the shared pack's 23 MB, and nothing
 //! yet says which a game needs. A pack of their own
 //! leaves the shared pack byte for byte as it was, so a capture or a bench mounts and reads none of
@@ -106,6 +109,7 @@ use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
 use sapphire_assets::texture_level::{self, TextureLevel};
+use sapphire_assets::voice::{self, VoiceLines};
 use sapphire_assets::{AssetError, AssetId, AssetKind, PipelineKey, SlotMaterial};
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
@@ -451,8 +455,13 @@ fn groups<'a>(
     cache: Option<&Cache>,
 ) -> Result<BTreeMap<String, Vec<&'a CookedAsset>>, PackError> {
     // Where an asset goes if no one zone holds it.
+    let voices = voice_packs(report, cache)?;
     let home = |asset: &CookedAsset| {
-        font_packs.get(&asset.id).cloned().unwrap_or_else(|| group(kind(&asset.output)).to_owned())
+        font_packs
+            .get(&asset.id)
+            .or_else(|| voices.get(&asset.id))
+            .cloned()
+            .unwrap_or_else(|| group(kind(&asset.output)).to_owned())
     };
     let is_zone = |asset: &&CookedAsset| kind(&asset.output) == Some(AssetKind::Zone);
     let zones: Vec<&CookedAsset> = report.assets.iter().filter(is_zone).collect();
@@ -546,6 +555,51 @@ fn groups<'a>(
         groups.entry(name).or_default().push(asset);
     }
     Ok(groups)
+}
+
+/// The voice pack of each asset one language's lines alone reach (see the [module docs](self)): the lines,
+/// their cues and their sounds, in `vo_<locale>` ([`voice::pack_name`]). What two languages' lines reach
+/// isn't here, and goes in [`AUDIO`] with the rest of the sound.
+fn voice_packs(report: &CookReport, cache: Option<&Cache>) -> Result<HashMap<AssetId, String>, PackError> {
+    let by_id: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
+    // `None` once a second language's lines reach it.
+    let mut packs: HashMap<AssetId, Option<String>> = HashMap::new();
+    for asset in report.assets.iter().filter(|asset| kind(&asset.output) == Some(AssetKind::VoiceLines)) {
+        let bytes = cooked_bytes(asset)?;
+        let lines = VoiceLines::read(&bytes)
+            .map_err(|source| PackError::Invalid { path: asset.output.clone(), source: source.into() })?;
+        let pack = voice::pack_name(lines.locale.as_str());
+        let mut reached = vec![asset.id];
+        for cue in reach_of(asset, AssetKind::VoiceLines, cache)? {
+            reached.push(cue);
+            if let Some(cue) = by_id.get(&cue).filter(|cue| kind(&cue.output) == Some(AssetKind::Cue)) {
+                reached.extend(reach_of(cue, AssetKind::Cue, cache)?);
+            }
+        }
+        for id in reached {
+            packs
+                .entry(id)
+                .and_modify(|held| {
+                    if held.as_deref() != Some(pack.as_str()) {
+                        *held = None;
+                    }
+                })
+                .or_insert_with(|| Some(pack.clone()));
+        }
+    }
+    // A sound a score or another pack's cue plays too goes where they do, since the audio pack can't lean on
+    // a language's. Nothing else reaches a sound or a cue (`AssetKind::may_depend_on`).
+    for asset in &report.assets {
+        let of = kind(&asset.output).filter(|&of| of == AssetKind::Cue || of == AssetKind::Score);
+        if let Some(of) = of
+            && !packs.get(&asset.id).is_some_and(Option::is_some)
+        {
+            for sound in reach_of(asset, of, cache)? {
+                packs.insert(sound, None);
+            }
+        }
+    }
+    Ok(packs.into_iter().filter_map(|(id, pack)| Some((id, pack?))).collect())
 }
 
 /// What cooked `asset`, of kind `of`, reaches, from the cache if its bytes have been asked before.

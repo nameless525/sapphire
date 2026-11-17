@@ -18,6 +18,9 @@
 //! `LocaleSettings::voice`, apart from the text's) says which table answers: that's
 //! `sapphire_audio`'s `VoiceRoute`. A key reads as a Fluent message's does, so a line and its subtitle
 //! can share one. The cook checks that each line is a cue on the voice bus.
+//!
+//! Since M6 U11 a table is written by `sapphire_pipeline vo` from a language's masters, and cooks with its
+//! cues and sounds into that language's pack ([`pack_name`]).
 
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use sapphire_reflect::Versioned;
@@ -32,6 +35,16 @@ pub const VOICE_LINES_EXTENSION: &str = "svoice";
 
 /// The most lines one table may hold.
 pub const MAX_LINES: usize = 4_096;
+
+/// What a voice pack's name starts with: `vo_` and its language, `vo_ja`.
+pub const PACK_PREFIX: &str = "vo_";
+
+/// The pack a language's lines, their cues and their sounds are cooked into (M6 U11): `vo_` and the tag in
+/// lowercase, `vo_zh-hant`, so a pack's file is one name where case doesn't count. An app mounts it for the
+/// language it speaks; a line two languages share stays in the audio pack.
+pub fn pack_name(locale: &str) -> String {
+    format!("{PACK_PREFIX}{}", locale.to_ascii_lowercase())
+}
 
 /// One language's voice lines. See the [module docs](self).
 #[derive(
@@ -100,7 +113,7 @@ pub fn is_line_key(key: &str) -> bool {
 
 /// Whether `tag` could be a BCP 47 tag: subtags of letters and digits between hyphens. Whether a
 /// game has the language is the route's to say.
-fn is_locale_tag(tag: &str) -> bool {
+pub fn is_locale_tag(tag: &str) -> bool {
     !tag.is_empty()
         && tag
             .split('-')
@@ -195,6 +208,12 @@ mod tests {
             let message = VoiceLines::from_document(&document("en", &line(bad))).unwrap_err().to_string();
             assert!(message.contains("`lines`"), "{bad:?}: {message}");
         }
+    }
+
+    #[test]
+    fn a_languages_pack_is_named_by_its_tag_in_lowercase() {
+        assert_eq!(pack_name("ja"), "vo_ja");
+        assert_eq!(pack_name("zh-Hant"), "vo_zh-hant");
     }
 
     #[test]

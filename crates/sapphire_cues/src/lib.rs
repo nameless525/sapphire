@@ -33,7 +33,8 @@
 //! - Hitstop, which G3 applies in the same step that publishes the cue: it's simulated, and in the
 //!   checksum.
 //! - What a row fires: effects' documents are `sapphire_vfx`'s, presets are `sapphire_world`'s, shakes
-//!   are `sapphire_camera`'s, and sounds, scores and voice lines are documents in `audio.spack`.
+//!   are `sapphire_camera`'s, and sounds and scores are documents in `audio.spack`, and each language's
+//!   voice lines in its own `vo_<locale>.spack` (M6 U11).
 //! - Which phase a fight's music is in: the app says, from the simulation's encounters.
 //! - Live tuning (T2).
 //! - A phone's haptics: a touch device has no pad, and an app there hands the dispatcher `()`.

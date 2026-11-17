@@ -1,0 +1,14 @@
+// `en`'s voice lines, written by `sapphire_pipeline vo` from `script.ron` and the masters in `en/` (M6 U11):
+// every recorded line, in the script's order. Edit those and import again, never this.
+(
+    type: "sapphire::assets::VoiceLines",
+    version: 1,
+    data: (
+        locale: "en",
+        lines: [
+            (key: "perfect-dodge", cue: "55b6e700-7e93-4896-b46f-988dfc34dba9"),
+            (key: "swap-in", cue: "661e7d90-924b-4d7b-98ca-ec20556fff2c"),
+            (key: "guide_greet", cue: "95d9a068-cd1b-459c-b7a0-54b1e94b636a"),
+        ],
+    ),
+)

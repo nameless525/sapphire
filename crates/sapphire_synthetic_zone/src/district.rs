@@ -380,6 +380,7 @@ fn document(cells: u32, kinds: &[&str]) -> ZoneDocument {
         encounters: vec![encounter_id()],
         exits: Vec::new(),
         ambient: None,
+        water: Vec::new(),
     }
 }
 

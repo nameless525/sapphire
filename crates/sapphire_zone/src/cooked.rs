@@ -27,6 +27,12 @@ use crate::document::{
 };
 use crate::grid::{Bounds, CellCoord, Grid, MAX_COORDINATE};
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
+use crate::water::{
+    ArchivedCookedWaterVolume, ArchivedWaterShape, CookedWaterSurface, CookedWaterVolume, MAX_BODIES,
+    WaterShape, WaterSurface, check_shore_margin,
+};
+
+mod v8;
 
 /// Conventional file extension for cooked zones.
 pub const ZONE_EXTENSION: &str = "szone";
@@ -43,13 +49,16 @@ pub struct Zone {
 impl Versioned for Zone {
     /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4). 5:
     /// patrols, and who walks them (P3). 6: a sky material, wind, weather and fog in the presentation (M5 M6).
-    /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16).
-    const VERSION: u32 = 8;
+    /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16). 9: water, in both
+    /// halves (M6 W2), with version 8 still read ([`Zone::upgrade`]).
+    const VERSION: u32 = 9;
 }
 
 impl Versioned for ZoneSimulation {
     /// [`Zone::VERSION`] as of the last change to this half, which the digest names: a change to the
-    /// presentation's alone bumps that and not this, so no replay's digest moves with it. 5: M3 P3.
+    /// presentation's alone bumps that and not this, so no replay's digest moves with it. 5: M3 P3. Water
+    /// (M6 W2) left it there: the digest writes a water section only for a zone with water, so every zone
+    /// without keeps its digest.
     const VERSION: u32 = 5;
 }
 
@@ -75,6 +84,8 @@ pub struct ZoneSimulation {
     pub encounters: Vec<AssetId>,
     /// By ascending ID.
     pub exits: Vec<CookedExit>,
+    /// Its water's volumes, by ascending ID, which [`WaterVolumes`](crate::water::WaterVolumes) asks.
+    pub water: Vec<CookedWaterVolume>,
 }
 
 /// A way out of a zone ([`Exit`](crate::Exit)). Only the IDs and the pack's name say where it goes: nothing of
@@ -217,6 +228,8 @@ pub struct ZonePresentation {
     pub weather: Option<ZoneWeather>,
     /// Its fog over its day's.
     pub fog: Option<ZoneFog>,
+    /// Its water's surfaces, one for each of [`ZoneSimulation::water`], in its order.
+    pub water: Vec<CookedWaterSurface>,
 }
 
 /// One cell of a zone's grid.
@@ -311,6 +324,23 @@ impl Zone {
         let zone = sapphire_serialize::access::<Self>(bytes)?;
         zone.validate()?;
         Ok(zone)
+    }
+
+    /// Cooked zone bytes of an older version as this version's, checked by [`Self::read`]; `None` for bytes
+    /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water,
+    /// whose digest is the one it had (cooker rule 2, for one release). Any other version is
+    /// [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
+    pub fn upgrade(bytes: &[u8]) -> Result<Option<AlignedVec>, ZoneError> {
+        let found = sapphire_serialize::cooked::schema_version::<Self>(bytes)?;
+        if found == Self::VERSION {
+            return Ok(None);
+        }
+        if found != v8::VERSION {
+            return Err(sapphire_serialize::CookedError::Stale { found, current: Self::VERSION }.into());
+        }
+        let cooked = v8::read(bytes)?.to_cooked()?;
+        Self::read(&cooked)?;
+        Ok(Some(cooked))
     }
 }
 
@@ -508,8 +538,8 @@ impl ArchivedZone {
     }
 
     /// What the zone names without holding: the meshes of its cells and instances, its probe grid, its
-    /// reflection probes and its sky material, for the world to ask for and let go of, and for a packer to
-    /// place. Sorted, without repeats.
+    /// reflection probes, its sky material and its water's materials, for the world to ask for and let go of,
+    /// and for a packer to place. Sorted, without repeats.
     pub fn presentation_references(&self) -> Vec<AssetId> {
         let presentation = &self.presentation;
         let contents = presentation
@@ -522,8 +552,9 @@ impl ArchivedZone {
         let probes = presentation.probes.as_ref().copied();
         let reflections = presentation.reflections.as_ref().copied();
         let sky = presentation.sky.as_ref().copied();
+        let water = presentation.water.iter().filter_map(|surface| surface.material.as_ref().copied());
         let mut references: Vec<AssetId> =
-            meshes.chain(instances).chain(probes).chain(reflections).chain(sky).collect();
+            meshes.chain(instances).chain(probes).chain(reflections).chain(sky).chain(water).collect();
         references.sort_unstable();
         references.dedup();
         references
@@ -621,6 +652,14 @@ impl ArchivedZone {
             digest.bytes(exit.pack.as_bytes());
             digest.u64(exit.arrive.to_native());
         }
+        // Only a zone with water writes this, so every zone without has the digest it had before water was.
+        if !simulation.water.is_empty() {
+            digest.bytes(b"water");
+            digest.u32(simulation.water.len() as u32);
+            for body in simulation.water.iter() {
+                digest.water(body);
+            }
+        }
         Ok(digest.finish())
     }
 
@@ -688,7 +727,7 @@ impl ArchivedZone {
             let invalid = |problem| ZoneError::invalid(format!("exit `{}`", exit.name.as_str()), problem);
             check_name(exit.pack.as_str()).map_err(invalid)?;
         }
-        Ok(())
+        validate_water(simulation)
     }
 
     fn validate_presentation(&self) -> Result<(), ZoneError> {
@@ -772,8 +811,60 @@ impl ArchivedZone {
         if let Some(fog) = presentation.fog.as_ref() {
             fog.to_native().check().map_err(|problem| ZoneError::invalid("fog", problem))?;
         }
+        self.validate_water_surfaces()
+    }
+
+    /// Whether each body has one surface, in the simulation's order, with a margin a cook would write and a
+    /// probe only where the zone has reflections.
+    fn validate_water_surfaces(&self) -> Result<(), ZoneError> {
+        let (volumes, surfaces) = (&self.simulation.water, &self.presentation.water);
+        if volumes.len() != surfaces.len() {
+            let problem = format!("{} surfaces for {} bodies", surfaces.len(), volumes.len());
+            return Err(ZoneError::invalid("water", problem));
+        }
+        for (volume, surface) in volumes.iter().zip(surfaces.iter()) {
+            let invalid =
+                |problem: String| ZoneError::invalid(format!("water `{}`", volume.name.as_str()), problem);
+            if surface.id != volume.id {
+                return Err(invalid("its surface is another body's".to_owned()));
+            }
+            check_shore_margin(surface.shore_margin.to_native()).map_err(invalid)?;
+            if surface.probe.is_some() && self.presentation.reflections.is_none() {
+                return Err(invalid("it reflects a probe, and the zone has none".to_owned()));
+            }
+        }
         Ok(())
     }
+}
+
+/// Whether the simulation's water is what a document's check and cook would make: few enough bodies and one
+/// sea, each shape one the query can answer over, and bounds exactly the ones its shape has, since the query
+/// trusts them to skip a body.
+fn validate_water(simulation: &ArchivedZoneSimulation) -> Result<(), ZoneError> {
+    if simulation.water.len() > MAX_BODIES {
+        let problem =
+            format!("{} bodies is more than the {MAX_BODIES} a zone may hold", simulation.water.len());
+        return Err(ZoneError::invalid("water", problem));
+    }
+    check_ids("water", simulation.water.iter().map(|entry| (entry.id.to_native(), entry.name.as_str())))?;
+    let mut seas = 0;
+    for body in simulation.water.iter() {
+        let invalid =
+            |problem: String| ZoneError::invalid(format!("water `{}`", body.name.as_str()), problem);
+        let shape = rkyv::deserialize::<WaterShape, rkyv::rancor::Error>(&body.shape)
+            .map_err(|error| invalid(error.to_string()))?;
+        shape.check().map_err(|(field, problem)| invalid(format!("{field}: {problem}")))?;
+        if body.bounds() != shape.bounds() {
+            return Err(invalid(format!("bounds {:?} aren't its shape's", body.bounds())));
+        }
+        if matches!(body.shape, ArchivedWaterShape::Ocean { .. }) {
+            seas += 1;
+            if seas > 1 {
+                return Err(invalid("a zone has one sea at most".to_owned()));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_count(list: &str, count: usize) -> Result<(), ZoneError> {
@@ -870,6 +961,37 @@ impl Digest {
         }
     }
 
+    /// A water body's ID, its shape's tag and values, its surface and whether it swims. Its bounds follow from
+    /// its shape, and its name from its ID.
+    fn water(&mut self, body: &ArchivedCookedWaterVolume) {
+        self.u64(body.id.to_native());
+        match &body.shape {
+            ArchivedWaterShape::Lake { outline, height } => {
+                self.u32(0);
+                self.u32(outline.len() as u32);
+                for point in outline.iter() {
+                    self.floats(&point.each_ref().map(|value| value.to_native()));
+                }
+                self.floats(&[height.to_native()]);
+            }
+            ArchivedWaterShape::River { points } => {
+                self.u32(1);
+                self.u32(points.len() as u32);
+                for point in points.iter() {
+                    let point = point.to_native();
+                    self.floats(&point.at);
+                    self.floats(&[point.width, point.speed]);
+                }
+            }
+            ArchivedWaterShape::Ocean { height } => {
+                self.u32(2);
+                self.floats(&[height.to_native()]);
+            }
+        }
+        self.u32(u32::from(body.surface() == WaterSurface::Frozen));
+        self.u32(u32::from(body.swim));
+    }
+
     /// With their length, so what follows can't read as part of them.
     fn bytes(&mut self, bytes: &[u8]) {
         self.u64(bytes.len() as u64);
@@ -888,6 +1010,7 @@ mod tests {
     use super::*;
     use crate::document::{ZoneDocument, ZoneGeometry};
     use crate::grid::Place;
+    use crate::water::{RiverPoint, WaterBody, WaterKind, WaterVolumes};
 
     const COLLIDERS: AssetId = AssetId::from_text("0aec06e8-ef8a-4f60-8dce-1e159cc277fa");
     const MESH: AssetId = AssetId::from_text("e94f690f-38e2-4630-aeb3-4d34d06fc233");
@@ -898,6 +1021,7 @@ mod tests {
     const NAVIGATION: AssetId = AssetId::from_text("6d7b7a5c-8c5e-4d7f-9b0e-3a1f2c4d5e6f");
     const SKY: AssetId = AssetId::from_text("5d1c7a2e-90b4-4e3f-8c61-2a7f0d9b4e15");
     const REFLECTIONS: AssetId = AssetId::from_text("0b3f6c1d-7a52-4e98-b4d1-93c2e8f05a67");
+    const WATER_MATERIAL: AssetId = AssetId::from_text("7c2e9a41-5b3d-4f08-a6e1-0d94b2c7f318");
 
     fn document() -> ZoneDocument {
         ZoneDocument::from_ron(&format!(
@@ -953,8 +1077,55 @@ mod tests {
     }
 
     fn zone() -> Zone {
+        cook(&document())
+    }
+
+    /// [`zone`] with water: a moat reflecting the gate's probe, a brook nobody swims in and the sea.
+    fn water_zone() -> Zone {
+        let mut document = document();
+        document.water = vec![
+            WaterBody {
+                name: "moat".to_owned(),
+                shape: WaterShape::Lake {
+                    outline: vec![[-10.0, -30.0], [10.0, -30.0], [10.0, -24.0], [-10.0, -24.0]],
+                    height: -0.5,
+                },
+                surface: WaterSurface::Liquid,
+                material: Some(WATER_MATERIAL),
+                swim: true,
+                probe: Some("gate".to_owned()),
+                shore_margin: 2.0,
+            },
+            WaterBody {
+                name: "brook".to_owned(),
+                shape: WaterShape::River {
+                    points: vec![
+                        RiverPoint { at: [20.0, 1.0, -40.0], width: 2.0, speed: 1.0 },
+                        RiverPoint { at: [24.0, 0.5, -20.0], width: 3.0, speed: 1.5 },
+                    ],
+                },
+                surface: WaterSurface::Liquid,
+                material: None,
+                swim: false,
+                probe: None,
+                shore_margin: 1.0,
+            },
+            WaterBody {
+                name: "sea".to_owned(),
+                shape: WaterShape::Ocean { height: -3.0 },
+                surface: WaterSurface::Liquid,
+                material: Some(WATER_MATERIAL),
+                swim: true,
+                probe: None,
+                shore_margin: 4.0,
+            },
+        ];
+        cook(&document)
+    }
+
+    fn cook(document: &ZoneDocument) -> Zone {
         let boxed = |min: [f32; 3], max: [f32; 3]| Bounds { min, max };
-        document()
+        document
             .cook(ZoneGeometry {
                 meshes: [
                     (
@@ -1191,6 +1362,15 @@ mod tests {
                 assert!(zone.simulation.patrol(patrol).is_some_and(|walk| walk.points().count() > 1));
             }
         }
+        let volumes = WaterVolumes::new(&zone.simulation, |_, from_y: f32, _, _| Some(from_y - 1.0));
+        for x in [-20.0, 0.0, 21.0, 22.0, 9000.0] {
+            for z in [-40.0, -27.0, -30.0, 0.0] {
+                if let Some(sample) = volumes.at(x, -1.0, z) {
+                    assert!(volumes.body(sample.body).is_some() && sample.surface_y.is_finite());
+                    seen += 1;
+                }
+            }
+        }
         let colliders = colliders();
         let digest = zone.simulation_digest(|_| Some(&colliders[..]));
         assert!(digest.is_ok(), "{digest:?}");
@@ -1202,7 +1382,7 @@ mod tests {
     /// repeats a failure. 40,000 flips at about a thousand bytes covers each bit several times over.
     #[test]
     fn damaged_bytes_are_refused_or_safe_and_never_panic() {
-        let good = zone().to_cooked().expect("write");
+        let good = water_zone().to_cooked().expect("write");
         let mut random = Random(0x5a17_e0ff_1ce5_d00d);
         let mut still_read = 0;
         for round in 0..40_000 {
@@ -1364,5 +1544,207 @@ mod tests {
         );
         std::io::stderr().write_all(line.as_bytes()).expect("stderr takes it");
         assert_eq!(digest, 0x15dc_b5da_8e03_1351, "the digest moved; {line}");
+    }
+
+    /// [`digest_pins`] for a zone with water, which only such a zone's digest writes: the moat, the brook and
+    /// the sea move it from the same zone's without, and it's pinned the same way (`sapphire_zone water
+    /// digest` in a job's log). It moves when the water section's text or order changes.
+    #[test]
+    fn water_moves_the_digest_and_is_pinned() {
+        use std::io::Write as _;
+
+        let colliders = colliders();
+        let digest_of = |zone: &Zone| {
+            let bytes = zone.to_cooked().expect("write");
+            Zone::read(&bytes).expect("read").simulation_digest(|_| Some(&colliders[..])).expect("digests")
+        };
+        let digest = digest_of(&water_zone());
+        assert_ne!(digest, digest_of(&zone()), "water is in the digest");
+        let line = format!("sapphire_zone water digest {digest:#018x} on {}\n", std::env::consts::ARCH);
+        std::io::stderr().write_all(line.as_bytes()).expect("stderr takes it");
+        assert_eq!(digest, 0x131b_a8cb_4d77_d2af, "the water digest moved; {line}");
+    }
+
+    /// Every value the query reads is in the digest, and nothing it doesn't: a body's material, probe and
+    /// shore margin are drawing's.
+    #[test]
+    fn the_digest_follows_what_the_query_reads() {
+        let colliders = colliders();
+        let digest_of = |zone: &Zone| {
+            let bytes = zone.to_cooked().expect("write");
+            Zone::read(&bytes).expect("read").simulation_digest(|_| Some(&colliders[..])).expect("digests")
+        };
+        let base = digest_of(&water_zone());
+        let at = |zone: &Zone, name: &str| {
+            zone.simulation.water.iter().position(|body| body.name == name).expect("there")
+        };
+        type Tamper = fn(&mut Zone, usize, usize, usize);
+        let simulation: [(&str, Tamper); 9] = [
+            ("a lake's point", |z, moat, _, _| {
+                let WaterShape::Lake { outline, .. } = &mut z.simulation.water[moat].shape else {
+                    unreachable!()
+                };
+                outline[2][1] += 0.25;
+            }),
+            ("a lake's height", |z, moat, _, _| {
+                let WaterShape::Lake { height, .. } = &mut z.simulation.water[moat].shape else {
+                    unreachable!()
+                };
+                *height += 0.25;
+            }),
+            ("a river's point", |z, _, brook, _| {
+                let WaterShape::River { points } = &mut z.simulation.water[brook].shape else {
+                    unreachable!()
+                };
+                points[1].at[1] += 0.25;
+            }),
+            ("a river's width", |z, _, brook, _| {
+                let WaterShape::River { points } = &mut z.simulation.water[brook].shape else {
+                    unreachable!()
+                };
+                points[0].width += 0.25;
+            }),
+            ("a river's speed", |z, _, brook, _| {
+                let WaterShape::River { points } = &mut z.simulation.water[brook].shape else {
+                    unreachable!()
+                };
+                points[0].speed += 0.25;
+            }),
+            ("the sea's height", |z, _, _, sea| {
+                z.simulation.water[sea].shape = WaterShape::Ocean { height: -2.0 }
+            }),
+            ("a frozen surface", |z, moat, _, _| z.simulation.water[moat].surface = WaterSurface::Frozen),
+            ("whether it swims", |z, _, brook, _| z.simulation.water[brook].swim = true),
+            ("a body fewer", |z, _, brook, _| {
+                z.simulation.water.remove(brook);
+                z.presentation.water.remove(brook);
+            }),
+        ];
+        let zone = water_zone();
+        let (moat, brook, sea) = (at(&zone, "moat"), at(&zone, "brook"), at(&zone, "sea"));
+        for (what, tamper) in simulation {
+            let mut moved = water_zone();
+            tamper(&mut moved, moat, brook, sea);
+            if let Some(body) = moved.simulation.water.get_mut(moat) {
+                (body.bounds_min, body.bounds_max) = body.shape.bounds();
+            }
+            if let Some(body) = moved.simulation.water.get_mut(brook) {
+                (body.bounds_min, body.bounds_max) = body.shape.bounds();
+            }
+            assert_ne!(digest_of(&moved), base, "{what}");
+        }
+        let presentation: [(&str, Tamper); 3] = [
+            ("a material", |z, moat, _, _| z.presentation.water[moat].material = None),
+            ("a probe", |z, moat, _, _| z.presentation.water[moat].probe = None),
+            ("a shore margin", |z, _, _, sea| z.presentation.water[sea].shore_margin = 0.5),
+        ];
+        for (what, tamper) in presentation {
+            let mut moved = water_zone();
+            tamper(&mut moved, moat, brook, sea);
+            assert_eq!(digest_of(&moved), base, "{what}");
+        }
+    }
+
+    /// Water reads back in place: the query answers over the archive, and drawing finds each body's surface
+    /// and its material among what the zone names.
+    #[test]
+    fn a_cooked_zones_water_reads_back() {
+        let bytes = water_zone().to_cooked().expect("write");
+        let read = Zone::read(&bytes).expect("read");
+        assert!(read.presentation_references().contains(&WATER_MATERIAL));
+        assert!(!read.references().contains(&WATER_MATERIAL), "drawing's, never the simulation's");
+        let volumes = WaterVolumes::new(&read.simulation, |_, from_y: f32, _, _| Some(from_y - 2.0));
+        let moat = volumes.at(0.0, -1.0, -27.0).expect("the moat");
+        assert_eq!((moat.kind, moat.surface_y, moat.depth), (WaterKind::Lake, -0.5, Some(2.0)));
+        let surface = &read.presentation.water[usize::from(moat.body)];
+        assert_eq!(surface.id, read.simulation.water[usize::from(moat.body)].id);
+        assert_eq!(
+            (surface.probe.as_ref().map(|probe| probe.to_native()), surface.shore_margin.to_native()),
+            (Some(0), 2.0)
+        );
+        let brook = volumes.at(22.0, 0.0, -30.0).expect("the brook");
+        assert_eq!((brook.kind, brook.swim), (WaterKind::River, false));
+        assert_eq!(volumes.at(0.0, -4.0, 0.0).expect("the sea").kind, WaterKind::Ocean);
+        assert_eq!(volumes.at(0.0, -2.0, 0.0), None, "over the sea, off the moat");
+    }
+
+    /// Whatever wrote these, `read` must refuse water the document would: a pack's bytes needn't come from our
+    /// cooker, and the query trusts a body's bounds.
+    #[test]
+    fn cooked_water_the_document_would_refuse_is_refused() {
+        type Tamper = fn(&mut Zone);
+        let cases: [(&str, &str, Tamper); 10] = [
+            ("order", "out of order", |z| z.simulation.water.reverse()),
+            ("id", "isn't its name's hash", |z| z.simulation.water[0].id ^= 1),
+            ("bounds", "aren't its shape's", |z| z.simulation.water[0].bounds_max[0] += 1.0),
+            ("two seas", "one sea", |z| {
+                let lake = z.simulation.water.iter_mut().find(|body| body.name == "moat").expect("there");
+                lake.shape = WaterShape::Ocean { height: 0.0 };
+                (lake.bounds_min, lake.bounds_max) = lake.shape.bounds();
+            }),
+            ("an outline", "cross or touch", |z| {
+                let lake = z.simulation.water.iter_mut().find(|body| body.name == "moat").expect("there");
+                let WaterShape::Lake { outline, .. } = &mut lake.shape else { unreachable!() };
+                outline.swap(0, 1);
+            }),
+            ("a river", "width", |z| {
+                let brook = z.simulation.water.iter_mut().find(|body| body.name == "brook").expect("there");
+                let WaterShape::River { points } = &mut brook.shape else { unreachable!() };
+                points[0].width = f32::NAN;
+            }),
+            ("surfaces", "surfaces for", |z| {
+                z.presentation.water.pop();
+            }),
+            ("a surface's body", "another body's", |z| z.presentation.water.swap(0, 1)),
+            ("a margin", "from 0 to", |z| z.presentation.water[0].shore_margin = f32::INFINITY),
+            ("a probe", "has none", |z| {
+                z.presentation.reflections = None;
+                z.presentation.water.iter_mut().for_each(|surface| surface.probe = Some(0));
+            }),
+        ];
+        for (what, expected, tamper) in cases {
+            let mut tampered = water_zone();
+            tamper(&mut tampered);
+            let bytes = tampered.to_cooked().expect("write");
+            let message = Zone::read(&bytes).expect_err(what).to_string();
+            assert!(message.contains(expected), "{what}: `{message}` must say `{expected}`");
+        }
+        let mut crowded = water_zone();
+        let body = crowded.simulation.water[0].clone();
+        crowded.simulation.water = (0..=MAX_BODIES)
+            .map(|index| {
+                let name = format!("pool_{index}");
+                CookedWaterVolume { id: Name::new(&name).as_u64(), name, ..body.clone() }
+            })
+            .collect();
+        crowded.simulation.water.sort_unstable_by_key(|body| body.id);
+        let message = Zone::read(&crowded.to_cooked().expect("write")).expect_err("17").to_string();
+        assert!(message.contains("more than the 16"), "{message}");
+    }
+
+    /// Version 8 bytes, as M5 cooked them, read for one release (cooker rule 2): `read` refuses them as stale,
+    /// and `upgrade` makes them this version's, a zone with no water whose digest is the one it had.
+    #[test]
+    fn a_version_8_zone_reads_as_one_with_no_water() {
+        let current = zone();
+        let old = v8::write(&current);
+        let message = Zone::read(&old).expect_err("stale").to_string();
+        assert!(message.contains("schema version 8") && message.contains("recook"), "{message}");
+
+        let upgraded = Zone::upgrade(&old).expect("reads").expect("version 8 bytes are rewritten");
+        let bytes = current.to_cooked().expect("write");
+        assert_eq!(upgraded.as_slice(), bytes.as_slice(), "the very bytes a cook writes today");
+        assert!(Zone::upgrade(&bytes).expect("reads").is_none(), "today's bytes are left as they are");
+
+        // Water dropped on the way to version 8 comes back as none, and the digest is the zone's without it.
+        let colliders = colliders();
+        let from_water = Zone::upgrade(&v8::write(&water_zone())).expect("reads").expect("rewritten");
+        let read = Zone::read(&from_water).expect("read");
+        assert!(read.simulation.water.is_empty() && read.presentation.water.is_empty());
+        assert_eq!(
+            read.simulation_digest(|_| Some(&colliders[..])).expect("digests"),
+            0x15dc_b5da_8e03_1351,
+            "digest_pins's"
+        );
     }
 }

@@ -23,6 +23,8 @@
 //!   bakes of them (`sapphire_assets::reflections`).
 //! - **Ambient characters** ([`ambient`], M5 C10): who stands about a zone and walks it, as presentation
 //!   alone, cooked to an asset of the zone's own (`.sambient`) beside its cells, never into [`Zone`].
+//! - **Water** ([`water`], M6 W2): lakes, rivers and the sea, their volumes in [`ZoneSimulation`] and their
+//!   surfaces in [`ZonePresentation`], and [`WaterVolumes::at`], the query a fixed step may ask.
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //!
@@ -45,7 +47,8 @@
 //! # Determinism
 //!
 //! What the simulation reads is parsed from decimal text and copied, with nothing computed from it but
-//! hashes, so it cooks to the same values on every OS and architecture, and the digest hashes values,
+//! hashes and a water body's bounds (comparisons, a halving and a subtraction, each correctly rounded),
+//! so it cooks to the same values on every OS and architecture, and the digest hashes values,
 //! not an archive's layout. Presentation's bounds are computed from geometry, whose cook goes through
 //! each platform's C math library, so they stay out of the digest and may differ by a few bits.
 //! `[simulation]` in `xtask/layers.toml` holds this crate to the simulation's `clippy.toml`.
@@ -58,6 +61,7 @@ pub mod encounter;
 pub mod grid;
 pub mod look;
 pub mod reflections;
+pub mod water;
 
 pub use ambient::{
     AMBIENT_EXTENSION, AMBIENT_PART, Ambient, ArchivedAmbient, ArchivedCookedCastMember, ArchivedCookedPost,
@@ -83,6 +87,10 @@ pub use encounter::{
 pub use grid::{Bounds, CellCoord, Grid, Place};
 pub use look::{ArchivedZoneFog, ArchivedZoneWeather, ArchivedZoneWind, ZoneFog, ZoneWeather, ZoneWind};
 pub use reflections::{ParallaxBox, ReflectionProbe};
+pub use water::{
+    ArchivedCookedWaterSurface, ArchivedCookedWaterVolume, CookedWaterSurface, CookedWaterVolume, Floor,
+    RiverPoint, WaterBody, WaterKind, WaterSample, WaterShape, WaterSurface, WaterVolumes,
+};
 
 /// The pack a zone's own assets go in, from the zone source's file stem (`town.zone.ron` →
 /// `zone_town`): the packer writes it and whoever loads the zone mounts it.

@@ -80,6 +80,7 @@ impl Small {
                 wind: None,
                 weather: None,
                 fog: None,
+                water: Vec::new(),
             },
         };
         let encounter = format!(

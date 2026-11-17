@@ -23,7 +23,8 @@ const SHIPPED: [(&str, u64); 6] = [
 ];
 
 fn digest(stem: &str) -> u64 {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../content/zones/{stem}/{stem}.zone.ron"));
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../content/zones/{stem}/{stem}.zone.ron"));
     let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     let document = ZoneDocument::from_ron(&text).unwrap_or_else(|error| panic!("{stem}: {error}"));
     let mut simulation = document.simulation().unwrap_or_else(|error| panic!("{stem}: {error}"));
@@ -48,6 +49,7 @@ fn digest(stem: &str) -> u64 {
             wind: None,
             weather: None,
             fog: None,
+            water: Vec::new(),
         },
     };
     let bytes = zone.to_cooked().expect("writes");

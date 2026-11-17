@@ -1,0 +1,317 @@
+use sapphire_serialize::cooked::AlignedVec;
+
+use super::*;
+use crate::{Zone, ZoneDocument, ZoneGeometry};
+
+/// A pond, a river that falls along two stretches, a frozen rink, and the sea under them all.
+const WATER: &str = r#"
+    water: [
+        (name: "pond", shape: Lake(outline: [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], height: 1.0)),
+        (name: "race", shape: River(points: [
+            (at: (20.0, 3.0, 5.0), width: 4.0, speed: 2.0),
+            (at: (40.0, 1.0, 5.0), width: 6.0, speed: 2.0),
+            (at: (40.0, 1.0, 25.0), width: 6.0, speed: 1.0),
+        ]), swim: false),
+        (name: "rink", shape: Lake(outline: [(-20.0, -20.0), (-10.0, -20.0), (-10.0, -10.0), (-20.0, -10.0)], height: 0.5), surface: Frozen),
+        (name: "sea", shape: Ocean(height: -2.0)),
+    ],
+"#;
+
+fn document(data: &str) -> ZoneDocument {
+    ZoneDocument::from_ron(&format!(
+        r#"(type: "sapphire::zone::ZoneDocument", version: 1, data: (grid: (cell_size: 32.0), {data}))"#
+    ))
+    .expect("a good document")
+}
+
+fn cooked(data: &str) -> AlignedVec {
+    document(data).cook(ZoneGeometry::default()).expect("cooks").to_cooked().expect("writes")
+}
+
+/// The ground under it all: the pond's bed a metre down, a hill west of x = −30 standing over the sea, nothing
+/// at all past x = 100, and elsewhere the seabed at −5. A ray that starts inside the hill meets it at once.
+fn floor(x: f32, from_y: f32, _z: f32, reach: f32) -> Option<f32> {
+    let ground = if x > 100.0 {
+        return None;
+    } else if x < -30.0 {
+        3.0
+    } else if (0.0..=10.0).contains(&x) {
+        -1.0
+    } else {
+        -5.0
+    };
+    let hit = if ground > from_y { from_y } else { ground };
+    (from_y - hit <= reach).then_some(hit)
+}
+
+fn body_named(volumes: &WaterVolumes<'_, impl Floor>, sample: &WaterSample) -> String {
+    volumes.body(sample.body).expect("a body").name.as_str().to_owned()
+}
+
+/// The query's table: inside and outside each kind, at the shore, along a river's flow, frozen, under a hill,
+/// and the floor's depth, with the floor's ray as `floor` above casts it.
+#[test]
+fn the_query_answers_where_the_water_is() {
+    let bytes = cooked(WATER);
+    let zone = Zone::read(&bytes).expect("reads");
+    let volumes = WaterVolumes::new(&zone.simulation, floor);
+    assert!(!volumes.is_empty());
+
+    /// The body's name, its kind, the surface's height, the flow and the depth.
+    type Expected = (&'static str, WaterKind, f32, [f32; 2], Option<f32>);
+    struct Row {
+        what: &'static str,
+        at: [f32; 3],
+        expect: Option<Expected>,
+    }
+    let rows = [
+        Row {
+            what: "the pond's middle",
+            at: [5.0, 0.5, 5.0],
+            expect: Some(("pond", WaterKind::Lake, 1.0, [0.0; 2], Some(2.0))),
+        },
+        Row {
+            what: "on the pond's surface",
+            at: [5.0, 1.0, 5.0],
+            expect: Some(("pond", WaterKind::Lake, 1.0, [0.0; 2], Some(2.0))),
+        },
+        Row { what: "over the pond", at: [5.0, 1.01, 5.0], expect: None },
+        Row { what: "under the pond's bed", at: [5.0, -1.5, 5.0], expect: None },
+        Row {
+            what: "just inside the pond's shore",
+            at: [9.99, 0.5, 5.0],
+            expect: Some(("pond", WaterKind::Lake, 1.0, [0.0; 2], Some(2.0))),
+        },
+        Row { what: "just outside it, over the sea", at: [10.01, 0.5, 5.0], expect: None },
+        Row {
+            what: "the sea",
+            at: [15.0, -3.0, 15.0],
+            expect: Some(("sea", WaterKind::Ocean, -2.0, [0.0; 2], Some(3.0))),
+        },
+        Row {
+            what: "the sea with no floor in reach",
+            at: [200.0, -3.0, 0.0],
+            expect: Some(("sea", WaterKind::Ocean, -2.0, [0.0; 2], None)),
+        },
+        Row { what: "under the hill", at: [-40.0, -3.0, 0.0], expect: None },
+        Row {
+            what: "halfway down the race's fall",
+            at: [30.0, 1.5, 5.0],
+            expect: Some(("race", WaterKind::River, 2.0, [2.0, 0.0], Some(7.0))),
+        },
+        Row { what: "over the race there", at: [30.0, 2.5, 5.0], expect: None },
+        Row {
+            what: "by the race's bank",
+            at: [30.0, 1.5, 7.4],
+            expect: Some(("race", WaterKind::River, 2.0, [2.0, 0.0], Some(7.0))),
+        },
+        Row { what: "past its bank", at: [30.0, 1.5, 7.6], expect: None },
+        Row {
+            what: "the race's second stretch",
+            at: [40.0, 0.5, 15.0],
+            expect: Some(("race", WaterKind::River, 1.0, [0.0, 1.5], Some(6.0))),
+        },
+        Row {
+            what: "round the race's bend",
+            at: [42.5, 0.5, 4.0],
+            expect: Some(("race", WaterKind::River, 1.0, [2.0, 0.0], Some(6.0))),
+        },
+        Row { what: "past the race's mouth", at: [40.0, 0.5, 28.5], expect: None },
+        Row {
+            what: "the rink",
+            at: [-15.0, 0.0, -15.0],
+            expect: Some(("rink", WaterKind::Lake, 0.5, [0.0; 2], Some(5.5))),
+        },
+    ];
+    for row in rows {
+        let [x, y, z] = row.at;
+        let found = volumes.at(x, y, z);
+        match (found, row.expect) {
+            (None, None) => {}
+            (Some(sample), Some((name, kind, surface_y, flow, depth))) => {
+                assert_eq!(body_named(&volumes, &sample), name, "{}", row.what);
+                assert_eq!(sample.kind, kind, "{}", row.what);
+                assert_eq!(sample.surface_y, surface_y, "{}", row.what);
+                let off = (0..2).map(|axis| (sample.flow[axis] - flow[axis]).abs()).fold(0.0, f32::max);
+                assert!(off <= 1e-6, "{}: flow {:?}, expected {flow:?}", row.what, sample.flow);
+                assert_eq!(sample.depth, depth, "{}", row.what);
+            }
+            (found, expect) => panic!("{}: found {found:?}, expected {expect:?}", row.what),
+        }
+    }
+
+    let rink = volumes.at(-15.0, 0.0, -15.0).expect("the rink");
+    assert_eq!((rink.surface, rink.swim), (WaterSurface::Frozen, true), "ice reports the water under it");
+    let race = volumes.at(30.0, 1.5, 5.0).expect("the race");
+    assert_eq!((race.surface, race.swim), (WaterSurface::Liquid, false));
+    let pond = volumes.at(5.0, 0.5, 5.0).expect("the pond");
+    assert!(pond.swim);
+}
+
+/// With no floor at all, every column is as deep as its water goes, and the sea's covers the zone.
+#[test]
+fn with_no_floor_the_water_is_bottomless() {
+    let bytes = cooked(WATER);
+    let zone = Zone::read(&bytes).expect("reads");
+    let volumes = WaterVolumes::new(&zone.simulation, |_, _, _, _| None);
+    let deep = volumes.at(-40.0, -100.0, 3000.0).expect("the sea");
+    assert_eq!((deep.kind, deep.depth), (WaterKind::Ocean, None));
+    assert_eq!(volumes.at(5.0, -50.0, 5.0).expect("the pond").kind, WaterKind::Lake);
+}
+
+/// Where two bodies hold a point, the higher surface answers, the first in the zone's order on a tie; and the
+/// floor is asked from that surface, once.
+#[test]
+fn where_bodies_overlap_the_higher_surface_answers() {
+    let square = |x: f32| format!("[({x}, 0.0), ({}, 0.0), ({}, 10.0), ({x}, 10.0)]", x + 10.0, x + 10.0);
+    let bytes = cooked(&format!(
+        r#"water: [
+            (name: "low", shape: Lake(outline: {}, height: 1.0)),
+            (name: "high", shape: Lake(outline: {}, height: 2.0)),
+            (name: "level", shape: Lake(outline: {}, height: 2.0)),
+        ],"#,
+        square(0.0),
+        square(5.0),
+        square(8.0),
+    ));
+    let zone = Zone::read(&bytes).expect("reads");
+    let asked = std::cell::Cell::new(0);
+    let floor = |_: f32, from_y: f32, _: f32, _: f32| {
+        asked.set(asked.get() + 1);
+        Some(from_y - 3.0)
+    };
+    let volumes = WaterVolumes::new(&zone.simulation, floor);
+    let name = |x: f32, y: f32| volumes.at(x, y, 5.0).map(|sample| body_named(&volumes, &sample));
+    assert_eq!(name(6.0, 0.5).as_deref(), Some("high"));
+    assert_eq!(name(6.0, 1.5).as_deref(), Some("high"));
+    assert_eq!(name(2.0, 0.5).as_deref(), Some("low"));
+    // "high" and "level" are one height over x = 9: the first by ID answers, whichever that is.
+    let first = zone.simulation.water.iter().find(|body| body.name != "low").expect("there").name.as_str();
+    assert_eq!(name(9.0, 0.5).as_deref(), Some(first));
+    assert_eq!(volumes.at(6.0, 0.5, 5.0).expect("high").depth, Some(3.0), "from the higher surface");
+    asked.set(0);
+    let _ = volumes.at(9.0, 0.5, 5.0);
+    assert_eq!(asked.get(), 1, "one ray, however many bodies hold the point");
+    let _ = volumes.at(30.0, 0.5, 5.0);
+    assert_eq!(asked.get(), 1, "none where no body does");
+}
+
+#[test]
+fn a_zone_with_no_water_has_none_anywhere() {
+    let bytes = cooked("");
+    let zone = Zone::read(&bytes).expect("reads");
+    let volumes = WaterVolumes::new(&zone.simulation, floor);
+    assert!(volumes.is_empty());
+    assert_eq!(volumes.at(0.0, -100.0, 0.0), None);
+}
+
+/// A lake's outline may run either way round, and its shape is the same.
+#[test]
+fn an_outline_reads_the_same_either_way_round() {
+    let forward = cooked(
+        r#"water: [(name: "a", shape: Lake(outline: [(0.0, 0.0), (8.0, 0.0), (4.0, 6.0)], height: 0.0))],"#,
+    );
+    let backward = cooked(
+        r#"water: [(name: "a", shape: Lake(outline: [(4.0, 6.0), (8.0, 0.0), (0.0, 0.0)], height: 0.0))],"#,
+    );
+    let (forward, backward) = (Zone::read(&forward).expect("reads"), Zone::read(&backward).expect("reads"));
+    let (forward, backward) =
+        (WaterVolumes::new(&forward.simulation, floor), WaterVolumes::new(&backward.simulation, floor));
+    for (x, z) in [(4.0, 2.0), (1.0, 1.0), (7.5, 0.5), (4.0, 5.9), (0.5, 3.0), (7.5, 3.0), (4.0, -0.1)] {
+        assert_eq!(forward.at(x, -0.5, z).is_some(), backward.at(x, -0.5, z).is_some(), "({x}, {z})");
+    }
+    assert!(forward.at(4.0, -0.5, 2.0).is_some());
+    assert!(forward.at(0.5, -0.5, 3.0).is_none());
+}
+
+/// Each thing a document can get wrong about its water names its field.
+#[test]
+fn every_water_check_names_the_field() {
+    type Tamper = fn(&mut ZoneDocument);
+    let cases: [(&str, Tamper); 16] = [
+        ("water[0].name", |d| d.water[0].name.clear()),
+        ("water[1].name", |d| d.water[1].name = "pond".to_owned()),
+        ("water[0].shape.outline", |d| {
+            d.water[0].shape = WaterShape::Lake { outline: vec![[0.0; 2], [1.0, 0.0]], height: 0.0 }
+        }),
+        ("water[0].shape.outline", |d| {
+            let outline = vec![[0.0, 0.0], [10.0, 10.0], [10.0, 0.0], [0.0, 10.0]];
+            d.water[0].shape = WaterShape::Lake { outline, height: 0.0 };
+        }),
+        ("water[0].shape.outline", |d| {
+            let outline = vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
+            d.water[0].shape = WaterShape::Lake { outline, height: 0.0 };
+        }),
+        ("water[0].shape.outline", |d| {
+            let outline = vec![[0.0, 0.0], [0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
+            d.water[0].shape = WaterShape::Lake { outline, height: 0.0 };
+        }),
+        ("water[0].shape.outline", |d| {
+            let outline = vec![[0.0, 0.0], [f32::NAN, 0.0], [0.0, 2.0]];
+            d.water[0].shape = WaterShape::Lake { outline, height: 0.0 };
+        }),
+        ("water[0].shape.height", |d| {
+            let outline = vec![[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]];
+            d.water[0].shape = WaterShape::Lake { outline, height: f32::INFINITY };
+        }),
+        ("water[1].shape.points", |d| {
+            let WaterShape::River { points } = &mut d.water[1].shape else { unreachable!() };
+            points.truncate(1);
+        }),
+        ("water[1].shape.points[1].width", |d| {
+            let WaterShape::River { points } = &mut d.water[1].shape else { unreachable!() };
+            points[1].width = 0.0;
+        }),
+        ("water[1].shape.points[0].speed", |d| {
+            let WaterShape::River { points } = &mut d.water[1].shape else { unreachable!() };
+            points[0].speed = -1.0;
+        }),
+        ("water[1].shape.points[2].at", |d| {
+            let WaterShape::River { points } = &mut d.water[1].shape else { unreachable!() };
+            points[2].at = [40.0, -5.0, 5.0];
+        }),
+        ("water[3].shape", |d| d.water[0].shape = WaterShape::Ocean { height: 0.0 }),
+        ("water[2].shore_margin", |d| d.water[2].shore_margin = -1.0),
+        ("water[2].probe", |d| d.water[2].probe = Some("nowhere".to_owned())),
+        ("water", |d| {
+            let mut extra = d.water[0].clone();
+            for index in 0..MAX_BODIES {
+                extra.name = format!("pool_{index}");
+                d.water.push(extra.clone());
+            }
+        }),
+    ];
+    for (field, tamper) in cases {
+        let mut tampered = document(WATER);
+        tamper(&mut tampered);
+        let message = tampered.check().expect_err(field).to_string();
+        assert!(message.contains(&format!("`{field}`")), "`{message}` must name `{field}`");
+    }
+}
+
+/// The module's example reads, and a document's water round-trips through its text, the defaults left out.
+#[test]
+fn water_round_trips_through_its_text() {
+    let reflections = r#"reflections: [(name: "harbour", position: (0.0, 1.6, 0.0), parallax: (min: (-8.0, 0.0, -8.0), max: (8.0, 8.0, 8.0)))],"#;
+    let with_probe = WATER.replace(
+        r#"shape: Ocean(height: -2.0))"#,
+        r#"shape: Ocean(height: -2.0), probe: Some("harbour"), shore_margin: 4.0)"#,
+    );
+    let document = document(&format!("{reflections} {with_probe}"));
+    assert_eq!(document.water[0].shore_margin, DEFAULT_SHORE_MARGIN);
+    assert!(document.water[0].swim && !document.water[1].swim);
+    let text = sapphire_serialize::to_ron(&document).expect("write");
+    assert!(!text.contains("Liquid") && !text.contains("swim: true"), "defaults are left out: {text}");
+    assert_eq!(ZoneDocument::from_ron(&text).expect("read"), document);
+
+    let zone = document.cook(ZoneGeometry {
+        reflections: Some(AssetId::from_text("0b3f6c1d-7a52-4e98-b4d1-93c2e8f05a67")),
+        ..ZoneGeometry::default()
+    });
+    let zone = zone.expect("cooks");
+    let sea = zone.simulation.water.iter().position(|body| body.name == "sea").expect("there");
+    let surface = &zone.presentation.water[sea];
+    assert_eq!((surface.probe, surface.shore_margin), (Some(0), 4.0));
+    assert_eq!(surface.id, zone.simulation.water[sea].id);
+    assert!(zone.simulation.water.is_sorted_by_key(|body| body.id));
+}

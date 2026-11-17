@@ -228,6 +228,7 @@ impl SyntheticZone {
                 navigation: None,
                 encounters: Vec::new(),
                 exits,
+                water: Vec::new(),
             },
             presentation: ZonePresentation {
                 cell_size: self.cell_size,
@@ -252,6 +253,7 @@ impl SyntheticZone {
                 wind: None,
                 weather: None,
                 fog: None,
+                water: Vec::new(),
             },
         };
         dress(&mut zone.presentation);

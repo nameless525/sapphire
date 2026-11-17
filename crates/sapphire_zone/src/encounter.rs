@@ -380,6 +380,7 @@ mod tests {
             patrols: Vec::new(),
             encounters: Vec::new(),
             exits: Vec::new(),
+            water: Vec::new(),
         };
         let document = EncounterDocument {
             waves: vec![Wave { when: WaveStart::Start, gap: 0, spawners: vec!["north".to_owned()] }],

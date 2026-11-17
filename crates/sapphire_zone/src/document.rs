@@ -48,6 +48,8 @@
 //!         ],
 //!         // Where it leads. A trigger whose `event` is `to_market` is its door.
 //!         exits: [(name: "to_market", to: "e8c21831-7d98-4a79-b592-912b806cf3e2", arrive: "player_start", prefetch: true)],
+//!         // Its lakes, rivers and sea (the `water` module), which the simulation asks where the water is.
+//!         water: [(name: "well_pool", shape: Lake(outline: [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)], height: -0.4))],
 //!     ),
 //! )
 //! ```
@@ -89,6 +91,7 @@ use crate::cooked::{
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 use crate::reflections::{self, ReflectionProbe};
+use crate::water::{CookedWaterSurface, CookedWaterVolume, MAX_BODIES, WaterBody, WaterKind};
 
 /// The most entries any list of a zone may hold.
 pub const MAX_ENTRIES: usize = 1 << 20;
@@ -164,6 +167,10 @@ pub struct ZoneDocument {
     /// cook writes as an asset of the zone's own: the [`ambient`](crate::ambient) module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient: Option<ZoneAmbient>,
+    /// Its lakes, rivers and sea (M6 W2): the [`water`](crate::water) module. At most
+    /// [`water::MAX_BODIES`](crate::water::MAX_BODIES), and one sea.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub water: Vec<WaterBody>,
 }
 
 impl Versioned for ZoneDocument {
@@ -589,6 +596,36 @@ impl ZoneDocument {
         if let Some(ambient) = &self.ambient {
             ambient.check()?;
         }
+        self.check_water()
+    }
+
+    /// Whether its water is some a cook can take: at most [`MAX_BODIES`] bodies and one sea, each good, each
+    /// probe one of its reflections.
+    fn check_water(&self) -> Result<(), ZoneError> {
+        if self.water.len() > MAX_BODIES {
+            let problem =
+                format!("{} bodies is more than the {MAX_BODIES} a zone may hold", self.water.len());
+            return Err(ZoneError::invalid("water", problem));
+        }
+        check_names("water", self.water.iter().map(|body| body.name.as_str()))?;
+        let mut seas = 0;
+        for (index, body) in self.water.iter().enumerate() {
+            body.check()
+                .map_err(|(field, problem)| ZoneError::invalid(format!("water[{index}].{field}"), problem))?;
+            if let Some(probe) = &body.probe
+                && !self.reflections.iter().any(|reflection| reflection.name == *probe)
+            {
+                let problem = format!("`{probe}` isn't one of the zone's reflections");
+                return Err(ZoneError::invalid(format!("water[{index}].probe"), problem));
+            }
+            if body.shape.kind() == WaterKind::Ocean {
+                seas += 1;
+                if seas > 1 {
+                    let problem = "a zone has one sea at most: it lies everywhere the ground is under it";
+                    return Err(ZoneError::invalid(format!("water[{index}].shape"), problem));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -729,6 +766,24 @@ impl ZoneDocument {
         exits.sort_unstable_by_key(|exit| exit.id);
         check_distinct("exits", &exits, |exit| (exit.id, &exit.name))?;
         check_distinct("patrols", &patrols, |patrol| (patrol.id, &patrol.name))?;
+        let mut water: Vec<CookedWaterVolume> = self
+            .water
+            .iter()
+            .map(|body| {
+                let (bounds_min, bounds_max) = body.shape.bounds();
+                CookedWaterVolume {
+                    id: Name::new(&body.name).as_u64(),
+                    name: body.name.clone(),
+                    shape: body.shape.clone(),
+                    surface: body.surface,
+                    swim: body.swim,
+                    bounds_min,
+                    bounds_max,
+                }
+            })
+            .collect();
+        water.sort_unstable_by_key(|body| body.id);
+        check_distinct("water", &water, |body| (body.id, &body.name))?;
         let sorted_set = |ids: &[AssetId]| ids.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
         Ok(ZoneSimulation {
             colliders: self.colliders,
@@ -739,6 +794,7 @@ impl ZoneDocument {
             navigation: None,
             encounters: sorted_set(&self.encounters),
             exits,
+            water,
         })
     }
 
@@ -807,6 +863,7 @@ impl ZoneDocument {
             wind: self.wind,
             weather: self.weather,
             fog: self.fog,
+            water: self.cooked_water_surfaces(&simulation),
         };
         // In `Place`'s order: the backdrop's entries, then each cell's.
         for place in places {
@@ -869,6 +926,28 @@ impl ZoneDocument {
             }
         }
         Ok(Zone { simulation, presentation })
+    }
+
+    /// What drawing reads of each body, in the simulation's order.
+    fn cooked_water_surfaces(&self, simulation: &ZoneSimulation) -> Vec<CookedWaterSurface> {
+        simulation
+            .water
+            .iter()
+            .map(|volume| {
+                let body =
+                    self.water.iter().find(|body| body.name == volume.name).expect("cooked from these");
+                let probe = body.probe.as_ref().map(|probe| {
+                    let index = self.reflections.iter().position(|reflection| reflection.name == *probe);
+                    index.expect("`check` found it") as u32
+                });
+                CookedWaterSurface {
+                    id: volume.id,
+                    material: body.material,
+                    probe,
+                    shore_margin: body.shore_margin,
+                }
+            })
+            .collect()
     }
 
     fn cooked_splines(&self) -> Result<Vec<CookedSpline>, ZoneError> {

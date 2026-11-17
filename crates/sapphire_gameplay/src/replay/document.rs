@@ -1095,6 +1095,7 @@ fn archived(mut simulation: ZoneSimulation, cell_size: f32) -> Result<AlignedVec
             wind: None,
             weather: None,
             fog: None,
+            water: Vec::new(),
         },
     };
     Ok(zone.to_cooked()?)

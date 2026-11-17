@@ -37,6 +37,8 @@ sapphire_core.workspace = true
 sapphire_look.workspace = true
 # Color math shared with the runtime (sRGB, OkLab).
 sapphire_math.workspace = true
+# The cook's timings (M6 C12): its only clock, read into the cook report and never into what a cook writes.
+sapphire_time.workspace = true
 # Move set documents, which cook to what the simulation reads (M2 G2). Plain data: the cooker never
 # links the simulation.
 sapphire_moves.workspace = true
@@ -105,7 +107,6 @@ sapphire_document.workspace = true
 # Reads a subset the way the runtime will.
 sapphire_text.workspace = true
 swash.workspace = true
-sapphire_time.workspace = true
 # A cutscene's subtitles, resolved in each language from tables cooked here (`tests/cutscene_strings.rs`).
 sapphire_loc.workspace = true
 sapphire_sequencer.workspace = true

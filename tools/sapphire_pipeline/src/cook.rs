@@ -183,6 +183,7 @@ use sapphire_moves::{
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
 use sapphire_reflect::Versioned;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable};
+use sapphire_time::Stopwatch;
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline};
 use sapphire_zone::{
     AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, Place, ZONE_EXTENSION, Zone, ZoneDocument,
@@ -231,6 +232,7 @@ use crate::reflections::{self, ReflectionCookError};
 use crate::script::{self, ScriptCookError};
 use crate::texture::{self, CookedTexture, TextureError};
 use crate::timeline::{self, TimelineCookError};
+use crate::timing::{AssetClocks, AssetTime, CookTimings, Phase, Step};
 use crate::ui::{self, ScreenCharacters, ScreenError, Screens, UiCookError};
 use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
 use crate::{bake, optimize};
@@ -1055,6 +1057,9 @@ pub struct CookReport {
     /// A cook never judges a source by the rules: `sapphire_pipeline check` does, and fails on a finding no
     /// sidecar waives.
     pub waivers: Vec<Waived>,
+    /// How long each phase of the run and each asset took (M6 C12, [`crate::timing`]): for people only, so
+    /// nothing a cook writes holds it.
+    pub timings: CookTimings,
 }
 
 impl CookReport {
@@ -1186,6 +1191,8 @@ fn cook_dir_through(
     workers: usize,
     reached: &dyn Fn(CookStage),
 ) -> Result<CookReport, CookError> {
+    let mut watch = Stopwatch::start();
+    let mut timings = CookTimings::default();
     let mut tree = SourceTree::scan(source_root)?;
     let inputs = map_inputs(source_root, &tree)?;
     tree.sources.retain(|source| !inputs.contains(source));
@@ -1370,6 +1377,7 @@ fn cook_dir_through(
     }
     let memory = CookMemory::new(COOK_MEMORY);
     let screen_characters = OnceLock::new();
+    let clocks = AssetClocks::new(plan.len());
     let tree = PlannedTree {
         plan: &plan,
         by_id: &by_id,
@@ -1381,14 +1389,18 @@ fn cook_dir_through(
         fluent: &fluent,
         flags: &flags,
         screens: &screen_characters,
+        clocks: &clocks,
     };
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
     reached(CookStage::Planned);
+    timings.ended(Phase::Plan, &mut watch);
     cook_independent(tree, &others, workers, &mut cooked)?;
+    timings.ended(Phase::Independent, &mut watch);
     let screens = read_screens(&cooked)?;
     screens.check_strings()?;
     screen_characters.set(screens.characters_of()).expect("only set here");
     cook_independent(tree, &fonts, workers, &mut cooked)?;
+    timings.ended(Phase::Fonts, &mut watch);
     let remembered = Remembered::default();
     let mut in_turn = |indices: Vec<Vec<usize>>| {
         for index in indices.into_iter().flatten() {
@@ -1400,12 +1412,28 @@ fn cook_dir_through(
     };
     in_turn(vec![shared_meshes, clips])?;
     reached(CookStage::ClipsCooked);
+    timings.ended(Phase::Clips, &mut watch);
     in_turn(vec![move_sets, materials, probe_grids, navigation, own_zones])?;
+    timings.ended(Phase::Dependent, &mut watch);
     let assets: Vec<CookedAsset> =
         cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     let localization = check_localization(&assets)?;
     check_dialogues(&assets)?;
     check_screens(&screens, &assets)?;
+    timings.ended(Phase::Checks, &mut watch);
+    timings.assets = plan
+        .iter()
+        .enumerate()
+        .map(|(index, planned)| {
+            let (key, cook) = clocks.read(index);
+            AssetTime {
+                importer: planned.recipe.importer.name,
+                cooker: planned.recipe.cooker.name,
+                key,
+                cook,
+            }
+        })
+        .collect();
     Ok(CookReport {
         assets,
         created_sidecars: resolved.created,
@@ -1414,6 +1442,7 @@ fn cook_dir_through(
         removed,
         localization,
         waivers,
+        timings,
     })
 }
 
@@ -2161,6 +2190,8 @@ struct PlannedTree<'a> {
     flags: &'a Registry,
     /// What the screens show, once the tree's documents and tables have cooked: before fonts do.
     screens: &'a OnceLock<ScreenCharacters>,
+    /// Each planned asset's times so far.
+    clocks: &'a AssetClocks,
 }
 
 impl<'a> PlannedTree<'a> {
@@ -2191,13 +2222,16 @@ impl<'a> PlannedTree<'a> {
     /// The plan's asset `index`'s key.
     fn key(&self, index: usize, assets: &Assets<'_>) -> Result<Keyed, CookError> {
         let planned = &self.plan[index];
-        guarded(&planned.asset.path, || key_asset(planned, assets, self.cook))
+        self.clocks
+            .time(index, Step::Key, || guarded(&planned.asset.path, || key_asset(planned, assets, self.cook)))
     }
 
     /// Brings the output of the plan's asset `index` up to date, by its key.
     fn finish(&self, index: usize, keyed: Keyed, assets: &Assets<'_>) -> Result<CookedAsset, CookError> {
         let planned = &self.plan[index];
-        guarded(&planned.asset.path, || finish_asset(planned, keyed, assets, self.cache, self.cook))
+        self.clocks.time(index, Step::Cook, || {
+            guarded(&planned.asset.path, || finish_asset(planned, keyed, assets, self.cache, self.cook))
+        })
     }
 }
 
@@ -4869,6 +4903,7 @@ mod tests {
                 fluent: &FluentFiles::new(),
                 flags: &Registry::default(),
                 screens: &OnceLock::new(),
+                clocks: &AssetClocks::new(plan.len()),
             };
             let remembered = Remembered::default();
             let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();
@@ -4927,6 +4962,7 @@ mod tests {
             fluent: &FluentFiles::new(),
             flags: &Registry::default(),
             screens: &OnceLock::new(),
+            clocks: &AssetClocks::new(plan.len()),
         };
         let remembered = Remembered::default();
         let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();
@@ -5652,6 +5688,88 @@ mod tests {
         let shared = index.packs["shared"];
         assert_eq!(shared.assets as usize, index.assets.len());
         assert_eq!(shared.bytes, index.assets.values().map(|asset| asset.bytes).sum::<u64>());
+    }
+
+    /// Every file under `root`, by its path under it, with its bytes.
+    fn files_under(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        let mut folders = vec![root.to_owned()];
+        while let Some(folder) = folders.pop() {
+            for entry in fs::read_dir(&folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else {
+                    files.insert(path.strip_prefix(root).unwrap().to_owned(), fs::read(&path).unwrap());
+                }
+            }
+        }
+        files
+    }
+
+    /// A cook's times (M6 C12) reach nothing it writes: two cold cooks of one tree, the second's report given
+    /// other times before its audit, index and packs are written, write the same files byte for byte, and
+    /// each asset and phase of the run has its time.
+    #[test]
+    fn a_cooks_times_reach_nothing_it_writes() {
+        use std::time::Duration;
+
+        use crate::index;
+        use crate::timing::Phase;
+
+        let scratch = Scratch::new("cook_times");
+        scratch.add_hair();
+        scratch.add_mannequin("samples/mannequin.glb");
+        let cook = Cook::Desktop;
+        let cook_into = |name: &str, times: Option<Duration>| -> (CookReport, PathBuf) {
+            let (loose, packs) =
+                (scratch.dir.path().join(name).join("loose"), scratch.dir.path().join(name).join("packs"));
+            let cache = scratch.dir.path().join(name).join("cache");
+            let options = CookOptions { cook, cache: Some(&cache), locked: false, editor: false };
+            let mut report = cook_dir(&scratch.source(), &loose, &options).unwrap();
+            if let Some(time) = times {
+                for (_, phase) in &mut report.timings.phases {
+                    *phase = time;
+                }
+                for asset in &mut report.timings.assets {
+                    (asset.key, asset.cook) = (time, time * 2);
+                }
+            }
+            let audited = audit::write(&scratch.source(), &loose, cook, Some(&cache), &report).unwrap();
+            index::write(&scratch.source(), &loose, cook, Some(&cache), &report, &audited.audit).unwrap();
+            crate::pack::pack_cooked(&report, &packs, Some(&cache)).unwrap();
+            (report, scratch.dir.path().join(name))
+        };
+        let (first, first_dir) = cook_into("first", None);
+        let (second, second_dir) = cook_into("second", Some(Duration::from_secs(3600)));
+
+        assert_ne!(first.timings, second.timings);
+        for folder in ["loose", "packs"] {
+            let (a, b) = (files_under(&first_dir.join(folder)), files_under(&second_dir.join(folder)));
+            if folder == "loose" {
+                assert!(
+                    a.contains_key(Path::new(index::FILE_NAME))
+                        && a.contains_key(Path::new(audit::FILE_NAME))
+                );
+            }
+            assert!(!a.is_empty() && a == b, "{folder}: {:?} against {:?}", a.keys(), b.keys());
+        }
+
+        let timings = &first.timings;
+        assert_eq!(timings.assets.len(), first.assets.len(), "one for each asset");
+        let phases: Vec<Phase> = timings.phases.iter().map(|(phase, _)| *phase).collect();
+        assert_eq!(
+            phases,
+            [Phase::Plan, Phase::Independent, Phase::Fonts, Phase::Clips, Phase::Dependent, Phase::Checks]
+        );
+        assert!(first.assets.iter().all(|asset| asset.status == CookStatus::Cooked), "a cold cook");
+        let mesh =
+            first.assets.iter().position(|asset| asset.output.extension().unwrap() == "smesh").unwrap();
+        let mesh = timings.assets[mesh];
+        assert_eq!((mesh.importer, mesh.cooker), (gltf::IMPORTER.name, MESH_COOKER.name));
+        assert!(mesh.key > Duration::ZERO && mesh.cook > Duration::ZERO, "{mesh:?}");
+        let spent: Duration = timings.assets.iter().map(AssetTime::total).sum();
+        assert!(spent <= timings.total() * 4, "on four workers at most: {spent:?} in {:?}", timings.total());
     }
 
     /// A playable kind whose moves, mesh, rig or graph no source under the root is fails its cook, naming the

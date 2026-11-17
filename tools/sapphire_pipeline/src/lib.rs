@@ -67,6 +67,8 @@
 //! - [`index`]: the asset index every cook writes beside its cooked files (M6 C2), `index.json`: each asset's
 //!   kind, source, pack, bytes, dependencies both ways, texture thumbnail, mesh levels, the audit's records
 //!   and the check's results; what `sapphire_pipeline graph` walks.
+//! - [`timing`]: how long a cook took (M6 C12), each phase's and each asset's time, read through
+//!   `sapphire_time` into the cook report only, never into anything a cook writes; what `cook --report` prints.
 //! - [`release`]: the release manifest a cook writes beside its packs, and signing a release and laying it
 //!   out for a static host (M4 P1). The only code that signs one: no build of the game links it.
 //! - [`cache`]: the cache key over everything that determines a cooked output or a pack, and the
@@ -183,6 +185,7 @@ pub mod script;
 mod test_util;
 pub mod texture;
 pub mod timeline;
+pub mod timing;
 pub mod ui;
 pub mod vo;
 pub mod zone;

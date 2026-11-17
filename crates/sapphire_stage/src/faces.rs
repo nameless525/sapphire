@@ -6,8 +6,9 @@
 //!
 //! - **The head** is content: the pipeline's face sample (`samples::face`), loaded by ID with
 //!   its face, hair, bangs and brow materials and their maps through the asset server
-//!   ([`Content::face_head`]). Its face region takes the GI's sphere and skin tint, its hair and
-//!   bangs the sphere (`RegionGi`): the only sample content that takes either.
+//!   ([`Content::face_head`]); the layout says which head ([`FaceLayout::head`]). Its face
+//!   region takes the GI's sphere and skin tint, its hair and bangs the sphere (`RegionGi`): the
+//!   only sample content that takes either.
 //! - **Each head is a character**, lit by the character light rig (M1 C2) like the turntable's:
 //!   [`Scene::frame_packet`] lists every head with the default preset's lighting resolved for
 //!   it, its key light turned to the head's [`FaceRig`] angles in head space, and its face, the
@@ -43,6 +44,10 @@
 //!   - `backlit` (M1 C8): heads facing the camera under keys from behind them, round from their
 //!     right to their left and at several heights: the light through thin hair
 //!     (`--hair-transmission`) and the rim against a back light.
+//!   - `edges` (M6 C6): the anti-aliased face ([`EDGES_HEAD`]), whose face map is generated from
+//!     masks painted at 512² and read with anti-aliased edges, facing the camera under keys from
+//!     three angles on the head's right, each between two masks: the face map's shadow edge
+//!     sweeping from the far cheek toward the middle.
 //!   - The eyes' layouts (M1 C6), framed close on the eyes' line under a key from the front, a
 //!     little above and to the side, with the heads closer together: `eyes`, one head facing
 //!     the camera; `eyes-turned`, one turned to three-quarter; `gaze`, a row looking toward the
@@ -73,6 +78,11 @@ pub use crate::MaterialOverrides;
 /// The face test head, by its sidecar's ID (`content/samples/face/face_head.glb.meta`, the
 /// pipeline's `samples::face::HEAD_ID`).
 pub(crate) const HEAD: AssetId = AssetId::from_text("cff436cc-9604-4a9f-8d3a-3bc8b5b6637e");
+
+/// The anti-aliased face's head (M6 C6), by its sidecar's ID
+/// (`content/samples/face/face_edges_head.glb.meta`, the pipeline's `samples::face::EDGES_HEAD_ID`):
+/// the same mesh, its face reading a face map with anti-aliased edges.
+pub(crate) const EDGES_HEAD: AssetId = AssetId::from_text("8572ebba-dbb6-4cb7-952c-3a23544fb2ca");
 
 /// One head of the rig: the key light's angles in head space, in degrees (yaw toward the head's
 /// right, negative to its left, and elevation above its horizontal plane), its expression, and
@@ -203,11 +213,12 @@ pub enum FaceLayout {
     Gaze,
     Blink,
     Backlit,
+    Edges,
 }
 
 impl FaceLayout {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Lights,
         Self::Hair,
         Self::Highlights,
@@ -219,10 +230,11 @@ impl FaceLayout {
         Self::Gaze,
         Self::Blink,
         Self::Backlit,
+        Self::Edges,
     ];
 
     /// The names `--face-layout` takes, one per layout, in the order they are declared.
-    pub const NAMES: [&str; 11] = [
+    pub const NAMES: [&str; 12] = [
         "lights",
         "hair",
         "highlights",
@@ -234,6 +246,7 @@ impl FaceLayout {
         "gaze",
         "blink",
         "backlit",
+        "edges",
     ];
 
     /// The layout `--face-layout` names.
@@ -250,6 +263,7 @@ impl FaceLayout {
             "gaze" => Some(Self::Gaze),
             "blink" => Some(Self::Blink),
             "backlit" => Some(Self::Backlit),
+            "edges" => Some(Self::Edges),
             _ => None,
         }
     }
@@ -267,6 +281,16 @@ impl FaceLayout {
             Self::Gaze => &GAZE,
             Self::Blink => &BLINK,
             Self::Backlit => &BACKLIT,
+            Self::Edges => &EDGES,
+        }
+    }
+
+    /// The head the layout draws, by ID: the anti-aliased face's for `edges` (M6 C6), the face
+    /// test head's for the rest.
+    pub fn head(self) -> AssetId {
+        match self {
+            Self::Edges => EDGES_HEAD,
+            _ => HEAD,
         }
     }
 
@@ -274,7 +298,7 @@ impl FaceLayout {
     pub(crate) fn light(self) -> HeadLight {
         match self {
             Self::Lights | Self::Hair | Self::Highlights | Self::Turn | Self::Backlit => HeadLight::Key,
-            Self::Eyes | Self::EyesTurned | Self::Gaze | Self::Blink => HeadLight::Key,
+            Self::Eyes | Self::EyesTurned | Self::Gaze | Self::Blink | Self::Edges => HeadLight::Key,
             Self::Gi => HeadLight::Gi { ceilings: None },
             Self::GiClamped => HeadLight::Gi { ceilings: Some(CLAMPED_GI) },
         }
@@ -372,6 +396,12 @@ const BACKLIT: [&[FaceRig]; 1] = [&[
     rig(-160.0, 40.0, 0.0, 0.0),
     rig(-140.0, 20.0, 0.0, 0.0),
 ]];
+
+// The anti-aliased face (M6 C6): keys level on the head's right, each between two masks, so the
+// edge shown is the map's sweep: the far cheek's edge and the nose's shadow (55°), the edge
+// curving round the cheek (75°) and nearing the middle (95°).
+const EDGES: [&[FaceRig]; 1] =
+    [&[rig(55.0, 0.0, 0.0, 0.0), rig(75.0, 0.0, 0.0, 0.0), rig(95.0, 0.0, 0.0, 0.0)]];
 
 /// Meters between neighbors in a row, and between rows.
 const SPACING: f32 = 0.34;
@@ -591,6 +621,14 @@ mod tests {
         }
         assert_eq!(FaceLayout::from_name("bangs"), None);
         assert_eq!(FaceLayout::default(), FaceLayout::Lights, "C3's rig, as `--faces` alone draws it");
+    }
+
+    #[test]
+    fn only_the_edges_layout_draws_the_anti_aliased_face() {
+        for layout in FaceLayout::ALL {
+            let expected = if layout == FaceLayout::Edges { EDGES_HEAD } else { HEAD };
+            assert_eq!(layout.head(), expected, "{layout:?}");
+        }
     }
 
     #[test]

@@ -30,6 +30,12 @@
 //!   [`vertical_threshold`]): a sphere's terminator, with a nose shadow that appears past 38°,
 //!   the far cheek staying lit a little longer, and eye sockets, the nose and the chin shadowed
 //!   early by a top light. Monotonic by construction.
+//! - **The anti-aliased face (M6 C6):** `face_edges_head.glb`, the same head, whose sidecar binds
+//!   its face slot to `face_edges.material.ron`, the face's material reading
+//!   `face_edges.facesdf.ron`: the same two angle fields' masks at [`EDGES_SIZE`]², each texel
+//!   lit by the share of [`EDGES_SAMPLES`]² points across it inside the lit region
+//!   (`masks_edges/`), read with `edges: AntiAliased`. The sandbox's `--face-layout edges` draws
+//!   it (the golden scene `faces-anti-aliased`).
 //! - **`face_base.png`** (color): skin and a small mouth; the eyes (M1 C6) and brows are meshes
 //!   of their own.
 //! - **`face_mask.png`** (mask, `character_maps::face_mask`): R the nose line on the nose's far
@@ -92,6 +98,10 @@ pub const HIGHLIGHT_MATERIAL_FILE_NAME: &str = "eye_highlight.material.ron";
 pub const LASH_MATERIAL_FILE_NAME: &str = "lash.material.ron";
 pub const LID_MATERIAL_FILE_NAME: &str = "lid.material.ron";
 pub const EYE_SHADOW_FILE_NAME: &str = "eye_shadow.png";
+/// The anti-aliased face's files (M6 C6).
+pub const EDGES_HEAD_FILE_NAME: &str = "face_edges_head.glb";
+pub const EDGES_SDF_FILE_NAME: &str = "face_edges.facesdf.ron";
+pub const EDGES_MATERIAL_FILE_NAME: &str = "face_edges.material.ron";
 pub const IRIS_FILE_NAME: &str = "iris.png";
 pub const HIGHLIGHT_FILE_NAME: &str = "eye_highlight.png";
 
@@ -117,6 +127,10 @@ pub const LID_MATERIAL_ID: AssetId = AssetId::from_text("12f47f1c-0b1c-4d29-929a
 pub const EYE_SHADOW_ID: AssetId = AssetId::from_text("e32c2fe8-c3ff-4361-b79e-7e82affbdf01");
 pub const IRIS_ID: AssetId = AssetId::from_text("1101d4e0-ccf5-4de3-904f-fad305772c59");
 pub const HIGHLIGHT_ID: AssetId = AssetId::from_text("9120fd6f-78c7-4fac-8658-bd396c41e9e1");
+/// The anti-aliased face's (M6 C6).
+pub const EDGES_HEAD_ID: AssetId = AssetId::from_text("8572ebba-dbb6-4cb7-952c-3a23544fb2ca");
+pub const EDGES_SDF_ID: AssetId = AssetId::from_text("a8435fa6-c1a9-464d-bbb6-afd17a12e60e");
+pub const EDGES_MATERIAL_ID: AssetId = AssetId::from_text("e7b7fb85-37bf-4466-bff0-a03facebd2b1");
 
 /// The material slots' names, which the head's sidecar binds.
 pub const FACE_SLOT: &str = "Face";
@@ -168,6 +182,10 @@ const HORIZONTAL_ANGLES: [u32; 19] = {
     angles
 };
 const VERTICAL_ANGLES: [u32; 7] = [0, 15, 30, 45, 60, 75, 90];
+/// The anti-aliased face's masks' size in texels (M6 C6), and the points across each texel,
+/// per side, whose share inside the lit region is its value.
+pub const EDGES_SIZE: u32 = 512;
+pub const EDGES_SAMPLES: u32 = 4;
 
 /// Every face file, relative to the samples directory, with its bytes.
 pub fn files() -> Vec<Output> {
@@ -192,6 +210,9 @@ pub fn files() -> Vec<Output> {
         Output::new(path(EYE_SHADOW_FILE_NAME), || eye_map_png(eye_shadow)),
         Output::new(path(IRIS_FILE_NAME), || eye_map_png(iris)),
         Output::new(path(HIGHLIGHT_FILE_NAME), || eye_map_png(highlight)),
+        Output::plain(path(EDGES_HEAD_FILE_NAME), head_glb),
+        Output::plain(path(EDGES_SDF_FILE_NAME), || edges_sdf_document().into_bytes()),
+        Output::plain(path(EDGES_MATERIAL_FILE_NAME), || edges_material_document().into_bytes()),
     ];
     // Threshold fields do not depend on the selected light angle: the first of a family's masks that's
     // missing works its field out, the rest of the family shares it, and it goes with the last of them.
@@ -199,18 +220,18 @@ pub fn files() -> Vec<Output> {
         (
             &HORIZONTAL_ANGLES[..],
             horizontal_threshold as fn(f32, f32) -> Option<f32>,
-            horizontal_mask_name as fn(u32) -> String,
+            horizontal_mask_name as fn(&str, u32) -> String,
         ),
         (
             &VERTICAL_ANGLES[..],
             vertical_threshold as fn(f32, f32) -> Option<f32>,
-            vertical_mask_name as fn(u32) -> String,
+            vertical_mask_name as fn(&str, u32) -> String,
         ),
     ] {
         let thresholds = Rc::new(OnceCell::new());
         for &angle in angles {
             let thresholds = Rc::clone(&thresholds);
-            files.push(Output::new(path(&name(angle)), move || {
+            files.push(Output::new(path(&name(MASKS, angle)), move || {
                 let thresholds: &Vec<Option<f32>> = thresholds.get_or_init(|| threshold_field(field));
                 let image = image::GrayImage::from_fn(SIZE, SIZE, |x, y| {
                     image::Luma([
@@ -226,16 +247,60 @@ pub fn files() -> Vec<Output> {
                 encode(image)
             }));
         }
+        // The anti-aliased face's masks (M6 C6), from the same field sampled finer.
+        let samples = Rc::new(OnceCell::new());
+        for &angle in angles {
+            let samples = Rc::clone(&samples);
+            files.push(Output::new(path(&name(EDGES_MASKS, angle)), move || {
+                let samples: &Vec<Option<f32>> = samples.get_or_init(|| sampled_field(field));
+                encode(anti_aliased_mask(samples, angle as f32))
+            }));
+        }
     }
     files
 }
 
-fn horizontal_mask_name(angle: u32) -> String {
-    format!("masks/h_{angle:03}.png")
+/// The masks' directory, and the anti-aliased face's beside it (M6 C6).
+const MASKS: &str = "masks";
+const EDGES_MASKS: &str = "masks_edges";
+
+/// `field`'s threshold at [`EDGES_SAMPLES`]² points evenly across each texel of an
+/// [`EDGES_SIZE`]² map, the points of a texel together, texels row by row.
+fn sampled_field(field: fn(f32, f32) -> Option<f32>) -> Vec<Option<f32>> {
+    let points = EDGES_SAMPLES * EDGES_SAMPLES;
+    let mut thresholds = Vec::with_capacity((EDGES_SIZE * EDGES_SIZE * points) as usize);
+    thresholds.extend((0..EDGES_SIZE * EDGES_SIZE).flat_map(|texel| {
+        (0..points).map(move |index| {
+            let at = |texel: u32, point: u32| {
+                (texel as f32 + (point as f32 + 0.5) / EDGES_SAMPLES as f32) / EDGES_SIZE as f32
+            };
+            let (x, y) = point(
+                at(texel % EDGES_SIZE, index % EDGES_SAMPLES),
+                at(texel / EDGES_SIZE, index / EDGES_SAMPLES),
+            );
+            field(x, y)
+        })
+    }));
+    thresholds
 }
 
-fn vertical_mask_name(angle: u32) -> String {
-    format!("masks/v_{angle:03}.png")
+/// The anti-aliased mask of the light at `angle` from [`sampled_field`]'s `samples`: each texel
+/// the share of its points lit, in 8 bits.
+fn anti_aliased_mask(samples: &[Option<f32>], angle: f32) -> image::GrayImage {
+    let points = (EDGES_SAMPLES * EDGES_SAMPLES) as usize;
+    image::GrayImage::from_fn(EDGES_SIZE, EDGES_SIZE, |x, y| {
+        let first = (y * EDGES_SIZE + x) as usize * points;
+        let lit = samples[first..first + points].iter().filter(|t| t.is_some_and(|t| t > angle)).count();
+        image::Luma([((lit * 255 + points / 2) / points) as u8])
+    })
+}
+
+fn horizontal_mask_name(dir: &str, angle: u32) -> String {
+    format!("{dir}/h_{angle:03}.png")
+}
+
+fn vertical_mask_name(dir: &str, angle: u32) -> String {
+    format!("{dir}/v_{angle:03}.png")
 }
 
 /// The texture coordinate of head-local point `(x, y)`: a front projection, `x` toward the
@@ -379,14 +444,31 @@ fn threshold_mask_png(angle: f32, field: fn(f32, f32) -> Option<f32>) -> io::Res
 
 /// The face map's document: the masks at their angles.
 pub fn sdf_document() -> String {
-    let masks = |angles: &[u32], name: fn(u32) -> String| {
-        angles.iter().map(|&angle| ThresholdMask { angle: angle as f32, path: name(angle) }).collect()
+    let masks = |angles: &[u32], name: fn(&str, u32) -> String| {
+        angles.iter().map(|&angle| ThresholdMask { angle: angle as f32, path: name(MASKS, angle) }).collect()
     };
     let document = FaceSdfMap {
         horizontal: masks(&HORIZONTAL_ANGLES, horizontal_mask_name),
         vertical: masks(&VERTICAL_ANGLES, vertical_mask_name),
         allowed_violations: 0,
         edges: Edges::Binary,
+    };
+    document.validate().expect("the face's masks are in order");
+    sapphire_serialize::to_ron(&document).expect("a face SDF document serializes")
+}
+
+/// The anti-aliased face map's document (M6 C6): its masks at their angles, read with
+/// anti-aliased edges.
+pub fn edges_sdf_document() -> String {
+    let masks = |angles: &[u32], name: fn(&str, u32) -> String| {
+        let mask = |angle| ThresholdMask { angle: angle as f32, path: name(EDGES_MASKS, angle) };
+        angles.iter().map(|&angle| mask(angle)).collect()
+    };
+    let document = FaceSdfMap {
+        horizontal: masks(&HORIZONTAL_ANGLES, horizontal_mask_name),
+        vertical: masks(&VERTICAL_ANGLES, vertical_mask_name),
+        allowed_violations: 0,
+        edges: Edges::AntiAliased,
     };
     document.validate().expect("the face's masks are in order");
     sapphire_serialize::to_ron(&document).expect("a face SDF document serializes")
@@ -474,17 +556,22 @@ fn expression_png() -> io::Result<Vec<u8>> {
 
 /// The face material's document.
 pub fn material_document() -> String {
-    document(&face_material(3.0))
+    document(&face_material(3.0, SDF_ID))
+}
+
+/// The anti-aliased face's material (M6 C6): the face's, reading the anti-aliased face map.
+pub fn edges_material_document() -> String {
+    document(&face_material(3.0, EDGES_SDF_ID))
 }
 
 /// The lids' material (M1 C6): the face's, whose maps the lids read at the skin above the eyes,
 /// without an outline, which would line the lids' edges.
 pub fn lid_material_document() -> String {
-    document(&face_material(0.0))
+    document(&face_material(0.0, SDF_ID))
 }
 
-/// The face's material, its outline `outline` pixels wide.
-fn face_material(outline: f32) -> AnimeCharacterMaterial {
+/// The face's material, its outline `outline` pixels wide, reading the face map `shadow_map`.
+fn face_material(outline: f32, shadow_map: AssetId) -> AnimeCharacterMaterial {
     let face = FaceShading {
         mask_map: Some(MASK_ID),
         expression_map: Some(EXPRESSION_ID),
@@ -495,7 +582,7 @@ fn face_material(outline: f32) -> AnimeCharacterMaterial {
         blush_color: [1.0, 0.5, 0.52],
         // The bangs' shadow at its default (M1 C5); the eyes draw through the bangs as eye
         // meshes (M1 C6), so the face doesn't.
-        ..FaceShading::new(SDF_ID)
+        ..FaceShading::new(shadow_map)
     };
     AnimeCharacterMaterial {
         surface: CharacterSurface::Face(face),
@@ -1574,16 +1661,16 @@ mod tests {
             (
                 &HORIZONTAL_ANGLES[..],
                 horizontal_threshold as fn(f32, f32) -> Option<f32>,
-                horizontal_mask_name as fn(u32) -> String,
+                horizontal_mask_name as fn(&str, u32) -> String,
             ),
             (
                 &VERTICAL_ANGLES[..],
                 vertical_threshold as fn(f32, f32) -> Option<f32>,
-                vertical_mask_name as fn(u32) -> String,
+                vertical_mask_name as fn(&str, u32) -> String,
             ),
         ] {
             for &angle in angles {
-                let path = format!("{DIR}/{}", name(angle));
+                let path = format!("{DIR}/{}", name(MASKS, angle));
                 let actual = &generated.iter().find(|(name, _)| *name == path).unwrap().1;
                 assert_eq!(actual, &threshold_mask_png(angle as f32, field).unwrap(), "{path}");
             }
@@ -1850,26 +1937,40 @@ mod tests {
             (EYE_SHADOW_FILE_NAME, EYE_SHADOW_ID),
             (IRIS_FILE_NAME, IRIS_ID),
             (HIGHLIGHT_FILE_NAME, HIGHLIGHT_ID),
+            (EDGES_HEAD_FILE_NAME, EDGES_HEAD_ID),
+            (EDGES_SDF_FILE_NAME, EDGES_SDF_ID),
+            (EDGES_MATERIAL_FILE_NAME, EDGES_MATERIAL_ID),
         ] {
             assert_eq!(sidecar(name).id, id, "{name}");
         }
-        let head = sidecar(HEAD_FILE_NAME);
-        let bindings = head.importer.mesh().expect("a mesh").materials.clone();
-        for (slot, id) in [
-            (FACE_SLOT, MATERIAL_ID),
-            (HAIR_SLOT, HAIR_MATERIAL_ID),
-            (BANGS_SLOT, BANGS_MATERIAL_ID),
-            (BROWS_SLOT, BROW_MATERIAL_ID),
-        ]
-        .into_iter()
-        .chain(EYE_SLOTS)
-        {
-            assert_eq!(bindings.get(slot), Some(&id), "the {slot} slot draws its document");
+        // The anti-aliased face (M6 C6) is the same head, its face drawn with its own material.
+        for (head, face) in [(HEAD_FILE_NAME, MATERIAL_ID), (EDGES_HEAD_FILE_NAME, EDGES_MATERIAL_ID)] {
+            let bindings = sidecar(head).importer.mesh().expect("a mesh").materials.clone();
+            for (slot, id) in [
+                (FACE_SLOT, face),
+                (HAIR_SLOT, HAIR_MATERIAL_ID),
+                (BANGS_SLOT, BANGS_MATERIAL_ID),
+                (BROWS_SLOT, BROW_MATERIAL_ID),
+            ]
+            .into_iter()
+            .chain(EYE_SLOTS)
+            {
+                assert_eq!(bindings.get(slot), Some(&id), "{head}: the {slot} slot draws its document");
+            }
         }
         let textures = AnyMaterialDocument::from_ron(&material_document()).unwrap().textures();
         for id in [SDF_ID, BASE_COLOR_ID, MASK_ID, EXPRESSION_ID] {
             assert!(textures.contains(&Some(id)), "{id}");
         }
+        let edges = AnyMaterialDocument::from_ron(&edges_material_document()).unwrap().textures();
+        assert_eq!(
+            edges
+                .iter()
+                .map(|id| id.map(|id| if id == EDGES_SDF_ID { SDF_ID } else { id }))
+                .collect::<Vec<_>>(),
+            textures,
+            "the face's maps but its face map"
+        );
         let bangs = AnyMaterialDocument::from_ron(&bangs_material_document()).unwrap().textures();
         assert!(bangs.contains(&Some(HAIR_MASK_ID)));
         // The eyes' maps (M1 C6), and the lids read the face's.
@@ -1886,5 +1987,35 @@ mod tests {
     #[test]
     fn generation_is_deterministic() {
         assert_eq!(made(files()).unwrap(), made(files()).unwrap());
+    }
+
+    #[test]
+    fn the_anti_aliased_face_reads_finer_masks_of_the_same_fields() {
+        let document: FaceSdfMap = sapphire_serialize::from_ron(&edges_sdf_document()).unwrap();
+        let base: FaceSdfMap = sapphire_serialize::from_ron(&sdf_document()).unwrap();
+        assert_eq!(document.edges, Edges::AntiAliased);
+        let angles = |masks: &[ThresholdMask]| masks.iter().map(|mask| mask.angle).collect::<Vec<_>>();
+        assert_eq!(angles(&document.horizontal), angles(&base.horizontal));
+        assert_eq!(angles(&document.vertical), angles(&base.vertical));
+        assert!(document.inputs().iter().all(|path| path.starts_with("masks_edges/")));
+        // Each texel is the share of its points lit: 0 or 1 inside a region, gray along edges, and
+        // binarized, within a texel of the base masks' shape at the same scale.
+        let samples = sampled_field(horizontal_threshold);
+        let mask = anti_aliased_mask(&samples, 40.0);
+        let (mut gray, mut far) = (0, 0);
+        for (x, y, value) in mask.enumerate_pixels().map(|(x, y, p)| (x, y, p.0[0])) {
+            if value != 0 && value != 255 {
+                gray += 1;
+            }
+            let center = |c: u32| (c as f32 + 0.5) / EDGES_SIZE as f32;
+            let (px, py) = point(center(x), center(y));
+            let lit = horizontal_threshold(px, py).is_some_and(|t| t > 40.0);
+            // A texel whose center the base reads otherwise is gray, on the edge.
+            if lit != (value >= 128) && (value == 0 || value == 255) {
+                far += 1;
+            }
+        }
+        assert!(gray > 500, "{gray} gray texels along the edges");
+        assert_eq!(far, 0);
     }
 }

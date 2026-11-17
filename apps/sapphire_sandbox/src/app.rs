@@ -1645,7 +1645,8 @@ pub(crate) fn create_renderer(
             options.materials.then(|| layers::upload_samples(content, gpu, &mut renderer)).transpose()?;
         let garments = options.two_sided.then(|| garments::upload_samples(&mut renderer)).transpose()?;
         let glass = options.glass.then(|| glass::upload_samples(&mut renderer)).transpose()?;
-        let face_head = options.faces.map(|_| content.face_head(&mut renderer, gpu)).transpose()?;
+        let face_head =
+            options.faces.map(|layout| content.face_head(layout, &mut renderer, gpu)).transpose()?;
         let rim_rig = options.rim_rig.map(|_| content.rim_rig_meshes(&mut renderer)).transpose()?;
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
         let fog_cards = ((options.environment || options.in_town()) && !options.fog_off)

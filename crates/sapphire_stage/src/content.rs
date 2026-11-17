@@ -15,8 +15,8 @@
 //! spheres they draw on are procedural. With `--materials` it loads the material layer samples'
 //! five materials (M1 C7), by the IDs in [`layers::MATERIALS`], with the matcap and layer mask
 //! they name ([`Content::layer_materials`]). With `--faces` it loads the face test head
-//! ([`faces::HEAD`]), whose face slot the head's sidecar binds to a face material, which names an
-//! SDF face map, a face mask and an expression map: all of it cooked content
+//! ([`crate::faces::HEAD`], or with `--face-layout edges` [`crate::faces::EDGES_HEAD`]), whose
+//! face slot the head's sidecar binds to a face material, which names an SDF face map, a face mask and an expression map: all of it cooked content
 //! ([`Content::face_head`]); with `--hair-shadow-softness` or `--hair-transmission`, face and
 //! hair materials upload with their bangs' shadow softened or their hair transmitting (M1 C8,
 //! [`Content::override_materials`]), a copy of the cooked material edited. With `--hard-edges`
@@ -137,7 +137,7 @@ use crate::LOG_TARGET;
 use crate::anim_graph::{ClipTable, MAX_HELD_CLIPS};
 use crate::environment;
 #[cfg(feature = "samples")]
-use crate::faces;
+use crate::faces::FaceLayout;
 #[cfg(feature = "samples")]
 use crate::foliage::{self, FoliageMeshes};
 #[cfg(feature = "samples")]
@@ -1951,16 +1951,19 @@ impl Content {
         Ok(ids.map(|id| self.gpu.materials.get(&id).expect("a ready material was uploaded here").object))
     }
 
-    /// Loads until the face test head is on `renderer`, with its materials and the maps they
-    /// name, and returns its mesh: the load screen of `--faces`. It stays loaded from then on.
+    /// Loads until the face test head `layout` draws ([`FaceLayout::head`]) is on `renderer`,
+    /// with its materials and the maps they name, and returns its mesh: the load screen of
+    /// `--faces`. It stays loaded from then on.
     #[cfg(feature = "samples")]
     pub fn face_head(
         &mut self,
+        layout: FaceLayout,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<MeshHandle, AppInitError> {
+        let id = layout.head();
         // Asking again tries a head that failed before, as the character does.
-        let head = self.server.load_with(faces::HEAD, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let head = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&head, |upload| assets.upload(upload, renderer, gpu));
         self.face_head = Some(head);
@@ -1968,7 +1971,7 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         loaded.map_err(|error| AppInitError::msg(format!("the face head didn't load: {error}")))?;
-        Ok(self.gpu.meshes.get(&faces::HEAD).expect("a ready mesh was uploaded here").object.handle)
+        Ok(self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle)
     }
 
     /// Loads until the courtyard is on `renderer`, with its environment materials and the maps they

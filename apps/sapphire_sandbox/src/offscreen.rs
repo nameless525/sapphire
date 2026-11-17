@@ -296,7 +296,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         scene.spawn_glass(sapphire_stage::glass::upload_samples(renderer)?);
     }
     if let Some(layout) = options.faces {
-        scene.spawn_face_rig(content.face_head(renderer, gpu)?, layout);
+        scene.spawn_face_rig(content.face_head(layout, renderer, gpu)?, layout);
     }
     if let Some(layout) = options.rim_rig {
         scene.spawn_rim_rig(layout, content.rim_rig_meshes(renderer)?);

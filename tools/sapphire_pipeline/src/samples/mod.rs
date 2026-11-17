@@ -570,7 +570,7 @@ mod tests {
             .map(|(name, _)| name.as_str())
             .collect();
         assert!(failed.is_empty(), "these samples differ from what gen-samples makes: {failed:?}");
-        assert_eq!(files.len(), 91, "every sample is compared");
+        assert_eq!(files.len(), 120, "every sample is compared");
     }
 
     #[test]

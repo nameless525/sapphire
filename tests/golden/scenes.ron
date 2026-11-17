@@ -4436,6 +4436,17 @@
                        "--capture-frames", "32", "--character-shadows", "own", "--effect-scale", "reduced:1"],
                 ci_seconds: (lavapipe: 37.0, warp: 132.9),
             ),
+            // The anti-aliased face (M6 C6): the face rig's head with its face map generated from masks painted
+            // at 512² and read with anti-aliased edges, lit level from its right at 55°, 75° and 95°, each between
+            // two masks: the shadow's edge sweeping from the far cheek and the nose toward the middle. Pinned as
+            // `faces` is, so the two compare.
+            (
+                name: "faces-anti-aliased",
+                ticks: 90,
+                args: ["--plain-post", "--faces", "--face-layout", "edges", "--plain-sky", "--aa", "msaa",
+                       "--shadows", "off", "--fog", "off", "--ao", "off"],
+                ci_seconds: (lavapipe: 1.4, warp: 4.7),
+            ),
         ],
     ),
 )

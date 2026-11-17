@@ -284,7 +284,8 @@ pub(crate) struct Options {
     pub glass: bool,
     /// `--faces [--face-layout <layout>]`: show the face look-dev rig instead of the character,
     /// in this layout (`lights` without `--face-layout`; the layouts are `FaceLayout::NAMES`:
-    /// lights, hair, highlights, turn, gi, gi-clamped, eyes, eyes-turned, gaze and blink).
+    /// lights, hair, highlights, turn, gi, gi-clamped, eyes, eyes-turned, gaze, blink, backlit and
+    /// edges).
     pub faces: Option<FaceLayout>,
     /// `--rim-rig angles|backlit|folded`: show the rim look-dev rig instead of the character
     /// (M1 C5; `folded`, M1 C8).

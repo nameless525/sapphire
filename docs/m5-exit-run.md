@@ -368,20 +368,29 @@ One line a finding, most serious first, with what closes it.
 13. **A recipe's look step run by `cargo run -p sapphire_sandbox` reads the content beside the binary,** `target/debug/content/`, which nothing writes: "A reflection probe", step 3, fails as written ("failed to read pack shared") until `SAPPHIRE_CONTENT_DIR=<checkout>/target/content/desktop/` is set, as the walk set it. Closed by those words in the recipes (the next handoff's "How to add").
 14. **A timeline's look step, `--arena --timeline <id>`, plays it in the arena's space and by drawn frames:** the court gate's shots, framed on the ward's places, show no fighter in the arena, so a face track's faces can't be seen there, and a capture by `--capture-ticks 330` alone drew the street with none of the timeline; `--capture-frames 330` drew the focus key's blur. Closed by a line in "A face track" and "A focus key" saying how to look at a zone's timeline, and to capture it by frames.
 
-## Final run at <commit>
+## Final run at f4efa213e
 
-The same table, on the release's head, with what changed since the rehearsal.
+2026-11-16 to 2026-11-17 UTC, at f4efa213e (#415's head, `main` from 19:12 UTC on the 16th), from a worktree left at that commit; the machine as at the rehearsal, an Apple M5 with 24 GB. `prepare` and `plan` ran at 17:07 UTC; `run --counts` ran its 32 units (the counted walks, two rounds each) in 6.3 minutes in an ordinary slot, at a load near 3.7; the timed sittings ran under `slot --all --load 8`, 56 sittings of 248 units in two rounds of 28: in each round, eight sittings on Desktop-High (2560 × 1440, the desktop cook), eight on Desktop-Low (1920 × 1080, the desktop cook), five on Mobile-High and seven on Mobile-Low (2532 × 1170, the mobile cook), 449 minutes by the units' stated lengths. Round 1 ran from 17:18 to 20:02 UTC and round 2 from 20:05 UTC to 00:13 UTC on the 17th; the owed timed pairs (L17's and L10's) ran in an idle hour during round 2. Every one of the 56 sittings exited 0, and no arrival was held to its bound in any log. `bench-scale device` (four units) is run apart, on the Simulator and the emulator.
 
-| Exit test | Tier | What was read | Measured | Budget | Verdict | Evidence |
-|---|---|---|---|---|---|---|
-| 1 | | | | | | |
-| 2 | | | | | | |
-| 3 | | | | | | |
-| 4 | | | | | | |
-| 5 | | | | | | |
-| 6 | | | | | | |
-| 7 | | | | | | |
-| 8 | | | | | | |
+**Why the two batches before it aren't the final run.** Each was prepared as the final batch and stopped when it found an engine fault, since a fix moves the measured commit:
+
+- **At d382ef94b,** sitting 3's zone trip on Desktop-High never arrived: `trip.desktop-high.r1` stopped at its deadline after 164 s (52 s stated). A texture bound by a material that no view read kept no target, so an arrival waiting for every texture at its plan held its wipe for good. Fixed in #410: an estimate sets a texture's target whether a view reads it or not, and an arrival waits for its textures 300 updates at most (`ARRIVAL_HOLD`), and a hold that reaches the bound is counted, and fails exit test 2 in the report (#411).
+- **At bff650dcc,** round 1 ran all 28 sittings with every GPU reading void (a screen saver drew beside the run all night, locks 0.37 to 0.76), and its report failed three things the display doesn't explain: exit test 6 judged `crowd-hold`, a run that logs no timed row; exit test 2 judged the 30-frame waits on the unpaced `streaming` run; and exit test 1's `texture streaming` CPU row read 524 to 583 µs at p95 against 500 on every Desktop-Low tour. The report's rules were fixed in #414 (the waits judged on paced runs only, the crowd on its walk), and the streamer's update was made cheaper with no decision changed in #415.
+
+**The display's lock in this run.** The rule above voids a round whose lock reads 0.10 or more, and this run met it two ways:
+
+- **The Mac in use beside the run.** Desktop-High's round 1 is void but for two units run after the maintainer left (locks 0.12 to 0.67): the maintainer was at the Mac, and an open browser kept the display awake. So were sitting 29's two tours (0.85 and 0.83: the display woke for six minutes) and most of the round-2 sittings run while the maintainer worked (34 to 44, Desktop-High's last three and Desktop-Low's eight). From Desktop-Low's round 1 on, the batch put the display to sleep before a sitting whenever the Mac was idle, by the maintainer's leave (at first after five minutes with no input; from sitting 34, ten minutes with no input and no app holding the display awake), and the rounds taken that way read 0.03 to 0.09 on the long runs.
+- **The floor on the phones' short runs.** The lock is the mean resultant length of the slow frames' phases, so with N slow frames spread evenly it reads about 1/√N by chance alone. The tours, with about 410 slow frames, read 0.03 to 0.04 with the display asleep; the phones' shorter units, with 65 to 180, often read 0.10 to 0.16, and up to 0.22: 13 of the phone tiers' 50 readings in round 1 were void by chance with the display asleep. A real lock reads far above that floor. The rule doesn't change in M5: a void round costs a run again, never a false pass. Voiding on significance (the lock against its floor for the run's slow frames) is M6's.
+
+**Void rounds run again.** A void round was run again by this rule, written before any was:
+
+1. Only a round that is void by the rule above is run again; a valid round is never run again, whatever its figure.
+2. Only with the Mac idle (the maintainer away ten minutes and the display asleep) and under `slot --all --load 8`. A round that reads void again carries no figure and may be run again on the same terms.
+3. The record of the void round is kept beside the batch, not overwritten.
+4. The verdict is the rule's, unchanged: the least of the valid rounds. No budget, statistic or lock limit changes in M5.
+5. The runs exit test 1 judges come first, then units with no valid round at all, then the other single void rounds.
+
+The batch's runner skips a unit whose status says it exited 0, so a void unit is run again by moving its log and status aside, into the batch folder's `void/`, after which `bench-scale run` takes the first sitting with a unit not complete and runs that unit alone.
 
 ## What stays owed
 

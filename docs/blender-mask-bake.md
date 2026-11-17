@@ -39,7 +39,7 @@ blender character.blend --background --python tools/blender/bake_character_masks
 | `--face OBJECT` | — | Bakes SDF threshold masks for this mesh |
 | `--body OBJECT` | — | Bakes ILM inputs (AO and material IDs) for this mesh; repeat for more |
 | `--out DIR` | required | Where masks and documents go |
-| `--size N` | 1024 | Mask width and height. The map has the masks' resolution, and masks are binarized, so this sets the shadow edge's precision |
+| `--size N` | 1024 | Mask width and height. The map has the masks' resolution, and masks are binarized unless the document reads them with `edges: AntiAliased`, so this sets the shadow edge's precision |
 | `--uv-map NAME` | the active map | UV map to bake into |
 | `--horizontal A` | `0:180:10` | Angles of the horizontal masks: `start:stop:step` or `a,b,c`, in degrees |
 | `--vertical A` | none | Angles of the vertical masks (WuWa's top light) |
@@ -79,7 +79,7 @@ Open the masks in any editor that keeps 8-bit grayscale PNGs (Krita, Photoshop, 
 
   A few stray anti-aliased pixels can be accepted with `allowed_violations: 4` in the document; they then follow the first mask that shadows them.
 - **Keep the outside of the face's UV islands black** in every mask: the generator sweeps the shadow from one mask's edge to the next, and a mask with no edge gives it nowhere to start.
-- Anti-aliased brushes are fine: masks are lit where they are at least 50% white.
+- Anti-aliased brushes are fine: masks are lit where they are at least 50% white. With `edges: AntiAliased` in the document (M6 C6), the gray along an edge places it inside the texel, so 512² masks painted anti-aliased give edges about six times closer to the painted shape than read binarized; masks painted with hard edges gain nothing from it.
 - **Masks can sit at any angles.** Add masks where the shape changes quickly (around the nose) and fewer where it doesn't; edit the angles in the document to match. The sweep between two masks is linear, so more masks give a smoother turn.
 - With the light exactly behind the head (180°) the map lights nothing, so a mask at 180° only shapes the sweep toward it; texels it lights are dark at that one angle.
 - Eyes and brows that never take shadow are painted in the face material's face mask (B, always lit; `character_maps::face_mask`), not in these masks. The face mask also holds the nose line (R) and the face highlight (G); blush and gloom go in the expression map (M1 C3).
@@ -91,6 +91,10 @@ For the ILM inputs, paint a specular mask (white where highlights may appear) an
 ```bash
 # The generated map as a 16-bit PNG, before compression:
 cargo run -p sapphire_pipeline --profile tools -- bake-map content/characters/heroine/face/face.facesdf.ron /tmp/face.png
+
+# A sheet to judge it by: the face lit from its right and its left at each angle, beside the
+# mask at that angle (red where the map can't reproduce it):
+cargo run -p sapphire_pipeline --profile tools -- bake-map content/characters/heroine/face/face.facesdf.ron /tmp/sheet.png --sheet 15,30,45,60,90
 
 # Cook the content tree:
 cargo xtask content

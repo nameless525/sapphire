@@ -79,3 +79,20 @@ fn a_range_no_cook_can_write_is_refused_and_doesnt_panic() {
         assert!(matches!(&refused, Err(AssetError::Zone(ZoneError::Invalid { .. }))), "{count}: {refused:?}");
     }
 }
+
+/// A zone a version 8 cook wrote (the proving hub as M5 committed it) takes a decode job's road: it becomes
+/// today's version before it's checked, so a pack cooked before water still loads (cooker rule 2).
+#[test]
+fn a_version_8_zone_is_upgraded_before_its_check() {
+    let mut old = sapphire_serialize::cooked::AlignedVec::<16>::new();
+    old.extend_from_slice(include_bytes!("../../sapphire_zone/testdata/proving_hub.v8.szone"));
+    assert!(AssetKind::Zone.references(&old).is_err(), "stale in place");
+    let upgraded = AssetKind::Zone.upgrade(old).expect("upgrades");
+    let read = Zone::read(&upgraded).expect("today's version");
+    assert!(read.simulation.water.is_empty());
+    assert_eq!(AssetKind::Zone.references(&upgraded).expect("good"), read.references());
+
+    let current = zone().to_cooked().expect("writes");
+    let same = AssetKind::Zone.upgrade(current.clone()).expect("left as it is");
+    assert_eq!(same.as_slice(), current.as_slice());
+}

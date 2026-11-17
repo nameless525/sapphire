@@ -405,11 +405,13 @@ impl AssetKind {
     }
 
     /// Cooked bytes of this kind at a version it still reads but no longer writes, as its current
-    /// version's; any other bytes as they are. Only clips have one (version 1, M6 A1). Decode jobs
-    /// call it before [`Self::references`], so what the runtime reads in place is always current.
+    /// version's; any other bytes as they are. Clips have one (version 1, M6 A1), and zones (version 8, M6
+    /// W2). Decode jobs call it before [`Self::references`], so what the runtime reads in place is always
+    /// current.
     pub fn upgrade(self, bytes: AlignedVec) -> Result<AlignedVec, AssetError> {
         Ok(match self {
             Self::Clip => Clip::upgrade(&bytes)?.unwrap_or(bytes),
+            Self::Zone => Zone::upgrade(&bytes)?.unwrap_or(bytes),
             _ => bytes,
         })
     }

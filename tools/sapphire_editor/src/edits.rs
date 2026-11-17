@@ -14,7 +14,7 @@ use sapphire_moves::{MoveDocument, MoveSetDocument};
 pub type MovesDocument = Document<MoveSetDocument>;
 
 /// A row of the timeline: a list in a move's document.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Track {
     Hitboxes,
     Hurtboxes,
@@ -112,7 +112,8 @@ impl TickSpan {
 }
 
 /// One entry of one track of one move, by its place in the file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EntryRef {
     pub mv: usize,
     pub track: Track,

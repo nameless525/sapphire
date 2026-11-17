@@ -17,7 +17,7 @@ use sapphire_assets::AssetId;
 use sapphire_assets::ui::{UiDocument, UiModel, UiValueKind};
 
 /// The aspects a screen's previewed at: those the game's screens' goldens hold, at their sizes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Aspect {
     /// 4:3, a tablet's.
     Standard,
@@ -55,7 +55,7 @@ impl Aspect {
 pub const LANGUAGES: [&str; 2] = ["en", "ja"];
 
 /// What a path reads, typed in.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StandIn {
     Number(f64),
     Bool(bool),

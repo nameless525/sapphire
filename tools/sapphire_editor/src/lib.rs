@@ -22,6 +22,7 @@
 pub mod app;
 pub mod capture;
 pub mod cli;
+pub mod commands;
 pub mod cooked;
 pub mod edits;
 pub mod figure;

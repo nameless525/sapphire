@@ -48,9 +48,6 @@
 //!
 //! # Later milestones
 //!
-//! - Distances that use anti-aliased mask edges (Gustavson and Strand's edge distance
-//!   transform) for sub-pixel accurate shadow edges from low-resolution masks; masks are
-//!   binarized today, so their resolution sets the edge's precision.
 //! - Ramp texture arrays once texture arrays exist (A2's later milestones), and color-coded
 //!   material-ID maps (a palette of flat colors) besides gray levels.
 //! - A per-instance debug view of the face map's threshold (F5). Material documents (A3) name

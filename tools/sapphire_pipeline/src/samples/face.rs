@@ -66,7 +66,7 @@ use sapphire_math::det;
 use serde_json::json;
 
 use crate::character_maps::FaceSdfMap;
-use crate::character_maps::face_sdf::ThresholdMask;
+use crate::character_maps::face_sdf::{Edges, ThresholdMask};
 use crate::color::srgb8;
 use crate::generators::Output;
 use crate::gltf_writer::{Geometry, GltfWriter};
@@ -386,6 +386,7 @@ pub fn sdf_document() -> String {
         horizontal: masks(&HORIZONTAL_ANGLES, horizontal_mask_name),
         vertical: masks(&VERTICAL_ANGLES, vertical_mask_name),
         allowed_violations: 0,
+        edges: Edges::Binary,
     };
     document.validate().expect("the face's masks are in order");
     sapphire_serialize::to_ron(&document).expect("a face SDF document serializes")

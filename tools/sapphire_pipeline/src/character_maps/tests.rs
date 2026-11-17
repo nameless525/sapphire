@@ -9,7 +9,7 @@ use sapphire_assets::character_maps::{MaterialId, face_sdf, ilm as ilm_layout};
 use sapphire_assets::texture::{AstcBlock, Texture, TextureFormat};
 use sapphire_serialize::{from_ron, to_ron};
 
-use super::face_sdf::ThresholdMask;
+use super::face_sdf::{Edges, ThresholdMask};
 use super::ilm::{ChannelInput, Encoding, ImageChannel, MaterialIdInput};
 use super::ramp::{ColorStop, ImageRamp, Interpolation, MaterialRamps, Ramp, SrgbColor, StopRamp};
 use super::*;
@@ -48,6 +48,7 @@ fn face_document(vertical: bool) -> FaceSdfMap {
         horizontal: masks("h"),
         vertical: if vertical { masks("v") } else { Vec::new() },
         allowed_violations: 0,
+        edges: Edges::Binary,
     }
 }
 
@@ -202,7 +203,13 @@ fn documents_round_trip_and_read_as_documented() {
         ))"#,
     )
     .unwrap();
-    assert_eq!((face.vertical.len(), face.allowed_violations), (0, 0));
+    assert_eq!((face.vertical.len(), face.allowed_violations, face.edges), (0, 0, Edges::Binary));
+    // Binary edges, the default, aren't written, so documents from before M6 C6 keep their bytes.
+    assert!(!to_ron(&face_document(false)).unwrap().contains("edges"));
+    let anti_aliased = FaceSdfMap { edges: Edges::AntiAliased, ..face_document(false) };
+    let text = to_ron(&anti_aliased).unwrap();
+    assert!(text.contains("edges: AntiAliased"), "{text}");
+    assert_eq!(from_ron::<FaceSdfMap>(&text).unwrap(), anti_aliased);
     let ramp: RampMap = from_ron(
         r##"(type: "sapphire::pipeline::RampMap", version: 1, data: (
             materials: [(
@@ -991,4 +998,71 @@ fn a_ramps_painted_strip_is_its_input() {
         matches!(&error, CookError::Map { source, .. } if matches!(&**source, MapError::MissingInput(path) if path.ends_with("ramps/skin.png"))),
         "{error:?}"
     );
+}
+
+/// Masks anti-aliased from the test face's shapes at four times their size: each texel the share
+/// of its 16 points that the shape lights, in 8 bits.
+fn anti_aliased_mask(degrees: f32) -> image::DynamicImage {
+    image::GrayImage::from_fn(SIZE, SIZE, |x, y| {
+        let lit = (0..16u32).filter(|k| {
+            let fine = |c: u32, k: u32| (f64::from(c * 4 + k) + 0.5) / 4.0 - 0.5;
+            let radius = 28.0 - f64::from(degrees) * 0.2;
+            (fine(x, k % 4) - 24.5).hypot(fine(y, k / 4) - 31.5) < radius
+        });
+        image::Luma([(lit.count() * 255 / 16) as u8])
+    })
+    .into()
+}
+
+#[test]
+fn anti_aliased_edges_recook_the_map_and_keep_every_mask_at_its_angle() {
+    let tree = Tree::new("maps_anti_aliased");
+    let face = tree.source().join("face");
+    for angle in ANGLES {
+        write_png(&face.join(format!("masks/h_{angle:03}.png")), anti_aliased_mask(angle));
+    }
+    let key = |report: &CookReport| {
+        report.assets.iter().find(|asset| asset.source.ends_with("face.facesdf.ron")).unwrap().key
+    };
+    let read = || {
+        let (_, level0) = texture(&tree.out(Cook::Desktop).join("face/face.facesdf.ktx2"));
+        let values: Vec<f32> =
+            level0.as_chunks::<2>().0.iter().map(|b| f32::from(u16::from_le_bytes(*b)) / 65535.0).collect();
+        values
+    };
+    let binary = key(&tree.cook(Cook::Desktop));
+    let binary_values = read();
+    tree.write_document(
+        &face.join("face.facesdf.ron"),
+        &FaceSdfMap { edges: Edges::AntiAliased, ..face_document(false) },
+    );
+    let report = tree.cook(Cook::Desktop);
+    assert_eq!(statuses(&report).iter().filter(|(_, status)| *status == CookStatus::Cooked).count(), 1);
+    assert_ne!(key(&report), binary, "the edges are in the document, so in the key");
+    let values = read();
+    let document = fs::read(face.join("face.facesdf.ron")).unwrap();
+    let generated: Vec<f32> =
+        generate(&face.join("face.facesdf.ron"), &document, &MapKind::FaceSdf.default_settings())
+            .unwrap()
+            .image
+            .pixels
+            .iter()
+            .map(|pixel| pixel[0])
+            .collect();
+    // As generated, the same texels light at each mask's angle: the masks binarized. Cooked,
+    // binary's do too, while an anti-aliased texel can turn at its mask's angle only where the
+    // edge runs through it, gray in its mask.
+    for angle in ANGLES {
+        let mask = anti_aliased_mask(angle).to_luma8();
+        for (i, &painted) in mask.as_raw().iter().enumerate() {
+            let expected = painted >= 128;
+            assert_eq!(face_sdf::is_lit(generated[i], angle), expected, "anti-aliased, {angle}°, {i}");
+            assert_eq!(face_sdf::is_lit(binary_values[i], angle), expected, "binary, {angle}°, {i}");
+            if face_sdf::is_lit(values[i], angle) != expected {
+                assert!((96..160).contains(&painted), "cooked, {angle}°, {i}: {painted}");
+            }
+        }
+    }
+    // Only where between texels the values cross moves.
+    assert_ne!(values, binary_values);
 }

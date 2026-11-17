@@ -43,9 +43,25 @@
 //!
 //! # Masks
 //!
-//! A mask is lit where its first channel (gray, or red) is at least one half; anti-aliased
-//! edges are binarized there, so a mask's resolution sets its edge's precision. Leave
-//! everything outside the face's UV islands in shadow in every mask: a mask with no shadow
+//! A mask is lit where its first channel (gray, or red) is at least one half. How its edges
+//! are read is the document's `edges` ([`Edges`]):
+//!
+//! - `Binary`, the default: anti-aliased edges are binarized at one half, and an edge lies
+//!   halfway between a lit and a shadowed texel, so a mask's resolution sets its edge's
+//!   precision.
+//! - `AntiAliased` (M6 C6): a gray texel along an edge places the edge inside it, by how much of
+//!   it is lit, through Gustavson and Strand's anti-aliased distance transform (`distance`'s
+//!   `anti_aliased_distances`). The same texels are lit and turn between the same masks as
+//!   binary's, so each mask still holds at its angle texel for texel as generated; what moves
+//!   is where between texels the map's values cross each angle, which is where the shader's
+//!   filtered read puts the shadow's edge. A texel the edge runs right through holds a value
+//!   just above its mask's, which the cook's rounding can take to the mask's own, so it turns
+//!   at that angle: half lit, it is right either way. Measured on masks painted at 512² against
+//!   the same shapes at 2048², the edge's mean error falls from about 0.12 texels to about 0.02
+//!   (`anti_aliased_masks_place_edges_closer_to_a_fine_reference`). A mask painted with hard
+//!   edges gains nothing from it.
+//!
+//! Leave everything outside the face's UV islands in shadow in every mask: a mask with no shadow
 //! gives the band after it no edge to sweep from (as one with nothing lit gives the band
 //! before it no edge to sweep to), so that band turns all at once, at the later mask's
 //! angle.
@@ -57,7 +73,7 @@ use sapphire_assets::character_maps::face_sdf::{MAX_ANGLE_DEGREES, encode_angle}
 use sapphire_reflect::Versioned;
 use serde::{Deserialize, Serialize};
 
-use super::distance::squared_distances;
+use super::distance::{anti_aliased_distances, squared_distances};
 use super::{GeneratedMap, Inputs, MapError, check_size, with_image_importer};
 use crate::cache::Stage;
 use crate::import::image::{ChannelLayout, SourceImage};
@@ -82,14 +98,37 @@ pub struct FaceSdfMap {
     /// [module docs](self)). 0 by default.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub allowed_violations: u32,
+    /// How the masks' edges are read (M6 C6): [`Edges::Binary`] by default.
+    #[serde(default, skip_serializing_if = "Edges::is_binary")]
+    pub edges: Edges,
 }
 
+/// A document from before `edges` reads as one with `edges: Binary`, the same map, so the field
+/// needs no new version.
 impl Versioned for FaceSdfMap {
     const VERSION: u32 = 1;
 }
 
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+/// How a face map's masks' edges are read (M6 C6): see the [module docs](self)' "Masks".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Edges {
+    /// Each mask is lit where it is at least one half, and its edges lie halfway between texels:
+    /// the masks' resolution sets the edges' precision.
+    #[default]
+    Binary,
+    /// A mask's gray texels along an edge place the edge within them, by how much of the texel is
+    /// lit: sub-texel edges from anti-aliased masks.
+    AntiAliased,
+}
+
+impl Edges {
+    fn is_binary(&self) -> bool {
+        *self == Self::Binary
+    }
 }
 
 /// One threshold mask: the face's lit region for a light at `angle`.
@@ -235,7 +274,7 @@ pub(super) fn generate(
     let mut size = None;
     let mut values = Vec::new();
     for (channel, masks) in map.channels() {
-        values.push(threshold_channel(channel, masks, map.allowed_violations, inputs, &mut size)?);
+        values.push(threshold_channel(channel, masks, map, inputs, &mut size)?);
     }
     let [width, height] = size.expect("validated: every channel has masks");
     let (layout, pixels, channels) = match &values[..] {
@@ -256,23 +295,24 @@ pub(super) fn generate(
     Ok(GeneratedMap { image, class })
 }
 
-/// One channel's threshold values, from its masks. `size` is the map's size, set by the
-/// first mask read.
+/// One channel's threshold values, from its masks (`map`'s, which says how to read them).
+/// `size` is the map's size, set by the first mask read.
 fn threshold_channel(
     channel: SdfChannel,
     masks: &[ThresholdMask],
-    allowed: u32,
+    map: &FaceSdfMap,
     inputs: &Inputs<'_>,
     size: &mut Option<[u32; 2]>,
 ) -> Result<Vec<f32>, MapError> {
+    let allowed = map.allowed_violations;
     let mut builder: Option<ChannelBuilder> = None;
     // One mask in memory at a time: a face map can have dozens.
     for mask in masks {
         let (path, image) = inputs.image(&mask.path)?;
         let expected = *size.get_or_insert([image.width, image.height]);
         check_size(&path, &image, expected)?;
-        let builder = builder.get_or_insert_with(|| ChannelBuilder::new(expected[0], expected[1]));
-        builder.push(mask.angle, image.pixels.iter().map(|pixel| pixel[0] >= 0.5).collect());
+        let builder = builder.get_or_insert_with(|| ChannelBuilder::new(expected[0], expected[1], map.edges));
+        builder.push(mask.angle, image.pixels.iter().map(|pixel| pixel[0]).collect());
     }
     let (values, pairs) = builder.expect("validated: at least two masks").finish();
     let violations: Vec<Violation> = pairs
@@ -306,6 +346,7 @@ struct PairViolation {
 struct ChannelBuilder {
     width: u32,
     height: u32,
+    edges: Edges,
     /// Every texel's value so far: set when the texel turns to shadow, or at the end.
     values: Vec<f32>,
     /// The masks fed so far.
@@ -314,59 +355,90 @@ struct ChannelBuilder {
     last: Vec<bool>,
     /// Texels lit in every mask so far: the last mask, monotonic by construction.
     lit: Vec<bool>,
+    /// With anti-aliased edges, how much of each texel every mask so far lights: the least of
+    /// their values. Empty with binary edges.
+    cover: Vec<f32>,
     /// The last mask's stored angle value.
     last_value: f32,
     violations: Vec<PairViolation>,
 }
 
 impl ChannelBuilder {
-    fn new(width: u32, height: u32) -> Self {
+    fn new(width: u32, height: u32, edges: Edges) -> Self {
         let texels = width as usize * height as usize;
+        let cover = match edges {
+            Edges::Binary => Vec::new(),
+            Edges::AntiAliased => vec![1.0; texels],
+        };
         Self {
             width,
             height,
+            edges,
             values: vec![0.0; texels],
             count: 0,
             last: Vec::new(),
             lit: vec![true; texels],
+            cover,
             last_value: 0.0,
             violations: Vec::new(),
         }
     }
 
-    /// Adds the mask for a light at `degrees`: whether each texel is lit, row-major.
-    fn push(&mut self, degrees: f32, mask: Vec<bool>) {
+    /// Adds the mask for a light at `degrees`: each texel's value, row-major, lit from one half.
+    fn push(&mut self, degrees: f32, mask: Vec<f32>) {
         let value = encode_angle(degrees);
         let (width, height) = (self.width as usize, self.height as usize);
+        let lit_now: Vec<bool> = mask.iter().map(|&v| v >= 0.5).collect();
         if self.count > 0 {
-            self.check_pair(&mask);
+            self.check_pair(&lit_now);
         }
-        let next: Vec<bool> = self.lit.iter().zip(&mask).map(|(&lit, &now)| lit && now).collect();
+        let next: Vec<bool> = self.lit.iter().zip(&lit_now).map(|(&lit, &now)| lit && now).collect();
+        // A NaN texel is in shadow, as it is binarized.
+        let next_cover: Vec<f32> = self
+            .cover
+            .iter()
+            .zip(&mask)
+            .map(|(&cover, &v)| cover.min(if v.is_nan() { 0.0 } else { v }))
+            .collect();
         let turned = |i: usize| self.lit[i] && !next[i];
         if self.count == 0 {
             // Shadowed by the first mask: never lit. The values are already 0.
         } else if (0..next.len()).any(turned) {
             // Distance to the previous lit region's edge, and to this one's lit region.
-            let inside = squared_distances(width, height, |i| !self.lit[i]);
-            let outside = squared_distances(width, height, |i| next[i]);
+            let (to_last, to_next): (Vec<f64>, Vec<f64>) = match self.edges {
+                Edges::Binary => (
+                    squared_distances(width, height, |i| !self.lit[i])
+                        .into_iter()
+                        .map(edge_distance)
+                        .collect(),
+                    squared_distances(width, height, |i| next[i]).into_iter().map(edge_distance).collect(),
+                ),
+                Edges::AntiAliased => {
+                    let shadow: Vec<f32> =
+                        self.cover.iter().map(|&cover| 1.0 - cover.clamp(0.0, 1.0)).collect();
+                    let lit: Vec<f32> = next_cover.iter().map(|&cover| cover.clamp(0.0, 1.0)).collect();
+                    (
+                        anti_aliased_distances(width, height, &shadow),
+                        anti_aliased_distances(width, height, &lit),
+                    )
+                }
+            };
+            // No shadow in the last mask, or nothing lit in this one: no edge to sweep from or
+            // to, so the band turns at once, at this mask's angle. Gray texels under one half
+            // make no edge, as they are shadow binarized.
+            let edges = self.lit.contains(&false) && next.contains(&true);
             let (low, high) = (self.last_value, value);
             let span = f64::from(high) - f64::from(low);
             for i in (0..next.len()).filter(|&i| turned(i)) {
-                let (to_last, to_next) = (edge_distance(inside[i]), edge_distance(outside[i]));
-                let t = if to_last.is_finite() && to_next.is_finite() {
-                    to_last / (to_last + to_next)
-                } else {
-                    // No shadow in the last mask, or nothing lit in this one: no edge to
-                    // sweep from or to, so the band turns at once, at this mask's angle.
-                    1.0
-                };
+                let t = if edges { to_last[i] / (to_last[i] + to_next[i]) } else { 1.0 };
                 // Strictly above the last mask's value, so the texel is still lit at that
                 // mask's angle even where `t` is too small for f32 to show.
                 self.values[i] = ((f64::from(low) + t * span) as f32).max(low.next_up()).min(high);
             }
         }
         self.lit = next;
-        self.last = mask;
+        self.cover = next_cover;
+        self.last = lit_now;
         self.last_value = value;
         self.count += 1;
     }
@@ -430,9 +502,9 @@ mod tests {
 
     /// Builds a channel from masks at their angles in degrees.
     fn build(masks: &[(f32, Mask)]) -> (Vec<f32>, Vec<PairViolation>) {
-        let mut builder = ChannelBuilder::new(masks[0].1.width, masks[0].1.height);
+        let mut builder = ChannelBuilder::new(masks[0].1.width, masks[0].1.height, Edges::Binary);
         for (degrees, mask) in masks {
-            builder.push(*degrees, mask.lit.clone());
+            builder.push(*degrees, mask.lit.iter().map(|&lit| if lit { 1.0 } else { 0.0 }).collect());
         }
         builder.finish()
     }
@@ -539,6 +611,148 @@ mod tests {
         assert!(is_lit(values[0], 30.0) && !is_lit(values[0], 90.0));
     }
 
+    /// Builds a channel from masks given as values, read with `edges`.
+    fn build_values(width: u32, height: u32, edges: Edges, masks: &[(f32, Vec<f32>)]) -> Vec<f32> {
+        let mut builder = ChannelBuilder::new(width, height, edges);
+        for (degrees, mask) in masks {
+            builder.push(*degrees, mask.clone());
+        }
+        let (values, violations) = builder.finish();
+        assert!(violations.is_empty());
+        values
+    }
+
+    /// The anti-aliased edge's measurement (M6 C6): masks painted at 512² and anti-aliased against
+    /// the same shapes' binary masks at 2048², the face map's edge from each, as the shader reads it
+    /// (filtered bilinearly up to the reference's texels), against the reference map's, at every
+    /// mask's angle between the first and the last and halfway between each pair. The error is
+    /// the area the two lit regions differ by over the edge's length: the edge's mean distance
+    /// from the reference's, in the 512² map's texels. `Binary` reads the same 512² masks, gray
+    /// texels and all, as artists' anti-aliased masks are read without `AntiAliased`.
+    ///
+    /// Measured (M6 C6, the M5 Mac, any load: the numbers are exact): a band whose wavy edge
+    /// sweeps across, 0.1200 texels binary against 0.0203 anti-aliased; discs that shrink,
+    /// 0.1296 against 0.0202. The test holds anti-aliased edges to under a quarter of binary's
+    /// error and under 0.05 texels.
+    #[test]
+    fn anti_aliased_masks_place_edges_closer_to_a_fine_reference() {
+        const FINE: u32 = 2048;
+        const SCALE: u32 = 4;
+        const COARSE: u32 = FINE / SCALE;
+        // Each case: its lit region at an angle (at a point in [0, 1]², y down), the masks'
+        // angles, and its edge's length at an angle, in units of the square's side.
+        struct Case {
+            name: &'static str,
+            lit: fn(f32, f64, f64) -> bool,
+            angles: [f32; 5],
+            length: fn(f32) -> f64,
+        }
+        // A wavy edge moving left as the light turns, at every slope up to about 0.8.
+        fn band_edge(degrees: f32, v: f64) -> f64 {
+            0.75 - 0.5 * f64::from(degrees) / 120.0 + 0.08 * (3.0 * std::f64::consts::PI * v).sin() + 0.05 * v
+        }
+        fn band_length(_: f32) -> f64 {
+            // The edge's shape doesn't change with the angle: its length, by the midpoint rule.
+            let steps = 4096;
+            (0..steps)
+                .map(|i| {
+                    let v = (f64::from(i) + 0.5) / f64::from(steps);
+                    let slope = 0.24 * std::f64::consts::PI * (3.0 * std::f64::consts::PI * v).cos() + 0.05;
+                    slope.hypot(1.0) / f64::from(steps)
+                })
+                .sum()
+        }
+        fn disc_radius(degrees: f32) -> f64 {
+            0.45 - 0.35 * f64::from(degrees) / 120.0
+        }
+        let cases = [
+            Case {
+                name: "band",
+                lit: |degrees, u, v| u < band_edge(degrees, v),
+                angles: [0.0, 25.0, 60.0, 90.0, 120.0],
+                length: band_length,
+            },
+            Case {
+                name: "discs",
+                lit: |degrees, u, v| (u - 0.5).hypot(v - 0.5) < disc_radius(degrees),
+                angles: [0.0, 30.0, 50.0, 85.0, 120.0],
+                length: |degrees| 2.0 * std::f64::consts::PI * disc_radius(degrees),
+            },
+        ];
+        for case in cases {
+            let fine_mask = |degrees: f32| -> Vec<f32> {
+                (0..FINE * FINE)
+                    .map(|i| {
+                        let center = |c: u32| (f64::from(c) + 0.5) / f64::from(FINE);
+                        if (case.lit)(degrees, center(i % FINE), center(i / FINE)) { 1.0 } else { 0.0 }
+                    })
+                    .collect()
+            };
+            let mut fine = Vec::new();
+            let mut coarse = Vec::new();
+            for degrees in case.angles {
+                let mask = fine_mask(degrees);
+                // The fine mask's coverage of each coarse texel, in 8 bits as a PNG holds it.
+                let cover = (0..COARSE * COARSE)
+                    .map(|i| {
+                        let (x, y) = (i % COARSE * SCALE, i / COARSE * SCALE);
+                        let lit: f32 = (0..SCALE)
+                            .flat_map(|dy| (0..SCALE).map(move |dx| ((y + dy) * FINE + x + dx) as usize))
+                            .map(|j| mask[j])
+                            .sum();
+                        (lit / (SCALE * SCALE) as f32 * 255.0).round() / 255.0
+                    })
+                    .collect();
+                fine.push((degrees, mask));
+                coarse.push((degrees, cover));
+            }
+            let reference = build_values(FINE, FINE, Edges::Binary, &fine);
+            let binary = build_values(COARSE, COARSE, Edges::Binary, &coarse);
+            let anti_aliased = build_values(COARSE, COARSE, Edges::AntiAliased, &coarse);
+            let interior = &case.angles[1..case.angles.len() - 1];
+            let halfway = case.angles.windows(2).map(|pair| (pair[0] + pair[1]) / 2.0);
+            let angles: Vec<f32> = interior.iter().copied().chain(halfway).collect();
+            let error = |map: &[f32]| -> f64 {
+                let total: f64 = angles
+                    .iter()
+                    .map(|&degrees| {
+                        let wrong = (0..FINE * FINE)
+                            .filter(|&i| {
+                                let sampled = bilinear(map, COARSE, i % FINE, i / FINE, SCALE);
+                                is_lit(sampled, degrees) != is_lit(reference[i as usize], degrees)
+                            })
+                            .count();
+                        wrong as f64 / ((case.length)(degrees) * f64::from(FINE)) / f64::from(SCALE)
+                    })
+                    .sum();
+                total / angles.len() as f64
+            };
+            let (binary, anti_aliased) = (error(&binary), error(&anti_aliased));
+            eprintln!("{}: binary {binary:.4} texels, anti-aliased {anti_aliased:.4}", case.name);
+            assert!(
+                anti_aliased < 0.25 * binary && anti_aliased < 0.05,
+                "{}: {anti_aliased} vs {binary}",
+                case.name
+            );
+        }
+    }
+
+    /// `map` (`size`² texels) sampled bilinearly, clamped at its edges, at the center of pixel
+    /// `(x, y)` of a grid `scale` times finer, as a GPU's linear filter samples it.
+    fn bilinear(map: &[f32], size: u32, x: u32, y: u32, scale: u32) -> f32 {
+        let at = |c: u32| (f64::from(c) + 0.5) / f64::from(scale) - 0.5;
+        let (sx, sy) = (at(x), at(y));
+        let (x0, y0) = (sx.floor(), sy.floor());
+        let (fx, fy) = ((sx - x0) as f32, (sy - y0) as f32);
+        let texel = |tx: f64, ty: f64| {
+            let clamp = |c: f64| c.clamp(0.0, f64::from(size - 1)) as usize;
+            map[clamp(ty) * size as usize + clamp(tx)]
+        };
+        let top = texel(x0, y0) * (1.0 - fx) + texel(x0 + 1.0, y0) * fx;
+        let bottom = texel(x0, y0 + 1.0) * (1.0 - fx) + texel(x0 + 1.0, y0 + 1.0) * fx;
+        top * (1.0 - fy) + bottom * fy
+    }
+
     #[test]
     fn generation_is_deterministic() {
         let masks = [
@@ -556,6 +770,7 @@ mod tests {
             horizontal,
             vertical,
             allowed_violations: 0,
+            edges: Edges::Binary,
         };
         assert!(map(vec![mask(0.0), mask(90.0)], Vec::new()).validate().is_ok());
         assert!(map(vec![mask(0.0), mask(180.0)], vec![mask(0.0), mask(45.0)]).validate().is_ok());

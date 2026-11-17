@@ -1066,3 +1066,58 @@ fn anti_aliased_edges_recook_the_map_and_keep_every_mask_at_its_angle() {
     // Only where between texels the values cross moves.
     assert_ne!(values, binary_values);
 }
+
+#[test]
+fn the_sheet_draws_each_angle_from_both_sides_beside_its_mask() {
+    use super::face_sdf::{SHEET_BACKGROUND, SHEET_GUTTER, SHEET_LIT, SHEET_SHADOW, SHEET_WRONG};
+    let tree = Tree::new("maps_sheet");
+    let path = tree.source().join("face/face.facesdf.ron");
+    let sheet = |angles: &[f32]| {
+        let bytes = fs::read(&path).unwrap();
+        face_sheet(&path, &bytes, &FaceSdfSettings::default(), angles).unwrap()
+    };
+    let shade = |lit: bool| if lit { SHEET_LIT } else { SHEET_SHADOW };
+    // Cell `column` of row `row`'s pixel `(x, y)`.
+    let at = |sheet: &image::RgbImage, row: u32, column: u32, x: u32, y: u32| {
+        sheet
+            .get_pixel(
+                SHEET_GUTTER + column * (SIZE + SHEET_GUTTER) + x,
+                SHEET_GUTTER + row * (SIZE + SHEET_GUTTER) + y,
+            )
+            .0
+    };
+
+    // 30° has a mask; 45° doesn't.
+    let drawn = sheet(&[30.0, 45.0]);
+    assert_eq!(drawn.dimensions(), (3 * SIZE + 4 * SHEET_GUTTER, 2 * SIZE + 3 * SHEET_GUTTER));
+    assert_eq!(drawn.get_pixel(0, 0).0, SHEET_BACKGROUND, "the gutters");
+    for (x, y) in (0..SIZE).flat_map(|y| (0..SIZE).map(move |x| (x, y))) {
+        // From the head's right; from its left, the map read mirrored; the mask, reproduced.
+        assert_eq!(at(&drawn, 0, 0, x, y), shade(lit(30.0, x, y)), "({x}, {y})");
+        assert_eq!(at(&drawn, 0, 1, x, y), shade(lit(30.0, SIZE - 1 - x, y)), "({x}, {y}) mirrored");
+        assert_eq!(at(&drawn, 0, 2, x, y), shade(lit(30.0, x, y)), "({x}, {y}) the mask");
+        assert_eq!(at(&drawn, 1, 2, x, y), SHEET_BACKGROUND, "no mask at 45°");
+    }
+
+    // A vertical channel adds its rows, lit from above only.
+    tree.add_vertical();
+    let drawn = sheet(&[60.0]);
+    assert_eq!(drawn.dimensions(), (3 * SIZE + 4 * SHEET_GUTTER, 2 * SIZE + 3 * SHEET_GUTTER));
+    assert_eq!(at(&drawn, 1, 0, 0, 40), shade(lit(60.0, 40, 0)), "the vertical masks are transposed");
+    assert_eq!(at(&drawn, 1, 1, 0, 40), SHEET_BACKGROUND);
+    assert_eq!(at(&drawn, 1, 2, 0, 40), shade(lit(60.0, 40, 0)));
+
+    // A mask's allowed violations are drawn in where the map can't reproduce them.
+    tree.write_document(&path, &FaceSdfMap { allowed_violations: 16, ..face_document(false) });
+    write_png(
+        &tree.source().join("face/masks/h_060.png"),
+        mask_image(|x, y| lit(60.0, x, y) || (x >= 60 && y < 4)),
+    );
+    let drawn = sheet(&[60.0]);
+    let wrong: Vec<(u32, u32)> = (0..SIZE)
+        .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+        .filter(|&(x, y)| at(&drawn, 0, 2, x, y) == SHEET_WRONG)
+        .collect();
+    assert_eq!(wrong.len(), 16);
+    assert!(wrong.iter().all(|&(x, y)| x >= 60 && y < 4), "{wrong:?}");
+}

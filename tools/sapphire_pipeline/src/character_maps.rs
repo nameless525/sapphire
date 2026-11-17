@@ -44,7 +44,9 @@
 //! whose stop documents decode none, is bumped with it instead ([`ramp`]'s "Versions").
 //!
 //! `sapphire_pipeline bake-map` writes a document's generated map as a PNG before
-//! compression ([`to_png`]), for checking a map without cooking the tree.
+//! compression ([`to_png`]), for checking a map without cooking the tree; with `--sheet` and a
+//! face SDF document, the map thresholded at chosen light angles beside the masks it should
+//! reproduce there ([`face_sheet`], M6 C6).
 //!
 //! # Later milestones
 //!
@@ -256,6 +258,22 @@ pub fn generate(path: &Path, bytes: &[u8], settings: &MapSettings) -> Result<Gen
             layer_mask::generate(&read_document(kind, bytes)?, settings, &inputs)
         }
     }
+}
+
+/// Reads the face SDF document at `path` (`bytes`) and its masks, generates its map, and draws
+/// the sheet an artist judges it by at `angles`, in degrees: a row per angle and channel of three
+/// cells at the map's size, the face lit from the head's right (or from above), from its left as
+/// the shader mirrors it, and the document's mask at that angle, red where the map misses it.
+pub fn face_sheet(
+    path: &Path,
+    bytes: &[u8],
+    settings: &FaceSdfSettings,
+    angles: &[f32],
+) -> Result<image::RgbImage, MapError> {
+    let document = read_document(MapKind::FaceSdf, bytes)?;
+    let inputs = Inputs { document: path };
+    let generated = face_sdf::generate(&document, settings, &inputs)?;
+    face_sdf::sheet(&document, &generated, angles, &inputs)
 }
 
 /// Generates and cooks one map document, capped to `max_size` as a texture is: the bytes of its

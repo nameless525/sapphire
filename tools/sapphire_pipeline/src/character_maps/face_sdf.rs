@@ -69,7 +69,7 @@
 use std::fmt;
 
 use bevy_reflect::TypePath;
-use sapphire_assets::character_maps::face_sdf::{MAX_ANGLE_DEGREES, encode_angle};
+use sapphire_assets::character_maps::face_sdf::{MAX_ANGLE_DEGREES, encode_angle, is_lit};
 use sapphire_reflect::Versioned;
 use serde::{Deserialize, Serialize};
 
@@ -262,6 +262,82 @@ pub enum FaceSdfError {
 
 fn list(violations: &[Violation]) -> String {
     violations.iter().map(|violation| format!("\n  - {violation}")).collect()
+}
+
+/// The space around and between a sheet's cells, in pixels ([`super::face_sheet`]).
+pub const SHEET_GUTTER: u32 = 8;
+/// A sheet's colors, 8-bit sRGB: a lit texel, a shadowed one, a mask's texel the map doesn't
+/// reproduce at its angle, and what lies between cells and fills an empty one.
+pub const SHEET_LIT: [u8; 3] = [236, 226, 214];
+pub const SHEET_SHADOW: [u8; 3] = [92, 80, 112];
+pub const SHEET_WRONG: [u8; 3] = [224, 32, 48];
+pub const SHEET_BACKGROUND: [u8; 3] = [24, 24, 28];
+
+/// A sheet an artist judges a face map by (`sapphire_pipeline bake-map --sheet`, M6 C6): the map
+/// `generated` from `map` thresholded at each of `angles` (degrees), as the face is lit, with the
+/// mask it should reproduce there beside it. One row of three cells, each the map's size, per
+/// angle and channel, horizontal first:
+///
+/// 1. the face lit from the head's right (the horizontal channel) or from above (the vertical);
+/// 2. for the horizontal channel, the face lit from the head's left, the map read mirrored as the
+///    shader reads it; empty for the vertical;
+/// 3. the document's mask at that angle, if it has one, with the texels the map doesn't reproduce
+///    in [`SHEET_WRONG`]: the allowed violations of the monotonic check (see the
+///    [module docs](self)), or a 180° mask's lit texels; empty at an angle with no mask.
+///
+/// The map is thresholded as generated, before the cook rounds it: a mobile cook's 8 bits can
+/// flip texels right along an edge.
+pub(super) fn sheet(
+    map: &FaceSdfMap,
+    generated: &GeneratedMap,
+    angles: &[f32],
+    inputs: &Inputs<'_>,
+) -> Result<image::RgbImage, MapError> {
+    let (width, height) = (generated.image.width, generated.image.height);
+    let channels: Vec<(SdfChannel, &[ThresholdMask])> = map.channels().collect();
+    let rows = (channels.len() * angles.len()) as u32;
+    let mut sheet = image::RgbImage::from_pixel(
+        3 * width + 4 * SHEET_GUTTER,
+        rows * height + (rows + 1) * SHEET_GUTTER,
+        image::Rgb(SHEET_BACKGROUND),
+    );
+    let mut row = 0;
+    for (channel, masks) in channels {
+        let values: Vec<f32> = generated
+            .image
+            .pixels
+            .iter()
+            .map(|pixel| match channel {
+                SdfChannel::Horizontal => pixel[0],
+                SdfChannel::Vertical => pixel[3],
+            })
+            .collect();
+        for &degrees in angles {
+            let lit = |x: u32, y: u32| is_lit(values[(y * width + x) as usize], degrees);
+            let top = SHEET_GUTTER + row * (height + SHEET_GUTTER);
+            let mut cell = |column: u32, color: &dyn Fn(u32, u32) -> [u8; 3]| {
+                let left = SHEET_GUTTER + column * (width + SHEET_GUTTER);
+                for (x, y) in (0..height).flat_map(|y| (0..width).map(move |x| (x, y))) {
+                    sheet.put_pixel(left + x, top + y, image::Rgb(color(x, y)));
+                }
+            };
+            let shade = |lit: bool| if lit { SHEET_LIT } else { SHEET_SHADOW };
+            cell(0, &|x, y| shade(lit(x, y)));
+            if channel == SdfChannel::Horizontal {
+                cell(1, &|x, y| shade(lit(width - 1 - x, y)));
+            }
+            if let Some(mask) = masks.iter().find(|mask| mask.angle == degrees) {
+                let (path, image) = inputs.image(&mask.path)?;
+                check_size(&path, &image, [width, height])?;
+                cell(2, &|x, y| {
+                    let painted = image.pixels[(y * width + x) as usize][0] >= 0.5;
+                    if painted == lit(x, y) { shade(painted) } else { SHEET_WRONG }
+                });
+            }
+            row += 1;
+        }
+    }
+    Ok(sheet)
 }
 
 /// Reads the masks `map` names and generates its threshold map.
@@ -477,8 +553,6 @@ fn edge_distance(squared: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use sapphire_assets::character_maps::face_sdf::is_lit;
 
     /// A test mask: which texels of a grid are lit.
     #[derive(Clone)]

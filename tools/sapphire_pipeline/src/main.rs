@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::{Context as _, anyhow, bail, ensure};
 use sapphire_pipeline::audit;
 use sapphire_pipeline::bake::OutlineSettings;
 use sapphire_pipeline::bench::{self, Preset};
-use sapphire_pipeline::character_maps::{self, MapKind};
+use sapphire_pipeline::character_maps::{self, FaceSdfSettings, MapKind, MapSettings};
 use sapphire_pipeline::check;
 use sapphire_pipeline::code_names;
 use sapphire_pipeline::combat;
@@ -85,11 +85,14 @@ Usage:
       the source's sidecar. By default only the materials that
       bind textures; --all extracts every material. Never overwrites a file, and keeps the
       materials the sidecar already binds.
-  sapphire_pipeline bake-map <DOCUMENT> <OUTPUT>
+  sapphire_pipeline bake-map <DOCUMENT> <OUTPUT> [--sheet <DEGREES>[,<DEGREES>...]]
       Generate the map a .facesdf.ron, .ramp.ron, .ilm.ron or .ptex.ron document describes, with
       the settings of its .meta sidecar if it has one, and write it to OUTPUT as a PNG before
       compression: 16-bit linear values for face SDF and ILM maps, 8-bit sRGB for ramps and a
       procedural texture's colour, 8-bit linear for its normal and mask (colour without a sidecar).
+      With --sheet, for a .facesdf.ron, write instead a sheet to judge the face map by: a row per
+      light angle (0 to 180) and channel, the face lit from the head's right, from its left, and
+      the document's mask at that angle, if any, red where the map doesn't reproduce it.
   sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--packs <DIR>]
                          [--cache <DIR>] [--locked] [--editor] [--report]
       Cook every source asset under --source (skipping hidden entries, and sources whose
@@ -226,6 +229,8 @@ enum Command {
     BakeMap {
         input: PathBuf,
         output: PathBuf,
+        /// `--sheet`'s light angles, in degrees: a face map's sheet instead of the map.
+        sheet: Option<Vec<f32>>,
     },
     ExtractMaterials {
         source: PathBuf,
@@ -373,8 +378,11 @@ fn run(command: Command) -> anyhow::Result<()> {
             cook::cook_mesh_file(&input, &output, &settings, cook)?;
             eprintln!("cooked {} -> {} ({cook})", input.display(), output.display());
         }
-        Command::BakeMap { input, output } => {
-            bake_map(&input, &output)?;
+        Command::BakeMap { input, output, sheet } => {
+            match sheet {
+                Some(angles) => bake_sheet(&input, &output, &angles)?,
+                None => bake_map(&input, &output)?,
+            }
             eprintln!("baked {} -> {}", input.display(), output.display());
         }
         Command::ExtractMaterials { source, all } => {
@@ -611,6 +619,43 @@ fn bake_map(input: &Path, output: &Path) -> anyhow::Result<()> {
     write_png(output, &png)
 }
 
+/// `--sheet`'s comma-separated light angles, each 0 to 180 degrees.
+fn sheet_angles(text: &str) -> anyhow::Result<Vec<f32>> {
+    text.split(',')
+        .map(|angle| {
+            let degrees: f32 =
+                angle.trim().parse().with_context(|| format!("--sheet: {angle:?} isn't a number"))?;
+            ensure!((0.0..=180.0).contains(&degrees), "--sheet: {degrees}° isn't between 0° and 180°");
+            Ok(degrees)
+        })
+        .collect()
+}
+
+/// Generates the face map the document at `input` describes and writes the sheet an artist judges
+/// it by at `angles` to `output` as a PNG.
+fn bake_sheet(input: &Path, output: &Path, angles: &[f32]) -> anyhow::Result<()> {
+    ensure!(
+        MapKind::for_path(input) == Some(MapKind::FaceSdf),
+        "--sheet draws face maps: {} isn't a .facesdf.ron document",
+        input.display()
+    );
+    let sidecar = meta::sidecar_path(input);
+    let settings = if sidecar.exists() {
+        match meta::read(&sidecar)?.importer {
+            ImportSettings::CharacterMap(MapSettings::FaceSdf(settings), _) => settings,
+            _ => bail!("{} isn't a face map's sidecar", sidecar.display()),
+        }
+    } else {
+        FaceSdfSettings::default()
+    };
+    let bytes = std::fs::read(input).with_context(|| format!("failed to read {}", input.display()))?;
+    let sheet = character_maps::face_sheet(input, &bytes, &settings, angles)
+        .with_context(|| format!("failed to draw the sheet of the map {} describes", input.display()))?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    sheet.write_to(&mut png, image::ImageFormat::Png).context("failed to encode the PNG")?;
+    write_png(output, &png.into_inner())
+}
+
 fn write_png(output: &Path, png: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
@@ -746,8 +791,10 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             Command::CookMesh { input: input.into(), output: output.into(), cook, outline }
         }
         "bake-map" => {
+            let sheet =
+                options.value::<String>("--sheet")?.map(|angles| sheet_angles(&angles)).transpose()?;
             let [input, output] = options.positional()?;
-            Command::BakeMap { input: input.into(), output: output.into() }
+            Command::BakeMap { input: input.into(), output: output.into(), sheet }
         }
         "extract-materials" => {
             let all = options.flag("--all");
@@ -961,7 +1008,15 @@ mod tests {
         );
         assert_eq!(
             parse(&["bake-map", "face.facesdf.ron", "face.png"]).unwrap(),
-            Command::BakeMap { input: "face.facesdf.ron".into(), output: "face.png".into() }
+            Command::BakeMap { input: "face.facesdf.ron".into(), output: "face.png".into(), sheet: None }
+        );
+        assert_eq!(
+            parse(&["bake-map", "face.facesdf.ron", "sheet.png", "--sheet", "0, 45,90.5"]).unwrap(),
+            Command::BakeMap {
+                input: "face.facesdf.ron".into(),
+                output: "sheet.png".into(),
+                sheet: Some(vec![0.0, 45.0, 90.5]),
+            }
         );
         assert_eq!(
             parse(&["extract-materials", "alicia.vrm"]).unwrap(),
@@ -1021,6 +1076,9 @@ mod tests {
         );
         assert!(parse(&["cook-mesh", "a.glb"]).is_err(), "one path");
         assert!(parse(&["bake-map", "a.ramp.ron"]).is_err(), "one path");
+        for angles in ["", "45,", "-10", "181", "front"] {
+            assert!(parse(&["bake-map", "a.facesdf.ron", "a.png", "--sheet", angles]).is_err(), "{angles:?}");
+        }
         assert!(parse(&["extract-materials"]).is_err(), "no source");
         assert!(parse(&["extract-materials", "a.vrm", "--cook", "mobile"]).is_err(), "no cook");
         assert!(

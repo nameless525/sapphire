@@ -2002,6 +2002,56 @@ fn a_frames_timings_name_its_untimed_passes_and_a_whole_one_has_a_span() {
     assert_eq!(spans, 1, "no frame in {FRAMES} came back whole; the last: {timings:?}");
 }
 
+/// Passes timed alone draw the frame an overlapped, untimed graph draws, byte for byte (M6 B2): the
+/// serial mode with GPU timing on submits each pass with its timestamps and waits for it, so no
+/// pass starts before the one before it ended, and every pass that can take timestamps is timed in
+/// some frame (on Apple GPUs all but the uploads, which begin no render or compute pass).
+#[test]
+#[ignore = "needs a GPU"]
+fn passes_timed_alone_draw_the_same_frame_and_none_overlaps() {
+    const SIZE: (u32, u32) = (160, 90);
+    const FRAMES: u32 = 16;
+    let gpu = gpu();
+    let encoder_writes = gpu.caps().features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+    let untimed: &[&str] = if encoder_writes { &[] } else { &["uploads"] };
+    let texture = target(&gpu, FORMAT, SIZE);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, SIZE, 0.5);
+    let draw = |serial: bool| {
+        let settings = RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() };
+        let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+        frames.graph.set_serial(serial);
+        let timing = serial && frames.graph.set_gpu_timing(&gpu, true);
+        let mesh = upload(&mut frames.renderer, &sphere(shaded(white(2.0), [0.6, 0.5, 0.7])));
+        let instances = [instance(1, mesh, Mat4::IDENTITY)];
+        let mut whole = 0;
+        for frame in 0..FRAMES {
+            let changed = if frame == 0 { &instances[..] } else { &[] };
+            assert!(frames.render(&gpu, &view, camera, changed, &[]).is_none(), "validates");
+            gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+            let Some(timings) = frames.graph.gpu_timings().filter(|_| timing) else { continue };
+            assert_eq!(timings.untimed, untimed, "{timings:?}");
+            for pass in &timings.passes {
+                assert_eq!(
+                    pass.exclusive, pass.duration,
+                    "{} overlapped the pass before it: {timings:?}",
+                    pass.name
+                );
+            }
+            whole += u32::from(timings.every_timed_pass);
+        }
+        if timing {
+            assert!(whole > 0, "no frame in {FRAMES} came back with every timed pass");
+        }
+        read_back(&gpu, &texture)
+    };
+    let overlapped = draw(false);
+    let alone = draw(true);
+    let differ = overlapped.iter().zip(&alone).filter(|(a, b)| a != b).count();
+    assert_eq!(differ, 0, "{differ} of {} pixels differ with each pass timed alone", overlapped.len());
+    assert_ne!(overlapped[0], overlapped[overlapped.len() / 2 + SIZE.0 as usize / 2], "the sphere is drawn");
+}
+
 /// A step of dynamic resolution down and back, within the second a set stays, makes no textures:
 /// the set it left is all still there, though it weighs more than the frames at the lower scale.
 #[test]

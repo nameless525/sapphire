@@ -114,7 +114,14 @@ impl GraphExecutor {
             tracing::debug!(target: LOG_TARGET, ?passes, culled, serial = self.serial, "first frame graph");
         }
         if self.serial {
-            let submitted = self.execute_serially(gpu, &textures, &shape.accesses, &mut jobs);
+            let submitted = Self::execute_serially(
+                gpu,
+                &mut self.timer,
+                self.frames,
+                &textures,
+                &shape.accesses,
+                &mut jobs,
+            );
             self.submitted = submitted.or(self.submitted.take());
             self.stats = self.frame_stats(shape.passes.len(), jobs.len());
             if let Some(report) = &mut self.report {
@@ -194,23 +201,20 @@ impl GraphExecutor {
 
     /// Records `jobs` one per command buffer, submitting each and waiting for the GPU to finish
     /// it before recording the next, with a debug-level log line before and after each: which
-    /// pass a GPU crash, hang or device loss comes from ([`Self::set_serial`]). Untimed. Returns the
-    /// last pass's submit, if any ran.
+    /// pass a GPU crash, hang or device loss comes from ([`Self::set_serial`]). While `timer` is on
+    /// each pass takes its timestamps as in an overlapped frame, and their resolve is submitted after
+    /// the last pass: each pass timed alone (M6 B2). Returns the last submit, if any ran.
     fn execute_serially(
-        &self,
         gpu: &GpuContext,
+        timer: &mut Option<Box<dyn FrameTimer>>,
+        frame: u64,
         textures: &[Option<Resolved<'_>>],
         accesses: &[Access],
         jobs: &mut [Job<'_, '_>],
     ) -> Option<wgpu::SubmissionIndex> {
-        let recorder = Recorder {
-            device: gpu.device(),
-            labels: gpu.label("").is_some(),
-            textures,
-            accesses,
-            queries: None,
-        };
-        let frame = self.frames;
+        let queries = timer.as_mut().and_then(|timer| timer.begin(gpu.device(), frame, jobs.len()));
+        let recorder =
+            Recorder { device: gpu.device(), labels: gpu.label("").is_some(), textures, accesses, queries };
         let mut submitted = None;
         for (index, job) in jobs.iter_mut().enumerate() {
             job.command_buffer = index as u32;
@@ -223,18 +227,32 @@ impl GraphExecutor {
             }
             tracing::debug!(target: LOG_TARGET, frame, pass, "pass: finished on the GPU");
         }
+        let timed = recorder.queries.is_some();
+        if let Some(timer) = timer.as_mut() {
+            let mut passes = jobs.iter().map(|job| (job.pass.name, job.timed));
+            if timed && let Some(resolve) = timer.finish(gpu.device(), &mut passes) {
+                submitted = Some(gpu.queue().submit([resolve]));
+            }
+            timer.submitted();
+        }
         submitted
     }
 
     /// Submits each pass on its own and waits for the GPU to finish it before the next, logging
-    /// each at debug level (off by default). For debugging only: it serializes the CPU and the
-    /// GPU and turns GPU timing off for the frames it runs, but a GPU crash, hang or device loss
-    /// then names its pass in the log, even on drivers that report nothing (CPU rasterizers).
+    /// each at debug level (off by default). It serializes the CPU and the GPU, but a GPU crash,
+    /// hang or device loss then names its pass in the log, even on drivers that report nothing (CPU
+    /// rasterizers).
+    ///
+    /// With GPU timing on ([`Self::set_gpu_timing`]) each pass is timed alone, with nothing else on
+    /// the GPU (M6 B2): on Metal, which overlaps a frame's passes, that splits the frame by pass where
+    /// an overlapped frame's times are tails. Read them as that split, beside the overlapped frame,
+    /// never as costs to add up: a pass run alone starts with other caches and clocks than in a
+    /// frame. A serial frame's [`GpuTimings::span`] holds the CPU's waits between passes too.
     pub fn set_serial(&mut self, serial: bool) {
         self.serial = serial;
     }
 
-    /// The last executed graph's submit, its last pass's when serial: what to wait for to know when the GPU
+    /// The last executed graph's submit, its last one's when serial: what to wait for to know when the GPU
     /// finished this graph's work rather than everything submitted since, from any thread (M5 X3's trace of a
     /// boot screen's frame). `None` before the first.
     pub fn submitted(&self) -> Option<&wgpu::SubmissionIndex> {

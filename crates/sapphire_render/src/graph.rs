@@ -45,6 +45,8 @@
 //!   timestamps between passes time every pass; on Apple GPUs, which sample only at
 //!   render-pass boundaries, a pass is timed when it hands [`PassContext::timestamp_writes`]
 //!   to its render pass (or [`PassContext::compute_timestamp_writes`] to its compute pass). Devices without timestamp queries report it unavailable.
+//!   Under [`GraphExecutor::set_serial`] each pass is timed alone (M6 B2): a split of the frame, not
+//!   a cost.
 //!
 //! # Later milestones
 //!

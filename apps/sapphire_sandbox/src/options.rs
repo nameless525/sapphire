@@ -575,7 +575,8 @@ pub(crate) struct Options {
     pub watch_documents: Vec<PathBuf>,
     /// `--serial-passes`: offscreen, submit each frame graph pass on its own and wait for the
     /// GPU after it, logging each at debug level, so a GPU crash, hang or device loss names its
-    /// pass (`GraphExecutor::set_serial`). Slow; for debugging.
+    /// pass (`GraphExecutor::set_serial`). Slow; for debugging, and under `--bench` for timing
+    /// each pass alone (M6 B2).
     pub serial_passes: bool,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
     /// default ones). Only `dev` builds have it.

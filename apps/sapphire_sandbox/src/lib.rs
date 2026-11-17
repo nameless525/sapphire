@@ -484,7 +484,11 @@
 //!     shape. `--cutin-library <ron>` takes them from a `CutInLibrary` document instead of the shipped one.
 //!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
-//!     log, even on drivers that report nothing. Slow; for debugging.
+//!     log, even on drivers that report nothing. Slow; for debugging, and for timing each pass
+//!     alone: a `--bench` under it logs each pass's `gpu` row with nothing else on the GPU (M6 B2).
+//!     On Metal, which overlaps a frame's passes, those rows split the frame by pass, read beside
+//!     the overlapped run's and never added up as costs, since a pass run alone meets other caches
+//!     and clocks; its `gpu frame` row holds the waits between passes too.
 //!
 //!   `--capture` and `--bench` exit with an error on an argument they don't know, so a misspelled
 //!   pin can't render another picture; the windowed app and `--offscreen` log a warning.

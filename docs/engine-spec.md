@@ -140,6 +140,7 @@ Each figure is wall time on the critical path.
 | Water: the wave twin and what reads it (floaters, the swim's bob, shore events) | 0.05 | 0.05 | 0.05 | 0.05 | H1a, H5 |
 | Weather's resolve: the state, its schedule and the accumulated shares | 0.01 | 0.01 | 0.02 | 0.03 | W8a, Y2 |
 | Springs' and cloth's wind | 0.01 | 0.01 | 0.01 | 0.02 | Y3 |
+| VFX simulation, CPU side, both worlds (§5.16): the High tiers' new (M6 N0), the Low tiers' the row above | 0.25 | 0.3 | 0.4 | 0.6 | N10 |
 
 Grass and scatter are placed as cells activate, so their worst frame, about 0.3, 0.3, 0.5 and 0.8 ms a tier (a proposal), stays inside "Streaming activation" above.
 
@@ -224,6 +225,13 @@ Distortion's share of "Particles, distortion" (M5 L6, measured on an Apple M5, �
 
 Volumetric fog keeps its own rows above. The worst places sum several rows, so m6-plan's exit test 15 also judges a storm (about 0.55, 0.5, 0.55 and 0.35 ms) and a snowy night (about 0.66 ms on Desktop-High and 0.22 on Mobile-Low) against 1.5× their sums, both estimates.
 
+**Particles, split in two (M6 N0; Decision, [m6-plan.md](m6-plan.md) §3, "Particles: two worlds and a stateless path").** "Particles, distortion" becomes two **proposals** that sum to its figure on every tier (0.8, 1.2, 1.0 and 3.0 ms): combat's effects, played by the fight's `VfxWorld` on its owners' clocks, and the world's (zone placements, ambience and motes, weather's splashes and breath, shed leaves), played by a second `VfxWorld` with caps of its own (§3.4), so the world never spends combat's frame. Both draw CPU particles and the stateless path (§5.16). They are judged on m6-plan's exit test 14 units: `fight-effects-heavy` (B5's district fight playing N11's generated library) for combat, and `nature-storm-effects` for the world.
+
+| Row (proposal) | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Particles, combat | 0.6 | 0.9 | 0.7 | 2.2 |
+| Particles, world, motes included | 0.2 | 0.3 | 0.3 | 0.8 |
+
 ### 3.4 Content budgets
 
 | Item | Desktop | Mobile |
@@ -235,12 +243,12 @@ Volumetric fog keeps its own rows above. The worst places sum several rows, so m
 | Texture size per character part | 2K | 1K (ramps are 256 × N and uncompressed); a larger map's sidecar caps it on this cook by dropping top levels, and a content test holds every character map to both (§5.27, M5 M1) |
 | Active enemies in combat | 12 | 6 |
 | Visible dynamic lights | 64 (clustered) | 8 (per-object lists) |
-| Live GPU particles | 50k | 8k |
+| Stateless particles drawn (a proposal, M6 N0; until then "Live GPU particles", 50k and 8k) | 24,000 on Desktop-High, 16,000 on Desktop-Low | 6,000 on Mobile-High, 3,000 on Mobile-Low |
 | Draw calls | 2,500 | 700 |
 | Zone texture pool | 2.5 GB | 600 MB; 400 MB on Mobile-Low (WuWa's mobile pool is reportedly 400 MB) |
 | Story flags (`content/flags.ron`, §5.23) | 256 | 256 |
 
-**As built beside two rows:** GPU particles aren't built (§5.16): effects are CPU particles, capped at 4,096, 2,048, 1,024 and 512 by tier (`VfxBudget`, [crates/sapphire_vfx/src/budget.rs](../crates/sapphire_vfx/src/budget.rs)), so nothing runs against the live GPU particles row. And the benchmark's fights (`district-fight` and `party-kinds` in [bench/scale.ron](../bench/scale.ron)) field twelve Ember Lancers on every tier, the phones' too, twice their active enemies row. What either row should say is owed ([m6-handoff.md](m6-handoff.md), "Everything deferred").
+**As built beside two rows:** GPU particles aren't built (§5.16): effects are CPU particles, capped at 4,096, 2,048, 1,024 and 512 by tier (`VfxBudget`, [crates/sapphire_vfx/src/budget.rs](../crates/sapphire_vfx/src/budget.rs)), so nothing ran against the live GPU particles row. M6 N0 restates that row as stateless particles drawn ([m6-plan.md](m6-plan.md) §3, "Particles: two worlds and a stateless path"): M6's N8b draws them on every tier and N10's budgets enforce them. Until then `tiers.ron`'s `max_particles` still reads 50,000 on the desktops and 8,000 on the phones (`crates/sapphire_render/tiers.ron:184`, `:234`, `:283`, `:335`), declared at `crates/sapphire_render/src/quality.rs:264` and read by nothing; `VfxBudget` is the CPU path's own table. And the benchmark's fights (`district-fight` and `party-kinds` in [bench/scale.ron](../bench/scale.ron)) field twelve Ember Lancers on every tier, the phones' too, twice their active enemies row. What that row should say is owed ([m6-handoff.md](m6-handoff.md), "Everything deferred").
 
 **The enemy row is a proposal (M3 C2):** the generated figures sit far under it, measured from each cook's sidecar settings (`every_figure_cooks_under_its_budget` holds it):
 
@@ -285,6 +293,21 @@ A zone holds at most 16 water bodies (W2), 6 impostor kinds (W16), 64 atmosphere
 | Froxel fog's grid, in zones that opt in (V14a) | about 14 MiB | about 14 MiB | — | — |
 
 Each counts its bytes on each phone tier (m6-plan's cooker rule 7): Mobile-Low peaks at 1,024 of its 1,638 MiB ([m5-exit-run.md](m5-exit-run.md), exit test 2). Terrain's layer array is fixed in size per cook, resident whole and never streamed, a narrow exception to m6-plan's "no texture arrays", so the streamer's texture replacement never meets it.
+
+**Proposed rows for particles (M6 N0), not yet adopted** (Decisions, [m6-plan.md](m6-plan.md) §3, "Particles: two worlds and a stateless path" and "Effects as an asset kind, and their atlas"). All **proposals**. The world's limits belong to the second `VfxWorld` (§5.16), beside combat's `VfxBudget` above, which the world never spends. Rain and snow's drops are precipitation's own draw, counted in §5.21's table, not here.
+
+| Item (proposal) | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Stateless particles drawn, by the stateless path (N8b) | 24,000 | 16,000 | 6,000 | 3,000 |
+| The world's CPU particles | 1,024 | 768 | 512 | 256 |
+| The world's live effects: zone placements, ambience, weather's | 64 | 48 | 32 | 24 |
+| The world's stateless instances | 128 | 96 | 64 | 32 |
+| The world's events a step | 64 | 48 | 32 | 16 |
+| The world's mesh particles | 256 | 192 | 96 | 48 |
+| Lights effects carry (N13) | 4 | 4 | 2 | 0 |
+| The effects atlas, memory: one texture array a loaded library, 256² layers (N4b) | at most 32 MiB | 32 MiB | 8 MiB | 8 MiB |
+
+The effects atlas is the second narrow exception to m6-plan's "no texture arrays", beside terrain's layers: fixed in size per cook, resident whole and never streamed.
 
 ### 3.5 Measured in combat (M2 Z1)
 
@@ -2925,7 +2948,7 @@ Nobody has heard any of it: the placeholder sounds are the project's own synthes
 **How**
 
 - **M2's v1 ([m2-plan.md](m2-plan.md) §3):** CPU-simulated particles and ribbons, drawn instanced, with tier caps, on every tier. A duel's effects are few and tied to gameplay, and the iOS Simulator has no indirect execution (ADR 0002).
-- **GPU particles (later):** compute passes for spawning, updating and compaction write indirect draw arguments. Render modes:
+- **GPU particles (later; as first designed, superseded by M6's decisions below):** compute passes for spawning, updating and compaction write indirect draw arguments. Render modes:
   - Sprites, flipbooks and mesh particles.
   - Soft particles.
   - Distortion, into a half-resolution distortion buffer.
@@ -2935,11 +2958,20 @@ Nobody has heard any of it: the placeholder sounds are the project's own synthes
 - **Screen effects:** published as `PostParams`.
 - **Effect assets:** emitters with modules and curves, as reflected data. Effects are spawned by cues and timeline-synced, and previewed in the editor.
 - **Clocks:** effects run on the owner's clock, so hitstop freezes the attacker's and victim's effects while world effects keep running.
-- **Budgets:** per-tier caps on particle count and an overdraw estimate. Half-resolution smoke and fog on mobile is planned and not built: the phones draw every effect at the end of the main pass, at the scene's size ([crates/sapphire_render/src/vfx.rs](../crates/sapphire_render/src/vfx.rs), "Where they draw").
+- **Budgets:** per-tier caps on particle count and an overdraw estimate. Half-resolution smoke and fog on mobile was planned and is now rejected (below): the phones draw every effect at the end of the main pass, at the scene's size ([crates/sapphire_render/src/vfx.rs](../crates/sapphire_render/src/vfx.rs), "Where they draw").
+- **Two worlds (Decision, [m6-plan.md](m6-plan.md) §3, "Particles: two worlds and a stateless path"; M6 N9 and N10 build it).** Combat keeps its `VfxWorld`. World effects (zone placements spawned by residency, ambience and motes, weather's splashes and breath, shed leaves, water's spray) get a second `VfxWorld`, owned by `OwnerId::WORLD`, with rows and caps of their own (§3.3, §3.4), so the world never spends combat's caps (512 particles on Mobile-Low, `crates/sapphire_vfx/src/budget.rs`). Hitstop holds combat's effects and not the world's. Zone-placed effects have one owner, N9: every track's world effects go through it.
+- **The stateless path (the same decision; M6 N8a and N8b build it).** Many cheap particles are each a closed-form function of their seed and age, evaluated in the vertex stage by one include, `procedural_particles.wgsl` (N8a; rain and snow's draw reads it too), and drawn as instanced quads with the dead ones collapsed in the vertex stage: no compute pass, no indirect draw and no buffer kept between frames, so every tier runs it, the iOS Simulator included, which has neither indirect execution nor base vertex (`crates/sapphire_rhi/src/caps.rs:381-389`), and it draws the same at any frame rate for the same world time. It draws 24,000, 16,000, 6,000 and 3,000 particles a tier, in place of `tiers.ron`'s unread 50,000 and 8,000 (§3.4). Combat may play stateless emitters on its owners' clocks, so hitstop holds them too.
+- **Documents and the atlas (Decision, [m6-plan.md](m6-plan.md) §3, "Effects as an asset kind, and their atlas"; M6 N1 and N4b).** `Effects` becomes an asset kind and libraries cook, under schema v5, with v1 to v4 read bit-identically: libraries load as documents today, at version 4 (`crates/sapphire_vfx/src/document.rs:354`), though the file's header still says schema 1 (`:1`). Painted sheets cook into one texture array per loaded library, 256-pixel layers, at most 32 MiB on the desktops and 8 on the phones, resident whole and never streamed, so one bind serves an effects draw. Sheets, presets and the library are generated by the pipeline: no downloaded or licensed effect ([m6-plan.md](m6-plan.md) §3, "Generated content, and no new crate").
+- **Rejected, each with what reopens it ([m6-plan.md](m6-plan.md) §3, "What not to do", whose GPU particles row M6 splits: stateless particles are allowed, the rest stays out):**
+  - **Particles whose state is kept in compute** need buffers across frames and, to draw only the living, the indirect draws the iOS Simulator lacks, while the CPU simulation costs 20 to 30 µs at a duel's worst. Only M6's N14 spike, priced against the stateless path on a recorded storm, and only on its trigger: a gust-curled storm or swirling motes failing by the maintainer's eye, or N10's counter, by the end of M6's batch III.
+  - **Order-independent transparency** needs an extra target and a composite, and mutes overlapping layers, while anime effects are mostly additive and each effect already sorts back to front. Reopens for an authored pack whose covering layers visibly interpenetrate in a capture.
+  - **Half-resolution effects on the phones:** Mobile-Low has no depth to composite them against, and half resolution blurs the hard edges that are the look. Reopens if N10 shows large soft world sprites over a stated share of Mobile-High's frame, and then only for emitters marked `soft_volume`, on Mobile-High.
+  - **Cooked fill budgets:** a cooked pixel estimate is wrong once the camera or the tier changes; N10's run-time estimate and N12's gauge serve instead. Reopens if B5 or N10 shows fill as the cost, cutout geometry first.
+  - **Particles for falling weather:** rain and snow take their positions from the stateless include with no state to keep, and CPU particles would starve combat's caps. Reopens for a blizzard or sandstorm whose flakes show visible repeat or sheet slide by the maintainer's eye, with the stateless path landed and the arm within 1.5× precipitation's row.
 - **As built (M2 E2):**
   - **Crates:** `sapphire_vfx` (L3) holds the simulation and no GPU. It resolves to `sapphire_look`'s plain `VfxFrame` (`VfxSprite`, `VfxRibbonPoint`, `VfxStats`), which `FramePacket::vfx` carries (R4), so it has no edge to `sapphire_render` and needs no `[allow]`. Decals, GPU particles, distortion and mesh particles are later work.
   - **Clocks:** `VfxWorld::advance` takes the world's step and each `OwnerId`'s (`OwnerSteps`), whatever rate the caller runs at. A step of 0 holds an owner's particles, trails and emitters while the world's go on. `write_frame` reads each effect `alpha` of the way along its owner's last step, as poses draw (review WA-3, §4.5): a particle back along its straight line, no further than its birth, and a trail's strip to where the frame falls between two samples, on the spline the next frame draws. At alpha 1 it writes what it always did. Nothing reads a clock, so the simulation can't time itself: the caller measures it into `VfxStats::simulation`. It's outside the simulation's checksum, reads no gameplay state and is seeded (PCG32, a stream per effect).
-  - **Caps:** `VfxBudget`'s plain table has a row per tier: particles 4096/2048/1024/512, ribbon points 2048/1024/768/384, effects, trails and a trail's subdivisions. Past a cap it counts what it dropped and keeps drawing, and a step walks only what fits (review PRE-001), so a rate, which a document holds to 245,760 a second, costs the budget at most however long the step. It allocates nothing once warmed. `tiers.ron`'s `max_particles` stays §3.4's GPU particles.
+  - **Caps:** `VfxBudget`'s plain table has a row per tier: particles 4096/2048/1024/512, ribbon points 2048/1024/768/384, effects, trails and a trail's subdivisions. Past a cap it counts what it dropped and keeps drawing, and a step walks only what fits (review PRE-001), so a rate, which a document holds to 245,760 a second, costs the budget at most however long the step. It allocates nothing once warmed. `tiers.ron`'s `max_particles` stays §3.4's GPU particles (restated by M6 N0 as stateless particles drawn).
   - **Trails:** `VfxWorld::sample_trail` takes two sockets as plain positions at sub-tick rate, oldest first, after `advance`. Each rail is a centripetal Catmull-Rom (Barry-Goldman) through its samples, resolved at frame write. Width, color and alpha follow a point's age; the strip narrows toward the tip, and its start grows from nothing (`start_fade`). The look is a crisp band whose edges stay a pixel wide at any distance, inside a glow falling away to nothing at each rail.
   - **Documents:** `EffectLibrary` (`sapphire::vfx`, v1, RON through `sapphire_serialize::document`) holds emitters with modules (`spawn`, `source`, `motion`, `shape`, `facing`, `light`) and curves, and validation names the effect, the part and the field. `default_effects.ron` has `hit_spark`, `sword_trail` and `dust_puff`. The shapes (soft dot, streak, star, ring) are generated in code into a mipmapped `R8Unorm` array.
   - **Drawing:** one instanced draw of a triangle strip, pulling from two vertex-stage storage buffers: sprites sorted back to front by their depth along the view (review REN-001: a quad facing the camera lies in a plane of one depth, and off to the side a nearer one's middle can be farther from the eye), then ribbon stretches, each joining two points the list holds side by side, so a point left out for rails that aren't finite ends the strip before it (review REN-002). Effects are the frame's last world draw, after every transparent surface and fog card, and don't appear in the debug views, which replay meshes. On both paths they come before post, so debug draw's lines (T1), which follow post, stay on top of them, as the overlay stays on top of those (`debug_lines_stay_on_top_of_effects`). Nothing exists before the first effect: no pipelines, buffers, map, pass or draw, which `a_frame_with_no_effects_builds_nothing` counts through `generate_report()`. `Renderer::prewarm_vfx` builds them ahead.

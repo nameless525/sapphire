@@ -210,6 +210,7 @@ use crate::effects::{self, EffectsCookError};
 use crate::encounter::{self, EncounterCookError};
 use crate::enemy::{self, EnemyCookError};
 use crate::font::{self, FontCookError};
+use crate::import::bvh::{self, Capture};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
@@ -507,6 +508,7 @@ impl Recipe {
             ImportSettings::GltfClips(_) => Self::gltf_clip(),
             ImportSettings::FbxClips(_) => Self::fbx_clip(),
             ImportSettings::Vrma(_) => Self { importer: vrma::IMPORTER, ..Self::gltf_clip() },
+            ImportSettings::Bvh(_) => Self { importer: bvh::IMPORTER, ..Self::gltf_clip() },
             ImportSettings::Zone(_) => Self {
                 importer: zone::IMPORTER,
                 cooker: zone::COOKER,
@@ -1825,6 +1827,13 @@ fn sub_assets(
             let (names, joints) = fbx::clips::plan(&read()?).map_err(import_error)?;
             animation_parts(meta.id, settings, &names, &joints, own, skeleton(own)).map_err(clip_error)
         }
+        ImportSettings::Bvh(settings) => {
+            let capture =
+                Capture::import(path, &read()?, settings).map_err(|error| import_error(error.into()))?;
+            let names = [capture.name];
+            animation_parts(meta.id, &settings.clips, &names, &capture.joints, own, skeleton(own))
+                .map_err(clip_error)
+        }
         ImportSettings::Assembly(settings) => {
             if settings.clips.is_some() || settings.skeleton.is_some() {
                 return Err(unsupported("assembly"));
@@ -2944,7 +2953,10 @@ fn cook_source(
         ImportSettings::Gltf(_) | ImportSettings::Fbx(_) | ImportSettings::Assembly(_) => {
             unreachable!("rigs are VRM sources' alone")
         }
-        ImportSettings::GltfClips(_) | ImportSettings::FbxClips(_) | ImportSettings::Vrma(_) => {
+        ImportSettings::GltfClips(_)
+        | ImportSettings::FbxClips(_)
+        | ImportSettings::Vrma(_)
+        | ImportSettings::Bvh(_) => {
             unreachable!("animation sources have their clips and skeleton, and nothing of their own")
         }
         // The texture's own asset is its tail, below the levels it plans as assets of their own (M5 M3).
@@ -3746,8 +3758,8 @@ fn source_dependencies(
                 Ok(Dependency::File { path: file, hash: blake3::hash(&bytes) })
             })
             .collect(),
-        // The importer never opens the files an FBX names.
-        ImportSettings::FbxClips(_) => Ok(Vec::new()),
+        // The importer never opens the files an FBX names, and a BVH names none.
+        ImportSettings::FbxClips(_) | ImportSettings::Bvh(_) => Ok(Vec::new()),
     }
 }
 
@@ -4292,7 +4304,8 @@ pub(crate) fn imported_mesh(
         | ImportSettings::Zone(_)
         | ImportSettings::Timeline(_)
         | ImportSettings::Dialogue(_)
-        | ImportSettings::ProceduralTexture(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::ProceduralTexture(_)
+        | ImportSettings::Bvh(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 

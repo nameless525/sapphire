@@ -2,10 +2,11 @@
 //! animated channel sampled once a tick ([`SampledClip`]), root motion lifted out, then key
 //! reduction and packing into a [`Clip`].
 //!
-//! Four sources feed this: [`gltf::clips`](crate::import::gltf::clips), [`fbx::clips`](crate::import::fbx::clips),
-//! [`vrma`](crate::import::vrma) and [`keypose`]. Each samples its own curves (glTF's step, linear
-//! and cubic segments, FBX's curves, a document's eases) at every tick, so what follows, and the
-//! runtime's one interpolation between keys, needn't know any of them. [`retarget`] carries what a
+//! Five sources feed this: [`gltf::clips`](crate::import::gltf::clips), [`fbx::clips`](crate::import::fbx::clips),
+//! [`vrma`](crate::import::vrma), [`bvh`](crate::import::bvh) and [`keypose`]. Each samples its own
+//! curves (glTF's step, linear and cubic segments, FBX's curves, a capture's frames, a document's eases)
+//! at every tick, so what follows, and the runtime's one interpolation between keys, needn't know any of
+//! them. [`retarget`] carries what a
 //! source sampled onto another rig before it reduces.
 //!
 //! # Byte identity

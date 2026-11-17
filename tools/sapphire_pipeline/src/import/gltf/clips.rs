@@ -137,6 +137,8 @@ pub enum ClipImportError {
     NoSkeleton { animation: String },
     #[error(transparent)]
     Fbx(#[from] Box<FbxImportError>),
+    #[error(transparent)]
+    Bvh(Box<import::bvh::BvhError>),
     #[error("animation {animation:?} has a time range from {begin} to {end} s, which no clip can hold")]
     TimeRange { animation: String, begin: f64, end: f64 },
     #[error("animation {animation:?}: joint {joint:?} isn't finite at tick {tick}")]

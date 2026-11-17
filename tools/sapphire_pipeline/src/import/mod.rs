@@ -1,7 +1,8 @@
 //! Importers: source formats → engine-neutral intermediates: an
 //! [`ImportedMesh`](crate::mesh::ImportedMesh) for meshes (glTF, FBX), a
 //! [`SourceImage`](image::SourceImage) for textures, and for VRM characters a mesh plus a
-//! [`CharacterRig`](sapphire_assets::rig::CharacterRig).
+//! [`CharacterRig`](sapphire_assets::rig::CharacterRig). Animation sources (glTF, FBX, VRMA and BVH
+//! motion capture) feed the clip cook ([`crate::clip`]) instead.
 //!
 //! Importers only translate what the source authored (geometry, materials, skins, morph
 //! targets and outline normals in one object space; pixels; a VRM's humanoid, expressions,
@@ -14,6 +15,7 @@
 //! (`slot_names`), the same generated material family, and the same skin and morph limits, so
 //! a scene exported from Blender as glTF and as FBX imports to the same mesh.
 
+pub mod bvh;
 pub mod fbx;
 pub mod gltf;
 pub mod image;

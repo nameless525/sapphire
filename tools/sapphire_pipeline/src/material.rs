@@ -138,6 +138,7 @@ impl TextureKind {
             | ImportSettings::GltfClips(_)
             | ImportSettings::FbxClips(_)
             | ImportSettings::Vrma(_)
+            | ImportSettings::Bvh(_)
             | ImportSettings::Zone(_)
             | ImportSettings::Timeline(_) => return None,
         })

@@ -324,7 +324,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Vrma(_)
         | ImportSettings::Zone(_)
         | ImportSettings::Timeline(_)
-        | ImportSettings::ProceduralTexture(_) => {
+        | ImportSettings::ProceduralTexture(_)
+        | ImportSettings::Bvh(_) => {
             return Err(ExtractError::NotAMesh(source.to_owned()));
         }
     };

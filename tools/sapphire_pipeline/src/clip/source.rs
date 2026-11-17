@@ -12,8 +12,9 @@ use sapphire_assets::skeleton::{Joint, Skeleton};
 
 use super::retarget::HumanMap;
 use super::{ClipCookError, ClipSettings, SampledClip};
+use crate::import::bvh::Capture;
 use crate::import::fbx::clips::FbxClips;
-use crate::import::gltf::clips::{self as gltf_clips, ClipScene};
+use crate::import::gltf::clips::{self as gltf_clips, ClipImportError, ClipScene};
 use crate::import::vrma;
 use crate::meta::ImportSettings;
 
@@ -35,6 +36,7 @@ pub struct ClipSource {
 enum Animations {
     Gltf(Box<GltfAnimations>),
     Fbx(Box<FbxClips>),
+    Bvh(Box<Capture>),
 }
 
 struct GltfAnimations {
@@ -96,6 +98,15 @@ impl ClipSource {
                     animations: Animations::Fbx(Box::new(clips)),
                 })
             }
+            ImportSettings::Bvh(settings) => {
+                let capture = Capture::import(path, bytes, settings).map_err(ClipImportError::from)?;
+                Ok(Self {
+                    joints: capture.joints.clone(),
+                    morph_defaults: Vec::new(),
+                    map: None,
+                    animations: Animations::Bvh(Box::new(capture)),
+                })
+            }
             _ => Err(ClipCookError::Settings),
         }
     }
@@ -112,6 +123,8 @@ impl ClipSource {
                 Ok(gltf_clips::sample(&gltf.document, &gltf.buffers, scene, index, settings)?)
             }
             Animations::Fbx(clips) => Ok(clips.sample(index, settings)?),
+            // A capture is one clip.
+            Animations::Bvh(capture) => Ok(capture.sample(settings)?),
         }
     }
 }

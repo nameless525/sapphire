@@ -1,5 +1,5 @@
 //! Animation sources through a whole cook: sources of clips and no mesh, rigs they share, clips
-//! chosen by name, retargets, and FBX and VRMA. How a retarget moves a character is tested beside it
+//! chosen by name, retargets, and FBX, VRMA and BVH. How a retarget moves a character is tested beside it
 //! (`clip::retarget::tests`).
 
 use std::collections::BTreeMap;
@@ -19,6 +19,7 @@ use crate::clip::retarget::RetargetSettings;
 use crate::clip::source::ClipSources;
 use crate::clip::{ClipSettings, RootMotionSettings, rest_model};
 use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet, MorphGeometry};
+use crate::import::bvh::tests::{synthetic_bytes, synthetic_settings};
 use crate::import::gltf::clips::tests::{ARM, HIPS, Track, animate, figure};
 use crate::import::vrm::samples;
 use crate::import::vrma::tests as vrma_files;
@@ -920,6 +921,48 @@ fn a_vrma_cooks_its_own_skeleton_and_retargets_by_its_own_map() {
     let own_map = ClipSettings { humanoid: human_map(), ..settings };
     tree.sidecar(&source, HUMAN, ImportSettings::Vrma(own_map));
     assert!(fault(&tree.try_cook(false).unwrap_err(), "wave.vrma").contains("a VRMA's is the file's"));
+}
+
+/// A capture cooks a skeleton and one clip named after its file, with its feet's contacts, and retargets
+/// by its sidecar's map; a first cook writes its sidecar, and a malformed file fails its cook naming the
+/// file and the line.
+#[test]
+fn a_bvh_cooks_its_skeleton_and_clip_and_retargets_by_its_sidecars_map() {
+    let tree = Tree::new("cook_bvh_new_sidecar");
+    let source = tree.write("walk.bvh", &synthetic_bytes());
+    let report = tree.cook();
+    assert_eq!(output_names(&report), ["walk.sskel", "walk.walk.sclip"]);
+    assert!(matches!(meta::read(&sidecar_path(&source)).unwrap().importer, ImportSettings::Bvh(_)));
+
+    let tree = Tree::new("cook_bvh_retarget");
+    let character = tree.write("sample.vrm", &samples::vrm1().to_glb());
+    tree.sidecar(&character, CHARACTER, ImportSettings::for_new_sidecar(&character).unwrap());
+    let source = tree.write("capture/walk.bvh", &synthetic_bytes());
+    let mut settings = synthetic_settings();
+    settings.clips.retarget = to_the_character(&["walk"]).retarget;
+    tree.sidecar(&source, HUMAN, ImportSettings::Bvh(settings.clone()));
+    let report = tree.try_cook(true).unwrap();
+    let own_bytes =
+        read_aligned(&by_id(&report, sapphire_assets::graph::imported_clip_id(HUMAN, "walk", None)).output);
+    let own = Clip::read(&own_bytes).unwrap();
+    assert_eq!(own.skeleton.as_ref().copied(), Some(meta::sub_asset_id(HUMAN, SKELETON)));
+    assert_eq!((own.rate.to_native(), own.ticks.to_native()), (60, 120));
+    let feet: Vec<HumanBone> = own.contacts.iter().map(|track| track.foot).collect();
+    assert_eq!(feet, [HumanBone::LeftFoot, HumanBone::RightFoot]);
+    let slides: Vec<f32> = own.contacts.iter().map(|track| track.slide.to_native()).collect();
+    assert!(slides[0] > 0.04 && slides[1] < 0.005, "{slides:?}");
+    let onto_id = sapphire_assets::graph::imported_clip_id(HUMAN, "walk", Some(CHARACTER));
+    let onto_bytes = read_aligned(&by_id(&report, onto_id).output);
+    let onto = Clip::read(&onto_bytes).unwrap();
+    assert_eq!(onto.skeleton.as_ref().copied(), Some(meta::sub_asset_id(CHARACTER, SKELETON)));
+    assert!(onto.root.is_some(), "the hips' travel, lifted");
+
+    // One frame short of what the header says.
+    let text = String::from_utf8(synthetic_bytes()).unwrap();
+    let short = text.lines().take(text.lines().count() - 1).collect::<Vec<_>>().join("\n");
+    tree.write("capture/walk.bvh", short.as_bytes());
+    let refused = fault(&tree.try_cook(false).unwrap_err(), "walk.bvh");
+    assert!(refused.contains("line 128: the header says 61 frames, but 60 follow"), "{refused}");
 }
 
 #[test]

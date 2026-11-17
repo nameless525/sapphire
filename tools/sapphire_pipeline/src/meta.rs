@@ -54,6 +54,10 @@
 //! [`ClipSettings`]. They cook no asset of their own: only clips and, unless they share another
 //! source's rig, a skeleton.
 //!
+//! BVH motion capture (`.bvh`, M6 A3) has `importer: Bvh((scale: 0.01, calibration: (…), clips: (…)))`
+//! ([`BvhSettings`]): the file's unit, the pose its skeleton rests in, and an animation source's
+//! [`ClipSettings`] under `clips`.
+//!
 //! Key-pose documents (`swing.keypose.ron`, M2 N1) have `importer: KeyPose((rig: "<id>"))`, naming
 //! the source with a skeleton and a humanoid map they cook for.
 //!
@@ -153,6 +157,7 @@ use crate::effects::{self, EffectsSettings};
 use crate::encounter::{self, EncounterSettings};
 use crate::enemy::{self, EnemySettings};
 use crate::font::{self, FontChainsSettings, FontSettings};
+use crate::import::bvh::BvhSettings;
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
 use crate::loc::{self, FluentSettings, LocaleDocumentSettings};
@@ -297,6 +302,9 @@ pub enum ImportSettings {
     /// A procedural texture (`.ptex.ron`): a surface the cook rasterizes, cooked as the map its settings
     /// name (M5 B1).
     ProceduralTexture(ProceduralSettings),
+    /// A BVH motion capture (`.bvh`): a skeleton and one clip, cooked as an animation source's, with
+    /// the pose it calibrates on (M6 A3).
+    Bvh(BvhSettings),
 }
 
 impl ImportSettings {
@@ -391,6 +399,7 @@ impl ImportSettings {
             "ogg" => Some(Self::Sound(SoundSettings::default())),
             "ttf" | "otf" => Some(Self::Font(FontSettings::default())),
             "vrma" => Some(Self::Vrma(ClipSettings::default())),
+            "bvh" => Some(Self::Bvh(BvhSettings::default())),
             // Integer images are colors until their sidecar says otherwise; float images are HDR.
             "png" | "tga" => Some(Self::Texture(TextureSettings::default())),
             "exr" => Some(Self::Texture(TextureSettings::from(TextureClass::Hdr(HdrSettings::default())))),
@@ -444,7 +453,8 @@ impl ImportSettings {
             | Self::Zone(_)
             | Self::Timeline(_)
             | Self::Dialogue(_)
-            | Self::ProceduralTexture(_) => None,
+            | Self::ProceduralTexture(_)
+            | Self::Bvh(_) => None,
         }
     }
 
@@ -483,7 +493,8 @@ impl ImportSettings {
             | Self::Zone(_)
             | Self::Timeline(_)
             | Self::Dialogue(_)
-            | Self::ProceduralTexture(_) => None,
+            | Self::ProceduralTexture(_)
+            | Self::Bvh(_) => None,
         }
     }
 
@@ -492,13 +503,14 @@ impl ImportSettings {
     pub fn clips(&self) -> Option<&ClipSettings> {
         match self {
             Self::GltfClips(settings) | Self::FbxClips(settings) | Self::Vrma(settings) => Some(settings),
+            Self::Bvh(settings) => Some(&settings.clips),
             _ => self.mesh().and_then(|mesh| mesh.clips.as_ref()),
         }
     }
 
     /// Whether the source's animations are all it cooks: it has no asset under its own ID.
     pub fn is_animation_only(&self) -> bool {
-        matches!(self, Self::GltfClips(_) | Self::FbxClips(_) | Self::Vrma(_))
+        matches!(self, Self::GltfClips(_) | Self::FbxClips(_) | Self::Vrma(_) | Self::Bvh(_))
     }
 
     /// Whether the source cooks an asset under its own ID. Sources wanted for their animations cook
@@ -511,6 +523,7 @@ impl ImportSettings {
     pub fn shared_rig(&self) -> Option<AssetId> {
         match self {
             Self::GltfClips(settings) | Self::FbxClips(settings) | Self::Vrma(settings) => settings.rig,
+            Self::Bvh(settings) => settings.clips.rig,
             _ => self.mesh().and_then(|mesh| mesh.skeleton),
         }
     }

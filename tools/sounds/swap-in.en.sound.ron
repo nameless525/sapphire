@@ -1,10 +1,10 @@
-// `swap-in` in English (M3 A1): no words, only a voice's shape, stress-timed. Spoken by
-// `content/audio/generated/voice/en/swap-in.cue.ron`.
+// `swap-in` in English (M3 A1): no words, only a voice's shape, stress-timed. Written as
+// the master `content/vo/en/swap-in.wav`, which `sapphire_pipeline vo` imports.
 (
     type: "sapphire::soundgen::Sound",
     version: 1,
     data: (
-        path: "audio/generated/voice/en/swap-in.ogg",
+        path: "vo/en/swap-in.wav",
         sound: Line((
             speaker_hz: 230.0,
             syllables: [

@@ -1,12 +1,16 @@
-//! Placeholder sounds (M3 A1, specs since M4 R4): music stems and voice lines synthesized from a spec
-//! each and encoded to Ogg Vorbis, so the engine has stems to fade by phase and lines to route by
-//! language with no recording and no download. Own work, under the workspace's license.
+//! Placeholder sounds (M3 A1, specs since M4 R4): music stems synthesized from a spec each and encoded to
+//! Ogg Vorbis, and voice lines synthesized as the WAV masters a studio would deliver (M6 U11), so the engine
+//! has stems to fade by phase and lines to route by language with no recording and no download. Own work,
+//! under the workspace's license.
 //!
 //! A sound starts as a spec, `<name>.sound.ron`, kept in `tools/sounds/`. `sapphire_soundgen --specs
-//! tools/sounds --out content` writes each spec's `.ogg` to the `path` it names under the content
-//! directory, and it's committed there: the cook reads it through its sidecar as it reads a recorded
-//! sound, and never this crate. So a new placeholder sound is a spec, its row in the `SOURCE.md` beside
-//! it, and whatever document names it (a score's stem, a voice line's cue), with no Rust.
+//! tools/sounds --out content` writes each spec's file to the `path` it names under the content
+//! directory, and it's committed there: a stem's `.ogg`, which the cook reads through its sidecar as it
+//! reads a recorded sound, and a line's `.wav` master under `vo/<locale>/` ([`wav`]), which `sapphire_pipeline
+//! vo` encodes and imports as it would a studio's, with [`QUALITY`]'s settings. The cook never links this
+//! crate.
+//! So a new placeholder sound is a spec, its row in the `SOURCE.md` beside it, and whatever names it (a
+//! score's stem; for a line, the voice script), with no Rust.
 //!
 //! # A spec
 //!
@@ -41,14 +45,15 @@
 //! How each instrument and the voice sound (harmonics, envelopes, the drum kit, a bell's partials,
 //! formants) is code; what they play is the spec's. Every struct denies unknown fields, and a value
 //! that can't be played (a chord a bar short, a note past 127, a tempo whose beat isn't whole frames,
-//! a seed of 0) fails naming its file and field. Every sound is normalized to the same peak and
-//! encoded mono at [`SAMPLE_RATE`].
+//! a seed of 0) fails naming its file and field. Every sound is normalized to the same peak, mono at
+//! [`SAMPLE_RATE`]. A stem's path ends in `.ogg` and a line's in `.wav`.
 //!
 //! # Determinism
 //!
 //! Everything is a pure function of its spec. Noise comes from a seeded xorshift, the Ogg stream
 //! serial is a hash of the output's path, and libvorbis has no other input, so a run makes the same
-//! bytes as the last on the same machine. The instruments use `std`'s `sin`, `exp` and `powf`, and
+//! bytes as the last on the same machine. A line's master holds its samples as 32-bit floats, exactly as
+//! made, so its encode is the stream this wrote itself before masters (M6 U11), but for the serial. The instruments use `std`'s `sin`, `exp` and `powf`, and
 //! libvorbis is C built by `cc`, so another OS or architecture can differ in the last bits and encode
 //! differently: the committed files were made on macOS on arm64, and the tests hold them to the byte
 //! there and by their decoded samples elsewhere. Moving the instruments to `sapphire_math::det` would
@@ -56,11 +61,12 @@
 //!
 //! # Does not own
 //!
-//! - The documents that name these sounds (`.score.ron`, `.voice.ron` and the lines' `.cue.ron`
-//!   beside them), which are written by hand, nor their sidecars, which the first cook makes.
+//! - The documents that name these sounds (`.score.ron`, written by hand), nor their sidecars, which the
+//!   first cook makes; nor a line's Ogg, cue and voice lines, which `sapphire_pipeline vo` writes.
 
 pub mod spec;
 mod synth;
+pub mod wav;
 
 use std::num::{NonZeroU8, NonZeroU32};
 use std::path::{Path, PathBuf};
@@ -75,8 +81,9 @@ pub use spec::{
 /// Every file's sample rate: plenty for placeholders, and a quarter less to decode than 32 kHz.
 pub const SAMPLE_RATE: u32 = 24_000;
 
-/// Libvorbis's quality, from -0.2 to 1: about 40 kbit/s for these.
-const QUALITY: f32 = 0.3;
+/// Libvorbis's quality, from -0.2 to 1: about 40 kbit/s for these, a mono line at 24 kHz included. The
+/// voice-over tool (`sapphire_pipeline vo`) encodes every master at the same quality, as [`encode`] does.
+pub const QUALITY: f32 = 0.3;
 /// Every stem's and line's loudest sample.
 const PEAK: f32 = 0.7;
 
@@ -116,33 +123,30 @@ pub fn read_all(dir: &Path) -> Result<Vec<(PathBuf, Sound)>, SpecError> {
 }
 
 impl Generated {
-    /// The file's bytes, its stream serial [`serial_of`] its path. The decoder the engine uses (lewton)
-    /// doesn't trim the last block to the stream's end, so a sound can come back a block longer than it
-    /// went in: a line is given that much quiet at its end and encoded again, until it comes back as
-    /// long as it is. A stem can't be: it must stay its bars, and this fails instead.
-    pub fn encode(&mut self) -> anyhow::Result<Vec<u8>> {
-        for _ in 0..4 {
-            let bytes = encode(&self.samples, serial_of(&self.path))?;
-            let frames = sapphire_assets::sound::decode_vorbis(&bytes)?.frames();
-            if frames == self.samples.len() {
-                return Ok(bytes);
-            }
-            anyhow::ensure!(
-                !self.looped,
-                "{} decodes to {frames} frames, not its {} frames of bars",
-                self.path,
-                self.samples.len()
-            );
-            self.samples.resize(frames, 0.0);
+    /// The file's bytes. A stem's is its Ogg Vorbis stream, its serial [`serial_of`] its path, which must
+    /// decode to its bars to the frame, or this fails. A line's is its master, a WAV file of its samples as
+    /// made ([`wav::write_float`]), which `sapphire_pipeline vo` encodes (M6 U11).
+    pub fn bytes(&self) -> anyhow::Result<Vec<u8>> {
+        if !self.looped {
+            return Ok(wav::write_float(SAMPLE_RATE, &self.samples));
         }
-        anyhow::bail!("{} never decodes to its own length", self.path)
+        let bytes = encode(&self.samples, SAMPLE_RATE, serial_of(&self.path))?;
+        let frames = sapphire_assets::sound::decode_vorbis(&bytes)?.frames();
+        anyhow::ensure!(
+            frames == self.samples.len(),
+            "{} decodes to {frames} frames, not its {} frames of bars",
+            self.path,
+            self.samples.len()
+        );
+        Ok(bytes)
     }
 }
 
-/// `samples` as an Ogg Vorbis stream, mono at [`SAMPLE_RATE`], with the stream serial `serial`.
-pub fn encode(samples: &[f32], serial: i32) -> anyhow::Result<Vec<u8>> {
-    let (Some(rate), Some(mono)) = (NonZeroU32::new(SAMPLE_RATE), NonZeroU8::new(1)) else {
-        unreachable!("neither is zero")
+/// `samples`, one channel at `sample_rate`, as an Ogg Vorbis stream at [`QUALITY`] with the stream serial
+/// `serial`.
+pub fn encode(samples: &[f32], sample_rate: u32, serial: i32) -> anyhow::Result<Vec<u8>> {
+    let (Some(rate), Some(mono)) = (NonZeroU32::new(sample_rate), NonZeroU8::new(1)) else {
+        anyhow::bail!("a sound at {sample_rate} Hz")
     };
     let mut builder = VorbisEncoderBuilder::new_with_serial(rate, mono, Vec::new(), serial);
     builder

@@ -1,11 +1,11 @@
 // `guide_greet` in English (M5 C6): the guide's first line at the Lantern Ward, as the conversation's `vo`
-// names it. No words, only a voice's shape, stress-timed, in two phrases that fall at their ends. Spoken by
-// `content/audio/generated/voice/en/guide_greet.cue.ron`.
+// names it. No words, only a voice's shape, stress-timed, in two phrases that fall at their ends. Written as
+// the master `content/vo/en/guide_greet.wav`, which `sapphire_pipeline vo` imports.
 (
     type: "sapphire::soundgen::Sound",
     version: 1,
     data: (
-        path: "audio/generated/voice/en/guide_greet.ogg",
+        path: "vo/en/guide_greet.wav",
         sound: Line((
             // The guide's pitch, lower than the character's, in both languages.
             speaker_hz: 175.0,

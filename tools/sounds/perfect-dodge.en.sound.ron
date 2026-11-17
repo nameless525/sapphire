@@ -1,10 +1,11 @@
 // `perfect-dodge` in English (M3 A1): no words, only a voice's shape, stress-timed, the long low last
-// syllable carrying the line. Spoken by `content/audio/generated/voice/en/perfect-dodge.cue.ron`.
+// syllable carrying the line. Written as the master `content/vo/en/perfect-dodge.wav`, which
+// `sapphire_pipeline vo` imports.
 (
     type: "sapphire::soundgen::Sound",
     version: 1,
     data: (
-        path: "audio/generated/voice/en/perfect-dodge.ogg",
+        path: "vo/en/perfect-dodge.wav",
         sound: Line((
             // The character's pitch, in both languages.
             speaker_hz: 230.0,

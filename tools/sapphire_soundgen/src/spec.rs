@@ -34,7 +34,8 @@ const MAX_SYLLABLES: usize = 64;
 #[type_path = "sapphire::soundgen"]
 #[serde(deny_unknown_fields)]
 pub struct Sound {
-    /// Where it's written, relative to the content directory, with `/` between parts: an `.ogg`.
+    /// Where it's written, relative to the content directory, with `/` between parts: a stem's `.ogg`,
+    /// or a line's `.wav` master (M6 U11).
     pub path: String,
     /// What it is.
     pub sound: Synth,
@@ -209,14 +210,22 @@ impl Sound {
     /// Checks every value can be made, naming the first that can't.
     pub(crate) fn check(&self) -> Result<(), Problem> {
         let parts: Vec<&str> = self.path.split('/').collect();
-        if !self.path.ends_with(".ogg")
+        // A stem is encoded here; a line is a master, which the voice-over tool encodes (M6 U11).
+        let extension = match self.sound {
+            Synth::Stem(_) => ".ogg",
+            Synth::Line(_) => ".wav",
+        };
+        if !self.path.ends_with(extension)
             || parts
                 .iter()
                 .any(|part| part.is_empty() || *part == "." || *part == ".." || part.contains(['\\', ':']))
         {
             return problem(
                 "path",
-                format!("{:?} isn't an `.ogg` under the content directory, `/` between its parts", self.path),
+                format!(
+                    "{:?} isn't a `{extension}` under the content directory, `/` between its parts",
+                    self.path
+                ),
             );
         }
         match &self.sound {

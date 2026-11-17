@@ -25,8 +25,8 @@ fn main() -> anyhow::Result<()> {
         bail!("no `*{}` specs in {}", sapphire_soundgen::SPEC_EXTENSION, specs.display());
     }
     for (_, sound) in &sounds {
-        let mut file = sapphire_soundgen::generate(sound);
-        let bytes = file.encode()?;
+        let file = sapphire_soundgen::generate(sound);
+        let bytes = file.bytes()?;
         let path = out.join(&file.path);
         let summary = format!("{} ({} frames, {} bytes)", file.path, file.samples.len(), bytes.len());
         match std::fs::read(&path) {

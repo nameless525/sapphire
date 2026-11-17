@@ -155,3 +155,21 @@ desktop-high-dusk | pipelines set | total +82
 desktop-high-night | pipelines set | total +82 p95 +1
 desktop-low-dusk | pipelines set | total +82
 desktop-low-night | pipelines set | total +82
+
+# The character triangles of each pass (M6 B6), from the same crowd as the first block: these rows count every
+# skinned character the pass draws, the crowd included, so they lose what lavapipe's net 11 (Desktop-High) and 24
+# (Desktop-Low) fewer crowd-character frames drew. The main view and the scene prepass draw each character's
+# surface and outline hull, so their rows move by twice the character prepass's, the same at dusk and at night.
+# The shadow row holds the table's figure, the same on every frame of every walk.
+desktop-high-dusk | character prepass triangles | total -16488
+desktop-high-dusk | main character triangles | total -32976
+desktop-high-dusk | scene prepass character triangles | total -32976
+desktop-high-night | character prepass triangles | total -16488
+desktop-high-night | main character triangles | total -32976
+desktop-high-night | scene prepass character triangles | total -32976
+desktop-low-dusk | character prepass triangles | total -58656
+desktop-low-dusk | main character triangles | total -117312 p50 -40
+desktop-low-dusk | scene prepass character triangles | total -117312 p50 -40
+desktop-low-night | character prepass triangles | total -58656
+desktop-low-night | main character triangles | total -117312 p50 -40
+desktop-low-night | scene prepass character triangles | total -117312 p50 -40

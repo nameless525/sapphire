@@ -580,6 +580,8 @@ pub struct Scene {
     ambient: Box<ambient::Crowd>,
     /// How the tier runs spring bones ([`Self::set_spring_quality`]).
     spring_quality: SpringQuality,
+    /// The tier [`Self::set_motion_tier`] was last given, whose voice caps the sound takes (M6 U3).
+    tier: TierId,
     /// Frames animated, which turn the rotation of who steps their springs (M5 C2): a count, never a clock.
     spring_turn: u64,
     /// Whether springs lie on the ground under the feet ([`Self::set_spring_floor`]).
@@ -773,6 +775,7 @@ impl Scene {
             anim_stats: AnimStats::default(),
             ambient: Box::default(),
             spring_quality: SpringQuality::DESKTOP_HIGH,
+            tier: TierId::DesktopHigh,
             spring_turn: 0,
             spring_floor: true,
             spring_turns: 0,
@@ -1913,6 +1916,7 @@ impl Scene {
     /// Runs secondary motion and thins animation as `tier` does, from the next frame on: its springs'
     /// quality, its animation levels (M5 C1) and how many ambient characters it draws (M5 C10).
     pub fn set_motion_tier(&mut self, tier: TierId) {
+        self.tier = tier;
         self.spring_quality = spring_quality(tier);
         self.anim_levels = anim_levels(tier);
         self.set_ambient_tier(tier);
@@ -2893,6 +2897,7 @@ impl Scene {
             hitstop: world
                 .get::<EntityClock>(self.character)
                 .is_some_and(|clock| clock.0.hitstop_ticks() > 0),
+            tier: self.tier,
         }
     }
 

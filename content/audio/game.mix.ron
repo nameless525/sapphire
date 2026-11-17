@@ -8,9 +8,10 @@
 // - A line takes the music and the effects down by its voice's loudness, which its sound's mouth curve
 //   carries, and lets them back up in its pauses. The music's -9 dB was the score's own `duck_db` before.
 // - `Portable` is a phone's speaker: narrower and louder. Which one plays is a later package's (U10).
+// - `footsteps` (M6 U3): six feet heard at once, the oldest giving way, however many walk.
 (
     type: "sapphire::assets::Mix",
-    version: 1,
+    version: 2,
     data: (
         buses: [
             (name: "sfx"),
@@ -64,6 +65,9 @@
                 volume_db: 2.0,
                 effects: [Compressor(threshold_db: -18.0, ratio: 3.0, attack_ms: 10.0, release_ms: 120.0, makeup_db: 4.0)],
             ),
+        ],
+        groups: [
+            (name: "footsteps", limit: (max: 6, rule: StopOldest)),
         ],
     ),
 )

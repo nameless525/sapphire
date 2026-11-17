@@ -45,13 +45,14 @@ pub use sapphire_audio::Volumes;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
     EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT,
-    SpeechRequest,
+    SpeechRequest, VoiceCaps,
 };
 use sapphire_core::Name;
 use sapphire_loc::LocaleSettings;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::Renderer;
+use sapphire_render::quality::TierId;
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 
@@ -183,6 +184,20 @@ pub struct SceneSound {
     pub(crate) character: Vec3,
     /// Whether the character's clock is held by hitstop.
     pub(crate) hitstop: bool,
+    /// The quality tier, whose [`voice_caps`] the mixer keeps to (M6 U3).
+    pub(crate) tier: TierId,
+}
+
+/// The voices `tier` mixes and keeps (M6 U3, spec §5.15): past them, what ranks lowest waits virtual or ends.
+#[must_use]
+pub fn voice_caps(tier: TierId) -> VoiceCaps {
+    let (real, virtual_voices) = match tier {
+        TierId::DesktopHigh => (64, 256),
+        TierId::DesktopLow => (48, 256),
+        TierId::MobileHigh => (40, 192),
+        TierId::MobileLow => (24, 128),
+    };
+    VoiceCaps { real, virtual_voices }
 }
 
 /// `--cue`'s one cue, and when it's due.
@@ -313,6 +328,7 @@ impl DeviceAudio {
             speech: fight.speech,
             music: music(self.score, &fight),
         };
+        self.system.set_voice_caps(voice_caps(scene.tier));
         self.system.update(&frame, &mut self.random);
         self.report_in -= dt;
         if self.report_in <= 0.0 {
@@ -373,7 +389,11 @@ impl DeviceAudio {
             streams = device.streams_opened,
             low_latency_refused = device.low_latency_refused,
             voices = stats.voices,
+            virtual_voices = stats.virtual_voices,
             played = stats.cues_played,
+            stolen = stats.voices_stolen,
+            virtualized = stats.voices_virtualized,
+            revived = stats.voices_revived,
             dropped_no_output = stats.dropped_no_output,
             dropped_voice_limit = stats.dropped_voice_limit,
             dropped_unknown = stats.dropped_unknown,
@@ -708,6 +728,7 @@ impl OfflineAudio {
             speech: fight.speech,
             music: music(self.score, &fight),
         };
+        self.system.set_voice_caps(voice_caps(scene.tier));
         self.system.update(&frame, &mut self.random);
     }
 
@@ -750,6 +771,18 @@ pub fn stayed_shut(opens: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M6 U3: spec §5.15's caps, fewer down the tiers, and within what the mixer has room for.
+    #[test]
+    fn each_tier_keeps_to_its_voice_caps() {
+        let caps =
+            [TierId::DesktopHigh, TierId::DesktopLow, TierId::MobileHigh, TierId::MobileLow].map(voice_caps);
+        assert_eq!(
+            caps.map(|caps| (caps.real, caps.virtual_voices)),
+            [(64, 256), (48, 256), (40, 192), (24, 128)]
+        );
+        assert!(caps.iter().all(|caps| caps.clamped() == *caps));
+    }
 
     #[test]
     fn a_cue_is_named_or_the_error_lists_the_names() {
@@ -919,6 +952,7 @@ mod tests {
             world_time_scale: 1.0,
             character: Vec3::ZERO,
             hitstop: false,
+            tier: TierId::DesktopHigh,
         };
         // Each frame: what the mouth read after the update, and the mix's power over the frame after it, for a
         // line asked for from `ASKED` on and held over `held`.

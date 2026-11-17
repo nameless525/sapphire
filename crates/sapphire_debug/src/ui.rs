@@ -745,6 +745,14 @@ fn audio(ui: &mut Ui, stats: &sapphire_audio::AudioStats) {
         );
         let dropped = stats.dropped_no_output + stats.dropped_voice_limit + stats.dropped_unknown;
         row(ui, "  Dropped", format!("{dropped} cues"));
+        row(
+            ui,
+            "  Virtual",
+            format!(
+                "{} now; {} stolen, {} went virtual, {} came back",
+                stats.virtual_voices, stats.voices_stolen, stats.voices_virtualized, stats.voices_revived
+            ),
+        );
         row(ui, "  Decoded", format!("{} KiB of sound", stats.decoded_bytes / 1024));
         row(
             ui,

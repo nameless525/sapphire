@@ -1,5 +1,6 @@
 // A foot taking the weight in a move. Quiet: a string of them shouldn't tire. On stone, as the town's
-// paving is, until a surface says otherwise.
+// paving is, until a surface says otherwise. Below everything else when the mixer is full, and one of the
+// mix's `footsteps`, which a crowd's feet share (M6 U3).
 (
     type: "sapphire::assets::Cue",
     version: 2,
@@ -16,5 +17,7 @@
         attenuation: Some((near: 1.0, far: 20.0, curve: Inverse)),
         bus: Sfx,
         hitstop: Freeze,
+        priority: 40,
+        group: Some("footsteps"),
     ),
 )

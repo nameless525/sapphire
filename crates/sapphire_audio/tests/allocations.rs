@@ -44,6 +44,7 @@ fn cue() -> Cue {
         attenuation: Some(Attenuation { near: 1.0, far: 20.0, curve: AttenuationCurve::Linear }),
         bus: Bus::Sfx,
         hitstop: HitstopResponse::Ignore,
+        ..Cue::default()
     }
 }
 

@@ -4,7 +4,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::assets::Cue",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         // Footsteps on stone: one of these, picked each time.
 //!         sounds: [
@@ -16,6 +16,10 @@
 //!         attenuation: Some((near: 1.0, far: 30.0, curve: Inverse)),
 //!         bus: Sfx,
 //!         hitstop: Duck(-12.0),
+//!         // M6 U3: how it competes for the mixer's voices.
+//!         priority: 40,
+//!         limit: Some((max: 4, rule: StopOldest)),
+//!         group: Some("footsteps"),
 //!     ),
 //! )
 //! ```
@@ -27,9 +31,14 @@
 //!
 //! A cue names what is authored. Picking among its sounds and ranges, placing the voice and mixing
 //! it are `sapphire_audio`'s.
+//!
+//! **Version 2 (M6 U3)** adds how a cue competes for the mixer's voices, each field optional with what a version 1
+//! cue did as its default: a [`priority`](Cue::priority), a [`limit`](Cue::limit) on its own voices at once, a
+//! [`group`](Cue::group) of the mix whose limit it shares, and whether it's [`looped`](Cue::looped). A version 1
+//! document reads as it was written.
 
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use sapphire_serialize::DocumentError;
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
 use serde::{Deserialize, Serialize};
@@ -47,6 +56,13 @@ pub(crate) const MAX_VOLUME_DB: f32 = 24.0;
 
 /// The playback rates a cue may ask for: a tenth of the speed to eight times it.
 const PITCH_RANGE: std::ops::RangeInclusive<f32> = 0.1..=8.0;
+
+/// A cue's priority when it names none (M6 U3): the middle, so a designer can rank a sound above or below
+/// everything left as it was.
+pub const DEFAULT_PRIORITY: u8 = 128;
+
+/// The most voices a [`Limit`] may allow: more than the mixer keeps, real and virtual, is no limit.
+pub const MAX_LIMIT: u16 = 512;
 
 /// A cue. See the [module docs](self).
 #[derive(
@@ -85,14 +101,163 @@ pub struct Cue {
     /// What it does while the actor it is attached to is in hitstop.
     #[serde(default)]
     pub hitstop: HitstopResponse,
+    /// How much its voices matter against others when the mixer has more to play than it mixes (M6 U3): higher
+    /// keeps a real voice first. [`DEFAULT_PRIORITY`] if it names none.
+    #[serde(default = "default_priority")]
+    pub priority: u8,
+    /// How many of its voices may sound at once, and which goes when one more is asked for. None, and it
+    /// competes only by its priority, its group's limit and the mixer's caps.
+    #[serde(default)]
+    pub limit: Option<Limit>,
+    /// The voice group of the mix it counts toward ([`Mix::groups`](crate::mix::Mix::groups)), whose limit its
+    /// voices share with every other cue naming it. A group the mix hasn't limits nothing.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Whether it plays round and round until it's ended: on an emitter, whose going ends it. A virtual loop
+    /// keeps its place and comes back where it would be.
+    #[serde(default)]
+    pub looped: bool,
+}
+
+/// Every field as a document that leaves it out has it, and no sounds yet: a cue to fill in, which
+/// [`Cue::check`] refuses until it names one.
+impl Default for Cue {
+    fn default() -> Self {
+        Self {
+            sounds: Vec::new(),
+            volume_db: [0.0; 2],
+            pitch: authored_pitch(),
+            attenuation: None,
+            bus: Bus::default(),
+            hitstop: HitstopResponse::default(),
+            priority: DEFAULT_PRIORITY,
+            limit: None,
+            group: None,
+            looped: false,
+        }
+    }
 }
 
 fn authored_pitch() -> [f32; 2] {
     [1.0, 1.0]
 }
 
+fn default_priority() -> u8 {
+    DEFAULT_PRIORITY
+}
+
 impl Versioned for Cue {
-    const VERSION: u32 = 1;
+    /// Version 2 (M6 U3): `priority`, `limit`, `group` and `looped`, each defaulting to what a version 1 cue did.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode::<v1::Cue>().map(Into::into).map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
+}
+
+/// Version 1 (M2 E1), as its documents read: what a cue says of its sound, and nothing of how it competes.
+mod v1 {
+    use serde::Deserialize;
+
+    use super::{Attenuation, Bus, DEFAULT_PRIORITY, HitstopResponse, authored_pitch};
+    use crate::AssetId;
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Cue {
+        sounds: Vec<AssetId>,
+        #[serde(default)]
+        volume_db: [f32; 2],
+        #[serde(default = "authored_pitch")]
+        pitch: [f32; 2],
+        #[serde(default)]
+        attenuation: Option<Attenuation>,
+        #[serde(default)]
+        bus: Bus,
+        #[serde(default)]
+        hitstop: HitstopResponse,
+    }
+
+    impl From<Cue> for super::Cue {
+        fn from(Cue { sounds, volume_db, pitch, attenuation, bus, hitstop }: Cue) -> Self {
+            Self {
+                sounds,
+                volume_db,
+                pitch,
+                attenuation,
+                bus,
+                hitstop,
+                priority: DEFAULT_PRIORITY,
+                limit: None,
+                group: None,
+                looped: false,
+            }
+        }
+    }
+}
+
+/// How many voices may sound at once, and which goes when one more is asked for (M6 U3): Unreal's
+/// concurrency rules.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct Limit {
+    /// Voices at once, at least 1 and at most [`MAX_LIMIT`].
+    pub max: u16,
+    pub rule: LimitRule,
+}
+
+impl Limit {
+    /// What's wrong with the limit, if anything.
+    #[must_use]
+    pub fn problem(&self) -> Option<String> {
+        (!(1..=MAX_LIMIT).contains(&self.max))
+            .then(|| format!("a limit of {} voices isn't from 1 to {MAX_LIMIT}", self.max))
+    }
+}
+
+/// Which voice goes when a [`Limit`] is reached and one more is asked for.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize)]
+#[rkyv(derive(Debug))]
+pub enum LimitRule {
+    /// The new one doesn't play: what's sounding is never cut.
+    RefuseNew,
+    /// The one that started first ends, and the new one plays.
+    StopOldest,
+    /// The quietest at the listener ends, the new one among them: if it's the quietest, it doesn't play.
+    StopQuietest,
+    /// The lowest priority ends, the oldest of them on a tie, the new one among them: if it's lower than all,
+    /// it doesn't play.
+    StopLowestPriority,
 }
 
 /// How a placed cue fades with distance.
@@ -338,6 +503,14 @@ impl Cue {
         {
             return field("hitstop", format!("Duck({db}) isn't quieter"));
         }
+        if let Some(problem) = self.limit.as_ref().and_then(Limit::problem) {
+            return field("limit.max", problem);
+        }
+        if let Some(group) = &self.group
+            && (group.is_empty() || group.trim() != group)
+        {
+            return field("group", format!("{group:?} isn't a group's name"));
+        }
         Ok(())
     }
 
@@ -355,32 +528,10 @@ impl Cue {
 
 impl ArchivedCue {
     /// The cue as plain data.
+    #[must_use]
     pub fn to_owned_cue(&self) -> Cue {
-        Cue {
-            sounds: self.sounds.iter().copied().collect(),
-            volume_db: self.volume_db.map(|value| value.to_native()),
-            pitch: self.pitch.map(|value| value.to_native()),
-            attenuation: self.attenuation.as_ref().map(|attenuation| Attenuation {
-                near: attenuation.near.to_native(),
-                far: attenuation.far.to_native(),
-                curve: match attenuation.curve {
-                    ArchivedAttenuationCurve::Linear => AttenuationCurve::Linear,
-                    ArchivedAttenuationCurve::Inverse => AttenuationCurve::Inverse,
-                },
-            }),
-            bus: match self.bus {
-                ArchivedBus::Sfx => Bus::Sfx,
-                ArchivedBus::Ambience => Bus::Ambience,
-                ArchivedBus::Ui => Bus::Ui,
-                ArchivedBus::Music => Bus::Music,
-                ArchivedBus::Voice => Bus::Voice,
-            },
-            hitstop: match self.hitstop {
-                ArchivedHitstopResponse::Ignore => HitstopResponse::Ignore,
-                ArchivedHitstopResponse::Duck(db) => HitstopResponse::Duck(db.to_native()),
-                ArchivedHitstopResponse::Freeze => HitstopResponse::Freeze,
-            },
-        }
+        rkyv::deserialize::<Cue, rkyv::rancor::Error>(self)
+            .expect("an archive that passed its check deserializes")
     }
 }
 
@@ -390,9 +541,9 @@ mod tests {
 
     const SOUND: &str = "4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5c";
 
-    /// A cue document with these lines in its data.
+    /// A cue document of the current version with these lines in its data.
     fn document(data: &str) -> String {
-        format!("(\n    type: \"sapphire::assets::Cue\",\n    version: 1,\n    data: (\n{data}\n    ),\n)\n")
+        format!("(\n    type: \"sapphire::assets::Cue\",\n    version: 2,\n    data: (\n{data}\n    ),\n)\n")
     }
 
     fn sounds() -> String {
@@ -426,6 +577,10 @@ mod tests {
                 attenuation: Some(Attenuation { near: 1.0, far: 30.0, curve: AttenuationCurve::Linear }),
                 bus: Bus::Ambience,
                 hitstop: HitstopResponse::Duck(-12.0),
+                priority: DEFAULT_PRIORITY,
+                limit: None,
+                group: None,
+                looped: false,
             }
         );
     }
@@ -437,6 +592,35 @@ mod tests {
         assert_eq!(cue.pitch, [1.0, 1.0]);
         assert_eq!(cue.attenuation, None);
         assert_eq!((cue.bus, cue.hitstop), (Bus::Sfx, HitstopResponse::Ignore));
+        assert_eq!((cue.priority, cue.limit, cue.group, cue.looped), (DEFAULT_PRIORITY, None, None, false));
+    }
+
+    /// M6 U3: version 2's fields read as written and cook back; a version 1 cue, which can name none of them, reads
+    /// as it was written and competes as it did.
+    #[test]
+    fn version_two_says_how_a_cue_competes_and_version_one_reads_as_it_did() {
+        let text = document(&format!(
+            "{}
+        priority: 200,
+        limit: Some((max: 3, rule: StopQuietest)),
+        group: Some(\"footsteps\"),
+        looped: true,",
+            sounds()
+        ));
+        let cue = Cue::from_document(&text).unwrap();
+        assert_eq!(cue.priority, 200);
+        assert_eq!(cue.limit, Some(Limit { max: 3, rule: LimitRule::StopQuietest }));
+        assert_eq!((cue.group.as_deref(), cue.looped), (Some("footsteps"), true));
+        let cooked = cue.to_cooked().unwrap();
+        assert_eq!(Cue::read(&cooked).unwrap().to_owned_cue(), cue);
+
+        let first = |data: &str| Cue::from_document(&document(data).replace("version: 2", "version: 1"));
+        let old = first(&format!("{}\n        volume_db: (-6.0, -3.0),", sounds())).unwrap();
+        assert_eq!(old, Cue { volume_db: [-6.0, -3.0], ..Cue::from_document(&document(&sounds())).unwrap() });
+        let error = first(&format!("{}\n        priority: 3,", sounds())).unwrap_err().to_string();
+        assert!(error.contains("priority"), "version 1 had no priority: {error}");
+        let error = Cue::from_document(&document(&sounds()).replace("version: 2", "version: 3")).unwrap_err();
+        assert!(matches!(&error, CueError::Document(_)), "{error}");
     }
 
     /// Whatever the document says, a gain is a number, and it only ever falls with distance.
@@ -514,6 +698,13 @@ mod tests {
             ("        attenuation: Some((near: 1.0, far: inf)),", &["attenuation.far"]),
             ("        hitstop: Duck(6.0),", &["hitstop"]),
             ("        hitstop: Duck(NaN),", &["hitstop"]),
+            ("        limit: Some((max: 0, rule: RefuseNew)),", &["limit.max"]),
+            ("        limit: Some((max: 600, rule: StopOldest)),", &["limit.max"]),
+            ("        limit: Some((max: 2)),", &["limit", "rule"]),
+            ("        limit: Some((max: 2, rule: StopNewest)),", &["StopNewest"]),
+            ("        group: Some(\"\"),", &["group"]),
+            ("        group: Some(\" steps\"),", &["group"]),
+            ("        priority: 256,", &["priority"]),
         ];
         let mut failures = Vec::new();
         for (lines, expected) in rows {

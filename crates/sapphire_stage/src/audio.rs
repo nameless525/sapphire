@@ -843,6 +843,7 @@ mod tests {
                 attenuation: None,
                 bus: Bus::Voice,
                 hitstop: HitstopResponse::Ignore,
+                ..Cue::default()
             };
             (id, cue, vec![(id, sound.clone())])
         };
@@ -909,6 +910,7 @@ mod tests {
             attenuation: None,
             bus: Bus::Voice,
             hitstop: HitstopResponse::Ignore,
+            ..Cue::default()
         };
         let decoded = sound.decode().unwrap();
         let length = curve.frames.len();

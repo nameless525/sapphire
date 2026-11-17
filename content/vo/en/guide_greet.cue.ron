@@ -2,7 +2,7 @@
 // synthesized, with no words.
 (
     type: "sapphire::assets::Cue",
-    version: 1,
+    version: 2,
     data: (
         sounds: ["e7310479-f739-4644-a40b-df0045b33f19"],
         volume_db: (-4.0, -4.0),

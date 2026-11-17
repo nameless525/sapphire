@@ -50,6 +50,7 @@ fn system(sound: &DecodedSound) -> AudioSystem<KiraBackend<OfflineOutput>> {
             attenuation: Some(Attenuation { near: 1.0, far: 40.0, curve: AttenuationCurve::Inverse }),
             bus: Bus::Sfx,
             hitstop: HitstopResponse::Freeze,
+            ..Cue::default()
         },
     );
     system

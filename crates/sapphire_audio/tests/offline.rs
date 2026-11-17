@@ -445,6 +445,7 @@ mod through_the_system {
             attenuation: None,
             bus: Bus::Sfx,
             hitstop: HitstopResponse::Ignore,
+            ..Cue::default()
         }
     }
 

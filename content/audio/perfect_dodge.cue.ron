@@ -1,7 +1,7 @@
 // A perfect dodge: a thin glass note on the player, placeholder until someone can hear it.
 (
     type: "sapphire::assets::Cue",
-    version: 1,
+    version: 2,
     data: (
         sounds: [
             "f4fab061-b3da-4559-a683-452e7b627465", // kenney_impact_sounds: impactGlass_light_000

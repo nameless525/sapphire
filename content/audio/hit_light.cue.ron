@@ -2,7 +2,7 @@
 // hitstop it starts.
 (
     type: "sapphire::assets::Cue",
-    version: 1,
+    version: 2,
     data: (
         sounds: [
             "050c7d4c-0c6f-49d1-b977-8741fa916335", // kenney_impact_sounds: impactPunch_medium_000

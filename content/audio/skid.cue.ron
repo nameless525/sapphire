@@ -2,7 +2,7 @@
 // no scrape.
 (
     type: "sapphire::assets::Cue",
-    version: 1,
+    version: 2,
     data: (
         sounds: [
             "b6dd6b1f-1eb7-43e3-8ed9-49ded116db1c", // kenney_impact_sounds: footstep_concrete_000

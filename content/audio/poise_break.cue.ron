@@ -1,7 +1,7 @@
 // A guard breaking: a low bell's strike, which rings on over the stagger.
 (
     type: "sapphire::assets::Cue",
-    version: 1,
+    version: 2,
     data: (
         sounds: [
             "4f008635-c078-4eb9-97cc-685c825f81a3", // kenney_impact_sounds: impactBell_heavy_000

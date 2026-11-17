@@ -305,6 +305,7 @@ mod tests {
                 attenuation: None,
                 bus: Bus::Voice,
                 hitstop: HitstopResponse::Ignore,
+                ..Cue::default()
             };
             system.add_cue(id, cue);
         }

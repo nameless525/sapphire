@@ -4,7 +4,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::assets::Mix",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         // The five categories first, in this order; a bus under one is named by its path.
 //!         buses: [
@@ -33,6 +33,8 @@
 //!              duck: [(bus: "music", gain_db: -10.0)]),
 //!         ],
 //!         profiles: [(profile: Home), (profile: Portable, effects: [Compressor(threshold_db: -18.0, ratio: 3.0, attack_ms: 10.0, release_ms: 120.0, makeup_db: 4.0)])],
+//!         // M6 U3: kinds of sound sharing a limit, which cues name.
+//!         groups: [(name: "footsteps", limit: (max: 6, rule: StopOldest))],
 //!     ),
 //! )
 //! ```
@@ -51,16 +53,18 @@
 //! - **Ducking rules** take buses down while a bus's voices sound: by the cooked mouth envelope of a voice
 //!   line at its playhead ([`DuckFollow::Envelope`]), or while any plays.
 //! - **Output profiles** are the master's volume and effects for where the sound is heard ([`OutputProfile`]).
+//! - **Voice groups** (version 2, M6 U3) are kinds of sound sharing a [`Limit`] on how many play at once, by
+//!   Unreal's rules, whichever cues name them. A version 1 mix reads as written, with none.
 //!
 //! [`Mix::from_document`] says what's wrong by field path, or by the document's own line. The cooked form is
 //! the same type. Making the buses, moving the snapshots and following the envelopes are `sapphire_audio`'s.
 
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
 use serde::{Deserialize, Serialize};
 
-use crate::cue::{Bus, MAX_VOLUME_DB, SILENCE_DB};
+use crate::cue::{Bus, Limit, MAX_VOLUME_DB, SILENCE_DB};
 use crate::score::{DocumentProblem, read_document};
 
 /// Conventional file extension for cooked mixes.
@@ -80,6 +84,9 @@ pub const MAX_SNAPSHOTS: usize = 32;
 
 /// The most ducking rules a mix may have.
 pub const MAX_RULES: usize = 16;
+
+/// The most voice groups a mix may have.
+pub const MAX_GROUPS: usize = 32;
 
 /// The frequencies a filter or a band may sit at, in hertz.
 const HEARD_HZ: std::ops::RangeInclusive<f32> = 20.0..=20_000.0;
@@ -118,10 +125,70 @@ pub struct Mix {
     pub ducking: Vec<DuckRule>,
     /// One for each place the sound is heard, `Home` among them.
     pub profiles: Vec<Profile>,
+    /// Voice groups (M6 U3): kinds of sound that share a limit on how many play at once, whichever cues they come
+    /// from ([`Cue::group`](crate::cue::Cue::group)).
+    #[serde(default)]
+    pub groups: Vec<VoiceGroup>,
 }
 
 impl Versioned for Mix {
-    const VERSION: u32 = 1;
+    /// Version 2 (M6 U3): `groups`, none in a version 1 mix.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode::<v1::Mix>().map(Into::into).map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
+}
+
+/// Version 1 (M6 U2), as its documents read: version 2's fields but the groups.
+mod v1 {
+    use serde::Deserialize;
+
+    use super::{DuckRule, MixBus, Profile, ReverbSend, Snapshot};
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Mix {
+        buses: Vec<MixBus>,
+        #[serde(default)]
+        sends: Vec<ReverbSend>,
+        #[serde(default)]
+        snapshots: Vec<Snapshot>,
+        #[serde(default)]
+        ducking: Vec<DuckRule>,
+        profiles: Vec<Profile>,
+    }
+
+    impl From<Mix> for super::Mix {
+        fn from(Mix { buses, sends, snapshots, ducking, profiles }: Mix) -> Self {
+            Self { buses, sends, snapshots, ducking, profiles, groups: Vec::new() }
+        }
+    }
+}
+
+/// A kind of sound whose voices share a limit, whichever cues they come from (M6 U3): footsteps, say, or
+/// the crowd's barks.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct VoiceGroup {
+    /// What a cue names it by.
+    pub name: String,
+    pub limit: Limit,
 }
 
 /// One bus.
@@ -492,7 +559,14 @@ impl Mix {
             snapshots: Vec::new(),
             ducking: Vec::new(),
             profiles: vec![Profile { profile: OutputProfile::Home, volume_db: 0.0, effects: Vec::new() }],
+            groups: Vec::new(),
         }
+    }
+
+    /// The voice group called `name`, by its place in [`Self::groups`].
+    #[must_use]
+    pub fn group(&self, name: &str) -> Option<usize> {
+        self.groups.iter().position(|group| group.name == name)
     }
 
     /// Reads and checks a mix document.
@@ -556,7 +630,31 @@ impl Mix {
         self.check_sends()?;
         self.check_snapshots()?;
         self.check_ducking()?;
-        self.check_profiles()
+        self.check_profiles()?;
+        self.check_groups()
+    }
+
+    fn check_groups(&self) -> Result<(), MixError> {
+        if self.groups.len() > MAX_GROUPS {
+            return Err(invalid("groups", format!("{} groups is more than {MAX_GROUPS}", self.groups.len())));
+        }
+        for (index, group) in self.groups.iter().enumerate() {
+            let field = format!("groups[{index}]");
+            let name = &group.name;
+            if name.is_empty()
+                || name.trim() != name
+                || self.groups[..index].iter().any(|earlier| earlier.name == *name)
+            {
+                return Err(invalid(
+                    format!("{field}.name"),
+                    format!("{name:?} is empty, padded or named twice"),
+                ));
+            }
+            if let Some(problem) = group.limit.problem() {
+                return Err(invalid(format!("{field}.limit.max"), problem));
+            }
+        }
+        Ok(())
     }
 
     fn check_buses(&self) -> Result<(), MixError> {
@@ -872,10 +970,10 @@ fn check_effects(field: &str, effects: &[BusEffect]) -> Result<(), MixError> {
 mod tests {
     use super::*;
 
-    /// A good mix document, with `extra` lines added to its data.
+    /// A good mix document of the current version, with `extra` lines added to its data.
     fn document(buses: &str, extra: &str) -> String {
         format!(
-            "(\n    type: \"sapphire::assets::Mix\",\n    version: 1,\n    data: (\n        buses: [{buses}],\n{extra}\n        profiles: [(profile: Home)],\n    ),\n)\n"
+            "(\n    type: \"sapphire::assets::Mix\",\n    version: 2,\n    data: (\n        buses: [{buses}],\n{extra}\n        profiles: [(profile: Home)],\n    ),\n)\n"
         )
     }
 
@@ -942,6 +1040,9 @@ mod tests {
             (CATEGORIES.to_owned(), r#"ducking: [(when: "voice", follow: Presence, attack: 0.1, release: 0.1, duck: [(bus: "music", gain_db: 3.0)])],"#, "ducking[0].duck[0].gain_db"),
             (CATEGORIES.to_owned(), r#"ducking: [(when: "speech", follow: Presence, attack: 0.1, release: 0.1, duck: [(bus: "music", gain_db: -3.0)])],"#, "ducking[0].when"),
             (CATEGORIES.to_owned(), r#"ducking: [(when: "voice", follow: Envelope(full_at: 0.0), attack: 0.1, release: 0.1, duck: [(bus: "music", gain_db: -3.0)])],"#, "ducking[0].follow"),
+            (CATEGORIES.to_owned(), r#"groups: [(name: "steps", limit: (max: 0, rule: RefuseNew))],"#, "groups[0].limit.max"),
+            (CATEGORIES.to_owned(), r#"groups: [(name: "steps", limit: (max: 2, rule: StopOldest)), (name: "steps", limit: (max: 3, rule: StopOldest))],"#, "groups[1].name"),
+            (CATEGORIES.to_owned(), r#"groups: [(name: "", limit: (max: 2, rule: StopOldest))],"#, "groups[0].name"),
         ];
         for (buses, extra, path) in cases {
             let message = error_of(&buses, extra);
@@ -956,5 +1057,24 @@ mod tests {
         assert!(Mix::from_document(&text).unwrap_err().to_string().contains("`profiles`"));
         let message = error_of(CATEGORIES, "loudness: 3,");
         assert!(message.contains("loudness: 3,"), "the line is quoted: {message}");
+    }
+
+    /// M6 U3: version 2's groups read and cook back; a version 1 mix reads as written, with none, and couldn't name
+    /// one.
+    #[test]
+    fn groups_are_version_twos_and_a_version_one_mix_reads_as_it_did() {
+        let groups = r#"groups: [(name: "footsteps", limit: (max: 6, rule: StopOldest)), (name: "barks", limit: (max: 2, rule: StopLowestPriority))],"#;
+        let mix = Mix::from_document(&document(CATEGORIES, groups)).unwrap();
+        assert_eq!((mix.group("barks"), mix.group("roars")), (Some(1), None));
+        assert_eq!(mix.groups[0].limit, Limit { max: 6, rule: crate::cue::LimitRule::StopOldest });
+        let cooked = mix.to_cooked().unwrap();
+        assert_eq!(Mix::read(&cooked).unwrap().to_mix(), mix);
+
+        let first = |extra: &str| {
+            Mix::from_document(&document(CATEGORIES, extra).replace("version: 2", "version: 1"))
+        };
+        assert_eq!(first("").unwrap(), Mix::from_document(&document(CATEGORIES, "")).unwrap());
+        assert!(first("").unwrap().groups.is_empty());
+        assert!(first(groups).unwrap_err().to_string().contains("groups"));
     }
 }

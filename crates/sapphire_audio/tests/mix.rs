@@ -60,6 +60,7 @@ fn cue_on(bus: Bus, sound: AssetId, volume_db: f32) -> Cue {
         attenuation: None,
         bus,
         hitstop: HitstopResponse::Ignore,
+        ..Cue::default()
     }
 }
 

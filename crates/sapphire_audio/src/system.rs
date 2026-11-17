@@ -907,6 +907,7 @@ mod tests {
             attenuation: None,
             bus: Bus::Sfx,
             hitstop: HitstopResponse::Ignore,
+            ..Cue::default()
         }
     }
 

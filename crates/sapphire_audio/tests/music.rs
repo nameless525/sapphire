@@ -189,6 +189,7 @@ fn the_music_goes_down_under_a_line_and_comes_back() {
         attenuation: None,
         bus: Bus::Voice,
         hitstop: HitstopResponse::Ignore,
+        ..Cue::default()
     };
     system.add_cue(LINE, cue);
     let lines =

@@ -1,7 +1,7 @@
 // A heavy blow landing: pitched down, so it has weight under the row's metal `hit` cue.
 (
     type: "sapphire::assets::Cue",
-    version: 1,
+    version: 2,
     data: (
         sounds: [
             "777260c4-e322-4f49-9a56-69565c28b7a0", // kenney_impact_sounds: impactPunch_heavy_000

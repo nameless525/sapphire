@@ -1,7 +1,7 @@
 // A body or a heavy swing meeting the ground.
 (
     type: "sapphire::assets::Cue",
-    version: 1,
+    version: 2,
     data: (
         sounds: [
             "c809c414-06c1-427c-9e02-eefbb416362f", // kenney_impact_sounds: impactSoft_heavy_000

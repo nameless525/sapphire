@@ -3974,6 +3974,11 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
             fs::read(source).map_err(|error| CookError::Read { path: source.clone(), source: error })?;
         zone::check_sky_material(&bytes).map_err(zone_error(path))?;
     }
+    for (index, body) in document.water.iter().enumerate() {
+        if let Some(id) = body.material {
+            reference(format!("water[{index}].material"), "a material", id, Planned::is_material)?;
+        }
+    }
     for (index, &id) in document.encounters.iter().enumerate() {
         let field = format!("encounters[{index}]");
         reference(field.clone(), "an encounter document", id, |planned| {

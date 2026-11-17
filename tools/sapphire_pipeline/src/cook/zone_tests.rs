@@ -1541,6 +1541,42 @@ fn a_zone_names_its_sky_and_its_air() {
     assert!(text.contains("town.zone.ron") && text.contains("sky") && text.contains("SkyMaterial"), "{text}");
 }
 
+/// A zone's water (M6 W2) cooks into both halves: its volumes where the simulation reads them, its surfaces'
+/// material shipping with the zone. A second cook of the same tree, from nothing, writes the same bytes; a
+/// material that isn't one is refused by its field.
+#[test]
+fn a_zones_water_cooks_into_both_halves_and_again_the_same() {
+    let water = format!(
+        r#"water: [
+            (name: "pond", shape: Lake(outline: [(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)], height: -0.25), material: Some("{WOOD}")),
+            (name: "race", shape: River(points: [(at: (8.0, 0.5, 0.0), width: 2.0, speed: 1.5), (at: (8.0, 0.0, 12.0), width: 3.0)]), swim: false),
+        ],"#
+    );
+    let cook = |name: &str| {
+        let tree = tree(name);
+        write_zone(&tree, &format!("{} {water}", placements()));
+        let report = tree.cook();
+        (read_zone(&report), report, tree)
+    };
+    let (first, _, tree) = cook("zone-water");
+    let read = Zone::read(&first).unwrap();
+    let names: Vec<&str> = read.simulation.water.iter().map(|body| body.name.as_str()).collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    let volumes = sapphire_zone::WaterVolumes::new(&read.simulation, |_, _, _, _| None);
+    let pond = volumes.at(3.0, -1.0, 2.0).expect("in the pond");
+    assert_eq!((pond.surface_y, pond.swim), (-0.25, true));
+    let race = volumes.at(8.0, 0.0, 6.0).expect("in the race");
+    assert_eq!((race.surface_y, race.swim), (0.25, false));
+    assert!(AssetKind::Zone.reach(&first).unwrap().contains(&WOOD), "its material ships with it");
+    assert!(!AssetKind::Zone.references(&first).unwrap().contains(&WOOD), "and loads with its cells");
+    let (second, ..) = cook("zone-water-again");
+    assert_eq!(first.as_slice(), second.as_slice(), "a cook from nothing writes the same bytes");
+
+    write_zone(&tree, &format!("{} {}", placements(), water.replace(&WOOD.to_string(), &CRATE.to_string())));
+    let text = chain(&tree.try_cook(false).expect_err("a prefab for a material"));
+    assert!(text.contains("town.zone.ron") && text.contains("water[0].material"), "{text}");
+}
+
 /// A sky material with nothing but its sun, as small as one reads.
 const SKY_DOCUMENT: &str = r#"(
     type: "sapphire::render::SkyMaterial",

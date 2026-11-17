@@ -1,0 +1,69 @@
+// The game's mix (M6 U2): the buses every cue, stem and line plays through, and how they move with the game.
+// Nobody has heard it: every level is a guess for someone who can, and the first things to check are where
+// `slow_motion` and `pause` leave the world, and how far the music and effects sit under a line.
+//
+// - `slow_motion` is the perfect dodge's, v0.2.0's numbers unchanged: the world's voices bend to 0.75 and their
+//   buses close to 900 Hz as the world's clock slows to 0.2, in in 30 ms and out over 250.
+// - `pause` holds the world where it is, tails and all, and leaves the music on, quieter and darker.
+// - A line takes the music and the effects down by its voice's loudness, which its sound's mouth curve
+//   carries, and lets them back up in its pauses. The music's -9 dB was the score's own `duck_db` before.
+// - `Portable` is a phone's speaker: narrower and louder. Which one plays is a later package's (U10).
+(
+    type: "sapphire::assets::Mix",
+    version: 1,
+    data: (
+        buses: [
+            (name: "sfx"),
+            (name: "ambience"),
+            (name: "ui"),
+            (name: "music"),
+            (name: "voice"),
+        ],
+        snapshots: [
+            (
+                name: "slow_motion",
+                priority: 10,
+                attack: 0.03,
+                release: 0.25,
+                driver: WorldTimeScale(floor: 0.2),
+                buses: [
+                    (bus: "sfx", low_pass_hz: Some(900.0), pitch: Some(0.75)),
+                    (bus: "ambience", low_pass_hz: Some(900.0), pitch: Some(0.75)),
+                ],
+            ),
+            (
+                name: "pause",
+                priority: 20,
+                attack: 0.05,
+                release: 0.2,
+                buses: [
+                    (bus: "sfx", pause: true),
+                    (bus: "ambience", pause: true),
+                    (bus: "voice", pause: true),
+                    (bus: "music", gain_db: -6.0, low_pass_hz: Some(2000.0)),
+                ],
+            ),
+        ],
+        ducking: [
+            (
+                when: "voice",
+                follow: Envelope(full_at: 0.5),
+                attack: 0.02,
+                release: 0.03,
+                duck: [
+                    (bus: "music", gain_db: -9.0),
+                    (bus: "sfx", gain_db: -4.0),
+                    (bus: "ambience", gain_db: -6.0),
+                ],
+            ),
+        ],
+        profiles: [
+            (profile: Home),
+            (
+                profile: Portable,
+                volume_db: 2.0,
+                effects: [Compressor(threshold_db: -18.0, ratio: 3.0, attack_ms: 10.0, release_ms: 120.0, makeup_db: 4.0)],
+            ),
+        ],
+    ),
+)

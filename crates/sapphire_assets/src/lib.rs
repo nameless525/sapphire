@@ -125,6 +125,7 @@ mod kind;
 pub mod manifest;
 pub mod material;
 pub mod mesh;
+pub mod mix;
 pub mod motion;
 pub mod mouth;
 pub mod pack;

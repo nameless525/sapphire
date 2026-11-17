@@ -124,6 +124,7 @@ impl TextureKind {
             | ImportSettings::Cue(_)
             | ImportSettings::Score(_)
             | ImportSettings::VoiceLines(_)
+            | ImportSettings::Mix(_)
             | ImportSettings::Font(_)
             | ImportSettings::FontChains(_)
             | ImportSettings::MoveSet(_)

@@ -95,6 +95,7 @@ use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
 use sapphire_assets::manifest::{self, Manifest};
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, Mesh};
+use sapphire_assets::mix::Mix;
 use sapphire_assets::motion::Motion;
 use sapphire_assets::pack;
 use sapphire_assets::probes::{ArchivedProbeGrid, ProbeGrid};
@@ -2856,6 +2857,24 @@ impl Content {
             .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
             .map_err(|error| failed(&error))?;
         Ok(self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?.to_owned_lines())
+    }
+
+    /// Loads the mix `id` (M6 U2), checked as its cook checked it.
+    pub(crate) fn load_mix(
+        &mut self,
+        id: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Mix, AppInitError> {
+        let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("the mix {id}: {error}"));
+        self.mount_audio().map_err(|error| failed(&error))?;
+        let assets = &mut self.gpu;
+        let handle =
+            self.server.load_with::<Mix>(id, LoadPriority::Critical).map_err(|error| failed(&error))?;
+        self.server
+            .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
+            .map_err(|error| failed(&error))?;
+        Ok(self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?.to_mix())
     }
 
     fn mount_audio(&mut self) -> Result<(), MountError> {

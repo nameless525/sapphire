@@ -6,10 +6,11 @@ use std::path::Path;
 use cpal::Sample;
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
+use sapphire_assets::mix::Mix;
 use sapphire_assets::sound::{DecodedSound, Sound, decode_vorbis};
 use sapphire_audio::{
-    AudioBackend, AudioFrame, AudioSystem, BusParams, CueRequest, CueRng, CueTarget, DeviceState,
-    KiraBackend, Listener, OfflineOutput, SnapshotTuning, VoiceParams, VoiceSlot,
+    AudioBackend, AudioFrame, AudioSystem, BusId, BusParams, CueRequest, CueRng, CueTarget, DeviceState,
+    KiraBackend, Listener, OfflineOutput, VoiceParams, VoiceSlot,
 };
 use sapphire_math::Vec3;
 
@@ -68,14 +69,23 @@ fn frequency_of(samples: &[f32]) -> f32 {
     rising as f32 * RATE as f32 / samples.len() as f32
 }
 
+/// The game's mix, as shipped: its `slow_motion` filters the world's buses.
+fn shipped() -> Mix {
+    Mix::from_document(include_str!("../../../content/audio/game.mix.ron")).unwrap()
+}
+
 fn mixer(sound: &DecodedSound) -> KiraBackend<OfflineOutput> {
     let mut backend = KiraBackend::<OfflineOutput>::new(RATE).expect("an offline mixer");
+    backend.set_mix(&shipped());
     backend.add_sound(SOUND, sound);
     backend
 }
 
+const SFX: BusId = BusId::category(Bus::Sfx);
+const UI: BusId = BusId::category(Bus::Ui);
+
 fn start(backend: &mut KiraBackend<OfflineOutput>, params: VoiceParams) {
-    backend.start_voice(VoiceSlot(0), SOUND, Bus::Sfx, params, false).expect("a voice");
+    backend.start_voice(VoiceSlot(0), SOUND, SFX, params, false).expect("a voice");
 }
 
 /// `seconds` of output, as interleaved stereo.
@@ -90,7 +100,7 @@ fn a_low_pass_really_takes_out_the_high_frequencies() {
     let sound = tones(&[LOW, HIGH], 1.0);
     let heard = |low_pass: BusParams| {
         let mut backend = mixer(&sound);
-        backend.set_bus(Bus::Sfx, low_pass);
+        backend.set_bus(SFX, low_pass);
         start(&mut backend, NEUTRAL);
         // Past the filter's move.
         let _settle = render(&mut backend, 0.1);
@@ -109,11 +119,11 @@ fn a_low_pass_really_takes_out_the_high_frequencies() {
 }
 
 #[test]
-fn only_the_world_buses_have_a_low_pass() {
+fn only_the_buses_a_snapshot_filters_have_a_low_pass() {
     let sound = tones(&[8_000.0], 0.6);
     let mut backend = mixer(&sound);
-    backend.set_bus(Bus::Ui, BusParams { low_pass_hz: 300.0 });
-    backend.start_voice(VoiceSlot(0), SOUND, Bus::Ui, NEUTRAL, false).unwrap();
+    backend.set_bus(UI, BusParams { low_pass_hz: 300.0 });
+    backend.start_voice(VoiceSlot(0), SOUND, UI, NEUTRAL, false).unwrap();
     let _settle = render(&mut backend, 0.1);
     let out = left(&render(&mut backend, 0.3));
     assert!(db(energy_at(&out, 8_000.0) / 0.25).abs() < 1.0);
@@ -249,7 +259,7 @@ fn a_stopped_voice_ends_at_once_and_smoothly() {
 fn a_frozen_voice_ends_when_stopped() {
     let sound = tones(&[QUIET_FREE_TONE], 1.0);
     let mut backend = mixer(&sound);
-    backend.start_voice(VoiceSlot(0), SOUND, Bus::Sfx, NEUTRAL, true).expect("a voice");
+    backend.start_voice(VoiceSlot(0), SOUND, SFX, NEUTRAL, true).expect("a voice");
     assert_eq!(sounding(&render(&mut backend, 0.05)), 0);
     backend.stop_voice(VoiceSlot(0));
     assert_eq!(sounding(&render(&mut backend, 0.05)), 0);
@@ -260,7 +270,7 @@ fn a_frozen_voice_ends_when_stopped() {
 fn a_voice_started_frozen_waits() {
     let sound = tones(&[1_000.0], 0.1);
     let mut backend = mixer(&sound);
-    backend.start_voice(VoiceSlot(0), SOUND, Bus::Sfx, NEUTRAL, true).unwrap();
+    backend.start_voice(VoiceSlot(0), SOUND, SFX, NEUTRAL, true).unwrap();
     assert_eq!(sounding(&render(&mut backend, 0.3)), 0);
     backend.freeze_voice(VoiceSlot(0), false);
     assert!(sounding(&render(&mut backend, 0.3)) > 4_000);
@@ -350,7 +360,7 @@ fn a_voices_own_low_pass_takes_out_the_high_frequencies() {
     const HIGH: f32 = 8_000.0;
     let sound = tones(&[LOW, HIGH], 1.0);
     let mut backend = mixer(&sound);
-    backend.start_voice(VoiceSlot(0), SOUND, Bus::Ui, NEUTRAL, false).unwrap();
+    backend.start_voice(VoiceSlot(0), SOUND, UI, NEUTRAL, false).unwrap();
     let _settle = render(&mut backend, 0.05);
     let open = left(&render(&mut backend, 0.2));
     assert!(db(energy_at(&open, HIGH) / 0.25).abs() < 1.0, "open, the sound as authored");
@@ -419,7 +429,10 @@ mod through_the_system {
     use super::*;
 
     fn system(sound: &DecodedSound, cue: Cue) -> AudioSystem<KiraBackend<OfflineOutput>> {
-        let mut system = AudioSystem::new(mixer(sound));
+        let mut backend = KiraBackend::<OfflineOutput>::new(RATE).expect("an offline mixer");
+        backend.add_sound(SOUND, sound);
+        let mut system = AudioSystem::new(backend);
+        system.set_mix(&shipped()).unwrap();
         system.add_cue(CUE, cue);
         system
     }
@@ -452,6 +465,7 @@ mod through_the_system {
                     dt: GAME_FRAME as f32 / RATE as f32,
                     listener: Listener::default(),
                     world_time_scale: time_scale,
+                    snapshots: &[],
                     emitters: &[],
                     cues,
                     lines: &[],
@@ -467,7 +481,8 @@ mod through_the_system {
 
     #[test]
     fn slow_motion_really_bends_and_darkens_the_world() {
-        let tuning = SnapshotTuning::default();
+        // The shipped mix's `slow_motion`.
+        let (floor_scale, floor_pitch) = (0.2, 0.75);
         let (low, high) = (500.0, 8_000.0);
         let sound = tones(&[low, high], 3.0);
         let mut normal = system(&sound, cue());
@@ -477,9 +492,9 @@ mod through_the_system {
         assert!(energy_at(&at_speed, high) > 0.2);
 
         let mut slowed = system(&sound, cue());
-        let dodge = tail(&left(&run(&mut slowed, Some(CueTarget::Flat), tuning.floor_scale, 30)));
+        let dodge = tail(&left(&run(&mut slowed, Some(CueTarget::Flat), floor_scale, 30)));
         // Both tones go down by the floor's pitch, and the upper one nearly away.
-        let (low_there, high_there) = (low * tuning.floor_pitch, high * tuning.floor_pitch);
+        let (low_there, high_there) = (low * floor_pitch, high * floor_pitch);
         assert!(energy_at(&dodge, low_there) > 0.15, "{}", energy_at(&dodge, low_there));
         assert!(energy_at(&dodge, low) < 0.02, "{}", energy_at(&dodge, low));
         let drop = db(energy_at(&at_speed, high) / energy_at(&dodge, high_there));
@@ -552,7 +567,7 @@ mod through_the_system {
     }
 
     /// A cue on the music bus (M4 A8) takes the player's volume once: the bus carries it for the score's stems
-    /// (`follow_music_gain`), so the voice itself mustn't take it too. At a music volume of a half, and every
+    /// (`follow_bus_gains`), so the voice itself mustn't take it too. At a music volume of a half, and every
     /// sound's a half, it's 12 dB down, not 24.
     #[test]
     fn a_cue_on_the_music_bus_takes_the_players_volume_once() {

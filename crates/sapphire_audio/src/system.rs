@@ -5,17 +5,22 @@ use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, Bus, Cue, HitstopResponse, SILENCE_DB};
+use sapphire_assets::mix::{DuckFollow, Mix, MixError, OutputProfile};
+use sapphire_assets::mouth::MouthCurve;
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::DecodedSound;
 use sapphire_assets::voice::VoiceLines;
+use sapphire_core::Name;
 use sapphire_math::Vec3;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
-use crate::backend::{AudioBackend, DeviceState, DeviceStatus, StartError, VoiceParams, VoiceSlot};
+use crate::backend::{
+    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, StartError, VoiceParams, VoiceSlot,
+};
+use crate::mix::MixState;
 use crate::music::{Music, MusicRequest};
 use crate::rng::CueRandom;
-use crate::snapshot::{ClockSnapshot, SnapshotMix, SnapshotTuning};
 use crate::voice::{LineKey, VoiceRoute, VoiceRouteError};
 
 /// Voices playing at once. A duel's sounds are short and few; past this a request is dropped and
@@ -33,10 +38,12 @@ const PAN_STEP: f32 = 0.005;
 /// command.
 const PITCH_STEP: f32 = 0.001;
 
-/// How fast the music goes down under a voice line or the player's volume, ...
-pub(crate) const DUCK_ATTACK: Duration = Duration::from_millis(80);
-/// ... and comes back after it: slower, so that a pause between two lines doesn't pump.
-pub(crate) const DUCK_RELEASE: Duration = Duration::from_millis(400);
+/// How long a bus's gain takes to reach what a frame asks: enough to hide the steps between frames. How fast
+/// a duck or a snapshot moves is the mix's own.
+pub(crate) const BUS_FADE: Duration = Duration::from_millis(30);
+
+/// The name a game asks for its pause snapshot by: the shipped mix's, which holds the world where it is.
+pub const PAUSE_SNAPSHOT: Name = Name::new("pause");
 
 /// An actor sounds can be attached to, named however the caller likes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -127,8 +134,12 @@ pub struct AudioFrame<'a> {
     /// Real seconds since the last frame.
     pub dt: f32,
     pub listener: Listener,
-    /// The world clock's speed: 1 is normal, and less drives the snapshot.
+    /// The world clock's speed: 1 is normal, and less drives the mix's snapshots that follow it
+    /// ([`SnapshotDriver::WorldTimeScale`](sapphire_assets::mix::SnapshotDriver::WorldTimeScale)).
     pub world_time_scale: f32,
+    /// The snapshots the game asks for by name this frame (M6 U2): [`PAUSE_SNAPSHOT`] while it's paused. A name
+    /// the mix hasn't does nothing.
+    pub snapshots: &'a [Name],
     /// The emitters that exist this frame.
     pub emitters: &'a [Emitter],
     /// The cues to start this frame.
@@ -206,8 +217,14 @@ impl Default for Volumes {
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     slot: VoiceSlot,
+    sound: AssetId,
     place: Place,
+    /// Its category, whose bus it plays on.
     bus: Bus,
+    /// How far into its sound it has played, by the system's own count of the real seconds it has played,
+    /// never asked of the audio thread: what a ducking rule reads its mouth curve at (M6 U2), and a
+    /// conversation's playhead (M5 C6).
+    seconds: f64,
     attenuation: Option<Attenuation>,
     hitstop: HitstopResponse,
     /// The gain and pitch the cue picked.
@@ -228,8 +245,14 @@ struct Speech {
     serial: u64,
     /// The voice saying it and its sound, until it ends or is cut: none if it never started.
     voice: Option<(VoiceSlot, AssetId)>,
-    /// How far in, in seconds of the sound.
-    seconds: f64,
+}
+
+/// What a bus was last sent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SentBus {
+    gain_db: f32,
+    low_pass_hz: f32,
+    paused: bool,
 }
 
 /// A tracked emitter.
@@ -249,14 +272,18 @@ pub struct AudioSystem<B: AudioBackend> {
     /// Slots no voice holds, as a stack.
     free_slots: Vec<VoiceSlot>,
     emitters: Vec<Tracked>,
-    snapshot: ClockSnapshot,
-    mix: SnapshotMix,
+    /// The mix's snapshots and ducking rules, as they stand (M6 U2).
+    mix: MixState,
+    /// Each bus as last sent, by place.
+    sent: Vec<SentBus>,
+    /// Each ducking rule's level this frame, 0 to 1.
+    levels: Vec<f32>,
+    /// The mouth curves of the sounds that have one, which ducking rules follow (M6 U2).
+    mouths: HashMap<AssetId, MouthCurve>,
     music: Music,
     voice: VoiceRoute,
     /// The conversation's line (M5 C6).
     speech: Option<Speech>,
-    /// The music bus's gain, as last sent: the player's volume, and down under a voice line.
-    music_gain_db: f32,
     background: bool,
     interrupted: bool,
     /// What the player's volume takes off every voice.
@@ -270,24 +297,22 @@ pub struct AudioSystem<B: AudioBackend> {
 }
 
 impl<B: AudioBackend> AudioSystem<B> {
-    /// A system with nothing loaded, on `backend`, under the default snapshot.
+    /// A system with nothing loaded, on `backend`, under [`Mix::plain`] until [`Self::set_mix`].
     pub fn new(backend: B) -> Self {
-        Self::with_tuning(backend, SnapshotTuning::default())
-    }
-
-    pub fn with_tuning(backend: B, tuning: SnapshotTuning) -> Self {
+        let plain = Mix::plain();
         Self {
             backend,
             cues: HashMap::new(),
             voices: Vec::with_capacity(MAX_VOICES),
             free_slots: (0..MAX_VOICES as u32).rev().map(VoiceSlot).collect(),
             emitters: Vec::with_capacity(MAX_EMITTERS),
-            snapshot: ClockSnapshot::new(tuning),
-            mix: SnapshotMix::NEUTRAL,
+            sent: sent_of(&plain),
+            levels: Vec::new(),
+            mix: MixState::new(&plain),
+            mouths: HashMap::new(),
             music: Music::default(),
             voice: VoiceRoute::new(),
             speech: None,
-            music_gain_db: 0.0,
             background: false,
             interrupted: false,
             volume_db: 0.0,
@@ -304,6 +329,37 @@ impl<B: AudioBackend> AudioSystem<B> {
 
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
+    }
+
+    /// Plays everything through `mix` from now on (M6 U2): its buses, snapshots, ducking rules and profiles,
+    /// under the `Home` profile. Load-time work, before the music and voices it's for: what plays ends, and
+    /// music starts again at its next request. A mix that doesn't check changes nothing.
+    pub fn set_mix(&mut self, mix: &Mix) -> Result<(), MixError> {
+        mix.check()?;
+        self.stop_voices();
+        self.backend.set_mix(mix);
+        self.music.forget_playing();
+        self.mix = MixState::new(mix);
+        self.sent = sent_of(mix);
+        self.levels = vec![0.0; mix.ducking.len()];
+        Ok(())
+    }
+
+    /// Plays the mix through `profile`'s volume and effects (M6 U2), or `Home`'s if the mix has none for it.
+    pub fn set_output_profile(&mut self, profile: OutputProfile) {
+        self.backend.set_output_profile(profile);
+    }
+
+    /// Gives a sound's mouth curve, for the ducking rules that follow a voice line's envelope (M6 U2). Load-time
+    /// work, beside [`Self::add_sound`].
+    pub fn add_mouth(&mut self, sound: AssetId, mouth: MouthCurve) {
+        self.mouths.insert(sound, mouth);
+    }
+
+    /// The mouth curve given for `sound`, if any: what a face reads at [`Speaking::seconds`].
+    #[must_use]
+    pub fn mouth(&self, sound: AssetId) -> Option<&MouthCurve> {
+        self.mouths.get(&sound)
     }
 
     /// Makes a cue playable. Load-time work, as is [`Self::add_sound`] for each of its sounds.
@@ -411,8 +467,9 @@ impl<B: AudioBackend> AudioSystem<B> {
     #[must_use]
     pub fn speaking(&self) -> Option<Speaking> {
         let speech = self.speech?;
-        let (_, sound) = speech.voice?;
-        Some(Speaking { serial: speech.serial, sound, seconds: speech.seconds as f32 })
+        let (slot, sound) = speech.voice?;
+        let seconds = self.voices.iter().find(|voice| voice.slot == slot).map_or(0.0, |voice| voice.seconds);
+        Some(Speaking { serial: speech.serial, sound, seconds: seconds as f32 })
     }
 
     /// The counters, as of the last [`Self::update`].
@@ -425,8 +482,8 @@ impl<B: AudioBackend> AudioSystem<B> {
         std::mem::take(&mut self.stats.update_peak)
     }
 
-    /// One frame: takes the emitters, moves the snapshot, starts the frame's cues and lines, follows
-    /// the music's phase, and brings every voice and the ducking up to date. Picks come from `random`,
+    /// One frame: takes the emitters, moves the mix's snapshots and ducks, starts the frame's cues and lines,
+    /// follows the music's phase, and brings every voice and bus up to date. Picks come from `random`,
     /// in request order, lines after cues: one number for the sound, one for the volume, one for the
     /// pitch, whatever the cue's ranges.
     pub fn update(&mut self, frame: &AudioFrame<'_>, random: &mut impl CueRandom) {
@@ -443,9 +500,10 @@ impl<B: AudioBackend> AudioSystem<B> {
         if state == DeviceState::Running {
             self.reap_voices();
         }
-        self.advance_speech(frame.dt, state);
+        self.advance_voices(frame.dt, state);
+        self.advance_speech();
         self.track_emitters(frame.emitters);
-        self.step_snapshot(frame);
+        self.step_mix(frame);
         for request in frame.cues {
             if state.plays() {
                 self.start_cue(request, &frame.listener, random, false);
@@ -476,7 +534,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         if state.plays() {
             self.update_voices(&frame.listener);
         }
-        self.follow_music_gain();
+        self.follow_bus_gains(frame.dt);
 
         self.stats.voices = self.voices.len() as u32;
         self.stats.update = timer.elapsed();
@@ -524,29 +582,46 @@ impl<B: AudioBackend> AudioSystem<B> {
         });
     }
 
-    fn step_snapshot(&mut self, frame: &AudioFrame<'_>) {
-        let mix = self.snapshot.step(frame.world_time_scale, frame.dt);
-        if mix.bus != self.mix.bus {
-            for bus in Bus::ALL {
-                if bus.follows_world_clock() {
-                    self.backend.set_bus(bus, mix.bus);
-                }
+    /// Moves every voice's playhead on by the real seconds since the last update, as fast as it plays, unless it
+    /// waits: frozen or held, on a paused bus, or the output not running.
+    fn advance_voices(&mut self, dt: f32, state: DeviceState) {
+        if state != DeviceState::Running || !(dt > 0.0 && dt.is_finite()) {
+            return;
+        }
+        for voice in &mut self.voices {
+            if !voice.stopped && !voice.frozen && !self.mix.now(BusId::category(voice.bus).index()).held {
+                voice.seconds += f64::from(dt) * f64::from(voice.sent.pitch);
             }
         }
-        self.mix = mix;
     }
 
-    /// Moves the conversation's line on by the real seconds since the last update, as fast as its voice plays,
-    /// unless the voice waits (held, frozen, or the output not running). A voice that has finished ends it.
-    fn advance_speech(&mut self, dt: f32, state: DeviceState) {
+    /// Ends the conversation's line once its voice has.
+    fn advance_speech(&mut self) {
         let Some(speech) = &mut self.speech else { return };
         let Some((slot, _)) = speech.voice else { return };
-        let Some(voice) = self.voices.iter().find(|voice| voice.slot == slot && !voice.stopped) else {
+        if !self.voices.iter().any(|voice| voice.slot == slot && !voice.stopped) {
             speech.voice = None;
-            return;
-        };
-        if state == DeviceState::Running && !voice.frozen && dt > 0.0 && dt.is_finite() {
-            speech.seconds += f64::from(dt) * f64::from(voice.sent.pitch);
+        }
+    }
+
+    /// Moves the mix's snapshots toward what the frame asks, and sends each bus's filter and pause where they
+    /// changed: before the frame's voices start, so they start bent as the bus is.
+    fn step_mix(&mut self, frame: &AudioFrame<'_>) {
+        self.mix.step_snapshots(frame.snapshots, frame.world_time_scale, frame.dt);
+        for (bus, sent) in self.sent.iter_mut().enumerate() {
+            let now = self.mix.now(bus);
+            if self.mix.filtered(bus) && now.low_pass_hz != sent.low_pass_hz {
+                self.backend.set_bus(BusId(bus as u16), BusParams { low_pass_hz: now.low_pass_hz });
+                sent.low_pass_hz = now.low_pass_hz;
+            }
+            if now.paused != sent.paused {
+                self.backend.pause_bus(
+                    BusId(bus as u16),
+                    now.paused,
+                    Duration::from_secs_f32(now.pause_fade),
+                );
+                sent.paused = now.paused;
+            }
         }
     }
 
@@ -576,7 +651,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             self.backend.stop_voice(slot);
         }
         let Some(asked) = asked else { return };
-        let mut speech = Speech { serial: asked.serial, voice: None, seconds: 0.0 };
+        let mut speech = Speech { serial: asked.serial, voice: None };
         match self.voice.line(asked.line) {
             None => self.stats.lines_missing += 1,
             Some(cue) => {
@@ -627,8 +702,10 @@ impl<B: AudioBackend> AudioSystem<B> {
         let [slow, fast] = cue.pitch;
         let mut voice = Voice {
             slot,
+            sound,
             place,
             bus: cue.bus,
+            seconds: 0.0,
             attenuation: cue.attenuation,
             hitstop: cue.hitstop,
             gain_db: quiet + (loud - quiet) * volume,
@@ -640,7 +717,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         };
         voice.frozen = self.is_frozen(&voice);
         voice.sent = self.params_of(&voice, listener);
-        match self.backend.start_voice(slot, sound, voice.bus, voice.sent, voice.frozen) {
+        match self.backend.start_voice(slot, sound, BusId::category(voice.bus), voice.sent, voice.frozen) {
             Ok(()) => {
                 self.voices.push(voice);
                 self.stats.cues_played += 1;
@@ -690,17 +767,41 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
     }
 
-    /// Keeps the music at the player's volume, as every voice is, and takes it further down while a voice
-    /// line plays. Its stems' gains are the score's, so the volume is the bus's.
-    fn follow_music_gain(&mut self) {
-        let speaking = self.voices.iter().any(|voice| voice.bus == Bus::Voice && !voice.stopped);
-        let duck_db = if speaking { self.music.duck_db() } else { 0.0 };
-        let volume_db = self.volume_db + self.bus_volume_db[Bus::Music.index()];
-        let gain_db = (volume_db + duck_db).max(SILENCE_DB);
-        if gain_db != self.music_gain_db {
-            let fade = if gain_db < self.music_gain_db { DUCK_ATTACK } else { DUCK_RELEASE };
-            self.backend.set_bus_gain(Bus::Music, gain_db, fade);
-            self.music_gain_db = gain_db;
+    /// Moves the ducks toward the voices playing now, the frame's among them, and brings each bus's gain to its own
+    /// volume with the snapshots' and the ducks' on top. The music's carries the
+    /// player's volume too, as every voice does, since its stems' gains are the score's. A gain moving sends
+    /// only steps a voice would; one come to rest is sent exactly.
+    fn follow_bus_gains(&mut self, dt: f32) {
+        let (mix, voices, mouths) = (&self.mix, &self.voices, &self.mouths);
+        for (level, (when, follow)) in self.levels.iter_mut().zip(mix.rules()) {
+            // The loudest of the rule's voices: a line by its mouth at its playhead, anything else by being there.
+            *level = voices
+                .iter()
+                .filter(|voice| {
+                    let bus = BusId::category(voice.bus).index();
+                    !voice.stopped && !voice.frozen && mix.is_under(bus, when) && !mix.now(bus).held
+                })
+                .map(|voice| match (follow, mouths.get(&voice.sound)) {
+                    (DuckFollow::Envelope { full_at }, Some(mouth)) => {
+                        (mouth.at(voice.seconds as f32).open / full_at).min(1.0)
+                    }
+                    _ => 1.0,
+                })
+                .fold(0.0, f32::max);
+        }
+        self.mix.step_ducks(&self.levels, dt);
+        let music = BusId::category(Bus::Music).index();
+        for (bus, sent) in self.sent.iter_mut().enumerate() {
+            let player_db =
+                if bus == music { self.volume_db + self.bus_volume_db[Bus::Music.index()] } else { 0.0 };
+            let rest_db = (self.mix.volume_db(bus) + player_db).max(SILENCE_DB);
+            let gain_db = (rest_db + self.mix.now(bus).gain_db).max(SILENCE_DB);
+            let moved = (gain_db - sent.gain_db).abs() > GAIN_STEP_DB
+                || (gain_db == rest_db && gain_db != sent.gain_db);
+            if moved {
+                self.backend.set_bus_gain(BusId(bus as u16), gain_db, BUS_FADE);
+                sent.gain_db = gain_db;
+            }
         }
     }
 
@@ -720,7 +821,7 @@ impl<B: AudioBackend> AudioSystem<B> {
                 .find(|tracked| tracked.emitter.id == id)
                 .map(|tracked| tracked.emitter.position),
         };
-        // The music bus carries the player's volume itself, for the score's stems ([`Self::follow_music_gain`]),
+        // The music bus carries the player's volume itself, for the score's stems ([`Self::follow_bus_gains`]),
         // so a cue on it takes it there and not again here (M4 A8).
         let volume_db = match voice.bus {
             Bus::Music => 0.0,
@@ -740,9 +841,21 @@ impl<B: AudioBackend> AudioSystem<B> {
         {
             gain_db += db;
         }
-        let pitch = if voice.bus.follows_world_clock() { voice.pitch * self.mix.pitch } else { voice.pitch };
+        let pitch = voice.pitch * self.mix.now(BusId::category(voice.bus).index()).pitch;
         VoiceParams { gain_db, pan, pitch, ..VoiceParams::NEUTRAL }
     }
+}
+
+/// Each of `mix`'s buses as a new mixer has it: at its own volume, open and playing.
+fn sent_of(mix: &Mix) -> Vec<SentBus> {
+    mix.buses
+        .iter()
+        .map(|bus| SentBus {
+            gain_db: bus.volume_db.max(SILENCE_DB),
+            low_pass_hz: f32::INFINITY,
+            paused: false,
+        })
+        .collect()
 }
 
 /// A share of full volume in decibels. Below [`SILENCE_DB`] the mixer's silent anyway, and it's finite
@@ -773,7 +886,6 @@ mod tests {
     use sapphire_assets::cue::AttenuationCurve;
 
     use super::*;
-    use crate::backend::BusParams;
     use crate::mock::{MockBackend, MockCall};
     use crate::rng::CueRng;
 
@@ -820,12 +932,22 @@ mod tests {
             dt: FRAME,
             listener: Listener::default(),
             world_time_scale: 1.0,
+            snapshots: &[],
             emitters,
             cues,
             lines: &[],
             speech: None,
             music: None,
         }
+    }
+
+    /// The game's mix, as shipped.
+    fn shipped() -> Mix {
+        Mix::from_document(include_str!("../../../content/audio/game.mix.ron")).unwrap()
+    }
+
+    fn music_bus() -> BusId {
+        BusId::category(Bus::Music)
     }
 
     fn play(target: CueTarget) -> [CueRequest; 1] {
@@ -936,11 +1058,10 @@ mod tests {
         system.set_volume(0.5);
         system.update(&frame(&[], &[]), &mut rng);
         let calls = system.backend_mut().take_calls();
-        let [MockCall::SetVoice { params, .. }, MockCall::SetBusGain { bus: Bus::Music, gain_db, .. }] =
-            calls[..]
-        else {
+        let [MockCall::SetVoice { params, .. }, MockCall::SetBusGain { bus, gain_db, .. }] = calls[..] else {
             panic!("{calls:?}")
         };
+        assert_eq!(bus, music_bus());
         assert!((params.gain_db + 6.02).abs() < 0.01, "{params:?}");
         assert_eq!(gain_db, params.gain_db, "the music with it");
         system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
@@ -964,17 +1085,17 @@ mod tests {
         system.set_volumes(Volumes { voice: 0.1, music: 0.1, ..Volumes::FULL });
         system.update(&frame(&[], &[]), &mut rng);
         let calls = system.backend_mut().take_calls();
-        let [MockCall::SetBusGain { bus: Bus::Music, gain_db, .. }] = calls[..] else { panic!("{calls:?}") };
+        let [MockCall::SetBusGain { bus, gain_db, .. }] = calls[..] else { panic!("{calls:?}") };
+        assert_eq!(bus, music_bus());
         assert!((gain_db + 20.0).abs() < 0.01, "{gain_db}");
         // The effects' and every sound's add up.
         system.set_volumes(Volumes { all: 0.5, effects: 0.5, ..Volumes::FULL });
         system.update(&frame(&[], &[]), &mut rng);
         let calls = system.backend_mut().take_calls();
-        let [MockCall::SetVoice { params, .. }, MockCall::SetBusGain { bus: Bus::Music, gain_db, .. }] =
-            calls[..]
-        else {
+        let [MockCall::SetVoice { params, .. }, MockCall::SetBusGain { bus, gain_db, .. }] = calls[..] else {
             panic!("{calls:?}")
         };
+        assert_eq!(bus, music_bus());
         assert!((params.gain_db + 12.04).abs() < 0.01, "{params:?}");
         assert!((gain_db + 6.02).abs() < 0.01, "the music under every sound's alone: {gain_db}");
         assert_eq!(Volumes::default(), Volumes::FULL);
@@ -1091,8 +1212,10 @@ mod tests {
 
     #[test]
     fn a_time_scale_below_one_dips_the_world_but_not_the_interface() {
-        let tuning = SnapshotTuning::default();
+        // The shipped mix's `slow_motion`: v0.2.0's numbers.
+        let (floor_scale, floor_low_pass_hz, floor_pitch) = (0.2, 900.0, 0.75);
         let mut system = system_with(plain_cue());
+        system.set_mix(&shipped()).unwrap();
         let ui = AssetId::from_text("22222222-2222-4333-8444-555555555555");
         system.add_cue(ui, Cue { bus: Bus::Ui, ..plain_cue() });
         let mut rng = CueRng::new(1);
@@ -1104,19 +1227,19 @@ mod tests {
         let calls = system.backend_mut().take_calls();
         assert!(!calls.iter().any(|call| matches!(call, MockCall::SetBus { .. })), "{calls:?}");
 
-        let slow = AudioFrame { world_time_scale: tuning.floor_scale, ..frame(&[], &[]) };
+        let slow = AudioFrame { world_time_scale: floor_scale, ..frame(&[], &[]) };
         for _ in 0..600 {
             system.update(&slow, &mut rng);
         }
         let calls = system.backend_mut().take_calls();
         let last_of_bus = |bus: Bus| {
             calls.iter().rev().find_map(|call| match *call {
-                MockCall::SetBus { bus: seen, params } if seen == bus => Some(params),
+                MockCall::SetBus { bus: seen, params } if seen == BusId::category(bus) => Some(params),
                 _ => None,
             })
         };
         let low_pass = last_of_bus(Bus::Sfx).expect("the world's bus dips").low_pass_hz;
-        assert!((low_pass - tuning.floor_low_pass_hz).abs() < 1.0, "{low_pass}");
+        assert!((low_pass - floor_low_pass_hz).abs() < 1.0, "{low_pass}");
         assert_eq!(last_of_bus(Bus::Ambience).map(|params| params.low_pass_hz), Some(low_pass));
         assert_eq!(last_of_bus(Bus::Ui), None, "the interface stays as it is");
 
@@ -1127,20 +1250,142 @@ mod tests {
             })
         };
         let world = last_of_voice(VoiceSlot(0)).expect("the world's voice bends");
-        assert!((world.pitch - tuning.floor_pitch).abs() < 2e-3, "{world:?}");
+        assert!((world.pitch - floor_pitch).abs() < 2e-3, "{world:?}");
         assert_eq!(last_of_voice(VoiceSlot(1)), None, "the interface's doesn't");
 
         // A voice started in the dip starts dipped.
         let cues = play(CueTarget::Flat);
         system.update(&AudioFrame { cues: &cues, ..slow }, &mut rng);
-        assert!((started(&mut system).pitch - tuning.floor_pitch).abs() < 2e-3);
+        assert!((started(&mut system).pitch - floor_pitch).abs() < 2e-3);
 
         // Back at speed, everything comes all the way back.
         for _ in 0..600 {
             system.update(&frame(&[], &[]), &mut rng);
         }
         let calls = system.backend_mut().take_calls();
-        assert!(calls.contains(&MockCall::SetBus { bus: Bus::Sfx, params: BusParams::OPEN }), "{calls:?}");
+        let open = MockCall::SetBus { bus: BusId::category(Bus::Sfx), params: BusParams::OPEN };
+        assert!(calls.contains(&open), "{calls:?}");
+    }
+
+    /// M6 U2: a mix that doesn't check changes nothing, and one that does ends what played on the last.
+    #[test]
+    fn a_mix_is_checked_before_it_replaces_the_last() {
+        let mut system = system_with(plain_cue());
+        let mut rng = CueRng::new(1);
+        system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
+        system.backend_mut().take_calls();
+        let mut bad = shipped();
+        bad.buses[0].volume_db = f32::NAN;
+        assert!(system.set_mix(&bad).is_err());
+        assert_eq!(system.backend_mut().take_calls(), []);
+        system.set_mix(&shipped()).unwrap();
+        let buses = shipped().buses.len();
+        assert_eq!(
+            system.backend_mut().take_calls(),
+            [MockCall::StopVoice { slot: VoiceSlot(0) }, MockCall::SetMix { buses }]
+        );
+        system.set_output_profile(OutputProfile::Portable);
+        assert_eq!(system.backend_mut().take_calls(), [MockCall::SetOutputProfile(OutputProfile::Portable)]);
+    }
+
+    /// M6 U2: the shipped `pause` holds the world's buses and the voices', fading as it says, and lets them go on;
+    /// a voice on a held bus keeps its playhead where it is.
+    #[test]
+    fn the_pause_snapshot_holds_the_world_and_lets_it_go() {
+        let mut system = speaker(1.0);
+        system.set_mix(&shipped()).unwrap();
+        let mut rng = CueRng::new(1);
+        say(&mut system, greet(1, false), &mut rng);
+        say(&mut system, greet(1, false), &mut rng);
+        system.backend_mut().take_calls();
+        let paused = [PAUSE_SNAPSHOT];
+        system
+            .update(&AudioFrame { snapshots: &paused, speech: greet(1, false), ..frame(&[], &[]) }, &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let pauses: Vec<_> = calls
+            .iter()
+            .filter_map(|call| match *call {
+                MockCall::PauseBus { bus, paused, fade } => Some((bus, paused, fade)),
+                _ => None,
+            })
+            .collect();
+        let attack = Duration::from_secs_f32(0.05);
+        let world = [Bus::Sfx, Bus::Ambience, Bus::Voice].map(|bus| (BusId::category(bus), true, attack));
+        assert_eq!(pauses, world, "{calls:?}");
+        let held = seconds(&system).unwrap();
+        for _ in 0..10 {
+            system.update(
+                &AudioFrame { snapshots: &paused, speech: greet(1, false), ..frame(&[], &[]) },
+                &mut rng,
+            );
+        }
+        assert_eq!(seconds(&system), Some(held), "the line waits with its bus");
+        assert!(!system.backend().calls().iter().any(|call| matches!(call, MockCall::PauseBus { .. })));
+        // The music goes down and darkens rather than stopping.
+        let music = system.backend().calls().iter().rev().find_map(|call| match *call {
+            MockCall::SetBus { bus, params } if bus == music_bus() => Some(params.low_pass_hz),
+            _ => None,
+        });
+        assert!(music.is_some_and(|hz| hz < 2_500.0), "{music:?}");
+        system.backend_mut().take_calls();
+        say(&mut system, greet(1, false), &mut rng);
+        let release = Duration::from_secs_f32(0.2);
+        let resumed = system.backend_mut().take_calls();
+        for bus in [Bus::Sfx, Bus::Ambience, Bus::Voice] {
+            let call = MockCall::PauseBus { bus: BusId::category(bus), paused: false, fade: release };
+            assert!(resumed.contains(&call), "{resumed:?}");
+        }
+        say(&mut system, greet(1, false), &mut rng);
+        assert!(seconds(&system).unwrap() > held);
+    }
+
+    /// M6 U2: a ducking rule takes its buses down while a line's mouth is open, by how open, and lets them back up
+    /// in a gap; a voice with no mouth curve ducks them all the way while it plays.
+    #[test]
+    fn a_line_ducks_the_music_by_its_mouth_and_lets_it_up_in_a_gap() {
+        // A line of 0.5 s spoken, 0.5 s silent, 0.5 s spoken.
+        let rate = 48_000;
+        let samples: Vec<f32> = (0..rate * 3 / 2)
+            .map(|frame| {
+                let spoken = !(rate / 2..rate).contains(&frame);
+                if spoken { 0.5 * (frame as f32 * 0.05).sin() } else { 0.0 }
+            })
+            .collect();
+        let sound = DecodedSound { sample_rate: rate as u32, channels: 1, samples };
+        let mouth = MouthCurve::analyze(&sound);
+        let mut system = speaker(1.0);
+        system.set_mix(&shipped()).unwrap();
+        system.add_mouth(SOUND_A, mouth);
+        let mut rng = CueRng::new(1);
+        let mut music_gain = 0.0;
+        let mut gains = Vec::new();
+        for _ in 0..80 {
+            say(&mut system, greet(1, false), &mut rng);
+            for call in system.backend_mut().take_calls() {
+                if let MockCall::SetBusGain { bus, gain_db, .. } = call
+                    && bus == music_bus()
+                {
+                    music_gain = gain_db;
+                }
+            }
+            gains.push(music_gain);
+        }
+        // Down by the rule's 9 dB while it speaks, back up in the gap, and down again.
+        let at = |seconds: f32| gains[(seconds * 60.0) as usize];
+        assert!((at(0.4) + 9.0).abs() < 0.2, "{gains:?}");
+        assert!(at(0.9) > -0.5, "{gains:?}");
+        assert!((at(1.3) + 9.0).abs() < 0.2, "{gains:?}");
+        // With no curve, the line's presence is enough.
+        let mut system = speaker(1.0);
+        system.set_mix(&shipped()).unwrap();
+        for _ in 0..30 {
+            say(&mut system, greet(1, false), &mut rng);
+        }
+        let last = system.backend().calls().iter().rev().find_map(|call| match *call {
+            MockCall::SetBusGain { bus, gain_db, .. } if bus == music_bus() => Some(gain_db),
+            _ => None,
+        });
+        assert!(last.is_some_and(|gain| (gain + 9.0).abs() < 0.1), "{last:?}");
     }
 
     #[test]

@@ -16,7 +16,8 @@
 // - `line`: a voice line by its key, said in the player's voice language from one of `voices` (M3 A1).
 //
 // `music` is the fight's `Score`, whose phase the fight's encounters choose, and `voices` its
-// `VoiceLines`, one a language, all in `content/audio/generated/` by their sidecars' IDs.
+// `VoiceLines`, one a language, all in `content/audio/generated/` by their sidecars' IDs. `mix` is the
+// `Mix` everything plays through (M6 U2), `content/audio/game.mix.ron`.
 //
 // Every number is a starting point for T2's tuning, and nobody here can hear or feel the last two.
 (
@@ -28,6 +29,7 @@
             "2d8dee05-24de-455d-87e8-b9aec0658ed6", // en
             "f654779f-b76d-405b-92c8-588b3064b11d", // ja
         ],
+        mix: Some("9786340a-c6ae-4ffb-b3cb-8ec5220b9fb3"), // game
         rows: [
             // A hit, by its weight: the cue a move's attack publishes unless it names its own.
             (

@@ -181,6 +181,7 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
             dt: FRAME,
             listener: Listener::default(),
             world_time_scale: 1.0,
+            snapshots: &[],
             emitters: &sinks.emitters,
             cues: cues.sounds(),
             lines: cues.lines(),

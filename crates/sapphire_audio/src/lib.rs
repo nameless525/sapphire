@@ -1,11 +1,11 @@
 //! Audio (spec §5.15, layer L3): cues in, sound out, with the mix in step with the game's clocks.
 //!
 //! ```text
-//! AudioFrame (plain data, once a frame): listener, emitters, world time scale, cue and line
-//!     │                                    requests, the score and its phase
-//! AudioSystem: picks variation, attenuates and pans, drives the snapshot and hitstop, routes lines
-//!     │        by the voice language, fades stems on the bar, ducks the music under a line
-//!     │  AudioBackend: plain numbers per voice and bus
+//! AudioFrame (plain data, once a frame): listener, emitters, world time scale, snapshots asked
+//!     │                                    for, cue and line requests, the score and its phase
+//! AudioSystem: picks variation, attenuates and pans, moves the mix's snapshots and ducks, drives
+//!     │        hitstop, routes lines by the voice language, fades stems on the bar
+//!     │  AudioBackend: plain numbers per voice and bus, and the mix's buses made once
 //!     ├── KiraBackend<CpalOutput>: kira's mixer on the audio device, each voice the engine's own
 //!     ├── KiraBackend<OfflineOutput>: the same mixer, rendered by a test with no device
 //!     └── MockBackend: writes down what was asked
@@ -21,16 +21,20 @@
 //! - **Cue playback** ([`AudioSystem`]): a [`Cue`](sapphire_assets::cue::Cue)'s variation, picked
 //!   from randomness the caller owns ([`CueRandom`], [`CueRng`]), and voices placed by distance and
 //!   side from the [`Listener`], following their [`Emitter`] by [`EmitterId`].
-//! - **Clock-aware audio:** the perfect-dodge snapshot ([`ClockSnapshot`]), pitch and a low-pass from
-//!   the world time scale, on the world's buses; and each actor's hitstop, which ducks or freezes
-//!   the voices attached to it as their cue says. The inputs are plain numbers per frame.
+//! - **The mix** (M6 U2): a [`Mix`](sapphire_assets::mix::Mix) document's bus tree under the five categories,
+//!   each bus's effects and reverb sends, made once on the mixer ([`AudioSystem::set_mix`]); its snapshots,
+//!   offsets to buses moved by attack, release and priority, asked for by name ([`AudioFrame::snapshots`],
+//!   [`PAUSE_SNAPSHOT`]) or following the world clock, as the perfect dodge's slow motion does; its ducking
+//!   rules, following the cooked mouth curve of each voice line at its playhead; and its output profiles
+//!   ([`AudioSystem::set_output_profile`]). With no mix given it's [`Mix::plain`](sapphire_assets::mix::Mix::plain).
+//! - **Clock-aware audio:** snapshots driven by the world time scale, and each actor's hitstop, which ducks or
+//!   freezes the voices attached to it as their cue says. The inputs are plain numbers per frame.
 //! - **Music** (M3 A1): a [`Score`](sapphire_assets::score::Score)'s stems loop together on the
 //!   music bus from one kira clock, and a phase asked for by name ([`MusicRequest`]) fades the stems
 //!   it changes on the clock's next bar line, at least [`LEAD_SECONDS`] ahead, in the mixer's own time.
 //! - **Voice lines** (M3 A1): [`VoiceRoute`] holds each language's
 //!   [`VoiceLines`](sapphire_assets::voice::VoiceLines) and answers a [`LineKey`] in the voice
-//!   language the player chose, which is not the text's; the music goes down by the score's
-//!   `duck_db` while a line plays.
+//!   language the player chose, which is not the text's; the mix's ducking rules take the music down under it.
 //! - **A conversation's line** (M5 C6): one [`SpeechRequest`] at a time, started, held by a pause and cut
 //!   by the next or by none, with its playhead counted here in the real seconds its voice has played
 //!   ([`AudioSystem::speaking`]), so a face can read the sound's mouth curve at it without asking the
@@ -62,27 +66,26 @@
 
 mod backend;
 mod kira_backend;
+mod mix;
 mod mock;
 mod music;
 mod output;
 mod rng;
-mod snapshot;
 mod system;
 mod voice;
 mod voice_sound;
 
 pub use backend::{
-    AudioBackend, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
+    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
 };
 pub use kira_backend::KiraBackend;
 pub use mock::{MockBackend, MockCall};
 pub use music::{LEAD_SECONDS, MusicRequest};
 pub use output::{CpalOutput, OfflineOutput, Output, device_opens};
 pub use rng::{CueRandom, CueRng};
-pub use snapshot::{ClockSnapshot, SnapshotMix, SnapshotTuning};
 pub use system::{
     AudioFrame, AudioStats, AudioSystem, CueRequest, CueTarget, Emitter, EmitterId, LineRequest, Listener,
-    MAX_VOICES, Speaking, SpeechRequest, Volumes,
+    MAX_VOICES, PAUSE_SNAPSHOT, Speaking, SpeechRequest, Volumes,
 };
 pub use voice::{LineKey, VoiceRoute, VoiceRouteError};
 

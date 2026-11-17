@@ -25,6 +25,7 @@ use crate::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains, FontE
 use crate::graph::{AnimGraph, GRAPH_EXTENSION, GraphError};
 use crate::material::{MATERIAL_EXTENSION, Material, MaterialError};
 use crate::mesh::{MESH_EXTENSION, Mesh, MeshError};
+use crate::mix::{MIX_EXTENSION, Mix, MixError};
 use crate::motion::{MOTION_EXTENSION, Motion, MotionError};
 use crate::probes::{PROBE_GRID_EXTENSION, ProbeGrid, ProbeGridError};
 use crate::reflections::{REFLECTIONS_EXTENSION, ReflectionProbes, ReflectionProbesError};
@@ -121,11 +122,14 @@ pub enum AssetKind {
     /// walks there, the zone's own sub-asset beside its cells. Its cast and graph are the stage's to load, so it
     /// depends on nothing, but they ship with it ([`Self::reach`]). CPU data, never uploaded.
     Ambient = 30,
+    /// A game's mix (`.smix`, M6 U2): [`Mix`], its buses, sends, snapshots, ducking and output profiles. It
+    /// names buses by path and sounds not at all, so it depends on nothing. CPU data, never uploaded.
+    Mix = 31,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -156,6 +160,7 @@ impl AssetKind {
         Self::Playable,
         Self::Motion,
         Self::Ambient,
+        Self::Mix,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -197,6 +202,7 @@ impl AssetKind {
             Self::Playable => PLAYABLE_EXTENSION,
             Self::Motion => MOTION_EXTENSION,
             Self::Ambient => AMBIENT_EXTENSION,
+            Self::Mix => MIX_EXTENSION,
         }
     }
 
@@ -233,18 +239,20 @@ impl AssetKind {
             Self::Playable => "playable kind",
             Self::Motion => "character motion",
             Self::Ambient => "ambient characters",
+            Self::Mix => "mix",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
     /// string table, a font, font chains, a navmesh, a timeline, a UI document, an encounter, a script, a
-    /// dialogue, an enemy, a score, voice lines, a playable kind or a character motion is ready once it and its
-    /// dependencies are decoded.
+    /// dialogue, an enemy, a score, voice lines, a playable kind, a character motion or a mix is ready once it and
+    /// its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
-            Self::Rig
+            Self::Mix
+                | Self::Rig
                 | Self::Skeleton
                 | Self::Clip
                 | Self::Colliders
@@ -280,11 +288,12 @@ impl AssetKind {
     /// skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
     /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores, voice lines, playable
-    /// kinds and character motions are read on the CPU only, so they stay.
+    /// kinds, character motions and mixes are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
-            Self::Material
+            Self::Mix
+                | Self::Material
                 | Self::ProbeGrid
                 | Self::Rig
                 | Self::Skeleton
@@ -378,6 +387,7 @@ impl AssetKind {
             28 => Some(Self::Playable),
             29 => Some(Self::Motion),
             30 => Some(Self::Ambient),
+            31 => Some(Self::Mix),
             _ => None,
         }
     }
@@ -389,7 +399,7 @@ impl AssetKind {
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
     /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
     /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`,
-    /// `Ambient::read`), and
+    /// `Ambient::read`, `Mix::read`), and
     /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
@@ -514,6 +524,11 @@ impl AssetKind {
                 Ambient::read(bytes)?;
                 Vec::new()
             }
+            // Its buses are paths of its own, and it names no sound.
+            Self::Mix => {
+                Mix::read(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -631,4 +646,6 @@ pub enum AssetError {
     Playable(#[from] PlayableError),
     #[error("invalid character motion")]
     Motion(#[from] MotionError),
+    #[error("invalid mix")]
+    Mix(#[from] MixError),
 }

@@ -137,7 +137,7 @@ impl Gpu {
             AssetKind::Playable => unreachable!("playable kinds never go to the uploader"),
             AssetKind::Motion => unreachable!("character motions never go to the uploader"),
             AssetKind::Ambient => unreachable!("ambient characters never go to the uploader"),
-            AssetKind::Score | AssetKind::VoiceLines => {
+            AssetKind::Score | AssetKind::VoiceLines | AssetKind::Mix => {
                 unreachable!("music and voice never go to the uploader")
             }
             AssetKind::TextureLevel => unreachable!("these textures stay whole"),
@@ -245,7 +245,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
         resident: [
             400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
             1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000,
+            1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source.clone(), budgets);

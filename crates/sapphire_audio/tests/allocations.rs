@@ -5,12 +5,16 @@
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
+use sapphire_assets::mix::Mix;
+use sapphire_assets::mouth::MouthCurve;
 use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
-    AudioBackend, AudioFrame, AudioSystem, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend,
-    Listener, MAX_VOICES, MockBackend, MockCall, MusicRequest, OfflineOutput, VoiceParams, VoiceSlot,
+    AudioBackend, AudioFrame, AudioSystem, BusId, CueRequest, CueRng, CueTarget, Emitter, EmitterId,
+    KiraBackend, Listener, MAX_VOICES, MockBackend, MockCall, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT,
+    VoiceParams, VoiceSlot,
 };
+use sapphire_core::Name;
 use sapphire_core::alloc::{EngineAllocator, PER_THREAD_COUNTS, count_in_scope, engine_allocator};
 use sapphire_math::Vec3;
 
@@ -48,6 +52,7 @@ fn frame<'a>(emitters: &'a [Emitter], cues: &'a [CueRequest]) -> AudioFrame<'a> 
         dt: GAME_FRAME as f32 / RATE as f32,
         listener: Listener::default(),
         world_time_scale: 1.0,
+        snapshots: &[],
         emitters,
         cues,
         lines: &[],
@@ -126,6 +131,55 @@ fn what_a_cue_allocates_on_the_calling_thread() {
 
     every_voice_filtering_mixes_with_no_allocation();
     music_changes_phase_with_no_allocation();
+    the_mix_moves_with_no_allocation();
+}
+
+/// A frame of the shipped mix: the world's clock at `scale`, paused or not.
+fn mix_frame(
+    system: &mut AudioSystem<KiraBackend<OfflineOutput>>,
+    scale: f32,
+    paused: bool,
+    rng: &mut CueRng,
+    buffer: &mut [f32],
+) {
+    let snapshots: &[Name] = if paused { &[PAUSE_SNAPSHOT] } else { &[] };
+    system.update(&AudioFrame { world_time_scale: scale, snapshots, ..frame(&[], &[]) }, rng);
+    system.backend_mut().output_mut().render_into(buffer);
+}
+
+/// The mix (M6 U2) with everything it does moving at once, through the real mixer: the shipped mix's slow
+/// motion in and out, its pause on and off, and a voice line ducking the music and the effects by its mouth
+/// curve. Once warmed, its frames and its mixing allocate nothing; starting the line is a cue's own cost.
+fn the_mix_moves_with_no_allocation() {
+    let mix = Mix::from_document(include_str!("../../../content/audio/game.mix.ron")).unwrap();
+    let line: AssetId = "5c0e0000-0000-4000-8000-0000000000b0".parse().unwrap();
+    let samples =
+        (0..RATE as usize * 4).map(|n| 0.25 * (n as f32 * 0.03).sin() * (n as f32 * 1e-4).sin()).collect();
+    let voiced = DecodedSound { sample_rate: RATE, channels: 1, samples };
+    let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
+    system.set_mix(&mix).unwrap();
+    system.add_sound(line, &voiced);
+    system.add_mouth(line, MouthCurve::analyze(&voiced));
+    system.add_cue(line, Cue { sounds: vec![line], bus: Bus::Voice, attenuation: None, ..cue() });
+    let requests = [CueRequest { cue: line, target: CueTarget::Flat }];
+    let mut rng = CueRng::new(1);
+    let mut buffer = vec![0.0; GAME_FRAME * 2];
+    let mut round = |system: &mut AudioSystem<KiraBackend<OfflineOutput>>, rng: &mut CueRng| {
+        for n in 0..90 {
+            let scale = if (20..50).contains(&n) { 0.2 } else { 1.0 };
+            mix_frame(system, scale, (55..75).contains(&n), rng, &mut buffer);
+        }
+    };
+    system.update(&frame(&[], &requests), &mut rng);
+    round(&mut system, &mut rng);
+    system.update(&frame(&[], &requests), &mut rng);
+    let ((), moving) = count_in_scope(|| round(&mut system, &mut rng));
+    #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
+    {
+        println!("90 frames of the mix moving: {} allocations", moving.allocations);
+    }
+    assert!(system.stats().voices > 0, "the line still speaks");
+    assert_eq!(moving.allocations, 0, "a snapshot, a pause or a duck allocated");
 }
 
 /// The engine voice (M6 U1) with all it can do at once: every slot playing, each through its own closed
@@ -142,7 +196,7 @@ fn every_voice_filtering_mixes_with_no_allocation() {
         |n: u32| VoiceParams { gain_db: -6.0, pan: 0.5, pitch: 0.9 + 0.01 * n as f32, low_pass_hz: 800.0 };
     for n in 0..MAX_VOICES as u32 {
         let sound = if n % 2 == 0 { SOUND } else { stereo };
-        backend.start_voice(VoiceSlot(n), sound, Bus::Sfx, params(n), false).unwrap();
+        backend.start_voice(VoiceSlot(n), sound, BusId::category(Bus::Sfx), params(n), false).unwrap();
     }
     let mut buffer = vec![0.0; GAME_FRAME * 2];
     backend.output_mut().render_into(&mut buffer);
@@ -175,7 +229,6 @@ fn music_changes_phase_with_no_allocation() {
         phases: (0..4).map(|n| Phase { name: format!("p{n}"), play: vec![format!("s{n}")] }).collect(),
         fade_beats: 1.0,
         volume_db: 0.0,
-        duck_db: -10.0,
     };
     let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
     let stem = DecodedSound { sample_rate: RATE, channels: 1, samples: vec![0.1; 2 * RATE as usize] };

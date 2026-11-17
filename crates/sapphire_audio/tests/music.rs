@@ -6,6 +6,7 @@
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Bus, Cue, HitstopResponse};
+use sapphire_assets::mix::{DuckFollow, DuckRule, DuckTarget, Mix};
 use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::DecodedSound;
 use sapphire_assets::voice::{VoiceLine, VoiceLines};
@@ -52,7 +53,6 @@ fn system(fade_beats: f32) -> AudioSystem<KiraBackend<OfflineOutput>> {
             ],
             fade_beats,
             volume_db: 0.0,
-            duck_db: -10.0,
         },
     );
     system
@@ -74,6 +74,7 @@ fn play_until(
             dt: GAME_FRAME as f32 / RATE as f32,
             listener: Listener::default(),
             world_time_scale: 1.0,
+            snapshots: &[],
             emitters: &[],
             cues: &[],
             lines: std::mem::take(&mut lines),
@@ -166,6 +167,16 @@ fn a_fade_starts_on_the_bar_line_and_takes_its_beats() {
 #[test]
 fn the_music_goes_down_under_a_line_and_comes_back() {
     let mut system = system(0.0);
+    // A mix whose one rule takes the music 10 dB down while a line plays, at once.
+    let mut mix = Mix::plain();
+    mix.ducking.push(DuckRule {
+        when: "voice".to_owned(),
+        follow: DuckFollow::Presence,
+        attack: 0.0,
+        release: 0.0,
+        duck: vec![DuckTarget { bus: "music".to_owned(), gain_db: -10.0 }],
+    });
+    system.set_mix(&mix).unwrap();
     // A line half a second long, of silence, so only the music is heard.
     system.add_sound(
         LINE,
@@ -192,7 +203,7 @@ fn the_music_goes_down_under_a_line_and_comes_back() {
     let asked = out.len();
     play_until(&mut system, "running", &said, asked + RATE as usize / 4, &mut out);
     let under = -out[out.len() - 1];
-    // The line ends half a second in; the music is back 400 ms after the frame that sees it end.
+    // The line ends half a second in; the music is back a bus fade after the frame that sees it end.
     play_until(&mut system, "running", &[], asked + RATE as usize * 3 / 2, &mut out);
     let after = -out[out.len() - 1];
     let ducked = 20.0 * (under / before).log10();

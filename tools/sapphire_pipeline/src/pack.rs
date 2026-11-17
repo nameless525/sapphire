@@ -154,7 +154,9 @@ pub const NOTICES: &str = "NOTICES.txt";
 /// file of no kind goes where the packer reports it.
 pub fn group(kind: Option<AssetKind>) -> &'static str {
     match kind {
-        Some(AssetKind::Sound | AssetKind::Cue | AssetKind::Score | AssetKind::VoiceLines) => AUDIO,
+        Some(
+            AssetKind::Sound | AssetKind::Cue | AssetKind::Score | AssetKind::VoiceLines | AssetKind::Mix,
+        ) => AUDIO,
         Some(AssetKind::Strings) => LOC,
         Some(AssetKind::Font | AssetKind::FontChains) => FONTS,
         Some(AssetKind::Ui) => UI,
@@ -193,7 +195,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Motion
         | AssetKind::Ambient
         | AssetKind::Score
-        | AssetKind::VoiceLines => Codec::Lz4,
+        | AssetKind::VoiceLines
+        | AssetKind::Mix => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }

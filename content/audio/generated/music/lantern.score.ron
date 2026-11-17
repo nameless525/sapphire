@@ -2,7 +2,7 @@
 // bars at 120 beats a minute. Nobody has heard it: every level here is a guess for someone who can.
 (
     type: "sapphire::assets::Score",
-    version: 1,
+    version: 2,
     data: (
         tempo_bpm: 120.0,
         beats_per_bar: 4,
@@ -26,7 +26,7 @@
             (name: "tolling", play: ["pad", "pulse", "drums", "toll"]),
         ],
         fade_beats: 2.0,
+        // How far it goes down under a voice line is the mix's (`content/audio/game.mix.ron`).
         volume_db: -12.0,
-        duck_db: -9.0,
     ),
 )

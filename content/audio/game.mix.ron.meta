@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "9786340a-c6ae-4ffb-b3cb-8ec5220b9fb3",
+        importer: Mix(()),
+    ),
+)

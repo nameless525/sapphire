@@ -85,6 +85,7 @@
 //!         dt: 1.0 / 60.0,
 //!         listener: Listener::default(),
 //!         world_time_scale: 1.0,
+//!         snapshots: &[], // By name: `PAUSE_SNAPSHOT` while the game is paused.
 //!         emitters: &[],
 //!         cues: cues.sounds(),
 //!         lines: cues.lines(),

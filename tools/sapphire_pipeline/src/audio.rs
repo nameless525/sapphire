@@ -1,6 +1,6 @@
 //! Cooking sound (M2 E1, spec §5.15, §5.27): `.ogg` files to `.ssound`, `.cue.ron` documents to
-//! `.scue`, and music and voice (M3 A1): `.score.ron` to `.sscore` and `.voice.ron` to `.svoice`. The
-//! formats are `sapphire_assets`' plain data, so no mixer is linked here.
+//! `.scue`, and music and voice (M3 A1): `.score.ron` to `.sscore` and `.voice.ron` to `.svoice`; and a game's
+//! mix (M6 U2), `.mix.ron` to `.smix`. The formats are `sapphire_assets`' plain data, so no mixer is linked here.
 //!
 //! A sound's cook copies the Ogg Vorbis file, the target format on every platform, after decoding
 //! all of it with the runtime's decoder, so a file the runtime couldn't play fails the cook. Desktop
@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::cue::{Bus, Cue, CueError};
+use sapphire_assets::mix::{Mix, MixError};
 use sapphire_assets::score::{Score, ScoreError};
 use sapphire_assets::sound::{Sound, SoundError};
 use sapphire_assets::voice::{VoiceLines, VoiceLinesError};
@@ -45,6 +46,10 @@ pub const SCORE_COOKER: Stage = Stage { name: "sscore", version: 1 };
 pub const VOICE_IMPORTER: Stage = Stage { name: "voice lines document", version: 1 };
 /// The voice-line cooker. Bump it whenever it changes output for the same document.
 pub const VOICE_COOKER: Stage = Stage { name: "svoice", version: 1 };
+/// The mix importer as cache keys know it (M6 U2).
+pub const MIX_IMPORTER: Stage = Stage { name: "mix document", version: 1 };
+/// The mix cooker. Bump it whenever it changes output for the same document.
+pub const MIX_COOKER: Stage = Stage { name: "smix", version: 1 };
 
 /// What a cue document's file name ends with.
 const CUE_SOURCE_SUFFIX: &str = ".cue.ron";
@@ -52,6 +57,8 @@ const CUE_SOURCE_SUFFIX: &str = ".cue.ron";
 const SCORE_SOURCE_SUFFIX: &str = ".score.ron";
 /// What a voice-line document's file name ends with.
 const VOICE_SOURCE_SUFFIX: &str = ".voice.ron";
+/// What a mix document's file name ends with.
+const MIX_SOURCE_SUFFIX: &str = ".mix.ron";
 
 /// Import settings for sounds: `importer: Sound(())` for most, and `Sound((mouth: true))` for a voice's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +85,11 @@ pub struct ScoreSettings {}
 #[serde(default)]
 pub struct VoiceLinesSettings {}
 
+/// Import settings for a mix, as for sounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MixSettings {}
+
 /// A sound or cue that won't cook.
 #[derive(Debug, thiserror::Error)]
 pub enum AudioCookError {
@@ -89,6 +101,8 @@ pub enum AudioCookError {
     Score(#[from] ScoreError),
     #[error(transparent)]
     VoiceLines(#[from] VoiceLinesError),
+    #[error(transparent)]
+    Mix(#[from] MixError),
     /// A stem that wouldn't loop in step with its score's bars.
     #[error(
         "stem `{stem}` is {frames} frames at {sample_rate} Hz, and the loop is {loop_seconds} s: {expected}"
@@ -120,6 +134,11 @@ pub fn is_voice_source(path: &Path) -> bool {
     ends_with(path, VOICE_SOURCE_SUFFIX)
 }
 
+/// Whether `path` names a mix document.
+pub fn is_mix_source(path: &Path) -> bool {
+    ends_with(path, MIX_SOURCE_SUFFIX)
+}
+
 fn ends_with(path: &Path, suffix: &str) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -139,6 +158,11 @@ pub fn score_output_path(relative: &Path, extension: &str) -> PathBuf {
 /// The cooked file voice lines at `relative` write: `ja.voice.ron` → `ja.svoice`.
 pub fn voice_output_path(relative: &Path, extension: &str) -> PathBuf {
     output_path(relative, VOICE_SOURCE_SUFFIX, extension)
+}
+
+/// The cooked file a mix at `relative` writes: `game.mix.ron` → `game.smix`.
+pub fn mix_output_path(relative: &Path, extension: &str) -> PathBuf {
+    output_path(relative, MIX_SOURCE_SUFFIX, extension)
 }
 
 fn output_path(relative: &Path, suffix: &str, extension: &str) -> PathBuf {
@@ -200,6 +224,18 @@ pub fn read_voice_lines(bytes: &[u8]) -> Result<VoiceLines, AudioCookError> {
 pub fn cook_voice_lines(bytes: &[u8]) -> Result<Vec<u8>, AudioCookError> {
     let cooked = read_voice_lines(bytes)?.to_cooked()?;
     VoiceLines::read(&cooked)?;
+    Ok(cooked.into_vec())
+}
+
+/// Reads and checks a mix document.
+pub fn read_mix(bytes: &[u8]) -> Result<Mix, AudioCookError> {
+    Ok(Mix::from_document(std::str::from_utf8(bytes)?)?)
+}
+
+/// The bytes of a mix's cooked file, read back through the runtime's check.
+pub fn cook_mix(bytes: &[u8]) -> Result<Vec<u8>, AudioCookError> {
+    let cooked = read_mix(bytes)?.to_cooked()?;
+    Mix::read(&cooked)?;
     Ok(cooked.into_vec())
 }
 
@@ -349,6 +385,7 @@ mod tests {
         assert_eq!(pack::group(Some(AssetKind::Cue)), pack::AUDIO);
         assert_eq!(pack::group(Some(AssetKind::Score)), pack::AUDIO);
         assert_eq!(pack::group(Some(AssetKind::VoiceLines)), pack::AUDIO);
+        assert_eq!(pack::group(Some(AssetKind::Mix)), pack::AUDIO);
         for kind in
             [AssetKind::Mesh, AssetKind::Texture, AssetKind::Material, AssetKind::Rig, AssetKind::ProbeGrid]
         {
@@ -356,6 +393,17 @@ mod tests {
         }
         // What the packer can't name is left for its error.
         assert_eq!(pack::group(None), pack::SHARED);
+    }
+
+    #[test]
+    fn the_shipped_mix_cooks_to_the_same_bytes_twice_and_reads_back() {
+        let document = include_bytes!("../../../content/audio/game.mix.ron");
+        let first = cook_mix(document).unwrap();
+        assert_eq!(first, cook_mix(document).unwrap(), "two cooks of the mix agree byte for byte");
+        let mut aligned: sapphire_serialize::cooked::AlignedVec = Default::default();
+        aligned.extend_from_slice(&first);
+        let cooked = Mix::read(&aligned).unwrap().to_mix();
+        assert_eq!(cooked, read_mix(document).unwrap(), "and read back as the document");
     }
 
     #[test]
@@ -398,7 +446,7 @@ mod tests {
         let tempo = (60.0 * f64::from(stem.sample_rate) / f64::from(stem.frames)) as f32;
         let beats = 1;
         format!(
-            "(\n    type: \"sapphire::assets::Score\",\n    version: 1,\n    data: (\n        tempo_bpm: {tempo:?},\n        \
+            "(\n    type: \"sapphire::assets::Score\",\n    version: 2,\n    data: (\n        tempo_bpm: {tempo:?},\n        \
              beats_per_bar: {beats},\n        bars: {bars},\n        stems: [(name: \"click\", sound: \"{sound}\")],\n        \
              phases: [(name: \"running\", play: [\"click\"])],\n    ),\n)\n"
         )

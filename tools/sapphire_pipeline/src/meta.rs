@@ -141,7 +141,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim_graph::{self, AnimGraphSettings};
 use crate::assembly;
-use crate::audio::{self, CueSettings, ScoreSettings, SoundSettings, VoiceLinesSettings};
+use crate::audio::{self, CueSettings, MixSettings, ScoreSettings, SoundSettings, VoiceLinesSettings};
 use crate::bake::OutlineSettings;
 use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
@@ -249,6 +249,8 @@ pub enum ImportSettings {
     Score(ScoreSettings),
     /// A voice-line document (`.voice.ron`), one language's lines by key (M3 A1).
     VoiceLines(VoiceLinesSettings),
+    /// A mix document (`.mix.ron`), a game's buses, snapshots and ducking (M6 U2).
+    Mix(MixSettings),
     /// A font file (`.ttf`, `.otf`), cut down for each pack that shows it (M3 U3).
     Font(FontSettings),
     /// A font chains document (`.fontchains.ron`): which fonts answer for each use and script (M3 U3).
@@ -344,6 +346,9 @@ impl ImportSettings {
         if audio::is_voice_source(source) {
             return Some(Self::VoiceLines(VoiceLinesSettings::default()));
         }
+        if audio::is_mix_source(source) {
+            return Some(Self::Mix(MixSettings::default()));
+        }
         if font::is_chains_source(source) {
             return Some(Self::FontChains(FontChainsSettings::default()));
         }
@@ -410,6 +415,7 @@ impl ImportSettings {
             | Self::Cue(_)
             | Self::Score(_)
             | Self::VoiceLines(_)
+            | Self::Mix(_)
             | Self::Font(_)
             | Self::FontChains(_)
             | Self::MoveSet(_)
@@ -447,6 +453,7 @@ impl ImportSettings {
             | Self::Cue(_)
             | Self::Score(_)
             | Self::VoiceLines(_)
+            | Self::Mix(_)
             | Self::Font(_)
             | Self::FontChains(_)
             | Self::MoveSet(_)

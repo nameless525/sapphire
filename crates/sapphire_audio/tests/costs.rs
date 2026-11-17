@@ -17,7 +17,7 @@ use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopRespo
 use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::{DecodedSound, decode_vorbis};
 use sapphire_audio::{
-    AudioFrame, AudioSystem, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend, Listener,
+    AudioFrame, AudioSystem, BusId, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend, Listener,
     MAX_VOICES, MusicRequest, OfflineOutput,
 };
 use sapphire_math::Vec3;
@@ -64,6 +64,7 @@ fn frame_at<'a>(tick: usize, emitters: &'a mut [Emitter; 1], cues: &'a [CueReque
         dt: 1.0 / 60.0,
         listener,
         world_time_scale: 0.6 + 0.4 * angle.sin(),
+        snapshots: &[],
         emitters,
         cues,
         lines: &[],
@@ -239,7 +240,8 @@ fn voice_against_kiras_static_sound(sound: &DecodedSound) {
         let Ok(mut backend) = KiraBackend::<OfflineOutput>::new(RATE);
         backend.add_sound(SOUND, sound);
         for n in 0..MAX_VOICES {
-            backend.start_voice(VoiceSlot(n as u32), SOUND, Bus::Sfx, params(n, low_pass_hz), false).unwrap();
+            let sfx = BusId::category(Bus::Sfx);
+            backend.start_voice(VoiceSlot(n as u32), SOUND, sfx, params(n, low_pass_hz), false).unwrap();
         }
         backend
     };
@@ -315,7 +317,6 @@ fn music_costs() {
         ],
         fade_beats: 2.0,
         volume_db: -6.0,
-        duck_db: -10.0,
     };
     let sound = sound();
     let music_system = || {

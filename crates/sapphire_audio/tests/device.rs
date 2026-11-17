@@ -12,8 +12,8 @@ use sapphire_assets::AssetId;
 use sapphire_assets::cue::Bus;
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
-    AudioBackend, BusParams, CpalOutput, DeviceState, DeviceStatus, KiraBackend, VoiceParams, VoiceSlot,
-    device_opens,
+    AudioBackend, BusId, BusParams, CpalOutput, DeviceState, DeviceStatus, KiraBackend, VoiceParams,
+    VoiceSlot, device_opens,
 };
 use sapphire_time::Stopwatch;
 
@@ -48,9 +48,11 @@ fn whatever_the_device_the_output_runs_or_says_why_not() {
     let Ok(mut backend) = KiraBackend::<CpalOutput>::new(());
     assert_eq!(device_opens(), opens + 1, "one output, one count");
     backend.add_sound(SOUND, &tone());
-    backend.set_bus(Bus::Sfx, BusParams::OPEN);
+    backend.set_bus(BusId::category(Bus::Sfx), BusParams::OPEN);
     let quiet = VoiceParams { gain_db: -60.0, ..VoiceParams::NEUTRAL };
-    backend.start_voice(VoiceSlot(0), SOUND, Bus::Sfx, quiet, false).expect("a voice starts");
+    backend
+        .start_voice(VoiceSlot(0), SOUND, BusId::category(Bus::Sfx), quiet, false)
+        .expect("a voice starts");
 
     let settled = |status: &DeviceStatus| status.state != DeviceState::Starting;
     let status = wait_for(&mut backend, Duration::from_secs(10), settled);

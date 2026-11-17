@@ -25,6 +25,10 @@
 //! through a pause and cuts it at the next line, and [`DeviceAudio::said`] reads the sound's cooked mouth
 //! curve at the voice's playhead, which the mixer's caller counts in real seconds. With no device there's no
 //! voice, and so no mouth: a face never moves to a line nobody can hear played.
+//!
+//! Everything plays through the game's mix (M6 U2, [`ShowSounds::mix`]; `--cue` the shipped one): its slow
+//! motion follows the world's clock, its ducking rules follow the voice lines' mouth curves, and a paused game
+//! asks for its `pause` snapshot ([`CueSounds::paused`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
@@ -32,6 +36,7 @@ use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
+use sapphire_assets::mix::Mix;
 use sapphire_assets::mouth::{MouthCurve, MouthSample};
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::{DecodedSound, Sound};
@@ -39,7 +44,8 @@ use sapphire_assets::voice::VoiceLines;
 pub use sapphire_audio::Volumes;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
-    EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, SpeechRequest,
+    EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT,
+    SpeechRequest,
 };
 use sapphire_core::Name;
 use sapphire_loc::LocaleSettings;
@@ -60,6 +66,13 @@ const CUES: [(&str, AssetId); 3] = [
     ("swing", AssetId::from_text("e595fa42-bdd3-4e6e-845c-52684b76f8ed")),
 ];
 
+/// The shipped mix, `content/audio/game.mix.ron`, by its sidecar's ID: what `--cue` plays through. A game
+/// names its mix in its cue table; a test holds this to the sidecar.
+const SHIPPED_MIX: AssetId = AssetId::from_text("9786340a-c6ae-4ffb-b3cb-8ec5220b9fb3");
+
+/// The snapshots a paused game asks for.
+const PAUSED: [Name; 1] = [PAUSE_SNAPSHOT];
+
 /// What a fight or whatever else fires sounds asks of the audio system this frame.
 #[derive(Clone, Copy, Debug)]
 pub struct CueSounds<'a> {
@@ -79,6 +92,8 @@ pub struct CueSounds<'a> {
     /// a phase of that name. With any other `music_phase`, a game flow's `waiting` or `cleared` among them, it
     /// isn't heard.
     pub boss_phase: Option<Name>,
+    /// The game is paused (M6 U2): the mix's `pause` snapshot holds the world's sounds where they are.
+    pub paused: bool,
 }
 
 impl CueSounds<'_> {
@@ -92,13 +107,19 @@ impl CueSounds<'_> {
         started_over: false,
         music_phase: None,
         boss_phase: None,
+        paused: false,
     };
+
+    /// The snapshots these ask the mix for by name.
+    fn snapshots(&self) -> &'static [Name] {
+        if self.paused { &PAUSED } else { &[] }
+    }
 }
 
 /// The phase a fight's score plays while any of its encounters runs: the one a boss's phase can stand in for.
 pub const RUNNING: &str = "running";
 
-/// What an app loads for a fight's sound: the cues its table plays, and the score and voice lines it
+/// What an app loads for a fight's sound: the cues its table plays, and the score, voice lines and mix it
 /// names.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShowSounds {
@@ -106,6 +127,8 @@ pub struct ShowSounds {
     pub score: Option<AssetId>,
     /// One `VoiceLines` a language.
     pub voices: Vec<AssetId>,
+    /// The mix everything plays through (M6 U2): none, and the plain one, five categories and nothing else.
+    pub mix: Option<AssetId>,
 }
 
 /// What a conversation's line says this frame (M5 C6): its sound's mouth curve at the voice's playhead.
@@ -116,17 +139,12 @@ pub struct Said {
     pub mouth: MouthSample,
 }
 
-/// The mouth curves of the sounds a show's voice lines play, by sound: load-time data a frame only reads.
-#[derive(Debug, Default)]
-struct Mouths(HashMap<AssetId, MouthCurve>);
-
-impl Mouths {
-    /// What `system`'s conversation line says now, if it's saying one. Allocates nothing.
-    fn said<B: AudioBackend>(&self, system: &AudioSystem<B>) -> Option<Said> {
-        let speaking = system.speaking()?;
-        let curve = self.0.get(&speaking.sound)?;
-        Some(Said { serial: speaking.serial, mouth: curve.at(speaking.seconds) })
-    }
+/// What `system`'s conversation line says now, if it's saying one, by the mouth curves the system holds.
+/// Allocates nothing.
+fn said<B: AudioBackend>(system: &AudioSystem<B>) -> Option<Said> {
+    let speaking = system.speaking()?;
+    let curve = system.mouth(speaking.sound)?;
+    Some(Said { serial: speaking.serial, mouth: curve.at(speaking.seconds) })
 }
 
 /// The emitter cues play on: the scene's character.
@@ -187,7 +205,6 @@ pub struct DeviceAudio {
     emitters: Vec<Emitter>,
     /// Seconds until the next stats line.
     report_in: f32,
-    mouths: Mouths,
 }
 
 impl DeviceAudio {
@@ -199,7 +216,7 @@ impl DeviceAudio {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Option<Self>, AppInitError> {
-        let sounds = ShowSounds { cues: vec![option.id], ..ShowSounds::default() };
+        let sounds = ShowSounds { cues: vec![option.id], mix: Some(SHIPPED_MIX), ..ShowSounds::default() };
         let audio = Self::for_show(&sounds, platform, content, renderer, gpu)?;
         Ok(audio.map(|audio| Self {
             repeating: Some(Repeating { cue: option.id, repeat: option.repeat, next_play: Some(0.0) }),
@@ -245,7 +262,7 @@ impl DeviceAudio {
         let ReadySounds { loaded, score } = ready;
         let Ok(backend) = KiraBackend::<CpalOutput>::new(());
         let mut system = AudioSystem::new(backend);
-        let mouths = add_loaded(&mut system, loaded)?;
+        add_loaded(&mut system, loaded)?;
         Ok(Self {
             system,
             random: CueRng::new(CUE_SEED),
@@ -253,7 +270,6 @@ impl DeviceAudio {
             repeating: None,
             emitters: Vec::with_capacity(8),
             report_in: REPORT_EVERY,
-            mouths,
         })
     }
 
@@ -261,7 +277,7 @@ impl DeviceAudio {
     /// its voice's playhead, until the voice ends or is cut. Allocates nothing.
     #[must_use]
     pub fn said(&self) -> Option<Said> {
-        self.mouths.said(&self.system)
+        said(&self.system)
     }
 
     /// One frame, `dt` real seconds after the last: plays `--cue`'s cue when it's due and what a fight
@@ -290,6 +306,7 @@ impl DeviceAudio {
             dt,
             listener: scene.listener,
             world_time_scale: scene.world_time_scale.min(fight.world_time_scale),
+            snapshots: fight.snapshots(),
             emitters: &self.emitters,
             cues: requests.as_ref().map_or(fight.requests, |requests| requests.as_slice()),
             lines: fight.lines,
@@ -518,14 +535,16 @@ fn read(
         }
         None => None,
     };
-    Ok(Read { cues, score, voices, took: stopwatch.elapsed() })
+    let mix = sounds.mix.map(|id| content.load_mix(id, renderer, gpu)).transpose()?;
+    Ok(Read { cues, score, voices, mix, took: stopwatch.elapsed() })
 }
 
-/// What [`read`] read: the cues, the score and the voice lines, each sound still to decode.
+/// What [`read`] read: the cues, the score, the voice lines and the mix, each sound still to decode.
 struct Read {
     cues: Vec<ReadCue>,
     score: Option<ReadScore>,
     voices: Vec<VoiceLines>,
+    mix: Option<Mix>,
     /// How long reading them took.
     took: Duration,
 }
@@ -545,12 +564,12 @@ impl Read {
                 })
                 .collect::<Result<Vec<_>, String>>()
         };
-        let mut mouths = Mouths::default();
+        let mut mouths = HashMap::new();
         let cues = self
             .cues
             .into_iter()
             .map(|(id, cue, mut sounds)| {
-                mouths.0.extend(sounds.iter_mut().filter_map(|(id, sound)| Some((*id, sound.mouth.take()?))));
+                mouths.extend(sounds.iter_mut().filter_map(|(id, sound)| Some((*id, sound.mouth.take()?))));
                 Ok((id, cue, decode(sounds)?))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -572,12 +591,15 @@ impl Read {
             ?decode,
             "sounds ready"
         );
-        Ok(Loaded { cues, score, voices: self.voices, mouths })
+        Ok(Loaded { cues, score, voices: self.voices, mix: self.mix, mouths })
     }
 }
 
-/// Gives `system` what [`load`] loaded, and hands back the mouth curves, which a frame reads beside it.
-fn add_loaded<B: AudioBackend>(system: &mut AudioSystem<B>, loaded: Loaded) -> Result<Mouths, AppInitError> {
+/// Gives `system` what [`load`] loaded, the mix first.
+fn add_loaded<B: AudioBackend>(system: &mut AudioSystem<B>, loaded: Loaded) -> Result<(), AppInitError> {
+    if let Some(mix) = &loaded.mix {
+        system.set_mix(mix).map_err(|error| AppInitError::msg(format!("the mix: {error}")))?;
+    }
     for (id, cue, sounds) in loaded.cues {
         system.add_cue(id, cue);
         for (id, sound) in &sounds {
@@ -593,8 +615,11 @@ fn add_loaded<B: AudioBackend>(system: &mut AudioSystem<B>, loaded: Loaded) -> R
     for lines in &loaded.voices {
         system.add_voice_lines(lines).map_err(|error| AppInitError::msg(format!("voice lines: {error}")))?;
     }
+    for (id, mouth) in loaded.mouths {
+        system.add_mouth(id, mouth);
+    }
     system.set_voice_language(&LocaleSettings::default().voice);
-    Ok(loaded.mouths)
+    Ok(())
 }
 
 /// What [`load`] loaded.
@@ -602,8 +627,9 @@ struct Loaded {
     cues: Vec<LoadedCue>,
     score: Option<LoadedScore>,
     voices: Vec<VoiceLines>,
+    mix: Option<Mix>,
     /// The voice sounds' mouth curves, out of their sounds.
-    mouths: Mouths,
+    mouths: HashMap<AssetId, MouthCurve>,
 }
 
 /// A cue and those of its sounds no cue before it brought, decoded.
@@ -631,7 +657,6 @@ pub struct OfflineAudio {
     emitters: Vec<Emitter>,
     /// A frame's samples, interleaved, which nothing reads.
     block: Vec<f32>,
-    mouths: Mouths,
 }
 
 impl OfflineAudio {
@@ -648,21 +673,20 @@ impl OfflineAudio {
     fn with_loaded(loaded: Loaded, score: Option<AssetId>) -> Result<Self, AppInitError> {
         let Ok(backend) = KiraBackend::<OfflineOutput>::new(OFFLINE_RATE);
         let mut system = AudioSystem::new(backend);
-        let mouths = add_loaded(&mut system, loaded)?;
+        add_loaded(&mut system, loaded)?;
         Ok(Self {
             system,
             random: CueRng::new(CUE_SEED),
             score,
             emitters: Vec::with_capacity(8),
             block: vec![0.0; OFFLINE_RATE as usize],
-            mouths,
         })
     }
 
     /// As [`DeviceAudio::said`].
     #[must_use]
     pub fn said(&self) -> Option<Said> {
-        self.mouths.said(&self.system)
+        said(&self.system)
     }
 
     /// One frame, `dt` seconds after the last, as [`DeviceAudio::update`] plays a fight's.
@@ -677,6 +701,7 @@ impl OfflineAudio {
             dt,
             listener: scene.listener,
             world_time_scale: scene.world_time_scale.min(fight.world_time_scale),
+            snapshots: fight.snapshots(),
             emitters: &self.emitters,
             cues: fight.requests,
             lines: fight.lines,
@@ -743,6 +768,14 @@ mod tests {
             let text = std::fs::read_to_string(&sidecar).unwrap_or_else(|error| panic!("{name}: {error}"));
             assert!(text.contains(&id.to_string()), "{name}'s sidecar has another ID:\n{text}");
         }
+        let text = std::fs::read_to_string(folder.join("game.mix.ron.meta")).unwrap();
+        assert!(text.contains(&SHIPPED_MIX.to_string()), "the mix's sidecar has another ID:\n{text}");
+    }
+
+    #[test]
+    fn a_paused_game_asks_for_the_pause_snapshot() {
+        assert_eq!(CueSounds::NONE.snapshots(), &[] as &[Name]);
+        assert_eq!(CueSounds { paused: true, ..CueSounds::NONE }.snapshots(), &[PAUSE_SNAPSHOT]);
     }
 
     /// A boss's phase stands in only for `running`, so a game's flow saying `waiting` over a defeat, with the
@@ -822,7 +855,8 @@ mod tests {
             cues: vec![line(english), line(japanese)],
             score: None,
             voices: voices.to_vec(),
-            mouths: Mouths::default(),
+            mix: None,
+            mouths: HashMap::new(),
         };
         add_loaded(&mut system, fight).unwrap();
         assert_eq!(system.voice_route().language(), Some("en"), "the default until the player's is read");
@@ -833,6 +867,7 @@ mod tests {
             dt: 1.0 / 60.0,
             listener: Listener::default(),
             world_time_scale: 1.0,
+            snapshots: &[],
             emitters: &[],
             cues: &[],
             lines: &dodge,
@@ -893,7 +928,8 @@ mod tests {
                     locale: "en".to_owned(),
                     lines: vec![VoiceLine { key: "guide_greet".to_owned(), cue: cue_id }],
                 }],
-                mouths: Mouths(HashMap::from([(sound_id, curve.clone())])),
+                mix: None,
+                mouths: HashMap::from([(sound_id, curve.clone())]),
             };
             let mut audio = OfflineAudio::with_loaded(loaded, None).unwrap();
             let mut heard = Vec::new();

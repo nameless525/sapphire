@@ -333,12 +333,13 @@ impl CueShow {
         &self.table
     }
 
-    /// What an app that plays sound loads for the table: its cues, its score and its voice lines.
+    /// What an app that plays sound loads for the table: its cues, its score, its voice lines and its mix.
     pub fn sounds_to_load(&self) -> ShowSounds {
         ShowSounds {
             cues: self.table.sound_cues(),
             score: self.table.music(),
             voices: self.table.voices().to_vec(),
+            mix: self.table.mix(),
         }
     }
 
@@ -484,6 +485,7 @@ impl CueShow {
             started_over: self.started_over,
             music_phase: self.music_phase,
             boss_phase: self.boss_phase,
+            paused: false,
         }
     }
 

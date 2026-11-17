@@ -159,6 +159,7 @@ use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontCha
 use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{AnyMaterialDocument, MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
+use sapphire_assets::mix::{MIX_EXTENSION, Mix};
 use sapphire_assets::motion::{MOTION_EXTENSION, Motion};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
 use sapphire_assets::reflections::{REFLECTIONS_EXTENSION, ReflectionProbes};
@@ -439,6 +440,12 @@ impl Recipe {
                 format: VoiceLines::VERSION,
                 extension: VOICE_LINES_EXTENSION,
             },
+            ImportSettings::Mix(_) => Self {
+                importer: audio::MIX_IMPORTER,
+                cooker: audio::MIX_COOKER,
+                format: Mix::VERSION,
+                extension: MIX_EXTENSION,
+            },
             ImportSettings::Font(_) => Self {
                 importer: font::IMPORTER,
                 cooker: font::COOKER,
@@ -619,6 +626,8 @@ impl Recipe {
             audio::score_output_path(relative, self.extension)
         } else if audio::is_voice_source(relative) {
             audio::voice_output_path(relative, self.extension)
+        } else if audio::is_mix_source(relative) {
+            audio::mix_output_path(relative, self.extension)
         } else if font::is_chains_source(relative) {
             font::chains_output_path(relative, self.extension)
         } else if ui::is_source(relative) {
@@ -1812,6 +1821,7 @@ fn sub_assets(
         | ImportSettings::Cue(_)
         | ImportSettings::Score(_)
         | ImportSettings::VoiceLines(_)
+        | ImportSettings::Mix(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
@@ -2890,6 +2900,7 @@ fn cook_source(
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
         ImportSettings::Score(_) => audio::cook_score(bytes).map_err(audio_error(path)),
         ImportSettings::VoiceLines(_) => audio::cook_voice_lines(bytes).map_err(audio_error(path)),
+        ImportSettings::Mix(_) => audio::cook_mix(bytes).map_err(audio_error(path)),
         ImportSettings::Font(settings) => {
             font::cook(path, bytes, settings, font_subset_of(part), screens_of(assets))
                 .map_err(font_error(path))
@@ -3524,7 +3535,8 @@ fn source_dependencies(
             Ok(dependencies)
         }
         // A sound is the one file it reads.
-        ImportSettings::Sound(_) => Ok(Vec::new()),
+        // A mix names only its own buses and sends (M6 U2).
+        ImportSettings::Sound(_) | ImportSettings::Mix(_) => Ok(Vec::new()),
         // A cue holds only its sounds' IDs, so their contents aren't inputs.
         ImportSettings::Cue(_) => {
             for id in audio::read_cue(bytes).map_err(audio_error(path))?.sounds {
@@ -4142,6 +4154,7 @@ pub(crate) fn imported_mesh(
         | ImportSettings::Cue(_)
         | ImportSettings::Score(_)
         | ImportSettings::VoiceLines(_)
+        | ImportSettings::Mix(_)
         | ImportSettings::Font(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)

@@ -2492,10 +2492,11 @@ impl Fight {
     }
 
     /// What the fight asks of an app's audio this frame: its cues' sounds ([`FightShow::cue_sounds`]) and the
-    /// open conversation's voice (M5 C6), `held` while a pause holds it.
+    /// open conversation's voice (M5 C6), `held` while a pause holds it, as the mix's pause snapshot then holds
+    /// the world's sounds (M6 U2).
     #[must_use]
     pub fn cue_sounds(&self, held: bool) -> CueSounds<'_> {
-        CueSounds { speech: self.dialogue.speech(held), ..self.show.cue_sounds() }
+        CueSounds { speech: self.dialogue.speech(held), paused: held, ..self.show.cue_sounds() }
     }
 
     /// Tells the fighters' faces what the audio said this frame (M5 C6), after the audio took

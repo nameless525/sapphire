@@ -20,6 +20,7 @@ use crate::font::{ArchivedFont, ArchivedFontChains, Font, FontChains};
 use crate::graph::{AnimGraph, ArchivedAnimGraph};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
+use crate::mix::{ArchivedMix, Mix};
 use crate::motion::{ArchivedMotion, Motion};
 use crate::probes::{ArchivedProbeGrid, ProbeGrid};
 use crate::reflections::{ArchivedReflectionProbes, ReflectionProbes};
@@ -81,6 +82,7 @@ mod sealed {
     impl Sealed for crate::cue::Cue {}
     impl Sealed for crate::score::Score {}
     impl Sealed for crate::voice::VoiceLines {}
+    impl Sealed for crate::mix::Mix {}
     impl Sealed for sapphire_moves::MoveSet {}
     impl Sealed for crate::graph::AnimGraph {}
     impl Sealed for sapphire_strings::StringTable {}
@@ -298,6 +300,16 @@ impl Asset for Motion {
         // SAFETY: as for meshes: `Motion::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Motion>(bytes) }
             .expect("the envelope was checked when the character motion was decoded")
+    }
+}
+
+impl Asset for Mix {
+    const KIND: AssetKind = AssetKind::Mix;
+    type View<'a> = &'a ArchivedMix;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedMix {
+        // SAFETY: as for meshes: `Mix::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Mix>(bytes) }.expect("the envelope was checked when the mix was decoded")
     }
 }
 

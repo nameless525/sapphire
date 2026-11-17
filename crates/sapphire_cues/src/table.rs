@@ -226,6 +226,9 @@ pub struct CueTable {
     /// `VoiceLines` documents' IDs, one a language: what the rows' lines say.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     voices: Vec<AssetId>,
+    /// A `Mix` document's ID (M6 U2): the buses, snapshots and ducking everything the fight plays goes through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mix: Option<AssetId>,
     rows: Vec<CueRow>,
 }
 
@@ -241,6 +244,8 @@ struct UncheckedTable {
     music: Option<AssetId>,
     #[serde(default)]
     voices: Vec<AssetId>,
+    #[serde(default)]
+    mix: Option<AssetId>,
     rows: Vec<CueRow>,
 }
 
@@ -248,7 +253,7 @@ impl TryFrom<UncheckedTable> for CueTable {
     type Error = CueTableError;
 
     fn try_from(table: UncheckedTable) -> Result<Self, CueTableError> {
-        Ok(Self::new(table.rows)?.with_music(table.music, table.voices))
+        Ok(Self::new(table.rows)?.with_music(table.music, table.voices).with_mix(table.mix))
     }
 }
 
@@ -268,13 +273,25 @@ impl CueTable {
             }
             row.validate()?;
         }
-        Ok(Self { music: None, voices: Vec::new(), rows })
+        Ok(Self { music: None, voices: Vec::new(), mix: None, rows })
     }
 
     /// The table, with the score `music` plays and the voice lines' tables `voices`.
     #[must_use]
     pub fn with_music(self, music: Option<AssetId>, voices: Vec<AssetId>) -> Self {
         Self { music, voices, ..self }
+    }
+
+    /// The table, with the mix `mix` (M6 U2).
+    #[must_use]
+    pub fn with_mix(self, mix: Option<AssetId>) -> Self {
+        Self { mix, ..self }
+    }
+
+    /// The `Mix` everything the fight plays goes through, if the table names one (M6 U2).
+    #[must_use]
+    pub fn mix(&self) -> Option<AssetId> {
+        self.mix
     }
 
     /// The `Score` the fight's phase plays, if any.
@@ -403,18 +420,22 @@ mod tests {
         assert!(sidecar("voice/en.voice.ron.meta").contains(&voices[0]));
         assert!(sidecar("voice/ja.voice.ron.meta").contains(&voices[1]));
         assert!(table.rows().iter().any(|row| row.line.is_some()));
+        let mix = table.mix().expect("the fight has a mix").to_string();
+        assert!(sidecar("../game.mix.ron.meta").contains(&mix));
     }
 
     #[test]
     fn music_and_voices_read_and_write_back() {
         let id = |n: u8| format!("11111111-2222-4333-8444-5555555555{n:02x}");
         let text = format!(
-            "(type: \"sapphire::cues::CueTable\", version: 1, data: (music: Some(\"{}\"), voices: [\"{}\"], rows: []))",
+            "(type: \"sapphire::cues::CueTable\", version: 1, data: (music: Some(\"{}\"), voices: [\"{}\"], mix: Some(\"{}\"), rows: []))",
             id(1),
-            id(2)
+            id(2),
+            id(3)
         );
         let table = CueTable::from_ron(&text).expect("reads");
         assert_eq!(table.music(), Some(id(1).parse().unwrap()));
+        assert_eq!(table.mix(), Some(id(3).parse().unwrap()));
         assert_eq!(table.voices(), [id(2).parse::<AssetId>().unwrap()]);
         assert_eq!(CueTable::from_ron(&table.to_ron().expect("writes")).expect("reads back"), table);
     }

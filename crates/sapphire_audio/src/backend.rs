@@ -11,12 +11,28 @@ use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Bus;
+use sapphire_assets::mix::{Mix, OutputProfile};
 use sapphire_assets::sound::DecodedSound;
 
 /// A voice's place in the backend: an index below [`MAX_VOICES`](crate::MAX_VOICES), reused once
 /// [`AudioBackend::voice_finished`] has said so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VoiceSlot(pub u32);
+
+/// A bus of the mix (M6 U2): its place in the [`Mix`]'s buses, the five categories first, in [`Bus::ALL`]'s order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BusId(pub u16);
+
+impl BusId {
+    /// A category's bus, which every mix has in the same place.
+    pub const fn category(bus: Bus) -> Self {
+        Self(bus.index() as u16)
+    }
+
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
 
 /// What a voice sounds like right now.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,7 +53,7 @@ impl VoiceParams {
     pub const NEUTRAL: Self = Self { gain_db: 0.0, pan: 0.0, pitch: 1.0, low_pass_hz: f32::INFINITY };
 }
 
-/// What a bus does to everything on it.
+/// What a snapshot's filter on a bus does to everything on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BusParams {
     /// The low-pass filter's cutoff in hertz. [`Self::OPEN`] takes the filter out.
@@ -157,12 +173,18 @@ pub trait AudioBackend {
     /// Forgets a sound. Voices already playing it go on.
     fn remove_sound(&mut self, id: AssetId);
 
+    /// Makes `mix`'s buses, sends and profiles (M6 U2), in place of the last mix's: before any voice plays or
+    /// music loads, since what plays on the last mix's buses ends. Load-time work: the mixer allocates for each
+    /// bus. Each bus starts at its own volume, open, unpaused, under the `Home` profile. A new backend has
+    /// [`Mix::plain`]'s.
+    fn set_mix(&mut self, mix: &Mix);
+
     /// Starts `sound` on `bus` in a free slot, frozen if `frozen`.
     fn start_voice(
         &mut self,
         slot: VoiceSlot,
         sound: AssetId,
-        bus: Bus,
+        bus: BusId,
         params: VoiceParams,
         frozen: bool,
     ) -> Result<(), StartError>;
@@ -180,13 +202,22 @@ pub trait AudioBackend {
     /// Whether the voice in `slot` has played out, which frees the slot.
     fn voice_finished(&mut self, slot: VoiceSlot) -> bool;
 
-    /// Sets what a bus does to its voices, smoothly enough not to click.
-    fn set_bus(&mut self, bus: Bus, params: BusParams);
+    /// Moves a bus's snapshot filter, smoothly enough not to click. A bus no snapshot filters has none, and
+    /// ignores it.
+    fn set_bus(&mut self, bus: BusId, params: BusParams);
 
-    /// Fades a bus's gain to `gain_db` over `fade`: the music, ducked under a voice line.
-    fn set_bus_gain(&mut self, bus: Bus, gain_db: f32, fade: Duration);
+    /// Fades a bus's gain to `gain_db` over `fade`: its own volume with the snapshots' and the ducks' on top.
+    fn set_bus_gain(&mut self, bus: BusId, gain_db: f32, fade: Duration);
 
-    /// Readies `stems` to loop together on the [`Music`](Bus::Music) bus, on a clock that will count
+    /// Pauses a bus and every bus under it, fading out over `fade`, its voices waiting where they are; or lets
+    /// it go on from there, fading in.
+    fn pause_bus(&mut self, bus: BusId, paused: bool, fade: Duration);
+
+    /// Plays the whole mix through `profile`'s volume and effects, or `Home`'s if the mix has none for it,
+    /// smoothly enough not to click.
+    fn set_output_profile(&mut self, profile: OutputProfile);
+
+    /// Readies `stems` to loop together on the [`Music`](Bus::Music) category's bus, on a clock that will count
     /// `tempo_bpm` beats a minute from their first frame, and ends any music playing over `fade`. They
     /// wait for [`Self::play_music`], in a later frame, so that they and the clock reach the mixer
     /// together however its callbacks fall. Made as a fight starts, not in its frames: the mixer

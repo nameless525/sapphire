@@ -116,12 +116,10 @@ impl Music {
         self.scores.insert(id, LoadedScore { score, masks, names });
     }
 
-    /// How far the music goes down under a voice line: the playing score's, or nothing.
-    pub fn duck_db(&self) -> f32 {
-        self.playing
-            .as_ref()
-            .and_then(|playing| self.scores.get(&playing.score))
-            .map_or(0.0, |loaded| loaded.score.duck_db)
+    /// Forgets the score playing, which the mixer ended with its mix (M6 U2): the next request starts it again.
+    pub fn forget_playing(&mut self) {
+        self.playing = None;
+        self.failed = None;
     }
 
     /// One frame: starts, changes or ends the music as `request` asks. `plays` says whether the output
@@ -231,17 +229,16 @@ fn next_bar(beats: Option<f64>, loaded: &LoadedScore) -> u64 {
 #[cfg(test)]
 mod tests {
     use sapphire_assets::cue::{Bus, Cue, HitstopResponse};
+    use sapphire_assets::mix::{DuckFollow, DuckRule, DuckTarget, Mix};
     use sapphire_assets::score::{Phase, Stem};
     use sapphire_assets::sound::DecodedSound;
     use sapphire_assets::voice::{VoiceLine, VoiceLines};
 
     use super::*;
-    use crate::backend::DeviceState;
+    use crate::backend::{BusId, DeviceState};
     use crate::mock::{MockBackend, MockCall};
     use crate::rng::CueRng;
-    use crate::system::{
-        AudioFrame, AudioSystem, CueTarget, DUCK_ATTACK, DUCK_RELEASE, LineRequest, Listener,
-    };
+    use crate::system::{AudioFrame, AudioSystem, BUS_FADE, CueTarget, LineRequest, Listener};
     use crate::voice::LineKey;
 
     const SCORE: AssetId = AssetId::from_text("5c0e0000-0000-4000-8000-000000000001");
@@ -274,13 +271,30 @@ mod tests {
             ],
             fade_beats: 1.0,
             volume_db: VOLUME_DB,
-            duck_db: -10.0,
         }
+    }
+
+    /// The plain mix with the music down 10 dB, at once, while any voice line plays.
+    fn ducking_mix() -> Mix {
+        let mut mix = Mix::plain();
+        mix.ducking.push(DuckRule {
+            when: "voice".to_owned(),
+            follow: DuckFollow::Presence,
+            attack: 0.0,
+            release: 0.0,
+            duck: vec![DuckTarget { bus: "music".to_owned(), gain_db: -10.0 }],
+        });
+        mix
+    }
+
+    fn music_bus() -> BusId {
+        BusId::category(Bus::Music)
     }
 
     /// The score's stems, and a line in each of two languages, each a cue of its own sound.
     fn system() -> AudioSystem<MockBackend> {
         let mut system = AudioSystem::new(MockBackend::new());
+        system.set_mix(&ducking_mix()).unwrap();
         let sound = DecodedSound { sample_rate: 48_000, channels: 1, samples: vec![0.25; 480] };
         for id in STEMS.into_iter().chain([LINE_EN, LINE_JA]) {
             system.add_sound(id, &sound);
@@ -316,6 +330,7 @@ mod tests {
             dt: 1.0 / 60.0,
             listener: Listener::default(),
             world_time_scale: 1.0,
+            snapshots: &[],
             emitters: &[],
             cues: &[],
             lines,
@@ -431,13 +446,13 @@ mod tests {
             _ => None,
         });
         let (slot, sound, bus) = started.expect("the line starts");
-        assert_eq!((sound, bus), (LINE_JA, Bus::Voice));
-        assert!(calls.contains(&MockCall::SetBusGain { bus: Bus::Music, gain_db: -10.0, fade: DUCK_ATTACK }));
+        assert_eq!((sound, bus), (LINE_JA, BusId::category(Bus::Voice)));
+        assert!(calls.contains(&MockCall::SetBusGain { bus: music_bus(), gain_db: -10.0, fade: BUS_FADE }));
         assert_eq!(update(&mut system, Some("running"), &[]), [], "still speaking, still down");
         system.backend_mut().finish(slot);
         assert_eq!(
             update(&mut system, Some("running"), &[]),
-            [MockCall::SetBusGain { bus: Bus::Music, gain_db: 0.0, fade: DUCK_RELEASE }]
+            [MockCall::SetBusGain { bus: music_bus(), gain_db: 0.0, fade: BUS_FADE }]
         );
 
         let missing = [LineRequest { line: LineKey::of("not-recorded"), target: CueTarget::Flat }];
@@ -457,7 +472,7 @@ mod tests {
         let half = 20.0 * 0.5_f32.log10();
         assert_eq!(
             update(&mut system, Some("running"), &[]),
-            [MockCall::SetBusGain { bus: Bus::Music, gain_db: half, fade: DUCK_ATTACK }],
+            [MockCall::SetBusGain { bus: music_bus(), gain_db: half, fade: BUS_FADE }],
             "the music turns down with every voice"
         );
         let dodge = [LineRequest { line: LineKey::of("perfect-dodge"), target: CueTarget::Flat }];
@@ -466,19 +481,19 @@ mod tests {
             MockCall::StartVoice { slot, .. } => Some(slot),
             _ => None,
         });
-        let ducked = MockCall::SetBusGain { bus: Bus::Music, gain_db: half - 10.0, fade: DUCK_ATTACK };
+        let ducked = MockCall::SetBusGain { bus: music_bus(), gain_db: half - 10.0, fade: BUS_FADE };
         assert!(calls.contains(&ducked), "{calls:?}");
 
         // Off is silent, under a line or not, and never past silence.
         system.set_volume(0.0);
         let calls = update(&mut system, Some("running"), &[]);
-        let silent = MockCall::SetBusGain { bus: Bus::Music, gain_db: SILENCE_DB, fade: DUCK_ATTACK };
+        let silent = MockCall::SetBusGain { bus: music_bus(), gain_db: SILENCE_DB, fade: BUS_FADE };
         assert!(calls.contains(&silent), "{calls:?}");
         system.set_volume(1.0);
         system.backend_mut().finish(slot.expect("the line starts"));
         assert_eq!(
             update(&mut system, Some("running"), &[]),
-            [MockCall::SetBusGain { bus: Bus::Music, gain_db: 0.0, fade: DUCK_RELEASE }]
+            [MockCall::SetBusGain { bus: music_bus(), gain_db: 0.0, fade: BUS_FADE }]
         );
     }
 }

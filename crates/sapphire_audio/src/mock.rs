@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::Bus;
+use sapphire_assets::mix::{Mix, OutputProfile};
 use sapphire_assets::sound::DecodedSound;
 
 use crate::backend::{
-    AudioBackend, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
+    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
 };
 
 /// One thing asked of a [`MockBackend`].
@@ -16,10 +16,14 @@ use crate::backend::{
 pub enum MockCall {
     AddSound(AssetId),
     RemoveSound(AssetId),
+    /// A mix with this many buses.
+    SetMix {
+        buses: usize,
+    },
     StartVoice {
         slot: VoiceSlot,
         sound: AssetId,
-        bus: Bus,
+        bus: BusId,
         params: VoiceParams,
         frozen: bool,
     },
@@ -35,14 +39,20 @@ pub enum MockCall {
         slot: VoiceSlot,
     },
     SetBus {
-        bus: Bus,
+        bus: BusId,
         params: BusParams,
     },
     SetBusGain {
-        bus: Bus,
+        bus: BusId,
         gain_db: f32,
         fade: Duration,
     },
+    PauseBus {
+        bus: BusId,
+        paused: bool,
+        fade: Duration,
+    },
+    SetOutputProfile(OutputProfile),
     /// The stems are [`MockBackend::stems`].
     LoadMusic {
         tempo_bpm: f32,
@@ -129,11 +139,15 @@ impl AudioBackend for MockBackend {
         self.calls.push(MockCall::RemoveSound(id));
     }
 
+    fn set_mix(&mut self, mix: &Mix) {
+        self.calls.push(MockCall::SetMix { buses: mix.buses.len() });
+    }
+
     fn start_voice(
         &mut self,
         slot: VoiceSlot,
         sound: AssetId,
-        bus: Bus,
+        bus: BusId,
         params: VoiceParams,
         frozen: bool,
     ) -> Result<(), StartError> {
@@ -161,12 +175,20 @@ impl AudioBackend for MockBackend {
         self.finished.contains(&slot)
     }
 
-    fn set_bus(&mut self, bus: Bus, params: BusParams) {
+    fn set_bus(&mut self, bus: BusId, params: BusParams) {
         self.calls.push(MockCall::SetBus { bus, params });
     }
 
-    fn set_bus_gain(&mut self, bus: Bus, gain_db: f32, fade: Duration) {
+    fn set_bus_gain(&mut self, bus: BusId, gain_db: f32, fade: Duration) {
         self.calls.push(MockCall::SetBusGain { bus, gain_db, fade });
+    }
+
+    fn pause_bus(&mut self, bus: BusId, paused: bool, fade: Duration) {
+        self.calls.push(MockCall::PauseBus { bus, paused, fade });
+    }
+
+    fn set_output_profile(&mut self, profile: OutputProfile) {
+        self.calls.push(MockCall::SetOutputProfile(profile));
     }
 
     fn load_music(&mut self, tempo_bpm: f32, stems: &[StemStart], fade: Duration) -> Result<(), StartError> {

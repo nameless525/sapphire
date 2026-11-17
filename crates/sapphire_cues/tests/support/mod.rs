@@ -168,6 +168,7 @@ impl Fight {
                 dt: FRAME,
                 listener: Listener::default(),
                 world_time_scale: 1.0,
+                snapshots: &[],
                 emitters: &self.emitters,
                 cues: self.cues.sounds(),
                 lines: self.cues.lines(),

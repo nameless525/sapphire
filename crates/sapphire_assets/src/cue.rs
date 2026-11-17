@@ -213,9 +213,20 @@ impl Bus {
         self as usize
     }
 
-    /// Whether the bus takes the world clock's snapshot (spec §5.15).
-    pub const fn follows_world_clock(self) -> bool {
-        matches!(self, Self::Sfx | Self::Ambience)
+    /// The category's name in a [`Mix`](crate::mix::Mix) (M6 U2): the root of its buses.
+    pub const fn mix_name(self) -> &'static str {
+        match self {
+            Self::Sfx => "sfx",
+            Self::Ambience => "ambience",
+            Self::Ui => "ui",
+            Self::Music => "music",
+            Self::Voice => "voice",
+        }
+    }
+
+    /// The category a mix's root bus is named for.
+    pub fn from_mix_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|bus| bus.mix_name() == name)
     }
 }
 
@@ -557,10 +568,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_worlds_buses_follow_the_world_clock() {
+    fn each_category_is_named_in_a_mix_and_keeps_its_place() {
         for bus in Bus::ALL {
-            assert_eq!(bus.follows_world_clock(), matches!(bus, Bus::Sfx | Bus::Ambience), "{bus:?}");
+            assert_eq!(Bus::from_mix_name(bus.mix_name()), Some(bus));
         }
+        assert_eq!(Bus::from_mix_name("Sfx"), None);
         for (index, bus) in Bus::ALL.into_iter().enumerate() {
             assert_eq!(bus.index(), index);
         }

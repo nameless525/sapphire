@@ -4,7 +4,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::assets::Score",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         tempo_bpm: 120.0,
 //!         beats_per_bar: 4,
@@ -21,13 +21,13 @@
 //!         ],
 //!         fade_beats: 2.0,
 //!         volume_db: -6.0,
-//!         duck_db: -10.0,
 //!     ),
 //! )
 //! ```
 //!
 //! A phase change lands on the next bar, where the stems it starts fade in and those it ends fade out,
-//! over `fade_beats`. That, and holding stems to their bars, is `sapphire_audio`'s; the cook checks that
+//! over `fade_beats`. How far it goes down under a voice line is the mix's ([`Mix`](crate::mix::Mix)'s ducking
+//! rules), not the score's. Playing it, and holding stems to their bars, is `sapphire_audio`'s; the cook checks that
 //! each stem is a sound of whole bars. The cooked form is the same type, so a score loads as an asset
 //! whose dependencies are its stems.
 
@@ -92,21 +92,16 @@ pub struct Score {
     /// The whole score's gain, in decibels.
     #[serde(default)]
     pub volume_db: f32,
-    /// How far it goes down while a voice line plays, in decibels: 0 or below.
-    #[serde(default = "voice_duck")]
-    pub duck_db: f32,
 }
 
 fn one_beat() -> f32 {
     1.0
 }
 
-fn voice_duck() -> f32 {
-    -10.0
-}
-
 impl Versioned for Score {
-    const VERSION: u32 = 1;
+    /// Version 2 (M6 U2) moved how far the music goes down under a voice line, `duck_db`, into the mix's ducking
+    /// rules ([`Mix`](crate::mix::Mix)).
+    const VERSION: u32 = 2;
 }
 
 /// One of a score's stems.
@@ -251,9 +246,6 @@ impl Score {
         if !(self.volume_db.is_finite() && self.volume_db <= MAX_VOLUME_DB) {
             return field("volume_db", format!("{} isn't up to {MAX_VOLUME_DB}", self.volume_db));
         }
-        if !(self.duck_db.is_finite() && self.duck_db <= 0.0) {
-            return field("duck_db", format!("{} isn't quieter", self.duck_db));
-        }
         Ok(())
     }
 
@@ -314,7 +306,6 @@ impl ArchivedScore {
                 .collect(),
             fade_beats: self.fade_beats.to_native(),
             volume_db: self.volume_db.to_native(),
-            duck_db: self.duck_db.to_native(),
         }
     }
 }
@@ -339,14 +330,13 @@ mod tests {
             ("phases", phases),
             ("fade_beats", ""),
             ("volume_db", ""),
-            ("duck_db", ""),
         ];
         let data: String = lines
             .iter()
             .map(|&(name, default)| if name == field { line } else { default })
             .map(|line| format!("        {line}\n"))
             .collect();
-        format!("(\n    type: \"sapphire::assets::Score\",\n    version: 1,\n    data: (\n{data}    ),\n)\n")
+        format!("(\n    type: \"sapphire::assets::Score\",\n    version: 2,\n    data: (\n{data}    ),\n)\n")
     }
 
     fn error_of(field: &str, line: &str) -> String {
@@ -360,7 +350,7 @@ mod tests {
     #[test]
     fn a_score_reads_with_its_defaults_and_cooks_back() {
         let score = good();
-        assert_eq!((score.fade_beats, score.volume_db, score.duck_db), (1.0, 0.0, -10.0));
+        assert_eq!((score.fade_beats, score.volume_db), (1.0, 0.0));
         assert_eq!(score.phase("running"), Some(1));
         assert_eq!(score.stem("drums"), Some(1));
         let cooked = score.to_cooked().unwrap();
@@ -384,7 +374,6 @@ mod tests {
             ("bars", "bars: 65,"),
             ("fade_beats", "fade_beats: -1.0,"),
             ("volume_db", "volume_db: 40.0,"),
-            ("duck_db", "duck_db: 3.0,"),
             ("stems", "stems: [],"),
             ("phases", "phases: [],"),
         ] {

@@ -101,7 +101,7 @@ Each frame, the fixed step advances the simulation, then resolves everything the
 
 ## Status
 
-**Sapphire 0.1.0** is the first release: the milestones below, all built ([changelog](CHANGELOG.md)). It runs on macOS, the iOS Simulator and the Android emulator; Windows and Linux build, pass their tests and render the golden images in CI. What only a phone, a store account or a person can prove is still owed.
+**Sapphire 0.2.0** is the second release: the milestones below, all built ([changelog](CHANGELOG.md)). M5's exit test 1 was not met on Desktop-High, by 0.03 ms of GPU frame on one valid round; the maintainer carried the rest to the next milestone. It runs on macOS, the iOS Simulator and the Android emulator; Windows and Linux build, pass their tests and render the golden images in CI. What only a phone, a store account or a person can prove is still owed.
 
 | Milestone | What it built |
 |---|---|
@@ -109,8 +109,9 @@ Each frame, the fixed step advances the simulation, then resolves everything the
 | **M2** Combat slice | Animation, physics, the combat core, the camera director, enemy AI, audio, VFX, touch controls and the timeline editor |
 | **M3** World and tools | Zones, navigation, the sequencer and dialogue, Luau, UI and menus, saves, localization and the editor's documents: the Lantern Ward |
 | **M4** Ship readiness | Pipeline warm-up, signed patches, quality tiers and heat, crash symbols, accessibility, store packages and playtests |
+| **M5** Fidelity at scale | A generated benchmark at the content budgets; draw lists, instancing, culling and levels of detail; texture streaming inside a hard pool; reflection probes, wet streets, effect meshes, decals and depth of field; playable kinds, chain cloth, faces and a crowd |
 
-The spec's [milestones](docs/engine-spec.md#10-milestones) have each one's exit tests and results, and [the M6 handoff](docs/m6-handoff.md) says what the next one inherits from M5, fidelity at scale ([its plan](docs/m5-plan.md)).
+The spec's [milestones](docs/engine-spec.md#10-milestones) have each one's exit tests and results, and [the M6 handoff](docs/m6-handoff.md) says what the next one inherits from M5.
 
 ## Documentation
 

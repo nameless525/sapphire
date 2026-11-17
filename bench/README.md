@@ -23,19 +23,20 @@ cook `content/` alone; `bench/` sits beside it, never in it.
 |---|---|---|
 | `district/` | M5 B2 | `district.ron`: the streets, building variants, props, lanterns, dressing and look, and each preset's scale. `district_day.ron`: its dusk and night keys. `prefabs/`: the props, from parametric shapes and builtins. `surfaces/`: procedural texture specs (`.ptex.ron`), the families the texture sets are varied from. The plaza's fight is code (`sapphire_synthetic_zone::district`), and so is what a body meets (M5 B5): the ground and a box a block, the same at every preset, which the generator writes as `district.colliders.ron` |
 | `cast/` | M5 B3 | `cast.ron`: each figure and what each preset makes of it. `figures/`: figure specs (the hero, an enemy, six ambient figures), built as `tools/figures/` specs are |
+| `trees/` | M6 G6a | `trees.ron`: the species and each preset's leaf atlas size. `species/`: a spec each (`.tree.ron`, `sapphire_pipeline::tree`) for a broadleaf, a blossom, a conifer and a willow, each grown at three ages by space colonization, with a leaf atlas painted in brush strokes: the trees the nature zone's forest places (M6 G2b) |
 | `kinds.ron` | M5 C12b | The shipped kinds a preset makes again at spec §3.4's rows, from their specs in `tools/figures/`: see "The kinds", below |
 
-Each folder is a part with a generator of its own in `sapphire_pipeline::bench` (`district.rs`, `cast.rs`),
-which reads only its folder, so the district and the cast grow without touching each other's files. A part
+Each folder is a part with a generator of its own in `sapphire_pipeline::bench` (`district.rs`, `cast.rs`, `trees.rs`),
+which reads only its folder, so the parts grow without touching each other's files. A part
 names the other's assets by ID (`bench::asset_id`), derived from their generated paths.
 
 The presets:
 
-| Preset | District | Cast |
-|---|---|---|
-| `ci` | 4 × 4 cells (the plaza and a ring of twelve blocks): 95 buildings of the 40 variants, 1,565 props, 133 lights, 4 texture sets at 256 texels | a small hero, an enemy and two ambient figures, maps at 256 texels |
-| `budget` | 8 × 8 cells, 256 m square: 469 buildings of 40 variants, 6,943 props, 518 lights, 160 texture sets at 2048 texels: 2.5 GiB of maps on desktop, the texture pool. A desktop cell draws 13 of them, not 16 (M5 B7), so the tour's worst frame sits at spec §3.4's 2,500 main draws | three heroes at spec §3.4's hero row, three enemies at 8,000 triangles, six ambient figures sharing a skeleton |
-| `double` | the budget's district at 320 texture sets: twice the pool | the budget's |
+| Preset | District | Cast | Trees |
+|---|---|---|---|
+| `ci` | 4 × 4 cells (the plaza and a ring of twelve blocks): 95 buildings of the 40 variants, 1,565 props, 133 lights, 4 texture sets at 256 texels | a small hero, an enemy and two ambient figures, maps at 256 texels | four species at three ages, atlases at 256 texels |
+| `budget` | 8 × 8 cells, 256 m square: 469 buildings of 40 variants, 6,943 props, 518 lights, 160 texture sets at 2048 texels: 2.5 GiB of maps on desktop, the texture pool. A desktop cell draws 13 of them, not 16 (M5 B7), so the tour's worst frame sits at spec §3.4's 2,500 main draws | three heroes at spec §3.4's hero row, three enemies at 8,000 triangles, six ambient figures sharing a skeleton | the same twelve trees, atlases at 1024 texels (512 on the phones) |
+| `double` | the budget's district at 320 texture sets: twice the pool | the budget's | the budget's |
 
 To open the district after a cook, a `dev` sandbox reads the shipped packs and the district's pack side by
 side (a shipping build mounts only what its release manifest names; `cargo xtask bench-content

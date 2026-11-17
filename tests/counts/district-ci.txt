@@ -4,8 +4,8 @@
 # Rewrite it with `cargo xtask counts --update` when a count moves on purpose, and say why in the change.
 #
 # preset: ci
-# sources: eb7075c6d42a3466 (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
-# sources-mobile: 9d02413a1a5b1af6 (the phones' district, which the phone tiers' walks read, the same digest)
+# sources: 3b8b25cd1baaf11c (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
+# sources-mobile: 9ece6ce7e60b2d8c (the phones' district, which the phone tiers' walks read, the same digest)
 # walks: --bench 3720 --draw-every 7 --size 320x180 --zone district --zone-walk tour --mount zone_proving_hub --ambient on --compute-threads 3, at each tier's settings and cook
 # reported in counts.txt, not held (the order cells arrive in is timing):
 #   materials bound: bound when the next draw's material differs, so it follows the draws' order

@@ -1,0 +1,41 @@
+// A willow (M6 G6a): branches arching up and out into a dome, and from every twig strands of narrow
+// leaves hanging straight down, the canopy a curtain. Fresh yellow-green, its strands' tops in the shade.
+// The strands sway with the leaves' flutter until G10's hanging weights.
+//
+// Heights in metres; the crown and the growth in fractions of the height and in growth steps
+// (`sapphire_pipeline::tree`). A strand's card is its length.
+(
+    type: "sapphire::pipeline::TreeSpecies",
+    version: 1,
+    data: (
+        name: "willow",
+        seed: 4409,
+        crown: (shape: Ellipsoid, base: 0.4, radius: 0.42, shell: 0.5),
+        growth: (steps: 34, influence: 7.0, kill: 1.5, leader: 0.45, tropism: 0.25, lean: 0.05),
+        wood: (
+            tip: 0.014,
+            exponent: 2.05,
+            thinnest: 0.022,
+            sides: (10, 4),
+            flare: 0.6,
+            root: "#54463e",
+            top: "#7a6a56",
+        ),
+        leaves: (
+            brush: Strand,
+            cards: 2,
+            fill: "#8cbc5a",
+            light: "#d0ec8a",
+            shade: "#4e8a5e",
+            accent: "#6a7a44",
+            inner: "#7a90a0",
+            translucency: "#e0f090",
+        ),
+        wind: (sway: 0.1, bend: 0.18, flutter: 0.06, flutter_frequency: 1.6),
+        ages: [
+            (name: "young", height: 4.0, points: 240, card: 1.4, clumps: 6),
+            (name: "mature", height: 7.5, points: 650, card: 2.4, clumps: 12),
+            (name: "old", height: 11.0, points: 1200, card: 3.2, clumps: 18),
+        ],
+    ),
+)

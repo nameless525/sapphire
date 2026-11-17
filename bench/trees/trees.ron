@@ -1,0 +1,16 @@
+// The benchmark's trees (M6 G6a): the four species the nature zone's forest places (M6 G2b), each a spec in
+// `species/`, grown at its three ages by `sapphire_pipeline::tree` (space colonization on the deterministic
+// maths) with a leaf atlas painted in brush strokes. Every tree is generated: no plant is downloaded or
+// licensed. A preset sizes only the leaf atlases; every model is the same at every preset and on every cook.
+(
+    type: "sapphire::pipeline::BenchTrees",
+    version: 1,
+    data: (
+        species: ["broadleaf", "blossom", "conifer", "willow"],
+        presets: (
+            ci: (atlas: 256),
+            // The tree row's map (`sapphire_pipeline check`): 1024 a side, capped to 512 on the phones.
+            budget: (atlas: 1024),
+        ),
+    ),
+)

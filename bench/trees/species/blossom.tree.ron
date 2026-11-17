@@ -1,0 +1,40 @@
+// A blossom tree (M6 G6a): a short, leaning trunk that forks low into a wide, flat head of pastel puffs.
+// Pink petals with a near-white lit side and a deep rose heart; the canopy's inside a cool lilac.
+//
+// Heights in metres; the crown and the growth in fractions of the height and in growth steps
+// (`sapphire_pipeline::tree`).
+(
+    type: "sapphire::pipeline::TreeSpecies",
+    version: 1,
+    data: (
+        name: "blossom",
+        seed: 2203,
+        crown: (shape: Ellipsoid, base: 0.38, radius: 0.48, shell: 0.5),
+        growth: (steps: 32, influence: 7.0, kill: 1.5, leader: 0.32, tropism: 0.05, lean: 0.08),
+        wood: (
+            tip: 0.014,
+            exponent: 2.1,
+            thinnest: 0.02,
+            sides: (9, 4),
+            flare: 0.5,
+            root: "#4a3a3e",
+            top: "#6e5658",
+        ),
+        leaves: (
+            brush: Petal,
+            cards: 2,
+            fill: "#f4b6c8",
+            light: "#fde8ee",
+            shade: "#d888a8",
+            accent: "#c8506e",
+            inner: "#a890b8",
+            translucency: "#ffd0dc",
+        ),
+        wind: (sway: 0.07, bend: 0.1, flutter: 0.03, flutter_frequency: 2.4),
+        ages: [
+            (name: "young", height: 3.5, points: 240, card: 0.6, clumps: 6),
+            (name: "mature", height: 6.5, points: 650, card: 0.95, clumps: 12),
+            (name: "old", height: 9.5, points: 1200, card: 1.3, clumps: 18),
+        ],
+    ),
+)

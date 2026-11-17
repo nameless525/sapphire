@@ -1,0 +1,40 @@
+// A conifer (M6 G6a): a straight leader to the top and tiers of drooping branches in a cone, their
+// fronds lying along the twigs. Deep blue-green needles, lighter where the light catches them.
+//
+// Heights in metres; the crown and the growth in fractions of the height and in growth steps
+// (`sapphire_pipeline::tree`).
+(
+    type: "sapphire::pipeline::TreeSpecies",
+    version: 1,
+    data: (
+        name: "conifer",
+        seed: 3307,
+        crown: (shape: Cone, base: 0.14, radius: 0.26, shell: 0.3),
+        growth: (steps: 44, influence: 5.0, kill: 1.4, leader: 0.97, tropism: -0.25, lean: 0.015),
+        wood: (
+            tip: 0.012,
+            exponent: 2.0,
+            thinnest: 0.022,
+            sides: (10, 4),
+            flare: 0.7,
+            root: "#4c3c38",
+            top: "#6a5048",
+        ),
+        leaves: (
+            brush: Needle,
+            cards: 3,
+            fill: "#2f7a66",
+            light: "#6fb88a",
+            shade: "#1e5054",
+            accent: "#4a3a30",
+            inner: "#5a6e9a",
+            translucency: "#a8d890",
+        ),
+        wind: (sway: 0.06, bend: 0.07, flutter: 0.02, flutter_frequency: 1.8),
+        ages: [
+            (name: "young", height: 5.0, points: 320, card: 0.9, clumps: 6),
+            (name: "mature", height: 11.0, points: 900, card: 1.4, clumps: 12),
+            (name: "old", height: 18.0, points: 1700, card: 1.9, clumps: 20),
+        ],
+    ),
+)

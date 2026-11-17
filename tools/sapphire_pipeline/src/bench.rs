@@ -12,7 +12,7 @@
 //! # Parts
 //!
 //! The tree is made of parts ([`PARTS`]), each a folder of `bench/` and a generator of its own: the
-//! district ([`district`], M5 B2's) and the cast ([`cast`], M5 B3's). A part reads its own folder, so its
+//! district ([`district`], M5 B2's), the cast ([`cast`], M5 B3's) and the trees ([`trees`], M6 G6a's). A part reads its own folder, so its
 //! presets and documents are its own, and returns its sources ([`Source`]) relative to its folder in the
 //! output. This module writes them, gives each its sidecar with an ID derived from its path ([`asset_id`]),
 //! and removes whatever an earlier run wrote that this one didn't. A part names another part's assets by
@@ -53,17 +53,20 @@ use sapphire_serialize::DocumentError;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::check::Budget;
 use crate::cook::Cook;
 use crate::figure::FigureError;
 use crate::generators::Output;
 use crate::meta::{self, AssetMeta, ImportSettings};
 use crate::samples::{Existing, Generated, write_files};
+use crate::tree::TreeError;
 
 pub mod cast;
 pub mod district;
 pub mod kinds;
 #[cfg(test)]
 mod tests;
+pub mod trees;
 
 /// The root every benchmark asset's ID derives from ([`asset_id`]).
 pub const BENCH_ROOT: AssetId = AssetId::from_text("4b0c8e31-5d27-4f6a-9a83-2e61c07db5f4");
@@ -74,7 +77,8 @@ pub const BENCH_ROOT: AssetId = AssetId::from_text("4b0c8e31-5d27-4f6a-9a83-2e61
 pub const MARKER: &str = ".bench-source";
 
 /// Every part: its folder under `bench/` and in the output, and its generator.
-pub const PARTS: [(&str, Generator); 2] = [("district", district::generate), ("cast", cast::generate)];
+pub const PARTS: [(&str, Generator); 3] =
+    [("district", district::generate), ("cast", cast::generate), (trees::PART, trees::generate)];
 
 /// A part's generator: its folder under `bench/`, the preset and the cook the tree is for, to its sources.
 pub type Generator = fn(&Path, Preset, Cook) -> Result<Vec<Source>, BenchError>;
@@ -203,22 +207,29 @@ pub struct Source {
     /// Its sidecar's importer and whether it cooks, or none for a file only another source reads (a
     /// control map an ILM document packs).
     pub sidecar: Option<(ImportSettings, bool)>,
+    /// Its sidecar's `budget`: the role `sapphire_pipeline check` holds it to.
+    pub budget: Option<Budget>,
 }
 
 impl Source {
     /// A source that cooks, as `importer` reads it.
     pub fn asset(path: impl Into<String>, bytes: Vec<u8>, importer: ImportSettings) -> Self {
-        Self { path: path.into(), bytes, sidecar: Some((importer, true)) }
+        Self { path: path.into(), bytes, sidecar: Some((importer, true)), budget: None }
     }
 
     /// A source that's only read by others: a prefab, which zones place.
     pub fn uncooked(path: impl Into<String>, bytes: Vec<u8>, importer: ImportSettings) -> Self {
-        Self { path: path.into(), bytes, sidecar: Some((importer, false)) }
+        Self { path: path.into(), bytes, sidecar: Some((importer, false)), budget: None }
     }
 
     /// A file without a sidecar, read by another source.
     pub fn input(path: impl Into<String>, bytes: Vec<u8>) -> Self {
-        Self { path: path.into(), bytes, sidecar: None }
+        Self { path: path.into(), bytes, sidecar: None, budget: None }
+    }
+
+    /// The same source, its sidecar holding `budget`.
+    pub fn with_budget(self, budget: Budget) -> Self {
+        Self { budget: Some(budget), ..self }
     }
 }
 
@@ -252,6 +263,8 @@ pub enum BenchError {
     OtherCook { dir: PathBuf, written: Cook, asked: Cook },
     #[error(transparent)]
     Figure(#[from] FigureError),
+    #[error(transparent)]
+    Tree(#[from] TreeError),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -313,7 +326,8 @@ pub fn generate_with(
                 return Err(BenchError::Path { part, path: source.path });
             }
             if let Some((importer, cook)) = source.sidecar {
-                let meta = AssetMeta { id: asset_id(part, &source.path), importer, cook, budget: None };
+                let meta =
+                    AssetMeta { id: asset_id(part, &source.path), importer, cook, budget: source.budget };
                 let text = sapphire_serialize::to_ron(&meta).expect("a sidecar serializes");
                 let sidecar = meta::sidecar_path(Path::new(&name)).to_string_lossy().replace('\\', "/");
                 written.insert(sidecar.clone());

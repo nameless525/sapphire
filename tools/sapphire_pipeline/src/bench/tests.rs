@@ -48,9 +48,9 @@ fn generating_twice_writes_the_same_bytes() {
 
 /// The `ci` preset's generated tree, pinned folder by folder: blake3 over each file's path, length
 /// and bytes, in path order. Everything the generator does is integer hashes, the four operations,
-/// `sqrt`, `floor` and `sapphire_math::det` (the figures' rings, rotations and colours included), so
-/// these are the same on every OS and architecture: CI's x86-64 runs fail here if one disagrees, and
-/// say which folder. A change to `bench/` or a generator moves them on purpose: update them then.
+/// `sqrt`, `floor` and `sapphire_math::det` (the figures' rings, rotations and colours, and the trees'
+/// growth, tubes, cards and painted atlases, included), so these are the same on every OS and
+/// architecture: CI's x86-64 runs fail here if one disagrees, and say which folder. A change to `bench/` or a generator moves them on purpose: update them then.
 #[test]
 fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
     const PINNED: &[(&str, &str)] = &[
@@ -64,6 +64,10 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
         ("district/materials", "57aaa0fc00432b725fe541e79abfa9e0b89db350aad58b9d6045af8e407685b0"),
         ("district/prefabs", "fd7f488cd15839048f1ecd7c2dc0f05d588fed511ddaedc1270d2e4b4923476c"),
         ("district/textures", "3e8613b7430eec9bb2d03163a999abe8ff34be45744a6c7908f0b94d853005c0"),
+        ("trees/blossom", "78a5f9d6bcf5faa07948468101050cbd5c40d12498dcf12287debdf9eef8a103"),
+        ("trees/broadleaf", "e11e019c52e3729e626569cdca84cee1f3e29b162afefedec02a6f492703c4d2"),
+        ("trees/conifer", "0cb8d797e6d4280496b8d658e8058b3ef9595e8b3f91763137bd60e6ddba9e97"),
+        ("trees/willow", "30d6e9d957dca84d050e3fa5388db892e1bbbbbeff21d9447d5e473cb365954c"),
     ];
     let dir = TempDir::new("bench_pinned");
     generate(&bench_dir(), Preset::Ci, Cook::Desktop, dir.path()).unwrap();
@@ -94,8 +98,9 @@ fn a_preset_scales_the_district_and_the_cast() {
     };
     assert_eq!(count(Preset::Ci, ".ptex.ron"), 4 * 3);
     assert_eq!(count(Preset::Budget, ".ptex.ron"), 160 * 3);
-    assert_eq!((count(Preset::Ci, ".vrm"), count(Preset::Ci, ".glb")), (1, 3));
-    assert_eq!((count(Preset::Budget, ".vrm"), count(Preset::Budget, ".glb")), (3, 3 + 6));
+    // The cast's models, and the trees' four species at three ages at every preset.
+    assert_eq!((count(Preset::Ci, ".vrm"), count(Preset::Ci, ".glb")), (1, 3 + 12));
+    assert_eq!((count(Preset::Budget, ".vrm"), count(Preset::Budget, ".glb")), (3, 3 + 6 + 12));
 
     // Every source but the control maps, the face's threshold masks and the district's day has a
     // sidecar, every sidecar's ID is its own, and the zone reaches every material.

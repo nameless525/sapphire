@@ -1,0 +1,41 @@
+// A broadleaf (M6 G6a): a round head of leafy clumps on a clear bole, the forest's common tree. Its
+// branches reach out to a crown whose points crowd toward its surface, so the canopy reads as a few soft
+// masses; warm yellow-green on top, cool teal in its shade.
+//
+// Heights in metres; the crown and the growth in fractions of the height and in growth steps
+// (`sapphire_pipeline::tree`).
+(
+    type: "sapphire::pipeline::TreeSpecies",
+    version: 1,
+    data: (
+        name: "broadleaf",
+        seed: 1101,
+        crown: (shape: Ellipsoid, base: 0.34, radius: 0.34, shell: 0.6),
+        growth: (steps: 36, influence: 7.0, kill: 1.5, leader: 0.42, tropism: 0.15, lean: 0.04),
+        wood: (
+            tip: 0.015,
+            exponent: 2.05,
+            thinnest: 0.022,
+            sides: (10, 4),
+            flare: 0.6,
+            root: "#5e4c46",
+            top: "#8c7868",
+        ),
+        leaves: (
+            brush: Broad,
+            cards: 2,
+            fill: "#6fa84e",
+            light: "#b8dc72",
+            shade: "#3c7a5a",
+            accent: "#5a4636",
+            inner: "#7088a8",
+            translucency: "#d6ec78",
+        ),
+        wind: (sway: 0.09, bend: 0.12, flutter: 0.035, flutter_frequency: 2.2),
+        ages: [
+            (name: "young", height: 4.5, points: 260, card: 0.75, clumps: 6),
+            (name: "mature", height: 8.5, points: 700, card: 1.1, clumps: 12),
+            (name: "old", height: 13.0, points: 1300, card: 1.5, clumps: 20),
+        ],
+    ),
+)

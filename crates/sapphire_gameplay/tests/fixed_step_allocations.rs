@@ -14,16 +14,18 @@ use sapphire_gameplay::replay::{
     StepAllocated, add_melee_buttons, find_scenario, find_script, melee,
 };
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, ControllerProfile, Faction,
-    HitQuery, HurtboxId, INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation, TickActions,
-    VolumeSweep, WarpTarget, remove_hurtboxes,
+    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CharacterWorld, CombatSet, ControllerProfile,
+    Faction, HitQuery, HurtboxId, INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation,
+    TickActions, VolumeSweep, WarpTarget, remove_hurtboxes,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample};
 use sapphire_physics::{
     ColliderId, Group, GroupMask, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape,
 };
+use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::{ScaleSource, SimDuration};
+use sapphire_zone::{ArchivedZoneSimulation, WaterVolumes, Zone, ZoneDocument, ZoneGeometry};
 use support::{SLICE, mesh_arena, press, script, slice, world};
 
 #[global_allocator]
@@ -211,6 +213,78 @@ fn a_characters_body_comes_and_goes_without_allocating() {
     });
     assert_eq!(counts.allocations, 0, "{} allocations", counts.allocations);
     assert_eq!(sim.physics().body_count(), 2);
+}
+
+/// What a step that asks where the water is reads, and what it found there.
+#[derive(Resource)]
+struct Wading {
+    zone: &'static ArchivedZoneSimulation,
+    samples: u32,
+    deepest: f32,
+}
+
+/// Asks the water at every actor's feet, the floor's depth with it, as a system reading a zone's water would.
+fn wade(
+    mut wading: ResMut<'_, Wading>,
+    world: Res<'_, CharacterWorld>,
+    actors: Query<'_, '_, &ActorTransform>,
+) {
+    let physics = world.physics();
+    let floor = |x, from_y, z, reach| physics.floor_below(Vec3::new(x, from_y, z), reach);
+    let volumes = WaterVolumes::new(wading.zone, floor);
+    let (mut samples, mut deepest) = (0, wading.deepest);
+    for transform in &actors {
+        let Vec3 { x, y, z } = transform.position;
+        if let Some(sample) = volumes.at(x, y, z) {
+            samples += 1;
+            deepest = det::max(deepest, sample.depth.unwrap_or(0.0));
+        }
+    }
+    wading.samples += samples;
+    wading.deepest = deepest;
+}
+
+/// Characters walking on the mesh arena through a lake and a river (M6 W2), every one's feet asked of the
+/// water each step with a ray for the floor's depth: nothing of that allocates, from the first step.
+#[test]
+fn asking_where_the_water_is_does_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let document = ZoneDocument::from_ron(
+        r#"(type: "sapphire::zone::ZoneDocument", version: 1, data: (
+            grid: (cell_size: 16.0),
+            water: [
+                (name: "pond", shape: Lake(outline: [(-16.0, -16.0), (1.0, -16.0), (1.0, 16.0), (-16.0, 16.0)], height: 0.6)),
+                (name: "brook", shape: River(points: [
+                    (at: (-16.0, 0.4, -10.0), width: 4.0, speed: 1.0),
+                    (at: (16.0, 0.4, -10.0), width: 4.0, speed: 2.0),
+                ])),
+            ],
+        ))"#,
+    )
+    .expect("a good zone");
+    let zone = document.cook(ZoneGeometry::default()).expect("cooks");
+    let cooked: &'static AlignedVec = Box::leak(Box::new(zone.to_cooked().expect("archives")));
+    let zone = &Zone::read(cooked).expect("reads").simulation;
+
+    let (mut sim, actors) = characters(6);
+    sim.insert_resource(Wading { zone, samples: 0, deepest: 0.0 });
+    sim.add_combat_system(CombatSet::Movement, wade);
+    let ticks: Vec<TickActions> = (0..1200).map(|tick| mesh_arena::tick_actions(tick, &actors)).collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &ticks {
+            sim.step(actions);
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "1200 steps allocated {} times", counts.allocations);
+    assert_eq!(sim.stats().allocations, 0, "and the stat agrees");
+    let wading = sim.world().resource::<Wading>();
+    assert!(wading.samples > 1200, "they waded: {}", wading.samples);
+    // The arena's ground is bumped by up to 12 cm, under a pond at 0.6 m.
+    assert!(wading.deepest > 0.4 && wading.deepest <= 0.6, "{}", wading.deepest);
 }
 
 /// `count` different characters on the mesh arena.

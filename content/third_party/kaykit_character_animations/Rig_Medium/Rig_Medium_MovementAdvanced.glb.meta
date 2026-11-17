@@ -9,6 +9,10 @@
             ),
             rig: "9a29e8c0-f131-4ea4-98b9-04879740413d",
             names: [],
+            // One side dodge authored, the other its mirror image (M6 A1), so the two always match.
+            mirror: {
+                "Dodge_Right": "Dodge_Left",
+            },
             retarget: [
                 // On the character (M2 O2, `clip::retarget`'s "Adjustments"): arms in, since a chibi's
                 // clear a body twice as thick; the stance in, the feet staying flat; fingers curled,

@@ -21,7 +21,8 @@
 //!   phase that drew (M5 B5).
 //! - **Core kinds:** each frame samples which kind of core the main thread was on as its CPU work ended
 //!   (`sapphire_platform::current_core`), and each phase logs its frames' CPU and GPU times split by kind,
-//!   which is what explains a ×2.6–3 spread between runs of one build: a frame on an efficiency core.
+//!   which is what explains a ×2.6–3 spread between runs of one build: a frame on an efficiency core. Beside
+//!   them, the thread's CPU time over those frames (M6 B3), which says whether a slow frame worked or waited.
 
 use std::time::Duration;
 
@@ -523,6 +524,8 @@ pub(super) fn report(trace: &[Traced], phase: Phase, budgets: &RunBudgets) {
         }
         let cpu = spread(on().map(|frame| (frame.cpu, frame.tick))).expect("frames");
         let gpu = spread(on().filter_map(|frame| Some((frame.gpu.span?, frame.tick))));
+        // Beside the kind, how much of the frame its thread spent on a core (M6 B3).
+        let on_core = spread(on().filter_map(|frame| Some((frame.cpu_on_core?, frame.tick))));
         let micros = |duration: Duration| format!("{:.1}", duration.as_secs_f64() * 1e6);
         tracing::info!(
             target: LOG_TARGET,
@@ -533,6 +536,8 @@ pub(super) fn report(trace: &[Traced], phase: Phase, budgets: &RunBudgets) {
             cpu_us_p50 = micros(cpu.p50),
             cpu_us_p95 = micros(cpu.p95),
             cpu_us_worst = micros(cpu.worst),
+            on_core_us_p50 = on_core.map(|on_core| micros(on_core.p50)),
+            on_core_us_p95 = on_core.map(|on_core| micros(on_core.p95)),
             gpu_us_p50 = gpu.map(|gpu| micros(gpu.p50)),
             gpu_us_p95 = gpu.map(|gpu| micros(gpu.p95)),
             "frames by core",

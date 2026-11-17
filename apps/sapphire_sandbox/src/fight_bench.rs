@@ -24,6 +24,14 @@
 //! tick that frame fell on and the budget it has on this tier. `--bench-trace <csv>` writes every frame:
 //! a spike's tick says which moment of the fight it was. Nothing it records allocates in a frame.
 //!
+//! **Frames left out are rows of their own** (M6 B3): a frame that starts a fight over, and in the GPU phase one
+//! whose timings never came back, are in no row's spread; each phase logs them by reason (`fight excluded`) with
+//! their count, their CPU frame's median and worst, a restart's own time, and what they allocated. **The thread's
+//! CPU time** (`sapphire_platform::thread_cpu_time`) is read beside the wall time over the frame's CPU span, its
+//! record (`FrameLaps::record_on_core`) and its wait for the GPU, as the `... on core` rows: what the wall has over
+//! it, the thread spent off its core, waiting on the encoders' workers, the driver or the GPU, or set aside by the
+//! machine's other work. Drawn offscreen, the GPU wait stands where a window's acquire would block.
+//!
 //! `--draw-every` is the same load and the same fight with nearly no frames drawn, which checks a load's
 //! pipeline inventory (exit test 7) where drawing costs seconds. It logs the pipelines' row, a zone's memory and
 //! its trips' steps, which count frames and bytes rather than time them, and no other rows.
@@ -184,6 +192,9 @@ struct Traced {
     cpu: Duration,
     /// Waiting for the GPU after that.
     wait: Duration,
+    /// The thread's CPU time over [`Self::cpu`] and over [`Self::wait`] (M6 B3), `None` where the OS doesn't say.
+    cpu_on_core: Option<Duration>,
+    wait_on_core: Option<Duration>,
     /// Starting a fight over, within [`Self::cpu`].
     restart: Duration,
     laps: FrameLaps,
@@ -300,7 +311,7 @@ const fn low(desktop: u32, mobile: u32) -> [Option<u32>; 4] {
 const UNBUDGETED: [Option<u32>; 4] = [None; 4];
 
 /// What's logged, in the order of spec §3: the whole, §3.2's rows, what §3.2 has no row for, §3.3's.
-const ROWS: [Row; 34] = [
+const ROWS: [Row; 38] = [
     cpu_row("cpu frame", |t| Some(t.cpu), [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
     cpu_row("game side", |t| Some(t.cpu.saturating_sub(t.laps.prepare + t.laps.record)), low(6_000, 13_600)),
     cpu_row("simulation", |t| Some(t.laps.simulation), low(1_000, 3_000)),
@@ -329,6 +340,13 @@ const ROWS: [Row; 34] = [
     // Only the frames a zone was on its way in, as a hub's exits come behind a trip.
     cpu_row("zone prefetch", |t| (!t.prefetch.is_zero()).then_some(t.prefetch), UNBUDGETED),
     cpu_row("gpu wait", |t| Some(t.wait), UNBUDGETED),
+    // Each span's thread CPU time beside its wall time (M6 B3): what of it the frame's thread spent on its core, so a
+    // frame that waits (on the encoders' workers, the driver, a lock, or a busy machine's other work) reads apart
+    // from one that works. Offscreen, the GPU wait is where a window's acquire would block on a GPU behind it.
+    cpu_row("cpu frame on core", |t| t.cpu_on_core, UNBUDGETED),
+    cpu_row("record", |t| Some(t.laps.record), UNBUDGETED),
+    cpu_row("record on core", |t| t.laps.record_on_core, UNBUDGETED),
+    cpu_row("gpu wait on core", |t| t.wait_on_core, UNBUDGETED),
     gpu_row("gpu frame", |t| t.gpu.span, [Some(12_000), Some(14_000), Some(13_000), Some(26_000)]),
     // A grouped row is held to the sum of its members' figures (M5 Z2): culling and the prepasses.
     gpu_row("gpu prepasses", |t| t.gpu.prepasses, low(1_500, 1_500)).proposing(1_200, 1_000),
@@ -406,6 +424,58 @@ impl Traced {
     /// Bytes the frame uploaded, new assets and raised texture levels both.
     fn uploaded(&self) -> u64 {
         self.counted.uploaded + self.counted.raised
+    }
+}
+
+/// The frame thread's CPU time across a frame's spans (M6 B3), as `sapphire_platform` reads it (R2): a clock read
+/// a span, which allocates nothing. `None` where the OS doesn't say.
+struct OnCore(Option<Duration>);
+
+impl OnCore {
+    fn start() -> Self {
+        Self(sapphire_platform::thread_cpu_time())
+    }
+
+    /// The thread's CPU time since the last read, and a span from now.
+    fn lap(&mut self) -> Option<Duration> {
+        let now = sapphire_platform::thread_cpu_time();
+        let since = self.0.zip(now).map(|(from, to)| to.saturating_sub(from));
+        self.0 = now;
+        since
+    }
+}
+
+/// Why a frame is left out of every row's statistics, each reported on its own as a row of its own (M6 B3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Excluded {
+    /// It started a fight over (or a walk's tour), which a row would read as the fight's worst frame.
+    Restart,
+    /// A GPU phase's frame whose timings never came back, which the GPU rows can't read.
+    Untimed,
+}
+
+impl Excluded {
+    const ALL: [Self; 2] = [Self::Restart, Self::Untimed];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::Untimed => "untimed",
+        }
+    }
+
+    /// Whether a phase can leave frames out for this reason: only the GPU phase times the GPU.
+    fn applies(self, phase: Phase) -> bool {
+        self == Self::Restart || phase == Phase::Gpu
+    }
+
+    /// Whether `frame`, of a phase this [`applies`](Self::applies) to, is left out for this reason. A restart frame
+    /// is a restart frame first.
+    fn holds(self, frame: &Traced, phase: Phase) -> bool {
+        match self {
+            Self::Restart => !frame.restart.is_zero(),
+            Self::Untimed => phase == Phase::Gpu && frame.restart.is_zero() && !frame.gpu.timed,
+        }
     }
 }
 
@@ -713,6 +783,7 @@ impl Run<'_> {
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
         let cpu = Stopwatch::start();
+        let mut on_core = OnCore::start();
         let mut restart = Duration::ZERO;
         if start_over {
             match self.option {
@@ -755,10 +826,12 @@ impl Run<'_> {
         stage.render(self.view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
         let cpu = cpu.elapsed();
+        let cpu_on_core = on_core.lap();
         let core = sapphire_platform::current_core();
         stopwatch.lap();
         stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
         let wait = stopwatch.lap();
+        let wait_on_core = on_core.lap();
         let mix = self.audio.as_mut().map_or(Duration::ZERO, |audio| audio.mix(frame_dt));
         let after = alloc::stats();
 
@@ -802,6 +875,8 @@ impl Run<'_> {
             steps,
             cpu,
             wait,
+            cpu_on_core,
+            wait_on_core,
             restart,
             laps: stage.laps,
             audio: audio_time,
@@ -953,15 +1028,6 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             bytes_per_frame = measured().map(|frame| frame.bytes).sum::<u64>() / count,
             step_allocations = frames().map(|frame| frame.step_allocations).sum::<u64>(),
             sim_allocations = frames().map(|frame| frame.sim_allocations).sum::<u64>(),
-            restart_step_allocations = frames().filter(|frame| !frame.restart.is_zero()).map(|frame| frame.step_allocations).sum::<u64>(),
-            restart_us = format_args!(
-                "{:.1}",
-                frames().map(|frame| micros(frame.restart)).fold(0.0, f64::max)
-            ),
-            restart_frame_us = format_args!(
-                "{:.1}",
-                frames().filter(|frame| !frame.restart.is_zero()).map(|frame| micros(frame.cpu)).fold(0.0, f64::max)
-            ),
             timed_frames = frames().filter(|frame| frame.gpu.timed).count(),
             post_first_use = frames().map(|frame| frame.post_first_use).max().unwrap_or(0),
             mix_us_p50 = format_args!(
@@ -972,9 +1038,46 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             ribbon_points_worst = frames().map(|frame| frame.ribbon_points).max().unwrap_or(0),
             "fight phase",
         );
+        for reason in Excluded::ALL.into_iter().filter(|reason| reason.applies(phase)) {
+            report_excluded(
+                &frames().filter(|frame| reason.holds(frame, phase)).collect::<Vec<_>>(),
+                phase,
+                reason,
+            );
+        }
         zone::report(run.stage, &run.trace, phase);
         counts::report(&run.trace, phase, &counts::RunBudgets::of(run.stage));
     }
+}
+
+/// What a phase's frames left out of the rows for `reason` cost (M6 B3), as a row of their own: how many, their
+/// CPU frame's median and worst with the thread's CPU time over that worst frame, a restart's own time, and what
+/// they allocated, all of it and the most in one frame. With none, a line saying so: none left out, not unlogged.
+fn report_excluded(frames: &[&Traced], phase: Phase, reason: Excluded) {
+    let micros = |duration: Duration| format!("{:.1}", duration.as_secs_f64() * 1e6);
+    let Some(cpu) = spread(frames.iter().enumerate().map(|(at, frame)| (frame.cpu, at as u64))) else {
+        tracing::info!(target: LOG_TARGET, phase = phase.name(), reason = reason.name(), frames = 0, "fight excluded");
+        return;
+    };
+    let worst = frames[cpu.worst_tick as usize];
+    let restart = spread(frames.iter().map(|frame| (frame.restart, frame.tick))).expect("frames");
+    tracing::info!(
+        target: LOG_TARGET,
+        phase = phase.name(),
+        reason = reason.name(),
+        frames = frames.len(),
+        cpu_us_p50 = micros(cpu.p50),
+        cpu_us_worst = micros(cpu.worst),
+        worst_tick = worst.tick,
+        on_core_us_worst = worst.cpu_on_core.map(micros),
+        restart_us_p50 = micros(restart.p50),
+        restart_us_worst = micros(restart.worst),
+        allocations = frames.iter().map(|frame| frame.allocations).sum::<u64>(),
+        allocations_worst = frames.iter().map(|frame| frame.allocations).max().unwrap_or(0),
+        bytes = frames.iter().map(|frame| frame.bytes).sum::<u64>(),
+        step_allocations = frames.iter().map(|frame| frame.step_allocations).sum::<u64>(),
+        "fight excluded",
+    );
 }
 
 /// A phase's waits for a texture's level, while streaming (m5-plan exit test 2), from the phase's start: every
@@ -1082,6 +1185,15 @@ hitstop_player,hitstop_enemy,world_scale,post_first_use,draws,gpu_timed,gpu_span
 gpu_character_prepass,gpu_shadows,gpu_skinning,gpu_sky_cube,gpu_clustering_ao,gpu_taa,gpu_post,gpu_vfx,gpu_ui,gpu_end,\
 script,prefetch,trip,resident,mesh_pool,textures,entities,process,";
 
+/// The thread's CPU time over the frame's CPU span, its record and its GPU wait, in µs (M6 B3), after the counts'
+/// columns, so a reader by position keeps its own; empty where the OS doesn't say.
+const ON_CORE_COLUMNS: &str = ",cpu_on_core,record_on_core,wait_on_core";
+
+/// `--bench-trace`'s whole header.
+fn trace_header() -> String {
+    format!("{TRACE_HEADER}{}{ON_CORE_COLUMNS}", counts::TRACE_COLUMNS)
+}
+
 /// One frame's line of `--bench-trace`'s file.
 fn trace_line_into(frame: &Traced, line: &mut String) {
     line.clear();
@@ -1181,6 +1293,14 @@ fn trace_line_into(frame: &Traced, line: &mut String) {
     let _ = write!(line, ",{:.1},{trip},", frame.prefetch.as_secs_f64() * 1e6);
     frame.memory.trace_into(line);
     counts::trace_into(frame, line);
+    for time in [frame.cpu_on_core, frame.laps.record_on_core, frame.wait_on_core] {
+        match time {
+            Some(time) => {
+                let _ = write!(line, ",{:.1}", time.as_secs_f64() * 1e6);
+            }
+            None => line.push(','),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1192,7 +1312,7 @@ fn trace_line(frame: &Traced) -> String {
 
 fn write_trace(path: &Path, trace: &[Traced]) -> std::io::Result<()> {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    writeln!(file, "{TRACE_HEADER}{}", counts::TRACE_COLUMNS)?;
+    writeln!(file, "{}", trace_header())?;
     let mut line = String::with_capacity(2048);
     for frame in trace {
         trace_line_into(frame, &mut line);
@@ -1214,6 +1334,8 @@ mod tests {
             steps: 1,
             cpu: Duration::from_micros(cpu_us),
             wait: Duration::ZERO,
+            cpu_on_core: None,
+            wait_on_core: None,
             restart: Duration::ZERO,
             laps: FrameLaps::default(),
             audio: Duration::ZERO,
@@ -1295,6 +1417,79 @@ mod tests {
             ..frame
         };
         assert!(counts(gpu, &timed, Phase::Cpu));
+    }
+
+    /// Every frame a row leaves out is a frame of a reason reported on its own (M6 B3): a restart in any phase, and
+    /// in the GPU phase a frame whose timings never came back; a restart frame is reported once, as a restart.
+    #[test]
+    fn every_frame_a_row_leaves_out_is_reported_with_its_reason() {
+        let cpu = &ROWS[0];
+        let gpu = ROWS.iter().find(|row| row.name == "gpu frame").expect("the GPU frame's row");
+        let timed = GpuTimes { timed: true, span: Some(Duration::from_micros(1)), ..GpuTimes::default() };
+        let restart = Duration::from_micros(7);
+        let frames = [
+            traced(1, 10),
+            Traced { restart, ..traced(2, 10) },
+            Traced { gpu: timed, ..traced(3, 10) },
+            Traced { gpu: timed, restart, ..traced(4, 10) },
+        ];
+        for phase in Phase::ALL {
+            let row = if phase == Phase::Gpu { gpu } else { cpu };
+            for frame in frames.map(|frame| Traced { phase, ..frame }) {
+                let reasons: Vec<Excluded> = Excluded::ALL
+                    .into_iter()
+                    .filter(|reason| reason.applies(phase) && reason.holds(&frame, phase))
+                    .collect();
+                // Read by the row, or left out for one reason: never both, never neither.
+                assert_eq!(counts(row, &frame, phase), reasons.is_empty(), "{phase:?} {frame:?}");
+                assert!(reasons.len() <= 1, "{reasons:?}");
+                if !frame.restart.is_zero() {
+                    assert_eq!(reasons, [Excluded::Restart]);
+                }
+            }
+        }
+        assert!(!Excluded::Untimed.applies(Phase::Cpu), "a CPU phase times no GPU");
+    }
+
+    /// What the bench adds a frame for the thread's CPU time allocates nothing (M6 B3): the clock's reads, the rows
+    /// that read them and the reasons a frame is left out.
+    #[test]
+    fn the_threads_cpu_time_and_its_rows_allocate_nothing_a_frame() {
+        assert!(alloc::is_installed(), "the sandbox counts its allocations");
+        let frame =
+            Traced { restart: Duration::from_micros(5), cpu_on_core: Some(Duration::ZERO), ..traced(3, 100) };
+        let rows: Vec<&Row> =
+            ROWS.iter().filter(|row| row.name.ends_with(" on core") || row.name == "record").collect();
+        assert_eq!(rows.len(), 4);
+        let scope = AllocScope::begin();
+        for _ in 0..100 {
+            let mut on_core = OnCore::start();
+            std::hint::black_box(on_core.lap());
+            std::hint::black_box(on_core.lap());
+            for row in &rows {
+                std::hint::black_box((row.read)(&frame));
+            }
+            for reason in Excluded::ALL {
+                std::hint::black_box(reason.holds(&frame, Phase::Gpu));
+            }
+        }
+        assert_eq!(scope.counts().allocations, 0);
+    }
+
+    /// The thread's CPU time over a span of work is some of its wall time, where the OS says.
+    #[test]
+    fn a_span_of_work_reads_on_its_threads_core() {
+        let mut on_core = OnCore::start();
+        let wall = Stopwatch::start();
+        let mut sum = 0_u64;
+        for i in 0..5_000_000_u64 {
+            sum = sum.wrapping_add(std::hint::black_box(i));
+        }
+        std::hint::black_box(sum);
+        let wall = wall.elapsed();
+        if let Some(cpu) = on_core.lap() {
+            assert!(cpu > Duration::ZERO && cpu <= wall + Duration::from_millis(5), "{cpu:?} of {wall:?}");
+        }
     }
 
     /// Spec §3.2's rows as they're held: a Mobile-Low frame's budget for a step is two steps'.
@@ -1412,15 +1607,29 @@ mod tests {
     #[test]
     fn a_trace_line_matches_its_header() {
         let line = trace_line(&traced(12, 345));
-        let header = format!("{TRACE_HEADER}{}", counts::TRACE_COLUMNS);
+        let header = trace_header();
         assert_eq!(line.split(',').count(), header.split(',').count(), "{line}");
         assert!(line.starts_with("cpu,0,0,12,1,345.0,"), "{line}");
+    }
+
+    /// The thread's CPU time is the trace's last three columns (M6 B3), after every older one, and empty where the OS
+    /// doesn't say.
+    #[test]
+    fn a_trace_line_ends_with_the_threads_cpu_time() {
+        let header = trace_header();
+        assert!(header.starts_with(TRACE_HEADER) && header.ends_with(ON_CORE_COLUMNS), "{header}");
+        let mut frame = traced(12, 345);
+        frame.cpu_on_core = Some(Duration::from_micros(300));
+        frame.laps.record_on_core = Some(Duration::from_nanos(41_300));
+        let line = trace_line(&frame);
+        assert!(line.ends_with(",300.0,41.3,"), "{line}");
+        assert!(trace_line(&traced(12, 345)).ends_with(",,,"));
     }
 
     /// The trace's `gpu_end` column holds the frame's end on the GPU's clock in µs, and is empty untimed (M5 Z2).
     #[test]
     fn a_trace_line_holds_the_frames_gpu_end() {
-        let header = format!("{TRACE_HEADER}{}", counts::TRACE_COLUMNS);
+        let header = trace_header();
         let column = header.split(',').position(|name| name == "gpu_end").expect("a gpu_end column");
         let end = Duration::from_secs(5) + Duration::from_nanos(123_456);
         let timed = Traced {

@@ -60,6 +60,10 @@ pub struct FrameLaps {
     /// Work after prepare through graph submission, including pass callbacks, excluding the
     /// tools hook when `FrameHooks::TOOLS` is true.
     pub record: Duration,
+    /// The thread's CPU time over [`Self::record`] (`sapphire_platform::thread_cpu_time`, M6 B3): beside its wall
+    /// time, what of it the thread spent off its core, waiting on the encoders' workers or the driver. `None`
+    /// where the OS doesn't say.
+    pub record_on_core: Option<Duration>,
     /// What each drew on the heap, on this thread: the workers that record passes count apart.
     pub animation_allocations: AllocCounts,
     pub packet_allocations: AllocCounts,
@@ -827,6 +831,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.renderer.prepare(&self.gpu, packet);
         self.laps.prepare += laps.lap();
         self.laps.prepare_allocations = next_scope(&mut scope);
+        let mut on_core = sapphire_platform::thread_cpu_time();
         let timing = FrameTiming::new(&self.graph, FRAME);
         self.follow_heat()?;
         self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));
@@ -852,6 +857,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         if H::TOOLS {
             laps.lap();
             scope = AllocScope::begin();
+            on_core = sapphire_platform::thread_cpu_time();
         }
         self.renderer.record(&mut graph, target);
         self.hooks.record(&mut graph, target);
@@ -864,6 +870,11 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
             self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)?;
         }
         self.laps.record += laps.lap();
+        if let Some(on_core) =
+            on_core.zip(sapphire_platform::thread_cpu_time()).map(|(from, to)| to.saturating_sub(from))
+        {
+            self.laps.record_on_core = Some(self.laps.record_on_core.unwrap_or_default() + on_core);
+        }
         self.laps.record_allocations = scope.counts();
         if let Some(mut stopwatch) = stopwatch {
             let render = stopwatch.lap().saturating_sub(tools);

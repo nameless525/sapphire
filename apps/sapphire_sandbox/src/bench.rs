@@ -6,7 +6,9 @@
 //! offscreen target (compile, record, submit), then waits for the GPU so frames don't queue up.
 //! After a warm-up it logs CPU time per frame (that span, without the GPU wait) and
 //! allocations per frame (the whole frame, wait included, like the windowed stats). It leaves
-//! out what only a window has: acquiring and presenting the swapchain, and vsync. A fast,
+//! out what only a window has: acquiring and presenting the swapchain, and vsync. The warm-up's frames, which no
+//! figure reads, are logged as a row of their own (`bench excluded`, M6 B3): how many, their CPU times and what
+//! they allocated. A fast,
 //! repeatable check for changes to the frame path against the budgets of spec §3. It also logs
 //! time of day's own resolve time per frame (part of extraction), against its 0.05 ms budget;
 //! `--day-length` makes the hour move every frame; animation's time per frame with `--clip`
@@ -313,6 +315,29 @@ impl TexturePartsWalk {
     }
 }
 
+/// The warm-up's frames, each one's CPU time and allocations, as the row of frames no figure reads (M6 B3), in the
+/// shape of a fight's `fight excluded` line: how many, their CPU frame's median and worst and the worst's frame, and
+/// what they allocated, all of it and the most in one frame.
+fn log_warm_up(frames: &[(Duration, u64)]) {
+    let mut sorted: Vec<(Duration, usize)> =
+        frames.iter().enumerate().map(|(at, &(cpu, _))| (cpu, at)).collect();
+    sorted.sort_unstable();
+    let Some(&(worst, worst_frame)) = sorted.last() else { return };
+    let micros = |duration: Duration| format!("{:.1}", duration.as_secs_f64() * 1e6);
+    tracing::info!(
+        target: LOG_TARGET,
+        phase = "cpu",
+        reason = "warm-up",
+        frames = frames.len(),
+        cpu_us_p50 = micros(sorted[(sorted.len() - 1) / 2].0),
+        cpu_us_worst = micros(worst),
+        worst_frame,
+        allocations = frames.iter().map(|&(_, allocations)| allocations).sum::<u64>(),
+        allocations_worst = frames.iter().map(|&(_, allocations)| allocations).max().unwrap_or(0),
+        "bench excluded",
+    );
+}
+
 /// What's left of a paced frame `since` after it began: none once it has run its `period` or longer.
 fn pace_left(since: Duration, period: Duration) -> Duration {
     period.saturating_sub(since)
@@ -352,6 +377,8 @@ pub(crate) fn run(
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut cpu = Vec::with_capacity(frames.min(1 << 20) as usize);
+    // The warm-up's frames, which no figure reads, as a row of their own (M6 B3): each one's CPU and allocations.
+    let mut warm_up: Vec<(Duration, u64)> = Vec::with_capacity(WARMUP_FRAMES as usize);
     let mut gpu_wait = Duration::ZERO;
     let (mut allocations, mut bytes) = (0, 0);
     // Time of day's resolve, per measured frame: its total and its slowest.
@@ -427,7 +454,9 @@ pub(crate) fn run(
         if holds_at_start(frame, counting_walk) {
             stage.scene.restart_zone_walk();
         }
-        if frame >= u64::from(WARMUP_FRAMES) {
+        if frame < u64::from(WARMUP_FRAMES) {
+            warm_up.push((frame_cpu, after.total_allocations - before.total_allocations));
+        } else {
             cpu.push(frame_cpu);
             gpu_wait += wait;
             allocations += after.total_allocations - before.total_allocations;
@@ -485,6 +514,7 @@ pub(crate) fn run(
     };
     drop(in_play);
     stage.lose_frames = false;
+    log_warm_up(&warm_up);
     zone_walk.log(&stage, options);
     if let Some(drawn) = &drawn {
         drawn.log(&stage);

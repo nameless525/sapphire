@@ -129,7 +129,7 @@ Each figure is wall time on the critical path.
 | Audio update | 0.2 | 0.3 |
 | Extract | 0.7 | 1.2 |
 | **Game side total** | **~6.0** | **~13.6** |
-| Render prepare + record (overlaps the next frame's sim) | 4.0 | 8.0 |
+| Render prepare + record (after the frame's own extract, on its thread: §4.2) | 4.0 | 8.0 |
 
 ### 3.3 GPU budget per pass
 

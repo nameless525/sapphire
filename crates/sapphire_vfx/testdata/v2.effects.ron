@@ -1,0 +1,296 @@
+(
+    type: "sapphire::vfx::EffectLibrary",
+    version: 2,
+    data: (
+        effects: [
+            (
+                name: "hit_spark",
+                emitters: [
+                    (
+                        name: "flash",
+                        spawn: Burst(
+                            count: 1,
+                        ),
+                        delay: 0.0,
+                        source: Point,
+                        lifetime: (0.08, 0.1),
+                        motion: (
+                            speed: (0.0, 0.0),
+                            direction: (0.0, 1.0, 0.0),
+                            spread: 0.0,
+                            gravity: 0.0,
+                            drag: 0.0,
+                        ),
+                        shape: Star,
+                        facing: Camera(
+                            spin: (-1.5, 1.5),
+                        ),
+                        light: Emissive,
+                        additive: 1.0,
+                        soft: 0.02,
+                        size_scale: (1.0, 1.0),
+                        size: [
+                            (0.0, 0.04),
+                            (0.2, 0.24),
+                            (1.0, 0.07),
+                        ],
+                        color: [
+                            (0.0, (4.5, 3.6, 2.2)),
+                            (1.0, (2.4, 1.1, 0.4)),
+                        ],
+                        alpha: [
+                            (0.0, 1.0),
+                            (0.45, 1.0),
+                            (1.0, 0.0),
+                        ],
+                    ),
+                    (
+                        name: "ring",
+                        spawn: Burst(
+                            count: 1,
+                        ),
+                        delay: 0.0,
+                        source: Point,
+                        lifetime: (0.16, 0.2),
+                        motion: (
+                            speed: (0.0, 0.0),
+                            direction: (0.0, 1.0, 0.0),
+                            spread: 0.0,
+                            gravity: 0.0,
+                            drag: 0.0,
+                        ),
+                        shape: Ring,
+                        facing: Camera(
+                            spin: (0.0, 0.0),
+                        ),
+                        light: Emissive,
+                        additive: 1.0,
+                        soft: 0.02,
+                        size_scale: (1.0, 1.0),
+                        size: [
+                            (0.0, 0.03),
+                            (0.4, 0.2),
+                            (1.0, 0.3),
+                        ],
+                        color: [
+                            (0.0, (2.2, 1.6, 0.9)),
+                            (1.0, (1.0, 0.4, 0.12)),
+                        ],
+                        alpha: [
+                            (0.0, 0.8),
+                            (1.0, 0.0),
+                        ],
+                    ),
+                    (
+                        name: "sparks",
+                        spawn: Burst(
+                            count: 18,
+                        ),
+                        delay: 0.0,
+                        source: Point,
+                        lifetime: (0.14, 0.32),
+                        motion: (
+                            speed: (3.5, 9.5),
+                            direction: (0.0, 1.0, 0.0),
+                            spread: 75.0,
+                            gravity: 6.0,
+                            drag: 4.5,
+                        ),
+                        shape: Streak,
+                        facing: Velocity(
+                            stretch: 0.016,
+                        ),
+                        light: Emissive,
+                        additive: 1.0,
+                        soft: 0.02,
+                        size_scale: (0.7, 1.3),
+                        size: [
+                            (0.0, 0.016),
+                            (1.0, 0.006),
+                        ],
+                        color: [
+                            (0.0, (5.0, 3.6, 1.8)),
+                            (0.5, (3.5, 1.6, 0.5)),
+                            (1.0, (1.4, 0.4, 0.1)),
+                        ],
+                        alpha: [
+                            (0.0, 1.0),
+                            (0.7, 1.0),
+                            (1.0, 0.0),
+                        ],
+                    ),
+                    (
+                        name: "motes",
+                        spawn: Burst(
+                            count: 6,
+                        ),
+                        delay: 0.0,
+                        source: Sphere(0.05),
+                        lifetime: (0.3, 0.55),
+                        motion: (
+                            speed: (0.6, 1.8),
+                            direction: (0.0, 1.0, 0.0),
+                            spread: 90.0,
+                            gravity: 1.0,
+                            drag: 3.0,
+                        ),
+                        shape: SoftDot,
+                        facing: Camera(
+                            spin: (0.0, 0.0),
+                        ),
+                        light: Emissive,
+                        additive: 1.0,
+                        soft: 0.02,
+                        size_scale: (0.7, 1.4),
+                        size: [
+                            (0.0, 0.016),
+                            (1.0, 0.006),
+                        ],
+                        color: [
+                            (0.0, (3.0, 2.0, 0.9)),
+                            (1.0, (1.4, 0.45, 0.12)),
+                        ],
+                        alpha: [
+                            (0.0, 1.0),
+                            (0.6, 0.8),
+                            (1.0, 0.0),
+                        ],
+                    ),
+                ],
+                trail: None,
+                mark: false,
+            ),
+            (
+                name: "sword_trail",
+                emitters: [],
+                trail: Some((
+                    lifetime: 0.2,
+                    max_samples: 48,
+                    width: [
+                        (0.0, 1.0),
+                        (0.5, 0.75),
+                        (1.0, 0.2),
+                    ],
+                    anchor: 1.0,
+                    color: [
+                        (0.0, (0.1, 0.34, 1.0)),
+                        (0.5, (0.07, 0.2, 0.8)),
+                        (1.0, (0.08, 0.1, 0.5)),
+                    ],
+                    alpha: [
+                        (0.0, 0.0),
+                        (0.05, 1.0),
+                        (0.5, 0.75),
+                        (1.0, 0.0),
+                    ],
+                    core: (
+                        position: 0.95,
+                        half_width: 0.018,
+                        color: [
+                            (0.0, (3.5, 4.0, 4.5)),
+                            (0.5, (2.2, 3.0, 4.5)),
+                            (1.0, (0.6, 1.2, 3.0)),
+                        ],
+                    ),
+                    glow_reach: 0.5,
+                    additive: 0.8,
+                    soft: 0.02,
+                    start_fade: 0.05,
+                )),
+                mark: false,
+            ),
+            (
+                name: "dust_puff",
+                emitters: [
+                    (
+                        name: "puff",
+                        spawn: Burst(
+                            count: 10,
+                        ),
+                        delay: 0.0,
+                        source: Disc(0.22),
+                        lifetime: (0.5, 0.95),
+                        motion: (
+                            speed: (0.25, 0.9),
+                            direction: (0.0, 1.0, 0.0),
+                            spread: 80.0,
+                            gravity: -0.15,
+                            drag: 3.2,
+                        ),
+                        shape: SoftDot,
+                        facing: Camera(
+                            spin: (-0.6, 0.6),
+                        ),
+                        light: Lit,
+                        additive: 0.0,
+                        soft: 0.25,
+                        size_scale: (0.7, 1.3),
+                        size: [
+                            (0.0, 0.08),
+                            (0.5, 0.26),
+                            (1.0, 0.36),
+                        ],
+                        color: [
+                            (0.0, (0.78, 0.72, 0.62)),
+                        ],
+                        alpha: [
+                            (0.0, 0.0),
+                            (0.15, 0.5),
+                            (1.0, 0.0),
+                        ],
+                    ),
+                ],
+                trail: None,
+                mark: false,
+            ),
+            (
+                name: "skill_arc",
+                emitters: [],
+                trail: None,
+                mark: false,
+                meshes: [
+                    (
+                        name: "arc",
+                        shape: SlashArc,
+                        delay: 0.0,
+                        lifetime: 0.3,
+                        offset: (0.0, 1.0, 0.0),
+                        rotation: (0.0, 0.0, -14.0),
+                        spin: 240.0,
+                        scale: [
+                            (0.0, (1.1, 1.0, 1.1)),
+                            (1.0, (1.4, 1.0, 1.4)),
+                        ],
+                        color: [
+                            (0.0, (1.7, 2.3, 3.4)),
+                            (1.0, (0.5, 0.9, 2.2)),
+                        ],
+                        alpha: [
+                            (0.0, 1.0),
+                            (0.7, 0.9),
+                            (1.0, 0.0),
+                        ],
+                        additive: 0.9,
+                        soft: 0.15,
+                        pattern: Streaks,
+                        tiling: (2.0, 1.0),
+                        scroll: (3.0, 0.0),
+                        erosion: Some((
+                            mask: Noise,
+                            tiling: (3.0, 1.0),
+                            threshold: [
+                                (0.0, 0.0),
+                                (0.35, 0.0),
+                                (1.0, 1.0),
+                            ],
+                            edge: 0.12,
+                            edge_color: (3.2, 2.8, 2.2),
+                        )),
+                        flipbook: None,
+                        priority: 0,
+                    ),
+                ],
+            ),
+        ],
+    ),
+)

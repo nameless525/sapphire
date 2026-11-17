@@ -25,14 +25,16 @@
 //!
 //! # Owns
 //!
-//! - **Effect documents** ([`EffectLibrary`], schema 4): effects of emitters, each a set of modules
+//! - **Effect documents** ([`EffectLibrary`], schema 5): effects of emitters, each a set of modules
 //!   (`spawn`, `source`, `motion`, `shape`, `facing`, `light`) and curves over a particle's life
 //!   ([`Curve`]), at most one trail, up to four mesh layers (M5 L5, [`MeshLayerDesc`]: generated
 //!   shapes with scrolling, erosion and flipbooks, any of which may bend the picture behind it instead of or as
 //!   well as drawing light, M5 L6's [`Distortion`]) and up to two ground decals (M5 L7, [`DecalLayerDesc`]:
 //!   signed distance shapes flat on the ground, a telegraph's fill timed to its actor's strike), checked
-//!   whole so an author's mistake names its field.
-//!   [`EffectLibrary::default_effects`] compiles in a hit spark, a sword trail and a dust puff.
+//!   whole so an author's mistake names its field. Versions 1 to 4 read to the bit (`testdata/`). A game's
+//!   library (`<name>.effects.ron`) cooks as the `Effects` asset kind (M6 N1) and loads through the asset
+//!   server, read and checked here as a document is; [`EffectLibrary::default_effects`] compiles in a hit spark,
+//!   a sword trail, a dust puff and what a fight's cues play.
 //! - **The simulation** ([`VfxWorld`]): CPU particles and trail samples, in pools sized from a
 //!   [`VfxBudget`] when it starts. Past a cap it counts what it dropped and keeps drawing, and it
 //!   allocates nothing per frame once warmed (`tests/allocations.rs`). Its random numbers are
@@ -61,8 +63,8 @@
 //! # Later milestones
 //!
 //! GPU particles, mesh particles, distortion from sprites and ribbons, projected decals, and half-resolution smoke on
-//! phones (spec §5.16); more ribbons than trails (E2's plan row cuts them first); effects in cooked
-//! packs and hot reload. [`VfxWorld::set_library`] is the hook a reload takes.
+//! phones (spec §5.16); more ribbons than trails (E2's plan row cuts them first). [`VfxWorld::set_library`] is the
+//! hook a reload takes: live tuning's edited library, or a cooked one loaded again.
 
 mod budget;
 mod curve;

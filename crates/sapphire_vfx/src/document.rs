@@ -1,6 +1,8 @@
-//! Effects as documents: an [`EffectLibrary`] (schema 1), named [`Effect`]s of emitters with modules
-//! and curves and at most one trail, checked whole however they were made, so what plays is valid
-//! and an author's mistake names its field.
+//! Effects as documents: an [`EffectLibrary`] (schema 5), named [`Effect`]s of emitters with modules
+//! and curves, at most one trail, mesh layers and ground decals, checked whole however they were made, so
+//! what plays is valid and an author's mistake names its field. A library is written as a `.effects.ron`
+//! document and cooks as its own asset kind (M6 N1, `sapphire_assets::effects`), or is compiled in
+//! ([`EffectLibrary::default_effects`]).
 
 use std::collections::BTreeSet;
 
@@ -335,7 +337,7 @@ pub enum EffectLibraryError {
     Invalid { effect: String, part: String, field: &'static str, problem: &'static str },
 }
 
-/// Named effects (an `EffectLibrary` document, schema 4).
+/// Named effects (an `EffectLibrary` document, schema 5).
 ///
 /// A library has at least one effect, its names are distinct and not empty, and every emitter and
 /// trail is valid: it is valid however it was made, deserialization included.
@@ -349,13 +351,16 @@ pub struct EffectLibrary {
 
 impl Versioned for EffectLibrary {
     /// 1: M2 E2. 2: M5 L5's mesh layers. 3: M5 L7's ground decals. 4: M5 L6's distortion, a mesh layer's
-    /// `distortion`, and its `color` left out where it only bends the picture. An effect without any of them
-    /// needn't say, so an older document decodes as it is.
-    const VERSION: u32 = 4;
+    /// `distortion`, and its `color` left out where it only bends the picture. 5: M6 N1, libraries cooked as
+    /// their own asset kind; what M6's effects add after it (forces, events, painted sheets, stateless
+    /// emitters, world effects) joins as fields an effect without them leaves out, written only where they
+    /// aren't their defaults. An effect without any of them needn't say, so an older document decodes as it
+    /// is, every value to the bit, and writes back as it was but for its version (`testdata/`).
+    const VERSION: u32 = 5;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
         match version {
-            1..=3 => data.decode().map_err(VersionError::Decode),
+            1..=4 => data.decode().map_err(VersionError::Decode),
             found => Err(VersionError::TooOld { found, oldest: 1 }),
         }
     }
@@ -932,5 +937,50 @@ mod tests {
         assert_eq!(emitter.size_scale, (1.0, 1.0));
         assert_eq!(emitter.source, Source::Point);
         assert_eq!(emitter.motion, Motion::default());
+    }
+
+    /// Libraries as each older version wrote them, with what that version brought: emitters and a trail at 1,
+    /// a mesh layer at 2, a ground decal at 3 and distortion at 4 (the shipped `hit_spark`, `sword_trail`,
+    /// `dust_puff`, `skill_arc`, `telegraph_ground` and `scorch_mark`). They stand for libraries on disk: never
+    /// write them again.
+    const OLDER: [(u32, &str); 4] = [
+        (1, include_str!("../testdata/v1.effects.ron")),
+        (2, include_str!("../testdata/v2.effects.ron")),
+        (3, include_str!("../testdata/v3.effects.ron")),
+        (4, include_str!("../testdata/v4.effects.ron")),
+    ];
+
+    /// A library at 1 to 4 reads under 5 and writes back exactly as it was but for its version. A float is
+    /// written as the shortest text that reads back to its bits, `-0.0` included, so matching text holds every
+    /// value to the bit, and nothing 5 adds is written for a library that doesn't use it.
+    #[test]
+    fn every_older_version_reads_to_the_bit_and_writes_back_but_for_its_version() {
+        for (version, text) in OLDER {
+            let library =
+                EffectLibrary::from_ron(text).unwrap_or_else(|error| panic!("version {version}: {error}"));
+            let written = library.to_ron().expect("written");
+            let as_five = text.replacen(&format!("version: {version},"), "version: 5,", 1);
+            assert_eq!(written, as_five, "version {version} wrote back otherwise");
+            assert_eq!(EffectLibrary::from_ron(&written).expect("reads back"), library, "version {version}");
+        }
+    }
+
+    /// The shipped library is a version 4 document: it reads, and its body under every version's header reads
+    /// to the same library to the bit (their writes match), while a version past this build's, or 0, is refused.
+    #[test]
+    fn the_shipped_library_reads_the_same_under_every_versions_header() {
+        let header = "    version: 4,\n";
+        assert!(DEFAULT_EFFECTS.contains(header), "the shipped library is at version 4");
+        let written = EffectLibrary::default_effects().to_ron().expect("written");
+        for version in 1..=EffectLibrary::VERSION {
+            let text = DEFAULT_EFFECTS.replacen(header, &format!("    version: {version},\n"), 1);
+            let library =
+                EffectLibrary::from_ron(&text).unwrap_or_else(|error| panic!("version {version}: {error}"));
+            assert_eq!(library.to_ron().expect("written"), written, "version {version}");
+        }
+        for version in [0, EffectLibrary::VERSION + 1] {
+            let text = DEFAULT_EFFECTS.replacen(header, &format!("    version: {version},\n"), 1);
+            assert!(EffectLibrary::from_ron(&text).is_err(), "version {version} read");
+        }
     }
 }

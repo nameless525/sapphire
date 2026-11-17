@@ -2712,8 +2712,9 @@ impl Fight {
                     show.set_party_meshes(scene, meshes);
                 }
                 scene.set_day(DEFAULT_TIME_OF_DAY, None);
-                show.play_cues_with(scene, vfx::budget(tier), self.documents.effects.clone())
-                    .map_err(AppInitError::msg)?;
+                // The library the cue table names, cooked (M6 N1), or the compiled-in one where it names none.
+                let effects = CueShow::effect_library().map(|id| content.load_effects(id)).transpose()?;
+                show.play_cues_with(scene, vfx::budget(tier), effects).map_err(AppInitError::msg)?;
                 let followed = show.follow_simulation(scene, combat.simulation(), combat.cast());
                 self.attach_prepared_combat(combat, scene, content)?;
                 scene.warm_fixed_step();

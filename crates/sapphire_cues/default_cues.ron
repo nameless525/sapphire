@@ -3,7 +3,9 @@
 // optionally a hit's weight; a row with the weight wins over one without. A cue with no row fires
 // nothing and is counted, so a row that fires nothing says so on purpose.
 //
-// - `effects`: `sapphire_vfx`'s effects, `default_effects.ron`. `at: Hit` (the default) is the hit's
+// - `effects`: effects of the table's library by name: `sapphire_vfx`'s compiled-in `default_effects.ron`
+//   here, since this table names no library of its own (a game's names its cooked `.effects.ron` by its
+//   sidecar's ID in `effect_library` beside `mix`, M6 N1). `at: Hit` (the default) is the hit's
 //   point with the effect's +Y out of the surface, `Feet` where its subject stands, `Crown` over its
 //   head, where a cue mark goes, `Facing` at its feet turned the way it faces (M5 L5). `clock: World`
 //   (the default) burns through hitstop; `Subject` and `Actor` freeze with one of the fighters.

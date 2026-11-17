@@ -907,7 +907,8 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
         Some(Document::Camera)
     } else if name == document_file_name(CUES_PATH) {
         Some(Document::Cues)
-    } else if name == document_file_name(EFFECTS_PATH) {
+    } else if name == document_file_name(EFFECTS_PATH) || name.ends_with(".effects.ron") {
+        // The compiled-in library, or a game's that cooks (M6 N1): either is what a fight's cues play.
         Some(Document::Effects)
     } else if name == document_file_name(BINDINGS_PATH) {
         Some(Document::Bindings)
@@ -1308,6 +1309,7 @@ mod tests {
         assert_eq!(kind_of_file(Path::new("x/default_camera.ron")), Some(Document::Camera));
         assert_eq!(kind_of_file(Path::new("x/default_cues.ron")), Some(Document::Cues));
         assert_eq!(kind_of_file(Path::new("x/default_effects.ron")), Some(Document::Effects));
+        assert_eq!(kind_of_file(Path::new("x/combat.effects.ron")), Some(Document::Effects));
         assert_eq!(kind_of_file(Path::new("x/boss.luau")), Some(Document::Script));
         assert_eq!(kind_of_file(Path::new("x/default_day.ron")), None);
     }

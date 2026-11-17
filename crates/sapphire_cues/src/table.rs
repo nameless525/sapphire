@@ -229,6 +229,10 @@ pub struct CueTable {
     /// A `Mix` document's ID (M6 U2): the buses, snapshots and ducking everything the fight plays goes through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mix: Option<AssetId>,
+    /// An `Effects` library's ID (M6 N1): what the rows' effects and the fight's sword trails play, loaded when a
+    /// fight starts. None plays `sapphire_vfx`'s compiled-in library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effect_library: Option<AssetId>,
     rows: Vec<CueRow>,
 }
 
@@ -246,6 +250,8 @@ struct UncheckedTable {
     voices: Vec<AssetId>,
     #[serde(default)]
     mix: Option<AssetId>,
+    #[serde(default)]
+    effect_library: Option<AssetId>,
     rows: Vec<CueRow>,
 }
 
@@ -253,7 +259,10 @@ impl TryFrom<UncheckedTable> for CueTable {
     type Error = CueTableError;
 
     fn try_from(table: UncheckedTable) -> Result<Self, CueTableError> {
-        Ok(Self::new(table.rows)?.with_music(table.music, table.voices).with_mix(table.mix))
+        Ok(Self::new(table.rows)?
+            .with_music(table.music, table.voices)
+            .with_mix(table.mix)
+            .with_effect_library(table.effect_library))
     }
 }
 
@@ -273,7 +282,7 @@ impl CueTable {
             }
             row.validate()?;
         }
-        Ok(Self { music: None, voices: Vec::new(), mix: None, rows })
+        Ok(Self { music: None, voices: Vec::new(), mix: None, effect_library: None, rows })
     }
 
     /// The table, with the score `music` plays and the voice lines' tables `voices`.
@@ -292,6 +301,19 @@ impl CueTable {
     #[must_use]
     pub fn mix(&self) -> Option<AssetId> {
         self.mix
+    }
+
+    /// The table, with the effects library `effect_library` (M6 N1).
+    #[must_use]
+    pub fn with_effect_library(self, effect_library: Option<AssetId>) -> Self {
+        Self { effect_library, ..self }
+    }
+
+    /// The `Effects` library the rows' effects come from, if the table names one (M6 N1): a cooked library a
+    /// fight loads when it starts. None is `sapphire_vfx`'s compiled-in one.
+    #[must_use]
+    pub fn effect_library(&self) -> Option<AssetId> {
+        self.effect_library
     }
 
     /// The `Score` the fight's phase plays, if any.
@@ -434,14 +456,16 @@ mod tests {
     fn music_and_voices_read_and_write_back() {
         let id = |n: u8| format!("11111111-2222-4333-8444-5555555555{n:02x}");
         let text = format!(
-            "(type: \"sapphire::cues::CueTable\", version: 1, data: (music: Some(\"{}\"), voices: [\"{}\"], mix: Some(\"{}\"), rows: []))",
+            "(type: \"sapphire::cues::CueTable\", version: 1, data: (music: Some(\"{}\"), voices: [\"{}\"], mix: Some(\"{}\"), effect_library: Some(\"{}\"), rows: []))",
             id(1),
             id(2),
-            id(3)
+            id(3),
+            id(4)
         );
         let table = CueTable::from_ron(&text).expect("reads");
         assert_eq!(table.music(), Some(id(1).parse().unwrap()));
         assert_eq!(table.mix(), Some(id(3).parse().unwrap()));
+        assert_eq!(table.effect_library(), Some(id(4).parse().unwrap()));
         assert_eq!(table.voices(), [id(2).parse::<AssetId>().unwrap()]);
         assert_eq!(CueTable::from_ron(&table.to_ron().expect("writes")).expect("reads back"), table);
     }

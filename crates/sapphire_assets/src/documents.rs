@@ -2,7 +2,7 @@
 //!
 //! The numbers a simulation or a frame needs before anything's loaded are documents compiled into their
 //! crates (`default_targeting.ron`, `default_body.ron`, `default_character_motion.ron`, `default_hud.ron`,
-//! `combat_bindings.ron`, `default_effects.ron`). A game names its own in `content/game.documents.ron`, a
+//! `combat_bindings.ron`). A game names its own in `content/game.documents.ron`, a
 //! [`GameDocuments`]: the cook checks what it names and copies it beside the packs, under [`SHIPPED_DIR`], and
 //! the game reads them at its start. They aren't assets: nothing streams them, nothing refers to them by ID,
 //! and they go into no pack, so a game's own numbers move no pack's bytes.
@@ -14,11 +14,15 @@
 //! targeting and body tuning, the flow and the flags) changes only with an app build, as everything the
 //! simulation reads does (m4-plan §3 "What a patch may carry"), and so does this manifest, which says which
 //! files those are. The rest are presentation (hair and cloth, the HUD, the bindings, which turn input into
-//! the actions a replay records, the effects and the screens), which a patch may change. The release manifest
+//! the actions a replay records, and the screens), which a patch may change. The release manifest
 //! (`crate::manifest`) records which is which, file by file.
+//!
+//! **Effects aren't here (M6 N1):** an effects library is an asset ([`crate::effects`]), cooked from a
+//! `.effects.ron` into a pack and named by the cue table, so a version 1 manifest that names one is refused,
+//! saying so.
 
 use bevy_reflect::TypePath;
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
@@ -48,9 +52,6 @@ pub struct GameDocuments {
     /// An `InputBindings`: combat's bindings.
     #[serde(default)]
     pub bindings: Option<String>,
-    /// An `EffectLibrary`: what a fight's cues and sword trails play.
-    #[serde(default)]
-    pub effects: Option<String>,
     /// A `FlowDocument`: the game's flow, from its title through a run to a win (M3 G1).
     #[serde(default)]
     pub flow: Option<String>,
@@ -63,8 +64,73 @@ pub struct GameDocuments {
 }
 
 impl Versioned for GameDocuments {
-    /// 1: M3 S3. G1's `flow` and `flags` and U9's `menus` are fields a version 1 manifest leaves out.
-    const VERSION: u32 = 1;
+    /// 1: M3 S3. G1's `flow` and `flags` and U9's `menus` are fields a version 1 manifest leaves out. 2: M6 N1,
+    /// `effects` gone, since an effects library is a cooked asset: a version 1 manifest reads as it is unless it
+    /// names one.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode::<v1::GameDocuments>().map(Into::into).map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
+}
+
+/// A version 1 manifest, which could name an effects library as a document.
+mod v1 {
+    use serde::Deserialize;
+
+    /// What a version 1 manifest says, refused if it names an effects library.
+    #[derive(Deserialize)]
+    #[serde(try_from = "Unchecked")]
+    pub(super) struct GameDocuments(super::GameDocuments);
+
+    /// As written: version 2's fields, and `effects`.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Unchecked {
+        #[serde(default)]
+        targeting: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        motion: Option<String>,
+        #[serde(default)]
+        hud: Option<String>,
+        #[serde(default)]
+        bindings: Option<String>,
+        #[serde(default)]
+        effects: Option<String>,
+        #[serde(default)]
+        flow: Option<String>,
+        #[serde(default)]
+        flags: Option<String>,
+        #[serde(default)]
+        menus: Option<String>,
+    }
+
+    impl TryFrom<Unchecked> for GameDocuments {
+        type Error = String;
+
+        fn try_from(unchecked: Unchecked) -> Result<Self, String> {
+            let Unchecked { targeting, body, motion, hud, bindings, effects, flow, flags, menus } = unchecked;
+            if let Some(path) = effects {
+                return Err(format!(
+                    "`effects` names {path:?}, but an effects library is an asset now (M6 N1): give it a name \
+                     ending `.effects.ron`, so a cook packs it, and name it by its sidecar's ID in the cue \
+                     table's `effect_library`"
+                ));
+            }
+            Ok(Self(super::GameDocuments { targeting, body, motion, hud, bindings, flow, flags, menus }))
+        }
+    }
+
+    impl From<GameDocuments> for super::GameDocuments {
+        fn from(documents: GameDocuments) -> Self {
+            documents.0
+        }
+    }
 }
 
 /// One document a manifest names.
@@ -94,7 +160,6 @@ impl GameDocuments {
             ("motion", "sapphire::anim::CharacterMotion", false, &self.motion),
             ("hud", "sapphire::ui::HudDesign", false, &self.hud),
             ("bindings", "sapphire::input::InputBindings", false, &self.bindings),
-            ("effects", "sapphire::vfx::EffectLibrary", false, &self.effects),
             ("flow", "sapphire::game::FlowDocument", true, &self.flow),
             ("flags", "sapphire::dialogue::FlagRegistry", true, &self.flags),
             ("menus", "sapphire::game::MenuDocument", false, &self.menus),
@@ -117,7 +182,7 @@ mod tests {
     use super::*;
 
     fn manifest(body: &str) -> String {
-        format!("(type: \"sapphire::assets::GameDocuments\", version: 1, data: ({body}))")
+        format!("(type: \"sapphire::assets::GameDocuments\", version: 2, data: ({body}))")
     }
 
     #[test]
@@ -134,6 +199,23 @@ mod tests {
         };
         assert_eq!(named, [hud]);
         assert_eq!(shipped_path(hud.path), "documents/ui/my_hud.ron");
+    }
+
+    /// A version 1 manifest reads as it was, but one naming an effects library is refused, saying where the
+    /// library goes now; version 2 has no such field.
+    #[test]
+    fn a_version_1_manifest_reads_unless_it_names_effects() {
+        let one =
+            |body: &str| format!("(type: \"sapphire::assets::GameDocuments\", version: 1, data: ({body}))");
+        let read = GameDocuments::from_ron(&one("hud: Some(\"my_hud.ron\")")).expect("reads");
+        assert_eq!(read, GameDocuments { hud: Some("my_hud.ron".to_owned()), ..GameDocuments::default() });
+        let refused =
+            GameDocuments::from_ron(&one("effects: Some(\"my_effects.ron\")")).expect_err("effects");
+        let refused = refused.to_string();
+        assert!(refused.contains("my_effects.ron") && refused.contains("effect_library"), "{refused}");
+        assert!(GameDocuments::from_ron(&one("huds: Some(\"my_hud.ron\")")).is_err(), "a typo still is one");
+        let effects = GameDocuments::from_ron(&manifest("effects: Some(\"my_effects.ron\")"));
+        assert!(effects.expect_err("not a field of version 2").to_string().contains("effects"));
     }
 
     /// A misspelled field would otherwise be a document nobody takes, and a game on Sapphire's numbers with

@@ -90,6 +90,7 @@ use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, HeroineClea
 #[cfg(feature = "dev")]
 use sapphire_anim::{ClipSource, GraphBindError, GraphBinding};
 use sapphire_assets::cue::Cue;
+use sapphire_assets::effects::Effects;
 use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
 #[cfg(not(feature = "dev"))]
 use sapphire_assets::manifest::{self, Manifest};
@@ -130,6 +131,7 @@ use sapphire_render::{
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 use sapphire_timeline::Timeline;
+use sapphire_vfx::EffectLibrary;
 
 use crate::LOG_TARGET;
 use crate::anim_graph::{ClipTable, MAX_HELD_CLIPS};
@@ -2891,6 +2893,21 @@ impl Content {
         Ok(self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?.to_mix())
     }
 
+    /// Loads the effects library `id` (M6 N1), from the shared pack: what a game's cue table names for its
+    /// cues and sword trails. Read and checked as a document is, which the cook already did once, so a library
+    /// that fails here is content cooked by another build. Waits for nothing else that's loading.
+    pub fn load_effects(&mut self, id: AssetId) -> Result<EffectLibrary, AppInitError> {
+        let failed =
+            |error: &dyn std::fmt::Display| AppInitError::msg(format!("the effects library {id}: {error}"));
+        let handle =
+            self.server.load_with::<Effects>(id, LoadPriority::Critical).map_err(|error| failed(&error))?;
+        let stopwatch = Stopwatch::start();
+        let remaining = || SCREENS_ALONE_WAIT.saturating_sub(stopwatch.elapsed());
+        self.server.finish_without_uploads(&handle, &remaining).map_err(|error| failed(&error))?;
+        let effects = self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?;
+        EffectLibrary::from_ron(effects.library()).map_err(|error| failed(&error))
+    }
+
     fn mount_audio(&mut self) -> Result<(), MountError> {
         if !self.server.is_mounted(AUDIO_PACK) {
             self.server.mount_now(AUDIO_PACK)?;
@@ -3569,6 +3586,11 @@ mod new_renderer_tests {
 
     /// As [`content`], over `source` with the character's pack added.
     fn content_over(source: MemoryPackSource) -> Content {
+        content_sharing(source, Vec::new())
+    }
+
+    /// As [`content_over`], with `more` beside the character in its pack.
+    fn content_sharing(source: MemoryPackSource, more: Vec<PackAsset>) -> Content {
         let vertex = |position: [f32; 3]| Vertex {
             position,
             normal: [0.0, 0.0, 1.0],
@@ -3586,7 +3608,8 @@ mod new_renderer_tests {
         );
         let bytes = mesh.to_cooked().expect("cooked");
         let asset = PackAsset::encode(CHARACTER, AssetKind::Mesh, Codec::Lz4, &bytes, Vec::new(), 3);
-        source.insert(PACK, write_pack(vec![asset.expect("encoded")]).expect("a pack"));
+        let assets = std::iter::once(asset.expect("encoded")).chain(more).collect();
+        source.insert(PACK, write_pack(assets).expect("a pack"));
         #[cfg(feature = "dev")]
         let live_packs = Arc::new(LivePacks::new(source));
         #[cfg(feature = "dev")]
@@ -3633,6 +3656,25 @@ mod new_renderer_tests {
         assert_eq!(transmission(&content, &hair), Some(0.8), "and one after a device loss or a tier change");
         content.keep_renderer(previous);
         assert_eq!(transmission(&content, &hair), Some(0.8), "and going back to one that was kept");
+    }
+
+    /// A cooked effects library loads from the shared pack as the library it was, and one that no longer reads
+    /// (cooked by a build whose effects differ) is an error naming it, not a panic.
+    #[test]
+    fn an_effects_library_loads_as_the_document_said() {
+        let shipped = EffectLibrary::default_effects();
+        let pack = |id: AssetId, library: String| {
+            let bytes = Effects { library }.to_cooked().expect("cooked");
+            PackAsset::encode(id, AssetKind::Effects, Codec::Lz4, &bytes, Vec::new(), 3).expect("encoded")
+        };
+        let (good, bad) = (AssetId::from_bytes([0x51; 16]), AssetId::from_bytes([0x52; 16]));
+        let stale =
+            shipped.to_ron().expect("written").replacen("lifetime: (0.08, 0.1)", "lifetime: (0.1, 0.08)", 1);
+        let assets = vec![pack(good, shipped.to_ron().expect("written")), pack(bad, stale)];
+        let mut content = content_sharing(MemoryPackSource::new(), assets);
+        assert_eq!(content.load_effects(good).expect("loads"), shipped);
+        let error = content.load_effects(bad).expect_err("a backward lifetime").to_string();
+        assert!(error.contains(&bad.to_string()) && error.contains("lifetime"), "{error}");
     }
 
     /// A stand finds its zone while something else's upload is queued, as a boot's, a restart's or a trip's

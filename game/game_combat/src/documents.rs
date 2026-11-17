@@ -13,7 +13,6 @@ use sapphire_gameplay::targeting::TargetingTuning;
 use sapphire_input::InputBindings;
 use sapphire_platform::ContentFs;
 use sapphire_ui::HudDesign;
-use sapphire_vfx::EffectLibrary;
 
 /// What a fight starts on. `Default` is [`Self::shipped`].
 #[derive(Clone, Debug)]
@@ -29,8 +28,6 @@ pub struct FightDocuments {
     pub hud: HudDesign,
     /// Combat's bindings: `None` is `sapphire_controls`' own.
     pub bindings: Option<InputBindings>,
-    /// What cues and sword trails play: `None` is `sapphire_vfx`'s own.
-    pub effects: Option<EffectLibrary>,
 }
 
 impl Default for FightDocuments {
@@ -49,7 +46,6 @@ impl FightDocuments {
             motion: CharacterMotion::shipped().clone(),
             hud: *HudDesign::shipped(),
             bindings: None,
-            effects: None,
         }
     }
 
@@ -87,9 +83,6 @@ impl FightDocuments {
                 "bindings" => {
                     let bindings = sapphire_serialize::from_ron(&text).map_err(|error| bad(&error))?;
                     documents.bindings = Some(bindings);
-                }
-                "effects" => {
-                    documents.effects = Some(EffectLibrary::from_ron(&text).map_err(|error| bad(&error))?);
                 }
                 // The flow's (`game_flow`) and the screens' (`game_ui`), which read them themselves: here only
                 // that they're there.
@@ -144,7 +137,6 @@ mod tests {
     const MOTION: &str = include_str!("../../../crates/sapphire_anim/default_character_motion.ron");
     const HUD: &str = include_str!("../../../crates/sapphire_ui/default_hud.ron");
     const BINDINGS: &str = include_str!("../../../crates/sapphire_controls/combat_bindings.ron");
-    const EFFECTS: &str = include_str!("../../../crates/sapphire_vfx/default_effects.ron");
 
     /// Content with `manifest`'s fields, and `files` under the documents' directory.
     fn content(manifest: &str, files: &[(&str, String)]) -> HashMap<String, Vec<u8>> {
@@ -167,7 +159,6 @@ mod tests {
             motion: Some(String::new()),
             hud: Some(String::new()),
             bindings: Some(String::new()),
-            effects: Some(String::new()),
             // The flow's own: `game_flow` holds the flow's name, and the flags' joins it when Q2's type lands.
             flow: None,
             flags: None,
@@ -183,7 +174,6 @@ mod tests {
                 stable_name::<CharacterMotion>(),
                 stable_name::<HudDesign>(),
                 stable_name::<InputBindings>(),
-                stable_name::<EffectLibrary>(),
             ]
         );
     }
@@ -197,7 +187,7 @@ mod tests {
         assert_eq!(documents.body, *BodyTuning::shipped());
         assert_eq!(&documents.motion, CharacterMotion::shipped());
         assert_eq!(documents.hud, *HudDesign::shipped());
-        assert!(documents.bindings.is_none() && documents.effects.is_none());
+        assert!(documents.bindings.is_none());
         let refused = read(&HashMap::new()).expect_err("no manifest");
         assert!(refused.contains("cook again"), "{refused}");
     }
@@ -209,21 +199,20 @@ mod tests {
         let own = content(
             "targeting: Some(\"my_targeting.ron\"), body: Some(\"look/my_body.ron\"), \
              motion: Some(\"look/my_motion.ron\"), hud: Some(\"my_hud.ron\"), \
-             bindings: Some(\"my_bindings.ron\"), effects: Some(\"my_effects.ron\")",
+             bindings: Some(\"my_bindings.ron\")",
             &[
                 ("my_targeting.ron", TARGETING.replacen("range: 12.0", "range: 15.0", 1)),
                 ("look/my_body.ron", BODY.replacen("rate: 4.5", "rate: 5.0", 1)),
                 ("look/my_motion.ron", MOTION.replacen("root_inertia: 0.25", "root_inertia: 0.5", 1)),
                 ("my_hud.ron", HUD.replacen("margin: 16.0", "margin: 30.0", 1)),
                 ("my_bindings.ron", BINDINGS.to_owned()),
-                ("my_effects.ron", EFFECTS.to_owned()),
             ],
         );
         let documents = read(&own).expect("reads");
         assert_eq!(documents.targeting.soft_lock.range, 15.0);
         assert_eq!(documents.body.look.rate, 5.0);
         assert_eq!(documents.motion.springs.root_inertia, 0.5);
-        assert!(documents.bindings.is_some() && documents.effects.is_some());
+        assert!(documents.bindings.is_some());
 
         let metrics = UiMetrics::new(Vec2::new(874.0, 402.0), Insets::default());
         let moved = HudLayout::designed(metrics, &documents.hud);
@@ -261,7 +250,8 @@ mod tests {
                 "look_weight",
             ),
             ("bindings: Some(\"my.ron\")", vec![("my.ron", "not bindings".to_owned())], "my.ron"),
-            ("effects: Some(\"my.ron\")", vec![("my.ron", "not effects".to_owned())], "my.ron"),
+            // An effects library is a cooked asset since M6 N1, which the cue table names.
+            ("effects: Some(\"my.ron\")", vec![], "`effects`"),
             ("hud_two: Some(\"my.ron\")", vec![], "hud_two"),
         ];
         for (manifest, files, named) in cases {

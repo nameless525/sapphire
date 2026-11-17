@@ -255,6 +255,12 @@ impl CueShow {
         Self::with_table(CueTable::default_table(), VfxLibrary::default_effects(), budget, presets)
     }
 
+    /// The cooked effects library the shipped table names (M6 N1), which a fight loads before its cues play:
+    /// none, and they play `sapphire_vfx`'s compiled-in library.
+    pub(crate) fn effect_library() -> Option<sapphire_assets::AssetId> {
+        CueTable::default_table().effect_library()
+    }
+
     /// The shipped table, firing `effects` within `budget`. An error names a row they don't have.
     pub(crate) fn with_effects(
         effects: VfxLibrary,

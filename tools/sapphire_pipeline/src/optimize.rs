@@ -210,16 +210,26 @@ struct Part {
     weights: Vec<f32>,
 }
 
-/// One level of the chain: its parts, and the largest of their errors.
+/// One level of the chain: its parts, the largest of their errors, and which of the settings' levels it
+/// is (0 for LOD0, `n` for `levels[n - 1]`).
 #[derive(Clone, Debug)]
 struct Level {
     parts: Vec<Part>,
     error: f32,
+    setting: usize,
 }
 
 impl Level {
     fn index_count(&self) -> usize {
         self.parts.iter().map(|part| part.indices.len()).sum()
+    }
+
+    /// How many vertices its triangles use.
+    fn vertex_count(&self) -> usize {
+        let mut used: Vec<u32> = self.parts.iter().flat_map(|part| part.indices.iter().copied()).collect();
+        used.sort_unstable();
+        used.dedup();
+        used.len()
     }
 }
 
@@ -245,7 +255,10 @@ pub fn optimize_pinned(
     let positions: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
     let adapter = VertexDataAdapter::new(bytemuck::cast_slice(&positions), size_of::<[f32; 3]>(), 0)
         .expect("tightly packed positions");
-    let mut chain = lod_chain(mesh, settings, seam_tolerance, pinned, &adapter);
+    let locks =
+        if settings.levels.is_empty() { Vec::new() } else { lock_causes(mesh, seam_tolerance, pinned).any() };
+    let border = if settings.lock_border { SimplifyOptions::LockBorder } else { SimplifyOptions::None };
+    let mut chain = lod_chain(mesh, settings, &locks, border, &adapter);
     let skip = match cook {
         Cook::Desktop => 0,
         Cook::Mobile => settings.mobile_skip as usize,
@@ -280,12 +293,13 @@ fn merge_by_material(mesh: &mut ImportedMesh) {
     lod0.submeshes = submeshes;
 }
 
-/// LOD0 and every level `settings` keeps, LOD0 first, as index lists into `mesh.vertices`.
+/// LOD0 and every level `settings` keeps, LOD0 first, as index lists into `mesh.vertices`, with the
+/// vertices `locks` marks ([`lock_causes`]) held still and the border as `border` says.
 fn lod_chain(
     mesh: &ImportedMesh,
     settings: &LodSettings,
-    seam_tolerance: f32,
-    pinned: &[bool],
+    locks: &[bool],
+    border: SimplifyOptions,
     adapter: &VertexDataAdapter<'_>,
 ) -> Vec<Level> {
     let scale = meshopt::simplify_scale(adapter);
@@ -313,15 +327,14 @@ fn lod_chain(
             })
             .collect(),
         error: 0.0,
+        setting: 0,
     };
     let mut chain = vec![lod0];
     if settings.levels.is_empty() {
         return chain;
     }
     let attributes = simplifier_attributes(mesh, scale);
-    let locks = locks(mesh, seam_tolerance, pinned);
-    let options = if settings.lock_border { SimplifyOptions::LockBorder } else { SimplifyOptions::None };
-    for level in &settings.levels {
+    for (setting, level) in (1..).zip(&settings.levels) {
         let last = chain.last().expect("LOD0 is always there");
         let parts: Vec<Part> = last
             .parts
@@ -339,10 +352,10 @@ fn lod_chain(
                     &attributes,
                     &part.weights,
                     size_of_val(part.weights.as_slice()),
-                    &locks,
+                    locks,
                     target,
                     budget,
-                    options,
+                    border,
                     Some(&mut step_error),
                 );
                 Part {
@@ -357,8 +370,11 @@ fn lod_chain(
         // Before parts that simplified away are dropped: their error still counts, and so does
         // every earlier level's, so the chain's errors never decrease.
         let error = parts.iter().map(|part| part.error).fold(last.error, f32::max);
-        let candidate =
-            Level { parts: parts.into_iter().filter(|part| !part.indices.is_empty()).collect(), error };
+        let candidate = Level {
+            parts: parts.into_iter().filter(|part| !part.indices.is_empty()).collect(),
+            error,
+            setting,
+        };
         let (count, last_count) = (candidate.index_count(), last.index_count());
         if count > 0 && count as f32 <= (1.0 - MIN_LOD_REDUCTION) * last_count as f32 {
             chain.push(candidate);
@@ -481,15 +497,13 @@ fn posed_positions(mesh: &ImportedMesh, skin: &ImportedSkin, axis: Vec3, angle: 
         .collect()
 }
 
-/// Per vertex: whether it must not move. That is a vertex on a seam between two submeshes
-/// (within `tolerance` of a vertex another submesh uses), a vertex a morph target moves or
-/// that shares a triangle with one, and a vertex the caller pinned (each by position, so a split
-/// vertex's copies count as one).
-fn locks(mesh: &ImportedMesh, tolerance: f32, pinned: &[bool]) -> Vec<bool> {
+/// Per vertex, each reason it must not move ([`LockCauses`]), each by position, so a split vertex's
+/// copies count as one.
+fn lock_causes(mesh: &ImportedMesh, tolerance: f32, pinned: &[bool]) -> LockCauses {
     let (group_of, group_count) = bake::weld(&mesh.vertices, tolerance);
     // Per weld group: the first submesh that uses it, and whether a second one does.
     let mut owner: Vec<Option<usize>> = vec![None; group_count];
-    let mut locked = vec![false; group_count];
+    let mut seam = vec![false; group_count];
     for (submesh, range) in mesh.lods[0].submeshes.iter().enumerate() {
         let indices =
             &mesh.indices[range.first_index as usize..(range.first_index + range.index_count) as usize];
@@ -497,27 +511,175 @@ fn locks(mesh: &ImportedMesh, tolerance: f32, pinned: &[bool]) -> Vec<bool> {
             let group = group_of[index as usize];
             match owner[group] {
                 None => owner[group] = Some(submesh),
-                Some(first) if first != submesh => locked[group] = true,
+                Some(first) if first != submesh => seam[group] = true,
                 Some(_) => {}
             }
         }
     }
+    let mut pinned_groups = vec![false; group_count];
     for (&group, _) in group_of.iter().zip(pinned).filter(|(_, pinned)| **pinned) {
-        locked[group] = true;
+        pinned_groups[group] = true;
     }
     let mut moved = vec![false; group_count];
     for delta in mesh.morph_targets.iter().flat_map(|target| &target.deltas) {
         moved[group_of[delta.vertex as usize]] = true;
     }
+    let mut morph = vec![false; group_count];
     if moved.contains(&true) {
         for triangle in mesh.indices.as_chunks::<3>().0 {
             let groups = triangle.map(|index| group_of[index as usize]);
             if groups.iter().any(|&group| moved[group]) {
-                groups.iter().for_each(|&group| locked[group] = true);
+                groups.iter().for_each(|&group| morph[group] = true);
             }
         }
     }
-    group_of.iter().map(|&group| locked[group]).collect()
+    let per_vertex = |groups: &[bool]| group_of.iter().map(|&group| groups[group]).collect();
+    LockCauses { seam: per_vertex(&seam), morph: per_vertex(&morph), pinned: per_vertex(&pinned_groups) }
+}
+
+/// Why the simplifier holds each vertex still, a flag a vertex for each cause: on a seam between two
+/// submeshes (within the weld tolerance of a vertex another submesh uses), moved by a morph target or
+/// sharing a triangle with one that is, or pinned by the caller. A sidecar's `lock_border` holds the open
+/// border too, through meshoptimizer's own option, which [`open_border`] stands in for in the audit.
+struct LockCauses {
+    seam: Vec<bool>,
+    morph: Vec<bool>,
+    pinned: Vec<bool>,
+}
+
+impl LockCauses {
+    /// Per vertex, whether any cause holds it: what the simplifier is given.
+    fn any(&self) -> Vec<bool> {
+        (0..self.seam.len())
+            .map(|vertex| self.seam[vertex] || self.morph[vertex] || self.pinned[vertex])
+            .collect()
+    }
+}
+
+/// Per vertex, whether it lies on the mesh's open border: on an edge, between positions as welded within
+/// `tolerance`, that only one of LOD0's triangles has. meshoptimizer finds its border by exact position,
+/// so where a mesh holds positions within the tolerance but apart, this counts fewer.
+fn open_border(mesh: &ImportedMesh, tolerance: f32) -> Vec<bool> {
+    let (group_of, group_count) = bake::weld(&mesh.vertices, tolerance);
+    let mut edges: Vec<(usize, usize)> = mesh
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|triangle| {
+            let groups = triangle.map(|index| group_of[index as usize]);
+            [(groups[0], groups[1]), (groups[1], groups[2]), (groups[2], groups[0])]
+        })
+        .filter(|(a, b)| a != b)
+        .map(|(a, b)| (a.min(b), a.max(b)))
+        .collect();
+    edges.sort_unstable();
+    let mut on_border = vec![false; group_count];
+    for run in edges.chunk_by(|a, b| a == b).filter(|run| run.len() == 1) {
+        let (a, b) = run[0];
+        on_border[a] = true;
+        on_border[b] = true;
+    }
+    group_of.iter().map(|&group| on_border[group]).collect()
+}
+
+/// What the simplifier's locks cost a mesh (M6 K1's audit): how many of LOD0's vertices each cause holds
+/// still, and every level of its chain built as the cook builds it and again with no vertex locked and
+/// the border free, at the same triangle targets and error budgets. A dry run: nothing it makes is cooked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainAudit {
+    /// The vertices LOD0's triangles use.
+    pub vertices: u32,
+    /// Of those, the ones on a seam between submeshes.
+    pub seam: u32,
+    /// The ones a morph target moves, or sharing a triangle with one it moves.
+    pub morph: u32,
+    /// The ones on the open border, where the sidecar's `lock_border` holds it (0 where it doesn't).
+    pub border: u32,
+    /// The ones a caller pinned.
+    pub pinned: u32,
+    /// The ones any of those hold.
+    pub locked: u32,
+    /// The chain the cook builds, before the mobile cook drops its first levels: each level it keeps.
+    pub cooked: Vec<ChainLevel>,
+    /// The same settings with nothing locked: each level that would be kept.
+    pub relaxed: Vec<ChainLevel>,
+}
+
+/// One level of a chain in a [`ChainAudit`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainLevel {
+    /// Which of the sidecar's levels: 1 for the first after LOD0.
+    pub setting: u32,
+    pub triangles: u32,
+    pub vertices: u32,
+    /// Its error, accumulated over the chain, in object-space meters, as the cooked level stores it.
+    pub error: f32,
+}
+
+/// [`ChainAudit`] of `mesh` (LOD0 alone, imported and baked, as [`optimize_pinned`] takes it) with these
+/// settings: a dry run of the simplifier, which merges `mesh`'s submeshes by material as the cook does and
+/// changes nothing else.
+pub fn audit_chain(
+    mesh: &mut ImportedMesh,
+    settings: &LodSettings,
+    seam_tolerance: f32,
+    pinned: &[bool],
+) -> ChainAudit {
+    debug_assert_eq!(mesh.lods.len(), 1, "the chain is built from LOD0 alone");
+    merge_by_material(mesh);
+    let causes = lock_causes(mesh, seam_tolerance, pinned);
+    let border = if settings.lock_border {
+        open_border(mesh, seam_tolerance)
+    } else {
+        vec![false; mesh.vertices.len()]
+    };
+    let mut used = vec![false; mesh.vertices.len()];
+    for &index in &mesh.indices {
+        used[index as usize] = true;
+    }
+    let count =
+        |flags: &[bool]| flags.iter().zip(&used).filter(|&(&flag, &used)| flag && used).count() as u32;
+    let locks = causes.any();
+    let any: Vec<bool> = locks.iter().zip(&border).map(|(&lock, &border)| lock || border).collect();
+    let positions: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
+    let adapter = VertexDataAdapter::new(bytemuck::cast_slice(&positions), size_of::<[f32; 3]>(), 0)
+        .expect("tightly packed positions");
+    let scale = meshopt::simplify_scale(&adapter);
+    let levels = |chain: Vec<Level>| -> Vec<ChainLevel> {
+        chain
+            .iter()
+            .skip(1)
+            .map(|level| ChainLevel {
+                setting: level.setting as u32,
+                triangles: (level.index_count() / 3) as u32,
+                vertices: level.vertex_count() as u32,
+                error: level.error * scale,
+            })
+            .collect()
+    };
+    let (cooked, relaxed) = if settings.levels.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        let options = if settings.lock_border { SimplifyOptions::LockBorder } else { SimplifyOptions::None };
+        let unlocked = vec![false; mesh.vertices.len()];
+        (
+            levels(lod_chain(mesh, settings, &locks, options, &adapter)),
+            levels(lod_chain(mesh, settings, &unlocked, SimplifyOptions::None, &adapter)),
+        )
+    };
+    ChainAudit {
+        vertices: used.iter().filter(|&&used| used).count() as u32,
+        seam: count(&causes.seam),
+        morph: count(&causes.morph),
+        border: count(&border),
+        pinned: count(&causes.pinned),
+        locked: count(&any),
+        cooked,
+        relaxed,
+    }
 }
 
 /// Renumbers the vertices coarsest LOD first, drops the ones no level uses, and writes the

@@ -697,3 +697,49 @@ fn simplification_keeps_the_shape_of_bent_joints() {
         assert!(posed <= error, "LOD{lod} bent {}°: {posed} m against {error} m", POSE_ANGLE.to_degrees());
     }
 }
+
+#[test]
+fn the_audit_counts_seam_locks_and_builds_the_cooks_chain_and_a_relaxed_one() {
+    let (rings, segments) = (48, 64);
+    let settings = LodSettings::default();
+    let audit = audit_chain(&mut two_material_sphere(rings, segments), &settings, TOLERANCE, &[]);
+    assert_eq!(audit.vertices, (rings + 2) * (segments + 1), "the equator's ring twice");
+    // The equator's ring, both copies of it, at least.
+    assert!(audit.seam >= 2 * (segments + 1), "{audit:?}");
+    assert_eq!((audit.morph, audit.border, audit.pinned), (0, 0, 0));
+    assert_eq!(audit.locked, audit.seam);
+
+    let mut cooked = two_material_sphere(rings, segments);
+    optimize(&mut cooked, &settings, TOLERANCE, Cook::Desktop);
+    let levels: Vec<(u32, f32)> =
+        (1..cooked.lods.len()).map(|lod| (triangles(&cooked, lod) as u32, cooked.lods[lod].error)).collect();
+    let audited: Vec<(u32, f32)> = audit.cooked.iter().map(|level| (level.triangles, level.error)).collect();
+    assert_eq!(audited, levels, "the dry run's chain is the cook's");
+    assert!(audit.cooked.iter().zip(&audit.cooked[1..]).all(|(a, b)| a.setting < b.setting));
+
+    let (cooked_last, relaxed_last) = (audit.cooked.last().unwrap(), audit.relaxed.last().unwrap());
+    assert!(
+        relaxed_last.triangles <= cooked_last.triangles,
+        "with the seam free the chain goes at least as far: {audit:?}"
+    );
+}
+
+#[test]
+fn the_audit_counts_what_morph_targets_and_a_locked_border_hold() {
+    let settings = LodSettings::new(vec![LodLevel { triangle_ratio: 0.1, max_error: 0.001 }], 1).unwrap();
+    let audit = audit_chain(&mut morph_witness(), &settings, TOLERANCE, &[]);
+    // The moved vertex and the six it shares triangles with.
+    assert_eq!((audit.vertices, audit.morph, audit.locked), (81, 7, 7));
+    assert_eq!(audit.border, 0, "the border is free without `lock_border`");
+
+    let cells = 32;
+    let free = audit_chain(&mut heightfield_tile(cells), &LodSettings::default(), TOLERANCE, &[]);
+    assert_eq!((free.border, free.locked), (0, 0));
+    let held = LodSettings::default().lock_border(true);
+    let locked = audit_chain(&mut heightfield_tile(cells), &held, TOLERANCE, &[]);
+    assert_eq!((locked.border, locked.locked), (4 * cells, 4 * cells));
+    let mut cooked = heightfield_tile(cells);
+    optimize(&mut cooked, &held, TOLERANCE, Cook::Desktop);
+    let levels: Vec<u32> = (1..cooked.lods.len()).map(|lod| triangles(&cooked, lod) as u32).collect();
+    assert_eq!(locked.cooked.iter().map(|level| level.triangles).collect::<Vec<_>>(), levels);
+}

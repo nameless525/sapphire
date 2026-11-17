@@ -9,6 +9,10 @@
 //!   timed run's rounds table prints a row a round: its lock, the lock's floor for the round's slow frames, the
 //!   chance of reading it with no lock, and whether it is void. A unit read above the manifest's load bound is
 //!   marked, never dropped.
+//! - **Work, waits and frames left out** (M6 B3): beside the CPU rows, each span's wall time (the CPU frame, its
+//!   record, its wait for the GPU) beside the frame thread's CPU time over it, from one round, and that round's
+//!   frames by kind of core; then every round's frames that no row reads (restarts, untimed GPU frames, a plain
+//!   bench's warm-up) as rows of their own. A log from before them prints neither.
 //! - **Counts** of a counting run are exact: every round must read the same. A count that differs is shown with
 //!   each round's, each marked against its budget, and on a run of counts alone that isn't streaming it fails
 //!   the report, as the scale lane would; a timed walk's may differ, and a round over its budget stays marked.
@@ -79,6 +83,11 @@ const CAST_COUNTED: [&str; 8] = [
     "outline draws",
     "ambient characters in view",
 ];
+
+/// The spans a fight's bench reads the thread's CPU time over (M6 B3): each wall row and its `on core` row, shown
+/// side by side in a table of their own.
+const SPANS: [(&str, &str); 3] =
+    [("cpu frame", "cpu frame on core"), ("record", "record on core"), ("gpu wait", "gpu wait on core")];
 
 /// The memory line's fields the report shows, in MiB, and the names it gives them.
 const MEMORY: [(&str, &str); 6] = [
@@ -526,7 +535,14 @@ fn section(
     let beside_name = run.beside.as_deref().unwrap_or("baseline");
     for read in &run.read {
         match read {
-            Read::Cpu => timed_table(out, rounds, beside, beside_name, "cpu", |row| !row.starts_with("gpu ")),
+            Read::Cpu => {
+                // The spans' own rows read in their table; the CPU frame stays in this one too, as the verdicts' row.
+                timed_table(out, rounds, beside, beside_name, "cpu", |row| {
+                    !row.starts_with("gpu ") && !row.ends_with(" on core") && row != "record"
+                });
+                spans_table(out, rounds);
+                excluded_table(out, rounds);
+            }
             Read::Gpu => {
                 timed_table(out, rounds, beside, beside_name, "gpu", |row| row.starts_with("gpu "));
                 copies_note(out, rounds);
@@ -653,6 +669,126 @@ fn timed_table(
             }
         });
         let _ = writeln!(out, "| {} | {cell} | {base} | {over} | {diagnostic} |", title(row));
+    }
+    let _ = writeln!(out);
+}
+
+/// Work and waits (M6 B3): each span's wall time beside the thread's CPU time over it, read from the round its wall
+/// row is judged on, so both are that round's frames; then that round's CPU frames by the kind of core they ended
+/// on, each with its time on a core. Nothing where no round read the thread's CPU time (a log from before it).
+fn spans_table(out: &mut String, rounds: &Rounds) {
+    if !rounds.rounds.iter().any(|round| round.log.timed("cpu", SPANS[0].1).is_some()) {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "Work and waits (cpu phase): each span's wall time beside the frame thread's CPU time over it, p50 / p95 / \
+         worst, from the round its wall row is judged on. What the wall has over the CPU, the thread spent off its \
+         core: waiting on the GPU, the encoders' workers or the driver, or set aside by the machine's other work. \
+         The bench draws offscreen, so its GPU wait stands where a window's acquire would block on a GPU behind \
+         it.\n"
+    );
+    let _ = writeln!(out, "| Span | Wall | On core | Off core at p50 |");
+    let _ = writeln!(out, "|---|---|---|---|");
+    let mut judged_frame = None;
+    for (wall, on_core) in SPANS {
+        let (cell, core, off) = match rounds.judged("cpu", wall) {
+            TimedCell::Round(round, timed) => {
+                if wall == SPANS[0].0 {
+                    judged_frame = Some(round);
+                }
+                let log = &rounds.rounds.iter().find(|r| r.round == round).expect("the judged round").log;
+                match log.timed("cpu", on_core) {
+                    Some(Entry::Read(core)) => (
+                        format!("{} (r{round})", figures(&timed, false)),
+                        figures(&core, false),
+                        ms((timed.p50 - core.p50).max(0.0)),
+                    ),
+                    Some(Entry::NotExercised) | None => (
+                        format!("{} (r{round})", figures(&timed, false)),
+                        "not read".to_owned(),
+                        String::new(),
+                    ),
+                }
+            }
+            other => (timed_text(&other).0, String::new(), String::new()),
+        };
+        let _ = writeln!(out, "| {} | {cell} | {core} | {off} |", title(wall));
+    }
+    let _ = writeln!(out);
+    let Some(round) = judged_frame.and_then(|round| rounds.rounds.iter().find(|r| r.round == round)) else {
+        return;
+    };
+    let cores: Vec<_> = round.log.by_core.iter().filter(|((phase, _), _)| phase == "cpu").collect();
+    if cores.is_empty() {
+        return;
+    }
+    let _ =
+        writeln!(out, "Its CPU frames by the kind of core they ended on (r{}), p50 / p95:\n", round.round);
+    let _ = writeln!(out, "| Core | Frames | Share | CPU frame | On core |");
+    let _ = writeln!(out, "|---|---|---|---|---|");
+    for ((_, core), by) in cores {
+        let on_core = match (by.on_core_p50, by.on_core_p95) {
+            (Some(p50), Some(p95)) => format!("{} / {}", ms(p50), ms(p95)),
+            _ => "not read".to_owned(),
+        };
+        let _ = writeln!(
+            out,
+            "| {} | {} | {:.1}% | {} / {} | {on_core} |",
+            capital(core),
+            thousands(by.samples),
+            by.share * 100.0,
+            ms(by.cpu_p50),
+            ms(by.cpu_p95)
+        );
+    }
+    let _ = writeln!(out);
+}
+
+/// The frames each round's phases left out of every row (M6 B3), by reason: a fight's restarts, the GPU phase's
+/// frames whose timings never came back and a plain bench's warm-up, each a row with its count, its CPU frame and
+/// what it allocated. Nothing where no round logged them (a log from before they were).
+fn excluded_table(out: &mut String, rounds: &Rounds) {
+    if !rounds.rounds.iter().any(|round| !round.log.excluded.is_empty()) {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "Frames left out of the rows: a frame that starts a fight over (or a walk's tour), in the GPU phase one \
+         whose timings never came back, and a plain bench's warm-up, each phase's by reason, every round. Times in \
+         ms, p50 / worst, a fight's worst frame's tick and its time on the thread's core beside it; a restart's own time within its frame, which \
+         exit test 4 proposes holding under 1 ms a frame (shown, judged on nothing); allocations of the whole \
+         frames, all of them and the most in one.\n"
+    );
+    let _ = writeln!(
+        out,
+        "| Round | Phase | Left out for | Frames | CPU frame | On core, worst | Restart | Allocations |"
+    );
+    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|");
+    for round in &rounds.rounds {
+        for ((phase, reason), excluded) in &round.log.excluded {
+            if excluded.frames == 0 {
+                let _ = writeln!(out, "| r{} | {phase} | {reason} | none | | | | |", round.round);
+                continue;
+            }
+            let restart = if reason == "restart" {
+                format!("{} / {}", ms(excluded.restart_p50), ms(excluded.restart_worst))
+            } else {
+                String::new()
+            };
+            let _ = writeln!(
+                out,
+                "| r{} | {phase} | {reason} | {} | {} / {}{} | {} | {restart} | {} / {} |",
+                round.round,
+                thousands(excluded.frames),
+                ms(excluded.cpu_p50),
+                ms(excluded.cpu_worst),
+                excluded.worst_tick.map_or_else(String::new, |tick| format!(" @ tick {tick}")),
+                excluded.on_core_worst.map_or_else(|| "not read".to_owned(), ms),
+                thousands(excluded.allocations),
+                thousands(excluded.allocations_worst)
+            );
+        }
     }
     let _ = writeln!(out);
 }
@@ -1740,5 +1876,93 @@ mod tests {
         let line = text.lines().find(|line| line.starts_with("| Desktop-Low | gpu main |")).expect(&text);
         assert_eq!(line, "| Desktop-Low | gpu main | 2.786 / 4.905 (r1) | 3.100 / 5.200 (r1) |");
         assert!(text.contains("**read at a load of 9.5,**"), "a unit above the bound is marked");
+    }
+
+    /// An unbudgeted CPU row's line, as the sandbox writes it.
+    fn cpu_line(row: &str, [p50, p95, worst]: [f64; 3]) -> String {
+        format!(
+            "x INFO sapphire::sandbox: fight row phase=\"cpu\" row=\"{row}\" samples=100 p50_us={p50:.1} \
+             p95_us={p95:.1} p99_us={worst:.1} worst_us={worst:.1} worst_tick=1 budget_us=None proposed_us=None \
+             over_p50=false over_worst=false\n"
+        )
+    }
+
+    /// Each span's wall time stands beside the thread's CPU time over it, both from the round the wall row is
+    /// judged on, and that round's frames by core with theirs (M6 B3); the spans' own rows leave the CPU table.
+    #[test]
+    fn a_spans_wall_time_reads_beside_its_time_on_a_core() {
+        let round = |cpu_p95: f64, on_core_p50: f64| {
+            [
+                cpu_line("cpu frame", [1_000.0, cpu_p95, 9_000.0]),
+                cpu_line("gpu wait", [3_000.0, 4_000.0, 6_000.0]),
+                cpu_line("cpu frame on core", [on_core_p50, 1_000.0, 2_000.0]),
+                cpu_line("record", [400.0, 600.0, 6_660.0]),
+                cpu_line("record on core", [350.0, 500.0, 900.0]),
+                cpu_line("gpu wait on core", [20.0, 40.0, 80.0]),
+                "x INFO sapphire::sandbox: frames by core phase=\"cpu\" core=\"performance\" samples=980 share=0.980 \
+                 cpu_us_p50=\"990.0\" cpu_us_p95=\"1400.0\" cpu_us_worst=\"9000.0\" on_core_us_p50=\"900.0\" \
+                 on_core_us_p95=\"1000.0\"\n"
+                    .to_owned(),
+            ]
+            .concat()
+        };
+        let fight = rounds(&[&round(1_500.0, 700.0), &round(1_400.0, 800.0)]);
+        let mut out = String::new();
+        spans_table(&mut out, &fight);
+        let line =
+            |span: &str| out.lines().find(|line| line.starts_with(&format!("| {span} |"))).expect(&out);
+        // Round 2 has the lesser p95, so both figures are its own.
+        assert_eq!(
+            line("Cpu frame"),
+            "| Cpu frame | 1.000 / 1.400 / 9.000 (r2) | 0.800 / 1.000 / 2.000 | 0.200 |"
+        );
+        assert_eq!(line("Record"), "| Record | 0.400 / 0.600 / 6.660 (r1) | 0.350 / 0.500 / 0.900 | 0.050 |");
+        assert_eq!(
+            line("Gpu wait"),
+            "| Gpu wait | 3.000 / 4.000 / 6.000 (r1) | 0.020 / 0.040 / 0.080 | 2.980 |"
+        );
+        assert!(out.contains("| Performance | 980 | 98.0% | 0.990 / 1.400 | 0.900 / 1.000 |"), "{out}");
+        assert!(out.contains("CPU frames by the kind of core they ended on (r2)"), "{out}");
+        let mut table = String::new();
+        timed_table(&mut table, &fight, None, "baseline", "cpu", |row| {
+            !row.starts_with("gpu ") && !row.ends_with(" on core") && row != "record"
+        });
+        assert!(
+            table.contains("| Cpu frame |") && !table.contains("On core") && !table.contains("| Record |")
+        );
+        // A log from before the thread's CPU time was read prints no such table.
+        let mut none = String::new();
+        spans_table(&mut none, &rounds(&[&fight_round(1_400.0, [3_000.0, 12_000.0, 13_000.0], None)]));
+        assert!(none.is_empty(), "{none}");
+    }
+
+    /// The frames a phase left out are rows of their own, every round's, by reason (M6 B3): the restart with its
+    /// own time, a reason with no frames said as none, and nothing at all from a log from before them.
+    #[test]
+    fn the_frames_left_out_are_rows_of_their_own() {
+        let log = "x INFO sapphire::sandbox: fight excluded phase=\"cpu\" reason=\"restart\" frames=2 \
+                   cpu_us_p50=\"8100.0\" cpu_us_worst=\"9200.0\" worst_tick=1 on_core_us_worst=\"8900.0\" \
+                   restart_us_p50=\"7850.0\" restart_us_worst=\"7880.0\" allocations=22200 allocations_worst=11100 \
+                   bytes=900000 step_allocations=0\n\
+                   x INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"untimed\" frames=0\n\
+                   x INFO sapphire::sandbox: bench excluded phase=\"cpu\" reason=\"warm-up\" frames=60 \
+                   cpu_us_p50=\"1200.0\" cpu_us_worst=\"45000.0\" worst_frame=0 allocations=6000 \
+                   allocations_worst=5000\n";
+        let mut out = String::new();
+        excluded_table(&mut out, &rounds(&[log]));
+        assert!(
+            out.contains(
+                "| r1 | cpu | restart | 2 | 8.100 / 9.200 @ tick 1 | 8.900 | 7.850 / 7.880 | 22,200 / 11,100 |"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("| r1 | gpu | untimed | none |"), "{out}");
+        assert!(
+            out.contains("| r1 | cpu | warm-up | 60 | 1.200 / 45.00 | not read |  | 6,000 / 5,000 |"),
+            "a plain bench's warm-up, which has no tick: {out}"
+        );
+        let mut none = String::new();
+        excluded_table(&mut none, &rounds(&[&fight_round(1_400.0, [3_000.0, 12_000.0, 13_000.0], None)]));
+        assert!(none.is_empty(), "{none}");
     }
 }

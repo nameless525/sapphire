@@ -165,6 +165,38 @@ pub struct GpuReading {
     pub lock: Option<f64>,
 }
 
+/// Frames a phase left out of every row's spread for one reason (M6 B3, `fight excluded`): a restart, or in the GPU
+/// phase a frame whose timings never came back. Times in µs; with no such frame, `frames` is 0 and nothing else
+/// was read.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Excluded {
+    pub frames: u64,
+    pub cpu_p50: f64,
+    pub cpu_worst: f64,
+    /// The fight's tick at the worst frame; a plain bench's warm-up has none.
+    pub worst_tick: Option<u64>,
+    /// The thread's CPU time over the worst frame, where the OS says.
+    pub on_core_worst: Option<f64>,
+    /// A restart's own time within its frame: 0 for a reason that isn't one.
+    pub restart_p50: f64,
+    pub restart_worst: f64,
+    /// What the frames allocated, all of them, and the most one frame did.
+    pub allocations: u64,
+    pub allocations_worst: u64,
+}
+
+/// A phase's frames on one kind of core (M5 B4, `frames by core`), in µs, with the thread's CPU time over them where
+/// the bench read it (M6 B3).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ByCore {
+    pub samples: u64,
+    pub share: f64,
+    pub cpu_p50: f64,
+    pub cpu_p95: f64,
+    pub on_core_p50: Option<f64>,
+    pub on_core_p95: Option<f64>,
+}
+
 /// A counting walk's end (M5 Z2, exit test 2's floor): the zone taken down and its pack unmounted, as a trip
 /// leaves one, and the mesh pool given back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -201,6 +233,10 @@ pub struct Log {
     pub no_upload: Vec<(Key, NoUpload)>,
     /// The GPU phase's reading, where the bench logged one.
     pub gpu_reading: Option<GpuReading>,
+    /// Each phase's frames left out of the rows, by reason: `("cpu", "restart")`, in the order logged.
+    pub excluded: Vec<(Key, Excluded)>,
+    /// Each phase's frames by the kind of core they ended on: `("cpu", "performance")`.
+    pub by_core: Vec<(Key, ByCore)>,
     /// A counting walk's `texture streaming cpu` line (M5 Z2): its fields that read as numbers, shown only.
     pub streaming_cpu: Option<BTreeMap<String, f64>>,
     /// A counting walk's `zone closed` line, at its end.
@@ -246,6 +282,44 @@ impl Log {
                     continue;
                 };
                 log.no_upload.push((key, NoUpload { samples, p50, p95, p99 }));
+            } else if has(line, "fight excluded") || has(line, "bench excluded") {
+                let (Some(phase), Some(reason), Some(frames)) =
+                    (field("phase"), field("reason"), int("frames"))
+                else {
+                    continue;
+                };
+                let read = |name: &str| float(name).unwrap_or(0.0);
+                log.excluded.push((
+                    (phase.to_owned(), reason.to_owned()),
+                    Excluded {
+                        frames,
+                        cpu_p50: read("cpu_us_p50"),
+                        cpu_worst: read("cpu_us_worst"),
+                        worst_tick: int("worst_tick"),
+                        on_core_worst: float("on_core_us_worst"),
+                        restart_p50: read("restart_us_p50"),
+                        restart_worst: read("restart_us_worst"),
+                        allocations: int("allocations").unwrap_or(0),
+                        allocations_worst: int("allocations_worst").unwrap_or(0),
+                    },
+                ));
+            } else if has(line, "frames by core") {
+                let (Some(phase), Some(core), Some(samples), Some(cpu_p50), Some(cpu_p95)) =
+                    (field("phase"), field("core"), int("samples"), float("cpu_us_p50"), float("cpu_us_p95"))
+                else {
+                    continue;
+                };
+                log.by_core.push((
+                    (phase.to_owned(), core.to_owned()),
+                    ByCore {
+                        samples,
+                        share: float("share").unwrap_or(0.0),
+                        cpu_p50,
+                        cpu_p95,
+                        on_core_p50: float("on_core_us_p50"),
+                        on_core_p95: float("on_core_us_p95"),
+                    },
+                ));
             } else if has(line, "fight gpu reading") {
                 log.gpu_reading = Some(GpuReading {
                     backend: field("backend").unwrap_or_default().to_owned(),
@@ -593,6 +667,37 @@ mod tests {
         assert_eq!(held.wait_reasons["first"].arrival_held_to_bound, Some(2));
         let unread = Log::parse("x  INFO sapphire::sandbox: fight gpu reading phase=\"gpu\" lock=-");
         assert_eq!(unread.gpu_reading.and_then(|reading| reading.lock), None);
+    }
+
+    /// A phase's frames left out of the rows (M6 B3), with or without any, and its frames by core with the thread's
+    /// CPU time over them, which a log from before it doesn't have.
+    #[test]
+    fn the_frames_left_out_and_by_core_are_read() {
+        let log = Log::parse(
+            "x  INFO sapphire::sandbox: fight excluded phase=\"cpu\" reason=\"restart\" frames=2 cpu_us_p50=\"8100.0\" \
+             cpu_us_worst=\"9200.0\" worst_tick=1201 on_core_us_worst=\"8900.0\" restart_us_p50=\"7850.0\" \
+             restart_us_worst=\"7880.0\" allocations=22200 allocations_worst=11100 bytes=9 step_allocations=0\n\
+             x  INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"untimed\" frames=0\n\
+             x  INFO sapphire::sandbox: frames by core phase=\"cpu\" core=\"efficiency\" samples=20 share=0.020 \
+             cpu_us_p50=\"2230.0\" cpu_us_p95=\"3000.0\" cpu_us_worst=\"4000.0\" on_core_us_p50=\"1100.0\" \
+             on_core_us_p95=\"1500.0\" gpu_us_p50=None\n\
+             x  INFO sapphire::sandbox: frames by core phase=\"first\" core=\"performance\" samples=5 share=1.000 \
+             cpu_us_p50=\"900.0\" cpu_us_p95=\"990.0\" cpu_us_worst=\"999.0\"",
+        );
+        let ((phase, reason), restart) = &log.excluded[0];
+        assert_eq!((phase.as_str(), reason.as_str()), ("cpu", "restart"));
+        assert_eq!((restart.frames, restart.cpu_worst, restart.worst_tick), (2, 9200.0, Some(1201)));
+        assert_eq!((restart.on_core_worst, restart.restart_worst), (Some(8900.0), 7880.0));
+        assert_eq!((restart.allocations, restart.allocations_worst), (22_200, 11_100));
+        assert_eq!(log.excluded[1].1, Excluded::default(), "none left out");
+        let ((_, core), efficiency) = &log.by_core[0];
+        assert_eq!(core, "efficiency");
+        assert_eq!(
+            (efficiency.samples, efficiency.cpu_p50, efficiency.on_core_p50),
+            (20, 2230.0, Some(1100.0))
+        );
+        assert_eq!(log.by_core[1].1.on_core_p95, None, "a line from before the thread's CPU time");
+        assert!(log.timed.is_empty(), "neither is a fight row");
     }
 
     #[test]

@@ -9,6 +9,7 @@ use sapphire_assets::sound::DecodedSound;
 
 use crate::backend::{
     AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
+    VoiceStart,
 };
 
 /// One thing asked of a [`MockBackend`].
@@ -20,12 +21,16 @@ pub enum MockCall {
     SetMix {
         buses: usize,
     },
+    /// A [`VoiceStart`]'s fields, flat.
     StartVoice {
         slot: VoiceSlot,
         sound: AssetId,
         bus: BusId,
         params: VoiceParams,
         frozen: bool,
+        from_seconds: f64,
+        looped: bool,
+        fade_in: Duration,
     },
     SetVoice {
         slot: VoiceSlot,
@@ -37,6 +42,7 @@ pub enum MockCall {
     },
     StopVoice {
         slot: VoiceSlot,
+        fade: Duration,
     },
     SetBus {
         bus: BusId,
@@ -148,14 +154,23 @@ impl AudioBackend for MockBackend {
         slot: VoiceSlot,
         sound: AssetId,
         bus: BusId,
-        params: VoiceParams,
-        frozen: bool,
+        start: VoiceStart,
     ) -> Result<(), StartError> {
         if !self.sounds.contains_key(&sound) {
             return Err(StartError::UnknownSound(sound));
         }
         self.finished.remove(&slot);
-        self.calls.push(MockCall::StartVoice { slot, sound, bus, params, frozen });
+        let VoiceStart { params, frozen, from_seconds, looped, fade_in } = start;
+        self.calls.push(MockCall::StartVoice {
+            slot,
+            sound,
+            bus,
+            params,
+            frozen,
+            from_seconds,
+            looped,
+            fade_in,
+        });
         Ok(())
     }
 
@@ -167,8 +182,8 @@ impl AudioBackend for MockBackend {
         self.calls.push(MockCall::FreezeVoice { slot, frozen });
     }
 
-    fn stop_voice(&mut self, slot: VoiceSlot) {
-        self.calls.push(MockCall::StopVoice { slot });
+    fn stop_voice(&mut self, slot: VoiceSlot, fade: Duration) {
+        self.calls.push(MockCall::StopVoice { slot, fade });
     }
 
     fn voice_finished(&mut self, slot: VoiceSlot) -> bool {

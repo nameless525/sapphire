@@ -27,6 +27,10 @@
 //!   [`PAUSE_SNAPSHOT`]) or following the world clock, as the perfect dodge's slow motion does; its ducking
 //!   rules, following the cooked mouth curve of each voice line at its playhead; and its output profiles
 //!   ([`AudioSystem::set_output_profile`]). With no mix given it's [`Mix::plain`](sapphire_assets::mix::Mix::plain).
+//! - **Voice limits** (M6 U3): each voice ranked by its cue's priority and how loud it is at the listener;
+//!   a cue's own [`Limit`](sapphire_assets::cue::Limit) and its mix voice group's, by Unreal's rules; the
+//!   quality tier's [`VoiceCaps`] on voices mixed and kept; and virtual voices, kept unmixed with their
+//!   playhead counted on, that come back where they would be, fading in over [`VIRTUAL_FADE`].
 //! - **Clock-aware audio:** snapshots driven by the world time scale, and each actor's hitstop, which ducks or
 //!   freezes the voices attached to it as their cue says. The inputs are plain numbers per frame.
 //! - **Music** (M3 A1): a [`Score`](sapphire_assets::score::Score)'s stems loop together on the
@@ -76,7 +80,8 @@ mod voice;
 mod voice_sound;
 
 pub use backend::{
-    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
+    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, STOP_FADE, StartError, StemStart,
+    VIRTUAL_FADE, VoiceParams, VoiceSlot, VoiceStart,
 };
 pub use kira_backend::KiraBackend;
 pub use mock::{MockBackend, MockCall};
@@ -85,7 +90,8 @@ pub use output::{CpalOutput, OfflineOutput, Output, device_opens};
 pub use rng::{CueRandom, CueRng};
 pub use system::{
     AudioFrame, AudioStats, AudioSystem, CueRequest, CueTarget, Emitter, EmitterId, LineRequest, Listener,
-    MAX_VOICES, PAUSE_SNAPSHOT, Speaking, SpeechRequest, Volumes,
+    MAX_VIRTUAL_VOICES, MAX_VOICES, PAUSE_SNAPSHOT, SHORTEST_VIRTUAL_SECONDS, Speaking, SpeechRequest,
+    VoiceCaps, Volumes,
 };
 pub use voice::{LineKey, VoiceRoute, VoiceRouteError};
 

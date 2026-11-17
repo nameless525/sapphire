@@ -71,6 +71,10 @@ impl SoundStorage {
         }
     }
 
+    pub(crate) fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
     pub(crate) fn frames(&self) -> usize {
         let samples = match &self.samples {
             Samples::Integer(samples) => samples.len(),
@@ -163,12 +167,16 @@ pub(crate) struct VoiceSettings {
     pub looped: Option<LoopRegion>,
     /// Whether it waits, silent, for [`VoiceHandle::freeze`] to let it go.
     pub frozen: bool,
+    /// How long it takes to come in from silence, as a virtual voice coming back does (M6 U3): none, and it's
+    /// heard whole from its first frame.
+    pub fade_in: Duration,
 }
 
 impl VoiceSettings {
     /// A voice that plays its sound once through, from now.
+    #[cfg(test)]
     pub(crate) fn once(params: VoiceParams, frozen: bool) -> Self {
-        Self { params, start: Start::Now, from: 0, looped: None, frozen }
+        Self { params, start: Start::Now, from: 0, looped: None, frozen, fade_in: Duration::ZERO }
     }
 }
 
@@ -388,7 +396,7 @@ impl SoundData for Voice {
                 position: settings.from as f64,
                 looped,
                 filtered: Frame::ZERO,
-                fade: if settings.frozen { 0.0 } else { 1.0 },
+                fade: if settings.frozen || !settings.fade_in.is_zero() { 0.0 } else { 1.0 },
             },
             gain_db: fixed(params.gain_db),
             pan: fixed(params.pan),
@@ -396,7 +404,7 @@ impl SoundData for Voice {
             cutoff_hz: fixed(cutoff_of(params.low_pass_hz)),
             opening: !params.low_pass_hz.is_finite(),
             last: None,
-            fade_rate: 0.0,
+            fade_rate: fade_rate(settings.fade_in),
             state,
             shared: Arc::clone(&shared),
             set,
@@ -616,6 +624,25 @@ mod tests {
         let out = render(&mut *sound, 600, &MockInfoBuilder::new().build());
         assert!((out[0].left - 0.5).abs() < 1e-3, "{}", out[0].left);
         assert!(sound.finished(), "and plays what's left");
+    }
+
+    /// M6 U3: a voice coming back fades in over its fade, from where it's told, with no step bigger than the
+    /// sound's own and the fade's.
+    #[test]
+    fn a_fade_in_comes_up_from_silence_over_its_length() {
+        let samples = vec![0.5; 4_800];
+        let fade = Duration::from_millis(20);
+        let settings =
+            VoiceSettings { from: 1_000, fade_in: fade, ..VoiceSettings::once(VoiceParams::NEUTRAL, false) };
+        let (mut sound, _) = play(&storage(samples, 1), settings);
+        let out = render(&mut *sound, 1_920, &MockInfoBuilder::new().build());
+        let fade_frames = (fade.as_secs_f64() * f64::from(RATE)) as usize;
+        assert!(out[0].left < 0.5 / fade_frames as f32 * 2.0, "from silence: {}", out[0].left);
+        let steps = out.windows(2).map(|pair| (pair[1].left - pair[0].left).abs());
+        let largest = steps.fold(0.0, f32::max);
+        assert!(largest <= 0.5 / fade_frames as f32 * 1.01, "no step past the fade's own: {largest}");
+        assert!((out[fade_frames].left - 0.5).abs() < 1e-3, "whole once it's in: {}", out[fade_frames].left);
+        assert!(!sound.finished(), "3,800 frames were left from frame 1,000");
     }
 
     #[test]

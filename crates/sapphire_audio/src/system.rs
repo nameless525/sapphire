@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Attenuation, Bus, Cue, HitstopResponse, SILENCE_DB};
-use sapphire_assets::mix::{DuckFollow, Mix, MixError, OutputProfile};
+use sapphire_assets::cue::{Attenuation, Bus, Cue, HitstopResponse, LimitRule, SILENCE_DB};
+use sapphire_assets::mix::{DuckFollow, Mix, MixError, OutputProfile, VoiceGroup};
 use sapphire_assets::mouth::MouthCurve;
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::DecodedSound;
@@ -16,16 +16,63 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::backend::{
-    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, StartError, VoiceParams, VoiceSlot,
+    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, STOP_FADE, StartError, VIRTUAL_FADE,
+    VoiceParams, VoiceSlot, VoiceStart,
 };
 use crate::mix::MixState;
 use crate::music::{Music, MusicRequest};
 use crate::rng::CueRandom;
 use crate::voice::{LineKey, VoiceRoute, VoiceRouteError};
 
-/// Voices playing at once. A duel's sounds are short and few; past this a request is dropped and
-/// counted, rather than cutting off what is already playing.
-pub const MAX_VOICES: usize = 32;
+/// The most voices mixed at once (M6 U3, Desktop-High's real voices): [`VoiceCaps::real`] at most. Past it,
+/// what ranks lowest goes virtual or ends.
+pub const MAX_VOICES: usize = 64;
+
+/// The most virtual voices kept at once (M6 U3, the desktop tiers'): [`VoiceCaps::virtual_voices`] at most.
+pub const MAX_VIRTUAL_VOICES: usize = 256;
+
+/// A one-shot shorter than this many seconds ends rather than going virtual (M6 U3): by the time it could come
+/// back, it would mostly be over.
+pub const SHORTEST_VIRTUAL_SECONDS: f64 = 2.0;
+
+/// The mixer's slots: twice [`MAX_VOICES`], so as many voices as it mixes can fade out while as many start.
+pub(crate) const MAX_SLOTS: usize = 2 * MAX_VOICES;
+
+/// Voices live at once, real and virtual, and so the room the system keeps for them.
+const MAX_LIVE: usize = MAX_VOICES + MAX_VIRTUAL_VOICES;
+
+/// How many decibels a real voice counts above its gain against a virtual one of the same priority (M6 U3), so
+/// two voices about as loud don't swap places frame after frame.
+const KEEP_REAL_DB: f32 = 3.0;
+
+/// How many voices the mixer mixes and keeps (M6 U3): the quality tier's, spec §5.15.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoiceCaps {
+    /// Voices mixed at once, 1 to [`MAX_VOICES`].
+    pub real: u16,
+    /// Voices kept at once without being mixed, waiting to come back, 0 to [`MAX_VIRTUAL_VOICES`].
+    pub virtual_voices: u16,
+}
+
+impl VoiceCaps {
+    /// The most there are room for: Desktop-High's.
+    pub const MAX: Self = Self { real: MAX_VOICES as u16, virtual_voices: MAX_VIRTUAL_VOICES as u16 };
+
+    /// The caps brought within what there's room for.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            real: self.real.clamp(1, MAX_VOICES as u16),
+            virtual_voices: self.virtual_voices.min(MAX_VIRTUAL_VOICES as u16),
+        }
+    }
+}
+
+impl Default for VoiceCaps {
+    fn default() -> Self {
+        Self::MAX
+    }
+}
 
 /// Emitters tracked at once: the actors a frame reports, and those gone with voices still ringing.
 const MAX_EMITTERS: usize = 64;
@@ -159,16 +206,26 @@ pub struct AudioStats {
     pub update: Duration,
     /// The longest update since [`AudioSystem::take_peak`].
     pub update_peak: Duration,
-    /// Voices live now.
+    /// Voices the mixer holds now: those it mixes, and those fading out that keep their slot until they've ended.
     pub voices: u32,
-    /// Cues that started a voice, all told.
+    /// Voices kept without being mixed now (M6 U3), each waiting to come back where it would be.
+    pub virtual_voices: u32,
+    /// Cues that started a voice, real or virtual, all told.
     pub cues_played: u64,
     /// Cues dropped because the output isn't playing (suspended, no device).
     pub dropped_no_output: u64,
-    /// Cues dropped because [`MAX_VOICES`] voices were live or the mixer was full.
+    /// Cues that didn't play (M6 U3): refused by their own limit or their group's, or ranked below everything the
+    /// [`VoiceCaps`] keep, or with the mixer full.
     pub dropped_voice_limit: u64,
-    /// Cues dropped for naming a cue, a sound or an emitter nobody added.
+    /// Cues dropped for naming a cue, a sound or an emitter nobody added, or asking for a loop off an emitter.
     pub dropped_unknown: u64,
+    /// Voices ended before their time to make room (M6 U3): by a limit's rule, or outranked with no virtual room.
+    pub voices_stolen: u64,
+    /// Voices that went virtual, all told (M6 U3): those outranked as they played, and those asked for that had
+    /// no real room yet.
+    pub voices_virtualized: u64,
+    /// Virtual voices that came back, all told (M6 U3).
+    pub voices_revived: u64,
     /// Lines asked for that the voice language has, all told: each plays as a cue does.
     pub lines_asked: u64,
     /// Lines the voice language lacks, or asked for with no language chosen.
@@ -213,12 +270,44 @@ impl Default for Volumes {
     }
 }
 
-/// A live voice.
+/// A voice's serial, in the order they were asked for: its age, and how a conversation finds its line's voice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct VoiceId(u64);
+
+/// Where a voice stands with the mixer (M6 U3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    /// Asked for this frame, and not yet placed.
+    Asked,
+    /// Mixed, in this slot.
+    Real(VoiceSlot),
+    /// Kept without being mixed, its playhead counted on.
+    Virtual,
+    /// Ended or refused this frame, and about to be forgotten.
+    Gone,
+}
+
+/// A live voice: real, virtual or just asked for.
 #[derive(Clone, Copy, Debug)]
 struct Voice {
-    slot: VoiceSlot,
+    id: VoiceId,
+    mode: Mode,
+    /// The cue it plays, which its own limit counts by.
+    cue: AssetId,
     sound: AssetId,
     place: Place,
+    /// The cue's priority: higher keeps a real voice first.
+    priority: u8,
+    /// Its voice group, by place in the mix's groups.
+    group: Option<u16>,
+    /// Plays round and round until its emitter goes.
+    looped: bool,
+    /// Its sound's length in seconds.
+    length: f64,
+    /// The conversation's line: ranked first, never virtual, and outside every limit.
+    protected: bool,
+    /// What it sounds like now, real or not.
+    params: VoiceParams,
     /// Its category, whose bus it plays on.
     bus: Bus,
     /// How far into its sound it has played, by the system's own count of the real seconds it has played,
@@ -230,13 +319,42 @@ struct Voice {
     /// The gain and pitch the cue picked.
     gain_db: f32,
     pitch: f32,
-    /// What the backend was last told.
+    /// What the backend was last told, while it's real.
     sent: VoiceParams,
+    /// Waiting where it is: what the backend was told, while it's real.
     frozen: bool,
     /// Held by its speech's caller ([`SpeechRequest::held`]), whatever hitstop says.
     held: bool,
-    /// Told to end, and only waiting to.
-    stopped: bool,
+}
+
+impl Voice {
+    fn live(&self) -> bool {
+        self.mode != Mode::Gone
+    }
+
+    /// Whether it can wait unheard and come back: a loop, or a sound long enough to be worth it.
+    fn can_wait(&self) -> bool {
+        !self.protected && (self.looped || self.length >= SHORTEST_VIRTUAL_SECONDS)
+    }
+
+    /// Whether it's heard at all where it is.
+    fn audible(&self) -> bool {
+        self.params.gain_db > SILENCE_DB
+    }
+}
+
+/// Whether `a` has a better claim than `b` on being mixed: the conversation's line first, then what's heard,
+/// then the higher priority, then the louder (a real voice by [`KEEP_REAL_DB`] more), then the older.
+fn standing(a: &Voice, b: &Voice) -> std::cmp::Ordering {
+    let loudness = |voice: &Voice| {
+        voice.params.gain_db + if matches!(voice.mode, Mode::Real(_)) { KEEP_REAL_DB } else { 0.0 }
+    };
+    b.protected
+        .cmp(&a.protected)
+        .then(b.audible().cmp(&a.audible()))
+        .then(b.priority.cmp(&a.priority))
+        .then(loudness(b).total_cmp(&loudness(a)))
+        .then(a.id.cmp(&b.id))
 }
 
 /// The conversation's line, as asked and as spoken.
@@ -244,7 +362,7 @@ struct Voice {
 struct Speech {
     serial: u64,
     /// The voice saying it and its sound, until it ends or is cut: none if it never started.
-    voice: Option<(VoiceSlot, AssetId)>,
+    voice: Option<(VoiceId, AssetId)>,
 }
 
 /// What a bus was last sent.
@@ -268,9 +386,20 @@ struct Tracked {
 pub struct AudioSystem<B: AudioBackend> {
     backend: B,
     cues: HashMap<AssetId, Cue>,
+    /// Each sound's length in seconds, kept with [`Self::add_sound`].
+    lengths: HashMap<AssetId, f64>,
+    /// Real, virtual and just asked for, oldest first.
     voices: Vec<Voice>,
+    /// The voices' places in [`Self::voices`], best claim first: room kept for the ranking each frame.
+    order: Vec<u16>,
+    /// Slots of voices told to end, kept until they have.
+    ending: Vec<VoiceSlot>,
     /// Slots no voice holds, as a stack.
     free_slots: Vec<VoiceSlot>,
+    next_id: u64,
+    caps: VoiceCaps,
+    /// The mix's voice groups, by place (M6 U3).
+    groups: Vec<VoiceGroup>,
     emitters: Vec<Tracked>,
     /// The mix's snapshots and ducking rules, as they stand (M6 U2).
     mix: MixState,
@@ -303,8 +432,15 @@ impl<B: AudioBackend> AudioSystem<B> {
         Self {
             backend,
             cues: HashMap::new(),
-            voices: Vec::with_capacity(MAX_VOICES),
-            free_slots: (0..MAX_VOICES as u32).rev().map(VoiceSlot).collect(),
+            lengths: HashMap::new(),
+            // The conversation's line is outside the room the rest share.
+            voices: Vec::with_capacity(MAX_LIVE + 1),
+            order: Vec::with_capacity(MAX_LIVE + 1),
+            ending: Vec::with_capacity(MAX_SLOTS),
+            free_slots: (0..MAX_SLOTS as u32).rev().map(VoiceSlot).collect(),
+            next_id: 0,
+            caps: VoiceCaps::MAX,
+            groups: Vec::new(),
             emitters: Vec::with_capacity(MAX_EMITTERS),
             sent: sent_of(&plain),
             levels: Vec::new(),
@@ -342,7 +478,18 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.mix = MixState::new(mix);
         self.sent = sent_of(mix);
         self.levels = vec![0.0; mix.ducking.len()];
+        self.groups.clone_from(&mix.groups);
         Ok(())
+    }
+
+    /// How many voices are mixed and kept from the next update on (M6 U3), brought within [`VoiceCaps::MAX`]:
+    /// the quality tier's. Lowering them sends what ranks lowest virtual, or ends it.
+    pub fn set_voice_caps(&mut self, caps: VoiceCaps) {
+        self.caps = caps.clamped();
+    }
+
+    pub fn voice_caps(&self) -> VoiceCaps {
+        self.caps
     }
 
     /// Plays the mix through `profile`'s volume and effects (M6 U2), or `Home`'s if the mix has none for it.
@@ -369,6 +516,8 @@ impl<B: AudioBackend> AudioSystem<B> {
 
     /// Makes a decoded sound playable.
     pub fn add_sound(&mut self, id: AssetId, sound: &DecodedSound) {
+        let frames = sound.samples.len() / sound.channels.max(1) as usize;
+        self.lengths.insert(id, frames as f64 / f64::from(sound.sample_rate.max(1)));
         self.backend.add_sound(id, sound);
         self.stats.decoded_bytes = self.backend.decoded_bytes();
     }
@@ -452,14 +601,25 @@ impl<B: AudioBackend> AudioSystem<B> {
     /// one's sounds. Their slots come back as they finish, and cues go on playing as usual, this
     /// frame's among them. Suspended, they end as the mixer next runs.
     pub fn stop_voices(&mut self) {
-        for voice in self.voices.iter_mut().filter(|voice| !voice.stopped) {
-            voice.stopped = true;
-            self.backend.stop_voice(voice.slot);
+        for index in 0..self.voices.len() {
+            self.end_voice(index, STOP_FADE);
         }
+        self.voices.clear();
         // A conversation's line is cut too, and not started again while it's asked for by the same serial.
         if let Some(speech) = &mut self.speech {
             speech.voice = None;
         }
+    }
+
+    /// Ends the voice at `index` in [`Self::voices`] for good, fading over `fade` if it's real, and marks it
+    /// gone: its slot waits in [`Self::ending`] until the mixer has let it go.
+    fn end_voice(&mut self, index: usize, fade: Duration) {
+        let voice = &mut self.voices[index];
+        if let Mode::Real(slot) = voice.mode {
+            self.backend.stop_voice(slot, fade);
+            self.ending.push(slot);
+        }
+        voice.mode = Mode::Gone;
     }
 
     /// What the conversation's line is saying, as of the last [`Self::update`]: none once it has ended or
@@ -467,9 +627,9 @@ impl<B: AudioBackend> AudioSystem<B> {
     #[must_use]
     pub fn speaking(&self) -> Option<Speaking> {
         let speech = self.speech?;
-        let (slot, sound) = speech.voice?;
-        let seconds = self.voices.iter().find(|voice| voice.slot == slot).map_or(0.0, |voice| voice.seconds);
-        Some(Speaking { serial: speech.serial, sound, seconds: seconds as f32 })
+        let (id, sound) = speech.voice?;
+        let voice = self.voices.iter().find(|voice| voice.id == id && voice.live())?;
+        Some(Speaking { serial: speech.serial, sound, seconds: voice.seconds as f32 })
     }
 
     /// The counters, as of the last [`Self::update`].
@@ -501,12 +661,13 @@ impl<B: AudioBackend> AudioSystem<B> {
             self.reap_voices();
         }
         self.advance_voices(frame.dt, state);
-        self.advance_speech();
         self.track_emitters(frame.emitters);
+        self.end_loops_left_behind();
+        self.advance_speech();
         self.step_mix(frame);
         for request in frame.cues {
             if state.plays() {
-                self.start_cue(request, &frame.listener, random, false);
+                self.start_cue(request, &frame.listener, random, None);
             } else {
                 self.stats.dropped_no_output += 1;
                 if !self.warned_no_output {
@@ -522,7 +683,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             };
             self.stats.lines_asked += 1;
             if state.plays() {
-                self.start_cue(&CueRequest { cue, target: request.target }, &frame.listener, random, false);
+                self.start_cue(&CueRequest { cue, target: request.target }, &frame.listener, random, None);
             } else {
                 self.stats.dropped_no_output += 1;
             }
@@ -532,11 +693,13 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.stats.music_phase_changes = self.music.counts.phase_changes;
         self.stats.music_unknown_phases = self.music.counts.unknown_phases;
         if state.plays() {
-            self.update_voices(&frame.listener);
+            self.place_voices(&frame.listener);
         }
         self.follow_bus_gains(frame.dt);
 
-        self.stats.voices = self.voices.len() as u32;
+        let real = self.voices.iter().filter(|voice| matches!(voice.mode, Mode::Real(_))).count();
+        self.stats.voices = (real + self.ending.len()) as u32;
+        self.stats.virtual_voices = (self.voices.len() - real) as u32;
         self.stats.update = timer.elapsed();
         self.stats.update_peak = self.stats.update_peak.max(self.stats.update);
     }
@@ -571,35 +734,72 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
     }
 
+    /// Frees the slots of the voices the mixer has let go: those played out, and those told to end.
     fn reap_voices(&mut self) {
         let (backend, free_slots) = (&mut self.backend, &mut self.free_slots);
         self.voices.retain(|voice| {
-            let finished = backend.voice_finished(voice.slot);
+            let Mode::Real(slot) = voice.mode else { return true };
+            let finished = backend.voice_finished(slot);
             if finished {
-                free_slots.push(voice.slot);
+                free_slots.push(slot);
+            }
+            !finished
+        });
+        self.ending.retain(|&slot| {
+            let finished = backend.voice_finished(slot);
+            if finished {
+                free_slots.push(slot);
             }
             !finished
         });
     }
 
     /// Moves every voice's playhead on by the real seconds since the last update, as fast as it plays, unless it
-    /// waits: frozen or held, on a paused bus, or the output not running.
+    /// waits: frozen or held, on a paused bus, or the output not running. A virtual one-shot whose playhead has
+    /// passed its end has ended unheard; a virtual loop goes round.
     fn advance_voices(&mut self, dt: f32, state: DeviceState) {
         if state != DeviceState::Running || !(dt > 0.0 && dt.is_finite()) {
             return;
         }
         for voice in &mut self.voices {
-            if !voice.stopped && !voice.frozen && !self.mix.now(BusId::category(voice.bus).index()).held {
-                voice.seconds += f64::from(dt) * f64::from(voice.sent.pitch);
+            if voice.frozen || self.mix.now(BusId::category(voice.bus).index()).held {
+                continue;
+            }
+            match voice.mode {
+                Mode::Real(_) => voice.seconds += f64::from(dt) * f64::from(voice.sent.pitch),
+                Mode::Virtual => {
+                    voice.seconds += f64::from(dt) * f64::from(voice.params.pitch);
+                    if voice.looped && voice.length > 0.0 {
+                        voice.seconds %= voice.length;
+                    } else if voice.seconds >= voice.length {
+                        voice.mode = Mode::Gone;
+                    }
+                }
+                Mode::Asked | Mode::Gone => {}
             }
         }
+        self.voices.retain(Voice::live);
+    }
+
+    /// Ends each loop whose emitter this frame didn't report: it plays only while what makes it is there.
+    fn end_loops_left_behind(&mut self) {
+        for index in 0..self.voices.len() {
+            let voice = self.voices[index];
+            let Place::On(id) = voice.place else { continue };
+            let reported =
+                || self.emitters.iter().any(|tracked| tracked.emitter.id == id && tracked.reported);
+            if voice.looped && !reported() {
+                self.end_voice(index, STOP_FADE);
+            }
+        }
+        self.voices.retain(Voice::live);
     }
 
     /// Ends the conversation's line once its voice has.
     fn advance_speech(&mut self) {
         let Some(speech) = &mut self.speech else { return };
-        let Some((slot, _)) = speech.voice else { return };
-        if !self.voices.iter().any(|voice| voice.slot == slot && !voice.stopped) {
+        let Some((id, _)) = speech.voice else { return };
+        if !self.voices.iter().any(|voice| voice.id == id) {
             speech.voice = None;
         }
     }
@@ -637,18 +837,18 @@ impl<B: AudioBackend> AudioSystem<B> {
         if let (Some(speech), Some(asked)) = (&self.speech, asked)
             && speech.serial == asked.serial
         {
-            if let Some((slot, _)) = speech.voice
-                && let Some(voice) = self.voices.iter_mut().find(|voice| voice.slot == slot)
+            if let Some((id, _)) = speech.voice
+                && let Some(voice) = self.voices.iter_mut().find(|voice| voice.id == id)
             {
                 voice.held = asked.held;
             }
             return;
         }
-        if let Some((slot, _)) = self.speech.take().and_then(|speech| speech.voice)
-            && let Some(voice) = self.voices.iter_mut().find(|voice| voice.slot == slot && !voice.stopped)
+        if let Some((id, _)) = self.speech.take().and_then(|speech| speech.voice)
+            && let Some(index) = self.voices.iter().position(|voice| voice.id == id)
         {
-            voice.stopped = true;
-            self.backend.stop_voice(slot);
+            self.end_voice(index, STOP_FADE);
+            self.voices.remove(index);
         }
         let Some(asked) = asked else { return };
         let mut speech = Speech { serial: asked.serial, voice: None };
@@ -658,7 +858,7 @@ impl<B: AudioBackend> AudioSystem<B> {
                 self.stats.lines_asked += 1;
                 if state.plays() {
                     let request = CueRequest { cue, target: asked.target };
-                    speech.voice = self.start_cue(&request, listener, random, asked.held);
+                    speech.voice = self.start_cue(&request, listener, random, Some(asked.held));
                 } else {
                     self.stats.dropped_no_output += 1;
                 }
@@ -667,15 +867,16 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.speech = Some(speech);
     }
 
-    /// Starts `request`, held from the start if `held`: the voice's slot and the sound it picked, if it
-    /// started.
+    /// Asks for `request`'s voice, placed with the rest at the end of the update: the conversation's line if
+    /// `speech` says whether it's held. Its own limit and its group's make room or refuse it first. The voice's
+    /// serial and the sound it picked, if it was let in.
     fn start_cue(
         &mut self,
         request: &CueRequest,
         listener: &Listener,
         random: &mut impl CueRandom,
-        held: bool,
-    ) -> Option<(VoiceSlot, AssetId)> {
+        speech: Option<bool>,
+    ) -> Option<(VoiceId, AssetId)> {
         let Some(cue) = self.cues.get(&request.cue) else {
             self.count_unknown(|| format!("cue {} isn't loaded", request.cue));
             return None;
@@ -688,22 +889,22 @@ impl<B: AudioBackend> AudioSystem<B> {
             CueTarget::At(position) => Place::At(position),
             CueTarget::On(id) => Place::On(id),
         };
-        if let Place::On(id) = place
-            && !self.emitters.iter().any(|tracked| tracked.emitter.id == id)
-        {
-            self.count_unknown(|| format!("emitter {id:?} isn't in this frame"));
-            return None;
-        }
-        let Some(slot) = self.free_slots.pop() else {
-            self.stats.dropped_voice_limit += 1;
-            return None;
-        };
+        let group =
+            cue.group.as_deref().and_then(|name| self.groups.iter().position(|group| group.name == name));
         let [quiet, loud] = cue.volume_db;
         let [slow, fast] = cue.pitch;
         let mut voice = Voice {
-            slot,
+            id: VoiceId(self.next_id),
+            mode: Mode::Asked,
+            cue: request.cue,
             sound,
             place,
+            priority: cue.priority,
+            group: group.map(|group| group as u16),
+            looped: cue.looped,
+            length: self.lengths.get(&sound).copied().unwrap_or_default(),
+            protected: speech.is_some(),
+            params: VoiceParams::NEUTRAL,
             bus: cue.bus,
             seconds: 0.0,
             attenuation: cue.attenuation,
@@ -712,26 +913,85 @@ impl<B: AudioBackend> AudioSystem<B> {
             pitch: slow + (fast - slow) * pitch,
             sent: VoiceParams::NEUTRAL,
             frozen: false,
-            held,
-            stopped: false,
+            held: speech.unwrap_or(false),
         };
-        voice.frozen = self.is_frozen(&voice);
-        voice.sent = self.params_of(&voice, listener);
-        match self.backend.start_voice(slot, sound, BusId::category(voice.bus), voice.sent, voice.frozen) {
-            Ok(()) => {
-                self.voices.push(voice);
-                self.stats.cues_played += 1;
-                Some((slot, sound))
-            }
-            Err(error) => {
-                self.free_slots.push(slot);
-                match error {
-                    StartError::UnknownSound(_) => self.count_unknown(|| error.to_string()),
-                    StartError::MixerFull => self.stats.dropped_voice_limit += 1,
-                }
-                None
-            }
+        let limit = cue.limit;
+        if let Place::On(id) = place
+            && !self.emitters.iter().any(|tracked| tracked.emitter.id == id)
+        {
+            self.count_unknown(|| format!("emitter {id:?} isn't in this frame"));
+            return None;
         }
+        if voice.looped && !matches!(place, Place::On(_)) {
+            self.count_unknown(|| format!("cue {} loops, so it plays only on an emitter", request.cue));
+            return None;
+        }
+        voice.frozen = self.is_frozen(&voice);
+        voice.params = self.params_of(&voice, listener);
+        let let_in = voice.protected
+            || (limit.is_none_or(|limit| {
+                self.make_room(&voice, limit.max.into(), Some(limit.rule), |other| other.cue == voice.cue)
+            }) && group.is_none_or(|group| {
+                let limit = self.groups[group].limit;
+                self.make_room(&voice, limit.max.into(), Some(limit.rule), |other| other.group == voice.group)
+            }) && self.make_room(&voice, MAX_LIVE, None, |_| true));
+        if !let_in {
+            self.stats.dropped_voice_limit += 1;
+            return None;
+        }
+        self.next_id += 1;
+        self.voices.push(voice);
+        Some((voice.id, sound))
+    }
+
+    /// Makes room for `new` among the live voices `counts` picks, `max` at most, by `rule`: whether it may play.
+    /// No rule is the room kept for live voices, where what has the worst claim goes if the new one's is
+    /// better. The conversation's line counts toward no limit and is never what goes.
+    fn make_room(
+        &mut self,
+        new: &Voice,
+        max: usize,
+        rule: Option<LimitRule>,
+        counts: impl Fn(&Voice) -> bool,
+    ) -> bool {
+        let members = |voice: &&Voice| voice.live() && !voice.protected && counts(voice);
+        while self.voices.iter().filter(members).count() >= max {
+            let candidates = self.voices.iter().enumerate().filter(|(_, voice)| members(voice));
+            let victim = match rule {
+                Some(LimitRule::RefuseNew) => return false,
+                Some(LimitRule::StopOldest) => candidates.min_by_key(|(_, voice)| voice.id),
+                Some(LimitRule::StopQuietest) => candidates.min_by(|(_, a), (_, b)| {
+                    a.params.gain_db.total_cmp(&b.params.gain_db).then(a.id.cmp(&b.id))
+                }),
+                Some(LimitRule::StopLowestPriority) => {
+                    candidates.min_by_key(|(_, voice)| (voice.priority, voice.id))
+                }
+                None => candidates.max_by(|(_, a), (_, b)| standing(a, b)),
+            };
+            let Some((index, victim)) = victim else { return false };
+            let refused = match rule {
+                Some(LimitRule::StopQuietest) => new.params.gain_db <= victim.params.gain_db,
+                Some(LimitRule::StopLowestPriority) => new.priority < victim.priority,
+                None => standing(new, victim).is_ge(),
+                Some(LimitRule::RefuseNew | LimitRule::StopOldest) => false,
+            };
+            if refused {
+                return false;
+            }
+            self.steal(index);
+        }
+        true
+    }
+
+    /// Ends the voice at `index` to make room: one asked for this frame never starts.
+    fn steal(&mut self, index: usize) {
+        match self.voices[index].mode {
+            Mode::Asked => self.stats.dropped_voice_limit += 1,
+            Mode::Real(_) | Mode::Virtual => self.stats.voices_stolen += 1,
+            Mode::Gone => {}
+        }
+        self.end_voice(index, STOP_FADE);
+        self.voices.remove(index);
     }
 
     /// Whether `voice` should wait where it is: held by its speech, or frozen by its emitter's hitstop.
@@ -747,22 +1007,132 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
     }
 
-    fn update_voices(&mut self, listener: &Listener) {
+    /// Brings every voice up to date and decides which are mixed (M6 U3): ranked by [`standing`], the first
+    /// [`VoiceCaps::real`] are real and the next [`VoiceCaps::virtual_voices`] that can wait are virtual, and the
+    /// rest end. A voice going virtual fades out over [`VIRTUAL_FADE`] and one coming back fades in over it, where
+    /// it would be. Then the backend hears of each change, oldest voice first.
+    fn place_voices(&mut self, listener: &Listener) {
         for index in 0..self.voices.len() {
             let voice = self.voices[index];
-            // Thawing one would resume it, which cancels its stop.
-            if voice.stopped {
-                continue;
+            self.voices[index].params = self.params_of(&voice, listener);
+        }
+        let voices = &self.voices;
+        self.order.clear();
+        self.order.extend(0..voices.len() as u16);
+        self.order.sort_unstable_by(|&a, &b| standing(&voices[usize::from(a)], &voices[usize::from(b)]));
+        let (mut real, mut waiting) = (0, 0);
+        let mut wants = [false; MAX_LIVE + 1];
+        let mut keeps = [false; MAX_LIVE + 1];
+        for &index in &self.order {
+            let voice = &self.voices[usize::from(index)];
+            if real < self.caps.real {
+                real += 1;
+                wants[usize::from(index)] = true;
+                keeps[usize::from(index)] = true;
+            } else if voice.can_wait() && waiting < self.caps.virtual_voices {
+                waiting += 1;
+                keeps[usize::from(index)] = true;
             }
-            let frozen = self.is_frozen(&voice);
-            if frozen != voice.frozen {
-                self.backend.freeze_voice(voice.slot, frozen);
+        }
+        for index in 0..self.voices.len() {
+            self.place(index, wants[index], keeps[index]);
+        }
+        self.voices.retain(Voice::live);
+    }
+
+    /// Takes the voice at `index` real if `real`, virtual if only `kept`, or ends it, telling the backend.
+    fn place(&mut self, index: usize, real: bool, kept: bool) {
+        let voice = self.voices[index];
+        let frozen = self.is_frozen(&voice);
+        match (voice.mode, real, kept) {
+            (Mode::Real(slot), true, _) => {
+                if frozen != voice.frozen {
+                    self.backend.freeze_voice(slot, frozen);
+                }
+                if moved(voice.params, voice.sent) {
+                    self.backend.set_voice(slot, voice.params);
+                    self.voices[index].sent = voice.params;
+                }
                 self.voices[index].frozen = frozen;
             }
-            let params = self.params_of(&voice, listener);
-            if moved(params, voice.sent) {
-                self.backend.set_voice(voice.slot, params);
-                self.voices[index].sent = params;
+            (Mode::Real(_), false, true) => {
+                self.end_voice(index, VIRTUAL_FADE);
+                self.voices[index].mode = Mode::Virtual;
+                self.voices[index].frozen = frozen;
+                self.stats.voices_virtualized += 1;
+            }
+            (Mode::Real(_), false, false) => {
+                self.end_voice(index, STOP_FADE);
+                self.stats.voices_stolen += 1;
+            }
+            (Mode::Asked | Mode::Virtual, true, _) => self.start(index, frozen, kept),
+            (Mode::Asked, false, true) => {
+                self.voices[index].mode = Mode::Virtual;
+                self.voices[index].frozen = frozen;
+                self.stats.cues_played += 1;
+                self.stats.voices_virtualized += 1;
+            }
+            (Mode::Virtual, false, true) => self.voices[index].frozen = frozen,
+            (Mode::Asked, false, false) => {
+                self.voices[index].mode = Mode::Gone;
+                self.stats.dropped_voice_limit += 1;
+            }
+            (Mode::Virtual, false, false) => {
+                self.voices[index].mode = Mode::Gone;
+                self.stats.voices_stolen += 1;
+            }
+            (Mode::Gone, ..) => {}
+        }
+    }
+
+    /// Starts the voice at `index` in the mixer: one just asked for from its sound's start, a virtual one where
+    /// it would be by now, fading in. With no slot or no room in the mixer it waits virtual if it may, `kept`.
+    fn start(&mut self, index: usize, frozen: bool, kept: bool) {
+        let voice = self.voices[index];
+        let revived = voice.mode == Mode::Virtual;
+        let once = VoiceStart { looped: voice.looped, ..VoiceStart::once(voice.params, frozen) };
+        let start = if revived {
+            let from_seconds =
+                if voice.looped && voice.length > 0.0 { voice.seconds % voice.length } else { voice.seconds };
+            VoiceStart { from_seconds, fade_in: VIRTUAL_FADE, ..once }
+        } else {
+            once
+        };
+        let result = match self.free_slots.pop() {
+            None => Err(StartError::MixerFull),
+            Some(slot) => {
+                let started = self.backend.start_voice(slot, voice.sound, BusId::category(voice.bus), start);
+                if started.is_err() {
+                    self.free_slots.push(slot);
+                }
+                started.map(|()| slot)
+            }
+        };
+        self.voices[index].frozen = frozen;
+        match result {
+            Ok(slot) => {
+                self.voices[index].mode = Mode::Real(slot);
+                self.voices[index].sent = voice.params;
+                if revived {
+                    self.stats.voices_revived += 1;
+                } else {
+                    self.stats.cues_played += 1;
+                }
+            }
+            Err(StartError::MixerFull) if kept && voice.can_wait() => {
+                if !revived {
+                    self.voices[index].mode = Mode::Virtual;
+                    self.stats.cues_played += 1;
+                    self.stats.voices_virtualized += 1;
+                }
+            }
+            Err(error) => {
+                self.voices[index].mode = Mode::Gone;
+                match error {
+                    StartError::UnknownSound(_) => self.count_unknown(|| error.to_string()),
+                    StartError::MixerFull if revived => self.stats.voices_stolen += 1,
+                    StartError::MixerFull => self.stats.dropped_voice_limit += 1,
+                }
             }
         }
     }
@@ -779,7 +1149,10 @@ impl<B: AudioBackend> AudioSystem<B> {
                 .iter()
                 .filter(|voice| {
                     let bus = BusId::category(voice.bus).index();
-                    !voice.stopped && !voice.frozen && mix.is_under(bus, when) && !mix.now(bus).held
+                    matches!(voice.mode, Mode::Real(_))
+                        && !voice.frozen
+                        && mix.is_under(bus, when)
+                        && !mix.now(bus).held
                 })
                 .map(|voice| match (follow, mouths.get(&voice.sound)) {
                     (DuckFollow::Envelope { full_at }, Some(mouth)) => {
@@ -883,7 +1256,7 @@ fn moved(now: VoiceParams, sent: VoiceParams) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use sapphire_assets::cue::AttenuationCurve;
+    use sapphire_assets::cue::{AttenuationCurve, Limit};
 
     use super::*;
     use crate::mock::{MockBackend, MockCall};
@@ -1283,7 +1656,7 @@ mod tests {
         let buses = shipped().buses.len();
         assert_eq!(
             system.backend_mut().take_calls(),
-            [MockCall::StopVoice { slot: VoiceSlot(0) }, MockCall::SetMix { buses }]
+            [MockCall::StopVoice { slot: VoiceSlot(0), fade: STOP_FADE }, MockCall::SetMix { buses }]
         );
         system.set_output_profile(OutputProfile::Portable);
         assert_eq!(system.backend_mut().take_calls(), [MockCall::SetOutputProfile(OutputProfile::Portable)]);
@@ -1481,7 +1854,10 @@ mod tests {
         system.stop_voices();
         assert_eq!(
             system.backend_mut().take_calls(),
-            [MockCall::StopVoice { slot: VoiceSlot(0) }, MockCall::StopVoice { slot: VoiceSlot(1) }]
+            [
+                MockCall::StopVoice { slot: VoiceSlot(0), fade: STOP_FADE },
+                MockCall::StopVoice { slot: VoiceSlot(1), fade: STOP_FADE }
+            ]
         );
         system.stop_voices();
         assert_eq!(system.backend().calls(), &[], "told once");
@@ -1715,7 +2091,7 @@ mod tests {
         // The same line again, as a new showing: the old voice stops and a new one starts from nothing.
         say(&mut system, greet(2, false), &mut rng);
         let calls = system.backend_mut().take_calls();
-        assert!(calls.contains(&MockCall::StopVoice { slot: VoiceSlot(0) }));
+        assert!(calls.contains(&MockCall::StopVoice { slot: VoiceSlot(0), fade: STOP_FADE }));
         assert!(calls.iter().any(|call| matches!(call, MockCall::StartVoice { .. })));
         assert_eq!(system.speaking().map(|speaking| (speaking.serial, speaking.seconds)), Some((2, 0.0)));
         // The conversation's end cuts it.
@@ -1759,5 +2135,214 @@ mod tests {
         say(&mut system, missing, &mut rng);
         say(&mut system, missing, &mut rng);
         assert_eq!((system.speaking(), system.stats().lines_missing), (None, 1));
+    }
+
+    /// Three seconds of sound: long enough to wait virtual.
+    const LONG: AssetId = AssetId::from_text("55555555-2222-4333-8444-555555555555");
+    const OTHER: AssetId = AssetId::from_text("66666666-2222-4333-8444-555555555555");
+
+    /// A system with [`CUE`] as `cue` and [`OTHER`] as `other`, both on [`LONG`] if `long`.
+    fn rivals(cue: Cue, other: Cue, long: bool) -> AudioSystem<MockBackend> {
+        let mut system = system_with(plain_cue());
+        system
+            .add_sound(LONG, &DecodedSound { sample_rate: 48_000, channels: 1, samples: vec![0.5; 144_000] });
+        let sounds = |cue: Cue| if long { Cue { sounds: vec![LONG], ..cue } } else { cue };
+        system.add_cue(CUE, sounds(cue));
+        system.add_cue(OTHER, sounds(other));
+        system.backend_mut().take_calls();
+        system
+    }
+
+    fn ask(system: &mut AudioSystem<MockBackend>, cue: AssetId, target: CueTarget, rng: &mut CueRng) {
+        system.update(&frame(&[], &[CueRequest { cue, target }]), rng);
+    }
+
+    fn stopped(calls: &[MockCall]) -> Vec<(VoiceSlot, Duration)> {
+        calls
+            .iter()
+            .filter_map(|call| match *call {
+                MockCall::StopVoice { slot, fade } => Some((slot, fade)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// M6 U3: a cue's own limit, by each of its rules.
+    #[test]
+    fn a_cues_limit_makes_room_by_its_rule() {
+        let limited = |rule| Cue { limit: Some(Limit { max: 2, rule }), ..placed_cue() };
+        let ahead = |meters: f32| CueTarget::At(Vec3::new(0.0, 0.0, -meters));
+        let mut rng = CueRng::new(1);
+
+        // Two play; the third ends the first, or doesn't play.
+        for (rule, stolen, refused) in [(LimitRule::StopOldest, 1, 0), (LimitRule::RefuseNew, 0, 1)] {
+            let mut system = system_with(limited(rule));
+            for _ in 0..3 {
+                ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+            }
+            let calls = system.backend_mut().take_calls();
+            let ends: &[_] = if stolen == 1 { &[(VoiceSlot(0), STOP_FADE)] } else { &[] };
+            assert_eq!(stopped(&calls), ends, "{rule:?}");
+            let stats = system.stats();
+            assert_eq!(
+                (stats.voices_stolen, stats.dropped_voice_limit, stats.cues_played),
+                (stolen, refused, 3 - refused)
+            );
+        }
+
+        // The quietest goes, unless it's the new one: at 1 m and 11 m, then 5 m, then 15 m.
+        let mut system = system_with(limited(LimitRule::StopQuietest));
+        for meters in [1.0, 11.0, 5.0] {
+            ask(&mut system, CUE, ahead(meters), &mut rng);
+        }
+        assert_eq!(stopped(&system.backend_mut().take_calls()), [(VoiceSlot(1), STOP_FADE)]);
+        ask(&mut system, CUE, ahead(15.0), &mut rng);
+        assert_eq!((system.stats().voices_stolen, system.stats().dropped_voice_limit), (1, 1));
+    }
+
+    /// M6 U3: a voice group's limit spans its cues, and the lowest priority goes, the newest only if it's lowest.
+    #[test]
+    fn a_groups_limit_spans_its_cues_and_keeps_the_higher_priority() {
+        let grouped = |priority| Cue { priority, group: Some("steps".to_owned()), ..plain_cue() };
+        let mut system = rivals(grouped(10), grouped(200), false);
+        let mut mix = Mix::plain();
+        let limit = Limit { max: 1, rule: LimitRule::StopLowestPriority };
+        mix.groups.push(VoiceGroup { name: "steps".to_owned(), limit });
+        system.set_mix(&mix).unwrap();
+        system.backend_mut().take_calls();
+        let mut rng = CueRng::new(1);
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        ask(&mut system, OTHER, CueTarget::Flat, &mut rng);
+        assert_eq!(stopped(&system.backend_mut().take_calls()), [(VoiceSlot(0), STOP_FADE)]);
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        let stats = system.stats();
+        assert_eq!((stats.voices_stolen, stats.dropped_voice_limit, stats.cues_played), (1, 1, 2));
+        // A group the mix hasn't limits nothing.
+        system.set_mix(&Mix::plain()).unwrap();
+        for _ in 0..3 {
+            ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        }
+        assert_eq!(system.stats().cues_played, 5);
+    }
+
+    /// M6 U3: past the real cap the lowest-ranked voice goes virtual, its playhead counted on, and comes back where
+    /// it would be when there's room, fading in; a short one-shot outranked ends instead.
+    #[test]
+    fn past_the_cap_a_voice_waits_virtual_and_comes_back_where_it_would_be() {
+        let mut system =
+            rivals(Cue { priority: 10, ..plain_cue() }, Cue { priority: 200, ..plain_cue() }, true);
+        system.set_voice_caps(VoiceCaps { real: 1, virtual_voices: 4 });
+        let mut rng = CueRng::new(1);
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        ask(&mut system, OTHER, CueTarget::Flat, &mut rng);
+        let calls = system.backend_mut().take_calls();
+        assert_eq!(stopped(&calls), [(VoiceSlot(0), VIRTUAL_FADE)], "{calls:?}");
+        assert!(calls.iter().any(|call| matches!(call, MockCall::StartVoice { slot: VoiceSlot(1), .. })));
+        let stats = system.stats();
+        assert_eq!((stats.voices, stats.virtual_voices, stats.voices_virtualized), (2, 1, 1));
+
+        // A virtual voice costs the mixer nothing while it waits.
+        system.backend_mut().finish(VoiceSlot(0));
+        for _ in 0..30 {
+            system.update(&frame(&[], &[]), &mut rng);
+        }
+        let calls = system.backend_mut().take_calls();
+        assert!(calls.is_empty(), "{calls:?}");
+        assert_eq!(system.stats().voices, 1, "the faded slot is free");
+
+        // The high one ends, and the low one comes back 32 frames in.
+        system.backend_mut().finish(VoiceSlot(1));
+        system.update(&frame(&[], &[]), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let [MockCall::StartVoice { slot, sound: LONG, from_seconds, fade_in, looped: false, .. }] =
+            calls[..]
+        else {
+            panic!("{calls:?}")
+        };
+        assert_eq!((slot, fade_in), (VoiceSlot(1), VIRTUAL_FADE));
+        assert!((from_seconds - 32.0 * f64::from(FRAME)).abs() < 1e-6, "{from_seconds}");
+        let stats = system.stats();
+        assert_eq!((stats.voices, stats.virtual_voices, stats.voices_revived), (1, 0, 1));
+
+        // A one-shot too short to wait ends when it's outranked.
+        let mut system =
+            rivals(Cue { priority: 10, ..plain_cue() }, Cue { priority: 200, ..plain_cue() }, false);
+        system.set_voice_caps(VoiceCaps { real: 1, virtual_voices: 4 });
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        ask(&mut system, OTHER, CueTarget::Flat, &mut rng);
+        assert_eq!(stopped(&system.backend_mut().take_calls()), [(VoiceSlot(0), STOP_FADE)]);
+        assert_eq!((system.stats().voices_stolen, system.stats().virtual_voices), (1, 0));
+        // Nor does a low one asked for with no room play at all.
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        assert_eq!(system.stats().dropped_voice_limit, 1);
+    }
+
+    /// M6 U3: a real voice keeps its place against a virtual one of the same priority until the other is clearly
+    /// louder, so two about as loud don't trade places frame by frame.
+    #[test]
+    fn a_real_voice_keeps_its_place_against_one_about_as_loud() {
+        let mut system = rivals(placed_cue(), placed_cue(), true);
+        system.set_voice_caps(VoiceCaps { real: 1, virtual_voices: 4 });
+        let mut rng = CueRng::new(1);
+        let (first, second) = (EmitterId(1), EmitterId(2));
+        let at = |id, meters: f32| Emitter { id, position: Vec3::new(0.0, 0.0, -meters), hitstop: false };
+        let both = [
+            CueRequest { cue: CUE, target: CueTarget::On(first) },
+            CueRequest { cue: OTHER, target: CueTarget::On(second) },
+        ];
+        system.update(&frame(&[at(first, 5.0), at(second, 6.0)], &both), &mut rng);
+        system.backend_mut().take_calls();
+        // 1 dB louder isn't enough; 6 dB is.
+        let close = [at(first, 5.0), at(second, 4.7)];
+        system.update(&frame(&close, &[]), &mut rng);
+        assert!(stopped(&system.backend_mut().take_calls()).is_empty());
+        let louder = [at(first, 5.0), at(second, 2.0)];
+        system.update(&frame(&louder, &[]), &mut rng);
+        assert_eq!(stopped(&system.backend_mut().take_calls()), [(VoiceSlot(0), VIRTUAL_FADE)]);
+    }
+
+    /// M6 U3: the conversation's line is mixed whatever else is asked for, and no limit counts it.
+    #[test]
+    fn the_conversations_line_outranks_everything() {
+        let mut system = speaker(1.0);
+        system.add_cue(OTHER, Cue { priority: u8::MAX, ..plain_cue() });
+        system.set_voice_caps(VoiceCaps { real: 1, virtual_voices: 0 });
+        let mut rng = CueRng::new(1);
+        say(&mut system, greet(1, false), &mut rng);
+        system.update(
+            &AudioFrame {
+                speech: greet(1, false),
+                ..frame(&[], &[CueRequest { cue: OTHER, target: CueTarget::Flat }])
+            },
+            &mut rng,
+        );
+        assert!(system.speaking().is_some());
+        assert_eq!((system.stats().voices, system.stats().dropped_voice_limit), (1, 1));
+    }
+
+    /// M6 U3: a loop plays on an emitter, round and round, and ends when the emitter goes.
+    #[test]
+    fn a_loop_plays_on_its_emitter_until_it_goes() {
+        let mut system = system_with(Cue { looped: true, ..plain_cue() });
+        let mut rng = CueRng::new(1);
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        assert_eq!((system.stats().dropped_unknown, system.stats().voices), (1, 0));
+        let here = [actor_at(Vec3::ZERO)];
+        system.update(&frame(&here, &play(CueTarget::On(ACTOR))), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        assert!(matches!(calls[..], [MockCall::StartVoice { looped: true, .. }]), "{calls:?}");
+        system.update(&frame(&here, &[]), &mut rng);
+        system.update(&frame(&[], &[]), &mut rng);
+        assert_eq!(stopped(&system.backend_mut().take_calls()), [(VoiceSlot(0), STOP_FADE)]);
+        assert_eq!(system.stats().voices, 1, "fading out");
+    }
+
+    /// M6 U3: the caps are held to what there's room for.
+    #[test]
+    fn the_caps_stay_within_the_room() {
+        let mut system = system_with(plain_cue());
+        assert_eq!(system.voice_caps(), VoiceCaps::MAX);
+        system.set_voice_caps(VoiceCaps { real: 0, virtual_voices: 1_000 });
+        assert_eq!(system.voice_caps(), VoiceCaps { real: 1, virtual_voices: MAX_VIRTUAL_VOICES as u16 });
     }
 }

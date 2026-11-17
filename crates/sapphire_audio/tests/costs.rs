@@ -204,7 +204,7 @@ fn voice_against_kiras_static_sound(sound: &DecodedSound) {
     use kira::sound::static_sound::{StaticSoundData, StaticSoundSettings};
     use kira::track::TrackBuilder;
     use kira::{AudioManager, AudioManagerSettings, Decibels, Frame, Mix, Panning, PlaybackRate};
-    use sapphire_audio::{AudioBackend, VoiceParams, VoiceSlot};
+    use sapphire_audio::{AudioBackend, VoiceParams, VoiceSlot, VoiceStart};
 
     let params = |n: usize, low_pass_hz: f32| VoiceParams {
         gain_db: -9.0,
@@ -242,7 +242,9 @@ fn voice_against_kiras_static_sound(sound: &DecodedSound) {
         backend.add_sound(SOUND, sound);
         for n in 0..MAX_VOICES {
             let sfx = BusId::category(Bus::Sfx);
-            backend.start_voice(VoiceSlot(n as u32), SOUND, sfx, params(n, low_pass_hz), false).unwrap();
+            backend
+                .start_voice(VoiceSlot(n as u32), SOUND, sfx, VoiceStart::once(params(n, low_pass_hz), false))
+                .unwrap();
         }
         backend
     };

@@ -14,8 +14,8 @@ use sapphire_assets::cue::Bus;
 use sapphire_assets::mix::{Mix, OutputProfile};
 use sapphire_assets::sound::DecodedSound;
 
-/// A voice's place in the backend: an index below [`MAX_VOICES`](crate::MAX_VOICES), reused once
-/// [`AudioBackend::voice_finished`] has said so.
+/// A voice's place in the backend: an index below twice [`MAX_VOICES`](crate::MAX_VOICES), so the voices a frame
+/// lets go can fade while as many start, reused once [`AudioBackend::voice_finished`] has said so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VoiceSlot(pub u32);
 
@@ -51,6 +51,36 @@ pub struct VoiceParams {
 impl VoiceParams {
     /// The sound as authored: full gain, centred, at its own pitch, unfiltered.
     pub const NEUTRAL: Self = Self { gain_db: 0.0, pan: 0.0, pitch: 1.0, low_pass_hz: f32::INFINITY };
+}
+
+/// How long a voice ended for good takes to fade: short of hearing as a fade, and long enough not to click.
+/// Hitstop's freezes fade as fast.
+pub const STOP_FADE: Duration = Duration::from_millis(5);
+
+/// How long a voice takes to fade out as it goes virtual, and back in as it comes back where it would be (M6
+/// U3): long enough that a sound cut and resumed part way, a loop's middle say, doesn't click.
+pub const VIRTUAL_FADE: Duration = Duration::from_millis(20);
+
+/// How a voice begins (M6 U3): a cue's from its sound's start, or a virtual voice coming back where it would be.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceStart {
+    pub params: VoiceParams,
+    /// Waiting where it starts until it's let go.
+    pub frozen: bool,
+    /// Seconds into its sound it starts at: within the sound, or for a loop, within one time round it.
+    pub from_seconds: f64,
+    /// Plays its whole sound round and round until it's stopped.
+    pub looped: bool,
+    /// How long it takes to come in: none for a sound from its start, whose own attack it is.
+    pub fade_in: Duration,
+}
+
+impl VoiceStart {
+    /// A sound played once through from its start, as authored.
+    #[must_use]
+    pub const fn once(params: VoiceParams, frozen: bool) -> Self {
+        Self { params, frozen, from_seconds: 0.0, looped: false, fade_in: Duration::ZERO }
+    }
 }
 
 /// What a snapshot's filter on a bus does to everything on it.
@@ -179,14 +209,13 @@ pub trait AudioBackend {
     /// [`Mix::plain`]'s.
     fn set_mix(&mut self, mix: &Mix);
 
-    /// Starts `sound` on `bus` in a free slot, frozen if `frozen`.
+    /// Starts `sound` on `bus` in a free slot, as `start` says.
     fn start_voice(
         &mut self,
         slot: VoiceSlot,
         sound: AssetId,
         bus: BusId,
-        params: VoiceParams,
-        frozen: bool,
+        start: VoiceStart,
     ) -> Result<(), StartError>;
 
     /// Moves a live voice to `params`, smoothly enough not to click.
@@ -195,9 +224,9 @@ pub trait AudioBackend {
     /// Stops a live voice where it is, or lets it go on from there.
     fn freeze_voice(&mut self, slot: VoiceSlot, frozen: bool);
 
-    /// Ends a live voice for good, frozen or not, soon enough to read as at once and smoothly enough not
-    /// to click. [`Self::voice_finished`] says when it has.
-    fn stop_voice(&mut self, slot: VoiceSlot);
+    /// Ends a live voice for good, frozen or not, fading over `fade`: [`STOP_FADE`] to read as at once,
+    /// [`VIRTUAL_FADE`] for one going virtual. [`Self::voice_finished`] says when it has.
+    fn stop_voice(&mut self, slot: VoiceSlot, fade: Duration);
 
     /// Whether the voice in `slot` has played out, which frees the slot.
     fn voice_finished(&mut self, slot: VoiceSlot) -> bool;

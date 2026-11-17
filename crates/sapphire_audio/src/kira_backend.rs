@@ -38,10 +38,11 @@ use sapphire_assets::sound::DecodedSound;
 
 use crate::LOG_TARGET;
 use crate::backend::{
-    AudioBackend, BusId, BusParams, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
+    AudioBackend, BusId, BusParams, DeviceStatus, STOP_FADE, StartError, StemStart, VoiceParams, VoiceSlot,
+    VoiceStart,
 };
 use crate::output::Output;
-use crate::system::MAX_VOICES;
+use crate::system::MAX_SLOTS;
 use crate::voice_sound::{LoopRegion, SoundStorage, Start, Voice, VoiceHandle, VoiceSettings};
 
 /// Frames between the mixer's parameter updates: kira's default, about 3 ms.
@@ -49,9 +50,9 @@ const INTERNAL_BUFFER_FRAMES: usize = 128;
 
 /// How long a voice takes to reach new parameters: enough to hide the steps of a frame's updates.
 const VOICE_TWEEN: Duration = Duration::from_millis(30);
-/// How long a voice takes to freeze, go on or end. Hitstop is about a tenth of a second, so this stays
-/// short of hearing as a fade, and long enough not to click.
-const FREEZE_TWEEN: Duration = Duration::from_millis(5);
+/// How long a voice takes to freeze or go on. Hitstop is about a tenth of a second, so this stays short of hearing
+/// as a fade, and long enough not to click: an end's.
+const FREEZE_TWEEN: Duration = STOP_FADE;
 /// How long a bus's filter takes to move.
 const FILTER_TWEEN: Duration = Duration::from_millis(30);
 /// How long the fold to mono takes to come in or go: long enough not to click.
@@ -135,7 +136,7 @@ impl<O: Output> KiraBackend<O> {
             mix,
             sounds: HashMap::new(),
             decoded_bytes: 0,
-            voices: std::iter::repeat_with(|| None).take(MAX_VOICES).collect(),
+            voices: std::iter::repeat_with(|| None).take(MAX_SLOTS).collect(),
             music: Music { clock, stems: Vec::with_capacity(MAX_STEMS) },
             mono,
         })
@@ -191,7 +192,7 @@ fn build_mix<O: Output>(manager: &mut AudioManager<O>, mix: &Mix) -> Option<MixT
         let stems = if place == BusId::category(Bus::Music).index() { 2 * MAX_STEMS } else { 0 };
         let mut builder = TrackBuilder::new()
             .volume(Decibels(bus.volume_db))
-            .sound_capacity(MAX_VOICES + stems)
+            .sound_capacity(MAX_SLOTS + stems)
             .sub_track_capacity(children);
         let filtered = mix
             .snapshots
@@ -414,11 +415,24 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
         slot: VoiceSlot,
         sound: AssetId,
         bus: BusId,
-        params: VoiceParams,
-        frozen: bool,
+        start: VoiceStart,
     ) -> Result<(), StartError> {
         let storage = Arc::clone(self.sounds.get(&sound).ok_or(StartError::UnknownSound(sound))?);
-        let voice = Voice { storage, settings: VoiceSettings::once(params, frozen) };
+        let frames = storage.frames();
+        // Rounded to the frame: a revived voice lands within one of where it would be.
+        let mut from = (start.from_seconds.max(0.0) * f64::from(storage.sample_rate())).round() as usize;
+        if start.looped && frames > 0 {
+            from %= frames;
+        }
+        let settings = VoiceSettings {
+            params: start.params,
+            start: Start::Now,
+            from,
+            looped: start.looped.then_some(LoopRegion { start: 0, end: frames }),
+            frozen: start.frozen,
+            fade_in: start.fade_in,
+        };
+        let voice = Voice { storage, settings };
         let Some(BusTrack { track, .. }) = self.mix.buses.get_mut(bus.index()) else {
             tracing::warn!(target: LOG_TARGET, bus = bus.0, "a sound asked for a bus the mix hasn't");
             return Err(StartError::MixerFull);
@@ -441,9 +455,9 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
         voice.freeze(frozen, FREEZE_TWEEN);
     }
 
-    fn stop_voice(&mut self, slot: VoiceSlot) {
+    fn stop_voice(&mut self, slot: VoiceSlot, fade: Duration) {
         if let Some(voice) = self.voice(slot) {
-            voice.stop(FREEZE_TWEEN);
+            voice.stop(fade);
         }
     }
 
@@ -522,6 +536,7 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
                     from: 0,
                     looped: Some(LoopRegion { start: 0, end: storage.frames() }),
                     frozen: false,
+                    fade_in: Duration::ZERO,
                 },
             };
             match self.mix.buses[BusId::category(Bus::Music).index()].track.play(voice) {

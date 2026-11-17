@@ -10,7 +10,7 @@ use sapphire_assets::mix::Mix;
 use sapphire_assets::sound::{DecodedSound, Sound, decode_vorbis};
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioSystem, BusId, BusParams, CueRequest, CueRng, CueTarget, DeviceState,
-    KiraBackend, Listener, OfflineOutput, VoiceParams, VoiceSlot,
+    KiraBackend, Listener, OfflineOutput, STOP_FADE, VoiceParams, VoiceSlot, VoiceStart,
 };
 use sapphire_math::Vec3;
 
@@ -85,7 +85,7 @@ const SFX: BusId = BusId::category(Bus::Sfx);
 const UI: BusId = BusId::category(Bus::Ui);
 
 fn start(backend: &mut KiraBackend<OfflineOutput>, params: VoiceParams) {
-    backend.start_voice(VoiceSlot(0), SOUND, SFX, params, false).expect("a voice");
+    backend.start_voice(VoiceSlot(0), SOUND, SFX, VoiceStart::once(params, false)).expect("a voice");
 }
 
 /// `seconds` of output, as interleaved stereo.
@@ -123,7 +123,7 @@ fn only_the_buses_a_snapshot_filters_have_a_low_pass() {
     let sound = tones(&[8_000.0], 0.6);
     let mut backend = mixer(&sound);
     backend.set_bus(UI, BusParams { low_pass_hz: 300.0 });
-    backend.start_voice(VoiceSlot(0), SOUND, UI, NEUTRAL, false).unwrap();
+    backend.start_voice(VoiceSlot(0), SOUND, UI, VoiceStart::once(NEUTRAL, false)).unwrap();
     let _settle = render(&mut backend, 0.1);
     let out = left(&render(&mut backend, 0.3));
     assert!(db(energy_at(&out, 8_000.0) / 0.25).abs() < 1.0);
@@ -239,7 +239,7 @@ fn a_stopped_voice_ends_at_once_and_smoothly() {
     let mut backend = mixer(&sound);
     start(&mut backend, NEUTRAL);
     let before = left(&render(&mut backend, 0.1));
-    backend.stop_voice(VoiceSlot(0));
+    backend.stop_voice(VoiceSlot(0), STOP_FADE);
     let after = left(&render(&mut backend, 0.05));
     let largest_step =
         |samples: &[f32]| samples.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f32::max);
@@ -259,9 +259,9 @@ fn a_stopped_voice_ends_at_once_and_smoothly() {
 fn a_frozen_voice_ends_when_stopped() {
     let sound = tones(&[QUIET_FREE_TONE], 1.0);
     let mut backend = mixer(&sound);
-    backend.start_voice(VoiceSlot(0), SOUND, SFX, NEUTRAL, true).expect("a voice");
+    backend.start_voice(VoiceSlot(0), SOUND, SFX, VoiceStart::once(NEUTRAL, true)).expect("a voice");
     assert_eq!(sounding(&render(&mut backend, 0.05)), 0);
-    backend.stop_voice(VoiceSlot(0));
+    backend.stop_voice(VoiceSlot(0), STOP_FADE);
     assert_eq!(sounding(&render(&mut backend, 0.05)), 0);
     assert!(backend.voice_finished(VoiceSlot(0)));
 }
@@ -270,7 +270,7 @@ fn a_frozen_voice_ends_when_stopped() {
 fn a_voice_started_frozen_waits() {
     let sound = tones(&[1_000.0], 0.1);
     let mut backend = mixer(&sound);
-    backend.start_voice(VoiceSlot(0), SOUND, SFX, NEUTRAL, true).unwrap();
+    backend.start_voice(VoiceSlot(0), SOUND, SFX, VoiceStart::once(NEUTRAL, true)).unwrap();
     assert_eq!(sounding(&render(&mut backend, 0.3)), 0);
     backend.freeze_voice(VoiceSlot(0), false);
     assert!(sounding(&render(&mut backend, 0.3)) > 4_000);
@@ -360,7 +360,7 @@ fn a_voices_own_low_pass_takes_out_the_high_frequencies() {
     const HIGH: f32 = 8_000.0;
     let sound = tones(&[LOW, HIGH], 1.0);
     let mut backend = mixer(&sound);
-    backend.start_voice(VoiceSlot(0), SOUND, UI, NEUTRAL, false).unwrap();
+    backend.start_voice(VoiceSlot(0), SOUND, UI, VoiceStart::once(NEUTRAL, false)).unwrap();
     let _settle = render(&mut backend, 0.05);
     let open = left(&render(&mut backend, 0.2));
     assert!(db(energy_at(&open, HIGH) / 0.25).abs() < 1.0, "open, the sound as authored");

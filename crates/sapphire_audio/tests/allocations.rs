@@ -4,15 +4,15 @@
 //! Music's phase changes (M3 A1) are held to none, once a score plays, in the same test.
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
-use sapphire_assets::mix::Mix;
+use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse, Limit, LimitRule};
+use sapphire_assets::mix::{Mix, VoiceGroup};
 use sapphire_assets::mouth::MouthCurve;
 use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioSystem, BusId, CueRequest, CueRng, CueTarget, Emitter, EmitterId,
     KiraBackend, Listener, MAX_VOICES, MockBackend, MockCall, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT,
-    VoiceParams, VoiceSlot,
+    VoiceCaps, VoiceParams, VoiceSlot, VoiceStart,
 };
 use sapphire_core::Name;
 use sapphire_core::alloc::{EngineAllocator, PER_THREAD_COUNTS, count_in_scope, engine_allocator};
@@ -133,6 +133,7 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     every_voice_filtering_mixes_with_no_allocation();
     music_changes_phase_with_no_allocation();
     the_mix_moves_with_no_allocation();
+    voice_limits_place_with_no_allocation();
 }
 
 /// A frame of the shipped mix: the world's clock at `scale`, paused or not.
@@ -197,7 +198,9 @@ fn every_voice_filtering_mixes_with_no_allocation() {
         |n: u32| VoiceParams { gain_db: -6.0, pan: 0.5, pitch: 0.9 + 0.01 * n as f32, low_pass_hz: 800.0 };
     for n in 0..MAX_VOICES as u32 {
         let sound = if n % 2 == 0 { SOUND } else { stereo };
-        backend.start_voice(VoiceSlot(n), sound, BusId::category(Bus::Sfx), params(n), false).unwrap();
+        backend
+            .start_voice(VoiceSlot(n), sound, BusId::category(Bus::Sfx), VoiceStart::once(params(n), false))
+            .unwrap();
     }
     let mut buffer = vec![0.0; GAME_FRAME * 2];
     backend.output_mut().render_into(&mut buffer);
@@ -264,4 +267,109 @@ fn music_changes_phase_with_no_allocation() {
     }
     assert_eq!(system.stats().music_phase_changes, 15);
     assert_eq!(changing.allocations, 0, "a phase change or the music's mix allocated");
+}
+
+/// Voice limits (M6 U3) under a storm: 200 requests a frame against a group's limit, the tier's caps and the
+/// room for live voices, loops going virtual and coming back as slots free. Through the mock the system's own
+/// placing allocates nothing; through the real mixer, the only allocations are each start's own.
+fn voice_limits_place_with_no_allocation() {
+    let step: AssetId = "5c0e0000-0000-4000-8000-0000000000c0".parse().unwrap();
+    let roar: AssetId = "5c0e0000-0000-4000-8000-0000000000c1".parse().unwrap();
+    let hum: AssetId = "5c0e0000-0000-4000-8000-0000000000c2".parse().unwrap();
+    let long = DecodedSound { sample_rate: RATE, channels: 1, samples: vec![0.1; 3 * RATE as usize] };
+    let mut mix = Mix::plain();
+    let steps = Limit { max: 6, rule: LimitRule::StopOldest };
+    mix.groups.push(VoiceGroup { name: "steps".to_owned(), limit: steps });
+    let cues = [
+        (step, Cue { priority: 40, group: Some("steps".to_owned()), ..cue() }),
+        (roar, Cue { sounds: vec![roar], priority: 200, ..cue() }),
+        (hum, Cue { sounds: vec![hum], priority: 10, looped: true, ..cue() }),
+    ];
+    let emitters: Vec<Emitter> = (0..24)
+        .map(|n| Emitter { id: EmitterId(100 + n), position: Vec3::new(n as f32, 0.0, 0.0), hitstop: false })
+        .collect();
+    let hums: Vec<CueRequest> =
+        emitters.iter().map(|emitter| CueRequest { cue: hum, target: CueTarget::On(emitter.id) }).collect();
+    let mut storm: Vec<CueRequest> = (0..199)
+        .map(|n| CueRequest { cue: step, target: CueTarget::At(Vec3::new(0.0, 0.0, -((n % 20) as f32))) })
+        .collect();
+    storm.push(CueRequest { cue: roar, target: CueTarget::Flat });
+    let mut rng = CueRng::new(1);
+
+    let mut system = AudioSystem::new(MockBackend::new());
+    ready(&mut system, &mix, &cues, &long);
+    system.backend_mut().reserve_calls(1 << 16);
+    system.update(&frame(&emitters, &hums), &mut rng);
+    system.update(&frame(&emitters, &storm), &mut rng);
+    let mut placing = 0;
+    for round in 0..20 {
+        let ((), counts) = count_in_scope(|| {
+            let cues: &[CueRequest] = if round % 2 == 0 { &storm } else { &[] };
+            system.update(&frame(&emitters, cues), &mut rng);
+        });
+        placing += counts.allocations;
+        // Every third frame, all that sounds plays out, so what waits comes back. Outside the count: the mock
+        // writes it down in a set.
+        if round % 3 == 2 {
+            for slot in 0..2 * MAX_VOICES as u32 {
+                system.backend_mut().finish(VoiceSlot(slot));
+            }
+        }
+    }
+    let stats = system.stats();
+    #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
+    {
+        println!(
+            "20 frames of a 200-request storm: {placing} allocations; {} stolen, {} virtualized, {} revived",
+            stats.voices_stolen, stats.voices_virtualized, stats.voices_revived
+        );
+    }
+    assert!(stats.voices_stolen > 0 && stats.voices_virtualized > 0 && stats.voices_revived > 0, "{stats:?}");
+    assert_eq!(placing, 0, "placing voices against their limits allocated");
+
+    // Through kira: warmed, then the same storm and churn, every allocation a start's.
+    let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
+    ready(&mut system, &mix, &cues, &long);
+    let mut buffer = vec![0.0; GAME_FRAME * 2];
+    let mut churn = |system: &mut AudioSystem<KiraBackend<OfflineOutput>>, rng: &mut CueRng| {
+        system.update(&frame(&emitters, &hums), rng);
+        for round in 0..20 {
+            let cues: &[CueRequest] = if round % 5 == 0 { &storm } else { &[] };
+            system.update(&frame(&emitters, cues), rng);
+            system.backend_mut().output_mut().render_into(&mut buffer);
+        }
+    };
+    churn(&mut system, &mut rng);
+    let before = system.stats();
+    let ((), churning) = count_in_scope(|| churn(&mut system, &mut rng));
+    let after = system.stats();
+    let starts = (after.cues_played - before.cues_played) + (after.voices_revived - before.voices_revived);
+    #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
+    {
+        println!("the storm through kira: {} allocations for {starts} starts", churning.allocations);
+    }
+    assert!(starts > 0);
+    assert!(
+        churning.allocations <= starts * PLAY_ALLOCATIONS,
+        "{} allocations for {starts} starts",
+        churning.allocations
+    );
+}
+
+/// Loads [`voice_limits_place_with_no_allocation`]'s mix, caps, sounds and cues.
+fn ready<B: AudioBackend>(
+    system: &mut AudioSystem<B>,
+    mix: &Mix,
+    cues: &[(AssetId, Cue)],
+    long: &DecodedSound,
+) {
+    system.set_mix(mix).unwrap();
+    system.set_voice_caps(VoiceCaps { real: 8, virtual_voices: 32 });
+    system.add_sound(SOUND, &sound());
+    for (id, cue) in cues {
+        if cue.sounds[0] != SOUND {
+            system.add_sound(cue.sounds[0], long);
+        }
+        system.add_cue(*id, cue.clone());
+    }
 }

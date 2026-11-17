@@ -23,9 +23,10 @@ use crate::table::{
     ScreenCenter,
 };
 
-/// The most sounds a frame can start. [`sapphire_audio::MAX_VOICES`] is all that can play, and a frame
-/// of two steps fills it only if every voice starts at once. Past it they're counted and dropped.
-pub const MAX_FRAME_SOUNDS: usize = sapphire_audio::MAX_VOICES;
+/// The most sounds a frame can start: a frame of two steps fills it only if every cue fires at once. Past it
+/// they're counted and dropped here, before the mixer's own ranking (M6 U3) sees them. Half of
+/// [`sapphire_audio::MAX_VOICES`], as it was before that rose to the desktop's real voices.
+pub const MAX_FRAME_SOUNDS: usize = 32;
 
 /// The most voice lines a frame can start: more at once is a crowd, not a voice. Past it they're
 /// counted and dropped.

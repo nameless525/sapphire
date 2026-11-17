@@ -594,7 +594,7 @@ mod tests {
     use sapphire_assets::sound::DecodedSound;
 
     use super::*;
-    use crate::backend::{AudioBackend, BusId, VoiceParams, VoiceSlot};
+    use crate::backend::{AudioBackend, BusId, VoiceParams, VoiceSlot, VoiceStart};
     use crate::kira_backend::KiraBackend;
 
     const RATE: u32 = 48_000;
@@ -779,7 +779,9 @@ mod tests {
         let samples = (0..RATE / 2).map(|frame| (frame as f32 * 0.05).sin() * 0.75).collect();
         backend.add_sound(SOUND, &DecodedSound { sample_rate: RATE, channels: 1, samples });
         let params = VoiceParams::NEUTRAL;
-        backend.start_voice(VoiceSlot(0), SOUND, BusId::category(Bus::Ui), params, false).expect("a voice");
+        backend
+            .start_voice(VoiceSlot(0), SOUND, BusId::category(Bus::Ui), VoiceStart::once(params, false))
+            .expect("a voice");
         backend
     }
 

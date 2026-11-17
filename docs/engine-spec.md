@@ -37,6 +37,7 @@ All five platforms are first-class from month 0. Bringing up a platform is cheap
 
 - **Consoles.** They are a separate project under the platform holders' NDAs. `sapphire_rhi` keeps that door open.
 - A seamless open world, online co-op, ray tracing, a web build, modding and VR.
+- **Terrain inside a zone is not among them (Decision, [m6-plan.md](m6-plan.md) §3, "Terrain inside zones", approved by the maintainer with the plan on 2026-11-17).** It reopens M5's "terrain out" ([m5-plan.md](m5-plan.md) §3, "The target"): a zone may have height-field terrain that is drawn, collided and navigated, built by M6's W12 to W14 (§5.21 has the design and each tier's share). A seamless open world, world partition and streaming beyond a zone stay out, and backdrop mountains stay cooked meshes.
 
 ### 1.4 Engine rules, enforced in review and CI
 
@@ -131,6 +132,17 @@ Each figure is wall time on the critical path.
 | **Game side total** | **~6.0** | **~13.6** |
 | Render prepare + record (after the frame's own extract, on its thread: §4.2) | 4.0 | 8.0 |
 
+**Proposed rows for the production tracks (M6 W0), not yet adopted.** Every production feature that costs frame time, memory or cook time gets a proposed row in this section, a counter (R9) and a unit that prices it (Decision, [m6-plan.md](m6-plan.md) §3, "Production costs"). Each figure is a **proposal** estimated from measured neighbours, not a measurement, in ms of wall time a frame at each tier's own rate; none is in the totals above.
+
+| Stage (proposal) | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low | Built by |
+|---|---|---|---|---|---|
+| Foliage: culling by chunk, levels and draws | 0.15 | 0.2 | 0.25 | 0.4 | G2 |
+| Water: the wave twin and what reads it (floaters, the swim's bob, shore events) | 0.05 | 0.05 | 0.05 | 0.05 | H1a, H5 |
+| Weather's resolve: the state, its schedule and the accumulated shares | 0.01 | 0.01 | 0.02 | 0.03 | W8a, Y2 |
+| Springs' and cloth's wind | 0.01 | 0.01 | 0.01 | 0.02 | Y3 |
+
+Grass and scatter are placed as cells activate, so their worst frame, about 0.3, 0.3, 0.5 and 0.8 ms a tier (a proposal), stays inside "Streaming activation" above.
+
 ### 3.3 GPU budget per pass
 
 | Pass | Desktop-Low, 1080p @ 60 fps (ms) | Mobile-Low, ~720p @ 30 fps (ms) |
@@ -164,20 +176,53 @@ Distortion's share of "Particles, distortion" (M5 L6, measured on an Apple M5, �
 | Forward opaque (decals within it) | 2.8 | 3.4 |
 | Outlines | 0.5 | 1.0 |
 | Hair, eyes, transparents | 0.7 | 0.9 |
-| Volumetric fog | 0.5 | 0.4 |
+| Volumetric fog | 0.5 | — (deleted by M6 W0, below) |
 | Particles, distortion | 0.8 | 1.0 |
 | TAA / upscaling | 0.9 | 0.6 (spatial) |
 | Bloom + tonemap + LUT, screen effects | 0.8 | 1.2 |
 | UI | 0.2 | 0.5 |
 | Skinning (new row) | 0.4 | 0.6 |
-| **Total** | **~12.0** (§3.1's upper end) | **~13.0** |
+| **Total** | **~12.0** (§3.1's upper end) | **~12.6** (13.0 until M6 W0 deleted volumetric fog's 0.4) |
 
 | New row (proposal) | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
 |---|---|---|---|---|
 | Skinning and morphs, compute, the whole cast | 0.4 | 0.5 | 0.6 | 1.0 |
 | Ground decals (inside forward opaque) | 0.3 | 0.3 | 0.4 | 0.6 |
 
-- **Why these sizes:** skinning fills Desktop-Low's last 0.5 ms under its 14 (a total of 14.0) and Mobile-Low's 1.0 under its 26; nothing measured skinning on the district yet (§3.8: the walk poses nothing), so C1 reads it against these. Depth of field runs only where gameplay's particles and HUD are light, so it adds no frame total. Its row above is measured, not proposed: 1.2 ms at Desktop-Low's 1080p and 2.0 at Desktop-High's 1440p on this M5 (§5.12), with Mobile-High's inset backdrop ~0.03 and nothing on Mobile-Low. Decals are shading work in the forward pass and get a share there, not a pass. So are probe reflections, whose row above is measured, not proposed: 58 µs of Desktop-High's forward opaque at 1080p and 36 of Mobile-High's, nothing measurable on Mobile-Low, whose characters alone read them; composing is compute in the ambient pass, nothing at a fixed hour and 115 µs on a frame the moving hour composes a 128² probe (§5.12). A screen-space reflection pass, if one is ever added, would take 0.6 ms of Desktop-High's forward share (B4's proposal). §3.8's draws, not any pass's milliseconds, are what break first on the district.
+- **Why these sizes:** skinning fills Desktop-Low's last 0.5 ms under its 14 (a total of 14.0) and Mobile-Low's 1.0 under its 26; nothing measured skinning on the district yet (§3.8: the walk poses nothing), so C1 reads it against these. Depth of field runs only where gameplay's particles and HUD are light, so it adds no frame total. Its row above is measured, not proposed: 1.2 ms at Desktop-Low's 1080p and 2.0 at Desktop-High's 1440p on this M5 (§5.12), with Mobile-High's inset backdrop ~0.03 and nothing on Mobile-Low. Decals are shading work in the forward pass and get a share there, not a pass. So are probe reflections, whose row above is measured, not proposed: 58 µs of Desktop-High's forward opaque at 1080p and 36 of Mobile-High's, nothing measurable on Mobile-Low, whose characters alone read them; composing is compute in the ambient pass, nothing at a fixed hour and 115 µs on a frame the moving hour composes a 128² probe (§5.12). A screen-space reflection pass, if one is ever added, would take 0.6 ms of Desktop-High's forward share (B4's proposal; M6 W0's row below proposes 0.6 and 0.4 ms on the desktops). §3.8's draws, not any pass's milliseconds, are what break first on the district.
+
+**Volumetric fog (M6 W0; Decision, [m6-plan.md](m6-plan.md) §3, "Atmosphere and exposure").** Its rows stay proposals of 0.5 ms on Desktop-High and 0.6 on Desktop-Low, and Mobile-High's 0.4 is deleted above, since that tier's `volumetric_fog` is already `false` (`crates/sapphire_render/tiers.ron:279`, and Mobile-Low's at `:331`). The desktops set it `true` (`tiers.ron:180`, `:230`), but nothing builds volumetric fog: the flag is plain data, declared at `crates/sapphire_render/src/quality.rs:249-251` and read by nothing (the shed list's note at `quality.rs:941-942` says so too), so the desktops' `true` draws nothing today. Froxel fog is M6's V14a, a measured package late in the milestone: a 128 × 72 × 64 grid to 120 m, on the desktops only and in zones that opt in. If it costs over 0.5 ms on Desktop-High or 0.6 on Desktop-Low, or can't be told from fog volumes (V2) with beams (V10), it is killed and `volumetric_fog` leaves `tiers.ron`.
+
+**Proposed rows for the production tracks (M6 W0), not yet adopted** (Decision, [m6-plan.md](m6-plan.md) §3, "Production costs"). The world's look, foliage, water, weather and the environment's effects (M6's tracks W, G, H, Y and V) each get a row. Every figure is a **proposal** estimated from measured neighbours, not a measurement: ms of GPU frame at each tier's settings. Each is priced and judged on a unit of M6 W1's generated nature zone (`nature-walk`, `nature-rain`, `nature-fight`, `nature-forest`, `nature-coast`), where a measured row must come within 1.5× its proposal (m6-plan's exit test 11), and the package that builds it carries a kill line of its own ([m6-plan.md](m6-plan.md) §4). A nature zone spends these rows instead of the district's building load, not on top of it, so the district stays judged against the totals above and W1's units get lines of their own. A figure with + is added inside a draw that exists anyway (the environment's, the sky's or precipitation's) rather than drawn as a pass of its own; — is a tier without the feature.
+
+| Row (proposal) | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low | Built by |
+|---|---|---|---|---|---|
+| Water's surface, at about 40% of the frame | 0.5 | 0.45 | 0.5 | 0.4 | W3 |
+| Its refraction copy | 0.1 | 0.08 | — | — | W4 |
+| The ocean coast: the ring grid and shore waves | 0.7 | 0.6 | 0.65 | 0.5 | H1b, H2 |
+| Caustics' dive pass | 0.15 | 0.1 | — | — | H4 |
+| Terrain | 0.8 | 0.7 | 0.8 | 0.6 | W13 |
+| Grass with its trail | 1.0 | 0.8 | 0.8 | 0.4 | W15 |
+| Trees near: meshes and cards | 1.2 | 1.0 | 0.9 | 0.6 | G2, G3 |
+| Impostors | 0.2 | 0.2 | 0.2 | 0.15 | W16 |
+| Wind volumes in foliage | 0.05 | 0.05 | 0.04 | 0 (no volumes on the GPU) | Y1 |
+| Precipitation | 0.25 | 0.25 | 0.3 | 0.25 | W6 |
+| Far sheets and curl | +0.10 | +0.08 | +0.08 | +0.05 | Y5 |
+| Rain on surfaces | +0.1 | +0.1 | +0.1 | — (shelter darkening only) | W7 |
+| The storm deck | 0.04 | 0.04 | 0.04 | 0.03 | Y4 |
+| Screen-space reflections | 0.6 | 0.4 | — | — | W10 |
+| Fog volumes | 0.08 | 0.08 | 0.06 | 0.04 | V2 |
+| Cover: snow, sand and frost | +0.12 | +0.12 | +0.10 | +0.04 | V5 |
+| Ice | +0.05 | +0.05 | +0.04 | +0.03 | V6 |
+| Footprints | 0.04 | 0.04 | 0.03 | 0.02 | V7 |
+| Deformation: trenches in deep snow | 0.12 | 0.12 | 0.10 | — | V8a, V8b |
+| Eye adaptation | 0.02 | 0.02 | 0.02 | — (authored exposure only) | V4 |
+| Beams, at their cap | +0.05 | +0.05 | +0.04 | +0.03 | V10 |
+| Cloud shadows | 0.03 | 0.03 | 0.03 | — | V12 |
+| The aurora | 0.15 | 0.15 | 0.12 | 0.05 | V11 |
+| Glare | 0.10 | 0.10 | — | — | V15 |
+
+Volumetric fog keeps its own rows above. The worst places sum several rows, so m6-plan's exit test 15 also judges a storm (about 0.55, 0.5, 0.55 and 0.35 ms) and a snowy night (about 0.66 ms on Desktop-High and 0.22 on Mobile-Low) against 1.5× their sums, both estimates.
 
 ### 3.4 Content budgets
 
@@ -217,6 +262,29 @@ Neither simplifies to a third level within its sidecar's error, since both are a
 **What the mobile cook can't meet yet:** the hero keeps 200 joints (no cook cuts a skeleton by tier; the chains are listed level by level, so the first 140 joints hold every parent, for whichever package cuts it). Its mobile cook merges skin, jacket and gear into one slot (M5 L15, §5.27), so it meets the mobile row's 4 materials and the desktop keeps the six of its row. Its 2K maps store 1K on mobile, by the cap the generator writes in their sidecars (M5 M1, §5.27). Everything else is at the row.
 
 **The look-dev VRM against the hero's row** (its own sidecar; `the_look_dev_character_measured_against_the_hero_row`): 36,470 triangles at LOD0 and 22,216 on mobile, both within the row, its levels 22,216, 13,747 and 9,953; 155 joints cooked, within the desktop's 200 and **over the mobile's 140**; **13 material slots, all opaque, over both rows** (6 and 4; not 11, as the survey said: body, bottoms, shoes, tops, back hair, mouth, iris, face, eye white, eyeline, brow, eye highlight and hair; M5 L15's merge refuses every pair of them, so it stays at 13, see §5.27); maps up to 2048 a side (the body's albedo and normal map, 2048², and the top's 1024 × 2048), the rest 256 to 1024, so those three are over the mobile's 1K; 66 morph targets (9 on the body, 57 on the face) behind the 18 presets; 22 springs of 79 joints with 13 colliders.
+
+**Proposed rows for the production tracks (M6 W0), not yet adopted** (Decision, [m6-plan.md](m6-plan.md) §3, "Production costs"). All **proposals**, from the plan's rows; a zone's limits are checked at its cook, and a tier's counted at run time (R9).
+
+| Item (proposal) | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Terrain's height spacing, by cook (W12) | 1 m | 1 m | 2 m | 2 m |
+| Terrain layers (W13) | 8 | 8 | 8 | 4 |
+| Grass: 16 m chunks placed within a ring of (W15a) | 60 m | 45 m | 40 m | 25 m |
+| Grass chunks placed a frame, at most (W15a, G2b) | 8 | 8 | 4 | 4 |
+| Foliage draws, at most, inside the draw calls row above (G2) | 150 | 150 | 60 | 40 |
+| An impostor atlas, 12 × 12 views of a tree kind (W16) | 2048² | 1024² | 1024² | 1024² |
+
+A zone holds at most 16 water bodies (W2), 6 impostor kinds (W16), 64 atmosphere volumes (V1), 64 fog volumes (V2) and 32 beams (V10).
+
+| Memory (proposal) | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Impostor atlases, a zone (6 kinds at the sizes above) | 64 MiB | 16 MiB | 16 MiB | 16 MiB |
+| Water's info textures, a zone: bed depth, shore distance, flow (W3a) | 4 MiB | 4 MiB | 1 MiB | 1 MiB |
+| Shelter tiles: 16-bit heights of the highest static occluder (W6) | about 4.5 MiB, 0.5 m texels | about 4.5 MiB | about 1.1 MiB, 1 m texels | about 1.1 MiB |
+| The press target in the interaction buffer, R16 (V8a) | 0.5 MiB, 512² over 32 m | 0.5 MiB | 0.125 MiB, 256² | none |
+| Froxel fog's grid, in zones that opt in (V14a) | about 14 MiB | about 14 MiB | — | — |
+
+Each counts its bytes on each phone tier (m6-plan's cooker rule 7): Mobile-Low peaks at 1,024 of its 1,638 MiB ([m5-exit-run.md](m5-exit-run.md), exit test 2). Terrain's layer array is fixed in size per cook, resident whole and never streamed, a narrow exception to m6-plan's "no texture arrays", so the streamer's texture replacement never meets it.
 
 ### 3.5 Measured in combat (M2 Z1)
 
@@ -1970,12 +2038,18 @@ One uber-shader family, with at most 8 static permutation bits, all taken: layer
 **Environment**
 
 - **Shading:** a stylized GGX uber-shader.
-- **Foliage:** instanced with vertex-shader wind. LODs go from cards up close to billboards to impostors. As built (M1 W6) the wind is there, but foliage draws as every mesh does, a draw of one instance per submesh, with no instancing yet ("Sorting" above).
-- **Grass:** instances generated on the GPU on desktop; low-density CPU-placed instances on mobile.
+- **Foliage:** vertex-shader wind, with levels from cards up close to impostors far away. As built (M1 W6, M5 D2), every plant is an entity with a 192-byte instance (`crates/sapphire_render/src/gpu_types.rs:220-244`) at level 0 (`crates/sapphire_render/src/levels.rs:48-52`), culled with every other instance. Since M5 D2, neighbours of one mesh, level, submesh and material draw as one instanced call in the shadow views and the scene prepass, and cut-out foliage in the main view too; opaque foliage draws a call a draw in the main view on the desktop tiers, while the phones run it ("As built (M5 D2)" above).
+  - **Decision ([m6-plan.md](m6-plan.md) §3, "Foliage as a field"; M6 G1 and G2 build it):** plants placed by rules cook to scatter sets of 16-byte instances with stable IDs per cell, culled by chunk on the CPU and drawn as one instanced draw a view, kind and level, each instance found by a search over `instance_index`, so no base vertex is needed (the iOS Simulator has none). Levels switch with hysteresis and a dithered crossfade; trees get levels, tight cards and canopy proxies for the cascades (G3); far trees are hemi-octahedral impostors baked at 12 × 12 views by the cooker's existing ray caster (`tools/sapphire_pipeline/src/probes/bvh.rs`), deterministic, never a GPU bake ([m6-plan.md](m6-plan.md) §3, "Smaller defaults"; W16). Trunks gain capsule colliders the nav bake sees (G1b), so only a zone with foliage colliders moves its digest. Colour palettes are chosen at load, never blended. Trees and ground cover are generated by the pipeline, with no licensed pack and no new crate ([m6-plan.md](m6-plan.md) §3, "Generated content, and no new crate"). Why: the hand-placed grove's 14 plants cost 1.05 ms of Desktop-High's GPU frame (below), and a forest of 100,000 entities would spend about 1.5 to 1.8 ms of CPU on culling before it draws [estimate].
+- **Grass: Decision ([m6-plan.md](m6-plan.md) §3, "Foliage as a field" and "What not to do"; M6 W15 builds it).** Placed on the CPU on every tier, on the jobs pool by deterministic hash dithering over a density map, in 16 m chunks inside a ring around the camera (§3.4), and drawn through the foliage field above. This replaces grass generated on the GPU on desktop, which the plan's rejection of the GPU-driven path overrules (it reopens for an open world). Blades are opaque and cast no shadow on any tier, Desktop-High included, since alpha testing costs a tiler its hidden-surface removal; cut grass regrows over 20 s. Grass and bushes bend in the one interaction buffer (W15b), the trail `crates/sapphire_render/src/foliage.rs:101-102` names.
 - **Sky:**
   - A gradient sky plus animated 2D cloud layers, and sun and moon discs.
   - Everything is driven by artist time-of-day curves, not physical atmosphere: one `TodTimeline` of `TodKey`s, evaluated in OkLab, is the single source for sky, fog, ambient, shadow tint, post and the character light rig.
 - **Fog:** distance and height fog colored by the sky horizon, plus fog cards, on every tier. Volumetric fog is desktop-only and comes later.
+  - **Decision ([m6-plan.md](m6-plan.md) §3, "Atmosphere and exposure"; M6 V1 to V4):** a zone places atmosphere volumes with biome presets (V1) and local fog volumes inside the existing fog ray, `fogged()` (V2); darkness with carried lights is presentation only (V3). Eye adaptation stays within ±0.75 EV of the authored exposure, rising at 3 EV a second and falling at 1, and Mobile-Low keeps authored exposure only (V4). Mobile-High's volumetric fog row is deleted, and the desktops' froxel fog waits on V14a's measurement; `volumetric_fog`'s status is in §3.3.
+- **Terrain: Decision ([m6-plan.md](m6-plan.md) §3, "Terrain inside zones"; M6 W13 builds it).** `MaterialFamily::Terrain`: a CDLOD quadtree per view on the CPU over one shared patch mesh instanced by level, heights from fixed-size pages, coarse levels in the far cascades, the packed 32-bit control map read by `textureLoad`, and a layer array for terrain alone, fixed in size per cook, resident whole and never streamed. §5.21 has its data and collision.
+- **Water: Decision ([m6-plan.md](m6-plan.md) §3, "Water beyond the lake"; M6 W3 to W5 and track H build it).** One water family, `MaterialFamily::Water`, its kinds (lake, river, ocean) by constants over a cooked info texture per body (top-down bed depth, shore distance, flow), since Mobile-Low never has a readable scene depth. Oceans take at most four Gerstner waves and two detail normals, with a Rust twin within 1e-3 m that the swim's bob, floaters and shore events read; authored states keep waves under 0.35 m of amplitude [estimate]. Rivers flow on their own cooked polyline, never the zone's camera splines. Under water is drawn by the fog's uniforms, not a post variant. Caustics are a generated pattern, with a dive pass on the desktops only. FFT or simulated oceans, tessellated water and physical caustics stay out. The simulation's surface stays flat and sees no current (§5.21).
+- **Weather and wind: Decision ([m6-plan.md](m6-plan.md) §3, "One wind and one weather state" and "The frame's uniforms").** One wind field, M6 Y1's `WindField` in `sapphire_look`, replaces the renderer-only `Wind` (`crates/sapphire_render/src/frame.rs:654-680`), which springs and cloth never see: today's gust term moves verbatim into a shared `wind.wgsl`, and wind volumes (directional, vortex, burst) sit in one 832-byte `WindBuffer`, sampled the same way in Rust and WGSL by foliage, precipitation, effects, springs and cloth. `FrameUniforms.weather` carries wetness, puddles, snow and sand, filling its two spare lanes (`crates/sapphire_render/src/gpu_types.rs:93-95`); the frame's uniforms grow once, by one appended `cover` vec4 (ice, frost, the cover's kind and a glint scale; V5), and `time`'s spare lanes are never used for weather. Rain and snow fall in one instanced draw after the resolve, never in history, each drop's position from the stateless particle include (§5.16) bent by the wind, and stopped under roofs by a cooked shelter map per cell that also dries puddles there (W6, W7). None of it enters the simulation (§5.21).
+- **Snow, sand and ice: Decision ([m6-plan.md](m6-plan.md) §3, "Snow, sand and ice"; M6 V5 to V8b).** Cover is a variant of its own, `COVER_SURFACES`, never inside `WET_SURFACES` (`crates/sapphire_render/shaders/environment.wgsl:168`), with functions foliage and terrain share; ice is `ICE_SURFACES`, and a frozen body is its water body's kind with ice's look. Footprints are a `Stamp` decal shape in a pool of their own (V7); trenches pressed into deep snow are a channel of the interaction buffer, on the desktops and Mobile-High (V8a, V8b). Tessellation stays out: wgpu 30 has none. As everywhere in the world's look, a tier's difference is a pipeline variant or an override constant, never a uniform branch.
 - **As built (M1 W1):**
   - Time of day lives in `sapphire_world::tod` (§5.21), not here. The renderer receives its resolved scene constants (§4.6) and draws the key light, sky gradient and post-processing from them as before. Sky discs, fog, ambient, the shadow tint and the character key light wait for W2, W3, W4/W5, R4 and C2.
   - Neighboring keys' grades blend as post's two LUTs: `grade_a` and `grade_b` are the two keys' grades and `grade_blend` the eased weight, with B unused while one grade shows. A running day therefore bakes one LUT per key crossed, and none between keys.
@@ -3316,6 +3390,29 @@ Nobody has heard any of it: the placeholder sounds are the project's own synthes
 - **Activation budget:** at most N entities, or M µs of spawning, per frame.
 - **Encounter volumes:** entering one freezes streaming and pre-warms the encounter's enemy movesets, VFX, banks and pipelines *before* combat starts.
 - **The simulation streams nothing (Decision, [m3-plan.md](m3-plan.md) §3):** a zone's colliders, triggers, spawners and navmesh load before its first step and stay, and a replay pins a digest of them. Only presentation streams. A zone's cooked form is plain data in `sapphire_zone` (L2), which the cooker and the simulation can both link, and `sapphire_gameplay` owns its triggers, spawners and encounters.
+- **Terrain inside zones is in (Decision, [m6-plan.md](m6-plan.md) §3, "Terrain inside zones", approved by the maintainer with the plan on 2026-11-17; M6 W12 to W14 build it).** It reopens M5's "terrain out" ([m5-plan.md](m5-plan.md) §3, "The target"; §1.3).
+  - **Data:** height-field tiles per zone cell, `.terrain.ron` with binary tiles (16-bit heights, a packed 32-bit control map in the layout Godot's Terrain3D documents, a tint, and a cover channel of an 8-bit grass density and an 8-bit layer that grass and scatter read), cooked into the zone's presentation at 1 m on desktop and 2 m on phones and, whole, into its simulation half (W12a). §5.12's "Terrain" draws it.
+  - **Collision and navigation:** a new `StaticShape::HeightField` in `sapphire_physics` (§5.14), swept cell by cell through the existing triangle path with no allocation (W12b), and the nav bake over it, holes and no-nav cells removed (W12c). Only a zone with terrain moves its digest.
+  - **Edits** live in `sapphire_zone::terrain::edit`, a runtime crate the editor and the running game both link (W14), since nothing may depend on a tool (`xtask/layers.toml:11`); each returns an undo record of the region's old bytes.
+  - **Out:** backdrop mountains stay cooked meshes; a seamless open world, world partition and streaming beyond a zone stay out.
+  - **Why:** a 4 km zone at 1 m as cooked meshes is about 270 to 340 MB of level-0 vertices against 32 MiB of 16-bit heights [estimate], and a sculpt edits a tile where a mesh would recook.
+  - **The world's look on each tier,** as M6's rows set it (proposals; §3.3 and §3.4 have the costs and limits, and each package builds and proves its own tier's answer):
+
+    | Feature | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+    |---|---|---|---|---|
+    | Terrain (W12, W13) | 1 m, 8 layers, holes | 1 m, 8 layers, holes | 2 m, 8 layers, holes | 2 m, 4 layers, holes |
+    | Water (W3, W4, W10, H1b, H4) | box-corrected probe, two normal maps, refraction copy, screen-space reflections at half resolution, caustics with a dive pass | the same, reflections at quarter resolution | the probe without its box, no bed-colour band, caustics through the surface; a characters-only planar reflection if W11's spike lives | one normal map, the sky alone, no bed-colour band, a flat sea, no caustics |
+    | Under water (W4) | the fog's uniforms | the same | the same | the same |
+    | Grass (W15) | a 60 m ring, the trail | 45 m, the trail | 40 m, the trail | 25 m, near clumps pushed from a short list |
+    | Far trees (W16) | impostors at 2048², crossfaded by dither | 1024², crossfaded | 1024², crossfaded | 1024², switched |
+    | Rain and snow (W6, Y5) | 8,000 drops, splashes, 3 far sheets | 6,000, splashes, 3 | 3,000, splashes, 2 | 1,200, no splashes, 1 |
+    | Rain on surfaces (W6, W7) | ripples, streaks, shelter at 0.5 m | the same | the same, shelter at 1 m | shelter darkening only, at 1 m |
+    | Snow (V5, V7, V8) | cover with glints, prints, trenches at 512² over 32 m | the same | glints halved, prints, trenches at 256² | no glints, prints only |
+- **What the simulation reads of the world, and what it never reads (Decisions, [m6-plan.md](m6-plan.md) §3, "Water beyond the lake", "One wind and one weather state", "One volume shape" and "Seams between tracks"):**
+  - **Water volumes** are in the zone's simulation half (M6 W2): `WaterVolumes::at(x, y, z) -> Option<WaterSample>` gives a flat rest surface, its flow, body and kind, pure, deterministic and allocation-free, and swimming reads it (A19). Waves stay presentation, and the simulation sees no current. The digest gains a water section only for a zone with bodies.
+  - **Weather and wind are presentation.** M6 W8a's `WeatherDocument` lives in `sapphire_tod::weather` ([m6-plan.md](m6-plan.md) §3, "Smaller defaults": `sapphire_look` has no serde or reflection), resolved to a `WeatherFrame` in `sapphire_look` beside `Weather` by a `WeatherSystem` in `sapphire_world::weather`. At most two states are live, chosen by the schedule (a pure hash of the world clock, every rate in world seconds, so an accelerated clock accelerates weather), then a region, then an override, then a cutscene's key, then the tool, never the simulation. Ten presets ship: clear, overcast, drizzle, rain, storm, snow, blizzard, hail, sandstorm and mist. The look resolves in one order, held by a test: the zone's day, the weather state, atmosphere volumes, a cutscene, the tool. Y2's shares (wetness, puddles, snow, sand and ice) rise and dry on the world clock (wetness over 180 s, puddles 900, snow melting over 1,200, sand 1,800, ice 900) and re-warm over the schedule's last six game hours in 120 steps on entering a zone or after a load, so nothing is saved. A hashed schedule needs no state in a save or a replay, and a later game could still move it into the simulation, deliberately.
+  - **One volume shape:** `ZoneShape { Sphere, Box { yaw }, Ellipsoid { yaw } }` in `sapphire_zone`, landed by whichever of M6 V1 and W8a comes first, converting to `sapphire_world`'s `VolumeShape`, which gains `Ellipsoid` and a yaw on `Box`. Atmosphere and fog volumes, weather regions and wind volumes all place by it.
+  - **One owner a seam:** terrain's tile format is W12a's and its edits W14's; water volumes W2's; surface tags for footsteps A6's, in the zone's presentation half; the wind field Y1's; the weather state W8a's; the accumulated shares Y2's; the one interaction buffer W15b's; zone-placed effects N9's (§5.16). No feature grows a second copy of any of them. The zone's cooked version (8 today), asset kind numbers (31 is next), the live-link protocol (6) and the save (4) move in landing order, never reserved ahead.
 - **As built (M3 W1, the format and its cook):** `crates/sapphire_zone`, plain L2 data in `[simulation]`: a `.zone.ron` document (`ZoneDocument`, `sapphire::zone`, schema 1, unknown fields refused, every check naming its field) cooks to a `.szone` (`Zone`). Nothing draws or loads one in a game yet: W2 does. Nothing about a prefab reaches the runtime.
   - **The cooked form** has two halves, because they load differently. `ZoneSimulation` (colliders, spawners, patrols since M3 P3, triggers, checkpoints since M3 B4, navigation, encounters) is what a replay pins. `ZonePresentation` is the grid, the backdrop, the cells (each a mesh, its bounds, and ranges into the instances and lights), the probe grid's ID, the day's and rigs' text, and the splines, which only the camera reads. `AssetKind::Zone`'s `references` hold only the colliders and the navmesh (and later what B2 adds), so loading a zone loads what the simulation needs and no mesh; `presentation_references` are what W2 streams; `AssetKind::reach` is both, and it decides packs.
   - **Stable IDs:** a spawner's, trigger's, checkpoint's and spline's ID is its name's `Name` hash, and lists are sorted by it, so adding one moves no other. Duplicates and hash collisions are refused by name.

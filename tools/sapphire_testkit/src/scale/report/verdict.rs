@@ -14,7 +14,8 @@
 //!   than a tenth of the timed frames have none judges no pass row. The frame row and the CPU rows read every
 //!   frame. Elsewhere every row is judged as logged.
 //! - **A round with the display's 60 Hz lock is void** (M5 Z2): its GPU rows are left out of the least of the
-//!   rounds and shown as void with the lock's figure, and a row with every round void isn't judged.
+//!   rounds and shown as void with the lock's figure, its floor and its chance with no lock (M6 B1), and a row
+//!   with every round void isn't judged.
 //! - **A count** fails on any round's worst frame over its budget.
 //! - **A wait for a texture's level**, on a run paced at the tier's rate (M5 Z2: an unpaced run's waits are shown
 //!   with its frame time and judged on nothing), fails on a phase's 99th percentile over 30 frames (an `N+` bin is over), a
@@ -502,18 +503,18 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
     };
     let reading = |round: &super::Round| round.log.gpu_reading.clone().unwrap_or_default();
     let overlaps = rounds.rounds.iter().any(|round| reading(round).overlaps);
-    let void = |round: &super::Round| reading(round).lock.is_some_and(|lock| lock >= LOCK_VOID);
     if rows.iter().any(|(phase, _)| phase == "gpu") {
         for round in &rounds.rounds {
             let read = reading(round);
-            if let Some(lock) = read.lock.filter(|_| void(round)) {
+            if let Some(lock) = round.lock().filter(|_| round.void()) {
                 let frame = match round.log.timed("gpu", "gpu frame") {
                     Some(Entry::Read(timed)) => format!(", its GPU frame p95 {} ms", ms(timed.p95)),
                     _ => String::new(),
                 };
                 findings.notes.push(format!(
-                    "{name} r{} void: the display's 60 Hz lock {lock:.3} (void at {LOCK_VOID:.2}){frame}",
-                    round.round
+                    "{name} r{} void: the display's 60 Hz lock {}, void at {LOCK_VOID:.2}{frame}",
+                    round.round,
+                    lock.describe()
                 ));
             }
             if read.overlaps {
@@ -532,7 +533,7 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
     }
     for (phase, row) in rows {
         if phase == "cpu" {
-            let TimedCell::Read(timed) = rounds.timed(&phase, &row) else { continue };
+            let TimedCell::Round(_, timed) = rounds.judged(&phase, &row) else { continue };
             unadopted(findings, &row, timed.budget, timed.proposed);
             against(findings, name, &row, timed.p95, timed.budget, timed.proposed);
             continue;
@@ -550,7 +551,7 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
         let (budget, proposed) = (first.budget, first.proposed);
         unadopted(findings, &row, budget, proposed);
         let (mut read, mut few) = (Vec::new(), 0);
-        for round in rounds.rounds.iter().filter(|round| !void(round)) {
+        for round in rounds.rounds.iter().filter(|round| !round.void()) {
             let Some(timed) = logged(round) else { continue };
             if !pass_row {
                 read.push(timed.p95);
@@ -1128,6 +1129,7 @@ mod tests {
             "the void round's 13 ms"
         );
         assert!(findings.notes[0].contains("r1 void: the display's 60 Hz lock 0.270"), "{findings:?}");
+        assert!(findings.notes[0].contains("(floor 0.105 for 90 slow frames, chance 0.001"), "{findings:?}");
         let findings = judge(1, run, "exit-walk", &tier, &rounds(&[&locked, &round(15_000.0, "0.100")]));
         assert_eq!(Verdict::of(&findings), Verdict::NotJudged, "{findings:?}");
         assert_eq!(findings.unjudged, ["exit-walk gpu frame: every round void"]);

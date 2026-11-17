@@ -159,6 +159,8 @@ pub struct GpuReading {
     /// with none, in %.
     pub taa_slow: [f64; 2],
     pub post_slow: [f64; 2],
+    /// The frames the lock is read over, those slow in TAA or in post: what chance alone would read it from.
+    pub slow_frames: u64,
     /// The lock's figure, 0 to 1; `None` with too few slow frames to read it.
     pub lock: Option<f64>,
 }
@@ -259,6 +261,7 @@ impl Log {
                         float("post_slow_in_flight_pct").unwrap_or(0.0),
                         float("post_slow_no_upload_pct").unwrap_or(0.0),
                     ],
+                    slow_frames: int("slow_frames").unwrap_or(0),
                     lock: float("lock"),
                 });
             } else if has(line, "texture streaming cpu") {
@@ -578,6 +581,7 @@ mod tests {
         assert!(reading.overlaps && reading.backend == "metal");
         assert_eq!((reading.timed_frames, reading.no_upload_frames, reading.lock), (7599, 4100, Some(0.065)));
         assert_eq!((reading.taa_slow, reading.post_slow), ([24.7, 0.2], [23.9, 0.1]));
+        assert_eq!(reading.slow_frames, 431);
         let reasons = &log.wait_reasons["drawn"];
         assert_eq!((reasons.tails_over_pool, reasons.arrived_at_update), (0, 41));
         assert_eq!(reasons.fields.get("decode"), Some(&3.0));

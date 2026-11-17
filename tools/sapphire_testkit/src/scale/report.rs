@@ -1,9 +1,13 @@
 //! The batch's report (M5 Z1): a commit's logs turned into the Markdown spec §3.8 takes, each row beside its
 //! budget and beside the baseline's, with what is over said plainly.
 //!
-//! - **Times** are the lesser of the rounds (B4's reading): each of p50, p95 and p99 the least any round read,
-//!   and the worst the least of the rounds' worst frames, with the metres walked where it fell, so a point on
-//!   the walk that is the worst in every round keeps its name. A unit read above the manifest's load bound is
+//! - **Times** are one round's own (M6 B1): a row reads the round a verdict reads, the least p95 of the valid
+//!   rounds, named, with that round's p50 and worst frame and the metres walked where it fell. A GPU row leaves out
+//!   the rounds the display's 60 Hz lock voids, so every GPU figure a table reads is one a verdict could rest on;
+//!   a CPU row reads every round. Beside it, where they differ, each statistic's least over every round, void ones
+//!   too (B4's reading, which can print a frame no round produced), is shown as a diagnostic, never judged. Each
+//!   timed run's rounds table prints a row a round: its lock, the lock's floor for the round's slow frames, the
+//!   chance of reading it with no lock, and whether it is void. A unit read above the manifest's load bound is
 //!   marked, never dropped.
 //! - **Counts** of a counting run are exact: every round must read the same. A count that differs is shown with
 //!   each round's, each marked against its budget, and on a run of counts alone that isn't streaming it fails
@@ -105,16 +109,93 @@ struct Round {
     trace: Option<String>,
 }
 
-/// A run's rounds on a tier, one variant: what the tables read from.
+impl Round {
+    /// The display's lock the round's GPU phase read, where it read one.
+    fn lock(&self) -> Option<Lock> {
+        let reading = self.log.gpu_reading.as_ref()?;
+        Some(Lock { lock: reading.lock?, slow_frames: reading.slow_frames })
+    }
+
+    /// Whether the display's lock voids the round's GPU rows (the exit run's rule, M5 Z2).
+    fn void(&self) -> bool {
+        self.lock().is_some_and(Lock::void)
+    }
+}
+
+/// A round's reading of the display's 60 Hz lock (M5 Z2): the mean resultant length of its slow frames' phases
+/// against a 60 Hz period, 0 spread evenly and 1 all at one phase. Beside it (M6 B1, m6-plan §3 "Void rounds"),
+/// what chance alone reads from that many frames: its floor and the chance of reading it with no lock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Lock {
+    lock: f64,
+    /// The frames the lock is read over; 0 in a log from before the bench printed them.
+    slow_frames: u64,
+}
+
+impl Lock {
+    /// The voiding rule, unchanged until B0's rounds show the significance reading agrees with it.
+    fn void(self) -> bool {
+        self.lock >= verdict::LOCK_VOID
+    }
+
+    /// What N slow frames spread evenly by chance read, about 1/√N (the root mean square of the mean resultant
+    /// length of N uniform phases), so a short run's honest lock reads higher than a long one's.
+    fn floor(self) -> Option<f64> {
+        (self.slow_frames > 0).then(|| 1.0 / (self.slow_frames as f64).sqrt())
+    }
+
+    /// The chance that N phases spread evenly read a lock at least this high at one period: Rayleigh's test,
+    /// with Zar's correction for small N (exact enough from the bench's least of 20 frames). The bench takes the
+    /// highest lock of the periods it tries within 0.03% of 1/60 s, so the chance at any of them is somewhat
+    /// higher; the run's span, which says how many of those periods are independent, isn't logged.
+    fn chance(self) -> Option<f64> {
+        if self.slow_frames == 0 {
+            return None;
+        }
+        let n = self.slow_frames as f64;
+        let resultant = n * self.lock.clamp(0.0, 1.0);
+        let exponent = (1.0 + 4.0 * n + 4.0 * (n * n - resultant * resultant)).sqrt() - (1.0 + 2.0 * n);
+        Some(exponent.exp().min(1.0))
+    }
+
+    /// "0.205 (floor 0.081 for 154 slow frames, chance 0.001 with no lock)".
+    fn describe(self) -> String {
+        match (self.floor(), self.chance()) {
+            (Some(floor), Some(chance)) => format!(
+                "{:.3} (floor {floor:.3} for {} slow frames, chance {} with no lock)",
+                self.lock,
+                self.slow_frames,
+                chance_text(chance)
+            ),
+            _ => format!("{:.3}", self.lock),
+        }
+    }
+}
+
+/// A chance to the places it's read at: "0.26", "0.004", "< 0.001".
+fn chance_text(chance: f64) -> String {
+    if chance < 0.001 {
+        "< 0.001".to_owned()
+    } else if chance < 0.01 {
+        format!("{chance:.3}")
+    } else {
+        format!("{chance:.2}")
+    }
+}
+
+/// A run's rounds on a tier, one variant: what the tables read from, in round order.
 struct Rounds {
     rounds: Vec<Round>,
 }
 
-/// A cell of a timed row, combined over rounds.
+/// A cell of a timed row, read over the rounds.
 enum TimedCell {
-    Read(Timed),
+    /// One round's own figures, and the round: the one a verdict reads.
+    Round(u32, Timed),
     NotExercised,
     Missing,
+    /// Every round that read the row is void by the display's lock: no figure a verdict could rest on.
+    Void,
 }
 
 /// A cell of a count row, combined over rounds.
@@ -127,22 +208,43 @@ enum CountCell {
 }
 
 impl Rounds {
-    fn timed(&self, phase: &str, row: &str) -> TimedCell {
-        let entries: Vec<Entry<Timed>> =
-            self.rounds.iter().filter_map(|round| round.log.timed(phase, row)).collect();
-        let read: Vec<Timed> = entries
+    /// The row as a verdict reads it: the round with the least p95, every round's on the CPU and the valid
+    /// rounds' on the GPU, with that round's own p50 and worst frame, so the figures are a frame a round produced.
+    fn judged(&self, phase: &str, row: &str) -> TimedCell {
+        let (mut logged, mut void, mut least) = (false, false, None::<(u32, Timed)>);
+        for round in &self.rounds {
+            let Some(entry) = round.log.timed(phase, row) else { continue };
+            logged = true;
+            let Entry::Read(timed) = entry else { continue };
+            if phase == "gpu" && round.void() {
+                void = true;
+            } else if least.is_none_or(|(_, least)| timed.p95 < least.p95) {
+                least = Some((round.round, timed));
+            }
+        }
+        match least {
+            Some((round, timed)) => TimedCell::Round(round, timed),
+            None if void => TimedCell::Void,
+            None if logged => TimedCell::NotExercised,
+            None => TimedCell::Missing,
+        }
+    }
+
+    /// The diagnostic: each statistic's least over every round, void ones included and each on its own (B4's
+    /// reading), with the metres of the least worst frame; `None` where no round read the row. No verdict reads it.
+    fn least(&self, phase: &str, row: &str) -> Option<Timed> {
+        let read: Vec<Timed> = self
+            .rounds
             .iter()
-            .filter_map(|entry| match entry {
-                Entry::Read(timed) => Some(*timed),
+            .filter_map(|round| match round.log.timed(phase, row)? {
+                Entry::Read(timed) => Some(timed),
                 Entry::NotExercised => None,
             })
             .collect();
-        let Some(first) = read.first() else {
-            return if entries.is_empty() { TimedCell::Missing } else { TimedCell::NotExercised };
-        };
+        let first = read.first()?;
         let least = |pick: fn(&Timed) -> f64| read.iter().map(pick).fold(f64::INFINITY, f64::min);
         let worst = read.iter().min_by(|a, b| a.worst.total_cmp(&b.worst)).expect("a round");
-        TimedCell::Read(Timed {
+        Some(Timed {
             p50: least(|t| t.p50),
             p95: least(|t| t.p95),
             p99: least(|t| t.p99),
@@ -204,10 +306,14 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
     let _ = writeln!(out, "# Benches at scale: {}\n", inputs.commit);
     let _ = writeln!(
         out,
-        "The `{}` district{}, {} round(s) of each run, each time the lesser of the rounds and a counting run's \
-         counts the same in every round; a timed walk's counts follow what streaming landed when, so they can \
-         differ between rounds, each round's shown and a round over its budget marked. {done} of {} units \
-         complete. **This is a Mac:** none of spec §3.1's devices; every figure \
+        "The `{}` district{}, {} round(s) of each run. A time is one round's own, named: the round a verdict \
+         reads, the least p95 of every round on the CPU and of the valid rounds on the GPU, where a round the \
+         display's lock voids is left out; where each statistic's least over every round, void ones too, \
+         differs from it, that is shown beside as a diagnostic, judged on nothing, since no round need have read \
+         it. Each timed run's rounds table gives every round's lock beside its floor and its chance with no \
+         lock. A counting run reads the same counts in every round; a timed walk's counts follow what streaming \
+         landed when, so they can differ between rounds, each round's shown and a round over its budget marked. \
+         {done} of {} units complete. **This is a Mac:** none of spec §3.1's devices; every figure \
          is this machine at a tier's settings, size and cook, and each phone figure is still owed to a phone. On \
          Metal passes overlap, so of the GPU rows only the frame is exact; a pass's figure is what it added, and \
          the verdicts judge the prepasses and shadows as one depth-only row and a pass on the frames with no \
@@ -295,8 +401,10 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
         let _ = writeln!(out, "## Pairs\n");
         let _ = writeln!(
             out,
-            "Each pair's variants alternated inside one sitting a round, the order turned each round. Times the lesser \
-             of the rounds (p50 / p95), counts p50 / worst.\n"
+            "Each pair's variants alternated inside one sitting a round, the order turned each round. A time is the \
+             round a verdict reads (p50 / p95, the round named), the GPU's from the valid rounds; a plain bench's \
+             field, which reads no lock, the least any round read; counts p50 / worst. Each variant's rounds and \
+             their locks follow its table.\n"
         );
     }
     for (run_index, run) in pairs {
@@ -321,7 +429,9 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
                 let _ = writeln!(out, "| {} | {row} | {} |", title(&tier.name), cells.join(" | "));
             }
             for (variant, rounds) in run.variants.iter().zip(&variants) {
-                load_note(&mut notes, manifest, rounds, &format!("{} {}", title(&tier.name), variant.name));
+                let what = format!("{} {}", title(&tier.name), variant.name);
+                load_note(&mut notes, manifest, rounds, &what);
+                locks_note(&mut notes, rounds, &what);
             }
         }
         let _ = writeln!(out);
@@ -410,6 +520,9 @@ fn section(
         return;
     }
     load_note(out, manifest, rounds, "");
+    if run.timed {
+        rounds_table(out, rounds);
+    }
     let beside_name = run.beside.as_deref().unwrap_or("baseline");
     for read in &run.read {
         match read {
@@ -437,7 +550,7 @@ fn section(
                 let _ = writeln!(out, "|---|---|---|");
                 for row in CAST_TIMED {
                     let phase = if row.starts_with("gpu ") { "gpu" } else { "cpu" };
-                    let (cell, over) = timed_text(&rounds.timed(phase, row));
+                    let (cell, over) = timed_text(&rounds.judged(phase, row));
                     let _ = writeln!(out, "| {} | {cell} | {over} |", title(row));
                 }
                 count_rows(out, failures, run, tier, rounds, None, &CAST_COUNTED, false);
@@ -462,6 +575,29 @@ fn load_note(out: &mut String, manifest: &ScaleBench, rounds: &Rounds, what: &st
             manifest.load_bound
         );
     }
+}
+
+/// A pair variant's rounds on one line (M6 B1), each with its lock beside its floor and its chance with no lock,
+/// a void one marked; nothing where no round logged a GPU reading.
+fn locks_note(out: &mut String, rounds: &Rounds, what: &str) {
+    if !rounds.rounds.iter().any(|round| round.log.gpu_reading.is_some()) {
+        return;
+    }
+    let each: Vec<String> = rounds
+        .rounds
+        .iter()
+        .map(|round| {
+            let void = if round.void() { " **void**" } else { "" };
+            match (round.lock(), &round.log.gpu_reading) {
+                (Some(lock), _) => format!("r{}{void} lock {}", round.round, lock.describe()),
+                (None, Some(reading)) => {
+                    format!("r{} lock not read ({} slow frames, too few)", round.round, reading.slow_frames)
+                }
+                (None, None) => format!("r{} lock not logged", round.round),
+            }
+        })
+        .collect();
+    let _ = writeln!(out, "{what}'s rounds: {}.\n", each.join("; "));
 }
 
 /// Count rows that came with a budget, in the order the bench logged them, from the phase the table reads (a
@@ -501,35 +637,97 @@ fn timed_table(
         let _ = writeln!(out, "missing: the log has no {phase} rows.\n");
         return;
     }
-    let _ = writeln!(out, "| Row | Read | {beside_name} | Over |");
-    let _ = writeln!(out, "|---|---|---|---|");
+    let _ = writeln!(out, "| Row | Read | {beside_name} | Over | The least of every round (diagnostic) |");
+    let _ = writeln!(out, "|---|---|---|---|---|");
     for row in rows {
-        let (cell, over) = timed_text(&rounds.timed(phase, row));
-        let base = beside.map_or_else(|| "none".to_owned(), |beside| timed_text(&beside.timed(phase, row)).0);
-        let _ = writeln!(out, "| {} | {cell} | {base} | {over} |", title(row));
+        let judged = rounds.judged(phase, row);
+        let (cell, over) = timed_text(&judged);
+        let base =
+            beside.map_or_else(|| "none".to_owned(), |beside| timed_text(&beside.judged(phase, row)).0);
+        // Shown only where it reads differently from the judged round, to the places printed.
+        let diagnostic = rounds.least(phase, row).map_or_else(String::new, |least| {
+            let text = figures(&least, false);
+            match &judged {
+                TimedCell::Round(_, timed) if figures(timed, false) == text => String::new(),
+                _ => text,
+            }
+        });
+        let _ = writeln!(out, "| {} | {cell} | {base} | {over} | {diagnostic} |", title(row));
     }
     let _ = writeln!(out);
 }
 
-/// A timed cell's text and its over-budget note.
+/// Each round of a timed run, a row each (M6 B1): the display's lock beside its floor for the round's slow
+/// frames and the chance of reading it with no lock, whether the exit run's rule voids the round, and its GPU
+/// frame where it doesn't.
+fn rounds_table(out: &mut String, rounds: &Rounds) {
+    let _ = writeln!(
+        out,
+        "Rounds: the display's 60 Hz lock voids a round at {:.2} (the exit run's rule), and a void round's GPU \
+         rows are judged on nothing and read only in the diagnostic. Beside each lock, its floor, about 1/√N for \
+         the N slow frames it is read over, which chance alone reads, and the chance N frames spread evenly read \
+         a lock this high at one period (Rayleigh's test; the bench takes the highest of the periods it tries, so \
+         the chance at any of them is somewhat higher): a reading beside the rule, not the rule (m6-plan §3, \
+         \"Void rounds\").\n",
+        verdict::LOCK_VOID
+    );
+    let _ = writeln!(out, "| Round | Lock | Floor | Chance with no lock | Gpu frame |");
+    let _ = writeln!(out, "|---|---|---|---|---|");
+    for round in &rounds.rounds {
+        let reading = round.log.gpu_reading.as_ref();
+        let (lock, floor, chance) = match (round.lock(), reading) {
+            (Some(lock), _) => (
+                format!("{:.3}", lock.lock),
+                lock.floor().map_or_else(String::new, |floor| {
+                    format!("{floor:.3} ({} slow frames)", thousands(lock.slow_frames))
+                }),
+                lock.chance().map_or_else(String::new, chance_text),
+            ),
+            (None, Some(reading)) => (
+                format!("not read ({} slow frames, too few)", thousands(reading.slow_frames)),
+                String::new(),
+                String::new(),
+            ),
+            (None, None) => ("not logged".to_owned(), String::new(), String::new()),
+        };
+        let frame = match round.log.timed("gpu", "gpu frame") {
+            _ if round.void() => "void".to_owned(),
+            Some(Entry::Read(timed)) => figures(&timed, true),
+            Some(Entry::NotExercised) => "not exercised".to_owned(),
+            None => "missing".to_owned(),
+        };
+        let name =
+            if round.void() { format!("r{} **void**", round.round) } else { format!("r{}", round.round) };
+        let _ = writeln!(out, "| {name} | {lock} | {floor} | {chance} | {frame} |");
+    }
+    let _ = writeln!(out);
+}
+
+/// A timed cell's text, the round named, and its over-budget note.
 fn timed_text(cell: &TimedCell) -> (String, String) {
     match cell {
         TimedCell::Missing => ("missing".to_owned(), String::new()),
         TimedCell::NotExercised => ("not exercised".to_owned(), String::new()),
-        TimedCell::Read(timed) => {
-            let mark = |value: f64| {
-                let text = ms(value);
-                if timed.budget.is_some_and(|budget| value > budget) { format!("**{text}**") } else { text }
-            };
-            let at = timed.walked.map_or_else(String::new, |metres| format!(" @ {metres:.1}"));
-            let budget =
-                timed.budget.map_or_else(String::new, |budget| format!(" [{}]", trim(budget / 1000.0)));
+        TimedCell::Void => ("every round void".to_owned(), String::new()),
+        TimedCell::Round(round, timed) => {
             let over = timed.budget.map_or_else(String::new, |budget| {
                 over_note(&[("p50", timed.p50), ("p95", timed.p95), ("worst", timed.worst)], budget)
             });
-            (format!("{} / {} / {}{at}{budget}", mark(timed.p50), mark(timed.p95), mark(timed.worst)), over)
+            (format!("{} (r{round})", figures(timed, true)), over)
         }
     }
+}
+
+/// "p50 / p95 / worst @ metres \[budget\]", each over the budget bold where `marked`: the judged round's are, the
+/// diagnostic's aren't, since nothing judges them.
+fn figures(timed: &Timed, marked: bool) -> String {
+    let mark = |value: f64| {
+        let text = ms(value);
+        if marked && timed.budget.is_some_and(|budget| value > budget) { format!("**{text}**") } else { text }
+    };
+    let at = timed.walked.map_or_else(String::new, |metres| format!(" @ {metres:.1}"));
+    let budget = timed.budget.map_or_else(String::new, |budget| format!(" [{}]", trim(budget / 1000.0)));
+    format!("{} / {} / {}{at}{budget}", mark(timed.p50), mark(timed.p95), mark(timed.worst))
 }
 
 /// "p95 ×1.24, worst ×7.19" for whichever readings pass `budget`.
@@ -1066,9 +1264,12 @@ fn pair_cell(rounds: &Rounds, row: &str) -> String {
         return "not run".to_owned();
     }
     for phase in ["gpu", "cpu"] {
-        match rounds.timed(phase, row) {
-            TimedCell::Read(timed) => return format!("{} / {}", ms(timed.p50), ms(timed.p95)),
+        match rounds.judged(phase, row) {
+            TimedCell::Round(round, timed) => {
+                return format!("{} / {} (r{round})", ms(timed.p50), ms(timed.p95));
+            }
             TimedCell::NotExercised => return "not exercised".to_owned(),
+            TimedCell::Void => return "every round void".to_owned(),
             TimedCell::Missing => {}
         }
     }
@@ -1110,6 +1311,7 @@ fn gather(
         let trace = std::fs::read_to_string(inputs.logs.join(format!("{}.csv", unit.name))).ok();
         rounds.push(Round { round: unit.round, log: Log::parse(&text), load: status.load, trace });
     }
+    rounds.sort_by_key(|round| round.round);
     Rounds { rounds }
 }
 
@@ -1322,7 +1524,7 @@ mod tests {
         assert_eq!(over, "worst ×1.29 (r2)", "how far, and in which round");
         let (header, _) = generate(false);
         assert!(!header.contains("each count the same in every round"), "{header}");
-        assert!(header.contains("a counting run's counts the same in every round"), "{header}");
+        assert!(header.contains("A counting run reads the same counts in every round"), "{header}");
     }
 
     /// The GPU frame's timestamps leave out the streamer's copies; the report says so and prints the wait past
@@ -1358,14 +1560,16 @@ mod tests {
     #[test]
     fn a_row_over_budget_is_marked_with_how_far() {
         let (text, _) = generate(true);
-        // Desktop-Low's GPU frame: p95 15.20 against 14, worst 79.97.
+        // Desktop-Low's GPU frame: round 1's p95 15.20 against 14, the lesser of the rounds', with round 1's own
+        // p50 and worst frame (M6 B1).
         let line = text.lines().find(|line| line.starts_with("| Gpu frame |")).expect(&text);
-        assert!(line.contains("**15.20**") && line.contains("**79.97** @ 312.0 [14]"), "{line}");
-        assert!(line.contains("p95 ×1.09, worst ×5.71"), "{line}");
-        // The lesser of the rounds: round 2 read p50 8.021, round 1 8.400.
-        assert!(line.contains("| 8.021 /"), "{line}");
+        assert!(line.contains("| 8.400 / **15.20** / **85.00** @ 312.0 [14] (r1) |"), "{line}");
+        assert!(line.contains("p95 ×1.09, worst ×6.07"), "{line}");
         // The baseline beside it.
-        assert!(line.contains("| 7.900 / 11.67 / **55.73** @ 312.0 [14] |"), "{line}");
+        assert!(line.contains("| 7.900 / 11.67 / **55.73** @ 312.0 [14] (r1) |"), "{line}");
+        // Each statistic's least over the rounds, round 2's p50 and worst beside round 1's p95: a diagnostic,
+        // unmarked, since no round read that frame.
+        assert!(line.ends_with("| 8.021 / 15.20 / 79.97 @ 312.0 [14] |"), "{line}");
         let calls = text.lines().find(|line| line.starts_with("| Draw calls |")).unwrap();
         assert!(calls.contains("**7,135**") && calls.contains("p95 ×2.85"), "{calls}");
     }
@@ -1417,11 +1621,124 @@ mod tests {
         assert!(text.contains("on the cold lap, the worse"), "the lap is named: {text}");
     }
 
+    /// A fight round's log (M6 B1): its CPU and GPU frames and its GPU reading, `lock` as the bench prints it
+    /// (`-` for too few slow frames) or `None` for a log with no reading.
+    fn fight_round(cpu_p95: f64, gpu: [f64; 3], lock: Option<(&str, u32)>) -> String {
+        let row = |phase: &str, row: &str, [p50, p95, worst]: [f64; 3], budget: u32| {
+            format!(
+                "x INFO sapphire::sandbox: fight row phase=\"{phase}\" row=\"{row}\" samples=100 p50_us={p50:.1} \
+                 p95_us={p95:.1} p99_us={worst:.1} worst_us={worst:.1} worst_tick=1 budget_us=Some({budget}) \
+                 proposed_us=None over_p50=false over_worst=false\n"
+            )
+        };
+        let reading = lock.map_or_else(String::new, |(lock, slow)| {
+            format!(
+                "x INFO sapphire::sandbox: fight gpu reading phase=\"gpu\" backend=\"metal\" overlaps=true \
+                 timed_frames=1000 no_upload_frames=800 in_flight_pct=20.0 taa_slow_in_flight_pct=0.0 \
+                 taa_slow_no_upload_pct=0.0 post_slow_in_flight_pct=0.0 post_slow_no_upload_pct=0.0 \
+                 slow_frames={slow} lock={lock} lock_period_us=16667.0\n"
+            )
+        });
+        format!(
+            "{}{}{reading}",
+            row("cpu", "cpu frame", [500.0, cpu_p95, 2_000.0], 22_000),
+            row("gpu", "gpu frame", gpu, 26_000)
+        )
+    }
+
+    /// The lock's floor is about 1/√N for N slow frames, and its chance with no lock is Rayleigh's: near
+    /// e^(−N·lock²), 1 at no lock, and small far above the floor. The rule still voids at 0.10.
+    #[test]
+    fn a_lock_reads_beside_its_floor_and_its_chance() {
+        let lock = |lock, slow_frames| Lock { lock, slow_frames };
+        assert_eq!(lock(0.05, 100).floor(), Some(0.1));
+        assert_eq!(lock(0.05, 0).floor(), None, "a log from before the slow frames were printed");
+        assert!((lock(0.0, 100).chance().unwrap() - 1.0).abs() < 1e-9);
+        // Desktop-High's district-fight at f4efa213e: round 2 valid at 0.094, round 1 void at 0.205, 154 slow
+        // frames each.
+        let valid = lock(0.094, 154).chance().unwrap();
+        assert!((valid - (-154.0 * 0.094_f64.powi(2)).exp()).abs() < 0.01, "{valid}");
+        assert!(lock(0.205, 154).chance().unwrap() < 0.002);
+        // A phone's short unit: 0.126 over 120 frames is void by the rule, and chance reads it one time in seven.
+        let phone = lock(0.126, 120);
+        assert!(phone.void() && (0.14..0.16).contains(&phone.chance().unwrap()));
+        assert!(!lock(0.099, 120).void() && lock(0.10, 120).void());
+        assert_eq!(
+            lock(0.205, 154).describe(),
+            "0.205 (floor 0.081 for 154 slow frames, chance 0.001 with no lock)"
+        );
+    }
+
+    /// Each timed run's rounds table has a row a round (M6 B1): its lock, the lock's floor and chance, a void
+    /// round marked and its GPU frame withheld, a lock too few frames read and a log with no reading said so.
+    #[test]
+    fn the_rounds_table_has_a_row_a_round_with_its_lock() {
+        let fight = rounds(&[
+            &fight_round(1_400.0, [3_000.0, 13_010.0, 14_000.0], Some(("0.205", 154))),
+            &fight_round(1_450.0, [3_100.0, 12_030.0, 13_360.0], Some(("0.094", 154))),
+            &fight_round(1_450.0, [3_100.0, 12_500.0, 13_360.0], Some(("-", 12))),
+            &fight_round(1_450.0, [3_100.0, 12_500.0, 13_360.0], None),
+        ]);
+        let mut out = String::new();
+        rounds_table(&mut out, &fight);
+        let lines: Vec<&str> = out.lines().filter(|line| line.starts_with("| r")).collect();
+        assert_eq!(
+            lines,
+            [
+                "| r1 **void** | 0.205 | 0.081 (154 slow frames) | 0.001 | void |",
+                "| r2 | 0.094 | 0.081 (154 slow frames) | 0.26 | 3.100 / 12.03 / 13.36 [26] |",
+                "| r3 | not read (12 slow frames, too few) |  |  | 3.100 / 12.50 / 13.36 [26] |",
+                "| r4 | not logged |  |  | 3.100 / 12.50 / 13.36 [26] |",
+            ],
+            "{out}"
+        );
+        let mut note = String::new();
+        locks_note(&mut note, &fight, "Desktop-High on");
+        assert!(note.starts_with("Desktop-High on's rounds: r1 **void** lock 0.205 (floor 0.081"), "{note}");
+        assert!(note.contains("r3 lock not read (12 slow frames, too few); r4 lock not logged."), "{note}");
+    }
+
+    /// A void round's GPU figures are no figure a verdict could rest on (M6 B1): a GPU row reads the valid round,
+    /// whole, and the least of every round, which takes the void round's lesser p95, shows beside it only as the
+    /// diagnostic. A CPU row reads every round, the display's lock voiding none. Mobile-Low's district-fight at
+    /// f4efa213e: round 1 valid at 3.65 ms, round 2 void at 3.63.
+    #[test]
+    fn a_void_round_shows_only_in_the_diagnostic() {
+        let fight = rounds(&[
+            &fight_round(1_480.0, [2_900.0, 3_650.0, 4_100.0], Some(("0.041", 160))),
+            &fight_round(1_470.0, [2_950.0, 3_631.0, 3_900.0], Some(("0.126", 120))),
+        ]);
+        let table = |phase: &str| {
+            let mut out = String::new();
+            timed_table(&mut out, &fight, None, "baseline", phase, |_| true);
+            out
+        };
+        let gpu = table("gpu");
+        let frame = gpu.lines().find(|line| line.starts_with("| Gpu frame |")).expect(&gpu);
+        assert_eq!(
+            frame, "| Gpu frame | 2.900 / 3.650 / 4.100 [26] (r1) | none |  | 2.900 / 3.631 / 3.900 [26] |",
+            "the valid round read, the void round's 3.63 only as the diagnostic"
+        );
+        assert!(gpu.contains("| The least of every round (diagnostic) |"), "{gpu}");
+        let cpu = table("cpu");
+        let frame = cpu.lines().find(|line| line.starts_with("| Cpu frame |")).expect(&cpu);
+        assert_eq!(
+            frame, "| Cpu frame | 0.500 / 1.470 / 2.000 [22] (r2) | none |  |  |",
+            "the void round read on the CPU, and the least of every round no other frame"
+        );
+        // Every round void: no figure, and the diagnostic still shown.
+        let void = rounds(&[&fight_round(1_480.0, [2_900.0, 3_650.0, 4_100.0], Some(("0.300", 160)))]);
+        assert!(matches!(void.judged("gpu", "gpu frame"), TimedCell::Void));
+        assert!(matches!(void.judged("cpu", "cpu frame"), TimedCell::Round(1, _)));
+        assert_eq!(pair_cell(&void, "gpu frame"), "every round void");
+        assert_eq!(pair_cell(&fight, "gpu frame"), "2.900 / 3.650 (r1)");
+    }
+
     #[test]
     fn a_pair_reads_each_variant_beside_the_other() {
         let (text, _) = generate(false);
         let line = text.lines().find(|line| line.starts_with("| Desktop-Low | gpu main |")).expect(&text);
-        assert_eq!(line, "| Desktop-Low | gpu main | 2.786 / 4.905 | 3.100 / 5.200 |");
+        assert_eq!(line, "| Desktop-Low | gpu main | 2.786 / 4.905 (r1) | 3.100 / 5.200 (r1) |");
         assert!(text.contains("**read at a load of 9.5,**"), "a unit above the bound is marked");
     }
 }

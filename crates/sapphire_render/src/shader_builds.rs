@@ -97,6 +97,7 @@ use crate::LOG_TARGET;
 use crate::ambient::AmbientPipelines;
 use crate::debug_view::RebuiltViews;
 use crate::lights::clusters::ClusterPipelines;
+use crate::measure::MeasurePipelines;
 use crate::pipeline_builds::Rebuilding;
 use crate::pipelines::Pipelines;
 use crate::post::RebuiltPipelines;
@@ -187,8 +188,8 @@ pub(crate) struct Built {
 }
 
 /// A build: the sources, the programs that changed, and each changed program's owners' steps
-/// (none for an owner that built nothing from it). Temporal AA's and the light clusters' are
-/// built with the renderer, so they are fixed.
+/// (none for an owner that built nothing from it). Temporal AA's, the light clusters' and the
+/// character pixel's counters' are built with the renderer, so they are fixed.
 pub(crate) struct Job {
     pub sources: ShaderSources,
     pub changed: Vec<Program>,
@@ -206,6 +207,8 @@ pub(crate) struct Job {
     pub debug_draw: Option<Step<wgpu::RenderPipeline>>,
     pub vfx: Option<Step<VfxPipelines>>,
     pub ui: Option<Step<wgpu::RenderPipeline>>,
+    /// The character pixel's counters (M6 B6), where a dev sandbox counts them.
+    pub measure: Option<Step<MeasurePipelines>>,
 }
 
 /// What a build built, for `Renderer::swap_pipelines`.
@@ -222,6 +225,7 @@ pub(crate) struct Rebuilt {
     pub debug_draw: Option<wgpu::RenderPipeline>,
     pub vfx: Option<VfxPipelines>,
     pub ui: Option<wgpu::RenderPipeline>,
+    pub measure: Option<MeasurePipelines>,
     pub update: ShaderUpdate,
 }
 
@@ -260,6 +264,7 @@ impl Job {
             debug_draw,
             vfx,
             ui,
+            measure,
         } = self;
         for &program in &changed {
             if cancel.is_set() {
@@ -284,6 +289,7 @@ impl Job {
         let debug_draw = run(debug_draw, &sources, cancel);
         let vfx = run(vfx, &sources, cancel);
         let ui = run(ui, &sources, cancel);
+        let measure = run(measure, &sources, cancel);
         if cancel.is_set() {
             return None;
         }
@@ -301,7 +307,8 @@ impl Job {
             + debug_views.as_ref().map_or(0, RebuiltViews::count)
             + u32::from(debug_draw.is_some())
             + vfx.as_ref().map_or(0, VfxPipelines::count)
-            + u32::from(ui.is_some());
+            + u32::from(ui.is_some())
+            + if measure.is_some() { MeasurePipelines::COUNT } else { 0 };
         Some(Ok(Rebuilt {
             mesh: mesh.map(|(mesh, _)| mesh),
             sky,
@@ -315,6 +322,7 @@ impl Job {
             debug_draw,
             vfx,
             ui,
+            measure,
             update: ShaderUpdate { programs: changed.len() as u32, pipelines },
         }))
     }

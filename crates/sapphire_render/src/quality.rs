@@ -124,10 +124,11 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AmbientOcclusion, CullingMode, CullingThresholds, DepthOfFieldSettings, DistortionResolution, DrawRuns,
-    EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings, LOG_TARGET, LevelSettings, LevelsMode,
-    LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, MainDepth, Msaa, PostEffectSettings,
-    PostVariants, ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, Upscaler, scaled_size,
+    AmbientOcclusion, CharacterSwitches, CullingMode, CullingThresholds, DepthOfFieldSettings,
+    DistortionResolution, DrawRuns, EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings,
+    LOG_TARGET, LevelSettings, LevelsMode, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE,
+    MainDepth, Msaa, PostEffectSettings, PostVariants, ReflectionSettings, RenderSettings, ShadowSettings,
+    SkySettings, Upscaler, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, Pressure, ResolutionBudget, ResolutionSignal,
@@ -510,6 +511,9 @@ impl QualityTier {
             // Its own: an `Equal` test against the prepass's flips ties between triangles of one draw,
             // which shipped content has (M5 D10, the crate docs' "A depth-equal main pass").
             main_depth: MainDepth::Own,
+            // A dev sandbox's alone (M6 B6).
+            character_switches: CharacterSwitches::SHIPPING,
+            measure_pixels: false,
         }
     }
 

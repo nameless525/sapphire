@@ -52,6 +52,7 @@ use crate::levels::{LevelSettings, LevelStats, RungBias};
 use crate::lights::capsule_bins::{self, CapsuleBinStats};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
+use crate::measure::{CharacterSwitches, MeasuredPixels, PixelCounter};
 use crate::mesh_pool::{MeshPool, MeshPoolStats, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::mip_streaming::{MipStreaming, MipStreamingStats};
 use crate::outlines::OutlineCull;
@@ -266,6 +267,18 @@ pub struct RenderSettings {
     /// one sample ([`Self::main_depth_from_prepass`]) and a frame only where it can, tests `Equal`
     /// against the scene prepass's.
     pub main_depth: MainDepth,
+    /// The measurement switches for the anime character pixel (M6 B6, the `measure` module): set only by
+    /// a dev sandbox's flags, to price a term of the pixel, never by a tier. The default, every switch off,
+    /// builds the shipping pipelines exactly.
+    #[doc(hidden)]
+    pub character_switches: CharacterSwitches,
+    /// The measurement counters (M6 B6): the character and hull pixels the main view shows, and the phones'
+    /// edge upscaler's wholly flat 32-pixel groups, counted on the GPU and read back a few frames late
+    /// ([`RenderStats::measured`]). Off by default and on every tier: on, it builds two compute pipelines
+    /// and adds their passes, which keep scene colour and the character IDs alive until they run, so a
+    /// timed run leaves it off.
+    #[doc(hidden)]
+    pub measure_pixels: bool,
 }
 
 impl RenderSettings {
@@ -324,6 +337,8 @@ impl Default for RenderSettings {
             draw_runs: DrawRuns::default(),
             capsule_bins: true,
             main_depth: MainDepth::default(),
+            character_switches: CharacterSwitches::SHIPPING,
+            measure_pixels: false,
         }
     }
 }
@@ -639,6 +654,10 @@ pub struct RenderStats {
     /// those of more than one draw, their instances, the longest and the median, and the bytes of
     /// records written for them.
     pub runs: RunStats,
+    /// What the character pixel's counters counted (M6 B6, [`RenderSettings::measure_pixels`]): the newest frame
+    /// read back, a few frames late. All zero where they aren't built.
+    #[doc(hidden)]
+    pub measured: MeasuredPixels,
 }
 
 /// What new shader sources rebuilt ([`Renderer::request_shader_sources`],
@@ -827,6 +846,8 @@ pub struct Renderer {
     /// next [`Self::prepare`] to find (own review RC-4, after M1 review RA-001). Atomic, since
     /// graphs record their passes on several threads.
     frame_ran: AtomicBool,
+    /// The character pixel's counters (M6 B6), where [`RenderSettings::measure_pixels`] asks.
+    measure: Option<Box<PixelCounter>>,
     /// What each pass of the frame recorded last submits, added as its passes record
     /// ([`RenderStats::passes`]): zeroed at each [`Self::record`].
     counts: PassCounters,
@@ -995,6 +1016,7 @@ impl Renderer {
                                 settings.main_depth_from_prepass(),
                             ),
                             crate::ambient::constants(&settings.ambient_occlusion, None, None),
+                            &settings.character_switches,
                         )
                     },
                 )
@@ -1151,6 +1173,8 @@ impl Renderer {
             "renderer created"
         );
         let ui = Ui::new(&device, color_format, pipeline_builds.clone(), gpu.label("").is_some());
+        let measure =
+            settings.measure_pixels.then(|| Box::new(PixelCounter::new(&device, &pipeline_builds, &shaders)));
         let mut renderer = Self {
             builds: ShaderBuilds::default(),
             warm_ups: WarmUps::default(),
@@ -1204,6 +1228,7 @@ impl Renderer {
             previous_clip_from_world: None,
             pending_cut: false,
             frame_ran: AtomicBool::new(false),
+            measure,
             counts: PassCounters::default(),
             view_lists: Box::default(),
             run_records,
@@ -2137,6 +2162,9 @@ impl Renderer {
                 has(Program::VfxDistortion),
             ),
             ui: has(Program::Ui).then(|| self.ui.rebuild()).flatten(),
+            measure: has(Program::Measure)
+                .then(|| self.measure.as_deref().map(|measure| measure.rebuild(device)))
+                .flatten(),
             changed,
         }
     }
@@ -2228,6 +2256,7 @@ impl Renderer {
             debug_draw,
             vfx,
             ui,
+            measure,
             update,
         } = rebuilt;
         if let Some(mesh) = mesh {
@@ -2265,6 +2294,9 @@ impl Renderer {
         }
         if let Some(ui) = ui {
             self.ui.set_pipeline(ui);
+        }
+        if let (Some(pipelines), Some(counter)) = (measure, self.measure.as_mut()) {
+            counter.set_pipelines(pipelines);
         }
         self.edited_shaders = !sources.is_compiled_in();
         self.shaders = sources;
@@ -2946,6 +2978,8 @@ impl Renderer {
         self.stats.draw_list_builds = self.scene.draw_list_builds();
         self.stats.lut_bakes = self.post.bakes();
         self.stats.post = self.post.stats();
+        self.stats.measured =
+            self.measure.as_deref().map_or_else(MeasuredPixels::default, PixelCounter::latest);
         self.stats.lights = self.lights.stats();
         self.stats.characters = self.characters.lit();
         self.stats.ignored_characters = self.characters.ignored();
@@ -3005,7 +3039,11 @@ impl Renderer {
     /// the rare frame that needs it.
     fn settle_last_frame(&mut self) {
         let recorded = self.recorded.take();
-        if self.frame_ran.swap(false, Ordering::Relaxed) {
+        let ran = self.frame_ran.swap(false, Ordering::Relaxed);
+        if let Some(measure) = &mut self.measure {
+            measure.settle(ran);
+        }
+        if ran {
             self.pending_cut = false;
             return;
         }
@@ -3239,6 +3277,7 @@ impl Renderer {
             ref debug_draw,
             ref color_vision_draw,
             ref frame_ran,
+            ref mut measure,
             ref counts,
             ref ui,
             ref mut insets,
@@ -3414,6 +3453,12 @@ impl Renderer {
             .upscale_uniforms(size, output)
             .filter(|_| upscales)
             .map(|(uniforms, buffer)| (uniforms, buffer.clone()));
+        // The character pixel's counters (M6 B6), at the upscaler's sizes on a frame that upscales.
+        let measure = measure.as_deref_mut().map(|counter| {
+            let easu = upscale_upload.as_ref().map_or([0.0; 4], |(uniforms, _)| uniforms.easu);
+            counter.begin(queue, easu, output);
+            &*counter
+        });
         // Light shafts' (M5 L13), at the size post reads: temporal AA's resolve at the target's, else the scene's.
         let shaft_input = if temporal.is_some() { output } else { size };
         let shaft_upload =
@@ -3958,7 +4003,12 @@ impl Renderer {
         let shaft_depth = (temporal_targets.is_some() || gtao_runs).then_some(targets.depth);
         let inputs = PostInputs { input: resolved, scene_color, depth, target, distortion, shaft_depth };
         let (insets, counter) = (inset_resolves.into_iter().flatten(), counts.get(Counted::Post));
-        post.record(graph, inputs, effects, insets, labels, counter, counts.get(Counted::Upscale));
+        let upscale_input =
+            post.record(graph, inputs, effects, insets, labels, counter, counts.get(Counted::Upscale));
+        if let Some(counter) = measure {
+            let read = (scene_color, targets.character_ids);
+            counter.add_passes(graph, device, read, upscale_input, output, labels);
+        }
         // The debug view over the finished frame (M1 F5).
         if let Some(views) = debug_view {
             let frame = DebugFrame {

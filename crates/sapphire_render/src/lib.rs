@@ -947,6 +947,7 @@ mod interface_screen;
 mod levels;
 mod lights;
 mod materials;
+mod measure;
 mod mesh_pool;
 mod mip_streaming;
 mod outlines;
@@ -998,6 +999,8 @@ pub use interface_screen::InterfaceScreen;
 pub use lights::capsule_bins::{BINNED_CAPSULES, CapsuleBinStats, UNBINNED_CAPSULES};
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
+#[doc(hidden)]
+pub use measure::{CharacterSwitches, MaterialRead, MeasuredPixels};
 pub use mesh_pool::{MeshHandle, MeshPoolStats};
 pub use pipeline_builds::{
     FirstUseBuild, FirstUseReport, PipelineFamily, PipelineInventory, PipelineStats, PipelineWarmup,

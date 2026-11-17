@@ -23,6 +23,7 @@ use crate::fog;
 use crate::foliage::{self, FoliageSettings, WindUniforms};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::{GpuLight, capsule_bins};
+use crate::measure::CharacterSwitches;
 use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::{Cancel, Step};
 use crate::shaders::{self, BuildOn, ProbeRead, Program, ShaderSources};
@@ -563,6 +564,11 @@ pub(crate) struct SurfaceVariant {
 }
 
 impl SurfaceVariant {
+    /// Whether it is an anime character's, of any part.
+    pub(crate) fn is_character(self) -> bool {
+        matches!(self.shading, Shading::Character(_))
+    }
+
     /// The surfaces of one coverage, in drawing order: the anime characters' parts, then those
     /// with the layers (but eyes, which always have them), then the same on both sides (M1 C8),
     /// then the world (the environment, then foliage), whose pixels behind them depth then
@@ -2189,7 +2195,8 @@ impl MeshModules {
             | Program::VfxMesh
             | Program::VfxDecal
             | Program::VfxDistortion
-            | Program::Ui => unreachable!("not a mesh program"),
+            | Program::Ui
+            | Program::Measure => unreachable!("not a mesh program"),
         }
     }
 
@@ -2249,6 +2256,9 @@ struct PipelineTarget {
     /// The environment's surfaces are built for a wet frame (M5 L4, `environment::WET_CONSTANT`):
     /// off, they are the shader as it was without weather.
     wet: bool,
+    /// The measurement switches' constants (M6 B6, `measure::CharacterSwitches::constants`), which the
+    /// anime character family's main-pass pipelines take: none at the shipping default.
+    character_switches: Vec<(&'static str, f64)>,
     /// A debug view's copy ([`Pipelines::build_replay`]): what it is built for. `None` for the
     /// renderer's own pipelines.
     replay: Option<ReplayTarget>,
@@ -2296,6 +2306,7 @@ impl Pipelines {
         shadows: Option<&ShadowSettings>,
         (card_depth_fade, velocity, scene_prepass, equal_depth): (bool, bool, bool, bool),
         ambient: Vec<(&'static str, f64)>,
+        character_switches: &CharacterSwitches,
     ) -> Self {
         let characters = layouts.frame(FrameGroup::Characters);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2361,6 +2372,7 @@ impl Pipelines {
             ambient,
             equal_depth,
             wet: false,
+            character_switches: character_switches.constants(),
             replay: None,
         };
         let programs = [
@@ -3035,6 +3047,7 @@ fn build_surface(
             if variant.two_sided {
                 cull = None;
             }
+            constants.extend(target.character_switches.iter().copied());
             "anime character"
         }
         Shading::Environment => {
@@ -3115,6 +3128,7 @@ fn build_outline(
     constants.extend(target.shadows.iter().flatten());
     let covered = target.covered(coverage);
     constants.extend(covered);
+    constants.extend(target.character_switches.iter().copied());
     // Inverted hull: keep only the back faces of the extruded shell.
     target.build_with(
         device,
@@ -3379,6 +3393,7 @@ fn build_through_hair(
     // Under MSAA a fading character's eyes cover its surfaces' samples (M1 C7).
     let covered = target.covered(variant.coverage);
     constants.extend(covered);
+    constants.extend(target.character_switches.iter().copied());
     target.build_with(
         device,
         &target.family_layouts[variant.shading.scene_group()],

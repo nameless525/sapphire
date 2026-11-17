@@ -61,13 +61,14 @@ fn scene(gpu: &GpuContext, settings: RenderSettings) -> (Frames, Vec<MeshInstanc
 /// What a pass of the scene's draws counts: the five squares' surfaces looked at, the three in view drawn
 /// and two culled by the frustum where the pass culls by it, and the sphere's surface and hull, a call
 /// each. The squares are opaque environment surfaces: the main view draws them a call each, and the scene
-/// prepass, which runs them (M5 D2), as one instanced call.
+/// prepass, which runs them (M5 D2), as one instanced call. The sphere's are the character triangles (M6 B6).
 fn scene_pass(frustum: bool) -> PassCounts {
     let squares = if frustum { IN_VIEW } else { IN_VIEW + BEHIND };
     PassCounts {
         draws: squares + 2,
         instances: squares + 2,
         triangles: 2 * u64::from(squares) + 2 * SPHERE_TRIANGLES,
+        character_triangles: 2 * SPHERE_TRIANGLES,
         outline_draws: 1,
         considered: IN_VIEW + BEHIND + 2,
         culled_by_frustum: if frustum { BEHIND } else { 0 },

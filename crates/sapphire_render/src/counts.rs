@@ -51,6 +51,9 @@ pub struct PassCounts {
     /// Triangles those calls drew, every instance's: a mesh draw's index range over three, a hull's the
     /// same as its surface's.
     pub triangles: u64,
+    /// Of [`Self::triangles`], the anime character family's (M6 B6): its surfaces', eyes' and outline
+    /// hulls', whether skinned or static.
+    pub character_triangles: u64,
     /// Of [`Self::draws`], outline hulls.
     pub outline_draws: u32,
     /// Mesh draws the pass looked at: those of its set (surfaces, hulls, eyes through hair) standing in
@@ -102,6 +105,13 @@ impl PassCounts {
         self.levels[usize::from(level).min(MESH_LEVELS - 1)] += instances;
     }
 
+    /// These counts, a group of draws of one surface variant's, with their triangles counted as characters'
+    /// where the variant is an anime character's (`characters`).
+    #[must_use]
+    pub(crate) fn of_characters(self, characters: bool) -> Self {
+        Self { character_triangles: if characters { self.triangles } else { 0 }, ..self }
+    }
+
     /// One more mesh draw left out by `verdict`'s test (`view_cull`), or by the pass's own pick
     /// for a shadow view's volume ([`Verdict::Frustum`] there): none for one drawn.
     pub(crate) fn count_culled(&mut self, verdict: Verdict) {
@@ -138,6 +148,7 @@ impl PassCounts {
             draws: self.draws + other.draws,
             instances: self.instances + other.instances,
             triangles: self.triangles + other.triangles,
+            character_triangles: self.character_triangles + other.character_triangles,
             outline_draws: self.outline_draws + other.outline_draws,
             considered: self.considered + other.considered,
             culled_by_frustum: self.culled_by_frustum + other.culled_by_frustum,
@@ -335,6 +346,7 @@ pub(crate) struct Counter {
     draws: AtomicU32,
     instances: AtomicU32,
     triangles: AtomicU64,
+    character_triangles: AtomicU64,
     outline_draws: AtomicU32,
     considered: AtomicU32,
     culled_by_frustum: AtomicU32,
@@ -365,6 +377,9 @@ impl Counter {
         if counts.triangles != 0 {
             self.triangles.fetch_add(counts.triangles, Ordering::Relaxed);
         }
+        if counts.character_triangles != 0 {
+            self.character_triangles.fetch_add(counts.character_triangles, Ordering::Relaxed);
+        }
         add(&self.outline_draws, counts.outline_draws);
         add(&self.considered, counts.considered);
         add(&self.culled_by_frustum, counts.culled_by_frustum);
@@ -383,6 +398,7 @@ impl Counter {
             draws: read(&self.draws),
             instances: read(&self.instances),
             triangles: self.triangles.load(Ordering::Relaxed),
+            character_triangles: self.character_triangles.load(Ordering::Relaxed),
             outline_draws: read(&self.outline_draws),
             considered: read(&self.considered),
             culled_by_frustum: read(&self.culled_by_frustum),
@@ -411,6 +427,7 @@ impl Counter {
             zero(counter);
         }
         self.triangles.store(0, Ordering::Relaxed);
+        self.character_triangles.store(0, Ordering::Relaxed);
         self.levels.iter().for_each(zero);
     }
 }

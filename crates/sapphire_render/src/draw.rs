@@ -295,7 +295,7 @@ impl MeshDraws<'_> {
             counts.considered += 1;
             counts.mesh_call(1, count, level, hull);
         }
-        self.counter.add(&counts);
+        self.counter.add(&counts.of_characters(variant.is_character()));
         self.count_changes(&bound.changes);
     }
 
@@ -344,7 +344,7 @@ impl MeshDraws<'_> {
                 counts.considered += run.count;
                 counts.mesh_call(run.count, count, level, hull);
             }
-            self.counter.add(&counts);
+            self.counter.add(&counts.of_characters(variant.is_character()));
             self.count_changes(&bound.changes);
             return;
         }
@@ -373,7 +373,7 @@ impl MeshDraws<'_> {
                 counts.culled_by_pass += 1;
             }
         }
-        self.counter.add(&counts);
+        self.counter.add(&counts.of_characters(variant.is_character()));
         self.count_changes(&bound.changes);
     }
 
@@ -479,7 +479,7 @@ impl MeshDraws<'_> {
                 counts.mesh_call(1, count, level, hull);
             }
         }
-        self.counter.add(&counts);
+        self.counter.add(&counts.of_characters(variant.is_character()));
         self.count_changes(&bound.changes);
     }
 
@@ -525,7 +525,7 @@ impl MeshDraws<'_> {
                 counts.culled_by_pass += 1;
             }
         }
-        self.counter.add(&counts);
+        self.counter.add(&counts.of_characters(variant.is_character()));
         self.count_changes(&bound.changes);
     }
 
@@ -631,7 +631,7 @@ impl MeshDraws<'_> {
                 }
             }
         }
-        self.counter.add(&counts);
+        self.counter.add(&counts.of_characters(variant.is_character()));
         self.count_changes(&bound.changes);
     }
 

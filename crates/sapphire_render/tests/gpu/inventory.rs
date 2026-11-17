@@ -20,7 +20,10 @@ use sapphire_pipeline::material::MaterialSettings;
 use sapphire_pipeline::meta::{AssetMeta, ImportSettings, MeshSettings, sidecar_path};
 use sapphire_pipeline::pack::pack_cooked;
 use sapphire_pipeline::samples;
-use sapphire_render::{PipelineInventory, PipelineStats, RenderSettings, Renderer};
+use sapphire_render::quality::TierTable;
+use sapphire_render::{
+    CharacterSwitches, MaterialRead, PipelineInventory, PipelineStats, RenderSettings, Renderer,
+};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -302,4 +305,54 @@ fn skinning_left_out_of_the_inventory_is_named() {
     assert_eq!(report.keys, [], "every key was listed: {report}");
     assert!(report.builds.iter().all(|build| build.family.name() == "skinning"), "{report}");
     assert!(report.to_string().contains("skinning: "), "{report}");
+}
+
+/// M6 B6: the character pixel's measurement switches change override constants alone. On every tier's settings a
+/// renderer with every switch on builds exactly the shipping renderer's pipelines from a cook's keys, and its
+/// uploads find nothing more to build; the counters (`measure_pixels`) add their two compute pipelines and no
+/// mesh pipeline.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_measurement_switches_build_every_tiers_inventory_and_nothing_more() {
+    let gpu = gpu();
+    let desktop = cooked_pack("switches_desktop", Cook::Desktop);
+    let mobile = cooked_pack("switches_mobile", Cook::Mobile);
+    let every = CharacterSwitches {
+        no_rim: true,
+        no_local_lights: true,
+        light_cap: Some(0),
+        one_received_slot: true,
+        no_hull_shadow: true,
+        unlit_hulls: true,
+        one_ramp_row: true,
+        material_read: MaterialRead::Whole,
+        one_hair_style: true,
+        face_light_constant: true,
+        control_unbound: true,
+    };
+    let mut tiers = 0;
+    for tier in TierTable::shipped().tiers() {
+        let name = format!("{:?}", tier.id);
+        let pack = if name.starts_with("Mobile") { &mobile } else { &desktop };
+        let inventory =
+            PipelineInventory { meshes: keys_of(pack), skinning: true, ..PipelineInventory::default() };
+        let built = |settings: RenderSettings| {
+            let mut renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
+            let warmed = renderer.prewarm(&inventory);
+            upload_all(&mut renderer, pack);
+            let report = renderer.first_use_report();
+            assert_eq!(report.builds, [], "{name}: {report}");
+            (renderer.stats().pipelines.built(), warmed, renderer.stats().character_pipelines)
+        };
+        let shipping = tier.render_settings();
+        assert!(shipping.character_switches.is_shipping() && !shipping.measure_pixels, "{name}");
+        let (all, warmed, character) = built(shipping);
+        assert!(warmed > 0 && character > 0, "{name}");
+        let switched = built(RenderSettings { character_switches: every, ..shipping });
+        assert_eq!(switched, (all, warmed, character), "{name}: every switch on");
+        let counting = built(RenderSettings { measure_pixels: true, ..shipping });
+        assert_eq!(counting, (all + 2, warmed, character), "{name}: the counters' two");
+        tiers += 1;
+    }
+    assert_eq!(tiers, 4);
 }

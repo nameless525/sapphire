@@ -109,10 +109,12 @@ pub enum ShaderFile {
     /// Reflection probes as surfaces read them: the environment's cell table, box parallax and fade, and
     /// a character's probe (M5 L3).
     Reflections,
+    /// The character pixel's counters (M6 B6): dev builds' measurement alone, which stands alone.
+    Measure,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -145,6 +147,7 @@ impl ShaderFile {
         Self::ProbeCubes,
         Self::ProbeFaces,
         Self::Reflections,
+        Self::Measure,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -182,6 +185,7 @@ impl ShaderFile {
             Self::ProbeCubes => "probe_cubes.wgsl",
             Self::ProbeFaces => "probe_faces.wgsl",
             Self::Reflections => "reflections.wgsl",
+            Self::Measure => "measure.wgsl",
         }
     }
 
@@ -225,6 +229,7 @@ impl ShaderFile {
             Self::ProbeCubes => include_str!("../shaders/probe_cubes.wgsl"),
             Self::ProbeFaces => include_str!("../shaders/probe_faces.wgsl"),
             Self::Reflections => include_str!("../shaders/reflections.wgsl"),
+            Self::Measure => include_str!("../shaders/measure.wgsl"),
         }
     }
 
@@ -271,10 +276,12 @@ pub(crate) enum Program {
     VfxDistortion,
     /// The on-screen interface (M2 I2).
     Ui,
+    /// The character pixel's counters (M6 B6), built only where a dev sandbox counts them.
+    Measure,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 20] = [
+    pub(crate) const ALL: [Self; 21] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -295,6 +302,7 @@ impl Program {
         Self::VfxDecal,
         Self::VfxDistortion,
         Self::Ui,
+        Self::Measure,
     ];
 
     /// Its files, in order.
@@ -346,6 +354,7 @@ impl Program {
             Self::VfxDecal => &[F::Frame, F::Materials, F::VfxDecal],
             Self::VfxDistortion => &[F::VfxDistortion],
             Self::Ui => &[F::Ui],
+            Self::Measure => &[F::Measure],
         }
     }
 
@@ -409,6 +418,7 @@ impl Program {
             Self::VfxDecal => "vfx decal",
             Self::VfxDistortion => "vfx distortion",
             Self::Ui => "ui",
+            Self::Measure => "measure",
         }
     }
 
@@ -829,7 +839,7 @@ mod tests {
     use crate::temporal::TemporalUniforms;
     use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
 
-    const PASSES: [(Program, &[&str]); 20] = [
+    const PASSES: [(Program, &[&str]); 21] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -934,6 +944,7 @@ mod tests {
         (Program::VfxDecal, &["vs_vfx_decal", "fs_vfx_decal"]),
         (Program::VfxDistortion, &["vs_vfx_distortion", "fs_vfx_distortion"]),
         (Program::Ui, &["vs_ui", "fs_ui"]),
+        (Program::Measure, &["cs_measure_pixels", "cs_measure_upscale"]),
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
@@ -1411,6 +1422,7 @@ mod tests {
             ),
             (Program::Ui, "UiUniforms", size_of::<crate::ui::UiUniforms>()),
             (Program::Ui, "UiQuad", size_of::<crate::ui::GpuUiQuad>()),
+            (Program::Measure, "MeasureUniforms", size_of::<crate::measure::MeasureUniforms>()),
         ];
         let mut layouts = std::collections::HashMap::new();
         for (program, name, rust_size) in expected {

@@ -1552,7 +1552,8 @@ impl PostProcess {
     /// renderer draws the effects that come after temporal AA's resolve there, so they go over the blurred
     /// frame and are never blurred themselves. Each of post's own passes counts its draw in `counter`, but the
     /// upscaler's (M5 L14), which count in `upscale_counter`: where [`Self::upscales`] says so, the fused pass
-    /// writes the input's size and they take it to the target's.
+    /// writes the input's size and they take it to the target's. Returns that pass's output, the edge
+    /// upscaler's input, on a frame that upscales (M6 B6's counters read it).
     #[expect(
         clippy::too_many_arguments,
         reason = "the frame's textures, its effects and insets, and its counters"
@@ -1566,7 +1567,7 @@ impl PostProcess {
         labels: bool,
         counter: &'f Counter,
         upscale_counter: &'f Counter,
-    ) {
+    ) -> Option<TextureId> {
         let PostInputs { input, scene_color, depth, target: output, distortion, shaft_depth } = inputs;
         // The upscaler (M5 L14), at the sizes this frame draws at.
         let (input_size, output_size) = (graph.size(input), graph.size(output));
@@ -1948,6 +1949,7 @@ impl PostProcess {
                 },
             );
         }
+        upscale.map(|_| target)
     }
 }
 

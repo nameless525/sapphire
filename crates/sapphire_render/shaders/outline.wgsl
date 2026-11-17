@@ -246,10 +246,14 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     // tone with it: a face's whole (the face pass's) with the other characters' at the hull (M5
     // L12), as the face takes them, any other surface's at the hull. Both are computed and one
     // selected, without a branch around the lookups (as for WARP below).
-    let face = materials[material].modes.z == CHARACTER_SURFACE_FACE;
-    let at_hull = cast_shadow_at(in.world_position, in.world_normal, in.character);
-    let received = received_visibility(in.world_position, safe_normalize(in.world_normal), in.character);
-    let shadow = select(at_hull, face_shadow(in.character) * received, face);
+    // A line priced without them (M6 B6's switches) takes none.
+    var shadow = 1.0;
+    if !MEASURE_NO_HULL_SHADOW && !MEASURE_UNLIT_HULLS {
+        let face = materials[material].modes.z == CHARACTER_SURFACE_FACE;
+        let at_hull = cast_shadow_at(in.world_position, in.world_normal, in.character);
+        let received = received_visibility(in.world_position, safe_normalize(in.world_normal), in.character);
+        shadow = select(at_hull, face_shadow(in.character) * received, face);
+    }
     let x = split_input(dot(safe_normalize(in.world_normal), rig.key_direction.xyz), in.occlusion * shadow, SHADOW_BIAS_NEUTRAL);
     let split = materials[material].split.xy;
     let width = max(split.y, 0.5 * fwidth(x));
@@ -260,7 +264,7 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
         base *= sample_material(base_color_map, swizzles, CHARACTER_BASE_COLOR, uv);
     }
     var region = in.region;
-    if material_has_texture(modes, CHARACTER_CONTROL) {
+    if material_has_texture(modes, CHARACTER_CONTROL) && !MEASURE_CONTROL_UNBOUND {
         region = control_material_id(swizzles, in.uv);
     }
     region = min(region, max(modes.y, 1u) - 1u);
@@ -313,7 +317,8 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     }
     // Unlit lines are their color exactly, and every line takes the fog its surface does (M1 W3),
     // at the hull.
-    let line_color = select(mix(line, lit_line, style.y), line, style.y <= 0.0);
+    // Hulls unlit (M6 B6's switch) take their color alone, and the lighting above compiles away.
+    let line_color = select(mix(line, lit_line, style.y), line, style.y <= 0.0 || MEASURE_UNLIT_HULLS);
     // The final color, in one variable at the one exit.
     let color = vec4<f32>(fogged(line_color, in.world_position, fog_share(in.character)), world);
     return OutlinePixel(color, kept, fade, region);

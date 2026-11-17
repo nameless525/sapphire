@@ -301,6 +301,35 @@ override PERMUTATION_TWO_SIDED: bool = false;
 // where that share isn't empty; 1 for every other pipeline, which keeps or discards whole pixels.
 override FADE_SAMPLES: u32 = 1u;
 
+// Measurement switches (M6 B6; `sapphire_render::measure`, m6-plan §3's "Measurement switches"): each takes
+// one term of the character pixel away, or makes it cheaper, so a bench can price it. Only a dev sandbox's
+// flags set them. At their defaults, which every shipping pipeline is built with, each compiles away and
+// the program is the shipping one. They are never a look anyone ships.
+// The depth-offset rim's mask isn't taken: no rim.
+override MEASURE_NO_RIM: bool = false;
+// The local lights' loop, and the derivatives it reads, skipped.
+override MEASURE_NO_LOCAL_LIGHTS: bool = false;
+// The most local lights a character pixel walks; the default caps nothing.
+override MEASURE_LIGHT_CAP: u32 = 4294967295u;
+// Another character's shadow from the first received slot alone.
+override MEASURE_ONE_RECEIVED_SLOT: bool = false;
+// A frame at full night reads the ramp's deep row alone, not both rows.
+override MEASURE_ONE_RAMP_ROW: bool = false;
+// How a material texture is read: 0 two whole levels, blended (the shipping read); 1 one read at the
+// fractional level; 2 one read at the nearest whole level.
+override MEASURE_MATERIAL_READ: u32 = 0u;
+// Hair takes its material's highlight style's coordinate alone, on a branch, not all three and a select.
+override MEASURE_ONE_HAIR_STYLE: bool = false;
+// A face's light in head space is a constant (as if the CPU gave it), not `face_margin`'s maths a pixel.
+override MEASURE_FACE_LIGHT_CONSTANT: bool = false;
+// Outline hulls skip their cast and received shadows (outline.wgsl).
+override MEASURE_NO_HULL_SHADOW: bool = false;
+// Outline hulls are their line color, unlit and unshadowed (outline.wgsl).
+override MEASURE_UNLIT_HULLS: bool = false;
+// The control map is never read, as if unbound: each pixel takes its vertex's region and the neutral
+// mask, bias and threshold (m6-plan K4's probe; surfaces and hulls).
+override MEASURE_CONTROL_UNBOUND: bool = false;
+
 // The layers (M1 C7). The reflection add's gate: from `layer_mask::REFLECTS` up, over this much
 // more metallic, so a mask's filtered edge doesn't alias.
 const REFLECTS: f32 = 0.9;
@@ -443,8 +472,20 @@ struct CharacterSurface {
 
 // Texture slot `slot` at `uv`, through the slot's swizzle (`swizzles` from the block).
 fn sample_material(map: texture_2d<f32>, swizzles: vec4<u32>, slot: u32, uv: MaterialUv) -> vec4<f32> {
-    let sampled = material_sample(map, material_sampler, uv);
+    var sampled: vec4<f32>;
+    if MEASURE_MATERIAL_READ != 0u {
+        sampled = measured_material_read(map, uv);
+    } else {
+        sampled = material_sample(map, material_sampler, uv);
+    }
     return material_swizzle(sampled, swizzles, slot);
+}
+
+// `material_sample`'s read as `MEASURE_MATERIAL_READ` asks (M6 B6): one read, at the fractional level or at
+// the nearest whole one.
+fn measured_material_read(map: texture_2d<f32>, uv: MaterialUv) -> vec4<f32> {
+    let level = material_level(textureDimensions(map), uv);
+    return textureSampleLevel(map, material_sampler, uv.uv, select(level, round(level), MEASURE_MATERIAL_READ == 2u));
 }
 
 // The light split's input: N·L, occluded, plus the shadow bias's offset `2·G − 1`, which a
@@ -508,7 +549,7 @@ fn received_visibility(position: vec3<f32>, normal: vec3<f32>, character: u32) -
         for (var slot = 0u; slot < 4u; slot++) {
             let weight = received.weights[slot];
             let caster = received.casters[slot];
-            if weight > 0.0 {
+            if weight > 0.0 && (slot == 0u || !MEASURE_ONE_RECEIVED_SLOT) {
                 var lit = 1.0;
                 if (caster & RECEIVED_CAPSULE) != 0u {
                     lit = capsule_lookup(caster & ~RECEIVED_CAPSULE, position);
@@ -536,17 +577,30 @@ fn face_shadow(character: u32) -> f32 {
 // (light angle / 180°), positive while lit: `character_maps::face_sdf::lit_margin` for the light
 // in head space (`HeadLight::new`). Two taps of the face map: at uv, and mirrored.
 fn face_margin(face: CharacterFace, toward_light: vec3<f32>, swizzles: vec4<u32>, uv: MaterialUv) -> f32 {
-    let forward = face.forward.xyz;
-    let up = face.up.xyz;
-    // The character's own right: models face +Z with +Y up, so -X at rest.
-    let right = cross(forward, up);
-    let l = vec3<f32>(dot(toward_light, right), dot(toward_light, up), dot(toward_light, forward));
-    let level = length(l.xz);
-    // Straight above or below, the yaw is undefined and fades out anyway.
-    let yaw = select(0.0, atan2(abs(l.x), l.z), level > 1e-6);
-    let horizontal = yaw * level / PI;
-    let vertical = asin(saturate(l.y)) / PI;
-    let side = min(abs(l.x) / max(FACE_MIRROR_BLEND * abs(l.y), 1e-6), 1.0);
+    var l: vec3<f32>;
+    var horizontal: f32;
+    var vertical: f32;
+    var side: f32;
+    if MEASURE_FACE_LIGHT_CONSTANT {
+        // A light ahead and a little to the head's right, level with it (M6 B6): the maths below priced
+        // away, both taps kept (`side` blends them).
+        l = vec3<f32>(1.0, 0.0, 1.0);
+        horizontal = 0.25;
+        vertical = 0.0;
+        side = 0.5;
+    } else {
+        let forward = face.forward.xyz;
+        let up = face.up.xyz;
+        // The character's own right: models face +Z with +Y up, so -X at rest.
+        let right = cross(forward, up);
+        l = vec3<f32>(dot(toward_light, right), dot(toward_light, up), dot(toward_light, forward));
+        let level = length(l.xz);
+        // Straight above or below, the yaw is undefined and fades out anyway.
+        let yaw = select(0.0, atan2(abs(l.x), l.z), level > 1e-6);
+        horizontal = yaw * level / PI;
+        vertical = asin(saturate(l.y)) / PI;
+        side = min(abs(l.x) / max(FACE_MIRROR_BLEND * abs(l.y), 1e-6), 1.0);
+    }
 
     let flip = vec2<f32>(-1.0, 1.0);
     let mirrored_uv = MaterialUv(vec2<f32>(1.0 - uv.uv.x, uv.uv.y), uv.dx * flip, uv.dy * flip);
@@ -719,11 +773,16 @@ fn shade_tint(surface: CharacterSurface, material: u32, x: f32, width: f32) -> v
         // How far into shadow: 0 facing away from the light, 1 at the terminator.
         let u = saturate((x + 1.0) / max(surface.split.x + 1.0, 1e-4));
         let swizzles = materials[material].swizzles;
-        var ramp = ramp_row(swizzles, u, surface.region.shade.a);
+        var ramp: vec3<f32>;
         // The whole frame takes this branch alike; a frame at full day or night samples once.
         let night = frame.day_night;
-        if night > 0.0 {
-            ramp = mix(ramp, ramp_row(swizzles, u, surface.region.deep_shade.a), saturate(night));
+        if MEASURE_ONE_RAMP_ROW && night >= 1.0 {
+            ramp = ramp_row(swizzles, u, surface.region.deep_shade.a);
+        } else {
+            ramp = ramp_row(swizzles, u, surface.region.shade.a);
+            if night > 0.0 {
+                ramp = mix(ramp, ramp_row(swizzles, u, surface.region.deep_shade.a), saturate(night));
+            }
         }
         return mix(surface.region.subsurface.rgb, ramp, materials[material].terms.x);
     }
@@ -917,7 +976,7 @@ fn local_lighting(
 ) -> vec3<f32> {
     let base = list * frame.lights.z;
     // Guards keep a list from reading past what was written this frame.
-    let count = min(light_lists[base], frame.lights.w);
+    let count = min(min(light_lists[base], frame.lights.w), MEASURE_LIGHT_CAP);
     // Light reaching the lit and the shadow side of each light's own split, and the rims.
     var lit = vec3<f32>(0.0);
     var shaded = vec3<f32>(0.0);
@@ -1208,7 +1267,7 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     surface.specular_mask = 1.0;
     surface.shadow_bias = SHADOW_BIAS_NEUTRAL;
     surface.specular_threshold = 0.5;
-    if material_has_texture(modes, CHARACTER_CONTROL) {
+    if material_has_texture(modes, CHARACTER_CONTROL) && !MEASURE_CONTROL_UNBOUND {
         let control = sample_material(control_map, swizzles, CHARACTER_CONTROL, uv);
         surface.specular_mask = control.r;
         surface.shadow_bias = control.g;
@@ -1269,15 +1328,33 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         surface.occlusion *= hair_mask.b;
         let shift = materials[material].surface.z + hair_mask.g - HAIR_MASK_NO_SHIFT;
         let style = (modes.w >> 8u) & 0xffu;
-        let rounded = spherized_normal(surface, rig, in.world_position);
-        let h = safe_normalize(key_direction + surface.view_dir);
-        let painted = dot(rounded, h) + shift;
-        let ring = 1.0 - abs((view.view_from_world * vec4<f32>(rounded, 0.0)).y - shift);
-        let strand = strand_direction(surface.normal, position_dx, position_dy, uv);
-        let t_dot_h = dot(safe_normalize(strand + shift * surface.normal), h);
-        let kajiya_kay = sqrt(saturate(1.0 - t_dot_h * t_dot_h));
-        band_input = select(painted, ring, style == CHARACTER_HIGHLIGHT_ANGEL_RING);
-        band_input = select(band_input, kajiya_kay, style == CHARACTER_HIGHLIGHT_KAJIYA_KAY);
+        if MEASURE_ONE_HAIR_STYLE {
+            // The material's style alone, on a branch (M6 B6): the block is the draw's, so the branch is
+            // uniform per draw.
+            let h = safe_normalize(key_direction + surface.view_dir);
+            if style == CHARACTER_HIGHLIGHT_KAJIYA_KAY {
+                let strand = strand_direction(surface.normal, position_dx, position_dy, uv);
+                let t_dot_h = dot(safe_normalize(strand + shift * surface.normal), h);
+                band_input = sqrt(saturate(1.0 - t_dot_h * t_dot_h));
+            } else {
+                let rounded = spherized_normal(surface, rig, in.world_position);
+                if style == CHARACTER_HIGHLIGHT_ANGEL_RING {
+                    band_input = 1.0 - abs((view.view_from_world * vec4<f32>(rounded, 0.0)).y - shift);
+                } else {
+                    band_input = dot(rounded, h) + shift;
+                }
+            }
+        } else {
+            let rounded = spherized_normal(surface, rig, in.world_position);
+            let h = safe_normalize(key_direction + surface.view_dir);
+            let painted = dot(rounded, h) + shift;
+            let ring = 1.0 - abs((view.view_from_world * vec4<f32>(rounded, 0.0)).y - shift);
+            let strand = strand_direction(surface.normal, position_dx, position_dy, uv);
+            let t_dot_h = dot(safe_normalize(strand + shift * surface.normal), h);
+            let kajiya_kay = sqrt(saturate(1.0 - t_dot_h * t_dot_h));
+            band_input = select(painted, ring, style == CHARACTER_HIGHLIGHT_ANGEL_RING);
+            band_input = select(band_input, kajiya_kay, style == CHARACTER_HIGHLIGHT_KAJIYA_KAY);
+        }
     }
     let band_width = max(materials[material].terms.y, 0.5 * fwidth(band_input));
 
@@ -1350,7 +1427,7 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     // Taken here for the local lights: after the alpha test below, a discarded pixel's
     // neighbours could no longer rely on them.
     var derivatives: CharacterDerivatives;
-    if frame.lights.y != LIGHT_LISTS_NONE {
+    if frame.lights.y != LIGHT_LISTS_NONE && !MEASURE_NO_LOCAL_LIGHTS {
         derivatives.normal_dx = dpdx(surface.normal);
         derivatives.normal_dy = dpdy(surface.normal);
         derivatives.position_dx = position_dx;
@@ -1453,7 +1530,7 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     rim.tint = mix(surface.albedo, vec3<f32>(1.0), 0.5) * surface.region.rim.rgb
         * (materials[material].edges.y * rig.key_direction.w);
     if !PERMUTATION_EYE && !PERMUTATION_TRANSPARENT && in.character != 0u && materials[material].edges.y > 0.0
-        && fade == 0.0 && dissolve == 0.0 {
+        && fade == 0.0 && dissolve == 0.0 && !MEASURE_NO_RIM {
         let pixel = in.clip_position.xy;
         rim.mask = rim_mask(surface, material, region, in.character, pixel, in.world_position, fresnel_width);
     }
@@ -1464,7 +1541,7 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     // The layers' light first: zero without them, which leaves the sum as it was.
     var color = layer_light + diffuse + ambient + rim_light(rim, key_direction, surface.view_dir, lit) * key_radiance;
     // A uniform branch: frames without local lights skip them.
-    if frame.lights.y != LIGHT_LISTS_NONE {
+    if frame.lights.y != LIGHT_LISTS_NONE && !MEASURE_NO_LOCAL_LIGHTS {
         let list = light_list(in.clip_position, in.instance);
         let geometric = in.world_normal;
         color += local_lighting(surface, rig.key_radiance.w, list, in.world_position, geometric, derivatives, rim);

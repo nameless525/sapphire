@@ -60,12 +60,27 @@ impl Drop for TestDir {
 
 /// An editor on `path`, talking to a port nobody has, on a window's worth of interface.
 fn harness(path: &Path) -> Harness<'static, Editor> {
-    let options = Options {
+    harness_of(on(path))
+}
+
+/// An editor on `path` as [`harness`] starts one, before anything's drawn.
+fn on(path: &Path) -> Editor {
+    Editor::new(Options {
         file: Some(path.to_owned()),
         content: Some(path.with_file_name("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
-    };
-    let editor = Editor::new(options);
+    })
+}
+
+/// An editor on `path` keeping its journal under `journal`, as a window keeps one under its repository's build
+/// folder.
+fn harness_keeping(path: &Path, journal: &Path) -> Harness<'static, Editor> {
+    let mut editor = on(path);
+    editor.keep_journal_at(journal);
+    harness_of(editor)
+}
+
+fn harness_of(editor: Editor) -> Harness<'static, Editor> {
     Harness::builder()
         .with_size((1400.0, 900.0))
         .with_accessibility_check(false)
@@ -1463,6 +1478,62 @@ fn a_file_that_stopped_being_text_needs_saying_so_before_a_save() {
     harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
     harness.run_steps(2);
     assert_same(&fs::read_to_string(&path).expect("the file"), &edited, "saved");
+}
+
+/// An editor that stops without saving, as a crash stops it, leaves what wasn't saved for the next to offer in
+/// its top bar: taken back, it's that text, unsaved, with its step to undo; one whose file someone saved meanwhile
+/// is a conflict, settled by putting the edits back on top; and one let go is gone. No source is written.
+#[test]
+fn an_editor_that_stopped_has_its_unsaved_text_offered_back() {
+    let dir = TestDir::new("journal");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let journal = dir.0.join("journal");
+    let mut first = harness_keeping(&path, &journal);
+    first.run_steps(3);
+    let (_, end, per_tick) = handles(&first, "hit volumes light_1_hit 5..8", 3);
+    drag(&mut first, end, end + egui::vec2(per_tick, 0.0));
+    let unsaved = text_of(&first);
+    assert_eq!(parse(&unsaved).moves[0].hitboxes[0].to, 9);
+    // Stopped with no quit: its journal isn't closed.
+    drop(first);
+    assert_same(&fs::read_to_string(&path).expect("the file"), SLICE, "nothing saved");
+
+    let mut next = harness_keeping(&path, &journal);
+    next.run_steps(2);
+    next.get_by_label("Take them back").click();
+    next.run_steps(2);
+    assert_same(&text_of(&next), &unsaved, "what wasn't saved");
+    assert!(next.state().is_dirty());
+    assert!(next.query_by_label("Take them back").is_none(), "offered once");
+    next.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    next.run_steps(2);
+    assert_same(&text_of(&next), SLICE, "the drag is a step to undo");
+    next.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    next.run_steps(2);
+    drop(next);
+
+    let theirs = SLICE.replacen("startup: 5", "startup: 6", 1);
+    fs::write(&path, &theirs).expect("someone else's save");
+    let mut last = harness_keeping(&path, &journal);
+    last.run_steps(2);
+    last.get_by_label("Take them back").click();
+    last.run_steps(2);
+    assert!(last.state().current().expect("a file").conflict().is_some());
+    assert_same(&fs::read_to_string(&path).expect("the file"), &theirs, "not written over");
+    last.get_by_label("Mine on top of the file's").click();
+    last.run_steps(2);
+    assert_same(&text_of(&last), &unsaved.replacen("startup: 5", "startup: 6", 1), "theirs, and the drag");
+    assert_same(&fs::read_to_string(&path).expect("the file"), &theirs, "until a save");
+    drop(last);
+
+    let mut gone = harness_keeping(&path, &journal);
+    gone.run_steps(2);
+    gone.get_by_label("Let them go").click();
+    gone.run_steps(2);
+    assert!(gone.query_by_label("Take them back").is_none());
+    assert_same(&text_of(&gone), &theirs, "the file's");
+    assert!(!gone.state().is_dirty());
+    assert!(gone.state().journal().is_some_and(|journal| journal.offers().is_empty()));
 }
 
 /// A field's row can go before it lets go: to another move, or with its entry. What was typed goes to the

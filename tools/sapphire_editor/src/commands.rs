@@ -78,6 +78,11 @@ pub enum Command {
     MineOnTop,
     /// The file changed on disk under edits: keeps these, to replace it at the next save.
     KeepMine,
+    /// Takes back the unsaved text an editor that stopped kept in the journal of the document that was at this
+    /// path: the document, dirty, or in conflict with a file that moved on since.
+    Recover(PathBuf),
+    /// Lets go of what the journal kept of the document that was at this path.
+    DropRecovered(PathBuf),
     /// Drops a value typed that the document refused.
     DropTyped,
     /// Shows where a refused typed value belongs.
@@ -188,6 +193,14 @@ impl Command {
         ron::to_string(self).expect("a command is plain data")
     }
 
+    /// The document it names by its path, if it names one: what a script's folder is the start of.
+    fn path_mut(&mut self) -> Option<&mut PathBuf> {
+        match self {
+            Self::Open(path) | Self::Recover(path) | Self::DropRecovered(path) => Some(path),
+            _ => None,
+        }
+    }
+
     /// Its name: what the registry knows it by.
     #[must_use]
     pub fn name(&self) -> &'static str {
@@ -210,6 +223,8 @@ impl Command {
             Self::TakeFile => "TakeFile",
             Self::MineOnTop => "MineOnTop",
             Self::KeepMine => "KeepMine",
+            Self::Recover(_) => "Recover",
+            Self::DropRecovered(_) => "DropRecovered",
             Self::DropTyped => "DropTyped",
             Self::ShowTyped => "ShowTyped",
             Self::Begin(_) => "Begin",
@@ -306,6 +321,9 @@ const COMMANDS: &[Registered] = registry! {
     "TakeFile", "TakeFile", None, "Takes the text of a file that changed on disk";
     "MineOnTop", "MineOnTop", None, "Takes the file's text and puts the edits that fit back on top";
     "KeepMine", "KeepMine", None, "Keeps the edits, to replace the file at the next save";
+    "Recover", r#"Recover("content/")"#, None, "Takes back what an editor that stopped hadn't saved of a document";
+    "DropRecovered", r#"DropRecovered("content/")"#, None,
+        "Lets go of what an editor that stopped hadn't saved of a document";
     "DropTyped", "DropTyped", None, "Drops a typed value the document refused";
     "ShowTyped", "ShowTyped", None, "Shows where a refused typed value belongs";
     "Begin", r#"Begin("a gesture")"#, None, "Starts a gesture: one step of undo until End";
@@ -416,10 +434,10 @@ impl Script {
         let mut script = Self::parse(&text).map_err(|error| format!("{}: {error}", path.display()))?;
         let folder = path.parent().unwrap_or(Path::new(""));
         for command in &mut script.commands {
-            if let Command::Open(opened) = command
-                && opened.is_relative()
+            if let Some(named) = command.path_mut()
+                && named.is_relative()
             {
-                *opened = folder.join(&*opened);
+                *named = folder.join(&*named);
             }
         }
         Ok(script)
@@ -449,9 +467,12 @@ impl Script {
         let commands = self
             .commands
             .iter()
-            .map(|command| match command {
-                Command::Open(opened) => Command::Open(relative(&absolute(opened), &folder)),
-                command => command.clone(),
+            .map(|command| {
+                let mut command = command.clone();
+                if let Some(named) = command.path_mut() {
+                    *named = relative(&absolute(named), &folder);
+                }
+                command
             })
             .collect();
         Self { version: self.version, commands }

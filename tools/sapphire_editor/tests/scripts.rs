@@ -989,6 +989,55 @@ mod ui {
         assert!(editor.link().attempts().is_empty());
         assert_same(&text_of(&editor), SLICE, "the text");
     }
+
+    #[test]
+    fn an_editor_that_stopped_has_its_unsaved_text_offered_back() {
+        let dir = TestDir::new("journal");
+        let path = dir.write("slice.moves.ron", SLICE);
+        let journal = dir.0.join("journal");
+        let keeping = |dir: &TestDir| {
+            let mut editor = editor(dir, Some(&path));
+            editor.keep_journal_at(&journal);
+            editor
+        };
+        let mut first = keeping(&dir);
+        run(&mut first, &dir, &drag_window(5, 9));
+        let unsaved = text_of(&first);
+        // Stopped with no quit: its journal isn't closed.
+        drop(first);
+        assert_same(&file(&path), SLICE, "nothing saved");
+
+        let mut next = keeping(&dir);
+        run(&mut next, &dir, r#"Recover("slice.moves.ron")"#);
+        assert_same(&text_of(&next), &unsaved, "what wasn't saved");
+        assert!(next.is_dirty());
+        refused(&mut next, r#"Recover("slice.moves.ron")"#);
+        run(&mut next, &dir, "Undo");
+        assert_same(&text_of(&next), SLICE, "the drag is a step to undo");
+        run(&mut next, &dir, "Redo");
+        drop(next);
+
+        let theirs = SLICE.replacen("startup: 5", "startup: 6", 1);
+        fs::write(&path, &theirs).expect("someone else's save");
+        let mut last = keeping(&dir);
+        run(&mut last, &dir, r#"Recover("slice.moves.ron")"#);
+        assert!(last.current().expect("a file").conflict().is_some());
+        assert_same(&file(&path), &theirs, "not written over");
+        run(&mut last, &dir, "MineOnTop");
+        assert_same(
+            &text_of(&last),
+            &unsaved.replacen("startup: 5", "startup: 6", 1),
+            "theirs, and the drag",
+        );
+        assert_same(&file(&path), &theirs, "until a save");
+        drop(last);
+
+        let mut gone = keeping(&dir);
+        run(&mut gone, &dir, r#"DropRecovered("slice.moves.ron")"#);
+        refused(&mut gone, r#"Recover("slice.moves.ron")"#);
+        assert_same(&text_of(&gone), &theirs, "the file's");
+        assert!(!gone.is_dirty());
+    }
 }
 
 mod panes {

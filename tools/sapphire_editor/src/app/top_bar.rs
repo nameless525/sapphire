@@ -1,5 +1,5 @@
 //! The top bar: the current document's name, save, undo and redo, the panes, the device's address, and the
-//! questions a quit, a close, a conflict or a refused value asks.
+//! questions a quit, a close, a conflict, the journal's offers or a refused value asks.
 
 use super::*;
 
@@ -92,6 +92,29 @@ impl Editor {
                 }
                 if ui.button("Keep editing").clicked() {
                     self.act(Command::CancelClose);
+                }
+            });
+        }
+        let offered: Vec<PathBuf> = self
+            .journal
+            .as_ref()
+            .map(|journal| journal.offers().iter().map(|offer| offer.entry.path.clone()).collect())
+            .unwrap_or_default();
+        for path in offered {
+            ui.horizontal_wrapped(|ui| {
+                let name = path
+                    .file_name()
+                    .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+                ui.colored_label(
+                    Color32::from_rgb(255, 170, 90),
+                    format!("{name} has edits an editor that stopped didn't save."),
+                )
+                .on_hover_text(path.display().to_string());
+                if ui.button("Take them back").clicked() {
+                    self.act(Command::Recover(path.clone()));
+                }
+                if ui.button("Let them go").clicked() {
+                    self.act(Command::DropRecovered(path.clone()));
                 }
             });
         }

@@ -5,6 +5,11 @@
 //! `moves`), and the top bar's save and undo act on the current one, which is whichever was last opened or
 //! edited: a timeline's edit makes its document current again. Nothing is lost by opening another document,
 //! since the set holds what's unsaved in each, so only closing one or the window asks.
+//!
+//! A [`Journal`] keeps what's unsaved on disk after each command, and offers back what an editor that stopped
+//! without saving kept: [`Command::Recover`] takes an offer back, as the document it was or in conflict with a
+//! file that moved on, which the top bar's three answers settle as any conflict, and [`Command::DropRecovered`]
+//! lets it go.
 
 mod browser;
 mod cvars;
@@ -31,7 +36,7 @@ use egui::{Color32, Key, Modifiers, RichText, Sense, TextEdit, Ui, Vec2};
 use sapphire_assets::AssetId;
 use sapphire_core::Name;
 use sapphire_document::disk::Temporary;
-use sapphire_document::{AnyDocument, DocumentSet, Kind, Noticed, PropertyPath, Rebased, SetError};
+use sapphire_document::{AnyDocument, DocumentSet, Journal, Kind, Noticed, PropertyPath, Rebased, SetError};
 use sapphire_livelink::protocol::MoveAttempt;
 use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument};
 use sapphire_time::Stopwatch;
@@ -266,6 +271,11 @@ pub struct Editor {
     drag_asked: Option<Action>,
     /// Commands a pass asked for from inside the shell, run once it's drawn.
     asked: Vec<Command>,
+    /// What's unsaved, kept on disk after each command, and what editors that stopped kept, if a journal is
+    /// kept.
+    journal: Option<Journal>,
+    /// The journal's last write failed, and the notice has said so.
+    journal_failing: bool,
 }
 
 /// What's being typed over.
@@ -375,6 +385,8 @@ impl Editor {
             recording: None,
             drag_asked: None,
             asked: Vec::new(),
+            journal: None,
+            journal_failing: false,
         };
         if let Some(path) = options.file {
             editor.open(&path);
@@ -483,25 +495,144 @@ impl Editor {
         let kind = Kind::of(path).unwrap_or(Kind::Moves);
         match kind.open(&mut self.documents, path) {
             Ok(id) => {
-                // It may be open from before, with a file that's moved on.
                 self.notice = None;
-                self.go_to(id);
-                let noticed = self.documents.refresh();
-                self.say_noticed(noticed);
-                if kind == Kind::Moves {
-                    self.show_on_timeline(id, path);
-                }
-                if matches!(kind, Kind::Zone | Kind::Timeline | Kind::Ui) && self.content.is_none() {
-                    self.content = find_cook(path);
-                }
-                match kind {
-                    Kind::Zone => self.shell.open(Pane::Zone),
-                    Kind::Timeline => self.shell.open(Pane::Sequencer),
-                    Kind::Ui => self.shell.open(Pane::Screen),
-                    _ => {}
-                }
+                self.opened(id, path, kind);
             }
             Err(error) => self.say(Notice { text: error.to_string(), trouble: true }),
+        }
+    }
+
+    /// Goes to a document just opened or taken back, and shows it in its panes.
+    fn opened(&mut self, id: AssetId, path: &Path, kind: Kind) {
+        self.go_to(id);
+        // It may be open from before, with a file that's moved on.
+        let noticed = self.documents.refresh();
+        self.say_noticed(noticed);
+        if kind == Kind::Moves {
+            self.show_on_timeline(id, path);
+        }
+        if matches!(kind, Kind::Zone | Kind::Timeline | Kind::Ui) && self.content.is_none() {
+            self.content = find_cook(path);
+        }
+        match kind {
+            Kind::Zone => self.shell.open(Pane::Zone),
+            Kind::Timeline => self.shell.open(Pane::Sequencer),
+            Kind::Ui => self.shell.open(Pane::Screen),
+            _ => {}
+        }
+    }
+
+    /// Keeps a journal under `root` from now on (`target/editor_journal/` in a repository, [`journal_path`]), and
+    /// offers what editors that stopped there without saving kept. Trouble with it is a notice, and no journal.
+    pub fn keep_journal_at(&mut self, root: &Path) {
+        match Journal::open(root) {
+            Ok(journal) => {
+                if let Some(why) = journal.unreadable().first() {
+                    self.notice = Some(Notice {
+                        text: format!("the journal holds what doesn't read, left where it is: {why}"),
+                        trouble: true,
+                    });
+                }
+                self.journal = Some(journal);
+                self.journal_step();
+            }
+            Err(error) => {
+                self.notice = Some(Notice {
+                    text: format!("{}: {error}: no journal is kept", root.display()),
+                    trouble: true,
+                });
+            }
+        }
+    }
+
+    /// The journal, if one's kept.
+    #[must_use]
+    pub const fn journal(&self) -> Option<&Journal> {
+        self.journal.as_ref()
+    }
+
+    /// Ends the journal's session, as a quit does with nothing unsaved or with what's unsaved let go: what it
+    /// kept goes. An editor that stops any other way leaves it for the next to offer.
+    pub fn close_journal(&mut self) {
+        if let Some(journal) = self.journal.take()
+            && let Err(error) = journal.close()
+        {
+            tracing::warn!(%error, "the journal's session wasn't taken away");
+        }
+    }
+
+    /// Writes what's changed of each unsaved document to the journal, and says once when that fails. The
+    /// documents whose entries failed are returned.
+    fn journal_step(&mut self) -> Vec<AssetId> {
+        let Some(journal) = &mut self.journal else { return Vec::new() };
+        let failed = journal.write(&self.documents);
+        match failed.first() {
+            Some((id, error)) => {
+                tracing::warn!(%id, %error, "the journal wasn't written");
+                if !std::mem::replace(&mut self.journal_failing, true) {
+                    // Not trouble: the command that just ran did what it was asked.
+                    self.notice = Some(Notice {
+                        text: format!(
+                            "the journal can't be written ({error}): a crash would lose what's unsaved"
+                        ),
+                        trouble: false,
+                    });
+                }
+            }
+            None => self.journal_failing = false,
+        }
+        failed.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Takes back what an editor that stopped hadn't saved of the document that was at `path`. Its entry goes
+    /// once this session's journal holds the text.
+    fn recover(&mut self, path: &Path) {
+        if !self.take_typed() {
+            self.refuse("nothing's taken back until what's being typed is fixed or dropped");
+            return;
+        }
+        let offered = self.journal.as_ref().and_then(|journal| journal.offer(path));
+        let Some(entry) = offered.map(|offer| offer.entry.clone()) else {
+            self.refuse(format!("the journal offers nothing of {}", path.display()));
+            return;
+        };
+        self.add_roots_around(&entry.path, true);
+        let kind = Kind::of(&entry.path).unwrap_or(Kind::Moves);
+        let noticed = match kind.recover(&mut self.documents, &entry) {
+            Ok(noticed) => noticed,
+            Err(error) => {
+                self.refuse(error.to_string());
+                return;
+            }
+        };
+        if !self.journal_step().contains(&entry.id)
+            && let Some(journal) = &mut self.journal
+            && let Err(error) = journal.forget(path)
+        {
+            tracing::warn!(%error, "the journal's entry that was taken back is still there");
+        }
+        let now = self.documents.path(entry.id).map_or_else(|| entry.path.clone(), Path::to_owned);
+        self.notice = Some(Notice {
+            text: format!("took back what wasn't saved of {}", now.display()),
+            trouble: false,
+        });
+        self.opened(entry.id, &now, kind);
+        self.say_noticed(noticed);
+    }
+
+    /// Lets go of what the journal kept of the document that was at `path`.
+    fn drop_recovered(&mut self, path: &Path) {
+        match self.journal.as_mut().map(|journal| journal.forget(path)) {
+            Some(Ok(true)) => {
+                self.notice = Some(Notice {
+                    text: format!("let go of what wasn't saved of {}", path.display()),
+                    trouble: false,
+                });
+            }
+            Some(Ok(false)) | None => {
+                self.refuse(format!("the journal offers nothing of {}", path.display()));
+            }
+            Some(Err(error)) => self.refuse(format!("{}: {error}", path.display())),
         }
     }
 
@@ -1119,7 +1250,17 @@ impl Editor {
 
     /// The window was asked to close: it goes at once, unless that would lose edits.
     pub fn request_quit(&mut self) {
-        self.quit = if self.is_dirty() { Quit::Asking } else { Quit::Yes };
+        if self.is_dirty() {
+            self.quit = Quit::Asking;
+        } else {
+            self.quit_now();
+        }
+    }
+
+    /// Quits, with nothing unsaved or what's unsaved let go, so the journal has nothing to keep.
+    fn quit_now(&mut self) {
+        self.quit = Quit::Yes;
+        self.close_journal();
     }
 
     /// The window was asked to close and can't draw, so the question it would ask can't be seen. Edits are
@@ -1130,17 +1271,21 @@ impl Editor {
     /// pump, so one click calls this twice, and every event wakes a pass, so the next click comes after one.
     pub fn request_quit_unseen(&mut self) {
         if !self.is_dirty() {
-            self.quit = Quit::Yes;
+            self.quit_now();
             return;
         }
         if std::mem::replace(&mut self.closed_unseen, true) {
             return;
         }
         self.quit = match self.save_all() {
-            Ok(()) => Quit::Yes,
+            Ok(()) => {
+                self.close_journal();
+                Quit::Yes
+            }
             Err(_) if self.quit == Quit::Asking => {
                 tracing::error!(
-                    "closing with no GPU to ask on, and the edits couldn't be saved: they're lost"
+                    "closing with no GPU to ask on, and the edits couldn't be saved: a journal, if one's kept, \
+                     keeps them for the next editor to offer"
                 );
                 Quit::Yes
             }
@@ -1392,6 +1537,8 @@ impl Editor {
             self.next_rescan = now + RESCAN_SECONDS.max(look.elapsed().as_secs_f64() * 100.0);
         }
         self.persist_layout();
+        // What landed outside a command: a value typed, a file taken from disk.
+        self.journal_step();
         if self.cook_changed() {
             self.load_cook();
         }
@@ -1623,6 +1770,13 @@ const REPOSITORY_ROOTS: [&str; 2] = ["content", "crates"];
 /// The repository `place` is in, if it's in one.
 fn repository_around(place: &Path) -> Option<&Path> {
     place.ancestors().find(|dir| dir.join("Cargo.toml").is_file() && dir.join("content").is_dir())
+}
+
+/// Where a window keeps its journal: under the build folder of the repository it was started in.
+#[must_use]
+pub fn journal_path() -> Option<PathBuf> {
+    let dir = std::env::current_dir().ok()?;
+    Some(repository_around(&dir)?.join("target/editor_journal"))
 }
 
 /// Where a window keeps its layout: under the build folder of the repository it was started in.

@@ -42,6 +42,10 @@ impl Editor {
         self.depth += 1;
         self.perform(&command);
         self.depth -= 1;
+        if self.depth == 0 {
+            // After each step, refused or not: a refusal can leave a gesture's middle behind it.
+            self.journal_step();
+        }
         if self.troubles != troubles {
             return Err(self
                 .notice
@@ -125,7 +129,8 @@ impl Editor {
         self.notice = Some(notice);
     }
 
-    fn refuse(&mut self, text: impl Into<String>) {
+    /// Refuses the command running, with why.
+    pub(super) fn refuse(&mut self, text: impl Into<String>) {
         self.say(Notice { text: text.into(), trouble: true });
     }
 
@@ -164,6 +169,8 @@ impl Editor {
                 self.answer_quit(command)
             }
             Command::TakeFile | Command::MineOnTop | Command::KeepMine => self.settle_conflict(command),
+            Command::Recover(path) => self.recover(path),
+            Command::DropRecovered(path) => self.drop_recovered(path),
             Command::DropTyped => self.typed = None,
             Command::ShowTyped => self.show_typed(),
             Command::Begin(label) => match self.current {
@@ -309,13 +316,13 @@ impl Editor {
         }
         match command {
             Command::SaveAndQuit => match self.save_all() {
-                Ok(()) => self.quit = Quit::Yes,
+                Ok(()) => self.quit_now(),
                 Err(text) => {
                     self.quit = Quit::No;
                     self.refuse(text);
                 }
             },
-            Command::QuitWithoutSaving => self.quit = Quit::Yes,
+            Command::QuitWithoutSaving => self.quit_now(),
             _ => self.quit = Quit::No,
         }
     }

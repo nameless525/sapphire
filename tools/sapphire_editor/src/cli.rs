@@ -11,14 +11,18 @@ use crate::commands::{SCRIPT_SUFFIX, Script};
 /// What `sapphire_editor` does when run with no arguments, for the rest see the crate's docs.
 pub const USAGE: &str = "\
 usage: sapphire_editor [<document>] [--link <address:port>] [--content <cook folder>] [--record <script>]
+                       [--journal <folder>]
        sapphire_editor <document> --capture <png> [--size <w>x<h>] [--move <name>] [--tick <n>]
                        [--content <cook folder>]
        sapphire_editor [<document>] --run <script> [--capture <png> [--size <w>x<h>]]
-                       [--link <address:port>] [--content <cook folder>]
+                       [--link <address:port>] [--content <cook folder>] [--journal <folder>]
 
 --capture draws one frame to a PNG with no window and no GPU. --run runs a script of commands
 (a .commands.ron) with no window, then draws its last frame if --capture asks. --record keeps
-every command a window's session runs in a script, which --run plays back.";
+every command a window's session runs in a script, which --run plays back. --journal keeps what's
+unsaved in a folder after each command and offers what an editor that stopped there kept: a
+window keeps one in its repository's target/editor_journal unless told where, and a script only
+when told.";
 
 /// What a capture draws.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,15 +40,19 @@ pub struct RunArgs {
     pub script: PathBuf,
     /// The frame to draw when it's done: its move and tick are the script's to choose.
     pub capture: Option<CaptureArgs>,
+    /// Where to keep a journal, whose offers the script can take or let go.
+    pub journal: Option<PathBuf>,
 }
 
 /// What was asked for.
 #[derive(Clone, Debug)]
 pub enum Launch {
-    /// A window, keeping the commands its session runs in a script if `record` names one.
+    /// A window, keeping the commands its session runs in a script if `record` names one, and its journal in
+    /// `journal` if it names one.
     Window {
         options: Options,
         record: Option<PathBuf>,
+        journal: Option<PathBuf>,
     },
     Capture(Options, CaptureArgs),
     Run(Options, RunArgs),
@@ -64,6 +72,7 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
     let mut tick = None;
     let mut script = None;
     let mut record = None;
+    let mut journal = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value =
@@ -89,6 +98,7 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
             }
             "--run" => script = Some(script_path(value("--run")?)?),
             "--record" => record = Some(script_path(value("--record")?)?),
+            "--journal" => journal = Some(PathBuf::from(value("--journal")?)),
             "--help" | "-h" => return Err(USAGE.to_owned()),
             flag if flag.starts_with('-') => return Err(format!("unknown argument `{flag}`\n\n{USAGE}")),
             path if options.file.is_none() => options.file = Some(PathBuf::from(path)),
@@ -100,16 +110,19 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
         png.map(|png| CaptureArgs { png, width: size.0, height: size.1, mv, tick: tick.unwrap_or(0) });
     match (script, record) {
         (_, Some(_)) if capture.is_some() => Err(format!("--record keeps a window's session\n\n{USAGE}")),
+        (None, _) if capture.is_some() && journal.is_some() => {
+            Err(format!("--journal keeps a session's, and a capture has none\n\n{USAGE}"))
+        }
         (Some(_), Some(_)) => Err(format!("--record keeps a window's session, not a script's\n\n{USAGE}")),
         (Some(script), None) => {
             if capture.as_ref().is_some_and(|capture| capture.mv.is_some()) || tick_given {
                 return Err(format!("with --run, the script says which move and tick\n\n{USAGE}"));
             }
-            Ok(Launch::Run(options, RunArgs { script, capture }))
+            Ok(Launch::Run(options, RunArgs { script, capture, journal }))
         }
         (None, record) => Ok(match capture {
             Some(capture) => Launch::Capture(options, capture),
-            None => Launch::Window { options, record },
+            None => Launch::Window { options, record, journal },
         }),
     }
 }
@@ -124,7 +137,8 @@ fn script_path(text: String) -> Result<PathBuf, String> {
 }
 
 /// Runs a script of commands on an editor started as `options`, with no window, then draws what it left if it's
-/// asked to. A refused command stops it, naming the command and why.
+/// asked to. A refused command stops it, naming the command and why. A journal, if it keeps one, closes when the
+/// script ends, either way: a script's end loses nothing a person typed.
 pub fn run_script(options: Options, args: &RunArgs) -> Result<(), String> {
     if let Some(capture) = &args.capture {
         capture::validate_size(capture.width, capture.height)?;
@@ -134,7 +148,17 @@ pub fn run_script(options: Options, args: &RunArgs) -> Result<(), String> {
     if let Some(notice) = editor.notice().filter(|notice| notice.trouble) {
         return Err(notice.text.clone());
     }
-    editor.run_script(&script).map_err(|error| format!("{}: {error}", args.script.display()))?;
+    if let Some(journal) = &args.journal {
+        editor.keep_journal_at(journal);
+        if editor.journal().is_none() {
+            return Err(editor
+                .notice()
+                .map_or_else(|| "no journal".to_owned(), |notice| notice.text.clone()));
+        }
+    }
+    let ran = editor.run_script(&script).map_err(|error| format!("{}: {error}", args.script.display()));
+    editor.close_journal();
+    ran?;
     match &args.capture {
         Some(capture) => write_frame(&mut editor, capture.width, capture.height, &capture.png),
         None => Ok(()),
@@ -219,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_window_and_a_capture_read_their_arguments() {
-        let Ok(Launch::Window { options, record: None }) =
+        let Ok(Launch::Window { options, record: None, journal: None }) =
             parse(&args("a.moves.ron --link 127.0.0.1:7900 --content cook"))
         else {
             panic!("a window")
@@ -278,6 +302,14 @@ mod tests {
             panic!("a window that records")
         };
         assert_eq!(record, Some(PathBuf::from("s.commands.ron")));
+        let Ok(Launch::Run(_, run)) = parse(&args("--run a.commands.ron --journal kept")) else {
+            panic!("a run that keeps a journal")
+        };
+        assert_eq!(run.journal, Some(PathBuf::from("kept")));
+        let Ok(Launch::Window { journal, .. }) = parse(&args("a.moves.ron --journal kept")) else {
+            panic!("a window that keeps a journal elsewhere")
+        };
+        assert_eq!(journal, Some(PathBuf::from("kept")));
         for bad in [
             "--run a.ron",
             "--record a.ron",
@@ -285,6 +317,8 @@ mod tests {
             "a.moves.ron --capture x.png --record b.commands.ron",
             "--run a.commands.ron --tick 3",
             "--run a.commands.ron --capture x.png --move light_1",
+            "a.moves.ron --capture x.png --journal kept",
+            "--run a.commands.ron --journal",
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad}");
         }

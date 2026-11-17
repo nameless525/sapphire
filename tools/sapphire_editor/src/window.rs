@@ -84,7 +84,7 @@ impl App for EditorApp {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let Launch::Window { options, record } =
+        let Launch::Window { options, record, journal } =
             sapphire_editor::cli::parse_command_line(platform.args()).map_err(AppInitError::msg)?
         else {
             return Err(AppInitError::msg("a capture or a script opens no window"));
@@ -95,7 +95,7 @@ impl App for EditorApp {
             ..WindowDesc::default()
         })?;
         let device = Device::new(&window)?;
-        Ok(Self::new(options, record, window, device))
+        Ok(Self::new(options, record, journal, window, device))
     }
 
     fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
@@ -146,7 +146,13 @@ impl Drop for EditorApp {
 }
 
 impl EditorApp {
-    fn new(options: Options, record: Option<PathBuf>, window: Window, device: Device) -> Self {
+    fn new(
+        options: Options,
+        record: Option<PathBuf>,
+        journal: Option<PathBuf>,
+        window: Window,
+        device: Device,
+    ) -> Self {
         Self {
             editor: {
                 let mut editor = Editor::new(options);
@@ -155,6 +161,9 @@ impl EditorApp {
                 }
                 if let Some(path) = record {
                     editor.record_to(path);
+                }
+                if let Some(root) = journal.or_else(sapphire_editor::app::journal_path) {
+                    editor.keep_journal_at(&root);
                 }
                 editor
             },

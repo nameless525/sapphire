@@ -380,12 +380,13 @@ Faces and looks are keys on a timeline's character track, and a conversation's l
 
 ### A voiced line, with a moving mouth (M5 C6)
 
-A conversation's line is voiced by a key of the voice lines' documents, and the cook gives each voice sound a mouth curve the speaker's face reads as it plays. Spec §5.15's "As built (M5 C6)" is the reference. No step edits Rust, and no replay moves.
+A conversation's line is voiced by a key of the voice lines' documents, and the cook gives each voice sound a mouth curve the speaker's face reads as it plays. Spec §5.15's "As built (M5 C6)" is the reference, and since M6 U11 its "As built (M6 U11)" has the voice-over pipeline the steps below run through. No step edits Rust, and no replay moves.
 
-1. **The sound:** a placeholder is a `tools/sounds/<key>.<language>.sound.ron` spec (`Line`, as `guide_greet`'s are) and `cargo run -p sapphire_soundgen`, then its row and SHA-256 in [SOURCE.md](../content/audio/generated/SOURCE.md); a recording is an `.ogg` with the plan's §3 provenance. Its sidecar says `importer: Sound((mouth: true))`: the voice lines' cook refuses a line whose sound has no curve, naming it.
-2. **The cue and the key:** a `<key>.cue.ron` on the `Voice` bus beside it, and a row `(key: "<key>", cue: "<the cue's id>")` in each language's `.voice.ron`. A language with no row for the key plays nothing, counted.
-3. **The line:** `say: (speaker: …, line: …, vo: "<key>", mouth: "<role>")`. `mouth` names whose mouth moves as a face track's role does (`hero`, `foe`, a kind's name) and needs a `vo`; leave it out for a speaker who isn't drawn, as the ward's guide is. The voice plays in the player's voice language from the frame the line shows, a pause holds it, and the next line or the conversation's end cuts it.
-4. **Know its limits:** the curve's envelope is what a mouth moves by; its five visemes are a coarse spectral guess with no phonemes behind it (spec §5.15). A mouth needs an audio device: with none, or a run with no sound, it stays shut.
+1. **The script:** a line in [content/vo/script.ron](../content/vo/script.ron): its key, its `text` and `speaker` (the dialogue node's `line` and `speaker`, which `vo` holds it to), its context and direction for the actor.
+2. **The master:** `content/vo/<language>/<key>.wav`, mono, for each language: a studio's take, with the plan's §3 provenance, or a placeholder from a `tools/sounds/<key>.<language>.sound.ron` spec (`Line`, as `guide_greet`'s are) and `cargo run -p sapphire_soundgen`, then its row and SHA-256 in [content/vo/SOURCE.md](../content/vo/SOURCE.md).
+3. **The import:** `cargo run -p sapphire_pipeline -- vo --content content` encodes the master, writes its Ogg with a sidecar asking for its mouth curve, its cue on the `Voice` bus, each language's `.voice.ron`, recording script and import report; commit them all. A language with no master for the key plays nothing, counted, and the import names it.
+4. **The line:** `say: (speaker: …, line: …, vo: "<key>", mouth: "<role>")`. `mouth` names whose mouth moves as a face track's role does (`hero`, `foe`, a kind's name) and needs a `vo`; leave it out for a speaker who isn't drawn, as the ward's guide is. The voice plays in the player's voice language from the frame the line shows, a pause holds it, and the next line or the conversation's end cuts it.
+5. **Know its limits:** the curve's envelope is what a mouth moves by; its five visemes are a coarse spectral guess with no phonemes behind it (spec §5.15). A mouth needs an audio device: with none, or a run with no sound, it stays shut.
 
 ### An effect mesh (M5 L5)
 

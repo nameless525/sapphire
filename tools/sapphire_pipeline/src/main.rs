@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use std::str::FromStr;
 
 use anyhow::{Context as _, anyhow, bail};
+use sapphire_pipeline::audit;
 use sapphire_pipeline::bake::OutlineSettings;
 use sapphire_pipeline::bench::{self, Preset};
 use sapphire_pipeline::character_maps::{self, MapKind};
@@ -357,6 +358,10 @@ fn run(command: Command) -> anyhow::Result<()> {
             let options = CookOptions { cook, cache: cache.as_deref(), locked, editor };
             let report = cook::cook_dir(&source, &out, &options)?;
             print_report(&report, cook, &source, &out);
+            let (path, written) = audit::write(&source, &out, cook, cache.as_deref(), &report)?;
+            if written == audit::Written::Written {
+                eprintln!("{cook}: wrote the cook audit {}", path.display());
+            }
             if let Some(packs) = packs {
                 if let Some(code) = code {
                     let names = code_names::scan(&code)

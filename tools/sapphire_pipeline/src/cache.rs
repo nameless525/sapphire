@@ -69,6 +69,7 @@ const REACH_CONTEXT: &str = "sapphire_pipeline 2026-11-03 pack reach key";
 const PIPELINE_KEYS_CONTEXT: &str = "sapphire_pipeline 2026-11-03 pack pipeline keys key";
 const PARSED_CONTEXT: &str = "sapphire_pipeline 2026-11-03 parsed document key";
 const TILE_CONTEXT: &str = "sapphire_pipeline 2026-11-03 navigation tile key";
+const AUDIT_CONTEXT: &str = "sapphire_pipeline 2026-11-17 cook audit key";
 
 /// A pipeline stage as cache keys know it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -192,6 +193,12 @@ impl CacheKey {
         Self::derive(TILE_CONTEXT, &(inputs.as_bytes(), (baker.name, baker.version)))
     }
 
+    /// The key a part of the cook audit is kept under ([`crate::audit`]): the auditor's stage, which part
+    /// (`report`, `mesh`, `material`), and what it reads, the cook keys of the assets it audits among them.
+    pub fn audit(auditor: Stage, part: &str, inputs: &impl Serialize) -> Self {
+        Self::derive(AUDIT_CONTEXT, &((auditor.name, auditor.version), part, inputs))
+    }
+
     /// The key a pack's hash is recorded under: the packer's stage, the pack's name, and its
     /// assets by ID and [`Self::packed`] key, in ID order, their pipeline keys' rows, in the same
     /// order (a material in another pack can change them with no asset here changing), and the names those
@@ -212,6 +219,13 @@ impl CacheKey {
     fn derive(context: &str, inputs: &impl Serialize) -> Self {
         let bytes = sapphire_serialize::postcard::to_allocvec(inputs).expect("key inputs always encode");
         Self(*blake3::Hasher::new_derive_key(context).update(&bytes).finalize().as_bytes())
+    }
+}
+
+/// A key's bytes, as another key's inputs hold it.
+impl Serialize for CacheKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
     }
 }
 

@@ -60,6 +60,8 @@
 //!   rig).
 //! - [`pack`]: the last stage (M1 A4): a cook's outputs into packs, the files content ships in,
 //!   with the grouping rules and the codec each kind is compressed with.
+//! - [`audit`]: the report every cook writes beside its cooked files (M6 K1): maps' bytes by class, the alpha
+//!   census, which control-map channels are constant per region, the simplifier's locks and their cost.
 //! - [`release`]: the release manifest a cook writes beside its packs, and signing a release and laying it
 //!   out for a static host (M4 P1). The only code that signs one: no build of the game links it.
 //! - [`cache`]: the cache key over everything that determines a cooked output or a pack, and the
@@ -126,6 +128,7 @@
 pub mod anim_graph;
 pub mod assembly;
 pub mod audio;
+pub mod audit;
 pub mod bake;
 pub mod bench;
 pub mod cache;

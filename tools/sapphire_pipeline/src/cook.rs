@@ -968,6 +968,41 @@ pub struct CookedAsset {
     /// What its author calls it: a clip's name, or else its source's file name up to the first dot. Only
     /// some kinds carry it into a pack (`crate::pack`).
     pub name: String,
+    /// Which texture it is or holds a level of, if any, and what that cooks as: what the cook audit
+    /// counts a map's bytes by ([`crate::audit`]).
+    pub texture: Option<TextureOf>,
+}
+
+/// The texture a cooked asset is, or holds a level of (M5 M3), and its class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextureOf {
+    /// The texture's own asset: the tail of a texture split into levels.
+    pub texture: AssetId,
+    pub class: TextureKind,
+}
+
+impl TextureOf {
+    /// What `part` of a source imported with `settings`, as `id`, is as a texture, if it is one.
+    fn of(id: AssetId, settings: &ImportSettings, part: &Part) -> Option<Self> {
+        match part {
+            Part::Own => TextureKind::of(settings).map(|class| Self { texture: id, class }),
+            Part::Level { texture, .. } => {
+                TextureKind::of(settings).map(|class| Self { texture: *texture, class })
+            }
+            Part::MergedMap { kind, .. } => Some(Self { texture: id, class: *kind }),
+            Part::Rig
+            | Part::Skeleton
+            | Part::Clip { .. }
+            | Part::KeyPose { .. }
+            | Part::Cell(_)
+            | Part::Shape(_)
+            | Part::FontSubset { .. }
+            | Part::Navigation
+            | Part::Reflections
+            | Part::Ambient
+            | Part::MergedMaterial { .. } => None,
+        }
+    }
 }
 
 /// What [`cook_dir`] did.
@@ -2200,7 +2235,9 @@ impl RigSource<'_> {
 }
 
 /// An asset's cooked file, aligned as its readers need it.
-fn read_cooked(asset: &CookedAsset) -> Result<sapphire_serialize::cooked::AlignedVec<16>, io::Error> {
+pub(crate) fn read_cooked(
+    asset: &CookedAsset,
+) -> Result<sapphire_serialize::cooked::AlignedVec<16>, io::Error> {
     let bytes = fs::read(&asset.output)?;
     let mut aligned = sapphire_serialize::cooked::AlignedVec::<16>::with_capacity(bytes.len());
     aligned.extend_from_slice(&bytes);
@@ -2498,7 +2535,7 @@ impl LastTexture {
 /// Runs `cook` for the source at `path`, a panic becoming an error that names it. Importers and
 /// cookers report what they find wrong themselves; this is the last line of defence, for what
 /// slips past them or panics inside a crate they call, so that the file is named all the same.
-fn guarded<T>(path: &Path, cook: impl FnOnce() -> Result<T, CookError>) -> Result<T, CookError> {
+pub(crate) fn guarded<T>(path: &Path, cook: impl FnOnce() -> Result<T, CookError>) -> Result<T, CookError> {
     panic::catch_unwind(AssertUnwindSafe(cook)).unwrap_or_else(|payload| {
         let text = payload.downcast_ref::<&str>().map(|text| (*text).to_owned());
         let message = text.or_else(|| payload.downcast_ref::<String>().cloned());
@@ -2586,6 +2623,7 @@ fn finish_asset(
         output_hash,
         status,
         name: asset_name(path, part),
+        texture: TextureOf::of(*id, &meta.importer, part),
     };
 
     let mut cached = None;
@@ -4047,7 +4085,7 @@ fn import_mesh(
 }
 
 /// Rejects values quantization would otherwise hide, for imported meshes and merged zone cells.
-fn validate_mesh_inputs(path: &Path, mesh: &ImportedMesh) -> Result<(), CookError> {
+pub(crate) fn validate_mesh_inputs(path: &Path, mesh: &ImportedMesh) -> Result<(), CookError> {
     if let Some(vertex) = mesh.vertices.iter().position(|v| !v.position.iter().all(|c| c.is_finite())) {
         return Err(CookError::Invalid {
             path: path.to_owned(),
@@ -4066,7 +4104,7 @@ fn validate_mesh_inputs(path: &Path, mesh: &ImportedMesh) -> Result<(), CookErro
 
 /// The mesh a mesh importer reads from `bytes`, before anything derived from it. A glTF that cooks
 /// clips counts every node its animations move as a joint.
-fn imported_mesh(
+pub(crate) fn imported_mesh(
     path: &Path,
     bytes: &[u8],
     importer: &ImportSettings,
@@ -4286,6 +4324,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::audit;
     use crate::bake::OutlineSettings;
     use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet, MorphGeometry};
     use crate::material::MaterialSettings;
@@ -5339,6 +5378,52 @@ mod tests {
         fs::remove_file(&output).unwrap();
         scratch.cook_with(Cook::Desktop, false);
         assert!(fs::read(&output).unwrap() == first);
+    }
+
+    /// Every cook's audit (M6 K1) lands beside its cooked files, and a second cook, served from the cache or
+    /// made again without one, writes the same bytes.
+    #[test]
+    fn every_cook_writes_its_audit_byte_for_byte() {
+        let scratch = Scratch::new("cook_audit");
+        let mannequin = scratch.add_mannequin("samples/mannequin.glb");
+        scratch.add_hair();
+        let cache = scratch.dir.path().join("cache");
+        for cook in [Cook::Desktop, Cook::Mobile] {
+            let report = scratch.cook_with(cook, true);
+            let out = scratch.out_for(cook);
+            let (path, written) = audit::write(&scratch.source(), &out, cook, Some(&cache), &report).unwrap();
+            assert_eq!((&path, written), (&out.join(audit::FILE_NAME), audit::Written::Written));
+            let first = fs::read_to_string(&path).unwrap();
+            let again = scratch.cook_with(cook, true);
+            let (_, written) = audit::write(&scratch.source(), &out, cook, Some(&cache), &again).unwrap();
+            assert_eq!(written, audit::Written::UpToDate, "{cook}: the cache's report is the one written");
+            let made = audit::audit(&scratch.source(), &out, cook, None, &again).unwrap();
+            assert!(made.to_ron().unwrap() == first, "{cook}: made again, the report has the same bytes");
+
+            assert_eq!(made.cook, cook.name());
+            let mesh = made.meshes.iter().find(|mesh| mesh.source == "samples/mannequin.glb").unwrap();
+            let cooked = read_mesh(&asset(&report, &mannequin).output);
+            let triangles: Vec<u32> = cooked
+                .lods
+                .iter()
+                .map(|lod| lod.submeshes.iter().map(|submesh| submesh.index_count / 3).sum())
+                .collect();
+            assert_eq!(mesh.levels.iter().map(|level| level.triangles).collect::<Vec<_>>(), triangles);
+            assert_eq!(mesh.levels[0].vertices, cooked.lods[0].vertex_count, "LOD0 uses every cooked vertex");
+            let chain = mesh.chain.as_ref().expect("a mesh cooked from its source");
+            assert!(chain.vertices > 0 && chain.locked <= chain.vertices);
+            assert!(mesh.slots.iter().all(|slot| slot.material.is_none() && slot.disagreeing.is_none()));
+
+            let hair =
+                made.materials.iter().find(|material| material.source == "hair/hair.material.ron").unwrap();
+            assert_eq!((hair.family.as_str(), hair.alpha.as_str()), ("anime character", "opaque"));
+            let character = hair.character.as_ref().unwrap();
+            assert_eq!((character.surface.as_str(), character.control.is_none()), ("hair", true));
+            assert_eq!(made.textures["color"].maps, 1, "the hair's albedo");
+            assert!(made.maps.iter().all(|map| map.bytes > 0 && !map.output.is_empty()));
+            let family = &made.alpha.families["anime character"];
+            assert!(family.opaque >= 1 && made.alpha.alpha_tested.is_empty());
+        }
     }
 
     /// A playable kind whose moves, mesh, rig or graph no source under the root is fails its cook, naming the

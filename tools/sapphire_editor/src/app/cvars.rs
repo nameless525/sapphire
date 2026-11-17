@@ -7,6 +7,7 @@ use egui::{Color32, RichText, Ui};
 use sapphire_livelink::protocol::{CvarStatus, CvarStatusKind};
 
 use super::Editor;
+use crate::commands::Command;
 
 /// What the panel keeps between passes.
 #[derive(Debug, Default)]
@@ -58,7 +59,7 @@ impl Editor {
             });
         });
         for (name, value) in sets {
-            self.link.set_cvar(&name, value);
+            self.act(Command::Cvar { name, value });
         }
     }
 }

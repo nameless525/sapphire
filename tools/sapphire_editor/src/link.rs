@@ -365,6 +365,12 @@ impl Link {
         }
     }
 
+    /// The device it talks to.
+    #[must_use]
+    pub const fn address(&self) -> Option<SocketAddr> {
+        self.address
+    }
+
     /// Points it at another device, if this one isn't it. Nothing said so far speaks for the new one.
     pub fn set_address(&mut self, address: Option<SocketAddr>) {
         if address == self.address {

@@ -13,6 +13,7 @@ use sapphire_document::write;
 use sapphire_document::{AnyDocument, PropertyKind, PropertyPath, Step, walk};
 
 use super::{Editor, Notice, Typed, TypedAt};
+use crate::commands::Command;
 
 /// A place in the tree. One can be several things at once: an `Option` of an enum with fields, say.
 #[derive(Debug)]
@@ -47,7 +48,7 @@ pub(super) struct PropertiesPanel {
 }
 
 /// What a click asked for, done once the tree isn't being read.
-enum Asked {
+pub(super) enum Asked {
     Toggle(PropertyPath, bool),
     Pick(PropertyPath, String),
     Add(PropertyPath),
@@ -83,7 +84,13 @@ impl Editor {
         });
         self.properties.nodes = nodes;
         for asked in asked {
-            self.do_asked(id, asked);
+            let command = match asked {
+                Asked::Toggle(path, on) => Command::SetOption { path: path.to_string(), on },
+                Asked::Pick(path, variant) => Command::PickVariant { path: path.to_string(), variant },
+                Asked::Add(path) => Command::AddEntry(path.to_string()),
+                Asked::Remove(path) => Command::RemoveEntry(path.to_string()),
+            };
+            self.act(command);
         }
     }
 
@@ -151,7 +158,7 @@ impl Editor {
         if leaf.literal == "true" || leaf.literal == "false" {
             let mut on = leaf.literal == "true";
             if ui.checkbox(&mut on, "").changed() {
-                self.set_property(id, &label, &node.path, &on.to_string());
+                self.act(Command::SetProperty { path: node.path.to_string(), value: on.to_string() });
             }
             return;
         }
@@ -160,7 +167,7 @@ impl Editor {
         {
             self.number_gesture(&response, &label, id);
             if let Some(literal) = literal {
-                self.set_property(id, &label, &node.path, &literal);
+                self.act(Command::SetProperty { path: node.path.to_string(), value: literal });
             }
             return;
         }
@@ -169,7 +176,7 @@ impl Editor {
         self.text_field(ui, field, at, &leaf.literal);
     }
 
-    fn set_property(&mut self, id: AssetId, label: &str, path: &PropertyPath, literal: &str) {
+    pub(super) fn set_property(&mut self, id: AssetId, label: &str, path: &PropertyPath, literal: &str) {
         if !self.take_typed() {
             return;
         }
@@ -178,7 +185,7 @@ impl Editor {
         self.after_property_edit(id, result.map(|_| ()).map_err(|error| error.to_string()));
     }
 
-    fn do_asked(&mut self, id: AssetId, asked: Asked) {
+    pub(super) fn do_asked(&mut self, id: AssetId, asked: Asked) {
         if !self.take_typed() {
             return;
         }
@@ -205,7 +212,7 @@ impl Editor {
                     self.check_selection();
                 }
             }
-            Err(text) => self.notice = Some(Notice { text, trouble: true }),
+            Err(text) => self.say(Notice { text, trouble: true }),
         }
     }
 

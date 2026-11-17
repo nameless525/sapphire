@@ -218,7 +218,7 @@ fn changing_figure_with_the_same_pose_key_matches_a_fresh_cache() {
     let player = editor_on(&player_path());
     let warrior = editor_on(&warrior_path());
     let frame = player.frame().expect("frame");
-    let run = player.run().expect("run");
+    let run = player.preview_run().expect("run");
     let draw = |figure: &sapphire_editor::figure::Figure, cache: &mut FigureCache| {
         let ctx = egui::Context::default();
         capture::draw(&ctx, &mut Textures::default(), capture::raw_input(320, 300, 0.0), 320, 300, |ui| {
@@ -266,7 +266,7 @@ fn a_refused_clip_edit_keeps_authored_casting_and_simulation_in_one_successful_s
     assert!(editor.select_move("light_1"));
     editor.set_tick(8);
     let casting = sapphire_editor::app::casting_of(&editor);
-    let before = editor.run().expect("run").clone();
+    let before = editor.preview_run().expect("run").clone();
     let path = |suffix: &str| {
         format!("moves[\"light_1\"].motion.clip?.{suffix}")
             .parse::<sapphire_document::PropertyPath>()
@@ -293,12 +293,12 @@ fn a_refused_clip_edit_keeps_authored_casting_and_simulation_in_one_successful_s
     editor.refresh();
     assert!(!editor.problems().is_empty());
     assert_eq!(sapphire_editor::app::casting_of(&editor), casting);
-    assert_eq!(editor.run(), Some(&before));
+    assert_eq!(editor.preview_run(), Some(&before));
     assert!(editor.select_move("skill"));
     let mut fresh = editor_on(&player_path());
     assert!(fresh.select_move("skill"));
     assert_eq!(sapphire_editor::app::casting_of(&editor), sapphire_editor::app::casting_of(&fresh));
-    assert_eq!(editor.run(), fresh.run(), "other prior valid moves remain selectable");
+    assert_eq!(editor.preview_run(), fresh.preview_run(), "other prior valid moves remain selectable");
 }
 
 /// What the real thing looks like, for an agent to read: the player's first cut as it lands, and the

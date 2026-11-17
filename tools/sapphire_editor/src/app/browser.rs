@@ -10,6 +10,7 @@ use sapphire_assets::AssetId;
 use sapphire_document::Kind;
 
 use super::Editor;
+use crate::commands::Command;
 
 /// What the browser keeps between passes.
 #[derive(Debug, Default)]
@@ -117,7 +118,7 @@ impl Editor {
             .color(Color32::from_gray(140)),
         );
         if let Some(path) = open {
-            self.open(&path);
+            self.act(Command::Open(path));
         }
     }
 

@@ -20,6 +20,7 @@ use sapphire_assets::ui::{UiDocument, UiModel};
 use sapphire_document::DocumentSet;
 
 use super::Editor;
+use crate::commands::Command;
 
 use crate::screen::{Aspect, LANGUAGES, ScreenShown, StandIn, read_from, stand_ins};
 
@@ -183,11 +184,13 @@ impl Editor {
         self.screen.aspect = aspect;
     }
 
-    /// Shows the preview in `language`, if it's one of [`LANGUAGES`].
-    pub fn preview_in(&mut self, language: &str) {
-        if let Some(index) = LANGUAGES.iter().position(|known| *known == language) {
+    /// Shows the preview in `language`, if it's one of [`LANGUAGES`]. Says whether it is.
+    pub fn preview_in(&mut self, language: &str) -> bool {
+        let index = LANGUAGES.iter().position(|known| *known == language);
+        if let Some(index) = index {
             self.screen.language = index;
         }
+        index.is_some()
     }
 
     /// Has `path` of the current screen read `value`. Says whether the screen has that path.
@@ -206,48 +209,58 @@ impl Editor {
             return;
         };
         self.screen.follow(&self.documents, Some(id));
-        let panel = &mut self.screen;
+        let mut asked = Vec::new();
+        let panel = &self.screen;
         ui.horizontal(|ui| {
             for aspect in Aspect::ALL {
                 if ui.selectable_label(panel.aspect == aspect, aspect.label()).clicked() {
-                    panel.aspect = aspect;
+                    asked.push(Command::Aspect(aspect));
                 }
             }
             ui.separator();
             for (index, language) in LANGUAGES.iter().enumerate() {
                 if ui.selectable_label(panel.language == index, *language).clicked() {
-                    panel.language = index;
+                    asked.push(Command::Language((*language).to_owned()));
                 }
             }
         });
-        let Some(held) = panel.screens.get_mut(&id) else { return };
-        if let Err(why) = &held.model {
-            ui.label(RichText::new(format!("Its model doesn't read, so the preview waits: {why}")).weak());
-            return;
+        if let Some(held) = panel.screens.get(&id) {
+            if let Err(why) = &held.model {
+                ui.label(
+                    RichText::new(format!("Its model doesn't read, so the preview waits: {why}")).weak(),
+                );
+            } else if held.values.is_empty() {
+                ui.label(RichText::new("Its paths read nothing.").weak());
+            } else {
+                ui.label(RichText::new("What its paths read, in the preview only:").weak());
+                values_grid(ui, &held.values, &mut asked);
+            }
         }
-        if held.values.is_empty() {
-            ui.label(RichText::new("Its paths read nothing.").weak());
-            return;
+        for command in asked {
+            self.act(command);
         }
-        ui.label(RichText::new("What its paths read, in the preview only:").weak());
-        egui::ScrollArea::vertical().id_salt("screen values").auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("screen values").num_columns(2).striped(true).show(ui, |ui| {
-                for (path, value) in &mut held.values {
-                    ui.label(path.as_str());
-                    match value {
-                        StandIn::Number(number) => {
-                            ui.add(egui::DragValue::new(number).speed(0.1).max_decimals(3));
-                        }
-                        StandIn::Bool(on) => {
-                            ui.checkbox(on, "");
-                        }
-                        StandIn::Text(text) => {
-                            ui.text_edit_singleline(text);
-                        }
-                    }
-                    ui.end_row();
-                }
-            });
-        });
     }
+}
+
+/// The values a screen's paths read, each changed by the command that has it read another.
+fn values_grid(ui: &mut Ui, values: &[(String, StandIn)], asked: &mut Vec<Command>) {
+    egui::ScrollArea::vertical().id_salt("screen values").auto_shrink([false, false]).show(ui, |ui| {
+        egui::Grid::new("screen values").num_columns(2).striped(true).show(ui, |ui| {
+            for (path, value) in values {
+                ui.label(path.as_str());
+                let mut value = value.clone();
+                let changed = match &mut value {
+                    StandIn::Number(number) => {
+                        ui.add(egui::DragValue::new(number).speed(0.1).max_decimals(3)).changed()
+                    }
+                    StandIn::Bool(on) => ui.checkbox(on, "").changed(),
+                    StandIn::Text(text) => ui.text_edit_singleline(text).changed(),
+                };
+                if changed {
+                    asked.push(Command::StandIn { path: path.clone(), value });
+                }
+                ui.end_row();
+            }
+        });
+    });
 }

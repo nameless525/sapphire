@@ -124,7 +124,7 @@ fn a_refused_rename_uses_the_previous_slots_successful_preview() {
         content: Some(dir.0.join("no cook")),
         link: Some("127.0.0.1:9".parse().expect("address")),
     });
-    let before = editor.run().expect("run").clone();
+    let before = editor.preview_run().expect("run").clone();
     let property = "moves[\"light_1\"].name".parse::<sapphire_document::PropertyPath>().expect("path");
     editor
         .moves_document_mut()
@@ -134,9 +134,9 @@ fn a_refused_rename_uses_the_previous_slots_successful_preview() {
     editor.refresh();
     assert!(!editor.problems().is_empty(), "neutral still names light_1");
     assert_eq!(editor.selected_move_name(), Some("renamed"));
-    assert_eq!(editor.run(), Some(&before));
+    assert_eq!(editor.preview_run(), Some(&before));
     assert!(editor.select_move("skill"));
-    assert_eq!(editor.run().expect("another prior move").move_name, "skill");
+    assert_eq!(editor.preview_run().expect("another prior move").move_name, "skill");
 }
 
 fn name_of(harness: &Harness<'static, Editor>) -> String {

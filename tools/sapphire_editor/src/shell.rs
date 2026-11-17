@@ -79,6 +79,12 @@ impl Pane {
 /// What draws the panes.
 pub trait PaneUi {
     fn pane_ui(&mut self, ui: &mut egui::Ui, pane: Pane);
+
+    /// A pane's tab was asked to close by its button: whether it closes now. The editor says no and closes it
+    /// by its command, once the panes have drawn.
+    fn close_asked(&mut self, _pane: Pane) -> bool {
+        true
+    }
 }
 
 /// A layout that can't be read or written.
@@ -266,6 +272,13 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
 
     fn is_tab_closable(&self, _tiles: &Tiles<Pane>, _tile: TileId) -> bool {
         true
+    }
+
+    fn on_tab_close(&mut self, tiles: &mut Tiles<Pane>, tile: TileId) -> bool {
+        match tiles.get(tile) {
+            Some(Tile::Pane(pane)) => self.panes.close_asked(*pane),
+            _ => true,
+        }
     }
 
     /// Tabs over a single pane too, so every pane has something to drag and close by.

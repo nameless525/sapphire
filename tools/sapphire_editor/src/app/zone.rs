@@ -9,11 +9,12 @@
 
 use egui::{RichText, Ui};
 use sapphire_assets::AssetId;
-use sapphire_document::{Document, DocumentSet, PropertyPath};
+use sapphire_document::{Document, DocumentSet, PropertyPath, write};
 use sapphire_math::Vec3;
 use sapphire_zone::ZoneDocument;
 
 use super::Editor;
+use crate::commands::Command;
 use crate::gizmo::{Axis, Gizmo, ViewCamera, along};
 use crate::viewport::ZoneShown;
 
@@ -43,6 +44,8 @@ struct GizmoDrag {
     from: Vec3,
     /// How far along the axis the press was.
     pressed: f32,
+    /// What it last set the number to.
+    set: Option<f32>,
 }
 
 /// How near a placement's place a click must be to select it, in points.
@@ -55,25 +58,27 @@ impl ZonePanel {
     }
 
     /// The pointer's share of the viewport, before the view takes what's left: a press on an arrow starts a drag
-    /// of it, which moves the placement until the press ends. Says whether it took the pointer.
+    /// of it, which moves the placement until the press ends. What it does is commands, in `asked`, for the editor
+    /// to run once the viewport has drawn. Says whether it took the pointer.
     pub(super) fn gizmo(
         &mut self,
-        documents: &mut DocumentSet,
+        documents: &DocumentSet,
         zone: Option<AssetId>,
         response: &egui::Response,
         camera: Option<&ViewCamera>,
         rect: egui::Rect,
+        asked: &mut Vec<Command>,
     ) -> bool {
         self.hot = None;
         let (Some(zone), Some(camera)) = (zone, camera) else {
             self.drag = None;
             return false;
         };
-        let Some(document) = documents.get_mut::<ZoneDocument>(zone) else { return false };
+        let Some(document) = documents.get::<ZoneDocument>(zone) else { return false };
         let pointer = response.ctx.input(|input| input.pointer.clone());
         let Some(gizmo) = self.gizmo_on(document, zone, camera) else {
             self.drag = None;
-            self.click_to_select(document, zone, response, camera, rect);
+            self.click_to_select(document, response, camera, rect, asked);
             return false;
         };
         if pointer.primary_pressed()
@@ -82,19 +87,19 @@ impl ZonePanel {
             && let Some(placement) = self.selected_in(zone)
             && let Some(pressed) = along(gizmo.origin, axis, camera.ray(at, rect))
         {
-            document.begin_gesture(MOVE_LABEL);
-            self.drag = Some(GizmoDrag { zone, placement, axis, from: gizmo.origin, pressed });
+            asked.push(Command::Begin(MOVE_LABEL.to_owned()));
+            self.drag = Some(GizmoDrag { zone, placement, axis, from: gizmo.origin, pressed, set: None });
         }
-        let Some(drag) = self.drag.filter(|drag| drag.zone == zone) else {
+        let Some(mut drag) = self.drag.filter(|drag| drag.zone == zone) else {
             self.hot = pointer.hover_pos().and_then(|at| gizmo.pick(camera, rect, at));
             if self.hot.is_none() {
-                self.click_to_select(document, zone, response, camera, rect);
+                self.click_to_select(document, response, camera, rect, asked);
             }
             return false;
         };
         self.hot = Some(drag.axis);
         if !pointer.primary_down() {
-            document.end_gesture();
+            asked.push(Command::End);
             self.drag = None;
             return true;
         }
@@ -103,13 +108,22 @@ impl ZonePanel {
         {
             let moved = drag.from[drag.axis.index()] + now - drag.pressed;
             let snapped = (moved / SNAP).round() * SNAP;
-            let path = placement_at(drag.placement, drag.axis);
-            // An undo or a save while it's held ends its gesture, and the rest of it is one of its own.
-            if !document.in_gesture() {
-                document.begin_gesture(MOVE_LABEL);
+            // A frame where it hasn't moved asks nothing, unless an undo or a save ended its gesture under it: then
+            // it sets the number again, as each frame of a held drag did before.
+            if drag.set != Some(snapped) || !document.in_gesture() {
+                drag.set = Some(snapped);
+                self.drag = Some(drag);
+                // An undo or a save while it's held ends its gesture, and the rest of it is one of its own.
+                if !document.in_gesture() && !asked.iter().any(|command| matches!(command, Command::Begin(_)))
+                {
+                    asked.push(Command::Begin(MOVE_LABEL.to_owned()));
+                }
+                // Refused or not, the drag goes on: the document's checks are the word on what it holds.
+                if let Ok(value) = write::canonical(&snapped, document.registry()) {
+                    let path = placement_at(drag.placement, drag.axis).to_string();
+                    asked.push(Command::SetProperty { path, value });
+                }
             }
-            // Refused or not, the drag goes on: the document's checks are the word on what it holds.
-            let _ = document.set(MOVE_LABEL, &path, &snapped);
         }
         true
     }
@@ -117,12 +131,12 @@ impl ZonePanel {
     /// A click off the gizmo selects the placement whose place shows nearest it, within [`CLICK_REACH`], or
     /// nothing.
     fn click_to_select(
-        &mut self,
+        &self,
         document: &Document<ZoneDocument>,
-        zone: AssetId,
         response: &egui::Response,
         camera: &ViewCamera,
         rect: egui::Rect,
+        asked: &mut Vec<Command>,
     ) {
         let (true, Some(at), Some(value)) =
             (response.clicked(), response.interact_pointer_pos(), document.value())
@@ -139,7 +153,7 @@ impl ZonePanel {
             })
             .filter(|(distance, _)| *distance <= CLICK_REACH)
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        self.selected = nearest.map(|(_, index)| (zone, index));
+        asked.push(Command::SelectPlacement(nearest.map(|(_, index)| index)));
     }
 
     /// The gizmo on what's selected in `document`, as `camera` sees it.
@@ -184,10 +198,11 @@ impl Editor {
     /// The viewport's pointer, for the gizmo first.
     pub(super) fn viewport_pane(&mut self, ui: &mut Ui) {
         let zone = self.current_zone();
-        let (documents, panel) = (&mut self.documents, &mut self.zone);
-        self.viewport.ui(ui, |response, camera, rect| panel.gizmo(documents, zone, response, camera, rect));
+        let (documents, panel, asked) = (&self.documents, &mut self.zone, &mut self.asked);
+        self.viewport
+            .ui(ui, |response, camera, rect| panel.gizmo(documents, zone, response, camera, rect, asked));
         if self.viewport.take_asked_to_play() {
-            self.play_in_viewport(None);
+            self.asked.push(Command::PlayInViewport(None));
         }
     }
 
@@ -245,7 +260,7 @@ impl Editor {
             }
         });
         if let Some(index) = choose {
-            self.zone.selected = Some((id, index));
+            self.act(Command::SelectPlacement(Some(index)));
         }
     }
 }

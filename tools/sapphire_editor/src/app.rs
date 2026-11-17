@@ -8,11 +8,18 @@
 
 mod browser;
 mod cvars;
+mod device;
+mod dispatch;
+mod inspector;
+mod palette;
 mod properties;
 mod screen;
 mod sequencer;
+mod timeline_pane;
+mod top_bar;
 mod zone;
 
+pub use dispatch::ScriptError;
 pub use sequencer::RATE;
 pub use zone::SNAP;
 
@@ -29,6 +36,7 @@ use sapphire_livelink::protocol::MoveAttempt;
 use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument};
 use sapphire_time::Stopwatch;
 
+use crate::commands::Command;
 use crate::cooked::{self, Cook};
 use crate::edits::{self, EditError, EntryRef, EntryValue, MovesDocument, Track};
 use crate::figure::{Casting, Figure, Figures};
@@ -246,6 +254,18 @@ pub struct Editor {
     /// in the text key by key, since only its widget holds what's typed, and a save has to find it there.
     typing_number: Option<(egui::Id, AssetId)>,
     viewport: ViewportPane,
+    /// The command palette, while it's open (Cmd+P).
+    palette: Option<palette::Palette>,
+    /// How many notices in trouble have gone up: one going up while a command runs refuses it.
+    troubles: u64,
+    /// How deep in commands this is: only those at the top are recorded.
+    depth: u32,
+    /// Where a session's commands go, if it's being recorded.
+    recording: Option<dispatch::Recording>,
+    /// What the timeline's drag last asked, so a frame that asks it again runs nothing.
+    drag_asked: Option<Action>,
+    /// Commands a pass asked for from inside the shell, run once it's drawn.
+    asked: Vec<Command>,
 }
 
 /// What's being typed over.
@@ -349,6 +369,12 @@ impl Editor {
             typed: None,
             typing_number: None,
             viewport: ViewportPane::default(),
+            palette: None,
+            troubles: 0,
+            depth: 0,
+            recording: None,
+            drag_asked: None,
+            asked: Vec::new(),
         };
         if let Some(path) = options.file {
             editor.open(&path);
@@ -439,7 +465,7 @@ impl Editor {
     /// says why. What's being typed goes in first, or nothing opens until it's fixed or dropped.
     pub fn open(&mut self, path: &Path) {
         if !self.take_typed() {
-            self.notice = Some(Notice {
+            self.say(Notice {
                 text: "nothing opens until what's being typed is fixed or dropped".to_owned(),
                 trouble: true,
             });
@@ -475,7 +501,7 @@ impl Editor {
                     _ => {}
                 }
             }
-            Err(error) => self.notice = Some(Notice { text: error.to_string(), trouble: true }),
+            Err(error) => self.say(Notice { text: error.to_string(), trouble: true }),
         }
     }
 
@@ -705,8 +731,9 @@ impl Editor {
         self.run.as_ref()?.frames.get(self.frame)
     }
 
+    /// The simulation's run of the selected move, which the preview shows.
     #[must_use]
-    pub fn run(&self) -> Option<&Run> {
+    pub fn preview_run(&self) -> Option<&Run> {
         self.run.as_ref()
     }
 
@@ -977,10 +1004,10 @@ impl Editor {
             Ok(()) => {
                 let Some(file) = self.current() else { return };
                 let (name, text) = (file.file_name(), file.text().to_owned());
-                self.notice = Some(Notice { text: format!("saved {name}"), trouble: false });
+                self.say(Notice { text: format!("saved {name}"), trouble: false });
                 self.link.push(name, text);
             }
-            Err(text) => self.notice = Some(Notice { text, trouble: true }),
+            Err(text) => self.say(Notice { text, trouble: true }),
         }
     }
 
@@ -1013,20 +1040,32 @@ impl Editor {
     /// stays in its field, and the top bar says why.
     fn take_typed(&mut self) -> bool {
         let Some(typed) = self.typed.take() else { return true };
-        let label = format!("edit {}", typed.at.label());
-        let result: Result<(), EditError> = match &typed.at {
+        // It lands as the command it amounts to, on the document it was typed in, which a script then repeats.
+        let (result, command): (Result<(), EditError>, Command) = match &typed.at {
             TypedAt::Entry { entry, path } => {
                 let Some(document) = self.moves_document_mut() else { return true };
-                document
-                    .together(&label, |document| edits::set_entry_value(document, *entry, path, &typed.text))
+                let label = format!("edit {path}");
+                let result = document
+                    .together(&label, |document| edits::set_entry_value(document, *entry, path, &typed.text));
+                (result, Command::SetValue { entry: *entry, path: path.clone(), value: typed.text.clone() })
             }
-            TypedAt::Property { document, path, .. } => {
-                let Some(document) = self.documents.any_mut(*document) else { return true };
-                document.set_spelled(&label, path, &typed.text).map(|_| ()).map_err(EditError::from)
+            TypedAt::Property { document: id, path, .. } => {
+                if self.current != Some(*id)
+                    && let Some(path) = self.documents.path(*id).map(Path::to_owned)
+                {
+                    self.go_to(*id);
+                    self.record(Command::Open(path));
+                }
+                let Some(document) = self.documents.any_mut(*id) else { return true };
+                let label = format!("edit {}", dispatch::last_step(path));
+                let result =
+                    document.set_spelled(&label, path, &typed.text).map(|_| ()).map_err(EditError::from);
+                (result, Command::SetProperty { path: path.to_string(), value: typed.text.clone() })
             }
         };
         match result {
             Ok(()) => {
+                self.record(command);
                 self.notice = None;
                 self.link.clear_push();
                 self.refresh();
@@ -1064,15 +1103,8 @@ impl Editor {
             }
             self.typing_number = None;
             let taken_back = ui.input(|input| input.key_pressed(Key::Escape));
-            if let Some(file) = self.documents.any_mut(id) {
-                if taken_back {
-                    file.cancel_gesture();
-                } else {
-                    file.end_gesture();
-                }
-            }
-            if taken_back {
-                self.after_history();
+            if self.documents.any(id).is_some_and(|file| file.in_gesture()) {
+                self.act(if taken_back { Command::Cancel } else { Command::End });
             }
         }
         if ui.input(|input| input.pointer.any_down()) {
@@ -1080,17 +1112,8 @@ impl Editor {
         }
         self.drag = None;
         self.drag_label = None;
-        let ids: Vec<AssetId> = self
-            .documents
-            .ids()
-            .filter(|id| self.documents.any(*id).is_some_and(|file| file.in_gesture()))
-            .collect();
-        for id in ids {
-            if let Some(file) = self.documents.any_mut(id)
-                && file.in_gesture()
-            {
-                file.end_gesture();
-            }
+        if self.documents.ids().any(|id| self.documents.any(id).is_some_and(|file| file.in_gesture())) {
+            self.act(Command::End);
         }
     }
 
@@ -1153,7 +1176,7 @@ impl Editor {
             self.after_history();
         } else if let Some(why) = file.why_no_undo() {
             // At history's floor: it's not that nothing was ever done, and the file doesn't have this text.
-            self.notice = Some(Notice { text: why, trouble: false });
+            self.say(Notice { text: why, trouble: false });
         }
     }
 
@@ -1167,6 +1190,8 @@ impl Editor {
     }
 
     fn after_history(&mut self) {
+        // A held drag asks again what it asked before the text moved.
+        self.drag_asked = None;
         self.notice = None;
         self.link.clear_push();
         self.refresh();
@@ -1202,46 +1227,51 @@ impl Editor {
                 Some(result)
             }
             Err(error) => {
-                self.notice = Some(Notice { text: error.0, trouble: true });
+                self.say(Notice { text: error.0, trouble: true });
                 None
             }
         }
     }
 
-    /// Applies what the timeline asked.
+    /// Applies what the timeline asked, as the commands it amounts to. A held drag asks each frame, and a frame
+    /// that asks what the last did runs nothing.
     pub fn apply(&mut self, action: Action) {
+        let edits =
+            matches!(action, Action::SetWindow { .. } | Action::SetInstant { .. } | Action::SetPhases { .. });
+        if edits && self.drag_label.is_some() && self.drag_asked.as_ref() == Some(&action) {
+            return;
+        }
+        self.drag_asked = edits.then(|| action.clone());
         match action {
-            Action::Scrub(tick) => self.set_tick(tick),
-            Action::Select(entry) => self.selected_entry = entry,
+            Action::Scrub(tick) => self.act(Command::Tick(tick)),
+            Action::Select(entry) => self.act(Command::Select(entry)),
             Action::BeginGesture(label) => {
-                self.stop();
-                self.begin_gesture(&label);
+                if self.playing.is_some() {
+                    self.act(Command::Stop);
+                }
+                self.begin_on_timeline(&label);
                 self.drag_label = Some(label);
             }
-            Action::EndGesture => {
-                self.drag_label = None;
-                if let Some(file) = self.moves_document_mut() {
-                    file.end_gesture();
-                }
-            }
+            Action::EndGesture => self.act(Command::End),
             Action::SetWindow { entry, from, to, part } => {
                 self.resume_drag();
-                self.edit("edit a window", |text| edits::set_window(text, entry, from, to));
+                self.act(Command::SetWindow { entry, from, to });
                 // The preview shows the tick the drag has hold of.
                 let tick = match part {
                     Part::Start | Part::Body => from,
                     Part::End => to.saturating_sub(1),
                 };
-                self.set_tick(tick);
+                self.act(Command::Tick(tick));
             }
             Action::SetInstant { entry, at } => {
                 self.resume_drag();
-                self.edit("move an instant", |text| edits::set_instant(text, entry, at));
-                self.set_tick(at);
+                self.act(Command::SetInstant { entry, at });
+                self.act(Command::Tick(at));
             }
             Action::SetPhases { mv, phases, edge } => {
                 self.resume_drag();
-                self.edit("edit the phases", |text| edits::set_phases(text, mv, phases));
+                let edits::Phases { startup, active, recovery } = phases;
+                self.act(Command::SetPhases { mv, startup, active, recovery });
                 let tick = match edge {
                     PhaseEdge::StartupEnd => phases.startup,
                     PhaseEdge::ActiveEnd => phases.startup.saturating_add(phases.active),
@@ -1249,9 +1279,9 @@ impl Editor {
                         phases.startup.saturating_add(phases.active).saturating_add(phases.recovery)
                     }
                 };
-                self.set_tick(tick);
+                self.act(Command::Tick(tick));
             }
-            Action::Add(track) => self.add_to_track(track),
+            Action::Add(track) => self.act(Command::Add(track)),
         }
     }
 
@@ -1260,19 +1290,24 @@ impl Editor {
     fn resume_drag(&mut self) {
         let Some(label) = self.drag_label.clone() else { return };
         if self.moves_document().is_some_and(|file| !file.in_gesture()) {
-            self.begin_gesture(&label);
+            self.begin_on_timeline(&label);
         }
     }
 
-    /// Starts a gesture, with what's being typed in the text first, as a step of its own.
-    fn begin_gesture(&mut self, label: &str) {
-        self.take_typed();
-        self.typing_number = None;
+    /// Starts a gesture on the timeline's document, which becomes the current one first, as a command of its own.
+    fn begin_on_timeline(&mut self, label: &str) {
         if let Some(id) = self.moves {
-            self.go_to(id);
+            self.make_current(id);
         }
-        if let Some(file) = self.moves_document_mut() {
-            file.begin_gesture(label);
+        self.act(Command::Begin(label.to_owned()));
+    }
+
+    /// Makes `id` the current document by the command that does, so a script goes where the session went.
+    pub(super) fn make_current(&mut self, id: AssetId) {
+        if self.current != Some(id)
+            && let Some(path) = self.documents.path(id).map(Path::to_owned)
+        {
+            self.act(Command::Open(path));
         }
     }
 
@@ -1384,7 +1419,7 @@ impl Editor {
         self.now = now;
         self.poll(now);
         self.advance_playback(now);
-        self.keys(ui, now);
+        self.keys(ui);
         if self.playing.is_some() {
             ui.ctx().request_repaint();
         } else {
@@ -1401,6 +1436,10 @@ impl Editor {
             shell.ui(ui, self);
             self.shell = shell;
         });
+        for command in std::mem::take(&mut self.asked) {
+            self.act(command);
+        }
+        self.palette_ui(ui);
         if let Some((_, saved @ None)) = &mut self.layout {
             *saved = Some(self.shell.tree.clone());
         }
@@ -1409,795 +1448,71 @@ impl Editor {
         self.settle_typed(ui);
     }
 
-    fn keys(&mut self, ui: &Ui, now: f64) {
+    /// The editor's keys, each the command the palette lists it by. Cmd+P opens the palette, which has the keys
+    /// while it's open.
+    fn keys(&mut self, ui: &Ui) {
         // The keys are the fight's while it's played.
         if self.viewport.is_playing() {
             return;
         }
         let ctx = ui.ctx();
-        let typing = ctx.egui_wants_keyboard_input();
         let pressed =
             |modifiers: Modifiers, key: Key| ctx.input_mut(|input| input.consume_key(modifiers, key));
+        if pressed(Modifiers::COMMAND, Key::P) {
+            self.palette = match self.palette {
+                Some(_) => None,
+                None => Some(palette::Palette::default()),
+            };
+        }
+        if self.palette.is_some() {
+            return;
+        }
+        let typing = ctx.egui_wants_keyboard_input();
         if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) {
-            self.redo();
+            self.act(Command::Redo);
         }
         if pressed(Modifiers::COMMAND, Key::Z) {
-            self.undo();
+            self.act(Command::Undo);
         }
         if pressed(Modifiers::COMMAND, Key::S) {
-            self.save_and_push();
+            self.act(Command::SaveAndPush);
         }
         if typing {
             return;
         }
-        if pressed(Modifiers::NONE, Key::Space) {
-            if self.playing.is_some() {
-                self.stop();
-            } else {
-                self.play(now);
+        let keys = [
+            (Modifiers::NONE, Key::Space),
+            (Modifiers::ALT, Key::ArrowLeft),
+            (Modifiers::ALT, Key::ArrowRight),
+            (Modifiers::NONE, Key::ArrowLeft),
+            (Modifiers::NONE, Key::Comma),
+            (Modifiers::NONE, Key::ArrowRight),
+            (Modifiers::NONE, Key::Period),
+            (Modifiers::NONE, Key::Home),
+            (Modifiers::NONE, Key::End),
+            (Modifiers::NONE, Key::OpenBracket),
+            (Modifiers::NONE, Key::CloseBracket),
+            (Modifiers::NONE, Key::Delete),
+            (Modifiers::NONE, Key::Backspace),
+        ];
+        for (modifiers, key) in keys {
+            if !pressed(modifiers, key) {
+                continue;
             }
-        }
-        if pressed(Modifiers::ALT, Key::ArrowLeft) {
-            self.nudge_selected(-1);
-        }
-        if pressed(Modifiers::ALT, Key::ArrowRight) {
-            self.nudge_selected(1);
-        }
-        if pressed(Modifiers::NONE, Key::ArrowLeft) || pressed(Modifiers::NONE, Key::Comma) {
-            self.set_tick(self.tick.saturating_sub(1));
-        }
-        if pressed(Modifiers::NONE, Key::ArrowRight) || pressed(Modifiers::NONE, Key::Period) {
-            self.set_tick(self.tick.saturating_add(1));
-        }
-        if pressed(Modifiers::NONE, Key::Home) {
-            self.set_tick(0);
-        }
-        if pressed(Modifiers::NONE, Key::End) {
-            self.set_tick(u32::MAX);
-        }
-        if pressed(Modifiers::NONE, Key::OpenBracket) {
-            self.set_selected_end_at_playhead(true);
-        }
-        if pressed(Modifiers::NONE, Key::CloseBracket) {
-            self.set_selected_end_at_playhead(false);
-        }
-        if pressed(Modifiers::NONE, Key::Delete) || pressed(Modifiers::NONE, Key::Backspace) {
-            self.delete_selected();
-        }
-    }
-
-    fn top_bar(&mut self, ui: &mut Ui) {
-        ui.add_space(3.0);
-        ui.horizontal_wrapped(|ui| {
-            let name = self.current().map_or_else(|| "no file".to_owned(), |file| file.file_name());
-            let dirty = self.typed.is_some() || self.current().is_some_and(|file| file.is_dirty());
-            let title = if dirty { format!("{name} *") } else { name };
-            ui.label(RichText::new(title).strong());
-
-            let has_file = self.current.is_some();
-            if ui
-                .add_enabled(has_file, egui::Button::new("Save and push"))
-                .on_hover_text("Cmd+S, or Ctrl+S")
-                .clicked()
-            {
-                self.save_and_push();
-            }
-            let undo = self.current().and_then(|file| file.undo_label()).map(ToOwned::to_owned);
-            // History's floor is worth a click: it says why there's nothing there.
-            let floor = self.current().and_then(|file| file.document().why_no_undo());
-            let hover = undo.clone().or_else(|| floor.clone()).unwrap_or_default();
-            if ui
-                .add_enabled(undo.is_some() || floor.is_some(), egui::Button::new("Undo"))
-                .on_hover_text(hover)
-                .clicked()
-            {
-                self.undo();
-            }
-            let redo = self.current().and_then(|file| file.redo_label()).map(ToOwned::to_owned);
-            if ui
-                .add_enabled(redo.is_some(), egui::Button::new("Redo"))
-                .on_hover_text(redo.unwrap_or_default())
-                .clicked()
-            {
-                self.redo();
-            }
-            if ui.add_enabled(has_file, egui::Button::new("Close file")).clicked() {
-                self.request_close();
-            }
-            ui.menu_button("Panes", |ui| {
-                for pane in Pane::ALL {
-                    let mut open = self.shell.is_open(pane);
-                    if ui.checkbox(&mut open, pane.title()).changed() {
-                        if open {
-                            self.shell.open(pane);
-                        } else {
-                            self.shell.close(pane);
-                        }
-                    }
-                }
-            });
-            ui.separator();
-            let device = self.link.device();
-            let (dot, words) = match device {
-                Some(status) => {
-                    (Color32::from_rgb(96, 214, 110), format!("{} ({})", status.app, status.platform))
-                }
-                None => (Color32::from_gray(110), "no device".to_owned()),
+            let command = match key {
+                Key::Space if self.playing.is_some() => Command::Stop,
+                Key::Space => Command::Play,
+                Key::ArrowLeft if modifiers.alt => Command::Nudge(-1),
+                Key::ArrowRight if modifiers.alt => Command::Nudge(1),
+                Key::ArrowLeft | Key::Comma => Command::Tick(self.tick.saturating_sub(1)),
+                Key::ArrowRight | Key::Period => Command::Tick(self.tick.saturating_add(1)),
+                Key::Home => Command::Tick(0),
+                Key::End => Command::Tick(u32::MAX),
+                Key::OpenBracket => Command::StartAtPlayhead,
+                Key::CloseBracket => Command::EndAtPlayhead,
+                _ => Command::Delete,
             };
-            let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-            ui.painter().circle_filled(dot_rect.center(), 4.5, dot);
-            let address = ui.add(TextEdit::singleline(&mut self.address_text).desired_width(130.0));
-            if address.lost_focus() {
-                match self.address_text.parse() {
-                    // An address unchanged is no change, however often the field lets go.
-                    Ok(address) => self.link.set_address(Some(address)),
-                    Err(_) => {
-                        self.notice = Some(Notice {
-                            text: format!("`{}` isn't an address and port", self.address_text),
-                            trouble: true,
-                        });
-                    }
-                }
-            }
-            ui.label(words);
-        });
-        if self.quit == Quit::Asking {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
-                if ui.button("Save and quit").clicked() {
-                    match self.save_all() {
-                        Ok(()) => self.quit = Quit::Yes,
-                        Err(text) => {
-                            self.notice = Some(Notice { text, trouble: true });
-                            self.quit = Quit::No;
-                        }
-                    }
-                }
-                if ui.button("Quit without saving").clicked() {
-                    self.quit = Quit::Yes;
-                }
-                if ui.button("Keep editing").clicked() {
-                    self.quit = Quit::No;
-                }
-            });
-        }
-        if let Some(id) = self.closing {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
-                if ui.button("Save and close").clicked() {
-                    match self.documents.save(id) {
-                        Ok(()) => self.close(id),
-                        Err(error) => {
-                            self.notice = Some(Notice { text: save_trouble(&error), trouble: true });
-                            self.closing = None;
-                        }
-                    }
-                }
-                if ui.button("Close without saving").clicked() {
-                    self.close(id);
-                }
-                if ui.button("Keep editing").clicked() {
-                    self.closing = None;
-                }
-            });
-        }
-        if let (Some(id), Some(conflict)) = (self.current, self.current().and_then(|file| file.conflict())) {
-            let (said, can_take) = match conflict {
-                Conflict::Text(_) => ("The file changed on disk, and you have edits here.", true),
-                Conflict::NotText => (
-                    "The file on disk isn't text any more. Keeping yours replaces it at the next save.",
-                    false,
-                ),
-            };
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(Color32::from_rgb(255, 170, 90), said);
-                if can_take && ui.button("Take the file's").clicked() {
-                    self.typed = None;
-                    self.documents.take_disk(id);
-                    self.after_take();
-                }
-                if can_take
-                    && ui
-                        .button("Mine on top of the file's")
-                        .on_hover_text("Each edit that still fits goes back")
-                        .clicked()
-                {
-                    self.typed = None;
-                    if let Some(rebased) = self.documents.rebase(id) {
-                        self.notice = Some(rebase_notice(&rebased));
-                    }
-                    self.after_take();
-                }
-                if ui.button("Keep mine").clicked() {
-                    self.documents.keep_mine(id);
-                }
-            });
-        }
-        if let Some(typed) = &self.typed
-            && let Some(why) = &typed.refused
-        {
-            let entry = match &typed.at {
-                TypedAt::Entry { entry, .. } => Some(*entry),
-                TypedAt::Property { .. } => None,
-            };
-            let said = match entry {
-                Some(entry) => format!(
-                    "`{}` can't go in {} {}'s {}, and nothing else can until it's fixed or dropped: {why}",
-                    typed.text,
-                    timeline::title(entry.track),
-                    entry.index,
-                    typed.at.label(),
-                ),
-                None => format!(
-                    "`{}` can't go in {}, and nothing else can until it's fixed or dropped: {why}",
-                    typed.text,
-                    typed.at.label(),
-                ),
-            };
-            ui.horizontal_wrapped(|ui| {
-                if let Some(entry) = entry
-                    && ui.button("Show it").clicked()
-                {
-                    self.choose_move(entry.mv);
-                    self.selected_entry = Some(entry);
-                    self.shell.open(Pane::Inspector);
-                }
-                if ui.button("Drop it").clicked() {
-                    self.typed = None;
-                }
-                ui.colored_label(Color32::from_rgb(255, 120, 110), said);
-            });
-        }
-        if let Some(message) = self.current().and_then(|file| file.document().failure_message()) {
-            ui.colored_label(
-                Color32::from_rgb(255, 120, 110),
-                format!("This can't be edited until the file reads again. {message}"),
-            );
-        }
-        if let Some(line) = self.current().and_then(|file| generated_by(file.text())) {
-            ui.colored_label(Color32::from_rgb(235, 190, 110), line);
-        }
-        if let Some(notice) = &self.notice {
-            let color =
-                if notice.trouble { Color32::from_rgb(255, 120, 110) } else { Color32::from_gray(190) };
-            ui.colored_label(color, &notice.text);
-        }
-        ui.add_space(2.0);
-    }
-
-    /// What taking a file's text leaves to do.
-    fn after_take(&mut self) {
-        self.link.clear_push();
-        self.refresh();
-        self.check_selection();
-    }
-
-    fn moves_list(&mut self, ui: &mut Ui) {
-        let Some(document) = self.document() else { return };
-        let problems = self.problems();
-        let rows: Vec<(usize, &str, u32, usize)> = document
-            .moves
-            .iter()
-            .enumerate()
-            .map(|(index, mv)| {
-                let count = problems
-                    .iter()
-                    .filter(|problem| problem.in_move.as_deref() == Some(mv.name.as_str()))
-                    .count();
-                (index, mv.name.as_str(), mv.ticks(), count)
-            })
-            .collect();
-        let mut choose = None;
-        egui::ScrollArea::vertical().id_salt("moves").show(ui, |ui| {
-            for (index, name, ticks, count) in rows {
-                let selected = index == self.selected_move;
-                let text = if count > 0 {
-                    RichText::new(format!("{name}  ({ticks})  ! {count}"))
-                        .color(Color32::from_rgb(255, 130, 115))
-                } else {
-                    RichText::new(format!("{name}  ({ticks})"))
-                };
-                if ui.selectable_label(selected, text).clicked() {
-                    choose = Some(index);
-                }
-            }
-        });
-        if let Some(index) = choose {
-            self.choose_move(index);
-        }
-    }
-
-    fn timeline_panel(&mut self, ui: &mut Ui) {
-        ui.add_space(3.0);
-        let problems = self.problems();
-        let editable = self.moves_document().is_some_and(|file| file.failure().is_none());
-        let Some(document) = self
-            .moves
-            .and_then(|id| self.documents.get::<MoveSetDocument>(id))
-            .and_then(|file| file.last_good())
-        else {
-            ui.label("Open a `.moves.ron` file.");
-            return;
-        };
-        let Some(mv) = document.moves.get(self.selected_move) else { return };
-        let root = self
-            .preview
-            .as_ref()
-            .and_then(|snapshot| {
-                snapshot
-                    .move_at(Some(&mv.name), self.selected_move)
-                    .and_then(|mv| snapshot.set.find(Name::intern(&mv.name)))
-            })
-            .map(|(_, mv)| mv.tables.root_samples());
-        let hit_ticks: Vec<u32> = self
-            .run
-            .as_ref()
-            .map_or_else(Vec::new, |run| run.hits().filter(|hit| hit.on_dummy).map(|hit| hit.tick).collect());
-        let view = TimelineView {
-            mv,
-            mv_index: self.selected_move,
-            tick: self.tick,
-            selected: self.selected_entry,
-            problems: &problems,
-            root,
-            hit_ticks: &hit_ticks,
-            editable,
-            show_all: self.show_all_tracks,
-        };
-        let actions = {
-            let drag = &mut self.drag;
-            let mut actions = Vec::new();
-            egui::ScrollArea::both()
-                .id_salt("timeline")
-                .auto_shrink([false, false])
-                .max_height(ui.available_height() - 74.0)
-                .show(ui, |ui| {
-                    actions = timeline::show(ui, &view, drag);
-                });
-            actions
-        };
-        for action in actions {
-            self.apply(action);
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.show_all_tracks, "All tracks");
-            let command = if ui.ctx().os() == egui::os::OperatingSystem::Mac { "Cmd" } else { "Ctrl" };
-            ui.add(
-                egui::Label::new(
-                    RichText::new(format!(
-                        "Drag ends and bodies.   [ and ]: window's ends to the playhead.   Alt+arrows: nudge.   \
-                         Delete: remove.   {command}+Z: undo.   {command}+S: save and push."
-                    ))
-                    .small()
-                    .color(Color32::from_gray(140)),
-                )
-                .truncate(),
-            );
-        });
-        self.problems_strip(ui);
-        // The panel keeps what it's been given, however little there is to show.
-        ui.allocate_space(ui.available_size());
-    }
-
-    /// The document's problems, whichever move they're in.
-    fn problems_strip(&mut self, ui: &mut Ui) {
-        let problems = self.problems();
-        if problems.is_empty() {
-            let word = if !self.stale && self.preview.is_some() {
-                "The document compiles."
-            } else {
-                "The document checks, as far as it can with no cook."
-            };
-            ui.label(RichText::new(word).small().color(Color32::from_gray(150)));
-            return;
-        }
-        let mut go_to = None;
-        egui::ScrollArea::vertical().id_salt("problems").max_height(44.0).show(ui, |ui| {
-            for problem in &problems {
-                let source = if problem.from_device { "device refused: " } else { "" };
-                let text = RichText::new(format!("{source}{}", problem.describe()))
-                    .color(Color32::from_rgb(255, 130, 115));
-                if ui.add(egui::Label::new(text).sense(Sense::click())).clicked()
-                    && let Some(name) = &problem.in_move
-                {
-                    go_to = Some(name.clone());
-                }
-            }
-        });
-        if let Some(name) = go_to {
-            self.select_move(&name);
-        }
-    }
-
-    fn preview_panel(&mut self, ui: &mut Ui, now: f64) {
-        self.transport(ui, now);
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Dummy");
-            let mut distance = self.setup.dummy_distance;
-            let response =
-                ui.add(egui::DragValue::new(&mut distance).speed(0.02).range(0.3..=12.0).suffix(" m"));
-            if response.changed() {
-                self.set_dummy_distance(distance);
-            }
-            let mut warp = self.setup.warp_to_dummy;
-            if ui.checkbox(&mut warp, "Warp to it").changed() {
-                self.set_warp_to_dummy(warp);
-            }
-            ui.separator();
-            if ui.small_button("Side").clicked() {
-                self.view = View::side(self.setup.dummy_distance);
-                self.view_fit = ViewFit::Pending;
-            }
-            if ui.small_button("Front").clicked() {
-                self.view = View::front(self.setup.dummy_distance);
-                self.view_fit = ViewFit::Pending;
-            }
-            if ui.small_button("Top").clicked() {
-                self.view = View::top(self.setup.dummy_distance);
-                self.view_fit = ViewFit::Pending;
-            }
-            ui.checkbox(&mut self.overlays.bones, "Bones");
-            ui.checkbox(&mut self.overlays.hurtboxes, "Hurtboxes");
-        });
-        let size = ui.available_size().max(Vec2::splat(40.0));
-        let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
-        let rect = response.rect;
-        if response.dragged() {
-            self.view_fit = ViewFit::Manual;
-            let delta = response.drag_delta();
-            self.view.yaw += delta.x * 0.008;
-            self.view.pitch = (self.view.pitch + delta.y * 0.008).clamp(-0.3, 1.55);
-        }
-        if response.hovered() {
-            let zoom = ui.input(|input| input.smooth_scroll_delta.y);
-            if zoom != 0.0 {
-                self.view_fit = ViewFit::Manual;
-                self.view.zoom = (self.view.zoom * (1.0 + zoom * 0.002)).clamp(0.2, 6.0);
-            }
-        }
-        let posed = self.cook.casting.and_then(|casting| {
-            let figure: &Figure = self.cook.figures.get(casting)?;
-            Some(PosedFigure { figure, clip: casting.clip, generation: self.cook.generation })
-        });
-        let mut drew = false;
-        if let Some(run) = &self.run
-            && let Some(frame) = run.frames.get(self.frame)
-        {
-            if matches!(self.view_fit, ViewFit::Pending)
-                || matches!(self.view_fit, ViewFit::Fitted(size) if size != rect.size())
-            {
-                self.view.fit(rect, frame, posed);
-                self.view_fit = ViewFit::Fitted(rect.size());
-            }
-            preview::draw(&painter, rect, &self.view, run, frame, posed, &mut self.cache, self.overlays);
-            drew = true;
-        }
-        if !drew {
-            let why = self.run_error.clone().unwrap_or_else(|| "Open a `.moves.ron` file.".to_owned());
-            preview::empty(&painter, rect, &why);
-        }
-        if self.stale && drew {
-            let color = Color32::from_rgb(255, 150, 120);
-            let galley = painter.layout(
-                "Showing the last valid preview.".to_owned(),
-                egui::FontId::proportional(13.0),
-                color,
-                (rect.width() - 20.0).max(1.0),
-            );
-            let at = rect.left_bottom() + Vec2::new(10.0, -10.0 - galley.size().y);
-            painter.galley(at, galley, color);
-        }
-        if posed_missing(&self.cook, self.document()) {
-            let why = if self.cook.cook.is_some() {
-                "no character for this move in the cook"
-            } else {
-                "no character without a cook: `cargo xtask content`"
-            };
-            let at = rect.right_bottom() + Vec2::new(-10.0, -10.0);
-            painter.text(
-                at,
-                egui::Align2::RIGHT_BOTTOM,
-                why,
-                egui::FontId::proportional(12.0),
-                Color32::from_gray(140),
-            );
-        }
-    }
-
-    fn transport(&mut self, ui: &mut Ui, now: f64) {
-        ui.horizontal_wrapped(|ui| {
-            let ticks = self
-                .document()
-                .and_then(|document| document.moves.get(self.selected_move))
-                .map_or(0, MoveDocument::ticks);
-            if ui.small_button("|<").on_hover_text("First tick (Home)").clicked() {
-                self.set_tick(0);
-            }
-            if ui.small_button("<").on_hover_text("One tick back (Left, or comma)").clicked() {
-                self.set_tick(self.tick.saturating_sub(1));
-            }
-            if ui.small_button(">").on_hover_text("One tick on (Right, or full stop)").clicked() {
-                self.set_tick(self.tick.saturating_add(1));
-            }
-            let mut tick = self.tick;
-            let response = ui.add(
-                egui::DragValue::new(&mut tick)
-                    .speed(0.25)
-                    .range(0..=ticks.saturating_sub(1))
-                    .prefix("tick "),
-            );
-            if response.changed() {
-                self.set_tick(tick);
-            }
-            ui.label(format!("of {ticks}, {:.0} ms", f64::from(self.tick) * 1000.0 / 60.0));
-            ui.separator();
-            let playing = self.playing.is_some();
-            let label =
-                if playing { "Stop".to_owned() } else { format!("Play from frame {}", self.play_from) };
-            if ui.button(label).on_hover_text("Space").clicked() {
-                if playing {
-                    self.stop();
-                } else {
-                    self.play(now);
-                }
-            }
-            for (speed, word) in SPEEDS {
-                if ui.selectable_label(self.speed == speed, word).clicked() {
-                    self.set_speed(speed);
-                }
-            }
-            ui.checkbox(&mut self.looping, "Loop");
-        });
-    }
-
-    fn inspector(&mut self, ui: &mut Ui) {
-        ui.add_space(4.0);
-        let Some(entry) = self.selected_entry else {
-            self.move_inspector(ui);
-            return;
-        };
-        ui.label(RichText::new(timeline::title(entry.track)).strong());
-        let Some(document) = self.document() else { return };
-        let Some(mv) = document.moves.get(entry.mv) else { return };
-        let Some(span) = entry.track.spans(mv).get(entry.index).copied() else { return };
-        let (from, to, is_instant) = (span.from, span.to, entry.track.is_instant());
-        let editable = self.moves_document().is_some_and(|file| file.failure().is_none());
-        ui.add_enabled_ui(editable, |ui| {
-            egui::Grid::new("entry ticks").num_columns(2).show(ui, |ui| {
-                if is_instant {
-                    let mut at = from;
-                    ui.label("at");
-                    let response = ui.add(egui::DragValue::new(&mut at).speed(0.25));
-                    self.timeline_number_gesture(&response, "move an instant");
-                    if response.changed() {
-                        self.edit("move an instant", |text| edits::set_instant(text, entry, at));
-                    }
-                    ui.end_row();
-                } else {
-                    let (mut new_from, mut new_to) = (from, to);
-                    ui.label("from");
-                    let response = ui.add(egui::DragValue::new(&mut new_from).speed(0.25));
-                    self.timeline_number_gesture(&response, "edit a window");
-                    let from_changed = response.changed();
-                    ui.end_row();
-                    ui.label("to");
-                    let response = ui.add(egui::DragValue::new(&mut new_to).speed(0.25));
-                    self.timeline_number_gesture(&response, "edit a window");
-                    if from_changed || response.changed() {
-                        self.edit("edit a window", |text| edits::set_window(text, entry, new_from, new_to));
-                    }
-                    ui.end_row();
-                }
-            });
-            let values = self.moves_document().and_then(|file| edits::entry_values(file, entry).ok());
-            if let Some(values) = values {
-                egui::Grid::new("entry values").num_columns(2).show(ui, |ui| {
-                    for value in values {
-                        self.value_row(ui, entry, &value);
-                    }
-                });
-            }
-            ui.add_space(4.0);
-            if ui.button("Delete").on_hover_text("Delete or Backspace").clicked() {
-                self.delete_selected();
-            }
-        });
-    }
-
-    fn timeline_number_gesture(&mut self, response: &egui::Response, label: &str) {
-        if let Some(id) = self.moves {
-            self.number_gesture(response, label, id);
-        }
-    }
-
-    /// A number's drag, or its typing, is one step of undo on its document.
-    fn number_gesture(&mut self, response: &egui::Response, label: &str, id: AssetId) {
-        if response.drag_started() {
-            self.begin_gesture_on(id, label);
-        }
-        if response.drag_stopped()
-            && let Some(file) = self.documents.any_mut(id)
-        {
-            file.end_gesture();
-        }
-        let held = response.ctx.input(|input| input.pointer.any_down());
-        let idle = self.documents.any(id).is_some_and(|file| !file.in_gesture());
-        if response.has_focus() && !held && idle {
-            self.begin_gesture_on(id, label);
-            self.typing_number = Some((response.id, id));
-        }
-    }
-
-    fn begin_gesture_on(&mut self, id: AssetId, label: &str) {
-        self.take_typed();
-        self.typing_number = None;
-        self.go_to(id);
-        if let Some(file) = self.documents.any_mut(id) {
-            file.begin_gesture(label);
-        }
-    }
-
-    fn value_row(&mut self, ui: &mut Ui, entry: EntryRef, value: &EntryValue) {
-        ui.label(&value.path);
-        let label = format!("edit {}", value.path);
-        let number = self
-            .document()
-            .and_then(|document| sapphire_document::walk::get(document, &value.property).ok())
-            .and_then(properties::number_kind);
-        if let Some(kind) = number
-            && let Some((response, literal)) = properties::number_widget(ui, &value.literal, kind)
-        {
-            self.timeline_number_gesture(&response, &label);
-            if let Some(literal) = literal {
-                self.edit(&label, |text| edits::set_entry_value(text, entry, &value.path, &literal));
-            }
-        } else {
-            // A name or a bare word, as the file writes it: see `Typed`.
-            let field = egui::Id::unique(("inspector value", entry, &value.path));
-            let at = TypedAt::Entry { entry, path: value.path.clone() };
-            self.text_field(ui, field, at, &value.literal);
-        }
-        ui.end_row();
-    }
-
-    /// Takes what a field holds now. Typing in another field means the last one let go, and typing back to
-    /// what the file says leaves nothing to take.
-    fn keep_typing(&mut self, typed: Typed, literal: &str) {
-        let elsewhere = self.typed.as_ref().is_some_and(|other| other.field != typed.field);
-        if !elsewhere || self.take_typed() {
-            // What's typed belongs to its document, so that's the one a save or an undo means from here on.
-            match &typed.at {
-                TypedAt::Entry { .. } => {
-                    if let Some(id) = self.moves {
-                        self.go_to(id);
-                    }
-                }
-                TypedAt::Property { document, .. } => self.go_to(*document),
-            }
-            self.typed = (typed.text != literal).then_some(typed);
-        }
-    }
-
-    fn move_inspector(&mut self, ui: &mut Ui) {
-        let Some(document) = self.document() else { return };
-        let Some(mv) = document.moves.get(self.selected_move) else { return };
-        let (name, startup, active, recovery, ticks) =
-            (mv.name.clone(), mv.startup, mv.active, mv.recovery, mv.ticks());
-        let has_clip = mv.motion.clip.is_some();
-        ui.label(RichText::new(name).strong());
-        ui.label(format!("{ticks} ticks, {:.0} ms", f64::from(ticks) * 1000.0 / 60.0));
-        ui.label(format!("startup {startup}, active {active}, recovery {recovery}"));
-        if has_clip {
-            ui.label(
-                RichText::new(
-                    "Plays a clip tick for tick, so its length is the clip's. Windows move freely.",
-                )
-                .small()
-                .color(Color32::from_gray(150)),
-            );
-        } else {
-            ui.label(RichText::new("Keyed by hand.").small().color(Color32::from_gray(150)));
-        }
-        ui.label(
-            RichText::new("Select something on the timeline to edit it.")
-                .small()
-                .color(Color32::from_gray(150)),
-        );
-    }
-
-    fn device_panel(&mut self, ui: &mut Ui) {
-        match self.link.device() {
-            Some(status) => {
-                ui.label(format!("{}, cook `{}`", status.platform, status.cook));
-                let name = self.current().map(|file| file.file_name()).unwrap_or_default();
-                let taken = status.documents.iter().find(|document| {
-                    !name.is_empty()
-                        && Path::new(&document.source)
-                            .file_name()
-                            .is_some_and(|source| source == name.as_str())
-                });
-                match taken {
-                    Some(document) => {
-                        ui.label(format!("takes this file: {} edits so far", document.edits));
-                    }
-                    None if !name.is_empty() => {
-                        ui.colored_label(
-                            Color32::from_rgb(235, 190, 110),
-                            format!("no fight there plays {name}"),
-                        );
-                    }
-                    None => {}
-                }
-            }
-            None => {
-                let why = self.link.trouble().unwrap_or("looking");
-                ui.label(
-                    RichText::new(format!("Not connected: {why}")).small().color(Color32::from_gray(150)),
-                );
-            }
-        }
-        match self.link.last_push() {
-            _ if self.link.is_waiting() => {
-                ui.label("Pushing...");
-            }
-            Some(Pushed::Took { owner, milliseconds }) => {
-                ui.colored_label(
-                    Color32::from_rgb(120, 214, 130),
-                    format!("Took it in {milliseconds} ms: {owner}"),
-                );
-            }
-            Some(Pushed::Refused(refusals)) => {
-                ui.colored_label(
-                    Color32::from_rgb(255, 130, 115),
-                    format!("Refused, {} problems: it keeps what it had. See the timeline.", refusals.len()),
-                );
-            }
-            Some(Pushed::Failed(why)) => {
-                ui.colored_label(Color32::from_rgb(235, 190, 110), format!("Not pushed: {why}"));
-            }
-            None => {}
-        }
-        if let Some(earlier) = self.link.earlier_push() {
-            let came_to = match &earlier.pushed {
-                Pushed::Took { .. } => "taken".to_owned(),
-                Pushed::Refused(refusals) => format!("refused, {} problems", refusals.len()),
-                Pushed::Failed(why) => format!("not pushed: {why}"),
-            };
-            ui.label(
-                RichText::new(format!("An earlier save of {}: {came_to}", earlier.origin))
-                    .small()
-                    .color(Color32::from_gray(150)),
-            );
-        }
-        let attempts = self.link.attempts();
-        if !attempts.is_empty() {
-            ui.add_space(3.0);
-            ui.label(RichText::new("Last attempts").small().strong());
-            for attempt in attempts {
-                self.attempt_row(ui, attempt);
-            }
-        }
-    }
-
-    fn attempt_row(&self, ui: &mut Ui, attempt: &MoveAttempt) {
-        let newest = attempt.revision == attempt.newest_revision;
-        let word = if newest { "newest" } else { "older" };
-        ui.label(
-            RichText::new(format!(
-                "actor {}: {} rev {} ({word})",
-                attempt.actor, attempt.name, attempt.revision
-            ))
-            .small(),
-        );
-        let windows: Vec<String> =
-            attempt.hit_windows.iter().map(|window| format!("{}..{}", window.from, window.to)).collect();
-        if !windows.is_empty() {
-            ui.label(
-                RichText::new(format!("   hits {}", windows.join(", ")))
-                    .small()
-                    .color(Color32::from_gray(160)),
-            );
+            self.act(command);
         }
     }
 }
@@ -2209,7 +1524,7 @@ impl PaneUi for Editor {
             Pane::Browser => self.browser_panel(ui),
             Pane::Moves => self.moves_list(ui),
             Pane::Timeline => self.timeline_panel(ui),
-            Pane::Preview => self.preview_panel(ui, self.now),
+            Pane::Preview => self.preview_panel(ui),
             Pane::Viewport => self.viewport_pane(ui),
             Pane::Zone => self.zone_panel(ui),
             Pane::Sequencer => self.sequencer_panel(ui),
@@ -2231,6 +1546,11 @@ impl PaneUi for Editor {
             }
         });
     }
+
+    fn close_asked(&mut self, pane: Pane) -> bool {
+        self.asked.push(Command::ClosePane(pane));
+        false
+    }
 }
 
 /// A save's trouble, in a notice's words.
@@ -2239,38 +1559,6 @@ fn save_trouble(error: &SetError) -> String {
         SetError::ChangedOnDisk { .. } => error.to_string(),
         error => format!("not saved: {error}"),
     }
-}
-
-/// What a rebase came to, in a notice's words.
-fn rebase_notice(rebased: &Rebased) -> Notice {
-    if rebased.beneath {
-        return Notice {
-            text: "took the file's text: history can't say which edits weren't saved, so they're in undo"
-                .to_owned(),
-            trouble: true,
-        };
-    }
-    match rebased.refused.first() {
-        None => Notice {
-            text: format!("took the file's text, and {} edits went back on top", rebased.kept),
-            trouble: false,
-        },
-        Some(first) => Notice {
-            text: format!(
-                "took the file's text: {} edits went back on top and {} didn't, the first of them `{}`: {}",
-                rebased.kept,
-                rebased.refused.len(),
-                first.label,
-                first.why,
-            ),
-            trouble: true,
-        },
-    }
-}
-
-/// Whether the current move should have had a figure and didn't.
-fn posed_missing(cook: &CookState, document: Option<&MoveSetDocument>) -> bool {
-    document.is_some() && cook.casting.is_none()
 }
 
 /// What a new entry starts as, at `tick`, in the file's own words. The numbers are a start, not a choice:
@@ -2313,21 +1601,6 @@ fn default_entry(document: &MoveSetDocument, mv: &MoveDocument, track: Track, ti
         Track::Cues => format!("(name: \"cue\", at: {from})"),
         Track::RootKeys => format!("(at: {from})"),
     }
-}
-
-/// What a file says of whatever else writes it, if anything does: the sentence near its top with
-/// "Written by" in it, so the file's own words decide what an edit here is worth. Only comments before
-/// the document count, so a word in a move's comment can't set it off.
-fn generated_by(text: &str) -> Option<String> {
-    let header = text.lines().take_while(|line| line.trim_start().starts_with("//"));
-    let mentions = header
-        .map(|line| line.trim_start().trim_start_matches('/').trim())
-        .find(|line| line.contains("Written by"))?;
-    let at = mentions.find("Written by")?;
-    let said = &mentions[at..];
-    // A path's dots have no space after them.
-    let end = said.find(". ").map_or(said.len(), |end| end + 1);
-    Some(said[..end].trim().to_owned())
 }
 
 /// The cook above a document, if there's one: an editor's (`cargo xtask content --cook editor`), which has each
@@ -2373,6 +1646,7 @@ pub fn figure_of(editor: &Editor) -> Option<&Figure> {
 
 #[cfg(test)]
 mod tests {
+    use super::top_bar::generated_by;
     use super::*;
     use crate::edits::test_files::{PLAYER, WARRIOR};
 
@@ -2413,7 +1687,7 @@ mod tests {
             pass += 1;
             let mut input = crate::capture::raw_input(600, 400, f64::from(pass) * 0.05);
             input.events = events;
-            let output = ctx.run_ui(input, |ui| editor.preview_panel(ui, f64::from(pass) * 0.05));
+            let output = ctx.run_ui(input, |ui| editor.preview_panel(ui));
             crate::capture::settle(&ctx, &mut textures, output);
         };
         for _ in 0..4 {

@@ -13,7 +13,8 @@ use sapphire_assets::AssetId;
 use sapphire_document::{Document, DocumentSet};
 use sapphire_timeline::{Timeline, TimelineDocument};
 
-use super::Editor;
+use super::{Editor, Notice};
+use crate::commands::Command;
 use crate::viewport::TimelineShown;
 
 /// The playhead's frames a second: a game's.
@@ -137,6 +138,31 @@ impl Editor {
         self.sequencer.playing = None;
     }
 
+    /// Plays the current timeline from its playhead, or from its start if that's at the end. One that doesn't cook
+    /// plays nothing, and says why.
+    pub fn play_timeline(&mut self) {
+        let Some(id) = self.current_timeline() else {
+            self.say(Notice { text: "no timeline to play".to_owned(), trouble: true });
+            return;
+        };
+        let Some(document) = self.documents.get::<TimelineDocument>(id) else { return };
+        let length = document.value().map(|value| value.length);
+        if let Err(why) = self.sequencer.cooked(id, document) {
+            self.say(Notice { text: format!("the timeline doesn't cook: {why}"), trouble: true });
+            return;
+        }
+        let last = length.map_or(0, frames_of);
+        if self.sequencer.frame_on(id) >= last {
+            self.sequencer.playhead = Some((id, 0));
+        }
+        self.sequencer.playing = Some(self.now);
+    }
+
+    /// Stops the current timeline where it is.
+    pub fn pause_timeline(&mut self) {
+        self.sequencer.playing = None;
+    }
+
     /// The playhead of the current timeline, in frames of [`RATE`].
     #[must_use]
     pub fn playhead(&self) -> Option<u32> {
@@ -167,20 +193,20 @@ impl Editor {
             }
             ui.ctx().request_repaint();
         }
+        // What a person asks, run once the pane has drawn, after the playhead playing moved.
+        let mut asked = None;
         ui.horizontal(|ui| {
             if self.sequencer.playing.is_some() {
                 if ui.button("Pause").clicked() {
-                    self.sequencer.playing = None;
+                    asked = Some(Command::PauseTimeline);
                 }
             } else if ui.add_enabled(cooked.is_ok(), egui::Button::new("Play")).clicked() {
-                if frame >= last {
-                    frame = 0;
-                }
-                self.sequencer.playing = Some(self.now);
+                asked = Some(Command::PlayTimeline);
             }
-            let slider = egui::Slider::new(&mut frame, 0..=last).show_value(false).text("Playhead");
+            let mut scrubbed = frame;
+            let slider = egui::Slider::new(&mut scrubbed, 0..=last).show_value(false).text("Playhead");
             if ui.add(slider).changed() {
-                self.sequencer.playing = None;
+                asked = Some(Command::Scrub(scrubbed));
             }
             ui.label(format!("{:.2} s, frame {frame} of {last}", frame as f32 / RATE));
         });
@@ -196,8 +222,10 @@ impl Editor {
         let x_of = |seconds: f32| ruler.min.x + ruler.width() * (seconds / length.max(1e-3)).clamp(0.0, 1.0);
         if let Some(at) = response.interact_pointer_pos().filter(|_| response.is_pointer_button_down_on()) {
             let share = ((at.x - ruler.min.x) / ruler.width().max(1.0)).clamp(0.0, 1.0);
-            frame = (share * last as f32).round() as u32;
-            self.sequencer.playing = None;
+            let scrubbed = (share * last as f32).round() as u32;
+            if scrubbed != frame || self.sequencer.playing.is_some() {
+                asked = Some(Command::Scrub(scrubbed));
+            }
         }
         let painter = ui.painter_at(rect);
         let visuals = ui.visuals();
@@ -241,5 +269,8 @@ impl Editor {
         );
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, "Tracks"));
         self.sequencer.playhead = Some((id, frame));
+        if let Some(command) = asked {
+            self.act(command);
+        }
     }
 }

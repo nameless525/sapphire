@@ -94,6 +94,19 @@ struct Sole {
     rest_height: f32,
 }
 
+/// A run of ticks one sole is planted while its foot is, and how far it strays across it: a foot's
+/// [`ContactTrack::slide`] is the worst of its runs'. Where a slide is, for the clip inspector and a
+/// test that a slide is reported where it was put (M6 A3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlantedRun {
+    pub foot: HumanBone,
+    /// The run's first and last ticks.
+    pub first: u16,
+    pub last: u16,
+    /// In meters, as the [module docs](self)' "Slide" measures it.
+    pub slide: f32,
+}
+
 /// Each foot's contact track, left then right, for the feet `map` names: see the [module docs](self).
 /// `positions` are `sampled`'s on `skeleton`.
 pub fn contacts(
@@ -103,6 +116,29 @@ pub fn contacts(
     positions: &Positions,
     settings: &ContactSettings,
 ) -> Vec<ContactTrack> {
+    feet(sampled, skeleton, map, positions, settings).into_iter().map(|(track, _)| track).collect()
+}
+
+/// Every [`PlantedRun`] of the feet `map` names, left foot's first, each foot's soles in turn and each
+/// sole's runs in order.
+pub fn planted_runs(
+    sampled: &SampledClip,
+    skeleton: &Skeleton,
+    map: &HumanMap,
+    positions: &Positions,
+    settings: &ContactSettings,
+) -> Vec<PlantedRun> {
+    feet(sampled, skeleton, map, positions, settings).into_iter().flat_map(|(_, runs)| runs).collect()
+}
+
+/// Each foot's contact track and its runs.
+fn feet(
+    sampled: &SampledClip,
+    skeleton: &Skeleton,
+    map: &HumanMap,
+    positions: &Positions,
+    settings: &ContactSettings,
+) -> Vec<(ContactTrack, Vec<PlantedRun>)> {
     let rest = super::rest_model(skeleton);
     let sole = |bone| {
         map.joint(bone).map(usize::from).map(|joint| Sole { joint, rest_height: rest[joint].translation.y })
@@ -192,19 +228,24 @@ pub fn contacts(
                 (0..count).map(|tick| planted_soles.iter().any(|sole| sole[tick])).collect();
             tidy(&mut planted, usize::from(settings.ticks));
 
-            let mut slide = 0.0f32;
+            let mut runs = Vec::new();
             for ((path, _), sole) in paths.iter().zip(&planted_soles) {
-                let mut anchor = None;
-                for tick in 0..count {
-                    if !(sole[tick] && planted[tick]) {
-                        anchor = None;
+                // The run's first tick, where it began, and its slide so far.
+                let mut run: Option<(usize, Vec3, f32)> = None;
+                for tick in 0..=count {
+                    if tick == count || !(sole[tick] && planted[tick]) {
+                        if let Some((first, _, slide)) = run.take() {
+                            let (first, last) = (first as u16, (tick - 1) as u16);
+                            runs.push(PlantedRun { foot: *foot, first, last, slide });
+                        }
                         continue;
                     }
                     let here = on_ground(path, tick);
-                    let from = *anchor.get_or_insert(here);
-                    slide = slide.max(Vec3::new(here.x - from.x, 0.0, here.z - from.z).length());
+                    let (_, from, slide) = run.get_or_insert((tick, here, 0.0));
+                    *slide = slide.max(Vec3::new(here.x - from.x, 0.0, here.z - from.z).length());
                 }
             }
+            let slide = runs.iter().map(|run| run.slide).fold(0.0f32, f32::max);
 
             let markers = (1..count)
                 .filter(|&tick| planted[tick] != planted[tick - 1])
@@ -213,7 +254,16 @@ pub fn contacts(
                     marker: if planted[tick] { Marker::Down } else { Marker::Up },
                 })
                 .collect();
-            ContactTrack { foot: *foot, joint: soles[0].joint as u16, planted: planted[0], markers, slide }
+            (
+                ContactTrack {
+                    foot: *foot,
+                    joint: soles[0].joint as u16,
+                    planted: planted[0],
+                    markers,
+                    slide,
+                },
+                runs,
+            )
         })
         .collect()
 }

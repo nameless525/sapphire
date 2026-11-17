@@ -143,6 +143,8 @@ The window is docked panes, each with a tab to drag elsewhere or close. The Pane
 
 To see it with no window: `cargo run -p sapphire_editor -- <file> --capture <png> [--move <name>] [--tick <n>] [--size <w>x<h>] [--content target/content/desktop]`, with `SDKROOT` set on a Mac. It draws on the CPU, with no SDL and no GPU.
 
+Everything the window does is a named command (`sapphire_editor::commands`, spec §5.28 "As built (M6 T1)"): Cmd+P lists them, and a script of them, a `.commands.ron` file, runs with no window: `cargo run -p sapphire_editor -- [<file>] --run <script.commands.ron> [--capture <png> [--size <w>x<h>]]`. A refused command stops the run, naming it and why. To make one, do it by hand once: `cargo xtask editor <file> --record target/<name>.commands.ron` keeps every command the session runs, with its documents named from the script's folder, and `--run` plays it back. `tests/scripts.rs` has a script for each of the interface's kittests.
+
 No test can show:
 
 - that the window opens at all, on any OS: `window.rs` is the one part nothing runs, with its surface, device loss, resizing, HiDPI scale and text input;

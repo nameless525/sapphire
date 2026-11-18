@@ -33,6 +33,9 @@
 //! - **The weather** ([`weather`], M5 L4): how wet the world is and how far its puddles have
 //!   filled ([`Weather`]), which a zone, its day's keys and a tool resolve and the environment's
 //!   wet surfaces draw.
+//! - **The wind** ([`wind`], M1 W6, M6 Y1): one field every reader samples ([`WindField`]): the global
+//!   wind ([`Wind`]), turbulence and local volumes ([`WindVolume`]), and its one sampler, which the
+//!   renderer's `wind.wgsl` mirrors operation for operation.
 //! - **The on-screen interface's draw list** ([`ui`], M2 I2): quads over a distance field atlas
 //!   ([`UiDrawList`], [`UiQuad`], [`UiAtlas`]), so `sapphire_ui` writes straight into the packet
 //!   with no edge to the renderer, and the renderer draws them with no edge to `sapphire_ui`.
@@ -40,17 +43,12 @@
 //! # Does not own
 //!
 //! - The frame packet itself and the rest of what it carries (views, instance deltas, poses,
-//!   local lights, characters' faces and bodies, wind, the probe keys): the renderer's,
+//!   local lights, characters' faces and bodies, the probe keys): the renderer's,
 //!   beside the code that reads them.
 //! - Drawing: the renderer's passes and WGSL. The CPU models here mirror its shaders, and the
 //!   renderer's tests hold the two together.
 //! - Where the values come from: time of day's keys (`sapphire_tod`), the world's light rigs and
-//!   screen effects (`sapphire_world`), a zone's weather (the stage).
-//!
-//! # Later milestones
-//!
-//! - **Wind** joins the look here once the world resolves it per hour, as the weather has (M5 L4);
-//!   until then it is the renderer's plain packet data, like the rest of the packet.
+//!   screen effects (`sapphire_world`), a zone's weather and wind (the stage).
 
 pub mod color_vision;
 pub mod fog;
@@ -60,6 +58,7 @@ pub mod sky;
 pub mod ui;
 pub mod vfx;
 pub mod weather;
+pub mod wind;
 
 pub use color_vision::Dichromacy;
 pub use fog::{Fog, FogLayer, FogRay, HeightFog};
@@ -85,3 +84,4 @@ pub use vfx::mesh::{
 };
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};
 pub use weather::Weather;
+pub use wind::{ResolvedWind, Wind, WindField, WindState, WindVolume, WindVolumeState};

@@ -74,6 +74,11 @@ pub struct SerdeName(pub &'static str);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
 pub struct Transparent;
 
+/// What serde's `#[serde(untagged)]` says on an enum whose variants each hold one value, likewise: a file
+/// writes the value alone, and which variant it is follows from its shape. `#[reflect(@Untagged)]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+pub struct Untagged;
+
 /// A serialized type's schema version, and how data from earlier versions loads.
 pub trait Versioned: Sized {
     /// The version written with new data. Starts at 1 and goes up by one whenever the

@@ -2,7 +2,8 @@
 //!
 //! A value and its text have two shapes, and [`place`] and [`agreement`] are where they meet. Serde decides
 //! the text's: a field can go by another name there ([`SerdeName`]), a wrapper may not be written at all
-//! ([`Transparent`]), a struct like `Vec3` is written as a tuple, and an `Option` may or may not say `Some`.
+//! ([`Transparent`]), nor an untagged enum's variant ([`Untagged`]), a struct like `Vec3` is written as a tuple,
+//! and an `Option` may or may not say `Some`.
 //! A rule this gets wrong fails [`agreement`] when a document opens, naming the path, and that document
 //! reads only: nothing here guesses at a file.
 
@@ -13,7 +14,7 @@ use std::ops::Range;
 use bevy_reflect::enums::VariantType;
 use bevy_reflect::list::List;
 use bevy_reflect::{PartialReflect, ReflectFromReflect, ReflectMut, ReflectRef, TypeInfo, TypeRegistry};
-use sapphire_reflect::{SerdeName, Transparent};
+use sapphire_reflect::{SerdeName, Transparent, Untagged};
 
 use crate::path::{PropertyPath, Step};
 use crate::text::{Kind, Node};
@@ -43,30 +44,39 @@ pub fn is_none(value: &dyn PartialReflect) -> bool {
 /// What `value` holds, past wrappers the text doesn't write.
 #[must_use]
 pub fn through(value: &dyn PartialReflect) -> &dyn PartialReflect {
-    if is_transparent(value)
-        && let ReflectRef::TupleStruct(wrapper) = value.reflect_ref()
-        && let Some(inner) = wrapper.field(0)
-    {
-        return through(inner);
+    if !is_transparent(value) {
+        return value;
     }
-    value
+    let inner = match value.reflect_ref() {
+        ReflectRef::TupleStruct(wrapper) => wrapper.field(0),
+        ReflectRef::Enum(variant) => variant.field_at(0),
+        _ => None,
+    };
+    inner.map_or(value, through)
 }
 
 fn through_mut(value: &mut dyn PartialReflect) -> &mut dyn PartialReflect {
     if !is_transparent(value) {
         return value;
     }
-    let ReflectMut::TupleStruct(wrapper) = value.reflect_mut() else {
-        unreachable!("only a tuple struct is transparent");
+    let inner = match value.reflect_mut() {
+        ReflectMut::TupleStruct(wrapper) => wrapper.field_mut(0),
+        ReflectMut::Enum(variant) => variant.field_at_mut(0),
+        _ => unreachable!("only a tuple struct or an untagged enum is transparent"),
     };
-    through_mut(wrapper.field_mut(0).expect("a transparent wrapper holds one field"))
+    through_mut(inner.expect("a transparent wrapper holds one field"))
 }
 
+/// Whether the text writes `value`'s one field in its place: a [`Transparent`] wrapper, or a variant of an
+/// [`Untagged`] enum, whose variants each hold one value.
 fn is_transparent(value: &dyn PartialReflect) -> bool {
-    matches!(
-        value.get_represented_type_info(),
-        Some(TypeInfo::TupleStruct(info)) if info.has_attribute::<Transparent>()
-    )
+    match value.get_represented_type_info() {
+        Some(TypeInfo::TupleStruct(info)) => info.has_attribute::<Transparent>(),
+        Some(TypeInfo::Enum(info)) if info.has_attribute::<Untagged>() => {
+            matches!(value.reflect_ref(), ReflectRef::Enum(variant) if variant.field_len() == 1)
+        }
+        _ => false,
+    }
 }
 
 /// The name of the variant `value` is in, if it's an enum.

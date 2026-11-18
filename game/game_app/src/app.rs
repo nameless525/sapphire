@@ -547,6 +547,7 @@ impl GameApp {
                     }
                 }
                 Duty::Draw => self.suspended = false,
+                Duty::TrimMemory => self.trim_memory(),
                 Duty::RebuildSurface => {
                     if let Some(on_device) =
                         self.on_device.as_mut().filter(|on_device| on_device.surface.is_none())
@@ -556,6 +557,16 @@ impl GameApp {
                     }
                 }
             }
+        }
+    }
+
+    /// A memory warning (iOS's; elsewhere it trims nothing): the stood stage's content unloads what nothing holds
+    /// or pins, through the path the sandbox takes too (`Content::memory_warning`, review PA-004, M6 X2), and
+    /// logs what that freed. A boot trims nothing: what it loads, it's about to hold, and dropping it would
+    /// read it again under the boot screen.
+    fn trim_memory(&mut self) {
+        if let Some(OnDevice { game: Game::Stood(stage), .. }) = &mut self.on_device {
+            stage.content.memory_warning(Os::CURRENT);
         }
     }
 
@@ -725,6 +736,8 @@ enum Duty {
     ResumeAudio,
     /// A surface dropped going down, made again from the window's new handle.
     RebuildSurface,
+    /// A memory warning: what nothing holds goes, as the sandbox's does (M6 X2, [`GameApp::trim_memory`]).
+    TrimMemory,
 }
 
 /// What `event` asks of the app, in order. Going down, the pause comes before the writes, so what's kept is
@@ -746,9 +759,8 @@ fn duties(event: LifecycleEvent) -> &'static [Duty] {
         LifecycleEvent::DidEnterForeground => &[RestartClock, Draw, ResumeAudio, RebuildSurface],
         // The app may never quit: what a quit writes, written now.
         LifecycleEvent::Terminating => &[PauseAndKeep, FlushSettings, SavePipelineCache],
-        LifecycleEvent::LowMemory
-        | LifecycleEvent::DidEnterBackground
-        | LifecycleEvent::WillEnterForeground => &[],
+        LifecycleEvent::LowMemory => &[TrimMemory],
+        LifecycleEvent::DidEnterBackground | LifecycleEvent::WillEnterForeground => &[],
     }
 }
 
@@ -1009,13 +1021,16 @@ mod tests {
         assert!(at(up, Duty::RestartClock) < at(up, Duty::Draw), "the time away isn't a frame's");
         assert!(up.contains(&Duty::ResumeAudio) && up.contains(&Duty::RebuildSurface));
         assert!(!up.contains(&Duty::PauseAndKeep), "the pause it comes back to is the one it left in");
-        for between in [
-            LifecycleEvent::DidEnterBackground,
-            LifecycleEvent::WillEnterForeground,
-            LifecycleEvent::LowMemory,
-        ] {
+        for between in [LifecycleEvent::DidEnterBackground, LifecycleEvent::WillEnterForeground] {
             assert_eq!(duties(between), [], "{between:?}");
         }
+    }
+
+    /// A memory warning trims, and does nothing else: no pause, no write, nothing stops drawing (M6 X2). Whether
+    /// it trims on this OS is `Content::memory_warning`'s, which the sandbox shares.
+    #[test]
+    fn a_memory_warning_only_trims() {
+        assert_eq!(duties(LifecycleEvent::LowMemory), [Duty::TrimMemory]);
     }
 
     /// The third device lost with no frame presented between stops the app: one lost in play, then one lost as

@@ -20,6 +20,7 @@ use sapphire_assets::{
     AssetBudgets, AssetId, AssetKind, AssetServer, LoadPriority, MemoryPackSource, MountState, PipelineKey,
 };
 use sapphire_livelink::LivePacks;
+use sapphire_platform::Os;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{RenderSettings, Renderer};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
@@ -1341,6 +1342,49 @@ fn a_zone_coming_copies_a_kept_mesh_off_the_frames_thread() {
     let mut bytes = sapphire_assets::material::AlignedVec::<16>::new();
     bytes.extend_from_slice(&SyntheticZone::instance_patch_bytes(1));
     assert_eq!(copy, &Mesh::read(&bytes).expect("a mesh").to_mesh().expect("its copy"), "the same mesh");
+}
+
+/// A memory warning between a trip's exit and its swap (M6 X2): on iOS the game trims on the frame's thread
+/// between frames, whatever is under way, so a trip's zone may be coming as it does. Trimmed every frame of the
+/// zone's coming and once more when it's ready, the trip still swaps, and it ends holding what a trip without
+/// the warnings holds, having read no more: what the stage and the coming zone hold isn't unloaded, so
+/// nothing they hold is read twice.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_memory_warning_between_a_trips_exit_and_its_swap_reads_nothing_held_again() {
+    let settings = small_settings();
+    let trip = |warn: bool| {
+        let mut walk = Walk::rooms(SMALL, 2, no_limits(), Vec::new());
+        walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+        walk.trip(0, settings);
+        walk.holds();
+        walk.scene.prefetch_zone(room(1), settings);
+        walk.scene.hurry_zone(room(1).zone);
+        let mut warnings = 0;
+        for frames in 0.. {
+            let ready = walk.scene.zone_load(room(1).zone) == ZoneLoad::Ready;
+            if warn {
+                walk.content.memory_warning(Os::Ios).expect("iOS trims");
+                warnings += 1;
+            }
+            if ready {
+                break;
+            }
+            assert_eq!(walk.scene.zone_load(room(1).zone), ZoneLoad::Waiting);
+            assert!(frames < 100_000, "it never came");
+            walk.frame();
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        // The swap, as `trip` does it from a zone that's ready.
+        walk.trip(1, settings);
+        let held = walk.holds();
+        (held, walk.content.stats().admitted_total, warnings)
+    };
+    let (quiet, quiet_read, _) = trip(false);
+    let (warned, warned_read, warnings) = trip(true);
+    assert!(warnings >= 1, "a warning before the swap");
+    assert_eq!(warned, quiet, "the same place held");
+    assert_eq!(warned_read, quiet_read, "nothing read again");
 }
 
 /// A pack that isn't there says so, and what's on stage stays. Asking again tries again.

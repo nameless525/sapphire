@@ -121,7 +121,7 @@ use sapphire_livelink::protocol::PackOutcome;
 #[cfg(feature = "dev")]
 use sapphire_livelink::{LivePacks, PushedPack};
 use sapphire_moves::Playable;
-use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, ReadError};
+use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, Os, ReadError};
 use sapphire_render::quality::QualityTier;
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
@@ -3535,9 +3535,12 @@ impl Content {
 
     /// Unloads every asset nothing holds or pins and frees the textures uploaded for them at once,
     /// rather than at the next [`Self::update`]: the response to a system memory warning (review
-    /// PA-004, spec §6.3). What the scene draws stays, since the sandbox holds a handle to all of
-    /// it; what goes is what reloads and rebuilds left behind. Their meshes and materials go from the
-    /// next [`Self::update`] (see `GpuAssets::unload`). Returns the server's counters before and after.
+    /// PA-004, spec §6.3). Only what no handle holds goes, so what either app draws stays: the
+    /// stage's character and sky, an open zone's cells and a zone coming next all hold handles to
+    /// what they use, and an asset still loading isn't evictable. What goes is what reloads, rebuilds
+    /// and a left zone gave up. A texture a frame in flight reads lives on in that frame (the GPU
+    /// texture is shared), and their meshes and materials go from the next [`Self::update`] (see
+    /// `GpuAssets::unload`). Returns the server's counters before and after.
     pub fn trim(&mut self) -> (AssetStats, AssetStats) {
         let before = self.server.stats();
         self.server.unload_unused();
@@ -3546,6 +3549,44 @@ impl Content {
         }
         (before, self.server.stats())
     }
+
+    /// The answer to [`LifecycleEvent::LowMemory`](sapphire_platform::LifecycleEvent::LowMemory) on `os`, the
+    /// one path the sandbox and the game both take (review PA-004, M6 X2): where the warning means pressure
+    /// ([`Os::memory_warnings_are_pressure`], iOS), [`Self::trim`], logged with what it freed; elsewhere nothing
+    /// (Android's SDL sends one on every trip to the background, which mustn't cost a reload each).
+    pub fn memory_warning(&mut self, os: Os) -> Option<MemoryTrim> {
+        if !os.memory_warnings_are_pressure() {
+            return None;
+        }
+        let (before, after) = self.trim();
+        let resident = |stats: &AssetStats| stats.resident.iter().sum::<u64>();
+        let trim = MemoryTrim {
+            unloaded: after.unloads - before.unloads,
+            assets: after.assets,
+            resident_before: resident(&before),
+            resident_after: resident(&after),
+        };
+        tracing::info!(
+            target: LOG_TARGET,
+            unloaded = trim.unloaded,
+            assets = trim.assets,
+            resident_before = trim.resident_before,
+            resident_after = trim.resident_after,
+            "memory warning: unused assets unloaded"
+        );
+        Some(trim)
+    }
+}
+
+/// What [`Content::memory_warning`] freed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryTrim {
+    /// Assets unloaded, and the assets the server still has a slot for.
+    pub unloaded: u64,
+    pub assets: u32,
+    /// The asset server's resident bytes before and after.
+    pub resident_before: u64,
+    pub resident_after: u64,
 }
 
 /// Review RC-1, through the asset server, the uploader and the scene: what a re-cook does to a
@@ -3714,6 +3755,46 @@ mod new_renderer_tests {
         });
         assert_eq!(uploaded, [CHARACTER], "the frame's uploader gets it");
         assert_eq!(content.server.state(&content.character), LoadState::Ready);
+    }
+
+    /// A memory warning trims what nothing holds where it means pressure (iOS), and does nothing where it
+    /// doesn't (Android's comes with every trip to the background; desktops send none): the path the sandbox
+    /// and the game share (review PA-004, M6 X2). What the scene holds, the character, stays.
+    #[test]
+    fn a_memory_warning_trims_what_nothing_holds_on_ios_only() {
+        const LEFT: AssetId = AssetId::from_bytes([0x72; 16]);
+        let left = PackAsset::encode(
+            LEFT,
+            AssetKind::Material,
+            Codec::Lz4,
+            &material(CharacterSurface::Body).to_cooked().expect("cooked"),
+            Vec::new(),
+            3,
+        );
+        let mut content = content_sharing(MemoryPackSource::new(), vec![left.expect("encoded")]);
+        let handle = content.server.load_with::<Material>(LEFT, LoadPriority::Normal).expect("loading");
+        for _ in 0..100 {
+            content.server.upload(|_| Ok(()));
+            if content.server.state(&handle) == LoadState::Ready
+                && content.server.state(&content.character) == LoadState::Ready
+            {
+                break;
+            }
+            content.server.wait(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(content.server.state(&handle), LoadState::Ready, "the material loaded");
+        drop(handle);
+        let held = content.stats();
+
+        for os in [Os::Android, Os::MacOs, Os::Windows, Os::Linux] {
+            assert_eq!(content.memory_warning(os), None, "{os:?}");
+        }
+        assert_eq!(content.stats().unloads, held.unloads, "nothing unloaded off iOS");
+
+        let trim = content.memory_warning(Os::Ios).expect("iOS trims");
+        assert_eq!((trim.unloaded, trim.assets), (1, held.assets - 1), "{trim:?}");
+        assert!(trim.resident_after < trim.resident_before, "{trim:?}");
+        assert_eq!(content.server.state(&content.character), LoadState::Ready, "what's held stays");
     }
 }
 

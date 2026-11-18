@@ -44,7 +44,8 @@
 //!   the app's uploader, which replaces each new version in place by its generation.
 //! - Watching files: the renderer-independent `sapphire_watch::FileWatcher`, which the tool's `watch` uses, with
 //!   that crate's paths to the engine's sources.
-//! - Cooking: `cargo xtask content --cook <cook>` writes the packs the tool pushes.
+//! - Cooking: `cargo xtask content --cook <cook>` writes the packs the tool pushes, and with `--watch` (M6 C4)
+//!   writes them again on each saved source, so `watch` carries a save to the device.
 //!
 //! # Packs
 //!

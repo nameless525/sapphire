@@ -43,7 +43,7 @@ Usage: cargo xtask [--locked] <command> [options]
 Commands:
   check-layers
       Check crate layering against xtask/layers.toml (spec §4.1, rules R1 and R8).
-  content [--cook desktop|mobile|editor] [--report]
+  content [--cook desktop|mobile|editor] [--report] [--watch]
       Generate missing sample sources under content/, then cook content/ into
       target/content/loose/<cook>/ and pack it into target/content/<cook>/ (default cook:
       desktop). Only assets whose inputs changed are cooked or compressed again (cache:
@@ -52,6 +52,9 @@ Commands:
       target/content/editor/, which no app ships.
       --report prints how long each phase of the pipeline's cook took, and its slowest stages and
       assets (M6 C12), which no file it writes holds.
+      --watch then cooks again each time a file in content/ changes, until interrupted (M6 C4): a
+      running dev app's hot reload remounts the packs that rewrites, and `link watch` pushes them
+      to a device reading the cook. A cook that fails is printed and the watch goes on.
   bench-content [--preset ci|budget|double] [--cook desktop|mobile] [--with-content]
       Generate the benchmark's sources from the documents in bench/ at a preset's scale into
       target/bench/<preset>/sources/ (the phones' into sources-mobile/, their district's cells
@@ -246,7 +249,7 @@ Commands:
                              device's cook in target/content/<cook>/
         capture <png>        write the next frame the device draws to <png>
         watch [<doc>...]     push what changes: packs after `cargo xtask content --cook
-                             <cook>`, the renderer's WGSL sources, the default day, the
+                             <cook> [--watch]`, the renderer's WGSL sources, the default day, the
                              light rig and screen effect presets, and the RON documents named
       Each command says how long the device took to answer.
       --addr <host:port> is the device (default 127.0.0.1:7811: desktop, the iOS Simulator,
@@ -340,7 +343,11 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
         "content" => {
             let cook = args.value::<Cook>("--cook")?.unwrap_or(Cook::Desktop);
             let report = args.flag("--report");
+            let watch = args.flag("--watch");
             args.finish(false)?;
+            if watch {
+                return content::watch::run(cook, report);
+            }
             let cooked = content::cook_reporting(cook, report)?;
             eprintln!("cooked content for {cook} into {}", cooked.dir.display());
             Ok(())

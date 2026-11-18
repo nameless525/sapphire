@@ -17,6 +17,9 @@
 //! are removed. Rebuilding the pipeline recooks nothing, so a change to an importer, cooker or
 //! the packer must bump that stage's version (see `sapphire_pipeline::cache`).
 //!
+//! With `--watch` it then cooks again each time a source changes, until interrupted ([`watch`], M6 C4): a
+//! running dev app's hot reload remounts what that rewrites, and `cargo xtask link watch` pushes it to a device.
+//!
 //! With `--locked` (CI), a source without a committed `.meta` sidecar fails the cook instead
 //! of getting a fresh ID that would be thrown away. A lock file per cook keeps concurrent
 //! xtask runs from changing content another run is still copying or running against.
@@ -38,6 +41,8 @@ use std::str::FromStr;
 use anyhow::anyhow;
 
 use crate::workspace::{self, BuildProfile, CargoBuild};
+
+pub mod watch;
 
 /// Source assets live here, relative to the workspace root.
 pub const SOURCE_DIR: &str = "content";
@@ -128,16 +133,7 @@ pub fn cook_reporting(cook: Cook, report: bool) -> anyhow::Result<Cooked> {
     let source = workspace::root().join(SOURCE_DIR);
     generate(&pipeline)?;
 
-    let out = cooked_dir(cook);
-    let lock_path = out.with_extension("lock");
-    let lock = workspace::lock_file(&lock_path)?;
-    workspace::wait_for_lock(
-        &lock,
-        File::try_lock,
-        File::lock,
-        &format!("to finish with the {cook} content"),
-    )?;
-    run_cook(&pipeline, &source, &loose_dir(cook), &out, cook, report)?;
+    let (out, lock) = cook_alone(&pipeline, &source, cook, report)?;
     // Another run may recook in the gap before the shared lock; its output is the same.
     lock.unlock()?;
     workspace::wait_for_lock(
@@ -147,6 +143,21 @@ pub fn cook_reporting(cook: Cook, report: bool) -> anyhow::Result<Cooked> {
         &format!("to finish with the {cook} content"),
     )?;
     Ok(Cooked { dir: out, _lock: lock })
+}
+
+/// Cooks `source` for `cook` into its folders under the cook's lock, held alone: returns the packs' folder and
+/// the lock, still held.
+fn cook_alone(pipeline: &Path, source: &Path, cook: Cook, report: bool) -> anyhow::Result<(PathBuf, File)> {
+    let out = cooked_dir(cook);
+    let lock = workspace::lock_file(&out.with_extension("lock"))?;
+    workspace::wait_for_lock(
+        &lock,
+        File::try_lock,
+        File::lock,
+        &format!("to finish with the {cook} content"),
+    )?;
+    run_cook(pipeline, source, &loose_dir(cook), &out, cook, report)?;
+    Ok((out, lock))
 }
 
 /// Generates whatever sources of `content/` are missing, with `pipeline`: each generator says what it writes,

@@ -38,7 +38,8 @@
 //!   and M2 T2's live tuning: a fight's moves, camera and animation graph).
 //!   Live link (A9)
 //!   drives the same three from a device's side.
-//! - Cooking: `cargo xtask content` writes packs, and hot reload sees them land.
+//! - Cooking: `cargo xtask content` writes packs, and hot reload sees them land; `cargo xtask content --watch`
+//!   (M6 C4) cooks again on each saved source, so a save reaches the app with no command in between.
 //!
 //! # Packs, not loose files
 //!
@@ -66,8 +67,6 @@
 //!
 //! # Later milestones
 //!
-//! - A pipeline watch mode that cooks on save, so editing a source reaches the running app with
-//!   no command in between (today `cargo xtask content` runs after the edit).
 //! - The quality tier table (`tiers.ron`) and the sandbox's bindings as watched documents:
 //!   `sapphire_render::quality::Quality` must keep its device profile to select a tier from a
 //!   new table, and a changed tier makes a new renderer, as an `r.tier` change does.

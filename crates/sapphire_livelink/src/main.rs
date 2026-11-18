@@ -37,10 +37,10 @@ Commands:
       Write the next frame the device draws, with everything pushed before it, to <png>.
   watch [<document>...]
       Push what changes, until interrupted: the packs of the device's cook in --content when
-      `cargo xtask content --cook <cook>` rewrites them, the renderer's WGSL sources, the default
-      day's timeline, the character light rig presets, the screen effect presets, the documents of
-      a fight the device says it takes, its script among them, and the RON documents or Luau
-      scripts named (a scene's own timeline, say).
+      `cargo xtask content --cook <cook>` rewrites them (with --watch, on each saved source), the
+      renderer's WGSL sources, the default day's timeline, the character light rig presets, the
+      screen effect presets, the documents of a fight the device says it takes, its script among
+      them, and the RON documents or Luau scripts named (a scene's own timeline, say).
 
 Each command says how long the device took to answer, from the request to its reply. A device
 has 10 s to answer (60 s for packs, shaders and captures), and must keep taking what is sent to

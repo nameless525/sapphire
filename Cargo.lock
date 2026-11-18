@@ -6777,6 +6777,8 @@ name = "xtask"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "sapphire_time",
+ "sapphire_watch",
  "serde",
  "serde_json",
  "toml",

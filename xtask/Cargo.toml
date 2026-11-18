@@ -7,10 +7,16 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-# Kept deliberately small so `cargo xtask` builds fast: no clap, no cargo_metadata
-# (the few `cargo metadata` fields the layer check needs are deserialized directly).
+# Kept small so `cargo xtask` builds fast: no clap, no cargo_metadata (the few `cargo metadata` fields the
+# layer check needs are deserialized directly). The one engine part it builds is for `content --watch` (M6 C4):
+# `sapphire_watch` with `notify` (and through them `tracing`, `thiserror` and `sapphire_time`), built with every
+# xtask build, so the watch shares hot reload's and live link's watcher instead of keeping a second one.
 [dependencies]
 anyhow.workspace = true
+# `content --watch` (M6 C4): the engine's own file watcher, as hot reload and live link watch with it, and its
+# clock for the time a cook took (rule R2).
+sapphire_time.workspace = true
+sapphire_watch = { workspace = true, features = ["notify"] }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

@@ -1,0 +1,15 @@
+// A conversation's close-up (M6 B8): nobody touches anything, and before its step 4 the heroine's close-up,
+// the first of `dialogue-closeup`'s timelines, holds the run for its 8 s, speaking; the run goes on for half a
+// second after, as the camera blends back. Its frames are nearly all the close-up: the bench's
+// `dialogue-closeup` unit, for faces.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the heroine standing still, with her close-up before step 4, watched to its end",
+        ticks: 36,
+        commands: [
+            (4, PlayTimeline(0)),
+        ],
+    ),
+)

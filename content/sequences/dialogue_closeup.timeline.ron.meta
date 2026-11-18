@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "cf18d9ca-6e9e-43a5-8a00-70b910b9d9d1",
+        importer: Timeline(()),
+    ),
+)

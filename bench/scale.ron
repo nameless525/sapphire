@@ -239,6 +239,19 @@
                 read: [Cpu, Gpu, Counts, Cast, Pipelines],
                 serves: [5],
             ),
+            // A conversation's close-up (M6 B8): the heroine speaking at close range on the arena, her face filling
+            // the frame, her mouth and expression moving as her idle breathes, from `dialogue_closeup`'s
+            // cutscene (8 s held, about 500 frames a fight at 60 Hz). Beside "skinned vertices" and `gpu skinning`,
+            // its count rows "vertices skinned again with the same pose" price appearance levels and "skinned
+            // vertices that held still" deformation blocks (m6-plan B8: built only past 0.2 ms on a tier). A probe
+            // for no exit test: B9's manifest takes it.
+            (
+                name: "dialogue-closeup",
+                about: "the heroine speaking at close range, her face filling the frame: a conversation's close-up",
+                args: ["--arena", "--replay", "{replays}/dialogue-closeup.sreplay", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(1000),
+                read: [Cpu, Gpu, Counts],
+            ),
             // Each package's own on/off pair.
             (
                 name: "lods",

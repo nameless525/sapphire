@@ -1,0 +1,58 @@
+// A conversation's close-up (M6 B8): the heroine speaking at close range, her face filling the frame, her mouth
+// and expression moving, for the bench's `dialogue-closeup` unit and its replay. A replay opens no
+// conversation (`game_combat::dialogue`: it applies the effects it recorded), so the close-up is a cutscene
+// framed as the reference games frame a speaker: head and shoulders on a long lens, a little to one side,
+// pushing in slowly, focused on her, so what stands behind blurs where a tier draws depth of field. Her mouth is visemes keyed on her face, three phrases
+// with an expression between them, as a voiced line's mouth would move it. The simulation is held, so
+// she stands where she stood, but her graph runs on the held ticks and her idle breathes as she speaks.
+//
+// Space: the arena's, the town's own. The heroine stands at the arena's `player` spawn point (3.2, 0, 5)
+// facing -Z, as `dialogue-closeup.scenario.ron` stands her, and nothing moves her: the shots frame where
+// she stands, her face about 1.43 m up (the look-dev face shot's height).
+(
+    type: "sapphire::timeline::TimelineDocument",
+    version: 3,
+    data: (
+        length: 8.0,
+        clock: Real,
+        camera: Some((
+            // A cut in from the fight's camera, and a short blend back out.
+            blend_in: 0.0,
+            blend_out: 0.3,
+            eye: Exact,
+            keys: [
+                (at: 0.0, eye: (3.42, 1.47, 4.24), look_at: (3.2, 1.43, 5.0), fov_degrees: 28.0,
+                    focus: Some((on: Role("hero"), sharp: 0.25, near: 0.5, far: 4.0, blur: 0.012))),
+                (at: 8.0, eye: (3.37, 1.46, 4.35), look_at: (3.2, 1.43, 5.0), fov_degrees: 26.0, ease: Smooth,
+                    focus: Some((on: Role("hero"), sharp: 0.25, near: 0.5, far: 4.0, blur: 0.012))),
+            ],
+        )),
+        characters: [(
+            role: "hero",
+            // Rests, three phrases with a smile and a start of surprise between them, and rests again.
+            faces: [
+                (at: 0.0, expression: "relaxed", weight: 0.6, blend: 0.0), (at: 0.4, expression: "aa", weight: 0.8, blend: 0.06), (at: 0.54, expression: "ih", weight: 0.5, blend: 0.06),
+                (at: 0.66, expression: "oh", weight: 0.7, blend: 0.06), (at: 0.83, expression: "ee", weight: 0.55, blend: 0.06), (at: 0.96, expression: "aa", weight: 0.9, blend: 0.06),
+                (at: 1.12, expression: "ou", weight: 0.6, blend: 0.06), (at: 1.24, expression: "ih", weight: 0.5, blend: 0.06), (at: 1.39, expression: "aa", weight: 0.75, blend: 0.06),
+                (at: 1.57, expression: "oh", weight: 0.65, blend: 0.06), (at: 1.7, expression: "ee", weight: 0.5, blend: 0.06), (at: 1.84, expression: "ih", weight: 0.6, blend: 0.06),
+                (at: 1.96, expression: "ou", weight: 0.7, blend: 0.06), (at: 2.12, expression: "aa", weight: 0.8, blend: 0.06), (at: 2.26, expression: "ih", weight: 0.5, blend: 0.06),
+                (at: 2.38, expression: "oh", weight: 0.7, blend: 0.06), (at: 2.6, expression: "happy", weight: 0.8, blend: 0.25), (at: 3.3, expression: "aa", weight: 0.8, blend: 0.06),
+                (at: 3.44, expression: "ih", weight: 0.5, blend: 0.06), (at: 3.56, expression: "oh", weight: 0.7, blend: 0.06), (at: 3.73, expression: "ee", weight: 0.55, blend: 0.06),
+                (at: 3.86, expression: "aa", weight: 0.9, blend: 0.06), (at: 4.02, expression: "ou", weight: 0.6, blend: 0.06), (at: 4.14, expression: "ih", weight: 0.5, blend: 0.06),
+                (at: 4.29, expression: "aa", weight: 0.75, blend: 0.06), (at: 4.47, expression: "oh", weight: 0.65, blend: 0.06), (at: 4.6, expression: "ee", weight: 0.5, blend: 0.06),
+                (at: 4.74, expression: "ih", weight: 0.6, blend: 0.06), (at: 4.86, expression: "ou", weight: 0.7, blend: 0.06), (at: 5.02, expression: "aa", weight: 0.8, blend: 0.06),
+                (at: 5.16, expression: "ih", weight: 0.5, blend: 0.06), (at: 5.3, expression: "surprised", weight: 0.7, blend: 0.2), (at: 5.9, expression: "aa", weight: 0.8, blend: 0.06),
+                (at: 6.04, expression: "ih", weight: 0.5, blend: 0.06), (at: 6.16, expression: "oh", weight: 0.7, blend: 0.06), (at: 6.33, expression: "ee", weight: 0.55, blend: 0.06),
+                (at: 6.46, expression: "aa", weight: 0.9, blend: 0.06), (at: 6.62, expression: "ou", weight: 0.6, blend: 0.06), (at: 6.74, expression: "ih", weight: 0.5, blend: 0.06),
+                (at: 6.89, expression: "aa", weight: 0.75, blend: 0.06), (at: 7.07, expression: "oh", weight: 0.65, blend: 0.06), (at: 7.2, expression: "ee", weight: 0.5, blend: 0.06),
+                (at: 7.4, expression: "relaxed", weight: 0.6, blend: 0.3),
+            ],
+            // She speaks to the camera, and looks away once she's done.
+            looks: [(at: 0.0, look_at: Some((3.42, 1.47, 4.24))), (at: 7.6, look_at: None)],
+        )],
+        // Told to the fight as it's let go, which nothing hears. It is the simulation half's one beat, and so
+        // what tells this cutscene from `square_look`: a stage finds a run's timelines by that half's digest,
+        // and two `Real` timelines with no beats have the same one.
+        events: [(at: 8.0, event: "closeup_seen")],
+    ),
+)

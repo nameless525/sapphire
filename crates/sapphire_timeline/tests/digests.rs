@@ -6,6 +6,7 @@ use sapphire_timeline::TimelineDocument;
 
 /// Each committed document, and its digest as it cooked before timeline version 2. None of the shipped
 /// three changed, and the cinematic's is the one `cooked.rs` pins too; the cutscene gained faces and looks.
+/// A document added since is pinned as it first cooked (M6 B8's close-up).
 const PINNED: &[(&str, &str, u64)] = &[
     (
         "ultimate",
@@ -21,6 +22,11 @@ const PINNED: &[(&str, &str, u64)] = &[
         "court_gate",
         include_str!("../../../content/zones/lantern_ward/court_gate.timeline.ron"),
         13_393_692_722_777_780_803,
+    ),
+    (
+        "dialogue_closeup",
+        include_str!("../../../content/sequences/dialogue_closeup.timeline.ron"),
+        18_282_223_013_957_417_243,
     ),
     ("cinematic", include_str!("../test_content/cinematic.timeline.ron"), 2_869_729_819_227_249_548),
     ("cutscene", include_str!("../test_content/cutscene.timeline.ron"), 14_018_787_872_005_434_949),

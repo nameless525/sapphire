@@ -1,0 +1,13 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the heroine alone at the arena's player spawn point on her own moves, with a conversation's close-up of her loaded to open on (M6 B8)",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        moves: ["content/combat/player/player.moves.ron"],
+        cast: [(moves: "player", at: "player", faction: 1, soft_lock: true, standing_jump: true)],
+        // Timeline 0, which `dialogue-closeup`'s input plays.
+        timelines: ["content/sequences/dialogue_closeup.timeline.ron"],
+    ),
+)

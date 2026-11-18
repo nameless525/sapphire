@@ -1216,6 +1216,33 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert!(again.sky_material.is_some());
 }
 
+/// A stage that asks for no probe grids (`--no-probe-grid`, M6 B4) brings none on a trip: the zone's grid is
+/// neither loaded nor put on the renderer, and the rest of its look comes as it would.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_stage_without_probe_grids_brings_none() {
+    let settings = small_settings();
+    let looks = [RoomLook { grid: Some(vec![6.0]), day: true, ..RoomLook::default() }, RoomLook::default()];
+    let mut walk = Walk::dressed_rooms(SMALL, &looks, no_limits());
+    walk.content.without_probe_grids();
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    walk.trip(0, settings);
+    walk.frame();
+    walk.frame();
+    assert!(walk.content.probe_hours().is_empty(), "no grid");
+    assert!(walk.content.zone_probe_grid().is_none());
+    assert!(!walk.renderer.stats().ambient.grid, "nor on the renderer");
+    assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "its day all the same");
+    // Nor does a trip's off-frame prewarm build the grid's pipelines, though the pack holds one.
+    let pack = room_pack(0);
+    let (server, _) = walk.content.streaming_parts();
+    assert!(!server.assets_of_kind(&pack, AssetKind::ProbeGrid).is_empty(), "the pack holds a grid");
+    walk.content.queue_zone_prewarm(&pack);
+    let inventory = walk.content.zone_prewarm_inventory(&pack).expect("queued");
+    assert!(!inventory.probe_grid, "the prewarm leaves the grid out");
+    walk.content.drop_zone_prewarm(&pack);
+}
+
 /// Light rigs that read as a library's by their type, as a cook checks them, but name one preset twice.
 const TWICE_NAMED_RIGS: &str = r#"(
     type: "sapphire::world::LightRigLibrary",

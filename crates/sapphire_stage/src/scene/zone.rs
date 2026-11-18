@@ -267,13 +267,13 @@ impl NextZone {
                     Err(TryRecvError::Empty) => return,
                     Err(TryRecvError::Disconnected) => Err("its read stopped".to_owned()),
                 };
-                let reflects = content.reflects_probes();
+                let (reflects, grids) = (content.reflects_probes(), content.uses_probe_grids());
                 let (server, _) = content.streaming_parts();
                 self.focus = arrival(server, zone, self.target.arrive);
                 let presentation = &server.get(zone).expect("the zone is ready").presentation;
                 let reflections = presentation.reflections.as_ref().copied().filter(|_| reflects);
-                let names =
-                    (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied(), reflections);
+                let probes = presentation.probes.as_ref().copied().filter(|_| grids);
+                let names = (probes, presentation.sky.as_ref().copied(), reflections);
                 // Its wet surfaces, off the frame, if it may go wet (M5 L4): the pack's prewarm
                 // couldn't say, with the zone unread.
                 let day_wet = matches!(&parsed, Ok((Some(day), ..)) if day.may_be_wet());

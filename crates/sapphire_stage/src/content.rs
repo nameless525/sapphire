@@ -1063,6 +1063,9 @@ pub struct Content {
     /// Zones' reflection probes are asked for; off, none is loaded and the sky alone is reflected
     /// (`--no-reflection-probes`, which the scenes captured before them keep).
     reflection_probes: bool,
+    /// Zones' probe grids are asked for; off, none is loaded and the environment keeps the hemisphere
+    /// (`--no-probe-grid`, M6 B4: what the benchmark's district drew before it had one).
+    probe_grids: bool,
     /// The meshes whose textures are held whole whatever the views read ([`Self::keep_textures_whole`]).
     whole_meshes: Vec<MeshHandle>,
     /// The streamer's pool a run set, over the tier's ([`Self::set_texture_pool`]).
@@ -1268,6 +1271,18 @@ impl Content {
         self.reflection_probes
     }
 
+    /// Asks for no zone's probe grid from here on (`--no-probe-grid`, M6 B4): zones light their environment
+    /// and characters by the hemisphere, as a zone without a grid does, and nothing of a grid is loaded or
+    /// built. A renderer that had a grid before keeps it, as a zone without one leaves it.
+    pub fn without_probe_grids(&mut self) {
+        self.probe_grids = false;
+    }
+
+    /// Whether zones' probe grids are asked for ([`Self::without_probe_grids`]).
+    pub(crate) fn uses_probe_grids(&self) -> bool {
+        self.probe_grids
+    }
+
     /// What a character built from here moves by: the shipped document, unless a game said otherwise. A
     /// playable kind whose document names a motion of its own moves by that instead
     /// ([`Self::character_motion_of`]).
@@ -1462,6 +1477,7 @@ impl Content {
             zone_reflections: None,
             asked_look: None,
             reflection_probes: true,
+            probe_grids: true,
             zone_prewarms: Vec::new(),
             zone_prewarm_time: std::time::Duration::ZERO,
             warm_up: WarmUpProgress::default(),
@@ -2166,7 +2182,7 @@ impl Content {
         let remaining = || SCREENS_ALONE_WAIT.saturating_sub(stopwatch.elapsed());
         let read = self.server.finish_cpu(&zone, &remaining);
         let read = read.map_err(|error| AppInitError::msg(format!("zone {stem} didn't load: {error}")))?;
-        let probe_grid = read.view().presentation.probes.is_some();
+        let probe_grid = self.probe_grids && read.view().presentation.probes.is_some();
         let reflection_probes = self.reflection_probes && read.view().presentation.reflections.is_some();
         let wet_surfaces = scene::may_be_wet(&read.view().presentation);
         let pack = sapphire_zone::pack_name(stem);
@@ -2211,7 +2227,7 @@ impl Content {
             return Err(AppInitError::msg(format!("zone {} isn't found yet", zone.id())));
         };
         let presentation = &read.presentation;
-        let probes = presentation.probes.as_ref().copied();
+        let probes = presentation.probes.as_ref().copied().filter(|_| self.probe_grids);
         let sky = presentation.sky.as_ref().copied();
         let reflections = presentation.reflections.as_ref().copied().filter(|_| self.reflection_probes);
         let server = &mut self.server;
@@ -2254,7 +2270,8 @@ impl Content {
                 let wet = scene::may_be_wet(presentation);
                 (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied(), reflections, wet)
             });
-        let reflections = reflections.filter(|_| self.reflection_probes);
+        let (probes, reflections) =
+            (probes.filter(|_| self.probe_grids), reflections.filter(|_| self.reflection_probes));
         let look =
             ZoneLookPipelines { probe_grid: probes.is_some(), reflection_probes: reflections.is_some(), wet };
         self.mount_zone_pack(pack, look, renderer)?;
@@ -2358,7 +2375,8 @@ impl Content {
         let reflections = !self.server.assets_of_kind(pack, AssetKind::ReflectionProbes).is_empty();
         let mut inventory = PipelineInventory {
             meshes: self.server.pipeline_keys_of(pack),
-            probe_grid: !self.server.assets_of_kind(pack, AssetKind::ProbeGrid).is_empty(),
+            probe_grid: self.probe_grids
+                && !self.server.assets_of_kind(pack, AssetKind::ProbeGrid).is_empty(),
             reflection_probes: self.reflection_probes && reflections,
             ..PipelineInventory::default()
         };
@@ -2384,6 +2402,15 @@ impl Content {
     /// Whether what [`Self::queue_zone_prewarm`] asked for has yet to be built.
     pub(crate) fn prewarms_pack(&self, pack: &str) -> bool {
         self.zone_prewarms.iter().any(|prewarm| prewarm.pack.as_deref() == Some(pack))
+    }
+
+    /// What [`Self::queue_zone_prewarm`] asked for `pack`, while it waits.
+    #[cfg(all(test, feature = "dev"))]
+    pub(crate) fn zone_prewarm_inventory(&self, pack: &str) -> Option<&PipelineInventory> {
+        self.zone_prewarms
+            .iter()
+            .find(|prewarm| prewarm.pack.as_deref() == Some(pack))
+            .map(|prewarm| &prewarm.inventory)
     }
 
     /// Lets go of what [`Self::queue_zone_prewarm`] asked for.

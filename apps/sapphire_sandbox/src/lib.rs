@@ -365,6 +365,9 @@
 //!   unless a zone's plan names others), in place of the plan's, a story flag's and a cutscene's (M6 W8a).
 //! - `--no-reflection-probes`: load no zone's reflection probes (M5 L3), so glossy surfaces reflect the
 //!   sky alone, which the golden scenes from before probes pin.
+//! - `--no-probe-grid`: load no zone's probe grid (M6 B4), so the environment and characters take the
+//!   hemisphere's ambient, as in a zone without one: what the benchmark district's runs and scenes from before
+//!   it had a grid pin, and its day runs' grid-off arm.
 //! - `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the look-dev character held at a spawner of the zone
 //!   cooked from `<stem>.zone.ron` (`player_start` unless named), or at `x,y,z,yaw` in the zone's space for a
 //!   shot no spawner stands at (M5 L3), under the zone's day, light rigs, probe grid and reflection probes, the

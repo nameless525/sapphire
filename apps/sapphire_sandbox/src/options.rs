@@ -426,6 +426,10 @@ pub(crate) struct Options {
     /// `--no-reflection-probes`: no zone's reflection probes loaded (M5 L3), so glossy surfaces reflect the
     /// sky alone, as in the scenes captured before them.
     pub no_reflection_probes: bool,
+    /// `--no-probe-grid`: no zone's probe grid loaded (M6 B4), so the environment and characters take the
+    /// hemisphere's ambient, as in a zone without one: the benchmark district's grid-off arm, and what its runs
+    /// from before it had a grid pin.
+    pub no_probe_grid: bool,
     /// `--stream`: how the town's zone streams.
     pub stream: StreamChoice,
     /// `--fog off`: no fog (M1 W3): time of day's fog left out of every frame, and no fog cards
@@ -876,7 +880,8 @@ impl Options {
     }
 
     /// The content these options draw from, mounted on `host`: their character and sky, zones' reflection
-    /// probes unless `--no-reflection-probes`, and `--mount`'s packs.
+    /// probes unless `--no-reflection-probes`, zones' probe grids unless `--no-probe-grid`, and `--mount`'s
+    /// packs.
     pub fn mount_content(
         &self,
         host: &sapphire_platform::Host,
@@ -884,6 +889,9 @@ impl Options {
         let mut content = sapphire_stage::Content::new(host, self.character(), self.sky())?;
         if self.no_reflection_probes {
             content.without_reflection_probes();
+        }
+        if self.no_probe_grid {
+            content.without_probe_grids();
         }
         for pack in &self.mount {
             content.mount_pack(pack)?;
@@ -1522,6 +1530,7 @@ impl Options {
                 }
                 "--plain-sky" => options.plain_sky = true,
                 "--no-reflection-probes" => options.no_reflection_probes = true,
+                "--no-probe-grid" => options.no_probe_grid = true,
                 "--stream" => options.stream = StreamChoice::parse(&value("--stream")?)?,
                 "--zone" => {
                     let raw = value("--zone")?;
@@ -3151,6 +3160,8 @@ mod tests {
         assert!(options.plain_sky && !Options::default().plain_sky);
         let probes = parse(&["--no-reflection-probes"]).unwrap().0;
         assert!(probes.no_reflection_probes && !Options::default().no_reflection_probes);
+        let grid = parse(&["--no-probe-grid"]).unwrap().0;
+        assert!(grid.no_probe_grid && !Options::default().no_probe_grid);
         assert_eq!(parse(&["--view", " -40.5 , 10 "]).unwrap().0.view, Some((-40.5, 10.0)));
         assert_eq!(parse(&[]).unwrap().0.cloud_cover, None);
         let wet = parse(&["--weather", "0.8,0.25"]).unwrap().0;

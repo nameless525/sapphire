@@ -5,10 +5,17 @@
 //! A person names a clip by the file it comes from, its name in that file and the character it was
 //! retargeted to, because that's what a person knows. Those three hash to the same ID the clip's own
 //! cook gave it ([`clip_id`]), and a cook fails if nothing in the content tree has that ID.
+//!
+//! **Graph v2 (M6 A5a).** Every graph also converts to version 2 and compiles ([`compile`]), so a
+//! version 1 graph that graph v2 can't hold is refused now, by the path in the converted document,
+//! rather than when the shipped graphs switch (A5c). The cooked `.sgraph` is the same bytes: nothing
+//! reads the program until its runtime does (A5b), so the cook writes none, and a version 2 document
+//! doesn't cook yet. An editor's layout sidecar (`<name>.animgraph.layout.ron`) is no source.
 
 use std::path::{Path, PathBuf};
 
 pub use sapphire_assets::graph::clip_id;
+use sapphire_assets::graph::v2::{self, CompileError, GraphProgram};
 use sapphire_assets::graph::{AnimGraph, GraphError};
 use sapphire_serialize::cooked::CookedError;
 use serde::{Deserialize, Serialize};
@@ -25,7 +32,9 @@ pub const IMPORTER: Stage = Stage { name: "animation graph document", version: 1
 /// 2: a `target` on a key-pose document names that rig's clip, where it was ignored for the first rig's
 /// (the review's AST-001).
 /// 3: imported clips use the unambiguous v2 name/target identity encoding.
-pub const COOKER: Stage = Stage { name: "sgraph", version: 3 };
+/// 4: also compiles every graph as version 2 (M6 A5a), so a warm cache checks each graph once; the
+/// same bytes, and since a pack keys its assets by their bytes, the same packs.
+pub const COOKER: Stage = Stage { name: "sgraph", version: 4 };
 
 /// What a graph source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".animgraph.ron";
@@ -43,6 +52,9 @@ pub enum AnimGraphCookError {
     NotUtf8(#[source] std::str::Utf8Error),
     #[error(transparent)]
     Graph(#[from] GraphError),
+    /// What graph v2's compiler refuses in the document converted to version 2.
+    #[error("as version 2: {0}")]
+    Compile(#[from] CompileError),
     #[error(transparent)]
     Cooked(#[from] CookedError),
 }
@@ -69,9 +81,21 @@ pub fn read(bytes: &[u8]) -> Result<AnimGraph, AnimGraphCookError> {
     Ok(graph)
 }
 
-/// The bytes of a graph's cooked file, read back through the runtime's check.
+/// A graph document of either version compiled to graph v2's program, a version 1 document converted,
+/// with its clips' IDs derived as for its cook.
+pub fn compile(bytes: &[u8]) -> Result<GraphProgram, AnimGraphCookError> {
+    let text = std::str::from_utf8(bytes).map_err(AnimGraphCookError::NotUtf8)?;
+    let mut graph = v2::AnimGraph::from_document(text)?;
+    graph.resolve(clip_id);
+    Ok(graph.compile()?)
+}
+
+/// The bytes of a graph's cooked file, read back through the runtime's check. It must compile as
+/// version 2 too, though the program isn't written yet.
 pub fn cook(bytes: &[u8]) -> Result<Vec<u8>, AnimGraphCookError> {
-    let cooked = read(bytes)?.to_cooked()?;
+    let graph = read(bytes)?;
+    v2::convert::convert(&graph).compile()?;
+    let cooked = graph.to_cooked()?;
     AnimGraph::read(&cooked)?;
     Ok(cooked.into_vec())
 }
@@ -251,6 +275,91 @@ mod tests {
         let error = cook_one(dir.path(), text).expect_err("nothing cooks that clip");
         let text = error.to_string();
         assert!(text.contains("fighter") && text.contains("not a clip"), "{text}");
+    }
+
+    /// Every shipped graph converts to version 2 and compiles, and each graph the code may name at the cost
+    /// pinned here: the most clips an evaluation of its layers samples, pose registers, ops, condition steps
+    /// from one state.
+    #[test]
+    fn every_shipped_graph_converts_and_compiles() {
+        let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let mut costs = Vec::new();
+        let mut folders = vec![content.clone()];
+        while let Some(folder) = folders.pop() {
+            for entry in fs::read_dir(&folder).expect("a content folder") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if is_source(&path) {
+                    let bytes = fs::read(&path).expect("a graph");
+                    let program =
+                        compile(&bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                    let relative = path.strip_prefix(&content).expect("in content");
+                    let name = relative
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>();
+                    let cost = program.cost;
+                    let row = [cost.clips_sampled, u16::from(cost.registers), cost.ops, cost.condition_ops];
+                    costs.push((name.join("/"), row));
+                }
+            }
+        }
+        // The graphs the code may name, each pinned. A boss's graph is content no code names (gameplay's
+        // `bosses_are_content`), so it and any other graph are held by compiling within the cap above.
+        let pinned: &[(&str, [u16; 4])] = &[
+            ("ambient/ambient.animgraph.ron", [2, 2, 3, 0]),
+            ("combat/enemy/warrior.animgraph.ron", [6, 2, 3, 0]),
+            ("combat/hero/hero.animgraph.ron", [7, 3, 5, 0]),
+            ("combat/lancer/lancer.animgraph.ron", [6, 2, 3, 0]),
+            ("combat/wren/wren.animgraph.ron", [7, 3, 5, 0]),
+            ("lookdev/character/character.animgraph.ron", [10, 3, 8, 6]),
+        ];
+        for (name, expected) in pinned {
+            let found = costs.iter().find(|(path, _)| path == name).unwrap_or_else(|| panic!("{name} ships"));
+            assert_eq!(found.1, *expected, "{name}'s cost an evaluation");
+        }
+        assert!(costs.len() > pinned.len(), "a graph the code doesn't name compiles too: {}", costs.len());
+    }
+
+    /// Each of the heroine's transitions says the rules v1's runtime keyed on its condition's variant,
+    /// and her program carries them: none rides on a condition's shape.
+    #[test]
+    fn the_heroines_transitions_say_their_runtime_rules() {
+        let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let bytes = fs::read(content.join("lookdev/character/character.animgraph.ron")).expect("her graph");
+        let graph = v2::AnimGraph::from_document(std::str::from_utf8(&bytes).expect("UTF-8")).expect("reads");
+        let none = v2::TransitionRules::default();
+        let rebound = v2::TransitionRules { rebound: true, ..none };
+        let expected = [
+            ("ground", "air", none),
+            ("ground", "jump_prepare", rebound),
+            ("jump_prepare", "air", none),
+            ("jump_prepare", "ground", none),
+            ("air", "land", v2::TransitionRules { lands: true, ..none }),
+            ("air", "ground", none),
+            ("land", "air", none),
+            ("land", "jump_prepare", rebound),
+            ("land", "ground", v2::TransitionRules { at_drawn: true, catch: true, ..none }),
+            ("land", "ground", v2::TransitionRules { waits_for_landing: true, ..none }),
+            ("land", "ground", v2::TransitionRules { at_drawn: true, ..none }),
+        ];
+        let found: Vec<(&str, &str, v2::TransitionRules)> = graph.machines[0]
+            .transitions
+            .iter()
+            .map(|transition| (transition.from.as_str(), transition.to.as_str(), transition.rules))
+            .collect();
+        assert_eq!(found, expected);
+        let program = compile(&bytes).expect("compiles");
+        let carried: Vec<v2::TransitionRules> =
+            program.transitions.iter().map(|transition| transition.rules).collect();
+        assert_eq!(carried, expected.map(|(.., rules)| rules));
+    }
+
+    /// An editor's layout sidecar is no graph, so moving a node recooks nothing.
+    #[test]
+    fn a_layout_sidecar_is_not_a_source() {
+        assert!(!is_source(Path::new("a/fighter.animgraph.layout.ron")));
     }
 
     #[test]

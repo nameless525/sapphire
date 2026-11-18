@@ -308,7 +308,10 @@ impl Editor {
         };
         match command {
             Command::SaveAndClose => match self.documents.save(id) {
-                Ok(()) => self.close(id),
+                Ok(()) => {
+                    self.ask_cook(&[id]);
+                    self.close(id);
+                }
                 Err(error) => {
                     self.closing = None;
                     self.refuse(super::save_trouble(&error));

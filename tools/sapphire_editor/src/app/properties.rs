@@ -15,6 +15,9 @@ use sapphire_document::{AnyDocument, PropertyKind, PropertyPath, Step, walk};
 use super::{Editor, Notice, Typed, TypedAt};
 use crate::commands::Command;
 
+/// What the cook refused is in this colour.
+const REFUSED: Color32 = Color32::from_rgb(255, 120, 110);
+
 /// A place in the tree. One can be several things at once: an `Option` of an enum with fields, say.
 #[derive(Debug)]
 struct Node {
@@ -73,6 +76,13 @@ impl Editor {
         for issue in document.issues().iter().take(8) {
             ui.colored_label(Color32::from_rgb(255, 130, 115), issue);
         }
+        if let Some((field, refusal)) = self.refused_field(id) {
+            let at = if field.is_empty() { String::new() } else { format!(" at {field}") };
+            ui.colored_label(
+                REFUSED,
+                format!("The cook refused this{at}: {}", refusal.message.replace('\n', ": ")),
+            );
+        }
         let fresh =
             self.properties.of.as_ref().is_some_and(|(of, text)| *of == id && text == document.text());
         if !fresh {
@@ -122,7 +132,14 @@ impl Editor {
 
     fn node_header(&mut self, ui: &mut Ui, id: AssetId, node: &Node, in_list: bool, asked: &mut Vec<Asked>) {
         let written = node.leaf.as_ref().is_none_or(|leaf| leaf.written);
-        let label = if written {
+        let refused = self.refused_field(id).is_some_and(|(field, _)| {
+            !field.is_empty()
+                && (node.path.to_string() == field
+                    || node.option.as_ref().is_some_and(|(path, _)| path.to_string() == field))
+        });
+        let label = if refused {
+            RichText::new(format!("{} (refused)", node.label)).color(REFUSED)
+        } else if written {
             RichText::new(&node.label)
         } else {
             RichText::new(&node.label).color(Color32::from_gray(130))

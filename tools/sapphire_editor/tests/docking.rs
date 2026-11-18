@@ -275,6 +275,7 @@ fn editor_harness(dir: &TestDir) -> Harness<'static, Editor> {
         file: None,
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     });
     editor.keep_layout_at(dir.0.join("layout.ron"));
     Harness::builder()

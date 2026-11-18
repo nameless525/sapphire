@@ -4,7 +4,8 @@
 //!
 //! This opens a window, so it's for a person at the machine; agents use `--capture` and the crate's tests
 //! (`docs/development-iteration.md`, "The timeline editor"). The cook's lock goes before it starts, so a
-//! cook beside a running editor doesn't wait for it to close; the editor notices the new cook itself.
+//! cook beside a running editor doesn't wait for it to close; the editor notices the new cook itself. A save in
+//! the editor cooks again with the pipeline this cook built (M6 T5), under the same lock.
 
 use std::process::Command;
 
@@ -16,6 +17,7 @@ const TOOL: &str = "sapphire_editor";
 
 pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let dir = content::cook(Cook::Editor)?.dir.clone();
+    let pipeline = content::pipeline()?;
     let env = platforms::host_build_env()?;
     // The cooker's profile: optimized, without cross-crate LTO, and most of it built by that cook already.
     let tool = workspace::build_binary(
@@ -23,6 +25,6 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
         TOOL,
     )?;
     let mut command = Command::new(tool);
-    command.arg("--content").arg(dir).args(args);
+    command.arg("--content").arg(dir).arg("--pipeline").arg(pipeline).args(args);
     workspace::run(&mut command)
 }

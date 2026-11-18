@@ -69,6 +69,7 @@ fn on(path: &Path) -> Editor {
         file: Some(path.to_owned()),
         content: Some(path.with_file_name("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     })
 }
 
@@ -96,6 +97,7 @@ fn public_playback_calls_preserve_phase_across_rate_changes_without_ui() {
         file: Some(path),
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     });
     editor.set_dummy_distance(30.0);
     editor.play(0.0);
@@ -140,6 +142,7 @@ fn a_capture_of_the_timeline_reads() {
         file: Some(path),
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     };
     let mut editor = Editor::new(options);
     assert!(editor.select_move("swipe"));
@@ -621,6 +624,7 @@ fn play_from_frame_n_plays_and_returns_to_n() {
         file: Some(path),
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     };
     let mut harness = Harness::builder()
         .with_size((1400.0, 900.0))
@@ -755,8 +759,12 @@ fn a_first_cook_reaches_an_editor_already_open() {
 
     let dir = TestDir::new("late_cook_found");
     let path = dir.write("slice.moves.ron", SLICE);
-    let options =
-        Options { file: Some(path), content: None, link: Some("127.0.0.1:9".parse().expect("an address")) };
+    let options = Options {
+        file: Some(path),
+        content: None,
+        link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
+    };
     let mut harness = Harness::builder()
         .with_size((1400.0, 900.0))
         .with_accessibility_check(false)
@@ -806,6 +814,7 @@ fn shapes_drawn(text: &str) -> usize {
         file: Some(dir.write("slice.moves.ron", text)),
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     };
     let mut editor = Editor::new(options);
     assert!(editor.select_move("light_1"));
@@ -830,6 +839,7 @@ fn with_no_file_named_the_list_offers_the_repositorys_documents() {
         file: None,
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     };
     let mut harness = Harness::builder()
         .with_size((1400.0, 900.0))
@@ -845,6 +855,7 @@ fn with_no_file_named_the_list_offers_the_repositorys_documents() {
         file: Some(dir.0.join("no such.moves.ron")),
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     };
     let mut harness = Harness::builder()
         .with_size((1400.0, 900.0))
@@ -870,6 +881,7 @@ fn save_and_push_shows_what_the_device_says() {
         file: Some(path.clone()),
         content: Some(dir.0.join("no cook here")),
         link: Some(device.address),
+        pipeline: None,
     };
     let mut harness = Harness::builder()
         .with_size((1400.0, 900.0))
@@ -986,6 +998,7 @@ fn on_device(path: &Path, device: &FakeDevice) -> Harness<'static, Editor> {
         file: Some(path.to_owned()),
         content: Some(path.with_file_name("no cook here")),
         link: Some(device.address),
+        pipeline: None,
     };
     Harness::builder()
         .with_size((1400.0, 900.0))

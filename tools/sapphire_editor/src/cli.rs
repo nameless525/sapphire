@@ -11,18 +11,21 @@ use crate::commands::{SCRIPT_SUFFIX, Script};
 /// What `sapphire_editor` does when run with no arguments, for the rest see the crate's docs.
 pub const USAGE: &str = "\
 usage: sapphire_editor [<document>] [--link <address:port>] [--content <cook folder>] [--record <script>]
-                       [--journal <folder>]
+                       [--journal <folder>] [--pipeline <cooker>]
        sapphire_editor <document> --capture <png> [--size <w>x<h>] [--move <name>] [--tick <n>]
                        [--content <cook folder>]
        sapphire_editor [<document>] --run <script> [--capture <png> [--size <w>x<h>]]
                        [--link <address:port>] [--content <cook folder>] [--journal <folder>]
+                       [--pipeline <cooker>]
 
 --capture draws one frame to a PNG with no window and no GPU. --run runs a script of commands
 (a .commands.ron) with no window, then draws its last frame if --capture asks. --record keeps
 every command a window's session runs in a script, which --run plays back. --journal keeps what's
 unsaved in a folder after each command and offers what an editor that stopped there kept: a
 window keeps one in its repository's target/editor_journal unless told where, and a script only
-when told.";
+when told. A save cooks the content again into the cook folder, with the pipeline --pipeline
+names or the one `cargo xtask content` builds beside it, and the viewport takes the packs it
+rewrites; a script waits for its saves' cooks before it ends.";
 
 /// What a capture draws.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +88,7 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
                 options.link = Some(address);
             }
             "--content" => options.content = Some(PathBuf::from(value("--content")?)),
+            "--pipeline" => options.pipeline = Some(PathBuf::from(value("--pipeline")?)),
             "--capture" => png = Some(PathBuf::from(value("--capture")?)),
             "--move" => mv = Some(value("--move")?),
             "--tick" => {
@@ -157,6 +161,8 @@ pub fn run_script(options: Options, args: &RunArgs) -> Result<(), String> {
         }
     }
     let ran = editor.run_script(&script).map_err(|error| format!("{}: {error}", args.script.display()));
+    // What its saves asked to cook lands before anything's drawn, whether or not the script went to its end.
+    editor.finish_cooks();
     editor.close_journal();
     ran?;
     match &args.capture {
@@ -234,6 +240,7 @@ mod tests {
             file: Some(path.clone()),
             content: Some(dir.join("no cook")),
             link: Some("127.0.0.1:9".parse().expect("an address")),
+            pipeline: None,
         });
         let error = write_frame(&mut editor, 32, 32, &path).expect_err("source alias refused");
         assert!(error.contains("open source document"), "{error}");
@@ -244,13 +251,14 @@ mod tests {
     #[test]
     fn a_window_and_a_capture_read_their_arguments() {
         let Ok(Launch::Window { options, record: None, journal: None }) =
-            parse(&args("a.moves.ron --link 127.0.0.1:7900 --content cook"))
+            parse(&args("a.moves.ron --link 127.0.0.1:7900 --content cook --pipeline cooker"))
         else {
             panic!("a window")
         };
         assert_eq!(options.file, Some(PathBuf::from("a.moves.ron")));
         assert_eq!(options.link, Some("127.0.0.1:7900".parse().expect("an address")));
         assert_eq!(options.content, Some(PathBuf::from("cook")));
+        assert_eq!(options.pipeline, Some(PathBuf::from("cooker")));
 
         let Ok(Launch::Capture(_, capture)) =
             parse(&args("a.moves.ron --capture out.png --size 800x600 --move light_1 --tick 7"))

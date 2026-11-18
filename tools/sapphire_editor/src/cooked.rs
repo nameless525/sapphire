@@ -55,6 +55,13 @@ pub(crate) struct PackStamp {
     header: Vec<u8>,
 }
 
+impl PackStamp {
+    /// The pack's file.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 pub(crate) fn pack_stamp(dir: &Path) -> Result<Vec<PackStamp>, String> {
     let result = || -> std::io::Result<Vec<PackStamp>> {
         let mut stamps = Vec::new();

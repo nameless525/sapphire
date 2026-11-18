@@ -41,6 +41,7 @@ use game_combat::documents::FightDocuments;
 use game_combat::fight::{Fight, fight_stage};
 use game_ui::screen::{ScreenStack, StackSetup};
 use sapphire_assets::AssetId;
+use sapphire_assets::manifest::{self, Manifest};
 use sapphire_assets::ui::UiDocument;
 use sapphire_controls::CombatControls;
 use sapphire_gameplay::ActorId;
@@ -657,6 +658,9 @@ pub struct ViewportFrame<'a> {
     pub open: bool,
     /// The cook's folder, if the editor's found one.
     pub content: Option<&'a Path>,
+    /// How many of the editor's own cooks have landed in it: a new count is packs to read again
+    /// ([`crate::Editor::cooks_landed`]).
+    pub cooked: u64,
     /// The document of moves it has open, by file name, as it last compiled.
     pub moves: Option<(&'a str, &'a MoveSet)>,
     /// The zone being edited, if the current document is one: it's what shows, rather than the fight.
@@ -707,6 +711,10 @@ pub struct StageView {
     screen: Option<ScreenState>,
     /// The stage's character stands in an inset, for a screen that has one.
     showcase: bool,
+    /// The editor's cooks the stage has taken: it reads the packs again when more have landed.
+    cooked: u64,
+    /// How many stages it has stood.
+    stands: u64,
 }
 
 /// What a screen on the stage shows.
@@ -765,6 +773,12 @@ impl StageView {
         self.frames
     }
 
+    /// How many stages it has stood: a fight's stands again when a cook lands, and a zone's takes the cook.
+    #[must_use]
+    pub const fn stands(&self) -> u64 {
+        self.stands
+    }
+
     /// The viewport's share of a frame, after egui's pass and before it paints. Takes what the pass asked for,
     /// and draws if anything's changed.
     pub fn draw(
@@ -773,7 +787,7 @@ impl StageView {
         painter: &mut egui_wgpu::Renderer,
         frame: ViewportFrame<'_>,
     ) {
-        let ViewportFrame { pane, open, content, moves, zone, timeline, screen, now } = frame;
+        let ViewportFrame { pane, open, content, cooked, moves, zone, timeline, screen, now } = frame;
         if !open {
             self.close(painter, pane);
             return;
@@ -809,8 +823,28 @@ impl StageView {
             self.stage = None;
             self.sequenced = None;
         }
-        if self.stage.is_none() && !self.stood(gpu, content, stood, pane) {
-            return;
+        // A run plays what it started on: its stage goes with it, and the next stands on the new cook.
+        if self.run.is_none() && self.cooked != cooked {
+            if self.stage.is_none() {
+                // A stand that failed may have failed on what this cook made again: it tries again unasked.
+                self.failed = false;
+            } else if stood == Stood::Fight {
+                // A fight's simulation holds the old cook's bodies, which a remount would put new meshes under:
+                // it stands again on the new cook, whose manifest `Content::new` reads.
+                self.stage = None;
+                self.sequenced = None;
+            } else if !self.take_cook(content, pane) {
+                // Another cook holds the folder: the next frame looks again.
+                pane.settling = true;
+                return;
+            }
+            self.cooked = cooked;
+        }
+        if self.stage.is_none() {
+            if !self.stood(gpu, content, stood, pane) {
+                return;
+            }
+            self.cooked = cooked;
         }
         if self.run.is_none() {
             match (screen, zone, timeline) {
@@ -936,6 +970,7 @@ impl StageView {
         match stood {
             Ok(stage) => {
                 self.stage = Some(stage);
+                self.stands += 1;
                 self.moves = None;
                 self.zone = None;
                 self.sequenced = None;
@@ -955,6 +990,55 @@ impl StageView {
                 false
             }
         }
+    }
+
+    /// Takes a cook the editor ran into the stage, a zone's or a screen's (a fight's stands again): the new manifest
+    /// and every mounted pack it names, read again under the cook's lock, shared as `cargo xtask content` reads a
+    /// cook, so a cook that has started packing since isn't read half new. An unchanged pack's header says so and
+    /// costs nothing more. New versions come in behind the handles the stage holds, as hot reload's do, and a zone's
+    /// laid out again, so a placement whose shape the cook has just made draws. Says whether it looked: not while
+    /// another cook holds the folder.
+    fn take_cook(&mut self, content: Option<&Path>, pane: &mut ViewportPane) -> bool {
+        let (Some(stage), Some(content)) = (&mut self.stage, content) else { return true };
+        let lock = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(content.with_extension("lock"));
+        if let Ok(lock) = &lock
+            && matches!(lock.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock))
+        {
+            return false;
+        }
+        let release = std::fs::read(content.join(manifest::FILE_NAME))
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| Manifest::read(&bytes).map_err(|error| error.to_string()));
+        let release = match release {
+            Ok(release) => release,
+            Err(error) => {
+                pane.note = Some(format!("The new cook's {} can't be read: {error}", manifest::FILE_NAME));
+                return true;
+            }
+        };
+        let taken = stage.content.take_cook(&release);
+        drop(lock);
+        for (pack, report) in &taken.remounted {
+            tracing::debug!(pack, ?report, "the viewport took a cook");
+        }
+        // What didn't take stays said: the zone isn't laid out again over it.
+        if let Some((pack, error)) = taken.refused.first() {
+            let refused = format!("{pack} didn't take the new cook: {error}");
+            tracing::warn!(%refused, "the viewport kept the cook it had");
+            pane.note = Some(refused);
+            self.settling = SETTLING_FRAMES;
+            return true;
+        }
+        if let Some((_, laid)) = &mut self.zone {
+            stage.scene.close_layout();
+            laid.clear();
+        }
+        self.settling = SETTLING_FRAMES;
+        true
     }
 
     /// Starts the fight over on the document's moves, when they've changed.

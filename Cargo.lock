@@ -4519,6 +4519,7 @@ dependencies = [
  "sapphire_moves",
  "sapphire_physics",
  "sapphire_platform",
+ "sapphire_reflect",
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_sequencer",

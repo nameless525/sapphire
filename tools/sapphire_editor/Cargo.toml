@@ -44,13 +44,16 @@ sapphire_livelink.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true
 sapphire_physics.workspace = true
+# A cook's refusal is a versioned document.
+sapphire_reflect.workspace = true
 # The window, and only the window.
 sapphire_platform.workspace = true
 sapphire_render.workspace = true
 sapphire_rhi.workspace = true
 sapphire_serialize.workspace = true
 # The viewport: the real renderer, on the window's device.
-sapphire_stage.workspace = true
+# `tools`: taking the cook a save makes (M6 T5).
+sapphire_stage = { workspace = true, features = ["tools"] }
 sapphire_time.workspace = true
 # A timeline's document, cooked as the cooker does, and played at its playhead as the game plays it.
 sapphire_sequencer.workspace = true

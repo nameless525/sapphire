@@ -16,6 +16,7 @@
 //! the whole of it back ([`sapphire_document::SetStep`]).
 
 mod browser;
+mod cooking;
 mod cvars;
 mod device;
 mod dispatch;
@@ -49,6 +50,7 @@ use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument};
 use sapphire_time::Stopwatch;
 
 use crate::commands::Command;
+use crate::cook::Cooker;
 use crate::cooked::{self, Cook};
 use crate::edits::{self, EditError, EntryRef, EntryValue, MovesDocument, Track};
 use crate::figure::{Casting, Figure, Figures};
@@ -80,6 +82,9 @@ pub struct Options {
     pub content: Option<PathBuf>,
     /// A device's live link. Not given, [`DEFAULT_LINK`].
     pub link: Option<SocketAddr>,
+    /// The pipeline a save's cook runs: the one `cargo xtask content` builds beside the cook if not given
+    /// ([`crate::cook::CookPlan::for_cook`]).
+    pub pipeline: Option<PathBuf>,
 }
 
 /// A note for the top of the window.
@@ -222,6 +227,14 @@ pub struct Editor {
     now: f64,
     content: Option<PathBuf>,
     cook: CookState,
+    /// The pipeline a save's cook runs, if named.
+    pipeline: Option<PathBuf>,
+    /// Cooks of what's saved: made at the first save with a cook to remake.
+    cooker: Option<Cooker>,
+    /// Why a save couldn't ask for a cook, if one couldn't.
+    no_cooker: Option<String>,
+    /// The open document the last cook refused, found once when it ended.
+    refused: Option<AssetId>,
     /// The text the latest diagnostics were made from.
     judged: Option<String>,
     issues: Vec<sapphire_moves::Issue>,
@@ -357,6 +370,10 @@ impl Editor {
             now: 0.0,
             content: options.content,
             cook: CookState::default(),
+            pipeline: options.pipeline,
+            cooker: None,
+            no_cooker: None,
+            refused: None,
             judged: None,
             issues: Vec::new(),
             preview: None,
@@ -823,6 +840,7 @@ impl Editor {
         ViewportFrame {
             open: self.shell.is_open(Pane::Viewport),
             content: self.content.as_deref(),
+            cooked: self.cooks_landed(),
             moves: moves
                 .and_then(|name| name.to_str())
                 .zip(self.preview.as_ref().map(|preview| &preview.set)),
@@ -1163,6 +1181,7 @@ impl Editor {
         }
         let Some(id) = self.current else { return Ok(()) };
         self.documents.save(id).map_err(|error| save_trouble(&error))?;
+        self.ask_cook(&[id]);
         // What a step of several documents did to the others goes too, or one file says what the other doesn't:
         // a placement saved without the colliders it moved is a zone the cook refuses.
         for joined in self.documents.joined(id) {
@@ -1179,7 +1198,9 @@ impl Editor {
         if !self.take_typed() {
             return Err("not saved: what's being typed can't go in".to_owned());
         }
+        let dirty: Vec<AssetId> = self.documents.ids().filter(|id| self.documents.is_dirty(*id)).collect();
         let mut failed = self.documents.save_all();
+        self.ask_cook(&dirty);
         match failed.pop() {
             None => Ok(()),
             Some((_, error)) if failed.is_empty() => Err(save_trouble(&error)),
@@ -1575,6 +1596,7 @@ impl Editor {
     /// link has reported.
     pub fn poll(&mut self, now: f64) {
         self.link.poll();
+        self.poll_cook(now);
         if now - self.last_poll < POLL_SECONDS {
             return;
         }
@@ -1892,6 +1914,7 @@ mod tests {
             file: Some(path),
             content: Some(dir.join("no cook")),
             link: Some("127.0.0.1:9".parse().expect("address")),
+            pipeline: None,
         });
         let ctx = egui::Context::default();
         let mut textures = crate::capture::Textures::default();

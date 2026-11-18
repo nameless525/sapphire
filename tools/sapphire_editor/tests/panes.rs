@@ -64,6 +64,7 @@ fn on_link(path: &Path, link: SocketAddr, step: f32) -> Harness<'static, Editor>
         file: Some(path.to_owned()),
         content: Some(path.with_file_name("no cook here")),
         link: Some(link),
+        pipeline: None,
     };
     Harness::builder()
         .with_size((1400.0, 900.0))
@@ -93,6 +94,7 @@ fn opening_another_file_keeps_new_conflict_notices_for_the_previous_document() {
         file: Some(path.clone()),
         content: Some(dir.0.join("no cook")),
         link: Some("127.0.0.1:9".parse().expect("address")),
+        pipeline: None,
     });
     editor
         .moves_document_mut()
@@ -123,6 +125,7 @@ fn a_refused_rename_uses_the_previous_slots_successful_preview() {
         file: Some(path),
         content: Some(dir.0.join("no cook")),
         link: Some("127.0.0.1:9".parse().expect("address")),
+        pipeline: None,
     });
     let before = editor.preview_run().expect("run").clone();
     let property = "moves[\"light_1\"].name".parse::<sapphire_document::PropertyPath>().expect("path");
@@ -467,6 +470,7 @@ fn a_capture_of_the_panes_reads() {
         file: Some(dir.0.join("player.moves.ron")),
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: None,
     });
     editor.open(&path);
     editor.shell_mut().open(Pane::Properties);

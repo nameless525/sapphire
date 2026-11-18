@@ -1,5 +1,5 @@
-//! The top bar: the current document's name, save, undo and redo, the panes, the device's address, and the
-//! questions a quit, a close, a conflict, the journal's offers or a refused value asks.
+//! The top bar: the current document's name, save, undo and redo, the panes, the device's address, how the last
+//! cook went, and the questions a quit, a close, a conflict, the journal's offers or a refused value asks.
 
 use super::*;
 
@@ -66,6 +66,8 @@ impl Editor {
                 self.act(Command::Link(self.address_text.clone()));
             }
             ui.label(words);
+            ui.separator();
+            self.cook_status(ui);
         });
         if self.quit == Quit::Asking {
             ui.horizontal_wrapped(|ui| {

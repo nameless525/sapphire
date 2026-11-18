@@ -12,9 +12,9 @@
 
 use glam::{Vec2, Vec3};
 use sapphire_math::det;
-use serde::{Deserialize, Serialize};
+use sapphire_zone::prefab::shapes::*;
 
-use super::roof::{Ridge, Roof, RoofKind, Tiles};
+use super::roof::RoofGeometry;
 use super::{Detail, Frame, Mesh, PLASTER_REPEAT, Part, check, finite, geometry_budget};
 
 /// Margin kept between openings, and between them and their face's edges, in meters.
@@ -30,20 +30,12 @@ const BAR_STEP: f32 = 0.006;
 /// a flat roof's.
 const POST_TOP: f32 = 0.01;
 
-/// A side of a building, by the way it faces: the front faces +Z.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Side {
-    #[default]
-    Front,
-    Right,
-    Back,
-    Left,
+pub(super) trait SideGeometry {
+    /// Its outward normal and the direction to the right seen from outside.
+    fn axes(self) -> (Vec3, Vec3);
 }
 
-impl Side {
-    pub const ALL: [Self; 4] = [Self::Front, Self::Right, Self::Back, Self::Left];
-
-    /// Its outward normal and the direction to the right seen from outside.
+impl SideGeometry for Side {
     fn axes(self) -> (Vec3, Vec3) {
         match self {
             Self::Front => (Vec3::Z, Vec3::X),
@@ -54,172 +46,12 @@ impl Side {
     }
 }
 
-/// What an opening is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OpeningKind {
-    /// A rectangular window in a timber frame, its lattice before paper.
-    Window,
-    /// A round window in a stone ring.
-    Moon,
-    /// A rectangular doorway from the ground in a timber frame, a door leaf in it.
-    Door,
-    /// A round doorway from the ground (a moon gate) in a stone ring: `size` is its circle's
-    /// width and the height of its top, the circle cut by the ground when that is less.
-    Gate,
-}
-
-/// An opening in a side.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Opening {
-    /// The side it's in (a freestanding wall's openings go through it from its front).
-    #[serde(default)]
-    pub side: Side,
-    pub kind: OpeningKind,
-    /// Its middle along the side (meters right of the side's middle, seen from outside) and its
-    /// foot's height (doors and gates stand on the ground: 0).
-    #[serde(default)]
-    pub at: [f32; 2],
-    /// Its width and height; a moon window's are its diameter.
-    pub size: [f32; 2],
-    /// Lattice bars, upright and across (windows and moon windows).
-    #[serde(default)]
-    pub lattice: [u32; 2],
-}
-
-/// The stone base walls stand on: its height and how far it stands proud of the plaster (no
-/// plinth at height 0).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Plinth {
-    pub height: f32,
-    pub proud: f32,
-}
-
-impl Default for Plinth {
-    fn default() -> Self {
-        Self { height: 0.5, proud: 0.06 }
-    }
-}
-
-/// Timber posts proud of the walls: at the corners and between `bays` (across the width and
-/// the depth), `width` wide.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Posts {
-    pub width: f32,
-    pub proud: f32,
-    pub bays: [u32; 2],
-}
-
-impl Default for Posts {
-    fn default() -> Self {
-        Self { width: 0.24, proud: 0.04, bays: [1, 1] }
-    }
-}
-
-/// A timber beam round all four sides, its top `at` meters up.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Beam {
-    pub at: f32,
-    pub height: f32,
-    pub proud: f32,
-}
-
-impl Default for Beam {
-    fn default() -> Self {
-        Self { at: 3.0, height: 0.22, proud: 0.07 }
-    }
-}
-
-/// A building's walls (`#hall`): `size` meters wide (X), deep (Z) and high, standing on its
-/// origin, the front facing +Z. A roof placed `size[2]` up sits on them.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Hall {
-    pub size: [f32; 3],
-    pub plinth: Plinth,
-    pub posts: Option<Posts>,
-    pub beams: Vec<Beam>,
-    pub openings: Vec<Opening>,
-    /// How far into the walls windows' paper and doors stand.
-    pub recess: f32,
-    /// The width of frames and rings round openings, and how proud they stand.
-    pub frame: [f32; 2],
-    /// A flat roof over it (none where a roof covers it).
-    pub flat_top: bool,
-}
-
-impl Default for Hall {
-    fn default() -> Self {
-        Self {
-            size: [6.0, 5.0, 3.6],
-            plinth: Plinth::default(),
-            posts: None,
-            beams: Vec::new(),
-            openings: Vec::new(),
-            recess: 0.16,
-            frame: [0.09, 0.03],
-            flat_top: false,
-        }
-    }
-}
-
-/// A freestanding wall (`#wall`): `size` meters long (X), high and thick (Z), standing on its
-/// origin, under a tiled coping. Its openings go through it, placed from its front.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Wall {
-    pub size: [f32; 3],
-    pub plinth: Plinth,
-    pub coping: Coping,
-    pub openings: Vec<Opening>,
-    pub frame: [f32; 2],
-    /// Whether its left and right ends are built (not where they run into a building).
-    pub ends: [bool; 2],
-}
-
-impl Default for Wall {
-    fn default() -> Self {
-        Self {
-            size: [6.0, 2.6, 0.32],
-            plinth: Plinth { height: 0.4, proud: 0.05 },
-            coping: Coping::default(),
-            openings: Vec::new(),
-            frame: [0.09, 0.03],
-            ends: [true, true],
-        }
-    }
-}
-
-/// A freestanding wall's coping: a small gable roof along its top.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Coping {
-    pub overhang: f32,
-    pub barge: f32,
-    pub rise: f32,
-    pub thickness: f32,
-    pub tiles: Tiles,
-    pub ridge: Ridge,
-}
-
-impl Default for Coping {
-    fn default() -> Self {
-        Self {
-            overhang: 0.16,
-            barge: 0.1,
-            rise: 0.22,
-            thickness: 0.08,
-            tiles: Tiles { period: 0.22, depth: 0.03 },
-            ridge: Ridge { height: 0.12, width: 0.14, ends: 0.0 },
-        }
-    }
-}
-
-impl Coping {
+pub(super) trait CopingGeometry {
     /// The coping as a gable roof over a wall `length` by `thickness`.
+    fn roof(&self, length: f32, thickness: f32) -> Roof;
+}
+
+impl CopingGeometry for Coping {
     fn roof(&self, length: f32, thickness: f32) -> Roof {
         Roof {
             size: [length, thickness],
@@ -238,7 +70,7 @@ impl Coping {
 }
 
 /// The geometry a hall and a freestanding wall share.
-struct Body<'a> {
+pub(super) struct Body<'a> {
     /// Half its width (X) and depth (Z).
     half: Vec2,
     height: f32,
@@ -280,7 +112,7 @@ impl Face {
 }
 
 /// An opening's outline on its face, in the face's (along, up) meters.
-struct Outline {
+pub(super) struct Outline {
     /// A window's closed outline; a grounded opening's path from its left foot on the ground up
     /// round to its right foot (its bottom open), through its jambs' points at the plinth's top.
     points: Vec<Vec2>,
@@ -290,7 +122,18 @@ struct Outline {
     center: Vec2,
 }
 
-impl Opening {
+pub(super) trait OpeningGeometry {
+    fn radius(&self) -> f32;
+    fn grounded(&self) -> bool;
+    /// The gate's circle's center height.
+    fn gate_center(&self) -> f32;
+    /// Its extent on its face, frame or ring included: (left, right, bottom, top).
+    fn extent(&self, frame: f32) -> [f32; 4];
+    /// Its outline on a face whose plinth is `plinth` high.
+    fn outline(&self, plinth: f32) -> Outline;
+}
+
+impl OpeningGeometry for Opening {
     fn radius(&self) -> f32 {
         0.5 * self.size[0]
     }
@@ -299,19 +142,16 @@ impl Opening {
         matches!(self.kind, OpeningKind::Door | OpeningKind::Gate)
     }
 
-    /// The gate's circle's center height.
     fn gate_center(&self) -> f32 {
         self.size[1] - self.radius()
     }
 
-    /// Its extent on its face, frame or ring included: (left, right, bottom, top).
     fn extent(&self, frame: f32) -> [f32; 4] {
         let [a, foot] = self.at;
         let [width, height] = self.size;
         [a - 0.5 * width - frame, a + 0.5 * width + frame, foot, foot + height + frame]
     }
 
-    /// Its outline on a face whose plinth is `plinth` high.
     fn outline(&self, plinth: f32) -> Outline {
         let [a, foot] = self.at;
         let [width, height] = self.size;
@@ -394,8 +234,14 @@ impl Outline {
     }
 }
 
-impl Hall {
-    pub fn validate(&self) -> Result<(), String> {
+pub(super) trait HallGeometry {
+    fn validate(&self) -> Result<(), String>;
+    fn body(&self) -> Body<'_>;
+    fn build(&self, mesh: &mut Mesh) -> Result<(), String>;
+}
+
+impl HallGeometry for Hall {
+    fn validate(&self) -> Result<(), String> {
         let [width, depth, height] = self.size;
         check(finite(&self.size) && width > 0.0 && depth > 0.0 && height > 0.0, || {
             format!("a hall's size {:?} must be positive", self.size)
@@ -417,7 +263,7 @@ impl Hall {
         }
     }
 
-    pub(super) fn build(&self, mesh: &mut Mesh) -> Result<(), String> {
+    fn build(&self, mesh: &mut Mesh) -> Result<(), String> {
         let body = self.body();
         body.build(mesh, &self.openings)?;
         if self.flat_top {
@@ -434,8 +280,14 @@ impl Hall {
     }
 }
 
-impl Wall {
-    pub fn validate(&self) -> Result<(), String> {
+pub(super) trait WallGeometry {
+    fn validate(&self) -> Result<(), String>;
+    fn body(&self) -> Body<'_>;
+    fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String>;
+}
+
+impl WallGeometry for Wall {
+    fn validate(&self) -> Result<(), String> {
         let [length, height, thickness] = self.size;
         check(finite(&self.size) && length > 0.0 && height > 0.0 && thickness > 0.0, || {
             format!("a wall's size {:?} must be positive", self.size)
@@ -468,7 +320,7 @@ impl Wall {
         }
     }
 
-    pub(super) fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String> {
+    fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String> {
         let [length, height, thickness] = self.size;
         // Each opening cuts the back too, mirrored.
         let mut openings = self.openings.clone();

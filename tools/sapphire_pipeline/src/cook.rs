@@ -191,7 +191,7 @@ use sapphire_zone::{
 };
 
 use crate::anim_graph::{self, AnimGraphCookError};
-use crate::assembly::{self, AssemblyError};
+use crate::assembly::{self, AssemblyError, CheckAssembly};
 use crate::audio::{self, AudioCookError, SoundSettings};
 use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};

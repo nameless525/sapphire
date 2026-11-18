@@ -27,11 +27,13 @@
 //!   surfaces in [`ZonePresentation`], and [`WaterVolumes::at`], the query a fixed step may ask.
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
+//! - **Prefabs** ([`prefab`], M6 T4): `.assembly.ron`, [`Assembly`], as plain data: what a zone places as a
+//!   prefab, and what the cooker builds into a mesh.
 //!
 //! # Does not own
 //!
-//! - Reading sources and sidecars, prefabs, merging placed pieces into a mesh per cell, cache keys and
-//!   packs: `sapphire_pipeline`'s `zone` module.
+//! - Reading sources and sidecars, merging placed pieces into a mesh per cell, cache keys and packs:
+//!   `sapphire_pipeline`'s `zone` module; building a prefab's triangles, its `assembly` module.
 //! - Asset kinds and residency: `sapphire_assets`, which reads this crate's format as
 //!   `AssetKind::Zone`.
 //! - Activating cells: `sapphire_world`. Spawning, firing triggers and running encounters:
@@ -60,6 +62,7 @@ pub mod document;
 pub mod encounter;
 pub mod grid;
 pub mod look;
+pub mod prefab;
 pub mod reflections;
 pub mod water;
 
@@ -86,6 +89,7 @@ pub use encounter::{
 };
 pub use grid::{Bounds, CellCoord, Grid, Place};
 pub use look::{ArchivedZoneFog, ArchivedZoneWeather, ArchivedZoneWind, ZoneFog, ZoneWeather, ZoneWind};
+pub use prefab::Assembly;
 pub use reflections::{ParallaxBox, ReflectionProbe};
 pub use water::{
     ArchivedCookedWaterSurface, ArchivedCookedWaterVolume, CookedWaterSurface, CookedWaterVolume, Floor,

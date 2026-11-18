@@ -94,7 +94,7 @@ use serde::{Deserialize, Serialize};
 use super::{BenchError, Preset, Presets, Source, asset_id, document_bytes, read_document};
 use crate::assembly::{
     self, Assembly, Beam, Hall, Lantern, Mount, Occlusion, Opening, OpeningKind, Placement as Piece, Plinth,
-    Posts, Projection, Roof, RoofKind, Scale, Shape, Side, SlotSpec, SurfaceRule, Wall,
+    Posts, Projection, Roof, RoofKind, Scale, Shape, ShapeGeometry, Side, SlotSpec, SurfaceRule, Wall,
 };
 use crate::character_maps::ramp::SrgbColor;
 use crate::colliders::ColliderSettings;

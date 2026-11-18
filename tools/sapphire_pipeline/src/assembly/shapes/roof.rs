@@ -28,98 +28,13 @@
 
 use glam::{Quat, Vec2, Vec3};
 use sapphire_math::det;
-use serde::{Deserialize, Serialize};
+use sapphire_zone::prefab::shapes::*;
 
 use super::polygon::{self, HalfPlane};
 use super::{
     Detail, Frame, Mesh, PLASTER_REPEAT, Part, TILE_COURSES, TILE_PERIODS, check, finite, smoothstep,
 };
 use crate::assembly::ShapeUv;
-
-/// A tiled roof (`#roof`); see the module docs.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Roof {
-    /// The walls it covers: width along its ridge (X) and depth (Z), meters.
-    pub size: [f32; 2],
-    pub kind: RoofKind,
-    /// How far the eaves reach past the walls.
-    pub overhang: f32,
-    /// How far a gable's slopes reach past its face.
-    pub barge: f32,
-    /// From the eaves' edge to the ridge (to the top edge, for a skirt).
-    pub rise: f32,
-    /// How much steeper the slope grows toward the ridge, 0 (straight) to 1.
-    pub curve: f32,
-    /// How far the eaves sweep up at the corners, and how far along the eaves the sweep reaches.
-    pub sweep: f32,
-    pub sweep_reach: f32,
-    /// From the tiles' top to the soffit, measured upright.
-    pub thickness: f32,
-    pub tiles: Tiles,
-    pub ridge: Ridge,
-}
-
-impl Default for Roof {
-    fn default() -> Self {
-        Self {
-            size: [8.0, 6.0],
-            kind: RoofKind::Hip,
-            overhang: 0.9,
-            barge: 0.45,
-            rise: 2.4,
-            curve: 0.4,
-            sweep: 0.4,
-            sweep_reach: 2.2,
-            thickness: 0.26,
-            tiles: Tiles::default(),
-            ridge: Ridge::default(),
-        }
-    }
-}
-
-/// The roof's form (see the module docs).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub enum RoofKind {
-    #[default]
-    Hip,
-    /// Where the gable starts, as a fraction of the slope's run from the eaves (0..1).
-    HipGable(f32),
-    Gable,
-    /// How far the skirt runs in from its eaves, meters.
-    Skirt(f32),
-}
-
-/// Rows of tiles: their spacing along the eaves and how high the cover tiles stand over the
-/// channels.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Tiles {
-    pub period: f32,
-    pub depth: f32,
-}
-
-impl Default for Tiles {
-    fn default() -> Self {
-        Self { period: 0.36, depth: 0.055 }
-    }
-}
-
-/// The main ridge's height and width (the others are scaled from it), and its end ornaments'
-/// height (none at 0).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Ridge {
-    pub height: f32,
-    pub width: f32,
-    pub ends: f32,
-}
-
-impl Default for Ridge {
-    fn default() -> Self {
-        Self { height: 0.3, width: 0.26, ends: 0.6 }
-    }
-}
 
 /// A row of tiles' profile across one period: a flat channel, then a cover tile peaking at
 /// `CREST`. Each period has corners at these fractions.
@@ -210,8 +125,15 @@ struct Plan<'a> {
     arc: Vec<f32>,
 }
 
-impl Roof {
-    pub fn validate(&self) -> Result<(), String> {
+pub(super) trait RoofGeometry {
+    fn validate(&self) -> Result<(), String>;
+    fn geometry_triangles(&self) -> f64;
+    /// Builds the roof with its origin at `origin`.
+    fn build(&self, mesh: &mut Mesh, origin: Vec3, detail: Detail) -> Result<(), String>;
+}
+
+impl RoofGeometry for Roof {
+    fn validate(&self) -> Result<(), String> {
         let [width, depth] = self.size;
         let numbers = [
             width,
@@ -295,12 +217,11 @@ impl Roof {
         Ok(())
     }
 
-    pub(super) fn geometry_triangles(&self) -> f64 {
+    fn geometry_triangles(&self) -> f64 {
         Plan::new(self, Vec3::ZERO, Detail::Full).geometry_triangles()
     }
 
-    /// Builds the roof with its origin at `origin`.
-    pub(super) fn build(&self, mesh: &mut Mesh, origin: Vec3, detail: Detail) -> Result<(), String> {
+    fn build(&self, mesh: &mut Mesh, origin: Vec3, detail: Detail) -> Result<(), String> {
         let plan = Plan::new(self, origin, detail);
         let slopes = plan.slopes();
         for slope in &slopes {

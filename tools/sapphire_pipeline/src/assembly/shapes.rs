@@ -37,7 +37,11 @@
 
 use glam::{Quat, Vec2, Vec3};
 use sapphire_math::det;
-use serde::{Deserialize, Serialize};
+pub use sapphire_zone::prefab::shapes::{
+    Awning, Beam, Cart, ClothAwning, ClothKind, Column, Coping, Counter, Fill, Goods, GoodsKind, Hall,
+    Lantern, LanternKind, Mount, Opening, OpeningKind, Plinth, Posts, Ridge, Roof, RoofKind, Shape, Shelves,
+    Side, Sign, Stall, Surface, TiledAwning, Tiles, Wall, Wheels,
+};
 
 use super::{PieceTriangle, ShapeUv};
 
@@ -51,12 +55,11 @@ mod stall;
 mod tests;
 mod walls;
 
-pub use cart::{Cart, Wheels};
-pub use goods::{Fill, Goods, GoodsKind, Surface};
-pub use props::{Column, Lantern, LanternKind, Mount};
-pub use roof::{Ridge, Roof, RoofKind, Tiles};
-pub use stall::{Awning, ClothAwning, ClothKind, Counter, Shelves, Sign, Stall, TiledAwning};
-pub use walls::{Beam, Coping, Hall, Opening, OpeningKind, Plinth, Posts, Side, Wall};
+use cart::CartGeometry;
+use props::{ColumnGeometry, LanternGeometry};
+use roof::RoofGeometry;
+use stall::StallGeometry;
+use walls::{HallGeometry, WallGeometry};
 
 /// Meters across one repeat of plaster's map along a wall: plaster runs once up each wall, from
 /// under its eaves (V 0) to its plinth (V 1), so the map's weathering (streaks under the eaves,
@@ -81,36 +84,18 @@ pub enum Detail {
     Light,
 }
 
-/// A parametric builtin, placed by a placement's `shape`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Shape {
-    Roof(Roof),
-    Hall(Hall),
-    Wall(Wall),
-    Column(Column),
-    Lantern(Lantern),
-    Stall(Stall),
-    Cart(Cart),
-}
-
-impl Shape {
-    /// The builtin's name, as rules and allowances name its placements.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Roof(_) => "#roof",
-            Self::Hall(_) => "#hall",
-            Self::Wall(_) => "#wall",
-            Self::Column(_) => "#column",
-            Self::Lantern(_) => "#lantern",
-            Self::Stall(_) => "#stall",
-            Self::Cart(_) => "#cart",
-        }
-    }
-
+/// What the cook does with a shape: checks it and builds its triangles, which needs its geometry.
+pub(crate) trait ShapeGeometry {
     /// Checks sizes, part fit and a per-shape logical triangle-count budget
     /// equivalent to 64 MiB of raw triangles. This does not cap vector capacity
     /// or peak process memory. Shapes exceeding the count budget must be split.
-    pub fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String>;
+    /// Its triangles in its own space, each in a part ([`Part::ALL`]'s index as its material).
+    fn triangles(&self, detail: Detail) -> Result<Vec<PieceTriangle>, String>;
+}
+
+impl ShapeGeometry for Shape {
+    fn validate(&self) -> Result<(), String> {
         match self {
             Self::Roof(roof) => roof.validate(),
             Self::Hall(hall) => hall.validate(),
@@ -122,8 +107,7 @@ impl Shape {
         }
     }
 
-    /// Its triangles in its own space, each in a part ([`Part::ALL`]'s index as its material).
-    pub(super) fn triangles(&self, detail: Detail) -> Result<Vec<PieceTriangle>, String> {
+    fn triangles(&self, detail: Detail) -> Result<Vec<PieceTriangle>, String> {
         self.validate()?;
         let mut mesh = Mesh::default();
         match self {

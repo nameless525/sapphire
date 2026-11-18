@@ -5,14 +5,14 @@
 //! and stacks of rolled cloth. Each is a few turned or boxed surfaces; in full detail a heap
 //! carries a few round fruit or heads of greens on top. Goods keep inside their surface and
 //! clear of each other and of what stands over them, which
-//! [`Stall::validate`](super::Stall::validate) and [`Cart::validate`](super::Cart::validate)
-//! check, so none can share a plane with the stall's or the cart's own faces.
+//! [`StallGeometry::validate`](super::stall::StallGeometry::validate) and
+//! [`CartGeometry::validate`](super::cart::CartGeometry::validate) check, so none can share a plane with the stall's or the cart's own faces.
 
 use std::f32::consts::FRAC_PI_2;
 
 use glam::{Vec2, Vec3};
 use sapphire_math::det;
-use serde::{Deserialize, Serialize};
+use sapphire_zone::prefab::shapes::*;
 
 use super::{Detail, Mesh, Part, check, finite};
 
@@ -25,65 +25,11 @@ const BOLT: f32 = 0.16;
 /// Goods under this size across carry one round fruit on their heap, not five.
 const SMALL_GOODS: f32 = 0.35;
 
-/// Goods for sale: `count` of a kind in a row along X, standing on a surface.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Goods {
-    pub kind: GoodsKind,
-    pub on: Surface,
-    /// The row's middle from its surface's middle (on the ground, from the shape's origin): along
-    /// X and Z, meters.
-    pub at: [f32; 2],
-    /// Each one's size: a basket's or jar's diameter, a crate's width, a roll of cloth's length.
-    pub size: f32,
-    pub count: u32,
+pub(super) trait SurfaceGeometry {
+    fn name(self) -> String;
 }
 
-impl Default for Goods {
-    fn default() -> Self {
-        Self { kind: GoodsKind::Basket(Fill::Fruit), on: Surface::Counter, at: [0.0; 2], size: 0.4, count: 1 }
-    }
-}
-
-/// What goods are.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GoodsKind {
-    /// A round wicker basket.
-    Basket(Fill),
-    /// A crate of boards, `0.7 size` deep.
-    Crate(Fill),
-    /// A lidded jar, a little taller than wide.
-    Jar,
-    /// Three rolls of cloth `size` long, stacked two under one, lying along the row.
-    Bolts,
-}
-
-/// What a basket or crate holds.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Fill {
-    /// A heap of greens.
-    Greens,
-    /// A heap of fruit.
-    #[default]
-    Fruit,
-    Empty,
-}
-
-/// What goods stand on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Surface {
-    /// A stall's counter.
-    #[default]
-    Counter,
-    /// A stall's shelf, counted from the lowest (0).
-    Shelf(u32),
-    /// A cart's bed.
-    Bed,
-    /// The ground, outside the stall's frame or clear of the cart.
-    Ground,
-}
-
-impl Surface {
+impl SurfaceGeometry for Surface {
     fn name(self) -> String {
         match self {
             Self::Counter => "counter".to_owned(),
@@ -108,9 +54,13 @@ impl Place {
     }
 }
 
-impl GoodsKind {
+pub(super) trait GoodsKindGeometry {
     /// How far one reaches either way along X and Z from its middle, and how high it stands,
     /// for its size.
+    fn extent(self, size: f32) -> (Vec2, f32);
+}
+
+impl GoodsKindGeometry for GoodsKind {
     fn extent(self, size: f32) -> (Vec2, f32) {
         match self {
             Self::Basket(_) => (Vec2::splat(0.5 * size), 0.5 * size),
@@ -121,15 +71,21 @@ impl GoodsKind {
     }
 }
 
-impl Goods {
+pub(super) trait GoodsGeometry {
     /// Its row's middles about the row's.
+    fn offsets(&self) -> impl Iterator<Item = f32> + '_;
+    /// Its row's footprint about `place`'s middle, least and greatest corners in X and Z.
+    fn footprint(&self) -> (Vec2, Vec2);
+    fn build(&self, mesh: &mut Mesh, place: &Place, detail: Detail);
+}
+
+impl GoodsGeometry for Goods {
     fn offsets(&self) -> impl Iterator<Item = f32> + '_ {
         let (half, _) = self.kind.extent(self.size);
         let pitch = 2.0 * half.x + GAP;
         (0..self.count).map(move |k| (k as f32 - 0.5 * (self.count as f32 - 1.0)) * pitch)
     }
 
-    /// Its row's footprint about `place`'s middle, least and greatest corners in X and Z.
     fn footprint(&self) -> (Vec2, Vec2) {
         let (half, _) = self.kind.extent(self.size);
         let reach = Vec2::new(0.5 * (self.count as f32 - 1.0) * (2.0 * half.x + GAP), 0.0) + half;
@@ -137,7 +93,7 @@ impl Goods {
         (at - reach, at + reach)
     }
 
-    pub(super) fn build(&self, mesh: &mut Mesh, place: &Place, detail: Detail) {
+    fn build(&self, mesh: &mut Mesh, place: &Place, detail: Detail) {
         for offset in self.offsets() {
             let base = place.middle + Vec3::new(self.at[0] + offset, 0.0, self.at[1]);
             match self.kind {

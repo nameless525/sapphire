@@ -9,9 +9,9 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::{Vec2, Vec3};
 use sapphire_math::det;
-use serde::{Deserialize, Serialize};
+use sapphire_zone::prefab::shapes::*;
 
-use super::goods::{Goods, Place, Surface, validate_goods};
+use super::goods::{GoodsGeometry, Place, validate_goods};
 use super::{Detail, Mesh, Part, check, finite};
 
 /// A cart's timbers: the axle's, the shafts', the legs' and the crossbar's square sections, and
@@ -34,43 +34,18 @@ const WHEEL_SIDES: u32 = 20;
 const LIGHT_WHEEL: u32 = 12;
 const HUB_SIDES: u32 = 10;
 
-/// A hand cart (`#cart`); see the module docs. It stands on its origin, its shafts toward +Z,
-/// its wheels' axle a little behind the bed's middle.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Cart {
-    /// The bed: width (X), length (Z), and its sides' height over its floor, meters.
-    pub bed: [f32; 3],
-    pub wheels: Wheels,
-    /// How far the shafts reach past the bed's front.
-    pub shafts: f32,
-    pub goods: Vec<Goods>,
+pub(super) trait CartGeometry {
+    fn validate(&self) -> Result<(), String>;
+    fn plan(&self) -> CartPlan;
+    fn place(&self, surface: Surface) -> Result<Place, String>;
+    fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String>;
+    /// A wheel about +Y through its origin: its iron tyre, the timber felloe inside it, its hub,
+    /// and spokes between.
+    fn wheel(&self, mesh: &mut Mesh, detail: Detail);
 }
 
-impl Default for Cart {
-    fn default() -> Self {
-        Self { bed: [1.1, 1.7, 0.3], wheels: Wheels::default(), shafts: 0.9, goods: Vec::new() }
-    }
-}
-
-/// A cart's wheels: their radius to the tyre, their spokes, and their rim's depth (from the
-/// tyre in) and width (along the axle).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Wheels {
-    pub radius: f32,
-    pub spokes: u32,
-    pub rim: [f32; 2],
-}
-
-impl Default for Wheels {
-    fn default() -> Self {
-        Self { radius: 0.45, spokes: 10, rim: [0.07, 0.07] }
-    }
-}
-
-impl Cart {
-    pub fn validate(&self) -> Result<(), String> {
+impl CartGeometry for Cart {
+    fn validate(&self) -> Result<(), String> {
         let [width, length, sides] = self.bed;
         let Wheels { radius, spokes, rim } = self.wheels;
         check(finite(&[width, length, sides, radius, rim[0], rim[1], self.shafts]), || {
@@ -122,7 +97,7 @@ impl Cart {
         }
     }
 
-    pub(super) fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String> {
+    fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String> {
         let plan = self.plan();
         let sides = self.bed[2];
         let (hx, hz) = (plan.half.x, plan.half.y);
@@ -191,8 +166,6 @@ impl Cart {
         Ok(())
     }
 
-    /// A wheel about +Y through its origin: its iron tyre, the timber felloe inside it, its hub,
-    /// and spokes between.
     fn wheel(&self, mesh: &mut Mesh, detail: Detail) {
         let Wheels { radius, spokes, rim } = self.wheels;
         let sides = if detail == Detail::Light { LIGHT_WHEEL } else { WHEEL_SIDES };
@@ -232,7 +205,7 @@ impl Cart {
 }
 
 /// A cart's numbers.
-struct CartPlan {
+pub(super) struct CartPlan {
     /// Half the bed's width and length.
     half: Vec2,
     /// The shafts' undersides (on the axle) and the floor's underside (on the shafts), and its top.

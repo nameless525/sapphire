@@ -2,35 +2,18 @@
 
 use glam::{Vec2, Vec3};
 use sapphire_math::det;
-use serde::{Deserialize, Serialize};
+use sapphire_zone::prefab::shapes::*;
 
 use super::{Detail, Mesh, Part, check, finite};
 use crate::assembly::ShapeUv;
 
-/// A round timber column (`#column`) standing on its origin: a stone drum under it and a
-/// timber block on its top for beams to rest on.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Column {
-    /// From the ground to the block's top, meters.
-    pub height: f32,
-    pub radius: f32,
-    /// Faces round the shaft.
-    pub sides: u32,
-    /// The drum's radius and height (none at height 0).
-    pub base: [f32; 2],
-    /// The block's width and height (none at height 0).
-    pub cap: [f32; 2],
+pub(super) trait ColumnGeometry {
+    fn validate(&self) -> Result<(), String>;
+    fn build(&self, mesh: &mut Mesh, detail: Detail);
 }
 
-impl Default for Column {
-    fn default() -> Self {
-        Self { height: 3.2, radius: 0.15, sides: 12, base: [0.26, 0.24], cap: [0.38, 0.22] }
-    }
-}
-
-impl Column {
-    pub fn validate(&self) -> Result<(), String> {
+impl ColumnGeometry for Column {
+    fn validate(&self) -> Result<(), String> {
         let [base_radius, base_height] = self.base;
         let [cap_width, cap_height] = self.cap;
         check(finite(&[self.height, self.radius, base_radius, base_height, cap_width, cap_height]), || {
@@ -50,7 +33,7 @@ impl Column {
         })
     }
 
-    pub(super) fn build(&self, mesh: &mut Mesh, detail: Detail) {
+    fn build(&self, mesh: &mut Mesh, detail: Detail) {
         let sides = if detail == Detail::Light { self.sides.min(8) } else { self.sides };
         let [base_radius, base_height] = self.base;
         let [cap_width, cap_height] = self.cap;
@@ -85,54 +68,15 @@ impl Column {
     }
 }
 
-/// A paper lantern (`#lantern`): its paper `size` meters across and high between caps.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Lantern {
-    pub kind: LanternKind,
-    pub size: [f32; 2],
-    /// Ribs round its paper (round and drum lanterns).
-    pub sides: u32,
-    pub mount: Mount,
+pub(super) trait LanternGeometry {
+    fn validate(&self) -> Result<(), String>;
+    /// The caps' height.
+    fn cap(&self) -> f32;
+    fn build(&self, mesh: &mut Mesh, detail: Detail);
 }
 
-impl Default for Lantern {
-    fn default() -> Self {
-        Self { kind: LanternKind::Round, size: [0.42, 0.5], sides: 10, mount: Mount::Hang(0.3) }
-    }
-}
-
-/// A lantern's form.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LanternKind {
-    /// Swelling to its middle, narrow caps: the classic red-and-amber paper globe.
-    #[default]
-    Round,
-    /// A cylinder bulging a little.
-    Drum,
-    /// Four paper panels between corner posts, under a little pyramid roof.
-    Square,
-}
-
-/// How a lantern is held, and where its origin is.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Mount {
-    /// Hanging this far under its origin on a cord (from an eave or a beam).
-    Hang(f32),
-    /// Standing on a timber post this high, its origin the post's foot.
-    Post(f32),
-    /// Its bottom on its origin.
-    Bare,
-}
-
-impl Default for Mount {
-    fn default() -> Self {
-        Self::Hang(0.3)
-    }
-}
-
-impl Lantern {
-    pub fn validate(&self) -> Result<(), String> {
+impl LanternGeometry for Lantern {
+    fn validate(&self) -> Result<(), String> {
         let [width, height] = self.size;
         check(finite(&self.size) && width > 0.0 && height > 0.0, || {
             format!("a lantern's size {:?} must be positive", self.size)
@@ -145,12 +89,11 @@ impl Lantern {
         check(reach.is_finite() && reach >= 0.0, || "a lantern's cord or post can't be negative".to_owned())
     }
 
-    /// The caps' height.
     fn cap(&self) -> f32 {
         (0.1 * self.size[1]).max(0.03)
     }
 
-    pub(super) fn build(&self, mesh: &mut Mesh, detail: Detail) {
+    fn build(&self, mesh: &mut Mesh, detail: Detail) {
         let sides = if detail == Detail::Light { self.sides.min(6) } else { self.sides };
         let [width, height] = self.size;
         let cap = self.cap();

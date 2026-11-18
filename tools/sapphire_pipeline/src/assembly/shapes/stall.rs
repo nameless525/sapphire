@@ -17,10 +17,10 @@ use std::f32::consts::PI;
 
 use glam::{Vec2, Vec3};
 use sapphire_math::det;
-use serde::{Deserialize, Serialize};
+use sapphire_zone::prefab::shapes::*;
 
-use super::goods::{Goods, Place, Surface, validate_goods};
-use super::roof::{Ridge, Roof, RoofKind, Tiles};
+use super::goods::{GoodsGeometry, Place, validate_goods};
+use super::roof::RoofGeometry;
 use super::{Detail, Frame, Mesh, Part, check, finite, smoothstep};
 use crate::assembly::ShapeUv;
 
@@ -55,131 +55,12 @@ const SIGN_FRAME: [f32; 2] = [0.035, 0.05];
 const SIGN_BOARD: f32 = 0.03;
 const CORD: f32 = 0.012;
 
-/// A market stall (`#stall`); see the module docs. It stands on its origin, its front toward
-/// +Z, its posts' outer faces `size` apart.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Stall {
-    /// The frame's footprint to its posts' outer faces: width (X) and depth (Z), meters.
-    pub size: [f32; 2],
-    /// From the ground to the frame's top, where the awning rests.
-    pub height: f32,
-    /// The posts' width (they're square) and their stone feet's height (none at 0).
-    pub posts: [f32; 2],
-    /// The beams' height round the frame's top.
-    pub beam: f32,
-    /// The counter across its front.
-    pub counter: Option<Counter>,
-    pub shelves: Shelves,
-    pub awning: Awning,
-    /// A board hanging from the front beam.
-    pub sign: Option<Sign>,
-    pub goods: Vec<Goods>,
-}
-
-impl Default for Stall {
-    fn default() -> Self {
-        Self {
-            size: [2.6, 1.6],
-            height: 2.3,
-            posts: [0.12, 0.08],
-            beam: 0.14,
-            counter: Some(Counter::default()),
-            shelves: Shelves::default(),
-            awning: Awning::default(),
-            sign: None,
-            goods: Vec::new(),
-        }
-    }
-}
-
-/// A stall's counter, between its front posts.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Counter {
-    /// Its top's height, and its depth from front to back, meters.
-    pub height: f32,
-    pub depth: f32,
-    /// Its top board's thickness, and how far the board overhangs its front.
-    pub top: f32,
-    pub overhang: f32,
-}
-
-impl Default for Counter {
-    fn default() -> Self {
-        Self { height: 0.9, depth: 0.5, top: 0.05, overhang: 0.04 }
-    }
-}
-
-/// A stall's shelves along its back, between its back posts.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Shelves {
-    /// Boards spaced evenly up to the beams (none at 0), and how deep they are.
-    pub count: u32,
-    pub depth: f32,
-    /// Whether boards close the back between the back posts.
-    pub back: bool,
-}
-
-impl Default for Shelves {
-    fn default() -> Self {
-        Self { count: 2, depth: 0.3, back: true }
-    }
-}
-
-/// A stall's awning.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Awning {
-    /// Tiles: a roof on the frame.
-    Tiles(TiledAwning),
-    /// Cloth over poles.
-    Cloth(ClothAwning),
-}
-
-impl Default for Awning {
-    fn default() -> Self {
-        Self::Tiles(TiledAwning::default())
-    }
-}
-
-/// A tiled awning: a `#roof` over the frame, its numbers as `#roof`'s (its size is the
-/// frame's), smaller by default as a stall's is.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct TiledAwning {
-    /// A hip, hip-and-gable or gable roof.
-    pub kind: RoofKind,
-    pub overhang: f32,
-    pub barge: f32,
-    pub rise: f32,
-    pub curve: f32,
-    pub sweep: f32,
-    pub sweep_reach: f32,
-    pub thickness: f32,
-    pub tiles: Tiles,
-    pub ridge: Ridge,
-}
-
-impl Default for TiledAwning {
-    fn default() -> Self {
-        Self {
-            kind: RoofKind::Hip,
-            overhang: 0.5,
-            barge: 0.3,
-            rise: 0.85,
-            curve: 0.45,
-            sweep: 0.28,
-            sweep_reach: 0.9,
-            thickness: 0.15,
-            tiles: Tiles { period: 0.24, depth: 0.035 },
-            ridge: Ridge { height: 0.18, width: 0.16, ends: 0.4 },
-        }
-    }
-}
-
-impl TiledAwning {
+pub(super) trait TiledAwningGeometry {
     /// The awning as a roof over a frame `size` meters across.
+    fn roof(&self, size: [f32; 2]) -> Roof;
+}
+
+impl TiledAwningGeometry for TiledAwning {
     fn roof(&self, size: [f32; 2]) -> Roof {
         Roof {
             size,
@@ -197,67 +78,18 @@ impl TiledAwning {
     }
 }
 
-/// A cloth awning (see the module docs): `overhang` past the frame's front and back (half that
-/// past its ends), `rise` from the beams to the ridge pole (a shed's back pole), sagging `sag`
-/// between them; its corners sweep up `sweep`, fading over `sweep_reach` along the eaves. Its
-/// valance hangs `valance[0]` to its scallops' tips, each scallop `valance[1]` wide (none at a
-/// drop of 0).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ClothAwning {
-    pub kind: ClothKind,
-    pub overhang: f32,
-    pub rise: f32,
-    pub sag: f32,
-    pub sweep: f32,
-    pub sweep_reach: f32,
-    pub valance: [f32; 2],
+pub(super) trait StallGeometry {
+    fn validate(&self) -> Result<(), String>;
+    /// The stall's numbers, worked out once.
+    fn plan(&self) -> StallPlan;
+    /// Where goods on `surface` stand.
+    fn place(&self, surface: Surface) -> Result<Place, String>;
+    fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String>;
+    fn build_shelves(&self, mesh: &mut Mesh, plan: &StallPlan);
 }
 
-impl Default for ClothAwning {
-    fn default() -> Self {
-        Self {
-            kind: ClothKind::Gable,
-            overhang: 0.35,
-            rise: 0.5,
-            sag: 0.05,
-            sweep: 0.16,
-            sweep_reach: 0.6,
-            valance: [0.2, 0.24],
-        }
-    }
-}
-
-/// A cloth awning's form.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClothKind {
-    /// Two slopes from a ridge pole over the middle, a valance along both eaves.
-    #[default]
-    Gable,
-    /// One slope from a pole on the back posts down to the front, a valance along the front.
-    Shed,
-}
-
-/// A board hanging from a stall's front beam on two cords: blank, in a timber frame.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Sign {
-    /// The board's width and height, meters.
-    pub size: [f32; 2],
-    /// Its middle along the beam, from the stall's middle.
-    pub at: f32,
-    /// How far under the beam it hangs.
-    pub drop: f32,
-}
-
-impl Default for Sign {
-    fn default() -> Self {
-        Self { size: [0.9, 0.3], at: 0.0, drop: 0.06 }
-    }
-}
-
-impl Stall {
-    pub fn validate(&self) -> Result<(), String> {
+impl StallGeometry for Stall {
+    fn validate(&self) -> Result<(), String> {
         let [width, depth] = self.size;
         let [post, foot] = self.posts;
         let mut numbers = vec![width, depth, self.height, post, foot, self.beam, self.shelves.depth];
@@ -360,7 +192,6 @@ impl Stall {
         super::geometry_budget(4096.0 + awning_triangles + super::goods::geometry_triangles(&self.goods))
     }
 
-    /// The stall's numbers, worked out once.
     fn plan(&self) -> StallPlan {
         let [post, _] = self.posts;
         let half = Vec2::from(self.size) * 0.5;
@@ -375,7 +206,6 @@ impl Stall {
         }
     }
 
-    /// Where goods on `surface` stand.
     fn place(&self, surface: Surface) -> Result<Place, String> {
         let plan = self.plan();
         match surface {
@@ -414,7 +244,7 @@ impl Stall {
         }
     }
 
-    pub(super) fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String> {
+    fn build(&self, mesh: &mut Mesh, detail: Detail) -> Result<(), String> {
         let plan = self.plan();
         let [post, foot] = self.posts;
         let h = self.height;
@@ -536,7 +366,7 @@ impl Stall {
 }
 
 /// A stall's numbers.
-struct StallPlan {
+pub(super) struct StallPlan {
     /// Half its footprint (X, Z) to the posts' outer faces, to their middles and to their inner
     /// faces.
     half: Vec2,

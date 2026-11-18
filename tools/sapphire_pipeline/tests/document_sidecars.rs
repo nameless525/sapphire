@@ -72,6 +72,7 @@ fn the_kinds_say_the_importer_a_cook_would_give_them() {
         ("a.assembly.ron", kinds::assembly().importer),
         ("a.encounter.ron", kinds::encounter().importer),
         ("a.dialogue.ron", kinds::dialogue().importer),
+        ("a.colliders.ron", kinds::colliders().importer),
     ] {
         let id = meta::new_id().expect("an ID");
         let settings = ImportSettings::for_new_sidecar(Path::new(name)).expect("a source");

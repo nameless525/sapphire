@@ -33,7 +33,7 @@
 
 use std::collections::BTreeSet;
 
-use bevy_reflect::TypePath;
+use bevy_reflect::Reflect;
 use glam::{Quat, Vec3};
 use sapphire_math::det;
 use sapphire_reflect::Versioned;
@@ -57,7 +57,7 @@ pub const MIN_EXTENT: f32 = 0.001;
 pub const MIN_TRIANGLE_AREA: f32 = 1e-8;
 
 /// A collider document (see the [module docs](self)).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::colliders"]
 #[serde(deny_unknown_fields)]
 pub struct ColliderDocument {
@@ -70,7 +70,8 @@ impl Versioned for ColliderDocument {
 }
 
 /// One static collider.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::colliders"]
 #[serde(deny_unknown_fields)]
 pub struct ColliderEntry {
     /// Unique in the document. The cooked set sorts by it, so a collider's ID doesn't depend on
@@ -91,7 +92,8 @@ fn default_groups() -> Vec<Group> {
 }
 
 /// A collider's geometry, in metres.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::colliders"]
 #[serde(deny_unknown_fields)]
 pub enum ColliderShape {
     Box {
@@ -114,7 +116,8 @@ pub enum ColliderShape {
 }
 
 /// A collider's rotation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::colliders"]
 #[serde(deny_unknown_fields)]
 pub enum Rotation {
     #[default]

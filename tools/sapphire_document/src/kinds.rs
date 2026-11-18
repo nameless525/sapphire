@@ -23,6 +23,7 @@ use sapphire_assets::graph::AnimGraph;
 use sapphire_assets::material::{AnimeCharacterMaterial, EnvironmentMaterial, MaterialDocument};
 use sapphire_assets::ramp::RampMap;
 use sapphire_assets::ui::UiDocument;
+use sapphire_colliders::ColliderDocument;
 use sapphire_dialogue::DialogueDocument;
 use sapphire_moves::MoveSetDocument;
 use sapphire_reflect::stable_name;
@@ -257,6 +258,17 @@ pub fn light_rigs() -> Schema<LightRigLibrary> {
     }
 }
 
+/// A zone's `.colliders.ron`. Its rules are its cook's, which a check runs whole: what it refuses is shown, by
+/// the collider it names. What a placement draws is held to the colliders it names by the zone's cook (M4 X1).
+#[must_use]
+pub fn colliders() -> Schema<ColliderDocument> {
+    Schema {
+        parse: |text| ColliderDocument::from_ron(text).map_err(|error| error.to_string()),
+        check: |document| document.cook().err().map(|error| error.to_string()).into_iter().collect(),
+        importer: Some("Colliders(())"),
+    }
+}
+
 /// The kinds of document there are, which a browser lists and a file's name says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
@@ -275,13 +287,14 @@ pub enum Kind {
     Dialogue,
     Day,
     LightRigs,
+    Colliders,
 }
 
 /// What every material family's file name ends with.
 const MATERIAL_SUFFIX: &str = ".material.ron";
 
 impl Kind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Moves,
         Self::Graph,
         Self::Cue,
@@ -297,6 +310,7 @@ impl Kind {
         Self::Dialogue,
         Self::Day,
         Self::LightRigs,
+        Self::Colliders,
     ];
 
     /// What a file is, if it's a document this crate knows: by its name, and for a material by the family its
@@ -348,6 +362,7 @@ impl Kind {
             Self::Dialogue => ".dialogue.ron",
             Self::Day => "_day.ron",
             Self::LightRigs => "_rigs.ron",
+            Self::Colliders => ".colliders.ron",
         })
     }
 
@@ -370,6 +385,7 @@ impl Kind {
             Self::Dialogue => "Dialogues",
             Self::Day => "Days",
             Self::LightRigs => "Light rigs",
+            Self::Colliders => "Colliders",
         }
     }
 
@@ -393,6 +409,7 @@ impl Kind {
             Self::Dialogue => set.open(path, dialogue(), Arc::new(registry_of::<DialogueDocument>())),
             Self::Day => set.open(path, day(), Arc::new(registry_of::<TodTimeline>())),
             Self::LightRigs => set.open(path, light_rigs(), Arc::new(registry_of::<LightRigLibrary>())),
+            Self::Colliders => set.open(path, colliders(), Arc::new(registry_of::<ColliderDocument>())),
         }
     }
 
@@ -418,6 +435,7 @@ impl Kind {
             Self::Dialogue => set.recover(entry, dialogue(), Arc::new(registry_of::<DialogueDocument>())),
             Self::Day => set.recover(entry, day(), Arc::new(registry_of::<TodTimeline>())),
             Self::LightRigs => set.recover(entry, light_rigs(), Arc::new(registry_of::<LightRigLibrary>())),
+            Self::Colliders => set.recover(entry, colliders(), Arc::new(registry_of::<ColliderDocument>())),
         }
     }
 }

@@ -4466,6 +4466,7 @@ dependencies = [
  "getrandom 0.4.3",
  "ron",
  "sapphire_assets",
+ "sapphire_colliders",
  "sapphire_dialogue",
  "sapphire_moves",
  "sapphire_reflect",

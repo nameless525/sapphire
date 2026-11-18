@@ -417,6 +417,12 @@ fn every_property_of_every_light_rig_library_undoes_or_is_refused() {
     );
 }
 
+/// A zone's colliders, which T2 made a kind so a placement moves with what it names.
+#[test]
+fn every_property_of_every_colliders_document_undoes_to_the_same_bytes() {
+    every_shipped(Kind::Colliders, &[], kinds::colliders(), false);
+}
+
 /// A path goes through its text and back.
 #[test]
 fn every_path_prints_and_parses_back() {
@@ -471,6 +477,7 @@ fn every_document_in_the_content_opens_for_editing() {
             Kind::Dialogue => open(&relative, kinds::dialogue()).failure().cloned(),
             Kind::Day => open(&relative, kinds::day()).failure().cloned(),
             Kind::LightRigs => open(&relative, kinds::light_rigs()).failure().cloned(),
+            Kind::Colliders => open(&relative, kinds::colliders()).failure().cloned(),
         };
         assert_eq!(failure, None, "{relative}");
         seen.insert(kind);

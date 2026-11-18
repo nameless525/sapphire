@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use common::server::{Host, Served};
 use common::{
     APP_BUILD, Content, EXPIRES, Expected, NOW, ShippedDir, TRUSTED, TestDir, UNTRUSTED, assert_staged_whole,
-    assert_starts_on, first_release, is_table_request, listing, retries, second_release, stage,
+    assert_starts_on, district, first_release, is_table_request, listing, retries, second_release, stage,
     staged_hashes, third_release,
 };
 use sapphire_assets::manifest::ManifestError;
@@ -231,6 +231,58 @@ fn what_a_download_stages_installs() {
     assert_starts_on(&app.open(), &app.shipped, &second, 2);
     // The next check finds the installed release current, through the patched packs' tables.
     assert_eq!(download(&installation).expect("checks"), Outcome::UpToDate { version: 2 });
+}
+
+/// A patch to one asset of a pack in parts (M6 K2) fetches that part's tables, stages its changed block, and
+/// installs, asks room for and holds that part alone; the same patch to the pack whole rewrites the whole pack
+/// (M5 M7's finding).
+#[test]
+fn a_patch_to_one_part_installs_that_part_alone() {
+    let mut installs = Vec::new();
+    for parts in [1, 4] {
+        let dir = TestDir::new(&format!("install_parts_{parts}"));
+        let (first, second) = (district(parts, false), district(parts, true));
+        let app = App::new(&dir, &first);
+        let host = Host::start(second.host(&second.signed(2, EXPIRES, TRUSTED)));
+        let expected = Expected::between(&first, &second);
+        let changed: Vec<&String> = second
+            .packs
+            .iter()
+            .filter(|(name, bytes)| first.packs[*name] != **bytes)
+            .map(|(name, _)| name)
+            .collect();
+        let part = if parts == 1 { "zone_district" } else { "zone_district.1" };
+        assert_eq!(changed, [part], "asset 5 is in part 5 % {parts}");
+        assert_eq!((expected.tables.len(), expected.blocks.len()), (1, 1), "one part's tables and one block");
+
+        let installation = app.open();
+        let to_install = installation.bytes_to_install(&second.manifest(2, EXPIRES));
+        assert_eq!(to_install, second.packs[part].len() as u64, "the touched part's bytes");
+        let request = Request {
+            installed: installation.installed().expect("reads the install"),
+            staging: app.staging.clone(),
+            now: NOW,
+            app_build: APP_BUILD,
+            checking: retries(),
+            retries: retries(),
+            room: Some(installation.room()),
+        };
+        let transport =
+            HttpTransport::new(&host.url(), Roots::Platform, Timeouts::default()).expect("a host");
+        assert!(matches!(
+            Download::start(request, transport).expect("starts").join(),
+            Ok(Outcome::Staged(_))
+        ));
+        assert_eq!(app.install().expect("installs"), InstallOutcome::Installed { from: 1, to: 2 });
+        let installed = app.open();
+        assert_starts_on(&installed, &app.shipped, &second, 2);
+        let held: Vec<String> =
+            listing(&app.root).into_iter().filter(|name| name.starts_with("packs/")).collect();
+        assert_eq!(held.len(), 1, "the root holds the one part it replaced: {held:?}");
+        installs.push(to_install);
+    }
+    let [whole, part] = installs[..] else { unreachable!() };
+    assert!(part * 3 < whole, "a part's install is about a quarter of the whole pack's: {part} of {whole}");
 }
 
 /// A disk that says it has `.0` bytes free, to an install's room check; its other steps are the real ones.

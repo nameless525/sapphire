@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sapphire_assets::pack::{
-    Block, HEADER_LEN, PackError, PackHeader, PackMetadataBudget, PackMetadataRead, Toc,
+    Block, HEADER_LEN, PackError, PackHeader, PackMetadataBudget, PackMetadataRead, Toc, pack_of_part,
 };
 use sapphire_assets::{AssetServer, LoadPriority, MountError, PackFile, PackSource, ReadDone};
 
@@ -45,8 +45,9 @@ pub const MAX_PUSH: u64 = 1 << 30;
 /// What pushed packs may hold on a device at once (see the [module docs](self)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PushLimits {
-    /// Pack names served from pushes. A push of another name is refused once this many are
-    /// served or being pushed; the names served can always be pushed again.
+    /// Packs served from pushes, a pack's parts one pack (M6 K2: the `budget` district is 16 parts, so a
+    /// session's edits to it would otherwise take the whole limit). A push of another pack is refused once this
+    /// many are served or being pushed; the packs served can always be pushed again, any part of them.
     pub packs: usize,
     /// Received bytes in memory, or asked for by a push under way, for as long as anything holds
     /// them (see the [module docs](self)). A push that would hold more is refused.
@@ -108,13 +109,14 @@ impl State {
         self.held.load(Ordering::Relaxed)
     }
 
-    /// Pack names served or being pushed, each once.
+    /// Packs served or being pushed, each once, however many of its parts.
     fn names(&self) -> usize {
         let mut names: Vec<&str> = self
             .pushed
             .iter()
             .map(|(name, _)| name.as_str())
             .chain(self.reserved_names.iter().map(String::as_str))
+            .map(|name| pack_of_part(name).0)
             .collect();
         names.sort_unstable();
         names.dedup();
@@ -183,7 +185,11 @@ impl LivePacks {
     fn reserve(&self, name: &str, bytes: u64) -> Result<Reservation, PushError> {
         let mut state = self.lock();
         let new = !state.pushed.iter().any(|(pushed, _)| pushed == name);
-        let named = new && !state.reserved_names.iter().any(|reserved| reserved == name);
+        // A part of a pack served or being pushed takes no place of its own.
+        let pack = pack_of_part(name).0;
+        let held = |other: &str| pack_of_part(other).0 == pack;
+        let named = !state.pushed.iter().any(|(pushed, _)| held(pushed))
+            && !state.reserved_names.iter().any(|reserved| held(reserved));
         if named && state.names() >= self.limits.packs {
             return Err(PushError::TooManyPacks(self.limits.packs));
         }
@@ -809,7 +815,9 @@ impl PushedPack {
         self.received
     }
 
-    /// Serves the pack from `packs` from now on and, if `server` has it mounted, remounts it:
+    /// Serves the pack from `packs` from now on and, if `server` has it mounted, remounts it (for a part's
+    /// file, the pack it's part of; a pack whose number of parts changed can't be pushed a part at a time, since
+    /// each part's remount refuses a set whose parts disagree):
     /// the assets whose bytes changed load their new versions behind their handles, as A8's hot
     /// reload does (`AssetServer::remount`). A pack the server refuses (one holding another
     /// mounted pack's asset, say) is served no more: `packs` goes back to the version before, as
@@ -828,8 +836,10 @@ impl PushedPack {
         let previous = packs.install(&self.name, self.version.clone());
         let mut outcome =
             PackOutcome { received: self.received, len: self.version.len, ..PackOutcome::default() };
-        if server.is_mounted(&self.name) {
-            match server.remount(&self.name) {
+        // A part's file (M6 K2) remounts its pack, which reads its other parts as they're served.
+        let (pack, _) = pack_of_part(&self.name);
+        if server.is_mounted(pack) {
+            match server.remount(pack) {
                 Ok(report) => {
                     outcome.mounted = true;
                     (outcome.changed, outcome.removed, outcome.reloading) =
@@ -847,7 +857,7 @@ impl PushedPack {
 
 #[cfg(test)]
 mod tests {
-    use sapphire_assets::pack::{Codec, PackAsset, PackReader, write_pack};
+    use sapphire_assets::pack::{Codec, PackAsset, PackReader, part_name, write_pack};
     use sapphire_assets::{AssetId, AssetKind, MemoryPackSource};
 
     use super::*;
@@ -1181,6 +1191,23 @@ mod tests {
         // A name served can be pushed again.
         push_and_serve(&packs, "zone3", &pack(vec![asset(1, 5_000, 2)])).unwrap();
         assert_eq!(packs.pushed().len(), 16);
+    }
+
+    /// A pack's parts are one pack to the limit: more parts of one pack than the limit are pushed, and the next
+    /// pack still has its place.
+    #[test]
+    fn a_packs_parts_take_one_place() {
+        let limits = PushLimits { packs: 2, ..PushLimits::DEFAULT };
+        let packs = LivePacks::with_limits(MemoryPackSource::new(), limits);
+        let bytes = pack(vec![asset(1, 5_000, 1)]);
+        for part in 0..3 {
+            push_and_serve(&packs, &part_name("zone_district", part), &bytes).unwrap();
+        }
+        let plan = packs.plan("zone_district.3", bytes.len() as u64, head(&bytes)).unwrap();
+        push_and_serve(&packs, "shared", &bytes).unwrap();
+        assert!(matches!(push_and_serve(&packs, "ui", &bytes), Err(PushError::TooManyPacks(2))));
+        drop(plan);
+        assert_eq!(packs.pushed().len(), 4, "three parts and `shared`");
     }
 
     #[test]

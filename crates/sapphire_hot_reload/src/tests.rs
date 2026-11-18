@@ -170,6 +170,14 @@ fn removed_and_renamed_files_are_changes() {
     let changes_made = changes(&mut reload, &[(packs_watch, "zone.spack"), (packs_watch, "district.spack")]);
     assert_eq!(changes_made.packs, ["zone", "district"]);
 
+    // A pack's parts (M6 K2) are that pack, to remount once.
+    for part in ["district.1.spack", "district.2.spack"] {
+        std::fs::write(content.join(part), b"part").unwrap();
+    }
+    let changes_made =
+        changes(&mut reload, &[(packs_watch, "district.2.spack"), (packs_watch, "district.1.spack")]);
+    assert_eq!(changes_made.packs, ["district"]);
+
     // A removed shader keeps the text it had, and says why.
     std::fs::remove_file(shaders.join("outline.wgsl")).unwrap();
     let changes_made = changes(&mut reload, &[(shaders_watch, "outline.wgsl")]);

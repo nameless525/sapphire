@@ -153,6 +153,29 @@ fn content(generation: u8) -> Content {
     }
 }
 
+/// A zone's pack of sixteen assets of four blocks each, cut into `parts` parts (M6 K2) as `zone_district`,
+/// `zone_district.1` and on, asset `n` in part `n % parts`; with `edited`, one block of asset 5 differs. Beside it,
+/// the first release's files.
+pub fn district(parts: u32, edited: bool) -> Content {
+    let mut members: Vec<Vec<PackAsset>> = vec![Vec::new(); parts as usize];
+    let cut = if parts == 1 { [0; 8] } else { *b"district" };
+    for n in 0..16u8 {
+        let mut bytes = noise(4 * BLOCK, 70 + u64::from(n));
+        if edited && n == 5 {
+            bytes[BLOCK + 10] ^= 0xff;
+        }
+        members[usize::from(n) % parts as usize].push(asset(100 + n, Codec::Zstd, &bytes));
+    }
+    let packs = (0..parts)
+        .zip(members)
+        .map(|(part, assets)| {
+            let name = sapphire_assets::pack::part_name("zone_district", part);
+            (name, sapphire_assets::pack::write_part(assets, part, parts, cut).expect("packs"))
+        })
+        .collect();
+    Content { packs, files: first_release().files }
+}
+
 impl Content {
     pub fn manifest(&self, version: u64, expires: u64) -> Manifest {
         Manifest {

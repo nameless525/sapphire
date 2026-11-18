@@ -77,7 +77,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use sapphire_assets::pack::PACK_EXTENSION;
+use sapphire_assets::pack::{PACK_EXTENSION, pack_of_part};
 use sapphire_render::{ShaderFile, ShaderSources};
 
 pub use sapphire_watch::{Changed, DEBOUNCE, FileWatcher, WatchError, WatchEvents, WatchId};
@@ -90,7 +90,7 @@ pub struct DocumentId(usize);
 #[derive(Debug, Default)]
 pub struct Changes {
     /// Packs to remount, by name: `<name>.spack` in the content root changed (rewritten, renamed
-    /// into place or removed).
+    /// into place or removed), or one of its parts' files (`<name>.<part>.spack`, M6 K2), once a pack.
     pub packs: Vec<String>,
     /// The renderer's shader sources as they are now, when a WGSL file changed: every file's
     /// text, read again, a file that couldn't be read keeping the text it had.
@@ -192,11 +192,13 @@ impl Watched {
         let mut shaders = false;
         for Changed { watch, name } in events.changed {
             let name = Path::new(name);
-            // `<name>.spack`; the temporary files packs are written to end otherwise.
+            // `<name>.spack`, or a part's `<name>.<part>.spack`; the temporary files packs are written to end
+            // otherwise.
             let pack = name.extension().is_some_and(|extension| extension == PACK_EXTENSION);
             if Some(*watch) == self.packs
                 && pack
-                && let Some(pack) = name.file_stem().and_then(|stem| stem.to_str())
+                && let Some(stem) = name.file_stem().and_then(|stem| stem.to_str())
+                && let (pack, _) = pack_of_part(stem)
                 && !changes.packs.iter().any(|known| known == pack)
             {
                 changes.packs.push(pack.to_owned());

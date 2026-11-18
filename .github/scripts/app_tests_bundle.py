@@ -40,6 +40,8 @@ TESTS = "target/debug/deps"
 # district's pack and the folder's own release manifest. The cook's own manifest isn't laid out in it.
 DISTRICT = "target/bench/ci/with-content/desktop"
 DISTRICT_OWN = ("release.smanifest", "zone_district.spack")
+# A district over the packer's 128 MiB cap is in parts (M6 K2): its other parts beside the first, its own too.
+DISTRICT_PART = re.compile(r"zone_district\.[1-9][0-9]*\.spack")
 COOK_MANIFEST = "release.smanifest"
 # Written by `unpack` for `run`; `target/tmp` is `CARGO_TARGET_TMPDIR`, which Cargo makes as it builds.
 MANIFEST = "target/app-tests.json"
@@ -84,7 +86,18 @@ def tests_from_messages(workspace: Path, messages: list[Path]) -> dict:
 
 
 def district_members() -> set[str]:
+    """The district folder's files every bundle holds; its other parts, if it has any, travel too."""
     return {f"{DISTRICT}/{name}" for name in DISTRICT_OWN}
+
+
+def district_own(name: str) -> bool:
+    """Whether `name`, in the district's folder, is the district's own: its manifest, its pack or a part of it."""
+    return name in DISTRICT_OWN or DISTRICT_PART.fullmatch(name) is not None
+
+
+def is_district_member(name: str) -> bool:
+    prefix = DISTRICT + "/"
+    return name.startswith(prefix) and district_own(name[len(prefix):])
 
 
 def district_files(workspace: Path) -> dict:
@@ -96,12 +109,15 @@ def district_files(workspace: Path) -> dict:
         if not (district / name).is_file() or (district / name).is_symlink():
             raise ValueError(f"The district's folder must hold {name}: run `cargo xtask bench-content --with-content`")
         own[f"{DISTRICT}/{name}"] = district / name
+    for path in sorted(district.glob("zone_district.*.spack")):
+        if DISTRICT_PART.fullmatch(path.name) and path.is_file() and not path.is_symlink():
+            own[f"{DISTRICT}/{path.name}"] = path
     laid = set()
     for path in sorted(district.rglob("*")):
         if path.is_symlink():
             raise ValueError(f"Symbolic links are not app test inputs: {path}")
         name = path.relative_to(district).as_posix()
-        if not path.is_file() or name in DISTRICT_OWN:
+        if not path.is_file() or district_own(name):
             continue
         cooked = content / name
         if name == COOK_MANIFEST or not cooked.is_file() or digest(cooked) != digest(path):
@@ -185,7 +201,7 @@ def allowed(name: str, test_paths: set[str], tests_only: bool) -> bool:
     tests if tests only."""
     if name in binaries(tests_only) or name in test_paths:
         return True
-    return not tests_only and (name.startswith(CONTENT + "/") or name in district_members())
+    return not tests_only and (name.startswith(CONTENT + "/") or is_district_member(name))
 
 
 def unpack(workspace: Path, archive: Path, commit: str) -> dict:

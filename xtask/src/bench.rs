@@ -376,14 +376,29 @@ pub fn put_beside(shipped: &Path, bench: &Path, out: &Path, cook: Cook) -> anyho
     }
     fs::create_dir_all(out)?;
     link_tree(shipped, out, &|name| name != MANIFEST)?;
-    let district = bench.join(DISTRICT_PACK);
-    if !district.is_file() {
+    if !bench.join(DISTRICT_PACK).is_file() {
         bail!("the benchmark's cook in {} has no {DISTRICT_PACK}", bench.display());
     }
-    link(&district, &out.join(DISTRICT_PACK))?;
+    // A district over the packer's cap is in parts (M6 K2): `zone_district.<part>.spack` beside its first.
+    for entry in fs::read_dir(bench)? {
+        let name = entry?.file_name();
+        if is_district_part(&name.to_string_lossy()) {
+            link(&bench.join(&name), &out.join(&name))?;
+        }
+    }
     let mut manifest = Command::new(content::pipeline()?);
     manifest.arg("manifest").arg("--packs").arg(out).args(["--cook", cook.name()]);
     workspace::run(&mut manifest)
+}
+
+/// Whether a cook's file `name` is the district's pack or one of its parts (`sapphire_assets::pack::part_name`).
+fn is_district_part(name: &str) -> bool {
+    let Some(rest) = name.strip_suffix(".spack") else { return false };
+    let stem = DISTRICT_PACK.trim_end_matches(".spack");
+    rest == stem
+        || rest.strip_prefix(stem).and_then(|part| part.strip_prefix('.')).is_some_and(|part| {
+            !part.is_empty() && !part.starts_with('0') && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 /// A cook's release manifest, which [`put_beside`] writes anew.
@@ -453,6 +468,22 @@ mod tests {
         assert!(!has_kinds(Preset::Ci) && has_kinds(Preset::Budget) && has_kinds(Preset::Double));
         assert!(workspace::root().join(SPECS_DIR).join("wren.figure.ron").is_file());
         assert!(workspace::root().join(SOURCE_DIR).join("kinds.ron").is_file());
+    }
+
+    #[test]
+    fn the_districts_parts_are_its_pack_and_its_numbered_parts() {
+        for name in ["zone_district.spack", "zone_district.1.spack", "zone_district.12.spack"] {
+            assert!(is_district_part(name), "{name}");
+        }
+        for name in [
+            "zone_district.0.spack",
+            "zone_district.01.spack",
+            "zone_district..spack",
+            "zone_districts.spack",
+            "zone_district.1",
+        ] {
+            assert!(!is_district_part(name), "{name}");
+        }
     }
 
     #[test]

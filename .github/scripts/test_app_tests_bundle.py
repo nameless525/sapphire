@@ -228,6 +228,17 @@ class AppTestsBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing"):
             app_tests_bundle.create(self.workspace, self.archive, self.commit, [self.messages])
 
+    def test_a_district_in_parts_travels_whole(self):
+        part = app_tests_bundle.DISTRICT + "/zone_district.1.spack"
+        self.fixture()
+        (self.workspace / part).write_bytes(b"the district's second part")
+        expected = app_tests_bundle.create(self.workspace, self.archive, self.commit, [self.messages])
+        actual = app_tests_bundle.unpack(self.consumer, self.archive, self.commit)
+        self.assertEqual(actual, expected)
+        self.assertIn(part, actual["files"])
+        self.assertEqual((self.consumer / part).read_bytes(), b"the district's second part")
+        self.assertFalse(app_tests_bundle.is_district_member(app_tests_bundle.DISTRICT + "/zone_district.0.spack"))
+
     def test_a_district_folder_that_isnt_the_cook_with_the_district_beside_it_cannot_be_packaged(self):
         district = self.workspace / app_tests_bundle.DISTRICT
         cases = (

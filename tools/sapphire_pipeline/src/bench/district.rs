@@ -6,7 +6,7 @@
 //! | File | What |
 //! |---|---|
 //! | `district.ron` | [`BenchDistrict`]: streets, building variants, props, lanterns, dressing, the look, and each preset's scale |
-//! | `district_day.ron` | The district's day: a dusk key (19:45) and a night key (23:00) |
+//! | `district_day.ron` | The district's day: a midday key (13:00, M6 B4), a dusk key (19:45) and a night key (23:00) |
 //! | `prefabs/<name>.assembly.ron` | The props, by file stem: parametric shapes and builtins only, since no kit is under `bench/` |
 //! | `surfaces/<name>.ptex.ron` | Procedural texture specs ([`crate::procedural`]), the families texture sets are varied from |
 //!
@@ -30,13 +30,15 @@
 //! - `prefabs/`: the committed props, a cell's `ground`, and a lane's `closure` wall, which zones place and
 //!   the cook merges into each cell's mesh, each placement drawing from its cell's palette of sets.
 //! - `plaza.encounter.ron`: the plaza's fight, and `district_day.ron`, the day the zone names.
+//! - `district.probes.ron`: the zone's ambient probe grid (M6 B4), over the whole district, seeing every cell's
+//!   merged mesh and every building as the zone places them, baked under the district's day.
 //! - `district.colliders.ron`: what a fight in the district stands on (M5 B5), the ground and a box a block
 //!   about the plaza, which nothing draws.
 //! - `district.zone.ron`: the zone, whose sidecar asks for its cells' levels of detail (`cell_levels`, M5 D6).
 //!   Its simulation half (spawners, the plaza's volume, a checkpoint, the fight and the colliders) is
 //!   `sapphire_synthetic_zone::district`'s, written here as its code builds it; its presentation is
-//!   the cells, buildings, lights, day, wind and fog, the `tour` spline and, for a preset with a crowd, its
-//!   ambient characters.
+//!   the cells, buildings, lights, day, wind and fog, its probe grid and reflection probes ([the
+//!   probes](self#the-probes)), the `tour` spline and, for a preset with a crowd, its ambient characters.
 //!
 //! # The crowd
 //!
@@ -57,6 +59,19 @@
 //! out to the variants' slots and then to cells' palette entries, those whose nearest use is nearest the tour
 //! first, so every set is drawn by something within [`SEEN`] of the tour: generation fails rather than make a
 //! set it can't see.
+//!
+//! # The probes
+//!
+//! M5 measured the district with no probe grid, no reflection probes and no sun (its day was dusk and night),
+//! so no figure of it paid for the environment's per-pixel lookup or the reflections a shipped zone has. M6 B4
+//! gives it all three: the grid (`probe_grid`) over the whole district; reflection probes (`reflections`) along
+//! both avenues outside the plaza, every `avenue_spacing` metres, each box the avenue between the building fronts
+//! across it over one stretch of its length, and a `plaza` × `plaza` square of them over the plaza, each box its
+//! tile of the open square out to the fronts across the lanes that edge it; and a midday key in its day. Each
+//! probe stands on ground the plan keeps clear (an avenue's middle, the plaza's paving), so none stands inside
+//! anything. The simulation half is untouched, so its digest is M5's. A run that measures what M5 did pins both
+//! off (`--no-probe-grid --no-reflection-probes`) and stands between 19:45 and 23:00, whose keys and the hours
+//! between them are M5's.
 //!
 //! # The phones' district
 //!
@@ -88,7 +103,9 @@ use sapphire_reflect::Versioned;
 use sapphire_synthetic_zone::district as simulation;
 use sapphire_zone::document::{Instance, Light, LightShape, Placement, Spline, ZoneDocument};
 use sapphire_zone::grid::Grid;
-use sapphire_zone::{CastMember, Post, Walk, ZoneAmbient, ZoneFog, ZoneWind};
+use sapphire_zone::{
+    CastMember, ParallaxBox, Place, Post, ReflectionProbe, Walk, ZoneAmbient, ZoneFog, ZoneWind,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{BenchError, Preset, Presets, Source, asset_id, document_bytes, read_document};
@@ -102,6 +119,9 @@ use crate::cook::Cook;
 use crate::material::MaterialSettings;
 use crate::meta::{ImportSettings, MeshSettings};
 use crate::optimize::LodSettings;
+use crate::probes::{
+    BakeBounds, BakeMesh, BakeTimeline, PerCook, ProbeGridDocument, ProbeGridSettings, ShOrder,
+};
 use crate::procedural::{self, ProceduralSettings, ProceduralTexture, SurfaceMap};
 use crate::samples::noise;
 use crate::texture::MaxSize;
@@ -119,6 +139,8 @@ pub const ENCOUNTER: &str = "plaza.encounter.ron";
 pub const DAY: &str = "district_day.ron";
 /// The zone's colliders, in the part's output (M5 B5): what a fight there stands on, the simulation half's.
 pub const COLLIDERS: &str = "district.colliders.ron";
+/// The zone's ambient probe grid, in the part's output (M6 B4).
+pub const PROBES: &str = "district.probes.ron";
 /// A building variant's slots, which its sidecar binds to texture sets.
 pub const BUILDING_SLOTS: [&str; 5] = ["wall", "stone", "roof", "wood", "paper"];
 /// Half the width the tour keeps clear along its legs, in metres.
@@ -165,6 +187,10 @@ pub struct BenchDistrict {
     pub wind: Option<ZoneWind>,
     #[serde(default)]
     pub fog: Option<ZoneFog>,
+    /// The zone's ambient probe grid (M6 B4, see [the probes](self#the-probes)).
+    pub probe_grid: DistrictGrid,
+    /// The zone's reflection probes (M6 B4, see [the probes](self#the-probes)).
+    pub reflections: DistrictReflections,
     /// Each cell's levels of detail (M5 D6), which the zone's sidecar asks the cook for: errors as a share
     /// of a cell's mesh's extent, as every mesh's are (`zone`'s "Levels of detail").
     pub cell_levels: LodSettings,
@@ -195,8 +221,40 @@ pub struct DistrictCrowd {
 
 impl Versioned for BenchDistrict {
     /// 1: M5 B1. 2: M5 B2, the district. 3: M5 D6, its cells' levels. 4: M5 B6, the phones' palette. 5: M5
-    /// B7, a preset's own palette.
-    const VERSION: u32 = 5;
+    /// B7, a preset's own palette. 6: M6 B4, the probe grid and the reflection probes.
+    const VERSION: u32 = 6;
+}
+
+/// The district's ambient probe grid (M6 B4): a [`ProbeGridDocument`]'s settings, its box the district's square
+/// from `floor` to `top`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DistrictGrid {
+    /// The box's least and greatest heights, in metres: under the ground and over the roofs.
+    pub floor: f32,
+    pub top: f32,
+    pub spacing: PerCook<f32>,
+    pub visibility: PerCook<ShOrder>,
+    pub rays: PerCook<u32>,
+    pub surfel_rays: u32,
+    pub surfel_spacing: f32,
+    pub bounces: u32,
+    pub bounce_strength: f32,
+}
+
+/// The district's reflection probes (M6 B4): along the avenues outside the plaza, and over the plaza.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DistrictReflections {
+    /// Metres between an avenue's probes: a cell's side is cut into the whole stretches nearest it, a probe a
+    /// stretch.
+    pub avenue_spacing: f32,
+    /// Probes along each side of the plaza's square of them.
+    pub plaza: u32,
+    /// How far over the ground each stands, in metres.
+    pub height: f32,
+    /// The top of every box, in metres: over the eaves of the tallest building.
+    pub top: f32,
 }
 
 /// The streets' widths, in metres.
@@ -452,8 +510,8 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
         placements,
         instances,
         lights,
-        probes: None,
-        reflections: Vec::new(),
+        probes: Some(asset_id(PART, PROBES)),
+        reflections: reflection_probes(&plan, &district.reflections),
         day: Some(DAY.to_owned()),
         rigs: None,
         sky: None,
@@ -478,9 +536,93 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
         weather_plan: None,
     };
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
+    sources.push(Source::asset(
+        PROBES,
+        document_bytes(&probe_grid(&district.probe_grid, &plan, &zone)),
+        ImportSettings::ProbeGrid(ProbeGridSettings::default()),
+    ));
     let settings = ZoneSettings { lods: district.cell_levels.clone(), ..ZoneSettings::default() };
     sources.push(Source::asset(ZONE, document_bytes(&zone), ImportSettings::Zone(settings)));
     Ok(sources)
+}
+
+/// The zone's probe grid (see [the probes](self#the-probes)): its box the district's square from `floor` to
+/// `top`, seeing every cell's merged mesh, in the zone's space, and every building where the zone stands it,
+/// under the district's day.
+fn probe_grid(grid: &DistrictGrid, plan: &Plan, zone: &ZoneDocument) -> ProbeGridDocument {
+    let zone_id = asset_id(PART, ZONE);
+    let places: BTreeSet<Place> =
+        zone.placements.iter().map(|placement| zone.place_of(placement.at, placement.backdrop)).collect();
+    let cells = places.into_iter().map(|place| BakeMesh {
+        mesh: zone_id.sub_asset(&crate::zone::part_name(place)),
+        translation: [0.0; 3],
+        yaw: 0.0,
+    });
+    let buildings = zone.instances.iter().map(|instance| BakeMesh {
+        mesh: instance.mesh,
+        translation: instance.at,
+        yaw: instance.turn,
+    });
+    ProbeGridDocument {
+        bounds: BakeBounds {
+            min: [-plan.half, grid.floor, -plan.half],
+            max: [plan.half, grid.top, plan.half],
+        },
+        spacing: grid.spacing,
+        visibility: grid.visibility,
+        rays: grid.rays,
+        surfel_rays: grid.surfel_rays,
+        surfel_spacing: grid.surfel_spacing,
+        bounces: grid.bounces,
+        bounce_strength: grid.bounce_strength,
+        timeline: BakeTimeline::Document(DAY.to_owned()),
+        meshes: cells.chain(buildings).collect(),
+    }
+}
+
+/// The zone's reflection probes (see [the probes](self#the-probes)): the north–south avenue's from the
+/// district's north edge, the east–west avenue's from its west edge, then the plaza's, row by row.
+fn reflection_probes(plan: &Plan, settings: &DistrictReflections) -> Vec<ReflectionProbe> {
+    let middle = plan.cells / 2;
+    // An avenue's middle line, and how far its fronts stand either side of it.
+    let (avenue, across) = (plan.line(middle), plan.half_width(middle));
+    let stretches = (plan.cell_size / settings.avenue_spacing + 0.5).floor().max(1.0) as u32;
+    let stretch = plan.cell_size / stretches as f32;
+    let (height, top) = (settings.height, settings.top);
+    let mut probes = Vec::new();
+    for (along_z, name) in [(true, "avenue_ns"), (false, "avenue_ew")] {
+        // `along` metres along the avenue, `side` across it, on the ground.
+        let ground = |along: f32, side: f32| if along_z { [side, along] } else { [along, side] };
+        let starts = (0..plan.cells)
+            .filter(|&k| k + 1 != middle && k != middle)
+            .flat_map(|k| (0..stretches).map(move |s| plan.line(k) + s as f32 * stretch));
+        for (index, from) in starts.enumerate() {
+            let to = from + stretch;
+            let [x, z] = ground((from + to) * 0.5, avenue);
+            let [min_x, min_z] = ground(from, avenue - across);
+            let [max_x, max_z] = ground(to, avenue + across);
+            probes.push(ReflectionProbe {
+                name: format!("{name}_{index:02}"),
+                position: [x, height, z],
+                parallax: ParallaxBox { min: [min_x, 0.0, min_z], max: [max_x, top, max_z] },
+            });
+        }
+    }
+    // The plaza's square, out to the fronts across the lanes that edge it, in tiles.
+    let least = plan.line(middle - 1) - plan.half_width(middle - 1);
+    let most = plan.line(middle + 1) + plan.half_width(middle + 1);
+    let tile = (most - least) / settings.plaza as f32;
+    for row in 0..settings.plaza {
+        for column in 0..settings.plaza {
+            let [min_x, min_z] = [least + column as f32 * tile, least + row as f32 * tile];
+            probes.push(ReflectionProbe {
+                name: format!("plaza_{row}_{column}"),
+                position: [min_x + tile * 0.5, height, min_z + tile * 0.5],
+                parallax: ParallaxBox { min: [min_x, 0.0, min_z], max: [min_x + tile, top, min_z + tile] },
+            });
+        }
+    }
+    probes
 }
 
 /// The district's ambient characters at `scale`, if its preset has a crowd (see the [module

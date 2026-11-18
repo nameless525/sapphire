@@ -59,7 +59,7 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
         ("cast/ambient_b_00", "a8fc041b56341744077c5846701d8b134ade32a74b08e2cb78072bbbb41294e7"),
         ("cast/enemy_00", "a4d4bf649b5df5e3e778fac27194fa8062a9e8905919a6bb630453de7c7f47d4"),
         ("cast/hero_00", "641bbc8d36b100df33d0d4eec3af37178f3ac55920bdb4df3e7c573a186c4b95"),
-        ("district", "9c278df98e569c561aba70a8f63664fb77fa6daf62c8693c95b5dedf713064f3"),
+        ("district", "578307ba34ed170956227f9333d90fe9e2bce8bb59471074e3c47d4189c2d650"),
         ("district/buildings", "4ba81538425fc6d90cb7a002164f7b9b40b0a76b3323f104ace974afb131d6e4"),
         ("district/materials", "57aaa0fc00432b725fe541e79abfa9e0b89db350aad58b9d6045af8e407685b0"),
         ("district/prefabs", "fd7f488cd15839048f1ecd7c2dc0f05d588fed511ddaedc1270d2e4b4923476c"),
@@ -207,4 +207,47 @@ fn a_tree_without_cell_levels_differs_only_in_the_zones_sidecar() {
     assert_eq!(marker_cook(marker), Cook::Desktop);
     assert_eq!("off".parse::<CellLevels>().unwrap(), CellLevels::Off);
     assert!("none".parse::<CellLevels>().is_err());
+}
+
+/// The district's simulation half (M6 B4): what a replay in it reads, the zone's spawners, triggers,
+/// checkpoints, colliders, encounters, navigation and exits and the two files they name, pinned at M5's
+/// value for `ci` and `budget`, so its look (the probes, the reflections, the day) can change without moving
+/// its digest. The hashes were taken from the generator and `bench/district/` at 1870dcf3e, the commit before
+/// B4's, with this test as it is. It hashes the document's fields, not the cooked zone's
+/// `simulation_digest`, which needs a cook: a change to one of those fields' types moves it with the
+/// simulation unchanged, and then it is pinned again with the cooked digest compared by hand.
+#[test]
+fn the_districts_simulation_half_is_m5s() {
+    const PINNED: &[(Preset, &str)] = &[
+        (Preset::Ci, "2fa0870f09a0d7c61e42c01ad8d3314cbee28088c10afad970e53636efc3d4bf"),
+        (Preset::Budget, "cd63c60e8446c5b988cb27a5c08eb11fb7c1e790ff1fc9aef61859a8f484a12b"),
+    ];
+    let dir = TempDir::new("bench_simulation");
+    let mut found = Vec::new();
+    for &(preset, _) in PINNED {
+        let out = dir.path().join(preset.name());
+        generate(&bench_dir(), preset, Cook::Desktop, &out).unwrap();
+        let files = tree(&out);
+        let zone: sapphire_zone::document::ZoneDocument =
+            sapphire_serialize::from_ron(std::str::from_utf8(&files["district/district.zone.ron"]).unwrap())
+                .unwrap();
+        let half = (
+            &zone.spawners,
+            &zone.triggers,
+            &zone.checkpoints,
+            zone.colliders,
+            &zone.encounters,
+            &zone.navigation,
+            &zone.exits,
+        );
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&sapphire_serialize::postcard::to_allocvec(&half).unwrap());
+        for file in [district::ENCOUNTER, district::COLLIDERS] {
+            hasher.update(&files[&format!("district/{file}")]);
+        }
+        found.push((preset, hasher.finalize().to_hex().to_string()));
+    }
+    let pinned: Vec<(Preset, String)> =
+        PINNED.iter().map(|&(preset, hash)| (preset, hash.to_owned())).collect();
+    assert!(found == pinned, "the district's simulation half hashes otherwise; found:\n{found:#?}");
 }

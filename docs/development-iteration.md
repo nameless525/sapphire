@@ -209,7 +209,9 @@ CI's scale lane (M5 X4) walks the benchmark district's `ci` preset, the tour at 
 dusk and at night, and holds what each walk counted to [`tests/counts/district-ci.txt`](../tests/counts/district-ci.txt):
 draws and instances, triangles, each pass's draws, the pipelines, materials and vertex buffers the mesh passes
 set, the ambient pass's dispatches, what animation posed, held and thinned, what was looked at and culled, the levels drawn, lights kept
-and dropped, the pools, the load's pipelines and what the zone placed. The materials and vertex buffers bound
+and dropped, the pools, the load's pipelines and what the zone placed. Since M6 B4 the district has a probe grid
+and reflection probes, and the walks pin `--no-probe-grid --no-reflection-probes`, so they count the frame M5
+counted (the table's `walks:` line names the flags). The materials and vertex buffers bound
 are in each walk's counts but not held: they follow the order cells arrive in, which is timing (the table's
 header says so). Every row held is exact, so a count that goes
 down fails as surely as one that goes up. No time is read, so any machine reproduces it:

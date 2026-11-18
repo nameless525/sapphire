@@ -1090,13 +1090,14 @@
                 ci_seconds: (lavapipe: 2.6, warp: 12.4),
             ),
             // The scale views (M5 X1) on the benchmark district's `ci` preset, from where the player
-            // arrives in the plaza at dusk. The levels view: each draw in its level of detail's color,
-            // the near props whole, the far ones coarser, the district's cells at theirs.
+            // arrives in the plaza at dusk, its probe grid and reflection probes pinned off (M6 B4), as M5
+            // drew it. The levels view: each draw in its level of detail's color, the near props whole, the
+            // far ones coarser, the district's cells at theirs.
             (
                 name: "debug-levels-district",
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
-                       "--ao", "off", "--debug-view", "levels"],
+                       "--ao", "off", "--debug-view", "levels", "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 5.1, warp: 24.1),
             ),
             // The same on Mobile-High: the phone's nearer level distances, two cascades.
@@ -1104,7 +1105,7 @@
                 name: "debug-levels-district-mobile-high",
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "mobile-high",
-                       "--ao", "off", "--debug-view", "levels"],
+                       "--ao", "off", "--debug-view", "levels", "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 6.3, warp: 20.6),
             ),
             // The texture view with the pool held to 32 MiB: each material in its worst streamed
@@ -1114,7 +1115,7 @@
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
                        "--texture-streaming", "on", "--texture-pool", "32", "--ao", "off",
-                       "--debug-view", "textures"],
+                       "--debug-view", "textures", "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 5.8, warp: 18.1),
             ),
             // The culling view from a pose across the plaza, turned to the camera's right, its frustum
@@ -1123,7 +1124,8 @@
                 name: "debug-culling-district",
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
-                       "--ao", "off", "--debug-view", "culling", "--debug-cull-from", "0,2,28,60,0"],
+                       "--ao", "off", "--debug-view", "culling", "--debug-cull-from", "0,2,28,60,0",
+                       "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 5.1, warp: 23.1),
             ),
             // The runs view: the draws that go in one instanced call with equal props, by the run's
@@ -1132,7 +1134,7 @@
                 name: "debug-runs-district",
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
-                       "--ao", "off", "--debug-view", "runs"],
+                       "--ao", "off", "--debug-view", "runs", "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 5.7, warp: 21.0),
             ),
             // The overdraw view on the district: opaque fragments by what the depth test keeps, the
@@ -1141,7 +1143,7 @@
                 name: "debug-overdraw-district",
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "desktop-high",
-                       "--ao", "off", "--debug-view", "overdraw"],
+                       "--ao", "off", "--debug-view", "overdraw", "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 5.3, warp: 22.4),
             ),
             // Debug draw through its whole path: one of each shape beside the mannequin, in its color;
@@ -4188,6 +4190,7 @@
             // The benchmark district (M5 X4): its `ci` preset, which the golden jobs cook beside the content,
             // as a pull request sees it at scale. Each stands where nothing streams (the desktops' 256 m and
             // the plaza's 100 m reach take in the whole 128 m district at the load) and draws whole textures.
+            // Each pins the district's probe grid and reflection probes off (M6 B4), as M5 drew it.
             // The long street at dusk, 8 m down it from its east end on the tour, looking west along it:
             // its repeated buildings and lanterns end to end, every cascade at its fullest.
             (
@@ -4195,7 +4198,8 @@
                 size: "480x270",
                 ticks: 1600,
                 args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
-                       "--tier", "desktop-high", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--capture-frames", "32", "--no-probe-grid",
+                       "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 27.6, warp: 45.7),
             ),
             // The plaza at night from where the player arrives in it: the lanterns at the light cap, the
@@ -4205,7 +4209,7 @@
                 size: "480x270",
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "23", "--tier", "desktop-high",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32", "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 18.1, warp: 51.1),
             ),
             // The same place at dusk on Mobile-High, at a phone's aspect: two cascades, eight lights, the
@@ -4215,18 +4219,20 @@
                 size: "480x222",
                 ticks: 90,
                 args: ["--zone", "district:plaza_arrive", "--time-of-day", "19.75", "--tier", "mobile-high",
-                       "--capture-frames", "32"],
+                       "--capture-frames", "32", "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 36.5, warp: 45.4),
             ),
             // The district's people (M5 C11): the crowd the `ci` preset stands and walks in front of its 48 block
             // sides (144 people, the proving hub's cast, mounted beside it), at dusk, 100 m along the tour, where
             // its walk sees the most of them (38 in view of the tier's 60 standing). Each draws at the level of
-            // detail its error gives (M5 D5) and is posed through the animation levels (M5 C1). Metal only.
+            // detail its error gives (M5 D5) and is posed through the animation levels (M5 C1). Metal only. Both pin
+            // the district's probe grid and reflection probes off (M6 B4), as M5 drew it.
             (
                 name: "zone-district-street-crowd",
                 ticks: 1000,
                 args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
-                       "--tier", "desktop-high", "--mount", "zone_proving_hub", "--capture-frames", "32"],
+                       "--tier", "desktop-high", "--mount", "zone_proving_hub", "--capture-frames", "32",
+                       "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 19.2, warp: 41.7),
             ),
             // The same on Mobile-High: its 30 nearest, with a crowd's shadows, capsules alone.
@@ -4234,7 +4240,8 @@
                 name: "zone-district-street-crowd-mobile-high",
                 ticks: 1000,
                 args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
-                       "--tier", "mobile-high", "--mount", "zone_proving_hub", "--capture-frames", "32"],
+                       "--tier", "mobile-high", "--mount", "zone_proving_hub", "--capture-frames", "32",
+                       "--no-probe-grid", "--no-reflection-probes"],
                 ci_seconds: (lavapipe: 28.1, warp: 51.4),
             ),
             // Wet surfaces (M5 L4). The proving ground's yard at night after rain: its paving darkened, glossed

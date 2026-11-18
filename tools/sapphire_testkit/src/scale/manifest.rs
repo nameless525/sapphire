@@ -773,6 +773,26 @@ mod tests {
             manifest.runs.iter().filter(|run| run.beside.as_deref() == Some(run.name.as_str())).count();
         assert_eq!(baseline * manifest.tiers.len(), 8);
         assert!(!manifest.counting(None).is_empty());
+        // The district has had a probe grid and reflection probes since M6 B4: every run in it but B4's day runs
+        // pins both off, so it measures the frame M5 measured (B7's arms compare against M5's district fight).
+        const DAY: [&str; 5] =
+            ["tour-day", "tour-day-probes", "district-fight-day", "district-fight-day-probes", "counted-day"];
+        let mut district = 0;
+        for run in &manifest.runs {
+            let zone = run.args.windows(2).any(|pair| pair[0] == "--zone" && pair[1].starts_with("district"));
+            let fight = run.args.iter().any(|arg| arg.ends_with("/district-encounter.sreplay"));
+            if !(zone || fight) || DAY.contains(&run.name.as_str()) {
+                continue;
+            }
+            let pinned = |flag: &str| run.args.iter().any(|arg| arg == flag);
+            assert!(
+                pinned("--no-probe-grid") && pinned("--no-reflection-probes"),
+                "{} pins the probes off",
+                run.name
+            );
+            district += 1;
+        }
+        assert_eq!(district, 21, "M5's and B7's runs in the district");
     }
 
     /// A phone draws its tier's capped scene onto a native panel and upscales it (spec §3.1's "~1600×740 →

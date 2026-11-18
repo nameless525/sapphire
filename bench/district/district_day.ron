@@ -1,15 +1,60 @@
-// The benchmark district's day (M5 B2): a dusk key and a night key, which the district's zone names
-// (`day`), so its look is its own wherever it opens (M5 M6). `--time-of-day 19.75` stands at the dusk key and
-// `--time-of-day 23` at the night key; between them the keys blend, and from 23:00 round to 19:45 the night
-// fades back to dusk, so the district has no daylight. The keys are the look-dev day's blue hour and nightfall
-// (`content/lookdev/lookdev_day.ron`), whose comments say what each group is for; the night key keeps
-// nightfall's values at 23:00. A `TodTimeline` document (`sapphire_world::tod`): the zone's cook checks it
-// and holds its text.
+// The benchmark district's day (M5 B2, M6 B4): a midday key, a dusk key and a night key, which the district's zone
+// names (`day`), so its look is its own wherever it opens (M5 M6). `--time-of-day 13` stands at the midday key, with
+// the sun up (M6 B4: the district's daylight, which M5's units never drew), `--time-of-day 19.75` at the dusk key and
+// `--time-of-day 23` at the night key. Between two keys they blend: from 13:00 the day turns to dusk, from 19:45 the
+// dusk to night, and from 23:00 round to 13:00 the night back to day. The dusk and night keys, and the hours between
+// them, are M5's as they were, so a run between 19:45 and 23:00 draws what M5 measured. The dusk and night keys are
+// the look-dev day's blue hour and nightfall and the midday key its midday (`content/lookdev/lookdev_day.ron`),
+// whose comments say what each group is for; the night key keeps nightfall's values at 23:00. A `TodTimeline`
+// document (`sapphire_world::tod`): the zone's cook checks it and holds its text.
 (
     type: "sapphire::world::TodTimeline",
     version: 1,
     data: (
         keys: [
+            (
+                // Midday: a strong warm sun from the east-south-east at about 37 degrees, so the buildings on the
+                // avenue's east side shade it, clearly cool shadows, a deep blue zenith over white cumulus.
+                time: 13.0,
+                sun: (direction: (-0.72, -0.6, -0.3), color: (1.0, 0.93, 0.82), intensity: 1.15),
+                moon: (direction: (-0.3, 0.9, -0.3), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.014, 0.085, 0.5), horizon: (0.4, 0.6, 0.86), ground: (0.3, 0.3, 0.36)),
+                ambient: (sky: (0.6, 0.75, 1.0), ground: (0.4, 0.37, 0.4), intensity: 0.16),
+                fog: (
+                    near: (color: (0.66, 0.76, 0.9), density: 0.0008, start: 35.0),
+                    far: (color: (1.0, 1.0, 1.0), density: 0.0012, start: 70.0),
+                    height: (color: (0.68, 0.77, 0.9), density: 0.0008, falloff: 0.015),
+                    sun_inscatter: (0.14, 0.12, 0.09),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.3, 0.42, 0.78),
+                character: (color: (1.0, 0.93, 0.82), intensity: 1.15),
+                day_night: 0.0,
+                exposure: -0.2,
+                grade: (contrast: 1.04, saturation: 1.18, lift: (0.0, 0.012, 0.03), gain: (1.02, 1.0, 0.97)),
+                bloom: (threshold: 1.0, knee: 0.5, intensity: 0.28, scatter: 0.75),
+                vignette: (intensity: 0.18, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.96, 0.88), intensity: 40.0, glow: (0.3, 0.27, 0.2), glow_size: 24.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
+                ),
+                stars: 0.0,
+                nebula: (),
+                clouds: (
+                    lit: (1.1, 1.08, 1.03), shade: (0.42, 0.52, 0.74), rim: (1.0, 0.98, 0.9),
+                    coverage: 0.85, cirrus: 0.4,
+                ),
+                diffusion: (intensity: 0.8, threshold: 0.15, color: (1.0, 0.97, 0.92)),
+                character_bloom: (threshold: 1.4, strength: 0.5),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.82, 0.88, 1.0), opacity: 0.22, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.82, 0.8, 0.9), opacity: 0.16, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.96, 0.88), opacity: 0.1, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.5, color: (1.0, 0.95, 0.85)),
+                emission: 0.08,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.4),
+            ),
             (
                 // Dusk: the blue hour, the sun gone and the moon low, the lanterns coming on.
                 time: 19.75,

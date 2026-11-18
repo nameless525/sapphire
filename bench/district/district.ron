@@ -15,7 +15,7 @@
 // budget, M5 B7), as a phone build's content would. The engine reduces no cell's materials by itself.
 (
     type: "sapphire::pipeline::BenchDistrict",
-    version: 5,
+    version: 6,
     data: (
         cell_size: 32.0,
         // Widths in metres; `edge` is the alley between the outer blocks and the boundary wall.
@@ -76,10 +76,29 @@
         // The same in the phones' tree (M5 B6): a phone build's content carries fewer materials a cell, since a
         // cell's merged mesh draws a call a material and the engine reduces none by itself.
         phone_palette: 4,
-        // Its look: the day in this folder (a dusk key and a night key), and its own air.
+        // Its look: the day in this folder (a midday key, a dusk key and a night key), and its own air.
         day: "district_day.ron",
         wind: Some((direction: (0.8, 0.0, 0.6), strength: 0.4, gustiness: 0.3)),
         fog: Some((density: 1.2)),
+        // Its ambient probe grid (M6 B4): over the whole district, from under the ground to over its roofs, seeing
+        // every cell and building as placed, baked under the district's day, at the shipped zones' settings
+        // (`content/zones/lantern_ward/lantern_ward.probes.ron`).
+        probe_grid: (
+            floor: -1.0,
+            top: 14.0,
+            spacing: (desktop: 3.0, mobile: 6.0),
+            visibility: (desktop: L2, mobile: L1),
+            rays: (desktop: 128, mobile: 64),
+            surfel_rays: 32,
+            surfel_spacing: 1.0,
+            bounces: 2,
+            bounce_strength: 1.0,
+        ),
+        // Its reflection probes (M6 B4): along both avenues outside the plaza, one each `avenue_spacing` metres, its
+        // box the avenue between the building fronts across it; and `plaza` × `plaza` in the plaza, each its tile of
+        // the open square out to the fronts across the lanes that edge it. Each stands `height` over the ground and
+        // its box reaches from the ground to `top`, over the tallest roof's eaves. 24 on `ci`, 40 on the budget.
+        reflections: (avenue_spacing: 16.0, plaza: 4, height: 1.6, top: 12.0),
         // Each cell's levels of detail (M5 D6, the mesh cook's settings): each level stops at its share of the
         // cell's triangles or its error, a share of the cell mesh's extent (about 40 m, so about 2, 8 and 24 cm),
         // whichever comes first. The mobile cook keeps every level: its cells are already the light detail.

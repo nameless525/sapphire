@@ -4,9 +4,9 @@
 # Rewrite it with `cargo xtask counts --update` when a count moves on purpose, and say why in the change.
 #
 # preset: ci
-# sources: 3b8b25cd1baaf11c (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
-# sources-mobile: 9ece6ce7e60b2d8c (the phones' district, which the phone tiers' walks read, the same digest)
-# walks: --bench 3720 --draw-every 7 --size 320x180 --zone district --zone-walk tour --mount zone_proving_hub --ambient on --compute-threads 3, at each tier's settings and cook
+# sources: 2b1caf8fe49920d5 (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)
+# sources-mobile: 57ed90a5a816d689 (the phones' district, which the phone tiers' walks read, the same digest)
+# walks: --bench 3720 --draw-every 7 --size 320x180 --zone district --zone-walk tour --mount zone_proving_hub --ambient on --compute-threads 3 --no-probe-grid --no-reflection-probes, at each tier's settings and cook
 # reported in counts.txt, not held (the order cells arrive in is timing):
 #   materials bound: bound when the next draw's material differs, so it follows the draws' order
 #   vertex buffers bound: bound when the next draw's mesh differs, so it follows the draws' order

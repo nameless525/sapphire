@@ -142,6 +142,10 @@ impl Walk {
             "on",
             "--compute-threads",
             &COMPUTE_THREADS.to_string(),
+            // The district as M5 counted it (M6 B4): without its probe grid and reflection probes, which
+            // `bench/scale.ron`'s day units draw.
+            "--no-probe-grid",
+            "--no-reflection-probes",
         ]
         .map(str::to_owned)
         .to_vec()
@@ -424,7 +428,7 @@ fn header(digest: Option<&str>, mobile_digest: Option<&str>) -> Vec<String> {
         ));
     }
     header.push(format!(
-        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour --mount zone_proving_hub --ambient on --compute-threads {COMPUTE_THREADS}, at each tier's settings and cook"
+        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour --mount zone_proving_hub --ambient on --compute-threads {COMPUTE_THREADS} --no-probe-grid --no-reflection-probes, at each tier's settings and cook"
     ));
     header.push("reported in counts.txt, not held (the order cells arrive in is timing):".to_owned());
     header.extend(REPORTED.iter().map(|(row, why)| format!("  {row}: {why}")));

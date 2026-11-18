@@ -785,9 +785,20 @@ mod tests {
     #[test]
     fn only_the_ambient_scenes_take_ambient_occlusion_and_a_grid() {
         // Every scene from before M1 W5 pins AO off and loads no grid, so it draws as it did; the
-        // ambient scenes pin fog off instead. A zone's brings its grid and pins nothing: it's its look.
+        // ambient scenes pin fog off instead. A zone's brings its grid and pins nothing, since it's its look, but
+        // the benchmark district's: it gained a grid and reflection probes in M6 B4, and its scenes pin both off,
+        // as M5 drew it.
+        let mut district = 0;
         for scene in committed_scenes() {
             let pinned = |flag: &str, value: &str| scene.args.windows(2).any(|pair| pair == [flag, value]);
+            if scene.value("--zone").is_some_and(|zone| zone == "district" || zone.starts_with("district:")) {
+                assert!(
+                    scene.has("--no-probe-grid") && scene.has("--no-reflection-probes"),
+                    "{}",
+                    scene.name
+                );
+                district += 1;
+            }
             if scene.name.starts_with("ambient-") {
                 assert!(pinned("--fog", "off"), "{}", scene.name);
             } else if scene.name.starts_with("zone-trip-") {
@@ -829,6 +840,7 @@ mod tests {
                 assert!(!scene.has("--probes"), "{}", scene.name);
             }
         }
+        assert!(district >= 11, "the district's scenes are found by their `--zone`: {district}");
     }
 
     #[test]

@@ -21,7 +21,7 @@ cook `content/` alone; `bench/` sits beside it, never in it.
 
 | Folder | Whose | What |
 |---|---|---|
-| `district/` | M5 B2 | `district.ron`: the streets, building variants, props, lanterns, dressing and look, and each preset's scale. `district_day.ron`: its dusk and night keys. `prefabs/`: the props, from parametric shapes and builtins. `surfaces/`: procedural texture specs (`.ptex.ron`), the families the texture sets are varied from. The plaza's fight is code (`sapphire_synthetic_zone::district`), and so is what a body meets (M5 B5): the ground and a box a block, the same at every preset, which the generator writes as `district.colliders.ron` |
+| `district/` | M5 B2 | `district.ron`: the streets, building variants, props, lanterns, dressing and look, and each preset's scale. `district_day.ron`: its midday, dusk and night keys (the midday key since M6 B4). The generator also writes the zone a probe grid (`district.probes.ron`) and reflection probes along the avenues and over the plaza (M6 B4). `prefabs/`: the props, from parametric shapes and builtins. `surfaces/`: procedural texture specs (`.ptex.ron`), the families the texture sets are varied from. The plaza's fight is code (`sapphire_synthetic_zone::district`), and so is what a body meets (M5 B5): the ground and a box a block, the same at every preset, which the generator writes as `district.colliders.ron` |
 | `cast/` | M5 B3 | `cast.ron`: each figure and what each preset makes of it. `figures/`: figure specs (the hero, an enemy, six ambient figures), built as `tools/figures/` specs are |
 | `trees/` | M6 G6a | `trees.ron`: the species and each preset's leaf atlas size. `species/`: a spec each (`.tree.ron`, `sapphire_pipeline::tree`) for a broadleaf, a blossom, a conifer and a willow, each grown at three ages by space colonization, with a leaf atlas painted in brush strokes: the trees the nature zone's forest places (M6 G2b) |
 | `kinds.ron` | M5 C12b | The shipped kinds a preset makes again at spec §3.4's rows, from their specs in `tools/figures/`: see "The kinds", below |
@@ -44,7 +44,9 @@ side (a shipping build mounts only what its release manifest names; `cargo xtask
 `target/bench/<preset>/desktop/zone_district.spack` in one folder and run, for example,
 `SAPPHIRE_CONTENT_DIR=<folder>/ sapphire_sandbox --capture dusk.png --size 1280x720 --zone district
 --zone-walk tour --time-of-day 19.75 --capture-ticks 300` (`--time-of-day 23` for the night key, `--bench
-<frames>` in place of `--capture` to time the walk).
+<frames>` in place of `--capture` to time the walk). `--time-of-day 13` stands at the midday key, the sun
+up; the zone loads its probe grid and reflection probes unless `--no-probe-grid` and `--no-reflection-probes`
+take them away, which every run and golden from before M6 B4 pins, so the district draws as M5 measured it.
 
 A `--bench` of the walk (M5 B4) measures it as a fight is measured, by phases: a cold walk from the tour's
 start, then a walk again for the CPU rows and another for the GPU rows, each `<frames>` long (a lap of the

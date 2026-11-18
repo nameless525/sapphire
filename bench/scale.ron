@@ -27,6 +27,10 @@
 // - A tier's `memory_mib` is spec §3.1's memory budget in MiB (a GB taken as 1,024 MiB, as §3.4's pools are), and
 //   `crowd` the ambient characters exit test 6 asks for on it.
 //
+// The district has a probe grid, reflection probes and a midday key since M6 B4: every run M5 measured in it pins
+// the grid and the probes off (`--no-probe-grid --no-reflection-probes`) and stands between 19:45 and 23:00, whose
+// keys are M5's, so it draws the frame M5 measured.
+//
 // Planning figures (`frames_a_second`, `startup_seconds`) are B4's walks on the M5 Mac: about 265 s a desktop
 // walk of three phases and 147 s a phone one. They size the sittings and measure nothing.
 (
@@ -55,11 +59,15 @@
             (name: "mobile-low", size: "2532x1170", cook: mobile, lap: 3800, frames_a_second: 85, startup_seconds: 12, memory_mib: Some(1638), crowd: Some(30)),
         ],
         runs: [
-            // B4's baseline, by its exact flags: the tour at dusk and at night.
+            // B4's baseline, by its exact flags and M6 B4's pins, which keep the district as it walked it: the tour at
+            // dusk and at night.
             (
                 name: "tour-dusk",
                 about: "the tour at dusk, as B4 walked it",
-                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75"],
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-probe-grid",
+                    "--no-reflection-probes",
+                ],
                 frames: Lap,
                 read: [Cpu, Gpu, Counts, Memory],
                 beside: Some("tour-dusk"),
@@ -68,7 +76,10 @@
             (
                 name: "tour-night",
                 about: "the tour at night, as B4 walked it",
-                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "23"],
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "23", "--no-probe-grid",
+                    "--no-reflection-probes",
+                ],
                 frames: Lap,
                 read: [Cpu, Gpu, Counts, Memory],
                 beside: Some("tour-night"),
@@ -81,6 +92,7 @@
                 args: [
                     "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--day-length", "935",
                     "--mount", "zone_proving_hub", "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Lap,
                 read: [Cpu, Gpu, Counts, Memory, Pipelines],
@@ -94,6 +106,7 @@
                 args: [
                     "--zone", "district", "--zone-walk", "tour", "--time-of-day", "23", "--mount", "zone_proving_hub",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(3800),
                 read: [Cpu, Gpu],
@@ -116,6 +129,7 @@
                 args: [
                     "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--texture-streaming", "on",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 tier_args: {
                     "desktop-high": ["--texture-pool", "1303"],
@@ -145,6 +159,7 @@
                 args: [
                     "--zone", "district:122.3,0,-64,270", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(1200),
                 phases: 1,
@@ -159,6 +174,7 @@
                 args: [
                     "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(3800),
                 read: [Cpu, Gpu, Cast],
@@ -175,6 +191,7 @@
                 args: [
                     "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
                     "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(1600),
                 read: [Cpu, Gpu, Counts, Cast, Pipelines],
@@ -192,6 +209,7 @@
                 args: [
                     "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
                     "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 tiers: ["mobile-high", "mobile-low"],
                 frames: Count(1600),
@@ -218,6 +236,7 @@
                 args: [
                     "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
                     "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(1600),
                 read: [Cpu, Gpu],
@@ -259,6 +278,7 @@
                 args: [
                     "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(3800),
                 read: [Cpu, Gpu, Counts],
@@ -274,6 +294,7 @@
                 args: [
                     "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(3800),
                 read: [Cpu, Gpu, Counts],
@@ -290,6 +311,7 @@
                 args: [
                     "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(3800),
                 read: [Gpu, Cast],
@@ -310,7 +332,10 @@
             (
                 name: "draw-runs",
                 about: "instanced runs (D2): a call a draw against the shadow views' runs",
-                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload", "--live-link", "off"],
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload",
+                    "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                ],
                 frames: Count(3800),
                 read: [Cpu, Gpu, Counts],
                 variants: [(name: "off", args: ["--draw-runs", "off"]), (name: "shadows", args: ["--draw-runs", "shadows"])],
@@ -320,7 +345,10 @@
             (
                 name: "shadow-cache",
                 about: "kept and held cascades (D8) on the tour, held against drawn in turns",
-                args: ["--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload", "--live-link", "off"],
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload",
+                    "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                ],
                 frames: Count(3800),
                 read: [Cpu, Gpu, Counts],
                 variants: [(name: "held", args: ["--shadow-cache", "held"]), (name: "turns", args: ["--shadow-cache", "turns"])],
@@ -333,6 +361,7 @@
                 args: [
                     "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(3800),
                 read: [Gpu],
@@ -373,6 +402,7 @@
                 args: [
                     "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
                     "--mount", "zone_proving_hub", "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Lap,
                 phases: 1,
@@ -387,6 +417,7 @@
                     "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
                     "--mount", "zone_proving_hub", "--ambient", "on", "--texture-streaming", "on", "--no-hot-reload",
                     "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 // `streaming`'s pools, half what each cook's walk holds whole, and paced at each tier's frame rate
                 // (tiers.ron's `frame_rate`), so a wait's frames each last a frame's time, as a game's do (M5 Z2):
@@ -412,6 +443,7 @@
                 args: [
                     "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "23",
                     "--mount", "zone_proving_hub", "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Lap,
                 phases: 1,
@@ -427,6 +459,7 @@
                     "--draw-every", "7", "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party",
                     "--time-of-day", "23", "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live",
                     "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 frames: Count(1600),
                 phases: 1,
@@ -449,6 +482,7 @@
                     "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75",
                     "--mount", "zone_proving_hub", "--ambient", "on", "--texture-streaming", "on", "--no-hot-reload",
                     "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
                 ],
                 tier_args: {
                     "mobile-high": ["--texture-pool", "28", "--bench-pace", "60"],

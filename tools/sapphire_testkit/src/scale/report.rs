@@ -546,6 +546,7 @@ fn section(
             Read::Gpu => {
                 timed_table(out, rounds, beside, beside_name, "gpu", |row| row.starts_with("gpu "));
                 copies_note(out, rounds);
+                overlap_table(out, rounds);
             }
             Read::Counts => {
                 let budgeted = budgeted_counts(rounds);
@@ -787,6 +788,51 @@ fn excluded_table(out: &mut String, rounds: &Rounds) {
                 excluded.on_core_worst.map_or_else(|| "not read".to_owned(), ms),
                 thousands(excluded.allocations),
                 thousands(excluded.allocations_worst)
+            );
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Each round's overlapped phases (M6 B7, `--bench-overlap`), a row each: whether the frames were CPU- or
+/// GPU-limited and the queue on the GPU's clock. Nothing where no round overlapped.
+fn overlap_table(out: &mut String, rounds: &Rounds) {
+    if !rounds.rounds.iter().any(|round| !round.log.overlap.is_empty()) {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "Overlapped (each frame waits for the frame two back): `gpu` where most frames' CPU waited on the GPU, `cpu` \
+         where it found the frame done, so a CPU-limited tier is one a render thread would serve. On the GPU's clock, \
+         lined up as the bench says: the work queued ahead of a frame at its submit and its age to its GPU end. Times \
+         in ms; the frames read, a frame and the one before it timed, beside those timed of the phase's.\n"
+    );
+    let _ = writeln!(
+        out,
+        "| Round | Phase | Limited | Waited | Lined up by | Queued ahead, p50 / p95 | Age, p50 / p95 / worst | Frames read |"
+    );
+    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|");
+    for round in &rounds.rounds {
+        for (phase, overlap) in &round.log.overlap {
+            let of = match (overlap.timed, overlap.phase_frames) {
+                (Some(timed), Some(phase_frames)) => {
+                    format!(" ({} timed of {})", thousands(timed), thousands(phase_frames))
+                }
+                _ => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "| r{} | {phase} | {} | {:.1}% | {} | {} / {} | {} / {} / {} | {}{of} |",
+                round.round,
+                overlap.limited,
+                overlap.waited_pct,
+                overlap.lined_up_by,
+                ms(overlap.behind[0]),
+                ms(overlap.behind[1]),
+                ms(overlap.queue_age[0]),
+                ms(overlap.queue_age[1]),
+                ms(overlap.queue_age[2]),
+                thousands(overlap.frames),
             );
         }
     }
@@ -1963,6 +2009,24 @@ mod tests {
         );
         let mut none = String::new();
         excluded_table(&mut none, &rounds(&[&fight_round(1_400.0, [3_000.0, 12_000.0, 13_000.0], None)]));
+        assert!(none.is_empty(), "{none}");
+    }
+
+    /// An overlapped phase's verdict and queue print under the run (M6 B7), and nothing where no round overlapped.
+    #[test]
+    fn an_overlapped_phase_prints_its_verdict() {
+        let log = "x INFO sapphire::sandbox: bench overlap phase=\"gpu\" tier=\"Mobile-Low\" frames=659 \
+                   phase_frames=700 timed=690 limited=\"cpu\" waited_pct=45.1 lined_up_by=\"waits\" lined_up=315 \
+                   behind_us_p50=\"2056.9\" behind_us_p95=\"3685.3\" queue_age_us_p50=\"4678.6\" \
+                   queue_age_us_p95=\"6532.1\" queue_age_us_worst=\"7808.0\"\n";
+        let mut out = String::new();
+        overlap_table(&mut out, &rounds(&[log]));
+        assert!(
+            out.contains("| r1 | gpu | cpu | 45.1% | waits | 2.057 / 3.685 | 4.679 / 6.532 / 7.808 | 659 (690 timed of 700) |"),
+            "{out}"
+        );
+        let mut none = String::new();
+        overlap_table(&mut none, &rounds(&[&fight_round(1_400.0, [3_000.0, 12_000.0, 13_000.0], None)]));
         assert!(none.is_empty(), "{none}");
     }
 }

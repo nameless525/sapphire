@@ -182,6 +182,49 @@
                 beside: Some("tour-night"),
                 serves: [1, 5, 7],
             ),
+            // The district's fight on a phone-shaped CPU (M6 B7): the job system's compute pool at one thread and at
+            // three, as a phone's cores leave the frame room for, beside this Mac's own (a physical core less one,
+            // nine on the M5). J3 reads its tails, the frames over 4 ms by the kind of core, from the traces; m6-plan
+            // B9 names it `fight-pool`.
+            (
+                name: "fight-pool",
+                about: "the district's fight on the phones with the compute pool at one thread, at three and at this Mac's own",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                ],
+                tiers: ["mobile-high", "mobile-low"],
+                frames: Count(1600),
+                read: [Cpu],
+                trace: true,
+                variants: [
+                    (name: "one", args: ["--compute-threads", "1"]),
+                    (name: "three", args: ["--compute-threads", "3"]),
+                    (name: "mac", args: []),
+                ],
+                rows: ["cpu frame", "record", "animation and ik", "gpu wait"],
+                serves: [3],
+            ),
+            // The district's fight with CPU and GPU overlapped (M6 B7, `--bench-overlap`): each frame waits for the
+            // frame two back rather than for everything, as behind a swapchain of two, beside the batch's way. Its
+            // `bench overlap` line says whether the tier is CPU- or GPU-limited so: a CPU-limited tier reopens a
+            // render thread (m6-plan §3, "What not to do"). The arms compare on `cpu frame` and `gpu wait` alone:
+            // overlapped, consecutive frames' GPU work can overlap (as Metal's command buffers do), so the GPU phase's
+            // pass rows and `gpu frame` are taken on other frames than the waiting arm's, and are not set side by
+            // side; `bench overlap` is the overlapped arm's alone.
+            (
+                name: "fight-overlap",
+                about: "the district's fight waiting for the frame two back, CPU and GPU overlapped, beside waiting for every frame",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(1600),
+                read: [Cpu, Gpu],
+                variants: [(name: "waits", args: []), (name: "overlaps", args: ["--bench-overlap"])],
+                rows: ["cpu frame", "gpu wait"],
+                serves: [3],
+            ),
             // Exit test 5's fight (M5 C12b): the heroine, Aster and Wren against twelve Ember Lancers on the arena,
             // from the root that holds the kinds at the preset's rows (`bench/kinds.ron`): Aster at 80,000
             // triangles, Wren at 83,808 (4.8% over the row), the heroine at her model's 36,470: 200,278 of 240,000.

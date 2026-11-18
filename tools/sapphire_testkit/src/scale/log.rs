@@ -185,6 +185,25 @@ pub struct Excluded {
     pub allocations_worst: u64,
 }
 
+/// An overlapped phase's reading (M6 B7, `bench overlap`): which of the CPU and GPU the frames waited on, and the
+/// queue on the GPU's clock. Times in µs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Overlap {
+    /// `gpu` where most frames' CPU waited on the frame two back, `cpu` otherwise.
+    pub limited: String,
+    pub waited_pct: f64,
+    /// What lined the CPU's clock up with the GPU's: `waits`, `idle` or `least`.
+    pub lined_up_by: String,
+    /// The frames read, the phase's, and those whose GPU times came back (none where the line is older).
+    pub frames: u64,
+    pub phase_frames: Option<u64>,
+    pub timed: Option<u64>,
+    /// The work queued ahead of a frame at its submit, p50 and p95.
+    pub behind: [f64; 2],
+    /// From a frame's submit to its GPU end, p50, p95 and worst.
+    pub queue_age: [f64; 3],
+}
+
 /// A phase's frames on one kind of core (M5 B4, `frames by core`), in µs, with the thread's CPU time over them where
 /// the bench read it (M6 B3).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -237,6 +256,8 @@ pub struct Log {
     pub excluded: Vec<(Key, Excluded)>,
     /// Each phase's frames by the kind of core they ended on: `("cpu", "performance")`.
     pub by_core: Vec<(Key, ByCore)>,
+    /// Each overlapped phase's reading, by phase, where the bench ran with `--bench-overlap`.
+    pub overlap: Vec<(String, Overlap)>,
     /// A counting walk's `texture streaming cpu` line (M5 Z2): its fields that read as numbers, shown only.
     pub streaming_cpu: Option<BTreeMap<String, f64>>,
     /// A counting walk's `zone closed` line, at its end.
@@ -484,6 +505,30 @@ impl Log {
                         first_hour: float("first_hour"),
                     },
                 );
+            } else if has(line, "bench overlap") {
+                let (Some(phase), Some(limited), Some(frames)) =
+                    (field("phase"), field("limited"), int("frames"))
+                else {
+                    continue;
+                };
+                let read = |name: &str| float(name).unwrap_or(0.0);
+                log.overlap.push((
+                    phase.to_owned(),
+                    Overlap {
+                        limited: limited.to_owned(),
+                        waited_pct: read("waited_pct"),
+                        lined_up_by: field("lined_up_by").unwrap_or_default().to_owned(),
+                        frames,
+                        phase_frames: int("phase_frames"),
+                        timed: int("timed"),
+                        behind: [read("behind_us_p50"), read("behind_us_p95")],
+                        queue_age: [
+                            read("queue_age_us_p50"),
+                            read("queue_age_us_p95"),
+                            read("queue_age_us_worst"),
+                        ],
+                    },
+                ));
             } else if has(line, "bench of a fight") || has(line, "bench") || has(line, "bench gpu") {
                 if let Some(startup) = float("startup_ms") {
                     log.startup_ms = Some(startup);
@@ -698,6 +743,30 @@ mod tests {
         );
         assert_eq!(log.by_core[1].1.on_core_p95, None, "a line from before the thread's CPU time");
         assert!(log.timed.is_empty(), "neither is a fight row");
+    }
+
+    /// An overlapped phase's reading (M6 B7) is read, and is not a plain bench's fields; a phase with nothing to
+    /// read logs no verdict and leaves none.
+    #[test]
+    fn an_overlapped_phases_reading_is_read() {
+        let log = Log::parse(
+            "x  INFO sapphire::sandbox: bench overlap phase=\"gpu\" tier=\"Mobile-High\" frames=1547 \
+             phase_frames=1600 timed=1590 limited=\"gpu\" waited_pct=83.8 lined_up_by=\"waits\" lined_up=1335 \
+             behind_us_p50=\"3926.0\" behind_us_p95=\"5220.6\" queue_age_us_p50=\"7163.1\" \
+             queue_age_us_p95=\"8737.1\" queue_age_us_worst=\"25282.9\" gpu_interval_us_p50=\"3121.9\" \
+             cpu_us_p50=\"2147.7\" wait_us_p50=\"883.5\"\n\
+             x  INFO sapphire::sandbox: bench overlap: no two frames in a row timed phase=\"cpu\" tier=\"Mobile-High\" \
+             frames=0",
+        );
+        let [(phase, overlap)] = log.overlap.as_slice() else { panic!("one reading: {:?}", log.overlap) };
+        assert_eq!(phase, "gpu");
+        assert_eq!(
+            (overlap.limited.as_str(), overlap.waited_pct, overlap.lined_up_by.as_str()),
+            ("gpu", 83.8, "waits")
+        );
+        assert_eq!((overlap.frames, overlap.phase_frames, overlap.timed), (1547, Some(1600), Some(1590)));
+        assert_eq!((overlap.behind, overlap.queue_age), ([3926.0, 5220.6], [7163.1, 8737.1, 25282.9]));
+        assert!(!log.plain_bench && log.fields.is_empty(), "not a plain bench's line");
     }
 
     #[test]

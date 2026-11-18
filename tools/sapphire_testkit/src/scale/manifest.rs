@@ -902,6 +902,43 @@ mod tests {
         );
     }
 
+    /// M6 B7's two runs are the batch's district fight, by its own arguments: on the phones alone with the compute
+    /// pool at one thread, three and the machine's own, and on every tier waiting for every frame and overlapped.
+    #[test]
+    fn the_pool_and_overlap_arms_are_the_district_fights() {
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let fight = manifest.run("district-fight").unwrap();
+        let arms = |run: &Run| -> Vec<(String, Vec<String>)> {
+            run.variants.iter().map(|variant| (variant.name.clone(), variant.args.clone())).collect()
+        };
+        let owned = |args: &[&str]| -> Vec<String> { args.iter().map(|arg| (*arg).to_owned()).collect() };
+        let pool = manifest.run("fight-pool").unwrap();
+        assert_eq!((&pool.args, pool.frames, pool.trace), (&fight.args, fight.frames, true));
+        assert_eq!(pool.tiers, ["mobile-high", "mobile-low"]);
+        assert!(
+            pool.tiers.iter().all(|tier| manifest.tier(tier).is_some_and(|tier| tier.cook == Cook::Mobile))
+        );
+        assert_eq!(
+            arms(pool),
+            [
+                ("one".to_owned(), owned(&["--compute-threads", "1"])),
+                ("three".to_owned(), owned(&["--compute-threads", "3"])),
+                ("mac".to_owned(), Vec::new()),
+            ]
+        );
+        let overlap = manifest.run("fight-overlap").unwrap();
+        assert_eq!((&overlap.args, overlap.frames), (&fight.args, fight.frames));
+        assert!(overlap.tiers.is_empty(), "every tier");
+        assert_eq!(
+            arms(overlap),
+            [("waits".to_owned(), Vec::new()), ("overlaps".to_owned(), owned(&["--bench-overlap"]))]
+        );
+        let units = manifest.units(None);
+        for (name, count) in [("fight-pool.", 3 * 2 * 2), ("fight-overlap.", 2 * 4 * 2)] {
+            assert_eq!(units.iter().filter(|unit| unit.name.starts_with(name)).count(), count, "{name}");
+        }
+    }
+
     /// Z1's counting walks count the crowd the timed walks draw: the proving hub's crowd mounted, the ambient
     /// characters on, as `streaming` and the exit walk have them.
     #[test]

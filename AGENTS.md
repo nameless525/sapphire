@@ -192,7 +192,7 @@ Then whatever the change itself must prove. [docs/development-iteration.md](docs
 
 | Task | Start at |
 |---|---|
-| Add a move, kind of enemy, playable kind, cloth, boss, encounter, zone and its look, ambient characters, dialogue, cutscene, face track, voiced line, effect mesh, decal, screen, music phase | [m6-handoff.md "How to add"](docs/m6-handoff.md#how-to-add): each is documents under `content/`, with Rust steps marked |
+| Add a move, kind of enemy, playable kind, authored character (Blender to a look-dev capture), cloth, boss, encounter, zone and its look, ambient characters, dialogue, cutscene, face track, voiced line, effect mesh, decal, screen, music phase | [m6-handoff.md "How to add"](docs/m6-handoff.md#how-to-add): each is documents under `content/`, with Rust steps marked |
 | Add or re-baseline a golden | [m6-handoff.md "A golden"](docs/m6-handoff.md#a-golden); `tests/golden/scenes.ron`'s header |
 | Add a replay, or move checksums | [development-iteration.md "Replays"](docs/development-iteration.md#replays) |
 | Change a shader or the look | `crates/sapphire_render/shaders/`, the module's `//!` docs, [spec §5.12](docs/engine-spec.md#512-sapphire_render-l3); look changes for the look-dev stage go in `content/lookdev/` so other goldens stay put |

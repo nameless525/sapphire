@@ -2,6 +2,8 @@
 
 Sapphire's add-on for Blender 5.2 LTS lets you author a character's anime data in Blender, export it as the glTF file the engine's importer reads, and check it against the engine's budgets without leaving Blender. It lives in [`tools/blender/sapphire/`](../tools/blender/sapphire/) (MIT). Every rule it shows comes from the pipeline binary, so the add-on, the content tests and CI judge a character the same way.
 
+The whole way from Blender to the screen, with the steps after the export (`new-character`, the masks and their sheet, ramps, `check`, the cook and a look-dev capture), is [m6-handoff.md](m6-handoff.md)'s recipe "An authored character, from Blender to a look-dev capture".
+
 ## Install
 
 1. Build the pipeline once: `cargo build -p sapphire_pipeline --profile tools` writes `target/tools/sapphire_pipeline`.

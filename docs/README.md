@@ -27,7 +27,7 @@ Every doc in `docs/`, grouped by what you'd read it for. New here? Start with [A
 
 | Doc | What it holds | Read it when |
 |---|---|---|
-| [m6-handoff.md](m6-handoff.md) | Where things stand; "How to add" recipes (a move, enemy, playable kind, cloth, boss, encounter, zone, a zone's look and weather, reflection probe, ambient characters, levels of detail, dialogue, cutscene, face track, voiced line, effect mesh, decal, bend, focus key, light shafts, cut-in, screen, golden, patch, GPU, tier, setting); rules the reviews made; everything deferred; known risks | Adding content or features; picking up the next milestone |
+| [m6-handoff.md](m6-handoff.md) | Where things stand; "How to add" recipes (a move, enemy, playable kind, authored character, cloth, boss, encounter, zone, a zone's look and weather, reflection probe, ambient characters, levels of detail, dialogue, cutscene, face track, voiced line, effect mesh, decal, bend, focus key, light shafts, cut-in, screen, golden, patch, GPU, tier, setting); rules the reviews made; everything deferred; known risks | Adding content or features; picking up the next milestone |
 | [blender-addon.md](blender-addon.md) | The Blender add-on: painting material IDs, the data color and outline normals, the material extras, export, masks and Check | Authoring a character in Blender |
 | [blender-mask-bake.md](blender-mask-bake.md) | Baking the anime character shader's SDF face map, ramps and ILM map, from documents or headless Blender | Authoring a character's masks |
 | [playtest.md](playtest.md) | Watching someone play a playtest build and turning the session into answers that point at a file | Running or reading a playtest |

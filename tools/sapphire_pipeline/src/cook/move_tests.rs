@@ -516,43 +516,71 @@ fn a_clip_that_cant_bake_says_why_by_move_and_track() {
     assert!(said.contains("add up to 19") && said.contains("99 ticks"), "{said}");
 }
 
-/// An FBX's numbers come through ufbx's C, so a table refuses them by name, rather than differ by
-/// architecture later.
+/// An FBX bakes a table as any source does (M6 A2): its curves and its rig's rest are evaluated in
+/// Rust, so a set from one is one set of bytes, here and on CI's other operating systems, as
+/// [`a_set_with_a_clip_cooks_to_one_set_of_bytes`] holds for a key-pose document. The fixture's spin
+/// plays on its own rig, its hips' half turn lifted into the root and a path following a joint by
+/// name, and a key-pose document plays on that rig too.
 #[test]
-fn an_fbx_is_refused_for_a_table() {
+fn an_fbx_bakes_a_table() {
     let fbx_id = AssetId::from_bytes([0xb2; 16]);
-    let tree = swing_tree("cook_move_fbx", &set_with(&swing_clip(), (8, 7, 5)));
-    let fbx = tree.write("moves/animated.fbx", &fixture("animated_clips.fbx"));
-    tree.sidecar(&fbx, fbx_id, ImportSettings::FbxClips(ClipSettings::default()));
-    let report = tree.try_cook(false).unwrap();
-    let name = report
-        .assets
-        .iter()
-        .find(|asset| asset.source == fbx && asset.output.extension().unwrap() == CLIP_EXTENSION)
-        .map(|asset| {
-            let bytes = read_aligned(&asset.output);
-            Clip::read(&bytes).unwrap().name.as_str().to_owned()
-        })
-        .expect("a clip");
+    let blade = "paths: [(name: \"blade\", follows: Joint(\"Arm\"), offset: (0.0, 0.5, 0.0))]";
+    let cooked = |name: &str| {
+        let tree = swing_tree(name, &set_with(&swing_clip(), (8, 7, 5)));
+        let fbx = tree.write("moves/animated.fbx", &fixture("animated_clips.fbx"));
+        let settings = ClipSettings {
+            root_motion: Some(clip::RootMotionSettings {
+                bone: "Hips".to_owned(),
+                translation: Default::default(),
+                rotation: Default::default(),
+            }),
+            ..ClipSettings::default()
+        };
+        tree.sidecar(&fbx, fbx_id, ImportSettings::FbxClips(settings));
+        let report = tree.try_cook(false).unwrap();
+        let (name, ticks) = report
+            .assets
+            .iter()
+            .filter(|asset| asset.source == fbx && asset.output.extension().unwrap() == CLIP_EXTENSION)
+            .map(|asset| {
+                let bytes = read_aligned(&asset.output);
+                let clip = Clip::read(&bytes).unwrap();
+                (clip.name.as_str().to_owned(), u32::from(clip.ticks.to_native()))
+            })
+            .find(|(name, _)| name.ends_with("Spin"))
+            .expect("the spin's clip");
+        let clip = format!("(source: \"{fbx_id}\", name: \"{name}\", {blade})");
+        write_set(&tree, &set_with(&clip, (8, 8, ticks - 16)));
+        let report = tree.try_cook(false).expect("an FBX's clip bakes");
+        (tree, fs::read(&by_id(&report, SET).output).unwrap())
+    };
+    let (tree, bytes) = cooked("cook_move_fbx_a");
+    assert_eq!(bytes, cooked("cook_move_fbx_b").1);
+    let set = MoveSet::from_cooked(&cooked_set(&tree.try_cook(false).unwrap())).unwrap();
+    let (_, swing) = set.find(Name::new("swing")).unwrap();
+    let yaw = swing.tables.root_samples().last().unwrap().yaw;
+    assert!((yaw.abs() - std::f32::consts::PI).abs() < 1e-3, "the spin turns the root a half turn: {yaw}");
+    assert_eq!(blake3::hash(&bytes).to_hex().as_str(), COOKED_FBX_SET);
 
-    write_set(&tree, &set_with(&format!("(source: \"{fbx_id}\", name: \"{name}\")"), (8, 7, 5)));
-    let said = says(&tree.try_cook(false).unwrap_err());
-    assert!(said.contains("is an FBX") && said.contains(&fbx_id.to_string()), "{said}");
-
-    // As the rig a clip plays on, the same: a key-pose document here, whose rest pose would be ufbx's.
+    // A key-pose document on the FBX's rig, whose rest is the FBX's.
     let on_fbx = AssetId::from_bytes([0xb3; 16]);
     let humanoid = HumanBone::REQUIRED.iter().map(|bone| (*bone, "Hips".to_owned())).collect();
-    let settings = ClipSettings { humanoid, ..ClipSettings::default() };
-    tree.sidecar(&fbx, fbx_id, ImportSettings::FbxClips(settings));
+    let fbx = tree.content().join("moves/animated.fbx");
+    tree.sidecar(
+        &fbx,
+        fbx_id,
+        ImportSettings::FbxClips(ClipSettings { humanoid, ..ClipSettings::default() }),
+    );
     let one_bone = "(type: \"sapphire::pipeline::KeyPoseClip\", version: 1, data: (
         ticks: 20, keys: [(tick: 0, pose: { Hips: (x: 10) })]))";
     let document = tree.write("moves/on_fbx.keypose.ron", one_bone.as_bytes());
     let settings = KeyPoseSettings { rig: Some(fbx_id), ..KeyPoseSettings::default() };
     tree.sidecar(&document, on_fbx, ImportSettings::KeyPose(settings));
-    write_set(&tree, &set_with(&format!("(source: \"{on_fbx}\")"), (8, 7, 5)));
-    let said = says(&tree.try_cook(false).unwrap_err());
-    assert!(said.contains("is an FBX") && said.contains(&fbx_id.to_string()), "{said}");
+    write_set(&tree, &set_with(&format!("(source: \"{on_fbx}\", {blade})"), (8, 7, 5)));
+    tree.try_cook(false).expect("a key-pose document on an FBX's rig bakes");
 }
+
+const COOKED_FBX_SET: &str = "c804100047bbdcc7b3e9469e8dac0693ba96e70b7d4809785ee1ed4223aab18c";
 
 /// A table's root stands for a hand-keyed one in the document, over the clip's bones.
 #[test]

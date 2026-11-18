@@ -28,7 +28,13 @@
 //! Linear, constant and user (Maya's "fixed" or "broken") tangents are one product each, the same
 //! bits everywhere. Auto and TCB tangents take a few multiply-adds first, which a C compiler may fuse
 //! on aarch64; that moves a tangent only where the `f64` result lands within an `f64` rounding of
-//! an `f32` boundary, which `moves`' pinned tables on CI's three operating systems watch for.
+//! an `f32` boundary. Blender bakes linear keys; the hand-written files' clips, with auto and TCB
+//! tangents, are pinned on CI's three operating systems
+//! (`tests::the_hand_written_clips_sample_to_one_set_of_bits`) to watch for it.
+//!
+//! **Measured** (`tests::every_channel_evaluates_within_the_kill_line_of_ufbx`, M6 A2's spike):
+//! against ufbx's own evaluation on this Mac, tick by tick, every channel of the fixtures agrees
+//! within 1e-11 mm, and all but two ticks in thousands to the `f32` a clip holds.
 
 use std::collections::HashMap;
 
@@ -40,6 +46,105 @@ pub(crate) fn rest(node: &Node) -> ufbx::Transform {
     Evaluation::rest()
         .transform(node, 0.0)
         .expect("the rest reads a connected property as the value it holds")
+}
+
+/// `node`'s rest in model space, as ufbx's `node_to_world`, in Rust: the rests of the node and its
+/// ancestors as matrices ([`transform_to_matrix`]), multiplied from the root down as ufbx does
+/// ([`matrix_mul`]). The root is the identity: the load's conversion is folded into the nodes below
+/// it (`SpaceConversion::AdjustTransforms`), and the loader's inherit-mode handling (`Compensate`)
+/// leaves every node inheriting its parent's whole transform, with scale helpers where it must.
+pub(crate) fn rest_world(node: &Node) -> ufbx::Matrix {
+    let mut chain = Vec::new();
+    let mut at = Some(node);
+    while let Some(current) = at.filter(|current| !current.is_root) {
+        chain.push(current);
+        at = current.parent.as_deref();
+    }
+    chain
+        .iter()
+        .rev()
+        .fold(IDENTITY_MATRIX, |world, node| matrix_mul(&world, &transform_to_matrix(&rest(node))))
+}
+
+/// `node`'s geometric transform, which FBX puts between a node and its mesh without passing it to
+/// the children, as ufbx's `geometry_to_node`, in Rust; `None` where it is the identity, as ufbx's
+/// `has_geometry_transform` is false.
+pub(crate) fn geometry_to_node(node: &Node) -> Option<ufbx::Matrix> {
+    if node.is_root {
+        return None;
+    }
+    let read = |name: &str, default: V3| {
+        node.element.props.find_prop(name).map_or(default, |prop| vec4_xyz(prop.value_vec4))
+    };
+    let mut t = IDENTITY_TRANSFORM;
+    t.scale_by(read(GEOMETRIC_SCALING, [1.0; 3]));
+    t.rotate_euler(read(GEOMETRIC_ROTATION, [0.0; 3]), ufbx::RotationOrder::Xyz, false);
+    t.translate(read(GEOMETRIC_TRANSLATION, [0.0; 3]));
+    if node.has_adjust_transform {
+        t.translation = mul3(t.translation, [node.adjust_translation_scale; 3]);
+    }
+    t.mirror(node.adjust_mirror_axis as usize);
+    if t.translation == [0.0; 3] && t.rotation == IDENTITY && t.scale == [1.0; 3] {
+        return None;
+    }
+    Some(transform_to_matrix(&t.into_transform()))
+}
+
+/// The identity, as ufbx's `ufbx_identity_matrix`.
+pub(crate) const IDENTITY_MATRIX: ufbx::Matrix = ufbx::Matrix {
+    m00: 1.0,
+    m10: 0.0,
+    m20: 0.0,
+    m01: 0.0,
+    m11: 1.0,
+    m21: 0.0,
+    m02: 0.0,
+    m12: 0.0,
+    m22: 1.0,
+    m03: 0.0,
+    m13: 0.0,
+    m23: 0.0,
+};
+
+/// ufbx's `ufbx_transform_to_matrix`, term for term.
+pub(crate) fn transform_to_matrix(t: &ufbx::Transform) -> ufbx::Matrix {
+    let q = t.rotation;
+    let (sx, sy, sz) = (2.0 * t.scale.x, 2.0 * t.scale.y, 2.0 * t.scale.z);
+    let (xx, xy, xz, xw) = (q.x * q.x, q.x * q.y, q.x * q.z, q.x * q.w);
+    let (yy, yz, yw) = (q.y * q.y, q.y * q.z, q.y * q.w);
+    let (zz, zw) = (q.z * q.z, q.z * q.w);
+    ufbx::Matrix {
+        m00: sx * (-yy - zz + 0.5),
+        m10: sx * (xy + zw),
+        m20: sx * (-yw + xz),
+        m01: sy * (-zw + xy),
+        m11: sy * (-xx - zz + 0.5),
+        m21: sy * (xw + yz),
+        m02: sz * (xz + yw),
+        m12: sz * (-xw + yz),
+        m22: sz * (-xx - yy + 0.5),
+        m03: t.translation.x,
+        m13: t.translation.y,
+        m23: t.translation.z,
+    }
+}
+
+/// ufbx's `ufbx_matrix_mul` of two affine matrices, `a · b`, term for term.
+pub(crate) fn matrix_mul(a: &ufbx::Matrix, b: &ufbx::Matrix) -> ufbx::Matrix {
+    ufbx::Matrix {
+        m03: a.m00 * b.m03 + a.m01 * b.m13 + a.m02 * b.m23 + a.m03,
+        m13: a.m10 * b.m03 + a.m11 * b.m13 + a.m12 * b.m23 + a.m13,
+        m23: a.m20 * b.m03 + a.m21 * b.m13 + a.m22 * b.m23 + a.m23,
+        m00: a.m00 * b.m00 + a.m01 * b.m10 + a.m02 * b.m20,
+        m10: a.m10 * b.m00 + a.m11 * b.m10 + a.m12 * b.m20,
+        m20: a.m20 * b.m00 + a.m21 * b.m10 + a.m22 * b.m20,
+        m01: a.m00 * b.m01 + a.m01 * b.m11 + a.m02 * b.m21,
+        m11: a.m10 * b.m01 + a.m11 * b.m11 + a.m12 * b.m21,
+        m21: a.m20 * b.m01 + a.m21 * b.m11 + a.m22 * b.m21,
+        m02: a.m00 * b.m02 + a.m01 * b.m12 + a.m02 * b.m22,
+        m12: a.m10 * b.m02 + a.m11 * b.m12 + a.m12 * b.m22,
+        m22: a.m20 * b.m02 + a.m21 * b.m12 + a.m22 * b.m22,
+    }
 }
 
 /// A property a connection drives, which this doesn't evaluate: the clip is refused.
@@ -61,6 +166,9 @@ const ROTATION_PIVOT: &str = "RotationPivot";
 const SCALING_OFFSET: &str = "ScalingOffset";
 const ROTATION_OFFSET: &str = "RotationOffset";
 const DEFORM_PERCENT: &str = "DeformPercent";
+const GEOMETRIC_TRANSLATION: &str = "GeometricTranslation";
+const GEOMETRIC_ROTATION: &str = "GeometricRotation";
+const GEOMETRIC_SCALING: &str = "GeometricScaling";
 
 type V3 = [f64; 3];
 
@@ -170,12 +278,7 @@ impl<'s> Evaluation<'s> {
         if use_scale_factor {
             transform.scale = mul3(transform.scale, scale_factor);
         }
-        let Composed { translation: t, rotation: r, scale: s } = transform;
-        Ok(ufbx::Transform {
-            translation: ufbx::Vec3 { x: t[0], y: t[1], z: t[2] },
-            rotation: ufbx::Quat { x: r.x, y: r.y, z: r.z, w: r.w },
-            scale: ufbx::Vec3 { x: s[0], y: s[1], z: s[2] },
-        })
+        Ok(transform.into_transform())
     }
 
     /// A blend channel's weight at `time`, as `ufbx::evaluate_blend_weight` gives it.
@@ -238,14 +341,7 @@ impl<'s> Evaluation<'s> {
             let scale = node.adjust_translation_scale;
             t.translation = mul3(t.translation, [scale; 3]);
         }
-        let axis = node.adjust_mirror_axis as usize;
-        if axis != 0 {
-            t.translation[axis - 1] = -t.translation[axis - 1];
-            let mut v = [t.rotation.x, t.rotation.y, t.rotation.z];
-            v[axis % 3] = -v[axis % 3];
-            v[(axis + 1) % 3] = -v[(axis + 1) % 3];
-            t.rotation = Q { x: v[0], y: v[1], z: v[2], w: t.rotation.w };
-        }
+        t.mirror(node.adjust_mirror_axis as usize);
         Ok(t)
     }
 
@@ -569,6 +665,28 @@ impl Composed {
             self.translation = rotate_vec3(q, self.translation);
         }
     }
+
+    /// ufbx's `ufbxi_mirror_translation` and `ufbxi_mirror_rotation` about `axis` (ufbx's
+    /// `ufbx_mirror_axis`; 0 for none).
+    fn mirror(&mut self, axis: usize) {
+        if axis == 0 {
+            return;
+        }
+        self.translation[axis - 1] = -self.translation[axis - 1];
+        let mut v = [self.rotation.x, self.rotation.y, self.rotation.z];
+        v[axis % 3] = -v[axis % 3];
+        v[(axis + 1) % 3] = -v[(axis + 1) % 3];
+        self.rotation = Q { x: v[0], y: v[1], z: v[2], w: self.rotation.w };
+    }
+
+    fn into_transform(self) -> ufbx::Transform {
+        let Self { translation: t, rotation: r, scale: s } = self;
+        ufbx::Transform {
+            translation: ufbx::Vec3 { x: t[0], y: t[1], z: t[2] },
+            rotation: ufbx::Quat { x: r.x, y: r.y, z: r.z, w: r.w },
+            scale: ufbx::Vec3 { x: s[0], y: s[1], z: s[2] },
+        }
+    }
 }
 
 fn mul3(a: V3, b: V3) -> V3 {
@@ -580,6 +698,10 @@ fn neg3(a: V3) -> V3 {
 }
 
 fn vec3(v: ufbx::Vec3) -> V3 {
+    [v.x, v.y, v.z]
+}
+
+fn vec4_xyz(v: ufbx::Vec4) -> V3 {
     [v.x, v.y, v.z]
 }
 

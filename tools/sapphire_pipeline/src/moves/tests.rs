@@ -556,6 +556,36 @@ fn warrior_blade_tracks_the_existing_attack_capsules() {
     }
 }
 
+/// The FBX fixture's stride on its own rig, its hips' travel lifted (M6 A2): an FBX's curves and rests
+/// evaluated from ufbx's raw keys, then root lifting.
+fn fbx_stride() -> (SampledClip, Skeleton) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/fbx/animated_clips.fbx");
+    let bytes = fs::read(path).unwrap();
+    let (names, _) = crate::import::fbx::clips::plan(&bytes).unwrap();
+    let index = names.iter().position(|name| name.ends_with("Stride")).expect("the stride");
+    let clips = crate::import::fbx::clips::FbxClips::import(&bytes, false).unwrap();
+    let settings = clip::ClipSettings {
+        root_motion: Some(clip::RootMotionSettings {
+            bone: "Hips".to_owned(),
+            translation: Default::default(),
+            rotation: Default::default(),
+        }),
+        ..clip::ClipSettings::default()
+    };
+    (clips.sample(index, &settings).unwrap(), Skeleton::new(clips.joints()))
+}
+
+/// Paths along the FBX fixture's arm and head, by joint, with a socket.
+fn fbx_paths() -> ClipMotionDocument {
+    let follow = |name: &str| ClipPathDocument {
+        name: name.to_lowercase(),
+        follows: Follows::Joint(name.to_owned()),
+        offset: SOCKET,
+        rotation: SOCKET_TURN,
+    };
+    motion(vec![follow("Arm"), follow("Head")])
+}
+
 /// The look-dev stage's own strike, as it stands.
 fn strike() -> SampledClip {
     let (skeleton, map) = character();
@@ -593,6 +623,10 @@ const SOCKET_TURN: [f32; 4] = [0.5, -0.5, 0.5, 0.5];
 /// Three of these read the sidecars' retarget options as shipped, so their constants move when those
 /// are tuned or `warrior.glb` is regenerated. Keep one clip here for each option: a new option needs
 /// one too, or this can't see what it does.
+///
+/// The FBX pair (M6 A2) holds `fbx::curves`: if only it fails on one architecture, ufbx's C has reached
+/// a sample, by its evaluation or by a key's auto tangent, which it derives as it parses and may fuse
+/// a multiply-add into on aarch64.
 #[test]
 fn baked_tables_and_clips_hash_the_same_on_every_architecture() {
     let (skeleton, map) = character();
@@ -635,6 +669,14 @@ fn baked_tables_and_clips_hash_the_same_on_every_architecture() {
         map: Some(&warrior_map),
     };
 
+    // An FBX, on its own rig (M6 A2).
+    let (stride, stride_rig) = fbx_stride();
+    let stride_target = ClipTarget {
+        skeleton: Some((AssetId::from_bytes([3; 16]), &stride_rig)),
+        morph_defaults: &[],
+        map: None,
+    };
+
     let found = [
         ("key-pose table", table_hash(&signature), SIGNATURE_TABLE),
         ("retargeted table", table_hash(&dodge), DODGE_TABLE),
@@ -658,6 +700,16 @@ fn baked_tables_and_clips_hash_the_same_on_every_architecture() {
         ),
         ("mirrored table", table_hash(&mirrored), MIRRORED_TABLE),
         ("mirrored clip", clip_hash(&mirrored), MIRRORED_CLIP),
+        (
+            "FBX table",
+            hash(&bake(&fbx_paths(), &plain(&stride, &stride_rig)).unwrap().to_cooked().unwrap()),
+            FBX_TABLE,
+        ),
+        (
+            "FBX clip",
+            hash(&clip::cook(&stride, &stride_target, &ClipOptions::default()).to_cooked().unwrap()),
+            FBX_CLIP,
+        ),
     ];
     let wrong: Vec<String> = found
         .iter()
@@ -681,6 +733,8 @@ const CHOP_TABLE: &str = "51dd4432e0d1ce128208107574ba1b67bfebff46cbe8bdd63daa8a
 const CHOP_CLIP: &str = "73245c7e4d99db0626027ea8a43db1579bda963f924eaa96022a2b8b7b5918ff";
 const MIRRORED_TABLE: &str = "55f852a02384ea16f83aae2c17ee2954eb8c3212d47067b4bef34ec1db028566";
 const MIRRORED_CLIP: &str = "4f815c2e0a5e6b9ec9a3826a57a4b3629bfad14ff2c0d0e4d1224c66bd9be3f6";
+const FBX_TABLE: &str = "6bc755c9e99648c1f2c8af5bf770f6fc5d58ac1edcbd28fc49b0e1de7d2d5375";
+const FBX_CLIP: &str = "2b7a2c07ac55b52f0d68fcc01f86f6ea1ec17558295d08e017a0af6cae638ea8";
 
 /// Each pinned clip above that stands for a retarget option really uses it, as the sidecars ship.
 #[test]

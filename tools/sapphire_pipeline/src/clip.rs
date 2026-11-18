@@ -11,8 +11,8 @@
 //!
 //! # Byte identity
 //!
-//! One source cooks to one set of bytes on every architecture, except an FBX's: a replay's
-//! `tables_hash` holds across them, and a move's tables ([`moves`](crate::moves)) start from the same
+//! One source cooks to one set of bytes on every architecture: a replay's `tables_hash` holds across
+//! them, and a move's tables ([`moves`](crate::moves)) start from the same
 //! [`SampledClip`]s as a clip does. So everything from a source to a [`SampledClip`], and on through
 //! [`cook`], goes through scalars and [`sapphire_math::det`]: never `Quat` arithmetic, `Vec4`,
 //! `Vec3A` or `Affine3A`, whose last bit differs between NEON and SSE2 (`Quat::normalize` multiplies by
@@ -20,9 +20,10 @@
 //! `Affine3` are plain scalars. Nor `f32::min` or `max` where a zero's sign could count, since NEON
 //! and SSE2 pick differently between 0 and −0.
 //!
-//! **FBX** is the exception. `ufbx` evaluates its curves in C through its platform's libm, so a clip
-//! from an FBX plays the same everywhere but isn't the same bytes, and no move's table may read one
-//! ([`moves::BakeError::FbxSource`](crate::moves::BakeError::FbxSource)).
+//! **FBX:** `ufbx` evaluates its curves in C through its platform's libm, so an FBX's clips and rests
+//! are evaluated in Rust from ufbx's raw keys instead ([`fbx::curves`](crate::import::fbx::curves)),
+//! step for step as ufbx does (M6 A2), and a move may bake from one as from any other source. The
+//! mesh importer takes its world rests and geometric transforms from there too.
 //!
 //! `moves::tests::baked_tables_and_clips_hash_the_same_on_every_architecture` pins real clips' bytes
 //! and tables, so CI's three operating systems hold all of this. Nothing can ban `quat * vec` in this

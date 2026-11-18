@@ -51,12 +51,20 @@
 //! - **Skeleton:** the bone of every skin cluster used, plus their ancestors (the scene's root
 //!   node aside, which the conversion leaves at the identity), in depth-first order of the scene,
 //!   so parents come first. Names are node names (`#<id>` for unnamed ones); the rest pose is each
-//!   node's local transform, which ufbx resolves from FBX's pre- and post-rotations and pivots.
+//!   node's local transform from FBX's pre- and post-rotations and pivots, evaluated as ufbx does
+//!   but in Rust (`curves::rest`), so a rig is the same bits on every architecture and a move may
+//!   bake on it.
 //! - **Palette:** a skinned mesh's vertices are placed in model space by its node's
 //!   geometry-to-world matrix `G`, like a static mesh's, and each cluster becomes the entry
 //!   (bone, `geometry_to_bone · G⁻¹`): the bone's world transform times that entry is FBX's own
 //!   skinning matrix, so the mesh deforms exactly as the file says whatever pose it was bound in,
 //!   and stands where the file shows it. Entries repeat once per (joint, matrix).
+//! - **In Rust, as ufbx does it:** each node's world rest (`curves::rest_world`), its geometric
+//!   transform (`curves::geometry_to_node`) and so `G`, and the geometric transform on a cluster's
+//!   mesh-to-bone matrix, which is the file's own, so a mesh's vertices and palette are the same
+//!   bits on every architecture. ufbx still triangulates a polygon in C, choosing its diagonals by
+//!   comparing positions, which a fused multiply-add could tip only on a polygon that is nearly
+//!   degenerate; and a cluster whose file holds no mesh-to-bone matrix gets one ufbx inverts in C.
 //! - **Weights:** one skin deformer per mesh. The four heaviest influences are kept and
 //!   renormalized, the rest dropped, and a vertex with no positive weight is bound wholly to the
 //!   first cluster's entry. Every skin blends linearly: dual-quaternion weights are dropped.
@@ -99,7 +107,6 @@ use crate::mesh::{
 };
 
 pub mod clips;
-#[cfg_attr(not(test), allow(dead_code, reason = "the spike alone: clips and rests sample through it next"))]
 pub mod curves;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -108,9 +115,11 @@ pub(crate) mod tests;
 /// step with `Cargo.lock`: a ufbx upgrade can change what a file imports to. Bump the version
 /// whenever import output changes for the same file.
 ///
+/// 4: a joint's rest, every node's world rest and geometric transform, and so the vertices and the
+/// palette, evaluated in Rust, as clips are, the same bits on every architecture (M6 A2).
 /// 3: reject nonfinite morph deltas before noise filtering.
 /// 2: generated materials take a material's double-sided feature (M1 C8).
-pub const IMPORTER: Stage = Stage { name: "fbx (ufbx 0.11.5)", version: 3 };
+pub const IMPORTER: Stage = Stage { name: "fbx (ufbx 0.11.5)", version: 4 };
 
 /// Joints and palette entries are addressed by u16.
 const MAX_JOINTS: usize = 1 << 16;
@@ -339,18 +348,14 @@ impl Skeleton {
             let index = u16::try_from(skeleton.joints.len()).map_err(|_| FbxImportError::TooManyJoints)?;
             let parent =
                 scene_node.parent.map(|parent| skeleton.joint_of[&nodes[parent].node.element.typed_id]);
-            // Under the root, the node's world transform is its local one (the root is the
-            // identity after conversion); taking the world one keeps that exact regardless.
-            let rest = match parent {
-                Some(_) => node.local_transform,
-                None => ufbx::matrix_to_transform(&node.node_to_world),
-            };
+            // Under the root, the node's local transform is its world one: the root is the identity
+            // after conversion.
             skeleton.joints.push(Joint {
                 name: name_of(&node.element),
                 parent,
-                rest: joint_transform(&rest),
+                rest: joint_transform(&curves::rest(node)),
             });
-            skeleton.rest_world.push(dmat4(&node.node_to_world));
+            skeleton.rest_world.push(dmat4(&curves::rest_world(node)));
             skeleton.joint_of.insert(node.element.typed_id, index);
         }
         Ok(Some(skeleton))
@@ -450,7 +455,7 @@ impl Builder {
         if mesh.skin_deformers.len() > 1 {
             return Err(FbxImportError::MultipleSkins { mesh: mesh_name, count: mesh.skin_deformers.len() });
         }
-        let world = dmat4(&node.geometry_to_world);
+        let world = dmat4(&geometry_to_world(node));
         let linear = DMat3::from_mat4(world);
         let normal_matrix = linear.inverse().transpose();
         // A negative determinant mirrors the geometry, which turns counter-clockwise front
@@ -560,7 +565,8 @@ impl Builder {
                             let bone =
                                 cluster.bone_node.as_deref().expect("ufbx lists only clusters with a bone");
                             let joint = skeleton.joint_of[&bone.element.typed_id];
-                            skeleton.bind(joint, dmat4(&cluster.geometry_to_bone) * inverse_world)
+                            skeleton
+                                .bind(joint, dmat4(&geometry_to_bone(mesh, node, cluster)) * inverse_world)
                         })
                         .collect::<Result<Vec<u16>, _>>()?;
                     sources.iter().map(|source| vertex_weights(skin, &binds, source.vertex)).collect()
@@ -759,6 +765,24 @@ fn name_of(element: &ufbx::Element) -> String {
 
 fn dvec3(v: ufbx::Vec3) -> DVec3 {
     DVec3::new(v.x, v.y, v.z)
+}
+
+/// `node`'s geometry in model space at rest, as ufbx's `geometry_to_world`, in Rust (M6 A2): its
+/// world rest, then its geometric transform.
+fn geometry_to_world(node: &ufbx::Node) -> ufbx::Matrix {
+    let world = curves::rest_world(node);
+    curves::geometry_to_node(node).map_or(world, |geometry| curves::matrix_mul(&world, &geometry))
+}
+
+/// A cluster's mesh-to-bone matrix with the mesh's geometric transform on it, as ufbx's
+/// `geometry_to_bone`, the geometric transform in Rust (M6 A2). The mesh-to-bone matrix is the
+/// file's own (its `Transform`), mirrored and scaled by the conversion, which is exact; ufbx takes
+/// the geometric transform of the mesh's first instance, as here.
+fn geometry_to_bone(mesh: &ufbx::Mesh, node: &ufbx::Node, cluster: &ufbx::SkinCluster) -> ufbx::Matrix {
+    let owner = mesh.element.instances.first().map_or(node, |instance| &**instance);
+    curves::geometry_to_node(owner).map_or(cluster.mesh_node_to_bone, |geometry| {
+        curves::matrix_mul(&cluster.mesh_node_to_bone, &geometry)
+    })
 }
 
 /// ufbx's affine 3 × 4 matrix, column by column.

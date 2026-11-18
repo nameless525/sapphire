@@ -143,6 +143,11 @@ pub enum ClipImportError {
     TimeRange { animation: String, begin: f64, end: f64 },
     #[error("animation {animation:?}: joint {joint:?} isn't finite at tick {tick}")]
     NonFiniteSample { animation: String, joint: String, tick: usize },
+    #[error(
+        "animation {animation:?}: {element:?}'s {property:?} is driven by a connection (a constraint or an \
+         expression), which a clip doesn't evaluate: bake (plot) it to keys before export"
+    )]
+    FbxConnected { animation: String, element: String, property: &'static str },
     #[error("the VRMC_vrm_animation extension is invalid")]
     VrmaExtension(#[source] serde_json::Error),
     #[error("not a VRMA file: it has no VRMC_vrm_animation extension")]

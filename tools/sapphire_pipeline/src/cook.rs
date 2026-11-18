@@ -2286,9 +2286,7 @@ struct RigSource<'a> {
     names: Option<&'a BTreeMap<HumanBone, String>>,
     /// The source's own mesh, whose morph targets a key-pose document names.
     mesh: Option<&'a CookedAsset>,
-    /// The source the skeleton is cooked from, as it's read.
-    importer: &'a ImportSettings,
-    /// That source's ID.
+    /// The ID of the source the skeleton is cooked from.
     owner: AssetId,
 }
 
@@ -2405,7 +2403,6 @@ impl<'a> Assets<'a> {
                 .map(|clips| &clips.humanoid)
                 .filter(|names| !names.is_empty()),
             mesh: source.meta.importer.mesh().and_then(|_| self.cooked(id)),
-            importer: &owner_source.meta.importer,
             owner,
         })
     }
@@ -2470,22 +2467,11 @@ impl<'a> Assets<'a> {
     }
 }
 
-/// Whether a source's numbers come through `ufbx`'s C: see [`BakeError::FbxSource`].
-fn is_fbx(importer: &ImportSettings) -> bool {
-    matches!(importer, ImportSettings::Fbx(_) | ImportSettings::FbxClips(_))
-}
-
 /// A move's tables, baked from the clip it names.
 fn move_tables(clip: &ClipMotionDocument, assets: &Assets<'_>) -> Result<BakedTables, BakeError> {
     let planned = assets.clip_of_move(clip)?;
     let SourceAsset { path, meta } = &planned.asset;
-    if is_fbx(&meta.importer) {
-        return Err(BakeError::FbxSource { id: meta.id });
-    }
     let rig = assets.rig_of_clip(planned).ok_or(BakeError::NotCooked { source_id: meta.id })?;
-    if is_fbx(rig.importer) {
-        return Err(BakeError::FbxSource { id: rig.owner });
-    }
     let bytes = fs::read(path).map_err(BakeError::Read)?;
     let samples = clip_samples(planned, &bytes, assets).map_err(Box::new)?;
     let skeleton = samples.skeleton.as_ref().ok_or_else(|| Box::new(ClipCookError::NoSkeleton))?;

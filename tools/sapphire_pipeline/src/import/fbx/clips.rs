@@ -7,11 +7,11 @@
 //! skeleton, as glTF's do. The scene loads as the [mesh importer](super)'s does, so joints mean
 //! the same thing in a clip and in a mesh.
 //!
-//! **Space and units.** ufbx evaluates a node's local transform at a time, from its curves, its
-//! default values, its pre- and post-rotations and pivots, and folds in what the load's conversion
-//! did to it (the axes and units on top-level nodes), exactly as [its rest
-//! transform](ufbx::Node::local_transform) is made. So a track holds the same numbers a joint's rest
-//! does, and a clip is in meters whatever the file's unit.
+//! **Space and units.** A node's local transform at a time comes from its curves, its default
+//! values, its pre- and post-rotations and pivots, and what the load's conversion did to it (the axes
+//! and units on top-level nodes), evaluated as ufbx evaluates it but in Rust ([`super::curves`]),
+//! exactly as a joint's rest is made. So a track holds the same numbers a joint's rest does, and a
+//! clip is in meters whatever the file's unit.
 //!
 //! **Rest.** A joint's rest is its node's default transform. Blender's exporter writes that as the
 //! pose of the frame it exported on, not the armature's rest (the skin keeps the true bind pose), so
@@ -21,19 +21,22 @@
 //! **Time.** A clip runs over its stack's own range, `LocalStart` to `LocalStop`, which is what the
 //! file says plays: keys outside it are cut. A stack with no such range runs from its earliest key
 //! to its latest. The clip is a whole number of ticks long, the last rounded up, and every channel
-//! is evaluated at every tick, through ufbx's curves (constant, linear, cubic) and layers. Morph
-//! weights come from blend channels by name, the first of a name for a target's whole track, as a
-//! glTF's first channel is.
+//! is evaluated at every tick from ufbx's raw keys, in Rust ([`super::curves`]): its curves, their
+//! extrapolations and its layers, as ufbx evaluates them, so a clip is the same bytes on every
+//! architecture and a move may bake its tables from one. Morph weights come from blend channels by
+//! name, the first of a name for a target's whole track, as a glTF's first channel is.
 //!
 //! **Malformed files** are errors, with no panics: the stacks and samples are counted against
 //! [`CLIP_BUDGET`] before any is evaluated (a few bytes can claim years of animation), a range must
-//! be finite, and a joint that isn't finite at some tick (ASCII files can hold `nan`) names itself.
+//! be finite, and a joint that isn't finite at some tick (ASCII files can hold `nan`) names itself,
+//! as does a property a connection drives, which ufbx would follow and this doesn't.
 
 use std::collections::{HashMap, HashSet};
 
 use sapphire_assets::clip::MAX_TICKS;
 use sapphire_assets::skeleton::Joint;
 
+use super::curves::{Connected, Evaluation};
 use super::{FbxImportError, Skeleton, flatten, import_scene_with, joint_transform, load, name_of};
 use crate::cache::Stage;
 use crate::clip::{ClipSettings, SampledClip};
@@ -45,9 +48,10 @@ use crate::mesh::ImportedMesh;
 /// name does (a test keeps it in step with `Cargo.lock`). Bump the version whenever sampling changes
 /// output for the same file.
 ///
+/// 4: curves and transforms evaluated in Rust from the raw keys, and rests with them (M6 A2).
 /// 3: clamp the last sample to LocalStop and retain unnamed morph channels.
 /// 2: root motion lifts in scalars, which can move a lifted track's last bit (M2 N1).
-pub const IMPORTER: Stage = Stage { name: "fbx clips (ufbx 0.11.5)", version: 3 };
+pub const IMPORTER: Stage = Stage { name: "fbx clips (ufbx 0.11.5)", version: 4 };
 
 /// The transform properties whose curves move a node.
 const TRANSFORM_PROPS: [&str; 3] = ["Lcl Translation", "Lcl Rotation", "Lcl Scaling"];
@@ -242,7 +246,7 @@ impl FbxClips {
         }
 
         let time_of = |tick: usize| (begin + tick as f64 / rate).min(end);
-        let anim: &ufbx::Anim = &stack.anim;
+        let evaluation = Evaluation::stack(&self.scene, stack);
         let mut clip = SampledClip {
             name: name.clone(),
             rate: settings.rate,
@@ -259,7 +263,10 @@ impl FbxClips {
             let mut translations = Vec::with_capacity(count);
             let mut scales = Vec::with_capacity(count);
             for tick in 0..count {
-                let transform = joint_transform(&ufbx::evaluate_transform(anim, node, time_of(tick)));
+                let transform = evaluation
+                    .transform(node, time_of(tick))
+                    .map_err(|error| connected(&name, &node.element, error))?;
+                let transform = joint_transform(&transform);
                 let finite = transform
                     .translation
                     .iter()
@@ -285,7 +292,10 @@ impl FbxClips {
             let channel = &self.scene.blend_channels[channel as usize];
             let mut weights = Vec::with_capacity(count);
             for tick in 0..count {
-                let weight = ufbx::evaluate_blend_weight(anim, channel, time_of(tick)) as f32;
+                let weight = evaluation
+                    .blend_weight(channel, time_of(tick))
+                    .map_err(|error| connected(&name, &channel.element, error))?
+                    as f32;
                 if !weight.is_finite() {
                     return Err(ClipImportError::NonFiniteSample {
                         animation: name,
@@ -304,6 +314,11 @@ impl FbxClips {
 
 #[cfg(test)]
 mod tests;
+
+/// The error for a property of `element` that a connection drives, in animation `animation`.
+fn connected(animation: &str, element: &ufbx::Element, Connected { property }: Connected) -> ClipImportError {
+    ClipImportError::FbxConnected { animation: animation.to_owned(), element: name_of(element), property }
+}
 
 /// When a stack starts and ends: its own range, or with none its keys'.
 fn time_range(stack: &ufbx::AnimStack) -> (f64, f64) {

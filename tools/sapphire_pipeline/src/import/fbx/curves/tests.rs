@@ -323,6 +323,10 @@ fn transforms_scene() -> Vec<u8> {
             "\"RotationOrder\", \"enum\", \"\", \"\",5",
             "\"PreRotation\", \"Vector3D\", \"Vector\", \"\",0,15,90",
             "\"RotationActive\", \"bool\", \"\", \"\",0",
+            // A geometric transform, which moves its mesh and not its children.
+            "\"GeometricTranslation\", \"Vector3D\", \"Vector\", \"\",1,-2,3",
+            "\"GeometricRotation\", \"Vector3D\", \"Vector\", \"\",10,-25,40",
+            "\"GeometricScaling\", \"Vector3D\", \"Vector\", \"\",1,2,0.5",
         ],
     );
     scene.curves(
@@ -570,6 +574,11 @@ fn as_f32_bits(transform: &ufbx::Transform) -> Vec<u32> {
 #[allow(clippy::print_stdout, reason = "the spike's measurement, read with --nocapture")]
 fn measure(name: &str, bytes: &[u8], rows: &mut Vec<(String, Worst)>) {
     let scene = load(bytes, false, true).unwrap();
+    let mut by_interpolation = [0usize; 4];
+    for key in scene.anim_curves.iter().flat_map(|curve| curve.keyframes.iter()) {
+        by_interpolation[key.interpolation as usize] += 1;
+    }
+    println!("{name}: keys constant, constant from the next, linear, cubic: {by_interpolation:?}");
     // The rest: the evaluation with no animation against ufbx's `local_transform`.
     let mut worst = Worst::default();
     for node in scene.nodes.iter().filter(|node| !node.is_root) {
@@ -725,3 +734,192 @@ fn the_hand_written_files_hold_every_mode() {
     assert!(layers.contains(&(false, true, false, false, false)), "{layers:?}");
     assert!(layers.iter().any(|l| !l.0 && !l.1), "an override: {layers:?}");
 }
+
+/// A property a connection drives is one ufbx would follow, so a clip names it and is refused, and a
+/// rest reads the value it holds, as ufbx's own rest does.
+#[test]
+fn a_connected_property_is_refused_by_name() {
+    let mut scene = Scene::default();
+    let stack = scene.stack("Driven", Some((0.0, 1.0)));
+    let layer = scene.layer(stack, &[]);
+    let driver = scene.model("Driver", 0, &["\"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",1,2,3"]);
+    let driven = scene.model("Driven", 0, &["\"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",4,5,6"]);
+    let turn = curve(&[key(0.0, 0.0, LINEAR), key(1.0, 90.0, LINEAR)]);
+    scene.curves(
+        layer,
+        driven,
+        "Lcl Rotation",
+        &[("d|X", 0.0, turn), ("d|Y", 0.0, None), ("d|Z", 0.0, None)],
+    );
+    let _ = writeln!(
+        scene.connections,
+        "\tC: \"PP\",{driver}, \"Lcl Translation\",{driven}, \"Lcl Translation\""
+    );
+    let bytes = scene.bytes(Y_UP, 100.0);
+
+    let loaded = load(&bytes, false, true).unwrap();
+    let node = loaded.nodes.iter().find(|node| &*node.element.name == "Driven").unwrap();
+    let prop = node.element.props.find_prop(LCL_TRANSLATION).unwrap();
+    assert!(prop.flags.has_any(ufbx::PropFlags::CONNECTED), "the file connects it");
+    let own = rest(node);
+    assert_eq!(as_f32_bits(&own), as_f32_bits(&node.local_transform));
+
+    let clips = crate::import::fbx::clips::FbxClips::import(&bytes, false).unwrap();
+    let error = clips.sample(0, &crate::clip::ClipSettings::default()).unwrap_err();
+    let said = error.to_string();
+    assert!(
+        said.contains("Driven") && said.contains("Lcl Translation") && said.contains("connection"),
+        "{said}"
+    );
+}
+
+/// The hand-written files' clips, every stack sampled, are one set of bits on every architecture:
+/// CI's `Test` job holds this on Linux and Windows as well as macOS. Unlike the Blender fixture, whose
+/// keys are all linear, these hold auto and TCB tangents, which ufbx derives in C as it parses, so this
+/// is where a fused multiply-add there would show. If only some machines fail, that's it; if all do,
+/// a file here or the evaluation changed on purpose: update the constant.
+#[test]
+fn the_hand_written_clips_sample_to_one_set_of_bits() {
+    let mut hasher = blake3::Hasher::new();
+    for (bytes, with_mesh) in [
+        (curves_scene(), false),
+        (transforms_scene(), false),
+        (layers_scene(), false),
+        (morph_scene(), true),
+        (inherit_scene(), false),
+    ] {
+        let clips = crate::import::fbx::clips::FbxClips::import(&bytes, with_mesh).unwrap();
+        let (names, _) = crate::import::fbx::clips::plan(&bytes).unwrap();
+        for index in 0..names.len() {
+            let clip = clips.sample(index, &crate::clip::ClipSettings::default()).unwrap();
+            let mut add = |values: &[f32]| {
+                for value in values {
+                    hasher.update(&value.to_bits().to_le_bytes());
+                }
+            };
+            for (_, track) in &clip.rotations {
+                track.iter().for_each(|q| add(&q.to_array()));
+            }
+            for (_, track) in clip.translations.iter().chain(&clip.scales) {
+                track.iter().for_each(|v| add(&v.to_array()));
+            }
+            for (_, track) in &clip.weights {
+                add(track);
+            }
+        }
+        for joint in clips.joints() {
+            let rest = &joint.rest;
+            hasher.update(bytemuck::cast_slice(&[rest.translation, rest.scale]));
+            hasher.update(bytemuck::cast_slice(&rest.rotation));
+        }
+    }
+    assert_eq!(hasher.finalize().to_hex().as_str(), HAND_WRITTEN_CLIPS);
+}
+
+const HAND_WRITTEN_CLIPS: &str = "7495d7e35b0f3469bbf303a9636fc4cdb921526028195fa170b5ecd1183bf4cf";
+
+/// How far apart two of ufbx's affine matrices put what they carry, in millimeters: the translation
+/// in meters (the load's unit), and the rest at the end of a bone [`REACH_M`] long.
+fn matrix_mm(a: &ufbx::Matrix, b: &ufbx::Matrix) -> f64 {
+    let linear = [
+        a.m00 - b.m00,
+        a.m10 - b.m10,
+        a.m20 - b.m20,
+        a.m01 - b.m01,
+        a.m11 - b.m11,
+        a.m21 - b.m21,
+        a.m02 - b.m02,
+        a.m12 - b.m12,
+        a.m22 - b.m22,
+    ];
+    let translation = DVec3::new(a.m03 - b.m03, a.m13 - b.m13, a.m23 - b.m23).length();
+    let linear = linear.iter().fold(0.0f64, |worst, d| worst.max(d.abs()));
+    let mm = translation.max(linear * REACH_M) * 1000.0;
+    if mm.is_finite() { mm } else { f64::INFINITY }
+}
+
+fn matrix_bits(m: &ufbx::Matrix) -> [u64; 12] {
+    [m.m00, m.m10, m.m20, m.m01, m.m11, m.m21, m.m02, m.m12, m.m22, m.m03, m.m13, m.m23].map(f64::to_bits)
+}
+
+/// The importer's matrices against ufbx's: each node's world rest ([`rest_world`] against
+/// `node_to_world`), its geometry's (against `geometry_to_world`) and each skin cluster's
+/// mesh-to-bone matrix (against `geometry_to_bone`), on every FBX fixture, the pavilion and the
+/// hand-written files (the transforms' carries a geometric transform, the inheritance's scale
+/// helpers). Prints a row a file; `--nocapture` shows them.
+#[test]
+#[allow(clippy::print_stdout, reason = "the measurement's table, read with --nocapture")]
+fn every_rest_and_geometry_matrix_is_within_the_kill_line_of_ufbx() {
+    let pavilion = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content/third_party/vvaytoyek_chinese_pavilion/chinese_four_corner_pavilion.fbx"),
+    )
+    .unwrap();
+    let files = [
+        ("animated_clips.fbx", fixture("animated_clips.fbx")),
+        ("skinned_morph.fbx", fixture("skinned_morph.fbx")),
+        ("static_multi.fbx", fixture("static_multi.fbx")),
+        ("pavilion", pavilion),
+        ("transforms", transforms_scene()),
+        ("inherit", inherit_scene()),
+    ];
+    let mut table = format!(
+        "{:20}  {:>12}  {:>12}  {:>12}  same f64 bits\n",
+        "file", "rest mm", "geometry mm", "bind mm"
+    );
+    let mut worst_of_all = 0.0f64;
+    let mut geometric = 0;
+    for (name, bytes) in &files {
+        let scene = load(bytes, false, false).unwrap();
+        let (mut rest_mm, mut geometry_mm, mut bind_mm) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut same, mut count) = (0, 0);
+        let mut add = |worst: &mut f64, own: &ufbx::Matrix, theirs: &ufbx::Matrix| {
+            *worst = worst.max(matrix_mm(own, theirs));
+            same += usize::from(matrix_bits(own) == matrix_bits(theirs));
+            count += 1;
+        };
+        for node in scene.nodes.iter().filter(|node| !node.is_root) {
+            add(&mut rest_mm, &rest_world(node), &node.node_to_world);
+            add(&mut geometry_mm, &crate::import::fbx::geometry_to_world(node), &node.geometry_to_world);
+            geometric += usize::from(geometry_to_node(node).is_some());
+            assert_eq!(
+                geometry_to_node(node).is_some(),
+                node.has_geometry_transform,
+                "{}",
+                &*node.element.name
+            );
+        }
+        for mesh in scene.meshes.iter() {
+            for cluster in mesh.skin_deformers.iter().flat_map(|skin| skin.clusters.iter()) {
+                let own = crate::import::fbx::geometry_to_bone(mesh, &mesh.element.instances[0], cluster);
+                add(&mut bind_mm, &own, &cluster.geometry_to_bone);
+            }
+        }
+        let _ = writeln!(
+            table,
+            "{name:20}  {rest_mm:>12.3e}  {geometry_mm:>12.3e}  {bind_mm:>12.3e}  {same}/{count}"
+        );
+        worst_of_all = worst_of_all.max(rest_mm).max(geometry_mm).max(bind_mm);
+    }
+    println!("{table}");
+    assert!(worst_of_all <= KILL_MM, "{worst_of_all} mm, over the kill line of {KILL_MM} mm\n{table}");
+    assert!(geometric > 0, "a geometric transform is measured");
+}
+
+/// An FBX mesh imports to one set of bits on every architecture: the skinned fixture with blend
+/// shapes, whose vertices, palette, rests and deltas all come through the Rust rests above. CI's
+/// `Test` job holds this on Linux and Windows as well as macOS. If only some machines fail, a
+/// matrix here still comes from C; if all do, the importer changed on purpose: update the constant.
+#[test]
+fn an_fbx_mesh_imports_to_one_set_of_bits() {
+    let mut hasher = blake3::Hasher::new();
+    for name in ["skinned_morph.fbx", "animated_clips.fbx"] {
+        let mesh = crate::import::fbx::import_slice(&fixture(name)).unwrap();
+        assert!(mesh.skin.is_some(), "{name} is skinned");
+        // `Debug` writes every float in the fewest digits that read back to its bits.
+        hasher.update(format!("{mesh:?}").as_bytes());
+    }
+    assert_eq!(hasher.finalize().to_hex().as_str(), FBX_MESHES);
+}
+
+const FBX_MESHES: &str = "f56ebe94c4ab2d3d5aa967de74fa981f151d6cffa3df74835342bc95d4711654";

@@ -36,8 +36,9 @@
 //! is read: `moves::tests::a_table_agrees_with_the_pose_on_screen` measures it on real clips, with
 //! the rig's constraints running.
 //!
-//! **FBX is refused** ([`BakeError::FbxSource`]), as a clip's source or a rig's: `ufbx` evaluates in
-//! C through its platform's libm. Convert it to glTF for a move, or key the move by hand.
+//! **FBX bakes as every other source does** (M6 A2): its curves, transforms and rests are evaluated in
+//! Rust from ufbx's raw keys ([`crate::import::fbx::curves`]), not by ufbx's C, so a clip or a rig from
+//! one is the same bytes on every architecture.
 //!
 //! **Zeros:** `-0.0` and `0.0` are different bytes and the same number, and a path can reach either
 //! by harmless routes, so a table writes `0.0`.
@@ -154,12 +155,6 @@ pub enum BakeError {
          (`names`, `retarget` or `also`)"
     )]
     NotCooked { source_id: AssetId },
-    #[error(
-        "{id} is an FBX, which `ufbx` evaluates in C through its platform's libm, so its numbers aren't the \
-         same bytes on every architecture and one replay's hash can't hold them: convert it to glTF, or key \
-         this move by hand"
-    )]
-    FbxSource { id: AssetId },
     #[error("failed to read the clip's source")]
     Read(#[source] std::io::Error),
     #[error(

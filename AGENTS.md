@@ -227,7 +227,7 @@ Then whatever the change itself must prove. [docs/development-iteration.md](docs
 | Ladder, rung | A tier's ordered list of things to give up when hot or over budget; each rung sheds in place, with no pipeline build |
 | Floor | A tier's `dynamic_floor`, the lowest render scale dynamic resolution may take |
 | Cook | Turning `content/` sources into a platform's cooked files (`desktop`, `mobile`, `editor`) |
-| Pack | A `.spack` file of cooked assets, mounted by the asset server; `shared` plus per-zone packs |
+| Pack | A `.spack` file of cooked assets, mounted by the asset server; `shared` plus per-zone packs; one over 128 MiB is in parts, `<name>.<k>.spack`, mounted together by its name |
 | Sidecar | A source's `.meta` file: its asset ID (a GUID) and importer settings |
 | Release manifest | The signed list of packs and files a release ships (`release.smanifest`) |
 | Golden | A reference PNG of a sandbox capture per backend family (`metal`, `vulkan-lavapipe`, `dx12-warp`), compared by FLIP |

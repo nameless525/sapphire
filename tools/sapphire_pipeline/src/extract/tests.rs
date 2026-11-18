@@ -268,7 +268,7 @@ fn extraction_keeps_ids_and_edits_across_runs() {
     assert_eq!(fs::read_to_string(&skin_path).unwrap(), edited);
 
     // `all` adds the untextured slots, as their generated materials.
-    let all = extract_materials(&source, &ExtractOptions { all: true }).unwrap();
+    let all = extract_materials(&source, &ExtractOptions { all: true, ..ExtractOptions::default() }).unwrap();
     let bound: Vec<&str> = all.bound.iter().map(|(slot, _)| slot.as_str()).collect();
     assert_eq!(bound, ["Hair", "Plain"]);
     let bytes = samples::vrm1().to_glb();
@@ -339,7 +339,8 @@ fn extraction_writes_the_gi_weights_vroid_names_give() {
         materials[material]["name"] = serde_json::json!(name);
     }
     let source = tree(&scratch, &sample);
-    let extraction = extract_materials(&source, &ExtractOptions { all: true }).unwrap();
+    let extraction =
+        extract_materials(&source, &ExtractOptions { all: true, ..ExtractOptions::default() }).unwrap();
     assert_eq!(extraction.bound.len(), 4, "{:?}", extraction.bound);
     for (slot, sphere, skin) in [
         ("Face_00_SKIN", 1.0, 1.0),
@@ -403,7 +404,7 @@ fn gltf_sources_extract_their_generated_materials() {
     cook(&scratch);
     let none = extract_materials(&source, &ExtractOptions::default()).unwrap();
     assert!(none.bound.is_empty() && none.written.is_empty(), "glTF materials reference no textures");
-    let all = extract_materials(&source, &ExtractOptions { all: true }).unwrap();
+    let all = extract_materials(&source, &ExtractOptions { all: true, ..ExtractOptions::default() }).unwrap();
     assert_eq!(all.bound.len(), 5);
     let mesh = gltf::import_slice(&crate::samples::mannequin_glb(), None).unwrap();
     for (slot, imported) in all.bound.iter().zip(&mesh.materials) {
@@ -856,7 +857,8 @@ fn noncanonical_material_ids_are_refused_before_changing_texture_roles() {
 fn a_file_created_after_extraction_preflight_keeps_the_winners_bytes() {
     let scratch = TempDir::new("extract_publish_winner");
     let path = scratch.path().join("artist.material.ron");
-    let mut writer = Writer { written: Vec::new() };
+    let mut writer =
+        Writer { written: Vec::new(), ids: &mut IdSource::Random, max_size: MaxSize::NONE, plan: false };
     writer
         .file(&path, || {
             fs::write(&path, b"artist saved this after preflight").unwrap();

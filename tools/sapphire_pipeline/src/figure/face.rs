@@ -45,7 +45,24 @@ pub(crate) fn masks(
         )
     })?;
     let size = (maps.size / MASK_SHARE).max(MIN_MASK);
-    let normals = rasterize(&built.primitives[primitive].geometry, size);
+    let geometry = &built.primitives[primitive].geometry;
+    let corners = geometry.indices.as_chunks::<3>().0.iter().map(|triangle| {
+        triangle.map(|index| (geometry.uvs[index as usize], Vec3::from(geometry.normals[index as usize])))
+    });
+    Ok(bake(corners, size)?)
+}
+
+/// A triangle's corner as the bake reads it: its texture coordinates and its shading normal.
+pub(crate) type Corner = ([f32; 2], Vec3);
+
+/// The threshold masks of the triangles `triangles`, `size` texels a side over their UV space, each
+/// with its angle (see the [module docs](self)): how a face is baked, whether a figure's (above) or
+/// an imported model's (`new-character`, M6 C5).
+pub(crate) fn bake(
+    triangles: impl Iterator<Item = [Corner; 3]>,
+    size: u32,
+) -> std::io::Result<Vec<(f32, Vec<u8>)>> {
+    let normals = rasterize(triangles, size);
     let mut lit: Vec<bool> = normals.iter().map(Option::is_some).collect();
     let mut masks = Vec::with_capacity(ANGLES.len());
     for angle in ANGLES {
@@ -63,16 +80,12 @@ pub(crate) fn masks(
 }
 
 /// Each texel's normal where a triangle covers its centre, in `size × size` texels over UV space.
-fn rasterize(geometry: &crate::gltf_writer::Geometry, size: u32) -> Vec<Option<Vec3>> {
+fn rasterize(triangles: impl Iterator<Item = [Corner; 3]>, size: u32) -> Vec<Option<Vec3>> {
     let mut texels = vec![None; (size * size) as usize];
     let scale = size as f32;
-    for triangle in geometry.indices.as_chunks::<3>().0 {
-        let corners = triangle.map(|index| index as usize);
-        let uv = corners.map(|corner| {
-            let [u, v] = geometry.uvs[corner];
-            (u * scale, v * scale)
-        });
-        let normal = corners.map(|corner| Vec3::from(geometry.normals[corner]));
+    for corners in triangles {
+        let uv = corners.map(|([u, v], _)| (u * scale, v * scale));
+        let normal = corners.map(|(_, normal)| normal);
         let area = (uv[1].0 - uv[0].0) * (uv[2].1 - uv[0].1) - (uv[2].0 - uv[0].0) * (uv[1].1 - uv[0].1);
         if area.abs() < 1e-9 {
             continue;

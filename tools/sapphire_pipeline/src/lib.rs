@@ -183,6 +183,7 @@ pub mod procedural;
 pub mod reflections;
 pub mod release;
 pub mod samples;
+pub mod scaffold;
 pub mod script;
 #[cfg(test)]
 mod test_util;

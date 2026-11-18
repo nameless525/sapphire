@@ -3,6 +3,7 @@
 //! The arguments are parsed by hand, as in xtask: six commands and a handful of options don't
 //! justify clap's build time, which xtask's cook pays in a release build too.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -24,11 +25,12 @@ use sapphire_pipeline::icon;
 use sapphire_pipeline::index::{self, AssetIndex};
 use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
-use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
+use sapphire_pipeline::meta::{self, IdSource, ImportSettings, MeshSettings};
 use sapphire_pipeline::pack::{self, PackReport, PackStatus};
 use sapphire_pipeline::procedural::{self, ProceduralTexture, SurfaceMap};
 use sapphire_pipeline::release::{self, ReleaseOptions};
 use sapphire_pipeline::samples::{self, Existing, Generated};
+use sapphire_pipeline::scaffold::{self, NewCharacter};
 use sapphire_pipeline::timing::{self, Phase, Slowest};
 use sapphire_pipeline::vo;
 use sapphire_time::Stopwatch;
@@ -85,6 +87,17 @@ Usage:
       the source's sidecar. By default only the materials that
       bind textures; --all extracts every material. Never overwrites a file, and keeps the
       materials the sidecar already binds.
+  sapphire_pipeline new-character --model <MODEL> [--out <DIR>] [--role <ROLE>] [--preset <FILE>]
+                                  [--part <SLOT>=<PART>]...
+      Scaffold a .vrm/.glb/.gltf/.fbx character so it cooks with no hand edit: copy MODEL into --out
+      (default: its own folder), start its sidecar from a preset (FILE, an ImportPreset document, or the
+      built-in character preset of its kind) cast as ROLE (hero, enemy, boss, ambient or tree; default the
+      preset's), extract every material as extract-materials --all does, and give each slot, by its
+      part (skin, face, hair, eye or cloth: from --part, else the importer and the slot's name), a ramp,
+      an ILM map and a layer mask, and a face its SDF map from masks baked from its normals, each a
+      document with its sidecar under <stem>/shading/, bound in its material. Every ID is new. Never
+      overwrites a file: a second run writes only what is missing, and a file of another kind where
+      one would go is an error naming it.
   sapphire_pipeline bake-map <DOCUMENT> <OUTPUT> [--sheet <DEGREES>[,<DEGREES>...]]
       Generate the map a .facesdf.ron, .ramp.ron, .ilm.ron or .ptex.ron document describes, with
       the settings of its .meta sidecar if it has one, and write it to OUTPUT as a PNG before
@@ -153,6 +166,10 @@ Usage:
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
+  --model <MODEL>            new-character: the character's model.
+  --role <ROLE>              new-character: the role its new sidecar casts it in.
+  --preset <FILE>            new-character: the ImportPreset its new sidecar starts from.
+  --part <SLOT>=<PART>       new-character: the part a slot is, in place of the one its name says.
   --check                    vo: write nothing, and fail on any file an import would change.
   --json                     check: the report as JSON on stdout.
   --index <FILE>             graph: the asset index to read.
@@ -236,6 +253,8 @@ enum Command {
         source: PathBuf,
         all: bool,
     },
+    /// `new-character`: a model's sidecar, and its slots' materials and maps.
+    NewCharacter(NewCharacter),
     Cook {
         source: PathBuf,
         out: PathBuf,
@@ -385,8 +404,34 @@ fn run(command: Command) -> anyhow::Result<()> {
             }
             eprintln!("baked {} -> {}", input.display(), output.display());
         }
+        Command::NewCharacter(request) => {
+            let scaffold = scaffold::new_character(&request, &mut IdSource::Random)?;
+            for path in &scaffold.written {
+                eprintln!("wrote {}", path.display());
+            }
+            for slot in &scaffold.kept {
+                eprintln!("kept {slot:?}: its sidecar binds it already");
+            }
+            for (slot, part) in &scaffold.parts {
+                eprintln!("{slot:?}: {part}");
+            }
+            for slot in &scaffold.unbound_ilm {
+                eprintln!(
+                    "note: {slot:?}'s vertices pick its regions, so its ILM document is written but not bound: \
+                     paint its material IDs, then bind it as the material's control_map"
+                );
+            }
+            eprintln!(
+                "{}: {} slot(s) scaffolded, {} file(s) written; check it with `sapphire_pipeline check`, then \
+                 commit them with the model",
+                scaffold.model.display(),
+                scaffold.parts.len(),
+                scaffold.written.len()
+            );
+        }
         Command::ExtractMaterials { source, all } => {
-            let extraction = extract::extract_materials(&source, &ExtractOptions { all })?;
+            let extraction =
+                extract::extract_materials(&source, &ExtractOptions { all, ..ExtractOptions::default() })?;
             for path in &extraction.written {
                 eprintln!("wrote {}", path.display());
             }
@@ -801,6 +846,32 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             let [source] = options.positional()?;
             Command::ExtractMaterials { source: source.into(), all }
         }
+        "new-character" => {
+            let role = match options.value::<String>("--role")? {
+                Some(name) => Some(check::Role::named(&name).with_context(|| {
+                    let roles = check::Role::ALL.map(check::Role::name).join(", ");
+                    format!("invalid --role {name:?}: the roles are {roles}")
+                })?),
+                None => None,
+            };
+            let mut parts = BTreeMap::new();
+            while let Some(part) = options.value::<String>("--part")? {
+                let (slot, part) = part
+                    .rsplit_once('=')
+                    .with_context(|| format!("invalid --part {part:?}: give it as <slot>=<part>"))?;
+                ensure!(
+                    parts.insert(slot.to_owned(), part.parse()?).is_none(),
+                    "--part names {slot:?} twice"
+                );
+            }
+            Command::NewCharacter(NewCharacter {
+                model: options.required("--model")?,
+                out: options.value("--out")?,
+                role,
+                preset: options.value("--preset")?,
+                parts,
+            })
+        }
         "cook" => Command::Cook {
             source: options.required("--source")?,
             out: options.required("--out")?,
@@ -1079,6 +1150,49 @@ mod tests {
         for angles in ["", "45,", "-10", "181", "front"] {
             assert!(parse(&["bake-map", "a.facesdf.ron", "a.png", "--sheet", angles]).is_err(), "{angles:?}");
         }
+        assert_eq!(
+            parse(&["new-character", "--model", "hero.glb"]).unwrap(),
+            Command::NewCharacter(NewCharacter { model: "hero.glb".into(), ..NewCharacter::default() })
+        );
+        assert_eq!(
+            parse(&[
+                "new-character",
+                "--model",
+                "hero.vrm",
+                "--out",
+                "content/hero",
+                "--role",
+                "enemy",
+                "--preset",
+                "presets/enemy.preset.ron",
+                "--part",
+                "Ribbon=hair",
+                "--part=Face_00_SKIN=face",
+            ])
+            .unwrap(),
+            Command::NewCharacter(NewCharacter {
+                model: "hero.vrm".into(),
+                out: Some("content/hero".into()),
+                role: Some(check::Role::Enemy),
+                preset: Some("presets/enemy.preset.ron".into()),
+                parts: BTreeMap::from([
+                    ("Face_00_SKIN".to_owned(), scaffold::Part::Face),
+                    ("Ribbon".to_owned(), scaffold::Part::Hair),
+                ]),
+            })
+        );
+        assert!(parse(&["new-character"]).is_err(), "no model");
+        assert!(parse(&["new-character", "--model", "a.vrm", "--role", "villain"]).is_err(), "no such role");
+        assert!(parse(&["new-character", "--model", "a.vrm", "--part", "Face"]).is_err(), "no part");
+        assert!(
+            parse(&["new-character", "--model", "a.vrm", "--part", "Face=nose"]).is_err(),
+            "no such part"
+        );
+        assert!(
+            parse(&["new-character", "--model", "a.vrm", "--part", "Face=face", "--part", "Face=skin"])
+                .is_err(),
+            "a slot twice"
+        );
         assert!(parse(&["extract-materials"]).is_err(), "no source");
         assert!(parse(&["extract-materials", "a.vrm", "--cook", "mobile"]).is_err(), "no cook");
         assert!(

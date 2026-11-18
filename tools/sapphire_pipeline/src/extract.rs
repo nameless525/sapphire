@@ -107,7 +107,8 @@ use crate::import::image::SourceFormat;
 use crate::import::vrm::mtoon::{Binding, Channel, LayerTexture, Mtoon};
 use crate::import::vrm::{self, ImageFormat, VrmImport, VrmImportError};
 use crate::material::{MaterialSettings, TextureKind};
-use crate::meta::{self, AssetMeta, ImportSettings, MetaError};
+use crate::mesh::ImportedMesh;
+use crate::meta::{self, AssetMeta, IdSource, ImportSettings, MetaError};
 use crate::texture::{
     ColorSettings, IlmSettings, MaskSettings, MaxSize, NormalSettings, TextureClass, TextureSettings,
 };
@@ -117,6 +118,9 @@ use crate::texture::{
 pub struct ExtractOptions {
     /// Every slot the sidecar doesn't bind, not only those that bind textures.
     pub all: bool,
+    /// The cap every texture and map sidecar it makes starts with ([`MaxSize`]); none by default.
+    /// `new-character` sets its role's row, so a character's maps meet `check` as made.
+    pub max_size: MaxSize,
 }
 
 /// What [`extract_materials`] did.
@@ -226,6 +230,12 @@ pub enum ExtractError {
         #[source]
         source: image::ImageError,
     },
+    #[error(
+        "{} is already there as a {found} source, where a {wanted} source would be written: move it, or \
+         delete it with its sidecar to have it written afresh",
+        path.display()
+    )]
+    Clash { path: PathBuf, wanted: &'static str, found: &'static str },
 }
 
 /// A slot to extract.
@@ -241,28 +251,77 @@ struct Slot {
 /// Extracts the materials of the mesh source at `source` (see the [module docs](self)). The
 /// source must have a sidecar.
 pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extraction, ExtractError> {
+    extract(source, options, &mut IdSource::Random, None, |_| Ok(()), |_| Ok(()))
+}
+
+/// An extraction run as a plan: everything it would do, with nothing written. Each file it would
+/// write is recorded in [`Extraction::written`] unwritten, and each sidecar already there is still
+/// checked for a clash, so a plan that succeeds names every write and meets every clash first.
+#[derive(Clone, Copy)]
+pub(crate) struct Plan<'a> {
+    /// The source's sidecar, where there is none on disk yet.
+    pub sidecar: &'a AssetMeta,
+    /// The source's bytes, where it isn't at its path yet.
+    pub bytes: &'a [u8],
+}
+
+/// A slot's document as extraction is about to write it, for a command that adds to it first
+/// (`new-character`, [`crate::scaffold`]).
+pub(crate) struct Finishing<'a, 'w> {
+    /// The slot's name.
+    pub slot: &'a str,
+    /// Its index among the source's slots.
+    pub index: usize,
+    /// Its document's file stem, unique over the source's slots ignoring case.
+    pub stem: &'a str,
+    /// The folder the source extracts into.
+    pub root: &'a Path,
+    /// The source as its importer read it.
+    pub mesh: &'a ImportedMesh,
+    pub document: &'a mut AnimeCharacterMaterial,
+    pub writer: &'a mut Writer<'w>,
+}
+
+/// [`extract_materials`], giving new sidecars IDs from `ids`, showing `slots` the source's slot names
+/// before anything is written, and handing each slot's document to `finish` before it is written. A
+/// document that exists already isn't handed over: it is the artist's. With `plan`, it writes nothing
+/// ([`Plan`]).
+pub(crate) fn extract<E: From<ExtractError>>(
+    source: &Path,
+    options: &ExtractOptions,
+    ids: &mut IdSource,
+    plan: Option<Plan<'_>>,
+    slots: impl FnOnce(&[&str]) -> Result<(), E>,
+    mut finish: impl FnMut(Finishing<'_, '_>) -> Result<(), E>,
+) -> Result<Extraction, E> {
+    let known = slots;
     let sidecar = meta::sidecar_path(source);
-    if !sidecar.exists() {
-        return Err(ExtractError::NoSidecar(source.to_owned()));
-    }
-    let mut asset = meta::read(&sidecar)?;
-    let bytes =
-        fs::read(source).map_err(|error| ExtractError::Read { path: source.to_owned(), source: error })?;
-    let (slots, import) = match &asset.importer {
+    let mut asset = match plan {
+        _ if sidecar.exists() => meta::read(&sidecar).map_err(ExtractError::from)?,
+        Some(plan) => plan.sidecar.clone(),
+        None => return Err(ExtractError::NoSidecar(source.to_owned()).into()),
+    };
+    let bytes = match plan {
+        Some(plan) => plan.bytes.to_vec(),
+        None => {
+            fs::read(source).map_err(|error| ExtractError::Read { path: source.to_owned(), source: error })?
+        }
+    };
+    let (slots, mesh, import) = match &asset.importer {
         ImportSettings::Gltf(_) => {
             let mesh = gltf::import_slice(&bytes, source.parent())
                 .map_err(|error| ExtractError::Gltf { path: source.to_owned(), source: error })?;
             let slots = mesh
                 .materials
-                .into_iter()
+                .iter()
                 .map(|m| Slot {
-                    name: m.name,
-                    generated: m.generated,
+                    name: m.name.clone(),
+                    generated: m.generated.clone(),
                     mtoon: None,
                     textures: SlotTextures::default(),
                 })
                 .collect();
-            (slots, None)
+            (slots, Some(mesh), None)
         }
         ImportSettings::Fbx(_) => {
             let import = fbx::import_with_textures(&bytes)
@@ -270,11 +329,16 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
             let slots = import
                 .mesh
                 .materials
-                .into_iter()
+                .iter()
                 .zip(import.slots)
-                .map(|(m, textures)| Slot { name: m.name, generated: m.generated, mtoon: None, textures })
+                .map(|(m, textures)| Slot {
+                    name: m.name.clone(),
+                    generated: m.generated.clone(),
+                    mtoon: None,
+                    textures,
+                })
                 .collect();
-            (slots, None)
+            (slots, Some(import.mesh), None)
         }
         ImportSettings::Vrm(settings) => {
             let import = vrm::import(&bytes, settings.version)
@@ -291,7 +355,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
                     textures: SlotTextures::default(),
                 })
                 .collect();
-            (slots, Some(import))
+            (slots, None, Some(import))
         }
         ImportSettings::Texture(_)
         | ImportSettings::CharacterMap(..)
@@ -326,9 +390,11 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Timeline(_)
         | ImportSettings::ProceduralTexture(_)
         | ImportSettings::Bvh(_) => {
-            return Err(ExtractError::NotAMesh(source.to_owned()));
+            return Err(ExtractError::NotAMesh(source.to_owned()).into());
         }
     };
+    let mesh = mesh.as_ref().or(import.as_ref().map(|import| &import.mesh)).expect("every mesh importer's");
+    known(&slots.iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>())?;
 
     let mut extraction = Extraction::default();
     let bindings = &asset.importer.mesh().expect("mesh importers have mesh settings").materials;
@@ -349,14 +415,14 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
 
     let root = folder(source)?;
     let names = Names::new(&slots, import.as_ref());
-    let mut writer = Writer { written: Vec::new() };
+    let mut writer = Writer { written: Vec::new(), ids, max_size: options.max_size, plan: plan.is_some() };
     let mut resolved = Resolved::default();
     let mut images = FbxImages::new(source, fbx_image_names(&slots))?;
     images.plan(&slots, &chosen)?;
     let mut bound = Vec::new();
     for index in chosen {
         let slot = &slots[index];
-        let document = match (&slot.mtoon, &import) {
+        let mut document = match (&slot.mtoon, &import) {
             (Some(mtoon), Some(import)) => {
                 resolved.write(import, mtoon, &names, &root, &mut writer)?;
                 let texture_of =
@@ -388,11 +454,12 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
                 document
             }
         };
-        let path = root.join("materials").join(format!(
-            "{}{}",
-            names.materials[index],
-            crate::material::SOURCE_SUFFIX
-        ));
+        let stem = &names.materials[index];
+        let path = root.join("materials").join(format!("{stem}{}", crate::material::SOURCE_SUFFIX));
+        if !path.exists() {
+            let (slot, document) = (&slot.name, &mut document);
+            finish(Finishing { slot, index, stem, root: &root, mesh, document, writer: &mut writer })?;
+        }
         let text = sapphire_serialize::to_ron(&document).expect("a material document always serializes");
         writer.file(&path, || Ok(text.into_bytes()))?;
         let id = writer.sidecar(&path, ImportSettings::Material(MaterialSettings::default()))?;
@@ -403,7 +470,9 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
     for (slot, id) in &bound {
         settings.materials.insert(slot.clone(), *id);
     }
-    meta::rewrite(&sidecar, &asset)?;
+    if plan.is_none() {
+        meta::rewrite(&sidecar, &asset).map_err(ExtractError::from)?;
+    }
     writer.written.push(sidecar);
     extraction.written = writer.written;
     extraction.bound = bound;
@@ -500,8 +569,12 @@ impl<'a> FbxImages<'a> {
     /// The images of the FBX at `source`, written under the file names `names` gives.
     fn new(source: &'a Path, names: BTreeMap<(String, &'static str), String>) -> Result<Self, ExtractError> {
         let dir = source.parent().unwrap_or(Path::new(""));
-        let folder = fs::canonicalize(if dir.as_os_str().is_empty() { Path::new(".") } else { dir })
-            .map_err(|error| ExtractError::Read { path: dir.to_owned(), source: error })?;
+        let folder = match fs::canonicalize(if dir.as_os_str().is_empty() { Path::new(".") } else { dir }) {
+            Ok(folder) => folder,
+            // A plan's folder not yet made: no image lies in it.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => dir.to_owned(),
+            Err(error) => return Err(ExtractError::Read { path: dir.to_owned(), source: error }),
+        };
         Ok(Self { dir, folder, names, bound: BTreeMap::new(), roles: BTreeMap::new(), conflicts: Vec::new() })
     }
 
@@ -657,7 +730,7 @@ impl<'a> FbxImages<'a> {
         texture: &FbxTexture,
         class: TextureClass,
         root: &Path,
-        writer: &mut Writer,
+        writer: &mut Writer<'_>,
     ) -> Result<Option<AssetId>, ExtractError> {
         if let Some(path) = self.in_place(texture) {
             return self.bind_in_place(slot, &path, class, writer);
@@ -689,7 +762,7 @@ impl<'a> FbxImages<'a> {
         slot: &str,
         path: &Path,
         class: TextureClass,
-        writer: &mut Writer,
+        writer: &mut Writer<'_>,
     ) -> Result<Option<AssetId>, ExtractError> {
         // Planned with every use, unless the file appeared since (then this use is its only one).
         let role = match self.roles.get(path) {
@@ -746,6 +819,10 @@ fn folder(source: &Path) -> Result<PathBuf, ExtractError> {
             other.to_string_lossy().to_lowercase() == stem.to_string_lossy().to_lowercase()
         })
     };
+    if !parent.as_os_str().is_empty() && !parent.exists() {
+        // A plan's source not yet copied into a folder not yet made: nothing there shares its folder.
+        return Ok(parent.join(stem));
+    }
     for entry in fs::read_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent })
         .map_err(read_error)?
     {
@@ -914,7 +991,7 @@ impl Resolved {
         mtoon: &Mtoon,
         names: &Names,
         root: &Path,
-        writer: &mut Writer,
+        writer: &mut Writer<'_>,
     ) -> Result<(), ExtractError> {
         for (usage, texture) in mtoon.textures() {
             let image = import.image_of(texture.texture);
@@ -994,7 +1071,7 @@ impl Resolved {
         image: usize,
         names: &Names,
         root: &Path,
-        writer: &mut Writer,
+        writer: &mut Writer<'_>,
     ) -> Result<String, ExtractError> {
         let input = &names.inputs[&image];
         writer.file(&root.join("maps").join(input), || png(import, image))?;
@@ -1017,19 +1094,34 @@ fn png(import: &VrmImport, index: usize) -> Result<Vec<u8>, ExtractError> {
     Ok(bytes)
 }
 
-/// Writes files that don't exist yet, and sidecars, recording what it wrote.
-struct Writer {
-    written: Vec<PathBuf>,
+/// Writes files that don't exist yet, and sidecars with IDs from its source, recording what it
+/// wrote.
+pub(crate) struct Writer<'i> {
+    pub(crate) written: Vec<PathBuf>,
+    ids: &'i mut IdSource,
+    /// The cap a new texture or map sidecar starts with, where its importer gave none.
+    max_size: MaxSize,
+    /// Whether this is a [`Plan`]: it records what it would write and writes nothing.
+    plan: bool,
 }
 
-impl Writer {
+impl Writer<'_> {
+    /// Whether this writer only plans ([`Plan`]), so a caller can skip making what it won't write.
+    pub(crate) fn planning(&self) -> bool {
+        self.plan
+    }
+
     /// Writes `path` with `contents()` unless it exists.
-    fn file(
+    pub(crate) fn file(
         &mut self,
         path: &Path,
         contents: impl FnOnce() -> Result<Vec<u8>, ExtractError>,
     ) -> Result<(), ExtractError> {
         if path.exists() {
+            return Ok(());
+        }
+        if self.plan {
+            self.written.push(path.to_owned());
             return Ok(());
         }
         let bytes = contents()?;
@@ -1042,13 +1134,41 @@ impl Writer {
         Ok(())
     }
 
-    /// The ID of `source`'s sidecar, created with `importer` and a new ID if there is none.
-    fn sidecar(&mut self, source: &Path, importer: ImportSettings) -> Result<AssetId, ExtractError> {
+    /// The ID of `source`'s sidecar, created with `importer` and a new ID if there is none. A sidecar
+    /// there already for another importer is a clash, naming the source: binding it would bind the
+    /// wrong kind of asset.
+    pub(crate) fn sidecar(
+        &mut self,
+        source: &Path,
+        importer: ImportSettings,
+    ) -> Result<AssetId, ExtractError> {
         let path = meta::sidecar_path(source);
         if path.exists() {
-            return Ok(meta::read(&path)?.id);
+            let found = meta::read(&path)?;
+            if !found.importer.same_importer(&importer) {
+                return Err(ExtractError::Clash {
+                    path: source.to_owned(),
+                    wanted: importer.importer_name(),
+                    found: found.importer.importer_name(),
+                });
+            }
+            return Ok(found.id);
         }
-        let meta = AssetMeta::new(meta::new_id().map_err(MetaError::Entropy)?, importer);
+        let importer = match importer {
+            ImportSettings::Texture(mut settings) if settings.max_size.is_none() => {
+                settings.max_size = self.max_size;
+                ImportSettings::Texture(settings)
+            }
+            ImportSettings::CharacterMap(settings, max_size) if max_size.is_none() => {
+                ImportSettings::CharacterMap(settings, self.max_size)
+            }
+            importer => importer,
+        };
+        let meta = AssetMeta::new(self.ids.next_id()?, importer);
+        if self.plan {
+            self.written.push(path);
+            return Ok(meta.id);
+        }
         if meta::create(&path, &meta)? {
             self.written.push(path);
             Ok(meta.id)
@@ -1060,14 +1180,14 @@ impl Writer {
 
 /// File names, unique ignoring case.
 #[derive(Default)]
-struct UniqueNames {
+pub(crate) struct UniqueNames {
     taken: HashSet<String>,
 }
 
 impl UniqueNames {
     /// `base` (or `fallback` when empty), with `-2`, `-3`, … appended until no name taken so far
     /// matches it ignoring case.
-    fn claim(&mut self, base: &str, fallback: &str) -> String {
+    pub(crate) fn claim(&mut self, base: &str, fallback: &str) -> String {
         let base = if base.is_empty() { fallback } else { base };
         let mut name = base.to_owned();
         let mut suffix = 1;
@@ -1081,7 +1201,7 @@ impl UniqueNames {
 
 /// `name` reduced to a file name: letters, digits, `-` and `_`, others as `_`, without leading
 /// or trailing `_`. Empty when nothing is left.
-fn file_name(name: &str) -> String {
+pub(crate) fn file_name(name: &str) -> String {
     let cleaned: String =
         name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     cleaned.trim_matches('_').to_owned()

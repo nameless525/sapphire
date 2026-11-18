@@ -121,6 +121,11 @@ impl Role {
         }
     }
 
+    /// The role [`Self::name`] calls `name`, as the command line names it (`new-character --role enemy`).
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|role| role.name() == name)
+    }
+
     /// The role's row on `cook`.
     pub fn limits(self, cook: Cook) -> Limits {
         let [desktop, mobile] = ROWS[self as usize];

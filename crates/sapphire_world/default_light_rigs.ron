@@ -1,5 +1,5 @@
 // Sapphire's character light rig presets (M1 C2), compiled into `sapphire_world`:
-// `LightRigLibrary::default_rigs`, whose module docs say how a preset resolves. Packs (A4) will
+// `light_rig::default_rigs`, whose module docs say how a preset resolves. Packs (A4) will
 // carry presets as content.
 //
 // - Every field a preset leaves out is neutral: the world's key light with no limits, time of

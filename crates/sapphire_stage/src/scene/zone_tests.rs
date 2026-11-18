@@ -1205,7 +1205,7 @@ fn a_zone_whose_look_does_not_read_cannot_come() {
     walk.look_from(Vec3::new(16.0, 0.0, 16.0));
     walk.trip(0, settings);
     walk.frame();
-    let rigs = walk.scene.ecs.world().resource::<LightRigLibrary>().clone();
+    let rigs = walk.scene.ecs.world().resource::<LightRigs>().0.clone();
     walk.scene.prefetch_zone(room(1), settings);
     walk.scene.hurry_zone(room(1).zone);
     let mut frames = 0;
@@ -1225,7 +1225,7 @@ fn a_zone_whose_look_does_not_read_cannot_come() {
     walk.frame();
     assert_eq!(walk.content.probe_hours(), [6.0], "the grid on stage stays");
     assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "and the day with it");
-    assert_eq!(walk.scene.ecs.world().resource::<LightRigLibrary>(), &rigs, "and the rigs");
+    assert_eq!(&walk.scene.ecs.world().resource::<LightRigs>().0, &rigs, "and the rigs");
 }
 
 /// A save of a zone's own day or rigs reaches the stage as the zone recooks (Z3 review F5): the zone on stage, at a
@@ -1243,13 +1243,13 @@ fn a_recooked_zone_on_stage_brings_its_look_again() {
     walk.trip(0, settings);
     walk.frame();
     assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "the zone's day");
-    assert_ne!(walk.scene.ecs.world().resource::<LightRigLibrary>(), &lookdev::light_rigs());
+    assert_ne!(&walk.scene.ecs.world().resource::<LightRigs>().0, &lookdev::light_rigs());
 
     let recooked = RoomLook { day: false, rigs: Some(LOOKDEV_RIGS), ..looks[0].clone() };
     source.insert(&room_pack(0), dressed_room(SMALL, 0, 1, &recooked));
     walk.content.remount(&room_pack(0)).expect("the new pack");
     let mut frames = 0;
-    while walk.scene.ecs.world().resource::<LightRigLibrary>() != &lookdev::light_rigs() {
+    while walk.scene.ecs.world().resource::<LightRigs>().0 != lookdev::light_rigs() {
         walk.frame();
         frames += 1;
         assert!(frames < 10_000, "the recooked zone's look never came");
@@ -1281,7 +1281,7 @@ fn a_zone_coming_reads_its_look_off_the_frames_thread() {
     let loads = frame_loads::loads();
     assert_eq!((loads.decodes, loads.builds), (start.decodes, start.builds), "{start:?} to {loads:?}");
     assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "the zone's day");
-    assert_eq!(walk.scene.ecs.world().resource::<LightRigLibrary>(), &lookdev::light_rigs(), "and its rigs");
+    assert_eq!(&walk.scene.ecs.world().resource::<LightRigs>().0, &lookdev::light_rigs(), "and its rigs");
 }
 
 /// Exit test 2 on a trip (M5 Z2): a zone coming with a mesh whose copy is kept (an ambient cast's, which it keeps

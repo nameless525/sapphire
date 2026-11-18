@@ -17,7 +17,7 @@
 //!   built again with the next save (`shader_edits.rs`);
 //! - an edited timeline replaces time of day's base timeline if it is the file of the day the
 //!   scene runs on ([`Scene::replace_day`](sapphire_stage::scene::Scene::replace_day));
-//! - edited presets replace the scene's (the `LightRigLibrary` resource) if they are the file of
+//! - edited presets replace the scene's (the `LightRigs` resource) if they are the file of
 //!   the presets the scene runs on (the shipped ones, or with `--look-dev` the look-dev stage's,
 //!   `content/lookdev/lookdev_light_rigs.ron`; [`Scene::replace_light_rigs`](sapphire_stage::scene::Scene::replace_light_rigs)); characters keep
 //!   their preset IDs. While a zone's own day or presets are live, the stage's wait for a zone

@@ -1,6 +1,6 @@
 //! [`TodTimeline`]: keys through the day, wrapping at midnight.
 
-use bevy_reflect::TypePath;
+use bevy_reflect::Reflect;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
@@ -18,15 +18,26 @@ pub const DAY_HOURS: f32 = 24.0;
 /// The base timeline sets every group in every key but the optional ones
 /// ([`Self::is_complete`]); a zone's timeline may set only the groups it overrides. Either way every key sets the same groups, the keys'
 /// times increase, and every value is in range: a timeline is valid however it was made,
-/// deserialization included. It has a stable type path but no `Reflect`, which could build or
-/// edit one without the checks; an editor edits a [`TodKey`] and makes a new timeline.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
+/// deserialization included. It reflects (M6 T4) so an editor can open a day as a document, whose every
+/// edit is to the text and read back through [`Self::from_ron`]'s checks; reflection's own
+/// `FromReflect` would build one unchecked, with no groups, so nothing else should build one by it.
+#[derive(Clone, Debug, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::world"]
 #[serde(try_from = "UncheckedTimeline")]
 pub struct TodTimeline {
     keys: Vec<TodKey>,
+    /// Which groups the keys set, worked out from them as they're checked.
     #[serde(skip)]
+    #[reflect(ignore)]
     groups: TodGroups,
+}
+
+/// Two timelines are equal when their keys are: the groups follow from the keys, and a value an edit
+/// reflected into holds the groups it had before.
+impl PartialEq for TodTimeline {
+    fn eq(&self, other: &Self) -> bool {
+        self.keys == other.keys
+    }
 }
 
 impl Versioned for TodTimeline {

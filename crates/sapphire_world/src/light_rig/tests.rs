@@ -48,11 +48,11 @@ fn sun_toward(azimuth_degrees: f32, elevation_degrees: f32, camera: &CameraData)
 }
 
 fn gameplay() -> LightRig {
-    *LightRigLibrary::default_rigs().rig(LightRigId::DEFAULT)
+    *default_rigs().rig(LightRigId::DEFAULT)
 }
 
 fn portrait() -> LightRig {
-    let rigs = LightRigLibrary::default_rigs();
+    let rigs = default_rigs();
     *rigs.rig(rigs.find("portrait").expect("shipped"))
 }
 
@@ -72,7 +72,7 @@ fn name_lookup_preserves_row_and_field_error_precedence() {
 
 #[test]
 fn the_shipped_presets_are_valid_and_round_trip() {
-    let rigs = LightRigLibrary::default_rigs();
+    let rigs = default_rigs();
     assert_eq!(rigs.names().collect::<Vec<_>>(), ["gameplay", "portrait"]);
     assert_eq!(rigs.find("gameplay"), Some(LightRigId::DEFAULT));
     assert_eq!(rigs.find("cinematic"), None);

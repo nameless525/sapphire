@@ -47,7 +47,7 @@ use sapphire_render::{
     Fog, FramePacket, LightKind, LocalLight, MaterialHandle, MeshHandle, Renderer, Weather, Wind,
 };
 use sapphire_rhi::GpuContext;
-use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary};
+use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary, LightRigs};
 use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer};
 use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline};
 #[cfg(any(test, feature = "dev"))]
@@ -878,7 +878,7 @@ impl Scene {
         let world = self.ecs.world();
         let own = self.zone_air.own.get_or_insert_with(|| StageLook {
             day: world.resource::<TimeOfDay>().timeline().clone(),
-            rigs: world.resource::<LightRigLibrary>().clone(),
+            rigs: world.resource::<LightRigs>().0.clone(),
             wind: self.wind,
         });
         let (day, rigs, wind) = (
@@ -887,7 +887,7 @@ impl Scene {
             wind.unwrap_or(own.wind),
         );
         self.time_of_day_mut().set_timeline(day).map_err(|error| error.to_string())?;
-        self.ecs.world_mut().insert_resource(rigs);
+        self.ecs.world_mut().insert_resource(LightRigs(rigs));
         (self.zone_air.zone_day, self.zone_air.zone_rigs) = (zone_day, zone_rigs);
         self.wind = wind;
         self.zone_air.weather = weather.unwrap_or_default();
@@ -949,7 +949,7 @@ impl Scene {
     #[cfg(any(test, feature = "dev"))]
     pub(super) fn take_stage_light_rigs(&mut self, rigs: LightRigLibrary) {
         if !self.zone_air.zone_rigs {
-            self.ecs.world_mut().insert_resource(rigs.clone());
+            self.ecs.world_mut().insert_resource(LightRigs(rigs.clone()));
         }
         if let Some(own) = &mut self.zone_air.own {
             own.rigs = rigs;

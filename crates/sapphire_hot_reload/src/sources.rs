@@ -34,7 +34,7 @@ mod tests {
     fn the_light_rigs_are_the_presets_the_library_compiles_in() {
         let text = std::fs::read_to_string(default_light_rigs()).expect("the light rig presets' document");
         let rigs = LightRigLibrary::from_ron(&text).expect("a valid library");
-        assert_eq!(rigs, LightRigLibrary::default_rigs());
+        assert_eq!(rigs, sapphire_world::light_rig::default_rigs());
     }
 
     #[test]

@@ -296,7 +296,7 @@ fn sun_look(toward_sun: Vec3) -> TodFrame {
 }
 
 fn rigs() -> LightRigLibrary {
-    LightRigLibrary::default_rigs()
+    sapphire_world::light_rig::default_rigs()
 }
 
 #[test]

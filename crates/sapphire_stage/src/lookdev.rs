@@ -1202,7 +1202,7 @@ mod tests {
     /// the shipped lighting with the rim held.
     #[test]
     fn the_look_dev_light_rigs_are_the_shipped_ones_with_a_camera_rim() {
-        let (shipped, stage) = (LightRigLibrary::default_rigs(), light_rigs());
+        let (shipped, stage) = (sapphire_world::light_rig::default_rigs(), light_rigs());
         assert_eq!(stage.names().collect::<Vec<_>>(), shipped.names().collect::<Vec<_>>());
         for name in shipped.names() {
             let (ours, theirs) =

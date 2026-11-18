@@ -13,7 +13,7 @@ use sapphire_tod::{DAY_HOURS, Segment, TodError, TodGroups, TodLook, TodTimeline
 use super::clock::TodClock;
 use super::cutscene::TodCutscene;
 use super::volume::{TodVolume, TodVolumeId};
-use crate::light_rig::LightRig;
+use crate::light_rig::{LightRig, ResolveRig};
 
 /// Time of day for one world (an ECS resource): the base [`TodTimeline`], its clock, the zone
 /// volumes in the world and a playing cutscene track, resolved each frame into a [`TodFrame`]
@@ -85,7 +85,7 @@ impl TodFrame {
 
     /// The lighting of a character lit by `rig`, seen by `camera`, with its head at `head`
     /// (world space): the preset resolved under this frame's key light and character key
-    /// ([`TodLook::key_light`], [`TodLook::character_key`], [`LightRig::resolve`]), with a
+    /// ([`TodLook::key_light`], [`TodLook::character_key`], [`ResolveRig::resolve`]), with a
     /// playing cutscene's rig over it by the track's weight (the key's direction along the great
     /// circle, colors in OkLab), its shadow side in this frame's shadow hue (M1 C8). Allocates
     /// nothing.

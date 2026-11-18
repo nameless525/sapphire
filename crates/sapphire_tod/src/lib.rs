@@ -29,6 +29,8 @@
 //!   cutscene's track are keys too, setting every group or only some ([`check_keys`] checks
 //!   either).
 //! - **[`TodLook`]**: the look at one moment, every group resolved, as plain values.
+//! - **Light rig presets** ([`light_rig`], M6 T4): the character light rig's presets and their
+//!   library as plain data, which `sapphire_world::light_rig` resolves against a camera.
 //!
 //! # Evaluation
 //!
@@ -61,11 +63,13 @@
 //! # Does not own
 //!
 //! - The clock, zone volumes, cutscene tracks with their light rigs, the default day and
-//!   resolving a frame: `sapphire_world::tod`.
+//!   resolving a frame: `sapphire_world::tod`; the shipped light rigs and resolving a rig:
+//!   `sapphire_world::light_rig`.
 //! - Drawing: the renderer reads only the resolved values the world writes into its frame packet.
 //! - Loading timelines from packs (A4).
 
 mod key;
+pub mod light_rig;
 mod look;
 mod timeline;
 

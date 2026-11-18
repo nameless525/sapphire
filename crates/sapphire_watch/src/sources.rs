@@ -34,7 +34,7 @@ pub fn default_day() -> PathBuf {
 }
 
 /// The character light rig presets' document, which
-/// `sapphire_world::light_rig::LightRigLibrary::default_rigs` compiles in.
+/// `sapphire_world::light_rig::default_rigs` compiles in.
 pub fn default_light_rigs() -> PathBuf {
     crates_dir().join("sapphire_world").join("default_light_rigs.ron")
 }

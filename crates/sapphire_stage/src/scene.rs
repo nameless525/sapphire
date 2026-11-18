@@ -121,7 +121,8 @@ use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
 use sapphire_vfx::VfxBudget;
 use sapphire_world::fade::ProximityFade;
 use sapphire_world::light_rig::{
-    CharacterLightRig, LightRig, LightRigId, LightRigLibrary, LightRigRim, NamedLightRig,
+    CharacterLightRig, KeyDirection, LightRig, LightRigId, LightRigLibrary, LightRigRim, LightRigs,
+    NamedLightRig, ResolveRig,
 };
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_effects};
 use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
@@ -242,7 +243,7 @@ type FrameStart = SystemState<(
 type FrameCharacters = SystemState<(
     ResMut<'static, RenderExtract>,
     Res<'static, TimeOfDay>,
-    Res<'static, LightRigLibrary>,
+    Res<'static, LightRigs>,
     Characters,
     FaceHeads,
 )>;
@@ -250,7 +251,7 @@ type FrameCharacters = SystemState<(
 /// What a frame's packet shoots its insets from (M3 U6), and its cut-in (M5 L10), likewise.
 type FrameInsets = SystemState<(
     ResMut<'static, RenderExtract>,
-    Res<'static, LightRigLibrary>,
+    Res<'static, LightRigs>,
     Query<
         'static,
         'static,
@@ -678,7 +679,7 @@ impl Scene {
         let time_of_day = TimeOfDay::new(tod::default_day(), day_clock, DEFAULT_TIME_OF_DAY)
             .expect("the default day sets every group");
         world.insert_resource(time_of_day);
-        world.insert_resource(LightRigLibrary::default_rigs());
+        world.insert_resource(LightRigs(sapphire_world::light_rig::default_rigs()));
         let effects_clock = world.resource_mut::<WorldClock>().0.new_local_clock();
         world.insert_resource(EffectStack::new(effects_clock));
         world.insert_resource(EffectLibrary::default_effects());
@@ -920,7 +921,7 @@ impl Scene {
     /// Fails with the presets' names if there is none of that name.
     pub fn set_character_rig(&mut self, name: &str) -> Result<(), String> {
         let world = self.ecs.world_mut();
-        let rigs = world.resource::<LightRigLibrary>();
+        let rigs = world.resource::<LightRigs>();
         let Some(rig) = rigs.find(name) else {
             let names: Vec<&str> = rigs.names().collect();
             return Err(format!("no character light rig preset {name:?}; presets: {}", names.join(", ")));
@@ -2351,7 +2352,7 @@ impl Scene {
         self.time_of_day_mut().set_timeline(lookdev::day()).expect("the look-dev day sets every group");
         self.wind = lookdev::WIND;
         let world = self.ecs.world_mut();
-        world.insert_resource(lookdev::light_rigs());
+        world.insert_resource(LightRigs(lookdev::light_rigs()));
         let mut character = world.entity_mut(self.character);
         character.insert(look.pose);
         if let Some(mut turntable) = character.get_mut::<Turntable>() {
@@ -2962,7 +2963,7 @@ impl Scene {
     /// rim's gating, from the presets' own direction (behind the character on the camera's right,
     /// and above, unless a preset says otherwise).
     pub fn set_camera_rim(&mut self, share: f32) -> Result<(), String> {
-        let library = self.ecs.world().resource::<LightRigLibrary>();
+        let library = self.ecs.world().resource::<LightRigs>();
         let rigs = library
             .names()
             .map(|name| {
@@ -2972,7 +2973,7 @@ impl Scene {
             })
             .collect();
         let library = LightRigLibrary::new(rigs).map_err(|error| error.to_string())?;
-        self.ecs.world_mut().insert_resource(library);
+        self.ecs.world_mut().insert_resource(LightRigs(library));
         Ok(())
     }
 
@@ -4344,7 +4345,7 @@ mod tests {
     fn a_save_of_the_stages_day_under_a_zones_own_waits_for_a_zone_naming_none() {
         let mut scene = scene();
         assert_eq!(scene.day(), Day::Default);
-        let rigs = |scene: &Scene| scene.ecs.world().resource::<LightRigLibrary>().clone();
+        let rigs = |scene: &Scene| scene.ecs.world().resource::<LightRigs>().0.clone();
         let (zone_day, zone_rigs) = (lookdev::day(), lookdev::light_rigs());
         scene.take_zone_look(zone::ZoneLook::of(Some(zone_day.clone()), Some(zone_rigs.clone()))).unwrap();
         assert_eq!((scene.time_of_day().timeline(), &rigs(&scene)), (&zone_day, &zone_rigs));
@@ -4425,9 +4426,9 @@ mod tests {
 
         // The stage lights its character by its own light rigs (M1 C8), which the shipped
         // presets' file, which `watch` pushes too, leaves alone.
-        let rigs = |scene: &Scene| scene.ecs.world().resource::<LightRigLibrary>().clone();
+        let rigs = |scene: &Scene| scene.ecs.world().resource::<LightRigs>().0.clone();
         assert_eq!(rigs(&scene), lookdev::light_rigs());
-        let shipped = LightRigLibrary::default_rigs();
+        let shipped = sapphire_world::light_rig::default_rigs();
         let error =
             scene.replace_light_rigs("default_light_rigs.ron", shipped.clone()).expect_err("not the stage's");
         assert!(error.contains("lookdev_light_rigs.ron"), "{error}");
@@ -4537,7 +4538,7 @@ mod tests {
         // in time of day's character key, which equals it at 10:00.
         assert_eq!(lit.lighting.key, SUN);
         assert_eq!(lit.lighting.gi.head, Some(Figure::MANNEQUIN.head), "on the turntable's axis");
-        let rigs = LightRigLibrary::default_rigs();
+        let rigs = sapphire_world::light_rig::default_rigs();
         assert_eq!(lit.lighting.gi.camera_bias, rigs.rig(LightRigId::DEFAULT).gi.camera_bias);
         scene.end_frame();
 
@@ -4685,7 +4686,7 @@ mod tests {
         let turntable = InstanceId(scene.character.to_bits());
         scene.step();
         let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
-        let preset = LightRigLibrary::default_rigs().rig(LightRigId::DEFAULT).gi;
+        let preset = sapphire_world::light_rig::default_rigs().rig(LightRigId::DEFAULT).gi;
         for id in &heads {
             let lighting = packet.characters.iter().find(|c| c.id == *id).expect("listed").lighting;
             assert_eq!(lighting.key.intensity, 0.0, "the key light is off");

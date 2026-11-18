@@ -11,7 +11,7 @@ use sapphire_render::{
     CameraData, CharacterBody, CharacterFace, CharacterInstance, FramePacket, InstanceId, MaterialDrive,
 };
 use sapphire_time::ScaledClock;
-use sapphire_world::light_rig::{LightRigId, LightRigLibrary};
+use sapphire_world::light_rig::LightRigId;
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
 use sapphire_world::tod::{
     ShotTime, TimeOfDay, TodCutscene, TodKey, TodTimeline, TodVolume, VolumeShape, default_day,
@@ -29,7 +29,7 @@ fn ticking_and_resolving_allocate_nothing() {
     let zone = TodTimeline::new(vec![TodKey { exposure: Some(1.0), ..TodKey::default() }]).expect("valid");
     let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 2.0 };
     tod.add_volume(TodVolume { blend_distance: 4.0, ..TodVolume::new(shape, Arc::new(zone)) });
-    let rigs = LightRigLibrary::default_rigs();
+    let rigs = sapphire_world::light_rig::default_rigs();
     let portrait = *rigs.rig(rigs.find("portrait").expect("shipped"));
     let shot = TodCutscene::new(
         1.0,

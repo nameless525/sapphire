@@ -4469,6 +4469,22 @@
                        "--shadows", "off", "--fog", "off", "--ao", "off"],
                 ci_seconds: (lavapipe: 1.4, warp: 4.7),
             ),
+            // A weather transition (M6 W8a), a third of the way from clear to the storm: the shipped states'
+            // partial days over the courtyard's noon, the storm's lid of cloud closing over a greying sky, its
+            // fog thickening and the grade cooling, the sun where the day puts it.
+            (
+                name: "weather-transition-early",
+                ticks: 90,
+                args: ["--environment", "--time-of-day", "12", "--aa", "taa", "--capture-frames", "32",
+                       "--shadows", "off", "--ao", "off", "--weather-state", "clear:storm@0.3"],
+            ),
+            // Two thirds of the way: the same courtyard nearly under the storm, the day's blue gone from the sky.
+            (
+                name: "weather-transition-late",
+                ticks: 90,
+                args: ["--environment", "--time-of-day", "12", "--aa", "taa", "--capture-frames", "32",
+                       "--shadows", "off", "--ao", "off", "--weather-state", "clear:storm@0.7"],
+            ),
         ],
     ),
 )

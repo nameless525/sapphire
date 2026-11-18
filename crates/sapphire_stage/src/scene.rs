@@ -125,7 +125,9 @@ use sapphire_world::light_rig::{
     NamedLightRig, ResolveRig,
 };
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_effects};
+use sapphire_world::tod::weather::{WeatherBlend, WeatherDocument, WeatherError};
 use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
+use sapphire_world::weather::{WeatherClock, WeatherPlan, WeatherSystem};
 
 use crate::LOG_TARGET;
 use crate::anim_graph::{ClipTable, GraphDriver, GraphEvaluation, GraphShow};
@@ -636,6 +638,11 @@ pub struct Scene {
     fog: bool,
     /// The weather in place of the zone's and its day's (`--weather`, M5 L4).
     weather: Option<Weather>,
+    /// The weather's states (M6 W8a): the plan, a story flag's override, a cutscene's state and the tool's,
+    /// resolved each frame before time of day. A field, not an ECS resource: one more resource type in
+    /// [`Self::new`] moved characters' and foliage's pixels in 17 Metal goldens (some order follows the
+    /// world's component IDs), so the weather keeps out of the world.
+    weather_system: WeatherSystem,
     /// Post without its compositing layers (`--plain-post`).
     plain_post: bool,
     /// Merges every thread's debug draws into each frame's packet (M2 T1).
@@ -807,6 +814,8 @@ impl Scene {
             plain_sky: false,
             fog: true,
             weather: None,
+            // No weather until a zone's plan, the tool or a cutscene names a state (M6 W8a).
+            weather_system: WeatherSystem::default(),
             plain_post: false,
             debug_draw: Collector::new(),
             #[cfg(feature = "samples")]
@@ -964,6 +973,31 @@ impl Scene {
     /// three places the frame's weather comes from, for captures and benches (`--weather`). A trip keeps it.
     pub fn set_weather(&mut self, weather: Option<Weather>) {
         self.weather = weather;
+    }
+
+    /// Takes `document`'s weather states and `plan` over them in place of the zone's (M6 W8a): the stage's own
+    /// weather. The next frame shows the plan's state at once; a zone that arrives takes its own plan, and one
+    /// with none gives this one back, as it gives back the stage's own day.
+    pub fn set_weather_plan(&mut self, document: Arc<WeatherDocument>, plan: Option<WeatherPlan>) {
+        self.zone_air.keep_weather(&document, plan.as_ref());
+        self.weather_system.set_plan(document, plan);
+    }
+
+    /// Shows `blend`'s weather states whatever the plan, a story flag or a cutscene says (M6 W8a), or theirs
+    /// again with `None`: the tool's, for captures, benches and the overlay (`--weather-state`). Refused for a
+    /// state the weather's document hasn't.
+    pub fn set_weather_state(&mut self, blend: Option<WeatherBlend>) -> Result<(), WeatherError> {
+        self.weather_system.set_tool(blend)
+    }
+
+    /// The weather (M6 W8a): its states, plan and last frame.
+    pub fn weather_system(&self) -> &WeatherSystem {
+        &self.weather_system
+    }
+
+    /// The weather, to set a story flag's override.
+    pub fn weather_system_mut(&mut self) -> &mut WeatherSystem {
+        &mut self.weather_system
     }
 
     /// Draws post as it was before its compositing layers (M1 P2): no diffusion glow, character
@@ -2690,9 +2724,11 @@ impl Scene {
         let (focus, shafts) = (self.focus, self.shafts);
         let (probe_hours, reflection_hours) = (&self.probe_hours, &self.reflection_hours);
         let (zone_air, zone_origin) = (&self.zone_air, self.zone.as_ref().map_or(0.0, |zone| -zone.stand.y));
+        let zone_stand = self.zone.as_ref().map_or(Vec3::ZERO, |zone| zone.stand);
         let (wind_volumes, wind_cap) = (&self.wind_volumes.0, self.wind_volumes.1);
         let vfx = &mut self.vfx;
         let view_cut = &mut self.view_cut;
+        let weather_system = &mut self.weather_system;
         if let Some(aspect) = drawable_aspect(target_size) {
             self.view_aspect = aspect;
         }
@@ -2713,6 +2749,12 @@ impl Scene {
             let probe = camera.eye();
             // Interpolated like everything else drawn this frame.
             packet.time_seconds = clock.0.presented_ticks(alpha) / f64::from(TICK_HZ);
+            // The weather's state (M6 W8a), chosen on the same clocks, its regions in the zone's space, and
+            // laid into time of day's look over the day and under its volumes.
+            let weather_clock = WeatherClock::of(&time_of_day, packet.time_seconds, alpha);
+            let shot_weather = time_of_day.cutscene_weather(alpha);
+            let weather_frame = *weather_system.resolve(weather_clock, probe + zone_stand, shot_weather);
+            weather_system.write(&mut time_of_day);
             let today = time_of_day.resolve(probe, alpha);
             today.write(packet);
             let keyed_weather = today.look.weather;
@@ -2742,6 +2784,8 @@ impl Scene {
                 packet.post = packet.post.plain();
             }
             packet.wind = WindField::new(wind);
+            // The weather's wind over the zone's, before its volumes over both.
+            weather_frame.wind_over(&mut packet.wind);
             packet.wind.choose(wind_volumes, probe, wind_cap);
             // The effects gameplay pushed, over whatever post's look is (M1 P3).
             packet.post.effects = effects.resolve(alpha);
@@ -4916,5 +4960,66 @@ mod tests {
         assert!(!scene.declared_pipelines(&()).wet_surfaces, "a tool's dry weather declares none");
         scene.set_weather(None);
         assert_eq!(weather(&mut scene), keyed);
+    }
+
+    /// The look's order (M6 W8a): the zone's day, then the weather's state, then atmosphere volumes, then a
+    /// cutscene, then the tool. A state that keys exposure and the sky shows over the day; a volume's exposure
+    /// over the state's, its sky left; a cutscene's keys over both, its own weather state over the world's; the
+    /// tool's state over the cutscene's, and the tool's look (fog off) over everything.
+    #[test]
+    fn the_look_is_the_days_under_the_weathers_under_volumes_under_a_cutscene_under_a_tools() {
+        use sapphire_world::tod::{TodCutscene, TodKey, TodVolume, VolumeShape};
+        let look = |scene: &mut Scene| {
+            let packet = scene.frame_packet(1.0, None, &mut ());
+            let look = (packet.post.exposure, packet.sky.zenith, packet.fog);
+            scene.end_frame();
+            look
+        };
+        let mut scene = scene();
+        let (day_exposure, day_sky, day_fog) = look(&mut scene);
+        let states = r#"(
+            type: "sapphire::world::WeatherDocument",
+            version: 1,
+            data: (states: [
+                (name: "grey", look: (keys: [(time: 0.0, exposure: 1.0, sky: (zenith: (0.5, 0.5, 0.5), horizon: (0.5, 0.5, 0.5), ground: (0.5, 0.5, 0.5)))])),
+                (name: "dark", look: (keys: [(time: 0.0, sky: (zenith: (0.1, 0.1, 0.1), horizon: (0.1, 0.1, 0.1), ground: (0.1, 0.1, 0.1)))])),
+            ]),
+        )"#;
+        let document = Arc::new(WeatherDocument::from_ron(states).expect("valid"));
+        scene.set_weather_plan(document, Some(WeatherPlan::always(0)));
+        let grey = Vec3::splat(0.5);
+        assert_eq!(look(&mut scene), (1.0, grey, day_fog), "the state over the day, at once");
+        assert_ne!((day_exposure, day_sky), (1.0, grey));
+
+        let everywhere = VolumeShape::Sphere { center: Vec3::ZERO, radius: 1.0e4 };
+        let lift =
+            tod::TodTimeline::new(vec![TodKey { time: 0.0, exposure: Some(3.0), ..TodKey::default() }]);
+        scene.time_of_day_mut().add_volume(TodVolume::new(everywhere, Arc::new(lift.expect("valid"))));
+        assert_eq!(look(&mut scene), (3.0, grey, day_fog), "a volume over the state");
+
+        let shot = TodCutscene::new(
+            60.0,
+            0.0,
+            0.0,
+            None,
+            vec![TodKey { exposure: Some(-2.0), ..TodKey::default() }],
+            None,
+        )
+        .expect("valid")
+        .with_weather("dark")
+        .expect("a name");
+        scene.time_of_day_mut().play_cutscene(Arc::new(shot));
+        assert_eq!(
+            look(&mut scene),
+            (-2.0, Vec3::splat(0.1), day_fog),
+            "a cutscene's keys and state over both"
+        );
+
+        scene.set_weather_state(Some(WeatherBlend::settled(0))).expect("a state");
+        assert_eq!(look(&mut scene), (-2.0, grey, day_fog), "the tool's state over the cutscene's");
+        assert!(scene.set_weather_state(Some(WeatherBlend::settled(2))).is_err(), "no third state");
+        scene.set_fog(false);
+        assert_eq!(look(&mut scene).2, Fog::default(), "the tool's look over everything");
+        assert!(scene.weather_system().stats().tool);
     }
 }

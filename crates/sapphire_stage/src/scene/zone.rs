@@ -52,11 +52,14 @@ use sapphire_render::{
 use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary, LightRigs};
 use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer};
+use sapphire_world::tod::weather::WeatherDocument;
 use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline};
 #[cfg(any(test, feature = "dev"))]
 use sapphire_world::tod::{TodError, TodGroups};
+use sapphire_world::weather::{WeatherPlan, WeatherSetup};
 use sapphire_zone::{
-    ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, CookedVolume, Zone, ZoneFog,
+    ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, CookedVolume, CookedWeatherPlan, Zone,
+    ZoneFog,
 };
 
 use super::{Figure, LOG_TARGET, Lamp, Scene};
@@ -241,13 +244,16 @@ impl NextZone {
                 let (server, _) = content.streaming_parts();
                 match server.state(zone) {
                     LoadState::Ready => {
-                        // Its day and rigs are text, parsed on a job: nothing loads on the frame's thread.
+                        // Its day, rigs and weather's states are text, parsed on a job: nothing loads on the
+                        // frame's thread.
                         let presentation = &server.get(zone).expect("the zone is ready").presentation;
                         let day = presentation.day.as_ref().map(|text| text.as_str().to_owned());
                         let rigs = presentation.rigs.as_ref().map(|text| text.as_str().to_owned());
+                        let weather = presentation.weather_plan.as_ref().map(|plan| plan.to_native());
                         let (sender, receiver) = mpsc::sync_channel(1);
                         sapphire_jobs::spawn_async(move || {
-                            let _ = sender.send(parse_look(day.as_deref(), rigs.as_deref()));
+                            let _ =
+                                sender.send(parse_look(day.as_deref(), rigs.as_deref(), weather.as_ref()));
                         });
                         self.coming = Coming::Reading(zone.clone(), receiver);
                     }
@@ -270,12 +276,12 @@ impl NextZone {
                     (presentation.probes.as_ref().copied(), presentation.sky.as_ref().copied(), reflections);
                 // Its wet surfaces, off the frame, if it may go wet (M5 L4): the pack's prewarm
                 // couldn't say, with the zone unread.
-                let day_wet = matches!(&parsed, Ok((Some(day), _)) if day.may_be_wet());
+                let day_wet = matches!(&parsed, Ok((Some(day), ..)) if day.may_be_wet());
                 let wet = !tool_weather && (weather_is_wet(presentation) || day_wet);
                 // Its day and rigs read before it's ready, so a look that doesn't read fails the trip
                 // before the arrival switches anything (Z3 review F4).
                 let read = parsed
-                    .map(|(day, rigs)| ZoneLook::with_air(presentation, day, rigs))
+                    .map(|(day, rigs, weather)| ZoneLook::with_air(presentation, day, rigs, weather))
                     .map_err(|error| format!("its look: {error}"));
                 let priority = self.priority();
                 self.coming = match read.and_then(|read| {
@@ -394,24 +400,30 @@ pub struct ZoneLook {
     fog: Option<ZoneFog>,
     /// Where its sound takes a reverb (M6 U5).
     rooms: Arc<[Room]>,
+    /// Its weather's states and plan (M6 W8a).
+    weather_plan: Option<WeatherSetup>,
 }
 
 impl ZoneLook {
     /// Reads `presentation`'s: its day must be complete, as a stage's must, and its rigs a valid library. A cook
     /// checked the day; the rigs only by their type (a content test reads the shipped zones'), so a zone coming
     /// reads its look before it's ready, and can't come if it doesn't read (Z3 review F4).
-    /// A zone coming parses its day and rigs on a job instead ([`parse_look`]).
+    /// A zone coming parses its day, rigs and weather plan on a job instead ([`parse_look`]).
     pub fn read(presentation: &ArchivedZonePresentation) -> Result<Self, String> {
         let day = presentation.day.as_ref().map(|text| text.as_str());
-        let (day, rigs) = parse_look(day, presentation.rigs.as_ref().map(|text| text.as_str()))?;
-        Ok(Self::with_air(presentation, day, rigs))
+        let weather = presentation.weather_plan.as_ref().map(|plan| plan.to_native());
+        let (day, rigs, weather) =
+            parse_look(day, presentation.rigs.as_ref().map(|text| text.as_str()), weather.as_ref())?;
+        Ok(Self::with_air(presentation, day, rigs, weather))
     }
 
-    /// `day` and `rigs`, parsed, with `presentation`'s wind, weather and fog, which are plain numbers.
+    /// `day`, `rigs` and the weather plan, parsed, with `presentation`'s wind, weather and fog, which are plain
+    /// numbers.
     fn with_air(
         presentation: &ArchivedZonePresentation,
         day: Option<TodTimeline>,
         rigs: Option<LightRigLibrary>,
+        weather_plan: Option<WeatherSetup>,
     ) -> Self {
         let wind = presentation.wind.as_ref().map(|wind| {
             let wind = wind.to_native();
@@ -422,7 +434,7 @@ impl ZoneLook {
             Weather { wetness: weather.wetness, puddles: weather.puddles }
         });
         let fog = presentation.fog.as_ref().map(|fog| fog.to_native());
-        Self { day, rigs, wind, weather, fog, rooms: rooms_of(presentation) }
+        Self { day, rigs, wind, weather, fog, rooms: rooms_of(presentation), weather_plan }
     }
 }
 
@@ -447,14 +459,14 @@ fn rooms_of(presentation: &ArchivedZonePresentation) -> Arc<[Room]> {
         .collect()
 }
 
-/// A zone's day and rigs, parsed on a job, or why they don't read.
-type ParsedLook = Result<(Option<TodTimeline>, Option<LightRigLibrary>), String>;
+/// A zone's day, rigs and weather plan, parsed on a job, or why they don't read.
+type ParsedLook = Result<(Option<TodTimeline>, Option<LightRigLibrary>, Option<WeatherSetup>), String>;
 
-/// Parses a zone's `day` and `rigs` texts: its day must be complete, as a stage's must, and its rigs a valid
-/// library. Building them from text is a load (exit test 2's count, `LoadWork::Build`), which a zone coming does
-/// on a job.
-fn parse_look(day: Option<&str>, rigs: Option<&str>) -> ParsedLook {
-    if day.is_some() || rigs.is_some() {
+/// Parses a zone's `day` and `rigs` texts and its weather plan's states: its day must be complete, as a stage's
+/// must, its rigs a valid library and its plan's names its states' (M6 W8a). Building them from text is a load
+/// (exit test 2's count, `LoadWork::Build`), which a zone coming does on a job.
+fn parse_look(day: Option<&str>, rigs: Option<&str>, weather: Option<&CookedWeatherPlan>) -> ParsedLook {
+    if day.is_some() || rigs.is_some() || weather.is_some() {
         sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
     }
     let day = match day.map(TodTimeline::from_ron).transpose().map_err(|error| format!("its day: {error}"))? {
@@ -464,14 +476,16 @@ fn parse_look(day: Option<&str>, rigs: Option<&str>) -> ParsedLook {
         day => day,
     };
     let rigs = rigs.map(LightRigLibrary::from_ron).transpose();
-    Ok((day, rigs.map_err(|error| format!("its light rigs: {error}"))?))
+    let rigs = rigs.map_err(|error| format!("its light rigs: {error}"))?;
+    let weather = weather.map(WeatherSetup::read).transpose();
+    Ok((day, rigs, weather.map_err(|error| format!("its weather: {error}"))?))
 }
 
 #[cfg(test)]
 impl ZoneLook {
     /// A look naming `day` and `rigs`, and no air.
     pub(crate) fn of(day: Option<TodTimeline>, rigs: Option<LightRigLibrary>) -> Self {
-        Self { day, rigs, wind: None, weather: None, fog: None, rooms: Arc::new([]) }
+        Self { day, rigs, wind: None, weather: None, fog: None, rooms: Arc::new([]), weather_plan: None }
     }
 }
 
@@ -527,9 +541,19 @@ struct StageLook {
     day: TodTimeline,
     rigs: LightRigLibrary,
     wind: Wind,
+    /// Its weather's states and plan (M6 W8a), which a zone with no plan gives back.
+    weather: (Arc<WeatherDocument>, Option<WeatherPlan>),
 }
 
 impl ZoneAir {
+    /// Keeps `document` and `plan` as the stage's own weather, which a zone with no plan gives back: once a
+    /// zone's look is on, [`Scene::set_weather_plan`] is the stage's from then on, as its day is.
+    pub(super) fn keep_weather(&mut self, document: &Arc<WeatherDocument>, plan: Option<&WeatherPlan>) {
+        if let Some(own) = &mut self.own {
+            own.weather = (Arc::clone(document), plan.cloned());
+        }
+    }
+
     /// Writes the zone's weather under the day's `keyed` weather (M5 L4) and its fog over the day's into `packet`,
     /// after time of day has written it, the zone's origin lying at `origin` in the world's height; and its sky in
     /// place of the app's `sky`.
@@ -902,21 +926,28 @@ impl Scene {
 
     /// Takes `look` in place of what the stage has (M5 M6): its day, light rigs and wind, or the stage's own again
     /// for what it names none of; its weather, dry with none; its fog over the day's, its height base in the
-    /// zone's space; and its rooms (M6 U5). Its probe grid and sky are the content's.
+    /// zone's space; its rooms (M6 U5); and its weather plan, arriving in the plan's state, or the stage's own
+    /// states and plan again with none (M6 W8a).
+    /// Its probe grid and sky are the content's.
     pub fn take_zone_look(&mut self, look: ZoneLook) -> Result<(), String> {
-        let ZoneLook { day, rigs, wind, weather, fog, rooms } = look;
+        let ZoneLook { day, rigs, wind, weather, fog, rooms, weather_plan } = look;
         let (zone_day, zone_rigs) = (day.is_some(), rigs.is_some());
         let world = self.ecs.world();
         let own = self.zone_air.own.get_or_insert_with(|| StageLook {
             day: world.resource::<TimeOfDay>().timeline().clone(),
             rigs: world.resource::<LightRigs>().0.clone(),
             wind: self.wind,
+            weather: (Arc::clone(self.weather_system.document()), self.weather_system.plan().cloned()),
         });
         let (day, rigs, wind) = (
             day.unwrap_or_else(|| own.day.clone()),
             rigs.unwrap_or_else(|| own.rigs.clone()),
             wind.unwrap_or(own.wind),
         );
+        let (document, plan) = match weather_plan {
+            Some(WeatherSetup { document, plan }) => (document, Some(plan)),
+            None => (Arc::clone(&own.weather.0), own.weather.1.clone()),
+        };
         self.time_of_day_mut().set_timeline(day).map_err(|error| error.to_string())?;
         self.ecs.world_mut().insert_resource(LightRigs(rigs));
         (self.zone_air.zone_day, self.zone_air.zone_rigs) = (zone_day, zone_rigs);
@@ -924,6 +955,7 @@ impl Scene {
         self.zone_air.weather = weather.unwrap_or_default();
         self.zone_air.fog = fog;
         self.zone_air.rooms = rooms;
+        self.weather_system.set_plan(document, plan);
         Ok(())
     }
 

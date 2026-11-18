@@ -26,7 +26,10 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 use sapphire_synthetic_zone::SyntheticZone;
 use sapphire_time::Stopwatch;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
-use sapphire_zone::{CookedExit, ZoneFog, ZonePresentation, ZoneWeather, ZoneWind};
+use sapphire_zone::{
+    CookedExit, CookedWeatherPlan, WeatherChoice, WeatherSlot, ZoneFog, ZonePresentation, ZoneWeather,
+    ZoneWind,
+};
 
 use super::*;
 use crate::content::Content;
@@ -458,6 +461,8 @@ struct RoomLook {
     wind: Option<ZoneWind>,
     weather: Option<ZoneWeather>,
     fog: Option<ZoneFog>,
+    /// Its weather plan (M6 W8a).
+    weather_plan: Option<CookedWeatherPlan>,
 }
 
 /// The look-dev day, which a room may name as its own.
@@ -502,6 +507,7 @@ impl RoomLook {
             presentation.wind = look.wind;
             presentation.weather = look.weather;
             presentation.fog = look.fog;
+            presentation.weather_plan.clone_from(&look.weather_plan);
         };
         (assets, dress)
     }
@@ -1099,6 +1105,16 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
             day: true,
             wind: Some(ZoneWind { direction: [0.0, 0.0, 1.0], strength: 2.5, gustiness: 0.1 }),
             weather: Some(ZoneWeather { wetness: 0.7, puddles: 0.3 }),
+            // Always the storm (M6 W8a), from the shipped states.
+            weather_plan: Some(CookedWeatherPlan {
+                states: include_str!("../../../../content/weather/presets.weather.ron").to_owned(),
+                seed: 0,
+                schedule: vec![WeatherSlot {
+                    from: 0.0,
+                    states: vec![WeatherChoice { state: "storm".to_owned(), weight: 1 }],
+                }],
+                regions: Vec::new(),
+            }),
             ..RoomLook::default()
         },
         RoomLook { grid: Some(vec![12.0, 18.0]), ..RoomLook::default() },
@@ -1119,6 +1135,10 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
         seen.expect("a packet")
     };
 
+    // The stage's own weather, which a zone with a plan replaces and one without gives back.
+    let shipped = sapphire_world::weather::default_weather();
+    let stage_plan = WeatherPlan::always(shipped.state("mist").expect("shipped"));
+    walk.scene.set_weather_plan(shipped, Some(stage_plan.clone()));
     let first_uses = walk.renderer.stats().pipelines.first_use_builds;
     walk.trip(0, settings);
     let in_first = packet(&mut walk);
@@ -1132,8 +1152,13 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "its day");
     assert!(in_first.sky_material.is_some(), "its sky");
     assert_eq!(in_first.sky_material, walk.content.zone_sky_material());
-    assert_eq!((in_first.wind.global.strength, in_first.wind.global.direction), (2.5, Vec3::Z), "its wind");
+    // Its wind, which its weather plan's storm blows harder but never turns.
+    assert_eq!((walk.scene.wind.strength, in_first.wind.global.direction), (2.5, Vec3::Z), "its wind");
     assert_eq!((in_first.weather.wetness, in_first.weather.puddles), (0.7, 0.3), "its weather");
+    let storm = walk.scene.weather_system().document().state("storm");
+    assert_eq!(walk.scene.weather_system().stats().state, storm, "its weather plan, arrived in at once");
+    assert_eq!(walk.scene.weather_system().stats().transition, 1.0);
+    assert!(in_first.wind.global.strength > 2.5, "the storm's wind over its own");
     let built = walk.renderer.stats().pipelines.first_use_builds - first_uses;
     assert_eq!(built, 0, "its wet surfaces (M5 L4) built as it came, none on its frames");
 
@@ -1158,6 +1183,13 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(in_second.sky_material, None, "and the app's sky, which this stage has none of");
     assert_eq!(walk.scene.wind, stage_wind);
     assert_eq!(in_second.weather.wetness, 0.0, "dry");
+    let mist = walk.scene.weather_system().document().state("mist");
+    assert_eq!(
+        walk.scene.weather_system().plan(),
+        Some(&stage_plan),
+        "no plan of its own: the stage's again"
+    );
+    assert_eq!(walk.scene.weather_system().stats().state, mist);
     let (server, _) = walk.content.streaming_parts();
     assert!(matches!(server.mount_state(&room_pack(0)), MountState::Unmounted), "room 1 doesn't lead back");
 

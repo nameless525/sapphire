@@ -18,6 +18,7 @@ use sapphire_render::{
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
 use sapphire_world::tod::CharacterShadeKey;
+use sapphire_world::tod::weather::{WeatherBlend, WeatherDocument};
 
 use crate::screen::{DialoguePreview, ScreenOptions};
 use game_combat::arena::ArenaShot;
@@ -417,6 +418,10 @@ pub(crate) struct Options {
     /// day's (M5 L4), each a share from 0 to 1; `dry` is `0,0`, what a scene from before wet surfaces pins in a
     /// zone with weather.
     pub weather: Option<Weather>,
+    /// `--weather-state <state>` or `--weather-state <from>:<to>@<weight>`: the weather's states, by name, in
+    /// place of the plan's, a story flag's and a cutscene's (M6 W8a): one state, or a transition `weight` of
+    /// the way from one to the other.
+    pub weather_state: Option<WeatherStateArg>,
     /// `--no-reflection-probes`: no zone's reflection probes loaded (M5 L3), so glossy surfaces reflect the
     /// sky alone, as in the scenes captured before them.
     pub no_reflection_probes: bool,
@@ -723,6 +728,10 @@ impl Options {
         scene.set_cloud_cover(self.cloud_cover);
         scene.set_plain_sky(self.plain_sky);
         scene.set_weather(self.weather);
+        if let Some(state) = &self.weather_state {
+            let blend = state.blend(scene.weather_system().document())?;
+            scene.set_weather_state(Some(blend)).map_err(|error| format!("--weather-state: {error}"))?;
+        }
         scene.set_fog(!self.fog_off);
         scene.set_plain_post(self.plain_post);
         scene.set_sharpening(self.sharpening);
@@ -1440,6 +1449,9 @@ impl Options {
                     options.cloud_cover = Some(cover);
                 }
                 "--weather" => options.weather = Some(parse_weather(&value("--weather")?)?),
+                "--weather-state" => {
+                    options.weather_state = Some(WeatherStateArg::parse(&value("--weather-state")?)?);
+                }
                 "--view" => options.view = Some(parse_view(&value("--view")?)?),
                 "--fov" => {
                     let degrees: f32 = number(&value("--fov")?, "--fov")?;
@@ -2458,6 +2470,49 @@ fn parse_weather(raw: &str) -> Result<Weather, String> {
     Ok(Weather { wetness: share(wetness)?, puddles: share(puddles)? })
 }
 
+/// `--weather-state`'s states, by name (M6 W8a): `state` alone, or a transition `weight` of the way from `state`
+/// to `to`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeatherStateArg {
+    pub state: String,
+    pub to: Option<(String, f32)>,
+}
+
+impl WeatherStateArg {
+    /// `<state>` or `<from>:<to>@<weight>`, the weight 0 to 1.
+    fn parse(raw: &str) -> Result<Self, String> {
+        let invalid =
+            || format!("--weather-state expects <state> or <from>:<to>@<weight 0 to 1>, got {raw:?}");
+        let Some((from, rest)) = raw.split_once(':') else {
+            return if raw.is_empty() {
+                Err(invalid())
+            } else {
+                Ok(Self { state: raw.to_owned(), to: None })
+            };
+        };
+        let (to, weight) = rest.split_once('@').ok_or_else(invalid)?;
+        let weight: f32 = weight.trim().parse().map_err(|_| invalid())?;
+        if from.is_empty() || to.is_empty() || !(0.0..=1.0).contains(&weight) {
+            return Err(invalid());
+        }
+        Ok(Self { state: from.to_owned(), to: Some((to.to_owned(), weight)) })
+    }
+
+    /// The blend it names among `document`'s states, or which name it hasn't.
+    pub fn blend(&self, document: &WeatherDocument) -> Result<WeatherBlend, String> {
+        let state = |name: &str| {
+            document
+                .state(name)
+                .ok_or_else(|| format!("--weather-state: `{name}` isn't one of the weather's states"))
+        };
+        let from = state(&self.state)?;
+        Ok(match &self.to {
+            None => WeatherBlend::settled(from),
+            Some((to, weight)) => WeatherBlend { from: Some(from), to: state(to)?, weight: *weight },
+        })
+    }
+}
+
 /// `--effect-scale`'s `<flashes>:<motion>`: flashes `normal` or `reduced`, as the player's setting has them
 /// (M4 A3), and motion 0 to 1.
 fn parse_effect_scale(raw: &str) -> Result<EffectScale, String> {
@@ -3088,6 +3143,17 @@ mod tests {
         assert_eq!(parse(&[]).unwrap().0.weather, None, "the zone's and its day's");
         for wrong in ["0.5", "1.5,0", "0,-0.1", "NaN,0", "wet"] {
             assert!(parse(&["--weather", wrong]).is_err(), "{wrong}");
+        }
+        let storm = parse(&["--weather-state", "clear:storm@0.25"]).unwrap().0.weather_state.expect("given");
+        assert_eq!(storm, WeatherStateArg { state: "clear".into(), to: Some(("storm".into(), 0.25)) });
+        let document = sapphire_world::weather::default_weather();
+        let blend = storm.blend(&document).expect("shipped states");
+        assert_eq!((blend.from, blend.to, blend.weight), (document.state("clear"), 4, 0.25));
+        let mist = parse(&["--weather-state=mist"]).unwrap().0.weather_state.expect("given");
+        assert_eq!(mist.blend(&document), Ok(WeatherBlend::settled(9)));
+        assert!(WeatherStateArg { state: "monsoon".into(), to: None }.blend(&document).is_err());
+        for wrong in ["", "clear:storm", "clear:storm@2", ":storm@0.5", "clear:@0.5", "clear:storm@x"] {
+            assert!(parse(&["--weather-state", wrong]).is_err(), "{wrong:?}");
         }
         assert!(parse(&["--cloud-cover", "1.5"]).is_err());
         assert!(parse(&["--cloud-cover", "NaN"]).is_err());

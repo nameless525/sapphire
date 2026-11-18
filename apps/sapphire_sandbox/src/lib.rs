@@ -360,6 +360,9 @@
 //!   the same at any hour, which the golden scenes from before the sky's layers pin.
 //! - `--weather <wetness>,<puddles>` (each 0 to 1) or `--weather dry`: draw this weather in place of the
 //!   zone's and its day's (M5 L4), the last of the three places the frame's weather comes from.
+//! - `--weather-state <state>` or `--weather-state <from>:<to>@<weight>`: show this weather state, or a
+//!   transition `weight` (0 to 1) of the way between two, by name (`sapphire_world::weather`'s shipped ten
+//!   unless a zone's plan names others), in place of the plan's, a story flag's and a cutscene's (M6 W8a).
 //! - `--no-reflection-probes`: load no zone's reflection probes (M5 L3), so glossy surfaces reflect the
 //!   sky alone, which the golden scenes from before probes pin.
 //! - `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the look-dev character held at a spawner of the zone

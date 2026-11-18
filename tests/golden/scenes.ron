@@ -1946,6 +1946,7 @@
                 ticks: 100,
                 args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "19", "--tier", "desktop-high", "--ao", "off",
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "forces"],
+                ci_seconds: (lavapipe: 25.7, warp: 54.8),
             ),
             // A fight's hits as the cue table fires them (M2 E3), from G3's recording, landing on the
             // look-dev character until fighters are drawn: a medium hit two ticks in, which a spark and a

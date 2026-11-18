@@ -14,7 +14,7 @@ This recipe bakes the masks the first two read from a character in Blender. The 
 
 - Blender; tested with 5.2 LTS. Baking uses Cycles on the CPU.
 - The character's `.blend`, with UV-unwrapped meshes. The face's UVs must be mirror-symmetric about `u = 0.5`, because the shader mirrors the face map for light from the left.
-- [`tools/blender/bake_character_masks.py`](../tools/blender/bake_character_masks.py). It runs headless and never saves the `.blend`: it bakes copies of the objects with temporary materials, removes everything it creates, and restores every setting it changes.
+- The bake: the Sapphire add-on's **Masks** panel ([blender-addon.md](blender-addon.md)), or headless, [`tools/blender/bake_character_masks.py`](../tools/blender/bake_character_masks.py), which runs the add-on's bake from the checkout. Either way it never saves the `.blend`: it bakes copies of the objects with temporary materials, removes everything it creates, and restores every setting it changes.
 
 ## 1. Prepare the face
 
@@ -93,7 +93,7 @@ For the ILM inputs, paint a specular mask (white where highlights may appear) an
 cargo run -p sapphire_pipeline --profile tools -- bake-map content/characters/heroine/face/face.facesdf.ron /tmp/face.png
 
 # A sheet to judge it by: the face lit from its right and its left at each angle, beside the
-# mask at that angle (red where the map can't reproduce it):
+# mask at that angle (red where the map can't reproduce it); the add-on's Face Sheet draws it too:
 cargo run -p sapphire_pipeline --profile tools -- bake-map content/characters/heroine/face/face.facesdf.ron /tmp/sheet.png --sheet 15,30,45,60,90
 
 # Cook the content tree:

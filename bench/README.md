@@ -24,19 +24,20 @@ cook `content/` alone; `bench/` sits beside it, never in it.
 | `district/` | M5 B2 | `district.ron`: the streets, building variants, props, lanterns, dressing and look, and each preset's scale. `district_day.ron`: its midday, dusk and night keys (the midday key since M6 B4). The generator also writes the zone a probe grid (`district.probes.ron`) and reflection probes along the avenues and over the plaza (M6 B4). `prefabs/`: the props, from parametric shapes and builtins. `surfaces/`: procedural texture specs (`.ptex.ron`), the families the texture sets are varied from. The plaza's fight is code (`sapphire_synthetic_zone::district`), and so is what a body meets (M5 B5): the ground and a box a block, the same at every preset, which the generator writes as `district.colliders.ron` |
 | `cast/` | M5 B3 | `cast.ron`: each figure and what each preset makes of it. `figures/`: figure specs (the hero, an enemy, six ambient figures), built as `tools/figures/` specs are |
 | `trees/` | M6 G6a | `trees.ron`: the species and each preset's leaf atlas size. `species/`: a spec each (`.tree.ron`, `sapphire_pipeline::tree`) for a broadleaf, a blossom, a conifer and a willow, each grown at three ages by space colonization, with a leaf atlas painted in brush strokes: the trees the nature zone's forest places (M6 G2b) |
+| `nature/` | M6 W1 | `nature.ron`: the nature zone, 2,048 × 1,280 m of terrain cells on value-noise hills, its named areas (the forest block, the coast, the cave, the valley, the frozen pond: plain ground until their packages fill them), the trees and grass each preset scatters, its walks, its look and probes. `nature_day.ron` and `nature.weather.ron`: its keys (the district's midday, dusk and night) and the weather states its plan picks from (rain from 19:00). `surfaces/`: its five grounds. Its lake, river, frozen pond and the clearing's fight are code's, `sapphire_synthetic_zone::nature`, as the district's are |
 | `kinds.ron` | M5 C12b | The shipped kinds a preset makes again at spec §3.4's rows, from their specs in `tools/figures/`: see "The kinds", below |
 
-Each folder is a part with a generator of its own in `sapphire_pipeline::bench` (`district.rs`, `cast.rs`, `trees.rs`),
+Each folder is a part with a generator of its own in `sapphire_pipeline::bench` (`district.rs`, `cast.rs`, `trees.rs`, `nature.rs`),
 which reads only its folder, so the parts grow without touching each other's files. A part
 names the other's assets by ID (`bench::asset_id`), derived from their generated paths.
 
 The presets:
 
-| Preset | District | Cast | Trees |
-|---|---|---|---|
-| `ci` | 4 × 4 cells (the plaza and a ring of twelve blocks): 95 buildings of the 40 variants, 1,565 props, 133 lights, 4 texture sets at 256 texels | a small hero, an enemy and two ambient figures, maps at 256 texels | four species at three ages, atlases at 256 texels |
-| `budget` | 8 × 8 cells, 256 m square: 469 buildings of 40 variants, 6,943 props, 518 lights, 160 texture sets at 2048 texels: 2.5 GiB of maps on desktop, the texture pool. A desktop cell draws 13 of them, not 16 (M5 B7), so the tour's worst frame sits at spec §3.4's 2,500 main draws | three heroes at spec §3.4's hero row, three enemies at 8,000 triangles, six ambient figures sharing a skeleton | the same twelve trees, atlases at 1024 texels (512 on the phones) |
-| `double` | the budget's district at 320 texture sets: twice the pool | the budget's | the budget's |
+| Preset | District | Cast | Trees | Nature |
+|---|---|---|---|---|
+| `ci` | 4 × 4 cells (the plaza and a ring of twelve blocks): 95 buildings of the 40 variants, 1,565 props, 133 lights, 4 texture sets at 256 texels | a small hero, an enemy and two ambient figures, maps at 256 texels | four species at three ages, atlases at 256 texels | 640 terrain cells, 2,213 trees and 1,135 grass tufts, grounds at 256 texels |
+| `budget` | 8 × 8 cells, 256 m square: 469 buildings of 40 variants, 6,943 props, 518 lights, 160 texture sets at 2048 texels: 2.5 GiB of maps on desktop, the texture pool. A desktop cell draws 13 of them, not 16 (M5 B7), so the tour's worst frame sits at spec §3.4's 2,500 main draws | three heroes at spec §3.4's hero row, three enemies at 8,000 triangles, six ambient figures sharing a skeleton | the same twelve trees, atlases at 1024 texels (512 on the phones) | the same cells, 8,170 trees and 4,522 tufts, grounds at 1024 texels (512 on the phones) |
+| `double` | the budget's district at 320 texture sets: twice the pool | the budget's | the budget's | the budget's |
 
 To open the district after a cook, a `dev` sandbox reads the shipped packs and the district's pack side by
 side (a shipping build mounts only what its release manifest names; `cargo xtask bench-content
@@ -60,6 +61,16 @@ three up the avenue into the plaza, whose twelve come at it. Only a `dev` build'
 hand the district's builder over, so a `dev` sandbox plays it, with the hub's people about the plaza:
 `SAPPHIRE_CONTENT_DIR=<folder>/ sapphire_sandbox --arena --replay tests/replays/district-encounter.sreplay --party
 --mount zone_proving_hub --bench 1 --draw-every 50 --tier desktop-high --size 64x36`.
+
+The nature zone (M6 W1) cooks beside the district, as `zone_nature.spack`, and opens the same way: `--zone
+nature --zone-walk walk --time-of-day 19.75` walks its 790 m from the north meadow down the river's west bank, past the
+lake's west shore into the clearing, in the rain its weather plan has from 19:00 (`--weather-state
+<state>` holds another of its states); `forest`, `overlook`, `coast` and `coast_dive` are its other walks.
+Its fight is `content/scenarios/nature-encounter.scenario.ron` and `tests/replays/nature-encounter.sreplay`,
+the party of three against the clearing's six Ember Lancers, which only a `dev` build or the replay runner
+plays, as the district's. Its units in `bench/scale.ron` are the `nature-` ones, and its walks join the scale
+lane's (`cargo xtask counts`). A package that fills one of its areas re-pins it
+(`the_nature_zone_generates_the_same_bytes_on_every_machine`).
 
 ## The kinds (M5 C12b)
 
@@ -96,7 +107,7 @@ them and a release manifest naming both (`sapphire_pipeline manifest`). The gold
   `zone-district-plaza-phone` in `tests/golden/scenes.ron`), and the cooks-agree jobs hold the district's
   pack to the same bytes on Linux, Windows and macOS as they hold the shipped packs.
 - **Every night** (and on a dispatch of CI), the scale lane walks the tour at each tier's settings, dusk and
-  night, a job each, and holds what each walk counted to `tests/counts/district-ci.txt` (`cargo xtask
+  night, and the nature zone's walk at dusk (M6 W1), a job each, and holds what each walk counted to `tests/counts/district-ci.txt` (`cargo xtask
   counts`; `docs/development-iteration.md` says what to run when a count moves). The phone tiers' walks read
   the mobile pair, which `--with-content --cook mobile` puts in `target/bench/ci/with-content/mobile/` and
   those runs alone cook and bundle (M5 Z3).

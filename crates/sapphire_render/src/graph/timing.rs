@@ -12,8 +12,10 @@
 //!
 //! Timestamps are resolved and copied into one of a few mapped-on-demand readback buffers, read
 //! a frame or two later when the GPU is done, without ever waiting on it. If every readback is
-//! still in flight, a frame simply isn't timed. Steady frames allocate only wgpu's own map
-//! callback; nothing here runs unless timing is turned on.
+//! still in flight, a frame simply isn't timed. Each frame's begin reads every readback whose map
+//! has come back: one where each frame waited for the last, up to [`READBACKS`] where frames
+//! overlap (M6 B7), each kept for that frame ([`FrameTimer::read`]) and the newest kept on. Steady
+//! frames allocate only wgpu's own map callback; nothing here runs unless timing is turned on.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -191,6 +193,9 @@ pub(super) trait FrameTimer: std::fmt::Debug + Send + Sync {
     /// The latest timings read back, if any frame has come back yet.
     fn latest(&self) -> Option<&GpuTimings>;
 
+    /// Every frame's timings read back at the latest [`Self::begin`], oldest first.
+    fn read(&self) -> &[GpuTimings];
+
     /// Reads back finished frames, then picks a readback for frame `frame` of `passes` running
     /// passes. `None` if every readback is still in flight: this frame goes untimed.
     fn begin(&mut self, device: &wgpu::Device, frame: u64, passes: usize) -> Option<FrameQueries<'_>>;
@@ -227,6 +232,10 @@ struct PassTimer {
     /// The readback this frame writes, between `begin` and `submitted`.
     current: Option<usize>,
     latest: GpuTimings,
+    /// The frames read back at the latest `begin`, oldest first: the first `read_count` of `read`,
+    /// whose others are kept for their buffers.
+    read: Vec<GpuTimings>,
+    read_count: usize,
 }
 
 impl PassTimer {
@@ -245,31 +254,43 @@ impl PassTimer {
             period: gpu.queue().get_timestamp_period(),
             current: None,
             latest: GpuTimings { every_pass: encoder_writes, ..GpuTimings::default() },
+            read: Vec::with_capacity(READBACKS),
+            read_count: 0,
         })
     }
 
-    /// Turns every mapped readback into timings, keeping the newest frame's.
+    /// Turns every mapped readback into timings, oldest frame first, each kept in `read` and the
+    /// newest in `latest`.
     fn collect(&mut self) {
-        for readback in &mut self.readbacks {
-            if readback.state.load(Ordering::Acquire) != MAPPED {
-                continue;
+        self.read_count = 0;
+        let mut mapped = [(0, 0); READBACKS];
+        let mut count = 0;
+        for (index, readback) in self.readbacks.iter().enumerate() {
+            if readback.state.load(Ordering::Acquire) == MAPPED {
+                mapped[count] = (readback.frame, index);
+                count += 1;
             }
-            if readback.frame > self.latest.frame {
-                let used = readback_size(&readback.passes);
-                // The buffer mapped successfully, so the range is available.
-                if let Ok(bytes) = readback.buffer.get_mapped_range(..used) {
-                    self.latest.frame = readback.frame;
-                    let complete = decode(
-                        &bytes,
-                        &readback.passes,
-                        readback.expected,
-                        self.period,
-                        &mut self.latest.passes,
-                    );
-                    self.latest.every_pass = self.encoder_writes && complete;
-                    self.latest.every_timed_pass = every_timed_pass(&readback.passes, &self.latest.passes);
-                    self.latest.untimed.clone_from(&readback.untimed);
-                    self.latest.start = first_start(&bytes, &readback.passes, self.period);
+        }
+        mapped[..count].sort_unstable();
+        for &(frame, index) in &mapped[..count] {
+            let readback = &self.readbacks[index];
+            let used = readback_size(&readback.passes);
+            // The buffer mapped successfully, so the range is available.
+            if let Ok(bytes) = readback.buffer.get_mapped_range(..used) {
+                if self.read.len() == self.read_count {
+                    self.read.push(GpuTimings::default());
+                }
+                let timings = &mut self.read[self.read_count];
+                self.read_count += 1;
+                timings.frame = frame;
+                let complete =
+                    decode(&bytes, &readback.passes, readback.expected, self.period, &mut timings.passes);
+                timings.every_pass = self.encoder_writes && complete;
+                timings.every_timed_pass = every_timed_pass(&readback.passes, &timings.passes);
+                timings.untimed.clone_from(&readback.untimed);
+                timings.start = first_start(&bytes, &readback.passes, self.period);
+                if frame > self.latest.frame {
+                    copy_timings(timings, &mut self.latest);
                 }
             }
             readback.buffer.unmap();
@@ -278,9 +299,23 @@ impl PassTimer {
     }
 }
 
+/// `from` into `into`, keeping `into`'s buffers.
+fn copy_timings(from: &GpuTimings, into: &mut GpuTimings) {
+    into.frame = from.frame;
+    into.passes.clone_from(&from.passes);
+    into.every_pass = from.every_pass;
+    into.every_timed_pass = from.every_timed_pass;
+    into.untimed.clone_from(&from.untimed);
+    into.start = from.start;
+}
+
 impl FrameTimer for PassTimer {
     fn latest(&self) -> Option<&GpuTimings> {
         (self.latest.frame > 0).then_some(&self.latest)
+    }
+
+    fn read(&self) -> &[GpuTimings] {
+        &self.read[..self.read_count]
     }
 
     fn begin(&mut self, device: &wgpu::Device, frame: u64, passes: usize) -> Option<FrameQueries<'_>> {

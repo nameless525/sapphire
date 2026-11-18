@@ -467,7 +467,10 @@
 //!     temporal AA's history; `--capture-step S` puts S ticks between them (0, the default:
 //!     the scene holds still at tick N; 1: it plays at 60 fps up to tick N).
 //!   - `--bench <frames>`: run the per-frame CPU path that many times and log CPU time and
-//!     allocations per frame, then GPU pass times.
+//!     allocations per frame, then GPU pass times. `--bench-overlap` (M6 B7) makes each frame wait for the frame
+//!     graph's submission two frames back rather than for everything, so CPU and GPU overlap as a shipped frame's
+//!     do, and logs `bench overlap` over the GPU timing's frames: whether the frames were CPU- or GPU-limited, and
+//!     the work queued ahead of each and the queue's age on the GPU's clock (`bench::overlap`). Off by default.
 //!   - `--offscreen` (`dev` builds): keep drawing at up to 60 frames a second, one fixed step
 //!     each, until the process is told to quit (Ctrl-C, `kill`) or `--frames N` have been drawn,
 //!     with hot reload and live link on (`serve.rs`): what a device runs, without a window.

@@ -298,6 +298,15 @@ impl GraphExecutor {
         self.timer.as_deref().and_then(FrameTimer::latest)
     }
 
+    /// Every frame's per-pass GPU times read back when the latest frame began, oldest first; the
+    /// newest is [`Self::gpu_timings`]'s. Where each frame waits for the GPU that is the frame
+    /// before; where frames overlap, as the bench's `--bench-overlap` has them (M6 B7), one wait
+    /// can bring back two, and a reader of [`Self::gpu_timings`] alone would miss the older.
+    /// Empty while timing is off.
+    pub fn gpu_timings_read(&self) -> &[GpuTimings] {
+        self.timer.as_deref().map_or(&[], FrameTimer::read)
+    }
+
     /// Graphs executed so far: the frame [`GpuTimings::frame`] counts in.
     pub fn frames(&self) -> u64 {
         self.frames

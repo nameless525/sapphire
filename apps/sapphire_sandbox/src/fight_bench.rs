@@ -32,6 +32,11 @@
 //! it, the thread spent off its core, waiting on the encoders' workers, the driver or the GPU, or set aside by the
 //! machine's other work. Drawn offscreen, the GPU wait stands where a window's acquire would block.
 //!
+//! **Overlapping** (`--bench-overlap`, M6 B7, `crate::bench::overlap`), each phase starts from an empty queue and each
+//! frame waits for the frame graph's submission two frames back, not for everything: the `gpu wait` rows are that
+//! wait, and the GPU phase logs `bench overlap`, the queue's age on the GPU's clock and whether its frames were CPU-
+//! or GPU-limited. Off, every frame waits for the GPU, as it always has.
+//!
 //! `--draw-every` is the same load and the same fight with nearly no frames drawn, which checks a load's
 //! pipeline inventory (exit test 7) where drawing costs seconds. It logs the pipelines' row, a zone's memory and
 //! its trips' steps, which count frames and bytes rather than time them, and no other rows.
@@ -69,6 +74,7 @@ use sapphire_rhi::wgpu;
 use sapphire_time::{Stopwatch, TICK_HZ};
 
 use crate::LOG_TARGET;
+use crate::bench::overlap::{self, GpuWait, Sample};
 use crate::offscreen::Stage;
 use crate::options::Options;
 use game_combat::combat::Combat;
@@ -128,6 +134,9 @@ struct GpuTimes {
     post: Option<Duration>,
     vfx: Option<Duration>,
     ui: Option<Duration>,
+    /// When the frame's GPU work started (`GpuTimings::start`), when its span reads: with [`Self::end`], what an
+    /// overlapped phase's reading takes (M6 B7).
+    start: Option<Duration>,
     /// When the frame's GPU work ended, on the GPU's own clock (`GpuTimings::end`), when its span reads: what
     /// lines a round's slow frames up against a display's refresh (M5 Z2).
     end: Option<Duration>,
@@ -172,6 +181,7 @@ impl GpuTimes {
                 effects + timings.get(DISTORTION_PASS).map_or(Duration::ZERO, |pass| pass.exclusive)
             }),
             ui: sum(&[UI_PASS]),
+            start: timings.every_timed_pass.then_some(timings.start).flatten(),
             end: timings.every_timed_pass.then(|| timings.end()).flatten(),
         }
     }
@@ -190,8 +200,10 @@ struct Traced {
     steps: u32,
     /// Everything on the frame's CPU path, from its first step to its submit.
     cpu: Duration,
-    /// Waiting for the GPU after that.
+    /// Waiting for the GPU after that: for every submission, or overlapping for the one two frames back.
     wait: Duration,
+    /// Overlapping (M6 B7), when [`Self::cpu`] ended, at the frame's submit, on the bench's clock.
+    submitted: Option<Duration>,
     /// The thread's CPU time over [`Self::cpu`] and over [`Self::wait`] (M6 B3), `None` where the OS doesn't say.
     cpu_on_core: Option<Duration>,
     wait_on_core: Option<Duration>,
@@ -601,6 +613,8 @@ struct Run<'a> {
     assets: sapphire_assets::AssetStats,
     /// The loads the frame's thread had done in play after the last frame (exit test 2), for what the next did.
     loads: u64,
+    /// How each frame waits for the GPU: for everything, or overlapping (M6 B7).
+    waits: GpuWait,
     /// A walk under a running day (`--day-length`): the hour its tour starts at, which each phase's restart of
     /// the tour sets again, so every phase walks the same stretch of the day (M5 Z1). `None` where time stands
     /// still or for a fight, which nothing here changes.
@@ -656,6 +670,7 @@ pub(crate) fn run(
         assets,
         loads,
         walk_hour: None,
+        waits: GpuWait::new(options.bench_overlap),
     };
     if option.is_none() && run.stage.scene.time_of_day().clock().day_length().is_some() {
         run.walk_hour = Some(run.stage.scene.time_of_day().clock().hours(1.0));
@@ -703,6 +718,7 @@ impl Run<'_> {
     /// Plays whole fights until it's measured `frames`. Returns how many it did.
     fn phase(&mut self, phase: Phase, frames: u32) -> Result<u32, AppInitError> {
         self.stage.measure_gpu = phase == Phase::Gpu;
+        self.waits.drain(self.stage.gpu.device()).map_err(AppInitError::msg)?;
         self.first_graph_frame = self.stage.graph.frames() + 1;
         self.first_traced = self.trace.len();
         self.stage.content.start_texture_waits_over();
@@ -829,7 +845,8 @@ impl Run<'_> {
         let cpu_on_core = on_core.lap();
         let core = sapphire_platform::current_core();
         stopwatch.lap();
-        stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+        let submitted =
+            self.waits.wait(stage.gpu.device(), stage.graph.submitted()).map_err(AppInitError::msg)?;
         let wait = stopwatch.lap();
         let wait_on_core = on_core.lap();
         let mix = self.audio.as_mut().map_or(Duration::ZERO, |audio| audio.mix(frame_dt));
@@ -875,6 +892,7 @@ impl Run<'_> {
             steps,
             cpu,
             wait,
+            submitted,
             cpu_on_core,
             wait_on_core,
             restart,
@@ -920,16 +938,23 @@ impl Run<'_> {
         })
     }
 
-    /// Puts the newest GPU times that have come back on the frame they belong to.
+    /// Puts the newest GPU times that have come back on the frame they belong to; overlapping, every frame's that
+    /// came back, since one frame's begin can read two (M6 B7).
     fn read_gpu_times(&mut self) {
-        let Some(timings) = self.stage.graph.gpu_timings() else { return };
-        if timings.frame <= self.last_timed || timings.frame < self.first_graph_frame {
-            return;
-        }
-        self.last_timed = timings.frame;
-        let at = self.first_traced + (timings.frame - self.first_graph_frame) as usize;
-        if let Some(frame) = self.trace.get_mut(at) {
-            frame.gpu = GpuTimes::of(timings, frame.bloom_levels, frame.bloom_chain);
+        let read = match self.stage.graph.gpu_timings() {
+            _ if self.waits.overlaps() => self.stage.graph.gpu_timings_read(),
+            Some(timings) => std::slice::from_ref(timings),
+            None => &[],
+        };
+        for timings in read {
+            if timings.frame <= self.last_timed || timings.frame < self.first_graph_frame {
+                continue;
+            }
+            self.last_timed = timings.frame;
+            let at = self.first_traced + (timings.frame - self.first_graph_frame) as usize;
+            if let Some(frame) = self.trace.get_mut(at) {
+                frame.gpu = GpuTimes::of(timings, frame.bloom_levels, frame.bloom_chain);
+            }
         }
     }
 }
@@ -1014,6 +1039,9 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
         }
         if phase == Phase::Gpu {
             gpu_reading(run.stage.gpu.caps().backend(), &frames().collect::<Vec<_>>(), &in_flight);
+            if run.waits.overlaps() {
+                overlap::log(phase.name(), quality.tier.id.name(), &overlap_samples(frames()));
+            }
         }
         let count = measured().count().max(1) as u64;
         let allocations =
@@ -1048,6 +1076,17 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
         zone::report(run.stage, &run.trace, phase);
         counts::report(&run.trace, phase, &counts::RunBudgets::of(run.stage));
     }
+}
+
+/// An overlapped phase's frames as its reading takes them (M6 B7): a restart's frame, or one whose GPU times never
+/// came back whole, has no GPU times, so neither it nor the frame after it is read.
+fn overlap_samples<'a>(frames: impl Iterator<Item = &'a Traced>) -> Vec<Sample> {
+    frames
+        .filter_map(|frame| {
+            let gpu = frame.gpu.start.zip(frame.gpu.end).filter(|_| frame.restart.is_zero());
+            Some(Sample { submitted: frame.submitted?, cpu: frame.cpu, wait: frame.wait, gpu })
+        })
+        .collect()
 }
 
 /// What a phase's frames left out of the rows for `reason` cost (M6 B3), as a row of their own: how many, their
@@ -1334,6 +1373,7 @@ mod tests {
             steps: 1,
             cpu: Duration::from_micros(cpu_us),
             wait: Duration::ZERO,
+            submitted: None,
             cpu_on_core: None,
             wait_on_core: None,
             restart: Duration::ZERO,
@@ -1586,9 +1626,9 @@ mod tests {
         let read = GpuTimes::of(&timings, 0, false);
         assert_eq!(read.span, Some(Duration::from_micros(20)), "Metal's frames have a span");
         assert_eq!(
-            read.end,
-            Some(Duration::from_secs(5) + Duration::from_micros(20)),
-            "and an end on the GPU's clock"
+            (read.start, read.end),
+            (Some(Duration::from_secs(5)), Some(Duration::from_secs(5) + Duration::from_micros(20))),
+            "and a start and an end on the GPU's clock"
         );
         assert_eq!(read.shadows, Some(Duration::from_micros(10)), "the cascades that ran");
         assert_eq!(read.main, Some(Duration::from_micros(10)));
@@ -1599,8 +1639,48 @@ mod tests {
         assert_eq!((untimed.shadows, untimed.depth_only), (None, None), "a cascade ran untimed");
         timings.every_timed_pass = false;
         let dropped = GpuTimes::of(&timings, 0, false);
-        assert_eq!((dropped.span, dropped.shadows, dropped.end), (None, None, None), "a pair was dropped");
+        assert_eq!(
+            (dropped.span, dropped.shadows, dropped.start, dropped.end),
+            (None, None, None, None),
+            "a pair was dropped"
+        );
         assert_eq!(dropped.main, Some(Duration::from_micros(10)));
+    }
+
+    /// An overlapped phase's reading (M6 B7) takes each frame's submit and its GPU's start and end, and leaves out the
+    /// GPU times of a restart's frame and of one whose span didn't read; a bench that didn't overlap has none.
+    #[test]
+    fn an_overlapped_phase_reads_its_frames_gpu_times_but_not_a_restarts() {
+        let ms = Duration::from_millis;
+        let gpu = |at: u64| GpuTimes {
+            timed: true,
+            start: Some(ms(at)),
+            end: Some(ms(at + 4)),
+            ..GpuTimes::default()
+        };
+        let frame = |at: u64| Traced { submitted: Some(ms(at)), gpu: gpu(at + 1), ..traced(at, 2_000) };
+        let frames = [
+            frame(0),
+            Traced { restart: ms(1), ..frame(10) },
+            frame(20),
+            Traced { gpu: GpuTimes { timed: true, ..GpuTimes::default() }, ..frame(30) },
+            frame(40),
+            frame(50),
+        ];
+        let samples = overlap_samples(frames.iter());
+        let read: Vec<_> = samples.iter().map(|sample| (sample.submitted, sample.gpu.is_some())).collect();
+        assert_eq!(
+            read,
+            [(ms(0), true), (ms(10), false), (ms(20), true), (ms(30), false), (ms(40), true), (ms(50), true)]
+        );
+        assert_eq!(samples[0].gpu, Some((ms(1), ms(5))));
+        assert_eq!(samples[5].cpu, ms(2));
+        assert_eq!(
+            overlap::read(&samples).map(|reading| reading.frames),
+            Some(1),
+            "only 40 then 50 in a row"
+        );
+        assert!(overlap_samples(frames.map(|frame| Traced { submitted: None, ..frame }).iter()).is_empty());
     }
 
     /// A trace's lines have as many fields as its header, whatever's in them.

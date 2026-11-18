@@ -51,6 +51,11 @@
 //! (`frame_thread_loads=`, by kind) and as the count row `frame thread loads`, whose budget is 0. A fight's bench
 //! does the same from its first frame, the audio and stage ready.
 //!
+//! `--bench-overlap` (M6 B7, [`overlap`]) waits after each frame for the frame graph's submission two frames back
+//! rather than for everything, so CPU and GPU overlap as a shipped frame's do, and the GPU timing's frames log
+//! `bench overlap`: the queue's age on the GPU's clock and whether they were CPU- or GPU-limited. Off, every frame
+//! waits for the GPU as above.
+//!
 //! Every bench first logs the class its OS schedules its threads in, the main thread's and the compute pool's,
 //! then asks for the main thread to be scheduled as user-interactive, as a game the user started is
 //! ([`schedule`]): a run started from a background shell would otherwise measure what the shell's class allows.
@@ -69,10 +74,13 @@ use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
+use crate::bench::overlap::{GpuWait, Sample};
 use crate::fight_bench::DrawnCounts;
 use crate::offscreen::Stage;
 use crate::options::Options;
 use game_combat::combat::CombatOption;
+
+pub(crate) mod overlap;
 
 /// Frames run before measuring: first-use pipeline work and buffer growth settle here.
 const WARMUP_FRAMES: u32 = 60;
@@ -425,6 +433,9 @@ pub(crate) fn run(
     }
     // `--bench-pace` (M5 Z2): each frame starts a frame's time after the last began, or late if that ran long.
     let mut pace = options.bench_pace.map(|rate| Pace::new(Duration::from_secs(1) / rate.get()));
+    // For every submission, or overlapping (M6 B7) for the frame graph's two frames back.
+    let mut waits = GpuWait::new(options.bench_overlap);
+    waits.drain(stage.gpu.device()).map_err(AppInitError::msg)?;
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
         if let Some(pace) = &mut pace {
             pace.wait();
@@ -437,7 +448,7 @@ pub(crate) fn run(
         stage.render(&view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
         let frame_cpu = stopwatch.lap();
-        stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+        waits.wait(stage.gpu.device(), stage.graph.submitted()).map_err(AppInitError::msg)?;
         let wait = stopwatch.lap();
         let after = alloc::stats();
         if stage.content.textures_arriving() && stage.scene.zone_arrived(&stage.content) {
@@ -643,7 +654,7 @@ pub(crate) fn run(
     if !alloc::is_installed() {
         tracing::warn!(target: LOG_TARGET, "no counting allocator: allocation counts are zero");
     }
-    gpu_times(&mut stage, &view, settings.bloom_levels, spin)?;
+    gpu_times(&mut stage, &view, (settings.bloom_levels, spin), &mut waits)?;
     stage.check_gpu()?;
     stage.show.fight.finish().map_err(AppInitError::msg)
 }
@@ -708,12 +719,13 @@ fn ui_medians(frames: &[(Duration, Duration)]) -> (Duration, f64) {
 /// Runs [`TIMED_FRAMES`] frames with GPU timing on and logs the mean GPU times: each pass's
 /// `exclusive` time (what it added to the frame; see `sapphire_render::graph::PassTime`) and its
 /// start-to-end `duration`, and the frame's span, with the UI pass's medians
-/// ([`ui_medians`]). `bloom_levels` is the renderer's.
+/// ([`ui_medians`]). `bloom_levels` is the renderer's. Overlapping (`waits`, M6 B7), its frames wait as the
+/// measured ones did and are read as `bench overlap` ([`overlap::log`]).
 fn gpu_times(
     stage: &mut Stage,
     view: &wgpu::TextureView,
-    bloom_levels: u32,
-    spin: f32,
+    (bloom_levels, spin): (u32, f32),
+    waits: &mut GpuWait,
 ) -> Result<(), AppInitError> {
     if !stage.gpu.caps().timestamp_query {
         tracing::info!(target: LOG_TARGET, "no timestamp queries on this device: GPU times not measured");
@@ -748,75 +760,100 @@ fn gpu_times(
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
     let (mut bloom, mut composite, mut post_total) = (zero, zero, zero);
     let (mut span, mut timed, mut last) = (Duration::ZERO, 0u32, 0);
+    // Overlapping, each frame's submit, CPU span and wait, and its GPU's start and end once they come back.
+    let overlapping = waits.overlaps();
+    let mut samples: Vec<Sample> = Vec::with_capacity(if overlapping { TIMED_FRAMES as usize } else { 0 });
+    let first_frame = stage.graph.frames() + 1;
+    waits.drain(stage.gpu.device()).map_err(AppInitError::msg)?;
     for _ in 0..TIMED_FRAMES {
+        let mut stopwatch = overlapping.then(Stopwatch::start);
         spin_insets(stage, spin);
         stage.step();
         stage.render(view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
-        stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
-        let Some(timings) = stage.graph.gpu_timings().filter(|timings| timings.frame > last) else {
-            continue;
+        let cpu = stopwatch.as_mut().map(Stopwatch::lap);
+        let submitted = waits.wait(stage.gpu.device(), stage.graph.submitted()).map_err(AppInitError::msg)?;
+        if let (Some(submitted), Some(cpu), Some(stopwatch)) = (submitted, cpu, &mut stopwatch) {
+            samples.push(Sample { submitted, cpu, wait: stopwatch.lap(), gpu: None });
+        }
+        // Overlapping, one frame's begin can read two frames' timings, and each counts (M6 B7).
+        let read = match stage.graph.gpu_timings() {
+            _ if overlapping => stage.graph.gpu_timings_read(),
+            Some(timings) => std::slice::from_ref(timings),
+            None => &[],
         };
-        last = timings.frame;
-        timed += 1;
-        span += timings.span();
-        // Temporal AA's cost is its two passes, against spec §3.3's 0.8 ms; the prepasses it
-        // runs are its inputs, timed apart; post's composite runs at the output's size either way,
-        // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
-        // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
-        // over the frame (M1 F5): what showing it costs.
-        let groups: [(&[&str], &mut Sums); 19] = [
-            (&["skinning"], &mut skinning),
-            (&["sky cube"], &mut sky_cube),
-            (&[MAIN_PASS], &mut main),
-            (&PREPASSES, &mut prepasses),
-            (&[CHARACTER_PREPASS], &mut character_prepass),
-            (&temporal::PASSES, &mut taa),
-            (&shadows::PASSES, &mut shadow),
-            (&["light clusters"], &mut clusters),
-            (&ambient::PASSES, &mut ambient_pass),
-            (&debug_view::PASSES, &mut views),
-            (&[debug_draw::PASS], &mut debug_draws),
-            (&[vfx::PASS], &mut effects),
-            (&[DISTORTION_PASS], &mut distortion),
-            (&post::UPSCALE_PASSES, &mut upscale),
-            (&[UI_PASS], &mut ui),
-            (&inset::PASSES, &mut insets),
-            (&post::FOCUS_PASSES, &mut focus),
-            (&[post::FOCUS_BACKDROP_PASS], &mut soft_backdrop),
-            (&post::SHAFT_PASSES, &mut shafts),
-        ];
-        for (sum, name) in focus_each.iter_mut().zip(post::FOCUS_PASSES) {
-            *sum += timings.get(name).map_or(Duration::ZERO, |pass| pass.exclusive);
-        }
-        for (sum, name) in upscale_each.iter_mut().zip(post::UPSCALE_PASSES) {
-            *sum += timings.get(name).map_or(Duration::ZERO, |pass| pass.exclusive);
-        }
-        if let Some(pass) = timings.get(UI_PASS) {
-            ui_each.push((pass.exclusive, timings.span()));
-        }
-        for (names, sums) in groups {
-            let mut ran = false;
-            for pass in names.iter().filter_map(|name| timings.get(name)) {
-                sums.0 += pass.exclusive;
-                sums.1 += pass.duration;
-                ran = true;
+        for timings in read {
+            // Overlapping, the phase's first begin can read the frames drained before it: they aren't its.
+            if timings.frame <= last || (overlapping && timings.frame < first_frame) {
+                continue;
             }
-            sums.2 += u32::from(ran);
-        }
-        let chain = stage.renderer.stats().post.bloom_chain;
-        let post_passes = || post::frame_passes(bloom_levels, chain);
-        if timings.get(MAIN_PASS).is_some() && post_passes().all(|name| timings.get(name).is_some()) {
-            for name in post_passes() {
-                let pass = timings.get(name).expect("checked above");
-                let sums = if name == post::COMPOSITE_PASS { &mut composite } else { &mut bloom };
-                sums.0 += pass.exclusive;
-                sums.1 += pass.duration;
-                post_total.0 += pass.exclusive;
-                post_total.1 += pass.duration;
+            last = timings.frame;
+            if let Some(sample) =
+                timings.frame.checked_sub(first_frame).and_then(|at| samples.get_mut(at as usize))
+                && timings.every_timed_pass
+            {
+                sample.gpu = timings.start.zip(timings.end());
             }
-            for sums in [&mut bloom, &mut composite, &mut post_total] {
-                sums.2 += 1;
+            timed += 1;
+            span += timings.span();
+            // Temporal AA's cost is its two passes, against spec §3.3's 0.8 ms; the prepasses it
+            // runs are its inputs, timed apart; post's composite runs at the output's size either way,
+            // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
+            // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
+            // over the frame (M1 F5): what showing it costs.
+            let groups: [(&[&str], &mut Sums); 19] = [
+                (&["skinning"], &mut skinning),
+                (&["sky cube"], &mut sky_cube),
+                (&[MAIN_PASS], &mut main),
+                (&PREPASSES, &mut prepasses),
+                (&[CHARACTER_PREPASS], &mut character_prepass),
+                (&temporal::PASSES, &mut taa),
+                (&shadows::PASSES, &mut shadow),
+                (&["light clusters"], &mut clusters),
+                (&ambient::PASSES, &mut ambient_pass),
+                (&debug_view::PASSES, &mut views),
+                (&[debug_draw::PASS], &mut debug_draws),
+                (&[vfx::PASS], &mut effects),
+                (&[DISTORTION_PASS], &mut distortion),
+                (&post::UPSCALE_PASSES, &mut upscale),
+                (&[UI_PASS], &mut ui),
+                (&inset::PASSES, &mut insets),
+                (&post::FOCUS_PASSES, &mut focus),
+                (&[post::FOCUS_BACKDROP_PASS], &mut soft_backdrop),
+                (&post::SHAFT_PASSES, &mut shafts),
+            ];
+            for (sum, name) in focus_each.iter_mut().zip(post::FOCUS_PASSES) {
+                *sum += timings.get(name).map_or(Duration::ZERO, |pass| pass.exclusive);
+            }
+            for (sum, name) in upscale_each.iter_mut().zip(post::UPSCALE_PASSES) {
+                *sum += timings.get(name).map_or(Duration::ZERO, |pass| pass.exclusive);
+            }
+            if let Some(pass) = timings.get(UI_PASS) {
+                ui_each.push((pass.exclusive, timings.span()));
+            }
+            for (names, sums) in groups {
+                let mut ran = false;
+                for pass in names.iter().filter_map(|name| timings.get(name)) {
+                    sums.0 += pass.exclusive;
+                    sums.1 += pass.duration;
+                    ran = true;
+                }
+                sums.2 += u32::from(ran);
+            }
+            let chain = stage.renderer.stats().post.bloom_chain;
+            let post_passes = || post::frame_passes(bloom_levels, chain);
+            if timings.get(MAIN_PASS).is_some() && post_passes().all(|name| timings.get(name).is_some()) {
+                for name in post_passes() {
+                    let pass = timings.get(name).expect("checked above");
+                    let sums = if name == post::COMPOSITE_PASS { &mut composite } else { &mut bloom };
+                    sums.0 += pass.exclusive;
+                    sums.1 += pass.duration;
+                    post_total.0 += pass.exclusive;
+                    post_total.1 += pass.duration;
+                }
+                for sums in [&mut bloom, &mut composite, &mut post_total] {
+                    sums.2 += 1;
+                }
             }
         }
     }
@@ -899,6 +936,9 @@ fn gpu_times(
         capsule_bins = ?stage.renderer.stats().capsule_bins,
         "bench gpu",
     );
+    if overlapping {
+        overlap::log("gpu", stage.quality.stats().tier.id.name(), &samples);
+    }
     Ok(())
 }
 

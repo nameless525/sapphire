@@ -577,6 +577,13 @@ pub(crate) struct Options {
     /// texture's level, counted in frames, lasts a frame's time each and the loads behind it run at a game's
     /// speed. With `--bench` of `--zone-walk` and `--draw-every`; it times nothing.
     pub bench_pace: Option<NonZeroU32>,
+    /// `--bench-overlap` (M6 B7): a timed bench waits after each frame's submit for the frame graph's submission
+    /// two frames back, not for everything submitted, so the CPU records frame N while the GPU still runs N - 1
+    /// and N - 2, as a shipped frame overlaps them behind a swapchain; its GPU phase then logs `bench overlap`, the
+    /// queue's age on the GPU's clock and whether the frames were CPU- or GPU-limited (`bench::overlap`). Off, the
+    /// bench waits for the GPU every frame, as it always has. With `--bench` of anything timed: not with
+    /// `--draw-every`, which times nothing, or `--serial-passes`, which waits after every pass.
+    pub bench_overlap: bool,
     /// `--compute-threads <n>`: the job system's compute pool runs `n` threads, not one a physical core but the
     /// main thread's (M5 X4's lane: a counted walk's worker count is the walk's, so its animation jobs are the
     /// scene's and not the machine's). Read before the job system starts ([`compute_threads_requested`]), so any
@@ -1752,6 +1759,7 @@ impl Options {
                 "--no-hot-reload" => options.no_hot_reload = true,
                 "--combat-input" => options.combat_input = true,
                 "--serial-passes" => options.serial_passes = true,
+                "--bench-overlap" => options.bench_overlap = true,
                 "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
                 "--spin" => {
                     let speed: f32 = number(&value("--spin")?, "--spin")?;
@@ -2213,6 +2221,12 @@ impl Options {
         {
             return Err(format!(
                 "--bench-pace needs {BENCH_FLAG} of a counting walk: --zone-walk with --draw-every"
+            ));
+        }
+        if options.bench_overlap && !(benching && options.draw_every.is_none() && !options.serial_passes) {
+            return Err(format!(
+                "--bench-overlap needs a timed {BENCH_FLAG}: not with --draw-every, which times nothing, or \
+                 --serial-passes, which waits for the GPU after every pass"
             ));
         }
         if options.draw_every.is_some() && !(capturing || serve || bench_of_a_load) {
@@ -4173,6 +4187,29 @@ mod tests {
             );
         }
         assert!(parse(&[&walk[..], &["--bench-pace", "0"]].concat()).is_err());
+    }
+
+    /// The overlap mode (M6 B7) is off unless asked, and goes with a timed bench alone: a plain one, a fight's or
+    /// a walk's, never one of counts or of passes waited for one by one.
+    #[test]
+    fn the_overlap_mode_goes_with_a_timed_bench_alone() {
+        assert!(!Options::default().bench_overlap && !parse(&["--bench", "1"]).unwrap().0.bench_overlap);
+        for args in [
+            &["--bench", "1"][..],
+            &["--bench", "1", "--replay", "x"],
+            &["--bench", "1", "--zone", "district", "--zone-walk", "tour"],
+        ] {
+            let (options, _) = parse(&[args, &["--bench-overlap"]].concat()).unwrap();
+            assert!(options.bench_overlap, "{args:?}");
+        }
+        for args in [
+            &["--capture", "x.png"][..],
+            &["--bench", "1", "--replay", "x", "--draw-every", "7"],
+            &["--bench", "1", "--serial-passes"],
+        ] {
+            let error = parse(&[args, &["--bench-overlap"]].concat()).unwrap_err();
+            assert!(error.contains("--bench-overlap"), "{args:?}: {error}");
+        }
     }
 
     #[test]

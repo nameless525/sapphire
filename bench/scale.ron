@@ -29,7 +29,8 @@
 //
 // The district has a probe grid, reflection probes and a midday key since M6 B4: every run M5 measured in it pins
 // the grid and the probes off (`--no-probe-grid --no-reflection-probes`) and stands between 19:45 and 23:00, whose
-// keys are M5's, so it draws the frame M5 measured.
+// keys are M5's, so it draws the frame M5 measured; M6 B4's day runs (`tour-day`, `district-fight-day`, their arms
+// and `counted-day`) draw the district as a shipped zone would be, at midday with the grid and the probes.
 //
 // Planning figures (`frames_a_second`, `startup_seconds`) are B4's walks on the M5 Mac: about 265 s a desktop
 // walk of three phases and 147 s a phone one. They size the sittings and measure nothing.
@@ -496,6 +497,86 @@
                 timed: false,
                 serves: [2, 7],
                 devices: ["ios-sim", "android"],
+            ),
+            // M6 B4: the district as a shipped zone would be, at midday (`district_day.ron`'s 13:00 key, the sun up)
+            // with its probe grid (the environment's and characters' ambient by the grid, per pixel on the desktops)
+            // and its reflection probes (24 on `ci`, 40 on the budget, along the avenues and over the plaza), beside
+            // M5's dusk and night, which draw neither. Its arms read the grid's lookup and the probes' cost by taking
+            // each away: `no-grid` (`--no-probe-grid`, the hemisphere's ambient, as M5's frame), `no-reflections`
+            // (`--no-reflection-probes`, the sky's reflection alone) and `neither`, on the desktops, where E3 and E4
+            // are judged. No exit test reads them yet: M6's fight that ships (B5) stands on them.
+            (
+                name: "tour-day",
+                about: "the tour at midday, the sun up, with the probe grid and the reflection probes",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "13", "--mount", "zone_proving_hub",
+                    "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Lap,
+                read: [Cpu, Gpu, Counts, Memory],
+            ),
+            (
+                name: "tour-day-probes",
+                about: "the tour at midday: the probe grid and the reflection probes, each taken away",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "13", "--mount", "zone_proving_hub",
+                    "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [
+                    (name: "both", args: []),
+                    (name: "no-grid", args: ["--no-probe-grid"]),
+                    (name: "no-reflections", args: ["--no-reflection-probes"]),
+                    (name: "neither", args: ["--no-probe-grid", "--no-reflection-probes"]),
+                ],
+                rows: ["cpu frame", "gpu frame", "gpu main", "gpu clustering and ao", "gpu shadows", "ambient dispatches",
+                    "probe dispatches"],
+            ),
+            (
+                name: "district-fight-day",
+                about: "the district's encounter at midday with the probe grid and the reflection probes, the crowd about",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "13",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(1600),
+                read: [Cpu, Gpu, Counts, Cast, Pipelines],
+                trace: true,
+            ),
+            (
+                name: "district-fight-day-probes",
+                about: "the district's encounter at midday: the probe grid and the reflection probes, each taken away",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "13",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(1600),
+                read: [Cpu, Gpu, Counts],
+                variants: [
+                    (name: "both", args: []),
+                    (name: "no-grid", args: ["--no-probe-grid"]),
+                    (name: "no-reflections", args: ["--no-reflection-probes"]),
+                    (name: "neither", args: ["--no-probe-grid", "--no-reflection-probes"]),
+                ],
+                rows: ["cpu frame", "gpu frame", "gpu main", "gpu clustering and ao", "gpu shadows", "ambient dispatches",
+                    "probe dispatches"],
+            ),
+            // M6 B4's day by counts: the tour at midday with the grid and the probes, a frame in seven drawn, failing on
+            // any pipeline built after the load, as `counted` does.
+            (
+                name: "counted-day",
+                about: "the tour's counts at midday with the probe grid and the reflection probes, a frame in seven drawn",
+                args: [
+                    "--draw-every", "7", "--zone", "district", "--zone-walk", "tour", "--time-of-day", "13",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Lap,
+                phases: 1,
+                read: [Counts, Pipelines],
+                timed: false,
             ),
         ],
         // Where a run with `devices` walks (M5 Z2). Each device's bundle is the release `dev` sandbox with the

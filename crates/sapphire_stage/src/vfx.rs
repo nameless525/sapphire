@@ -21,6 +21,10 @@
 //! character's feet; `distort-haze` one landing at the start, the haze over its burn; `distort-one` one landing
 //! always playing and `distort-full` as many as the tier's bends' cap, the bench's load. A show's bends draw
 //! unless `--distortion off` says not (`Scene::set_vfx_distortion`); the decal shows' scorches bend too.
+//!
+//! The `forces` show plays the shipped forces and ground (M6 N2) in a breeze: embers drifting off the paving
+//! behind the character through a moving noise, sparks thrown up beside it twice a second that bounce and skid
+//! on the floor, and a charge's motes spiralling into a point at the height of its hands.
 
 use std::time::Duration;
 
@@ -29,7 +33,8 @@ use sapphire_render::VfxFrame;
 use sapphire_render::quality::TierId;
 use sapphire_time::Stopwatch;
 use sapphire_vfx::{
-    EffectHandle, EffectId, EffectLibrary, OwnerId, OwnerSteps, Placement, VfxBudget, VfxWorld, on_ground,
+    EffectHandle, EffectId, EffectLibrary, OwnerId, OwnerSteps, Placement, VfxBudget, VfxWorld, WindSample,
+    on_ground,
 };
 
 use crate::ik::IkGround;
@@ -80,10 +85,12 @@ pub enum VfxShow {
     DistortOne,
     /// As many as the tier's bends' cap, always playing round it.
     DistortFull,
+    /// Embers drifting in a breeze, sparks bouncing on the floor and a charge gathering (M6 N2).
+    Forces,
 }
 
 impl VfxShow {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Arc,
         Self::Hit,
         Self::Dust,
@@ -100,6 +107,7 @@ impl VfxShow {
         Self::DistortHaze,
         Self::DistortOne,
         Self::DistortFull,
+        Self::Forces,
     ];
 
     pub fn name(self) -> &'static str {
@@ -120,6 +128,7 @@ impl VfxShow {
             Self::DistortHaze => "distort-haze",
             Self::DistortOne => "distort-one",
             Self::DistortFull => "distort-full",
+            Self::Forces => "forces",
         }
     }
 
@@ -157,6 +166,13 @@ const LANDING_TURN: f32 = std::f32::consts::PI;
 /// How often the bends' bench lands each landing again, in ticks: as long as the shipped scorch bends, its haze
 /// ending 1.75 s in.
 const LANDING_PERIOD: u32 = 105;
+
+/// Where the `forces` show's embers rise, its sparks fly from and its charge gathers (M6 N2), and the breeze
+/// they play in: across the view from the camera's left, a little toward it.
+const EMBER_SPOT: Vec3 = Vec3::new(0.7, 0.02, -3.0);
+const SPARK_SPOT: Vec3 = Vec3::new(-1.1, 0.9, -2.0);
+const CHARGE_SPOT: Vec3 = Vec3::new(0.3, 1.1, 0.45);
+const FORCES_WIND: WindSample = WindSample { velocity: Vec3::new(0.9, 0.0, 0.25) };
 
 /// The ticks a swing takes: a sixth of a second, as a light attack's strike.
 const SWING_TICKS: f32 = 10.0;
@@ -234,6 +250,8 @@ pub(crate) struct VfxPlayer {
     decals: Option<(EffectId, EffectId)>,
     /// The scorch, whose shockwave and haze bend, for a `distort-*` show (M5 L6).
     landing: Option<EffectId>,
+    /// The embers, the sparks and the charge, for the `forces` show (M6 N2).
+    forces: Option<[EffectId; 3]>,
     /// Whether its bends draw (`--distortion`): when not, a frame has none.
     distortion: bool,
     /// The decals `decal-one` and `decal-full` keep playing, and how many: one, or the tier's cap.
@@ -273,7 +291,8 @@ impl VfxPlayer {
             | VfxShow::DistortShockwave
             | VfxShow::DistortHaze
             | VfxShow::DistortOne
-            | VfxShow::DistortFull => None,
+            | VfxShow::DistortFull
+            | VfxShow::Forces => None,
         }
         .map(effect);
         let landing = matches!(
@@ -283,6 +302,8 @@ impl VfxPlayer {
         .then(|| effect("scorch_mark"));
         let decals = matches!(show, VfxShow::DecalSlope | VfxShow::DecalOne | VfxShow::DecalFull)
             .then(|| (effect("telegraph_ground"), effect("scorch_mark")));
+        let forces = (show == VfxShow::Forces)
+            .then(|| [effect("ember_drift"), effect("spark_bounce"), effect("charge_gather")]);
         let shown_count = match show {
             VfxShow::DecalOne | VfxShow::DistortOne => 1,
             VfxShow::DecalFull => (budget.max_decals as usize).min(MAX_SHOWN_DECALS),
@@ -300,6 +321,7 @@ impl VfxPlayer {
             arcs: [None; 8],
             decals,
             landing,
+            forces,
             distortion: true,
             shown: [None; MAX_SHOWN_DECALS],
             shown_count,
@@ -416,6 +438,10 @@ impl VfxPlayer {
                 self.land(LANDING_SPOT, LANDING_TURN);
                 None
             }
+            VfxShow::Forces if world_step > 0.0 && self.world_ticks == 0 => {
+                self.start_the_forces();
+                None
+            }
             _ => None,
         }
     }
@@ -492,6 +518,20 @@ impl VfxPlayer {
         }
     }
 
+    /// The forces' three effects, each playing until the show ends, in a breeze across the camera's view from its
+    /// left: the embers rise from the paving behind the character, the sparks fly up beside it from the height
+    /// of a blade and fall to the floor, and the charge gathers in front of it.
+    fn start_the_forces(&mut self) {
+        let Some([embers, sparks, charge]) = self.forces else { return };
+        self.world.set_wind(FORCES_WIND);
+        self.world.spawn(embers, OwnerId::WORLD, Placement::at(EMBER_SPOT));
+        if let Some(handle) = self.world.spawn(sparks, OwnerId::WORLD, Placement::at(SPARK_SPOT)) {
+            // The character's feet are on the floor at the world's origin.
+            self.world.set_ground(handle, 0.0);
+        }
+        self.world.spawn(charge, OwnerId::WORLD, Placement::at(CHARGE_SPOT));
+    }
+
     /// A heavy's landing at `at` on flat ground, turned `turn` radians: its scorch, shockwave and haze.
     fn land(&mut self, at: Vec3, turn: f32) -> Option<EffectHandle> {
         let landing = self.landing?;
@@ -559,7 +599,8 @@ impl VfxPlayer {
             | VfxShow::DistortShockwave
             | VfxShow::DistortHaze
             | VfxShow::DistortOne
-            | VfxShow::DistortFull => {}
+            | VfxShow::DistortFull
+            | VfxShow::Forces => {}
         }
     }
 
@@ -807,6 +848,32 @@ mod tests {
                 }
                 assert_eq!(frame.stats.dropped_decals, 0, "{show:?} {budget:?}");
             }
+        }
+    }
+
+    /// The forces' show keeps its three effects playing with nothing dropped on every tier: embers aloft, sparks
+    /// on the floor and never under it, motes gathering into the charge's point.
+    #[test]
+    fn the_forces_show_plays_its_forces() {
+        for budget in
+            [VfxBudget::DESKTOP_HIGH, VfxBudget::DESKTOP_LOW, VfxBudget::MOBILE_HIGH, VfxBudget::MOBILE_LOW]
+        {
+            let (player, frame) = frame_after(VfxShow::Forces, budget, 100);
+            assert_eq!(frame.stats.effects, 3, "{budget:?}");
+            assert_eq!(frame.stats.dropped_particles, 0, "{budget:?}");
+            assert!(!player.has_meshes() && !player.has_decals() && !player.has_distortion());
+            let near = |spot: Vec3, reach: f32| {
+                frame.sprites.iter().filter(|sprite| sprite.position.distance(spot) < reach).count()
+            };
+            assert!(near(EMBER_SPOT, 2.5) > 40, "{budget:?}: embers");
+            assert!(near(CHARGE_SPOT, 0.6) > 40, "{budget:?}: the charge");
+            let on_the_floor = frame
+                .sprites
+                .iter()
+                .filter(|sprite| sprite.position.y < 0.05 && sprite.position.x < 0.0)
+                .count();
+            assert!(on_the_floor > 4, "{budget:?}: sparks on the floor, {on_the_floor}");
+            assert!(frame.sprites.iter().all(|sprite| sprite.position.y >= 0.0), "{budget:?}");
         }
     }
 

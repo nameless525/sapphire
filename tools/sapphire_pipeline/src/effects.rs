@@ -101,7 +101,7 @@ mod tests {
     /// as well as macOS). If it fails everywhere, the shipped library, the effects schema's writer or the
     /// envelope changed on purpose: update it, and bump [`COOKER`] or [`IMPORTER`] if the same document now
     /// cooks otherwise.
-    const SHIPPED_HASH: &str = "b648007b3d822c66463528f28f6e79f427bee6727781d2a22d753dd7fe1d8ad8";
+    const SHIPPED_HASH: &str = "db4f6313a9e1b68f7d3aff0a954527cb26930addaeacf719e145e34791e2219f";
 
     /// A cooked library's bytes, aligned as a pack's reader hands them over.
     fn aligned(bytes: &[u8]) -> AlignedVec {

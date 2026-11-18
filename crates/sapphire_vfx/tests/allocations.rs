@@ -6,7 +6,7 @@
 use glam::Vec3;
 use sapphire_core::alloc::{CountingAllocator, count_in_scope};
 use sapphire_look::VfxFrame;
-use sapphire_vfx::{EffectLibrary, OwnerId, OwnerSteps, Placement, VfxBudget, VfxWorld};
+use sapphire_vfx::{EffectLibrary, OwnerId, OwnerSteps, Placement, VfxBudget, VfxWorld, WindSample};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator<std::alloc::System> = CountingAllocator::new(std::alloc::System);
@@ -75,6 +75,107 @@ fn stepping_spawning_and_resolving_allocate_nothing_once_warmed() {
     assert_eq!(counts.allocations, 0, "after warming, {peak:?}");
     assert!(frame.stats.dropped_particles == 0 && frame.stats.dropped_ribbon_points == 0);
 }
+
+/// A library's forces, its ground and its new spawns (M6 N2) step and resolve with nothing from the heap: the
+/// shipped embers, bouncing sparks and charge, and a dust trail fired along the way it's moved under every
+/// force at once, in a breeze that changes every step, one owner frozen now and then.
+#[test]
+fn forces_the_ground_and_the_new_spawns_allocate_nothing_once_warmed() {
+    let shipped = EffectLibrary::default_effects();
+    let effects =
+        ["ember_drift", "spark_bounce", "charge_gather"].map(|name| shipped.find(name).expect("shipped"));
+    let mut world = VfxWorld::new(shipped, VfxBudget::DESKTOP_LOW, 7);
+    let trail = EffectLibrary::from_ron(DUST_TRAIL).expect("valid");
+    let mut trails = VfxWorld::new(trail, VfxBudget::DESKTOP_LOW, 7);
+    let mut frame = VfxFrame::default();
+    let runner = OwnerId(1);
+    let (mut tick, mut dust) = (0_u32, None);
+    let mut play = |world: &mut VfxWorld, trails: &mut VfxWorld, frame: &mut VfxFrame, ticks: u32| {
+        for _ in 0..ticks {
+            let gust = (tick as f32 * 0.05).sin();
+            let wind = WindSample { velocity: Vec3::new(1.0 + gust, 0.0, 0.3 * gust) };
+            world.set_wind(wind);
+            trails.set_wind(wind);
+            let frozen = (tick % 90) < 6;
+            let held = [(runner, 0.0)];
+            let owners: &[(OwnerId, f32)] = if frozen { &held } else { &[] };
+            world.advance(&OwnerSteps { world: TICK, owners });
+            trails.advance(&OwnerSteps { world: TICK, owners });
+            if tick % 120 == 0 {
+                for (index, &effect) in effects.iter().enumerate() {
+                    let handle =
+                        world.spawn(effect, runner, Placement::at(Vec3::new(index as f32, 1.0, 0.0)));
+                    if let Some(handle) = handle {
+                        world.set_ground(handle, 0.0);
+                    }
+                }
+            }
+            if tick % 120 == 100 {
+                world.clear();
+            }
+            let dust = *dust
+                .get_or_insert_with(|| trails.spawn(sapphire_vfx::EffectId(0), runner, Placement::default()));
+            if let Some(handle) = dust {
+                let along = tick as f32 * 0.05;
+                trails.set_placement(
+                    handle,
+                    Placement::at(Vec3::new(along.sin() * 3.0, 0.0, along.cos() * 3.0)),
+                );
+            }
+            world.write_frame(frame, 0.5);
+            trails.write_frame(frame, 0.5);
+            tick += 1;
+        }
+    };
+    // To 90 ticks after the third round of spawns, so the peak is a full one.
+    play(&mut world, &mut trails, &mut frame, 330);
+    let peak = (world.stats(), trails.stats());
+    let ((), counts) = count_in_scope(|| play(&mut world, &mut trails, &mut frame, 720));
+    assert_eq!(counts.allocations, 0, "after warming, {peak:?}");
+    assert!(peak.0.particles > 100 && peak.1.particles > 100, "{peak:?}");
+    assert_eq!(frame.stats.dropped_particles, 0);
+}
+
+/// A run's dust, fired along the way it's moved and pushed by every force there is, bouncing on the ground.
+const DUST_TRAIL: &str = r#"(
+    type: "sapphire::vfx::EffectLibrary",
+    version: 5,
+    data: (
+        effects: [
+            (
+                name: "dust_trail",
+                emitters: [
+                    (
+                        name: "dust",
+                        spawn: PerMeter(per_meter: 12.0),
+                        source: Disc(0.2),
+                        lifetime: (0.8, 1.4),
+                        motion: (speed: (0.3, 1.2), spread: 60.0, gravity: 2.0, drag: 1.0),
+                        size: [(0.0, 0.05)],
+                        color: [(0.0, (0.8, 0.7, 0.6))],
+                        forces: [
+                            Wind(response: 2.0),
+                            Noise(strength: 2.0, frequency: 1.0, octaves: 2, drift: 0.5),
+                            Vortex(axis: (0.0, 1.0, 0.0), strength: 1.0, pull: 0.5),
+                            Attract(point: (0.0, 1.0, 0.0), strength: 0.5, kill_radius: 0.05),
+                            LimitSpeed(max: 3.0),
+                        ],
+                        collide: Some((bounce: 0.3, friction: 0.2)),
+                    ),
+                    (
+                        name: "pulse",
+                        spawn: Repeat(count: 4, interval: 0.2, times: 0),
+                        lifetime: (0.5, 0.5),
+                        motion: (speed: (1.0, 2.0), spread: 90.0, gravity: 9.8),
+                        size: [(0.0, 0.02)],
+                        color: [(0.0, (2.0, 1.0, 0.5))],
+                        collide: Some((dies: true)),
+                    ),
+                ],
+            ),
+        ],
+    ),
+)"#;
 
 /// The frame's capacity is all that warms: a frame holding a duel's capacity needs nothing else,
 /// from the very first frame, in a world that's only just been made.

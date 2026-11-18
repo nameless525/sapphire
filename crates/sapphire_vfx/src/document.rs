@@ -1076,12 +1076,13 @@ mod tests {
         }
     }
 
-    /// The shipped library is a version 4 document: it reads, and its body under every version's header reads
-    /// to the same library to the bit (their writes match), while a version past this build's, or 0, is refused.
+    /// The shipped library is a version 5 document, since M6 N2's forces: it reads, and its body under every
+    /// version's header reads to the same library to the bit (their writes match), while a version past this
+    /// build's, or 0, is refused.
     #[test]
     fn the_shipped_library_reads_the_same_under_every_versions_header() {
-        let header = "    version: 4,\n";
-        assert!(DEFAULT_EFFECTS.contains(header), "the shipped library is at version 4");
+        let header = "    version: 5,\n";
+        assert!(DEFAULT_EFFECTS.contains(header), "the shipped library is at version 5");
         let written = EffectLibrary::default_effects().to_ron().expect("written");
         for version in 1..=EffectLibrary::VERSION {
             let text = DEFAULT_EFFECTS.replacen(header, &format!("    version: {version},\n"), 1);

@@ -956,7 +956,9 @@ impl AssetServer {
     /// Holds every mount and remount from here on to `release`: a pack it doesn't name, or whose file isn't
     /// the length and header it names, fails to mount (see [mounting](AssetServer#mounting)). A shipping
     /// build's call, on its install's manifest, before it mounts anything; development builds, whose packs
-    /// a cook or live link rewrites, don't make it.
+    /// a cook or live link rewrites, don't make it. The one call after mounting is the editor's, taking a cook
+    /// it ran on the new cook's own manifest (`sapphire_stage`'s `Content::take_cook`, behind its `tools`
+    /// feature, which a shipped game doesn't have; M6 T5).
     pub fn mount_only_released(&mut self, release: &Manifest) {
         self.release = Some(release.packs.clone().into());
     }

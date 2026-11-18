@@ -118,6 +118,8 @@ pub mod turntable;
 pub mod vfx;
 
 pub use content::Content;
+#[cfg(feature = "tools")]
+pub use content::CookTaken;
 pub use extract::{RenderMesh, RenderPose, RenderTransform};
 pub use frame::{
     CaptureTextures, FRAME, FrameHooks, FrameLaps, LoadingFrame, Stage, StageDesc, StageTimes, ToolFrame,

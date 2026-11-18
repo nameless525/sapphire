@@ -1246,6 +1246,18 @@ fn a_release_holds_what_mounts() {
     assert!(matches!(server.remount("shared"), Err(MountError::NotAsReleased { .. })));
     source.insert("shared", shared);
     assert_eq!(server.remount("shared").unwrap(), RemountReport::default());
+
+    // A new cook's pack is refused until its own release is taken (the editor's `Content::take_cook`, M6 T5),
+    // and then it's the old pack that's refused.
+    let recooked = write_pack(textures(3)).unwrap();
+    source.insert("shared", recooked.clone());
+    assert!(matches!(server.remount("shared"), Err(MountError::NotAsReleased { .. })));
+    let mut next = release.clone();
+    next.packs[0] = released("shared", &recooked);
+    server.mount_only_released(&next);
+    assert!(server.remount("shared").unwrap().changed > 0, "the new cook's pack");
+    source.insert("shared", write_pack(character()).unwrap());
+    assert!(matches!(server.remount("shared"), Err(MountError::NotAsReleased { .. })));
 }
 
 struct SizedSource {

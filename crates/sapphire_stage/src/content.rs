@@ -89,11 +89,17 @@ use std::sync::Arc;
 use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, HeroineClearance, Skeleton};
 #[cfg(feature = "dev")]
 use sapphire_anim::{ClipSource, GraphBindError, GraphBinding};
+#[cfg(feature = "dev")]
+use sapphire_assets::AssetChange;
+#[cfg(any(feature = "dev", feature = "tools"))]
+use sapphire_assets::RemountReport;
 use sapphire_assets::cue::Cue;
 use sapphire_assets::effects::Effects;
 use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
 #[cfg(not(feature = "dev"))]
-use sapphire_assets::manifest::{self, Manifest};
+use sapphire_assets::manifest;
+#[cfg(any(not(feature = "dev"), feature = "tools"))]
+use sapphire_assets::manifest::Manifest;
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, Mesh};
 use sapphire_assets::mix::Mix;
@@ -113,8 +119,6 @@ use sapphire_assets::{
     LoadError, LoadPriority, MountError, NamedAsset, PackFile, PackSource, ReadDone, Unloaded, Upload,
     UploadError,
 };
-#[cfg(feature = "dev")]
-use sapphire_assets::{AssetChange, RemountReport};
 use sapphire_dialogue::Dialogue;
 #[cfg(feature = "dev")]
 use sapphire_livelink::protocol::PackOutcome;
@@ -1235,6 +1239,16 @@ fn newest_saved(files: &[(GraphKey, PathBuf)], owner: GraphKey, server: &AssetSe
     let mut graph = AnimGraph::from_document(&newest_text(named)?).ok()?;
     graph.resolve(sapphire_assets::graph::clip_id);
     graph.clips.iter().all(|clip| server.contains(clip.id)).then_some(graph)
+}
+
+/// What [`Content::take_cook`] did with a new cook.
+#[cfg(feature = "tools")]
+#[derive(Debug, Default)]
+pub struct CookTaken {
+    /// The packs read again, and what each found.
+    pub remounted: Vec<(String, RemountReport)>,
+    /// The packs that didn't take the cook, and why: each keeps what it had.
+    pub refused: Vec<(String, MountError)>,
 }
 
 impl Content {
@@ -3482,10 +3496,12 @@ impl Content {
         self.gpu.texture_bytes
     }
 
-    /// Reads pack `name` again after its file changed and reloads what changed (hot reload,
-    /// `dev` builds): new versions reach the renderer through [`Self::update`].
-    #[cfg(feature = "dev")]
+    /// Reads pack `name` again after its file changed and reloads what changed: new versions reach the renderer
+    /// through [`Self::update`], behind the handles the scene holds. Hot reload calls it in `dev` builds, and the
+    /// editor through [`Self::take_cook`] (`tools`); a shipped game has neither, so it has no way to it.
+    #[cfg(any(feature = "dev", feature = "tools"))]
     pub fn remount(&mut self, name: &str) -> Result<RemountReport, MountError> {
+        #[cfg(feature = "dev")]
         if self.stock_inputs_locked && name == PACK {
             return Err(MountError::BoundToStockFight(name.to_owned()));
         }
@@ -3504,9 +3520,42 @@ impl Content {
     }
 
     /// Whether pack `name` is mounted.
-    #[cfg(feature = "dev")]
+    #[cfg(any(feature = "dev", feature = "tools"))]
     pub fn is_mounted(&self, name: &str) -> bool {
         self.server.is_mounted(name)
+    }
+
+    /// Takes a new cook of this content whose manifest is `release` (M6 T5, the editor's, `tools` only): holds every
+    /// mount from here on to it, as a build without `dev` holds its packs to the manifest it stood on, and reads
+    /// again each pack it names that's mounted. A pack the new cook moved an asset into is read again after the
+    /// rest. What didn't take the cook keeps what it had and is named in what this returns.
+    #[cfg(feature = "tools")]
+    pub fn take_cook(&mut self, release: &Manifest) -> CookTaken {
+        self.server.mount_only_released(release);
+        let mut packs: Vec<String> = release
+            .packs
+            .iter()
+            .map(|released| pack::pack_of_part(&released.name).0.to_owned())
+            .filter(|name| self.server.is_mounted(name))
+            .collect();
+        packs.sort();
+        packs.dedup();
+        let mut taken = CookTaken::default();
+        let mut again = Vec::new();
+        for pack in packs {
+            match self.remount(&pack) {
+                Ok(report) => taken.remounted.push((pack, report)),
+                Err(MountError::Duplicate { .. }) => again.push(pack),
+                Err(error) => taken.refused.push((pack, error)),
+            }
+        }
+        for pack in again {
+            match self.remount(&pack) {
+                Ok(report) => taken.remounted.push((pack, report)),
+                Err(error) => taken.refused.push((pack, error)),
+            }
+        }
+        taken
     }
 
     /// Hot reload's changes to loaded assets since the last call.

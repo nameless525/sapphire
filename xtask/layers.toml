@@ -132,7 +132,9 @@ sapphire_cues = { kind = "runtime", layer = 5 }
 # `SceneShow` of the game's (M3 S2). `dev`: what an app's own `dev` forwards, for pushed packs; the edges it
 # needs are in [allow]. `samples` (M3 Z5d): the sandbox's sample scenes, which a game never names, built only
 # for the sandbox. It adds no dependency and no tooling, only leaves code out of a game's build.
-sapphire_stage = { kind = "runtime", layer = 5, features = ["dev", "samples"] }
+# `tools` (M6 T5): what only the editor calls, taking its own cook's packs; likewise no dependency and no
+# behaviour, only code a game leaves out.
+sapphire_stage = { kind = "runtime", layer = 5, features = ["dev", "samples", "tools"] }
 # L6 the game (M3 S2). A fight's app side, standing on the stage, and the interface that reads it, by an
 # edge in [allow]. `dev`: what an app's own `dev` forwards, for live tuning.
 game_combat = { kind = "runtime", layer = 6, features = ["dev"] }

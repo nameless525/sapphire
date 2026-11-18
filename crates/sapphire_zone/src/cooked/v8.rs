@@ -109,6 +109,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
             weather,
             fog,
             water: Vec::new(),
+            rooms: Vec::new(),
         },
     })
 }

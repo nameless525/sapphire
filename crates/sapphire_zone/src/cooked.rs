@@ -27,12 +27,14 @@ use crate::document::{
 };
 use crate::grid::{Bounds, CellCoord, Grid, MAX_COORDINATE};
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
+use crate::rooms::CookedRoom;
 use crate::water::{
     ArchivedCookedWaterVolume, ArchivedWaterShape, CookedWaterSurface, CookedWaterVolume, MAX_BODIES,
     WaterShape, WaterSurface, check_shore_margin,
 };
 
 mod v8;
+mod v9;
 
 /// Conventional file extension for cooked zones.
 pub const ZONE_EXTENSION: &str = "szone";
@@ -50,8 +52,9 @@ impl Versioned for Zone {
     /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4). 5:
     /// patrols, and who walks them (P3). 6: a sky material, wind, weather and fog in the presentation (M5 M6).
     /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16). 9: water, in both
-    /// halves (M6 W2), with version 8 still read ([`Zone::upgrade`]).
-    const VERSION: u32 = 9;
+    /// halves (M6 W2). 10: rooms, in the presentation's (M6 U5). Versions 8 and 9 are still read
+    /// ([`Zone::upgrade`]).
+    const VERSION: u32 = 10;
 }
 
 impl Versioned for ZoneSimulation {
@@ -230,6 +233,8 @@ pub struct ZonePresentation {
     pub fog: Option<ZoneFog>,
     /// Its water's surfaces, one for each of [`ZoneSimulation::water`], in its order.
     pub water: Vec<CookedWaterSurface>,
+    /// Where its sound takes a reverb (M6 U5), by ascending ID: the [`rooms`](crate::rooms) module.
+    pub rooms: Vec<CookedRoom>,
 }
 
 /// One cell of a zone's grid.
@@ -327,18 +332,20 @@ impl Zone {
     }
 
     /// Cooked zone bytes of an older version as this version's, checked by [`Self::read`]; `None` for bytes
-    /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water,
-    /// whose digest is the one it had (cooker rule 2, for one release). Any other version is
-    /// [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
+    /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water
+    /// and no rooms, version 9 as one with no rooms, each with the digest it had (cooker rule 2, for one
+    /// release). Any other version is [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
     pub fn upgrade(bytes: &[u8]) -> Result<Option<AlignedVec>, ZoneError> {
         let found = sapphire_serialize::cooked::schema_version::<Self>(bytes)?;
         if found == Self::VERSION {
             return Ok(None);
         }
-        if found != v8::VERSION {
-            return Err(sapphire_serialize::CookedError::Stale { found, current: Self::VERSION }.into());
-        }
-        let cooked = v8::read(bytes)?.to_cooked()?;
+        let zone = match found {
+            v8::VERSION => v8::read(bytes)?,
+            v9::VERSION => v9::read(bytes)?,
+            _ => return Err(sapphire_serialize::CookedError::Stale { found, current: Self::VERSION }.into()),
+        };
+        let cooked = zone.to_cooked()?;
         Self::read(&cooked)?;
         Ok(Some(cooked))
     }
@@ -811,6 +818,7 @@ impl ArchivedZone {
         if let Some(fog) = presentation.fog.as_ref() {
             fog.to_native().check().map_err(|problem| ZoneError::invalid("fog", problem))?;
         }
+        crate::rooms::validate(presentation)?;
         self.validate_water_surfaces()
     }
 
@@ -901,7 +909,10 @@ fn check_contents(
 
 /// Whether entries' names are good and each's ID is its name's hash, ascending: what looking one up by
 /// a [`Name`] leans on, and what makes a save's ID mean the same thing again.
-fn check_ids<'a>(list: &str, entries: impl Iterator<Item = (u64, &'a str)>) -> Result<(), ZoneError> {
+pub(crate) fn check_ids<'a>(
+    list: &str,
+    entries: impl Iterator<Item = (u64, &'a str)>,
+) -> Result<(), ZoneError> {
     let mut previous = None;
     for (id, name) in entries {
         let invalid = |problem: String| ZoneError::invalid(format!("{list} `{name}`"), problem);
@@ -1008,8 +1019,9 @@ mod tests {
     use sapphire_colliders::ColliderDocument;
 
     use super::*;
-    use crate::document::{ZoneDocument, ZoneGeometry};
+    use crate::document::{Volume, ZoneDocument, ZoneGeometry};
     use crate::grid::Place;
+    use crate::rooms::{MAX_ROOMS, ZoneRoom};
     use crate::water::{RiverPoint, WaterBody, WaterKind, WaterVolumes};
 
     const COLLIDERS: AssetId = AssetId::from_text("0aec06e8-ef8a-4f60-8dce-1e159cc277fa");
@@ -1746,5 +1758,112 @@ mod tests {
             0x15dc_b5da_8e03_1351,
             "digest_pins's"
         );
+    }
+
+    /// [`zone`] with rooms (M6 U5): the street outdoors and a gatehouse over it.
+    fn room_zone() -> Zone {
+        let mut document = document();
+        document.rooms = vec![
+            ZoneRoom {
+                name: "street".to_owned(),
+                position: [0.0, 6.0, 0.0],
+                volume: Volume::Box { half_extents: [60.0, 6.0, 60.0] },
+                reverb: "street".to_owned(),
+                priority: 0,
+                outdoor: true,
+                fade: 0.5,
+            },
+            ZoneRoom {
+                name: "gatehouse".to_owned(),
+                position: [3.2, 2.0, -20.0],
+                volume: Volume::Sphere { radius: 4.0 },
+                reverb: "shelter".to_owned(),
+                priority: 2,
+                outdoor: false,
+                fade: 0.4,
+            },
+        ];
+        cook(&document)
+    }
+
+    /// Rooms are presentation: they read back by ascending ID as written, and the digest is [`digest_pins`']
+    /// for the same zone without them.
+    #[test]
+    fn rooms_read_back_and_leave_the_digest_alone() {
+        let colliders = colliders();
+        let zone = room_zone();
+        let bytes = zone.to_cooked().expect("write");
+        let read = Zone::read(&bytes).expect("read");
+        let rooms: Vec<_> = read.presentation.rooms.iter().map(|room| room.name.as_str()).collect();
+        let mut expected = ["street", "gatehouse"];
+        expected.sort_unstable_by_key(|name| Name::new(name).as_u64());
+        assert_eq!(rooms, expected);
+        let gatehouse =
+            read.presentation.rooms.iter().find(|room| room.name == "gatehouse").expect("it's there");
+        assert_eq!(gatehouse.position(), [3.2, 2.0, -20.0]);
+        assert_eq!(gatehouse.volume.to_native(), CookedVolume::Sphere { radius: 4.0 });
+        assert_eq!(
+            (gatehouse.reverb.as_str(), gatehouse.priority, gatehouse.outdoor, gatehouse.fade.to_native()),
+            ("shelter", 2, false, 0.4)
+        );
+        let digest = read.simulation_digest(|_| Some(&colliders[..])).expect("digests");
+        assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's: rooms aren't the simulation's");
+        assert_eq!(zone.simulation, self::zone().simulation);
+    }
+
+    #[test]
+    fn cooked_rooms_the_document_would_refuse_are_refused() {
+        type Tamper = fn(&mut Zone);
+        let cases: [(&str, &str, Tamper); 5] = [
+            ("an order", "out of order", |z| z.presentation.rooms.swap(0, 1)),
+            ("an ID", "name's hash", |z| z.presentation.rooms[0].id ^= 1),
+            ("a fade", "from 0 to", |z| z.presentation.rooms[0].fade = 12.0),
+            ("a reverb", "empty", |z| z.presentation.rooms[0].reverb.clear()),
+            ("a volume", "half extents", |z| {
+                z.presentation
+                    .rooms
+                    .iter_mut()
+                    .for_each(|room| room.volume = CookedVolume::Box { half_extents: [0.0; 3] });
+            }),
+        ];
+        for (what, expected, tamper) in cases {
+            let mut tampered = room_zone();
+            tamper(&mut tampered);
+            let bytes = tampered.to_cooked().expect("write");
+            let message = Zone::read(&bytes).expect_err(what).to_string();
+            assert!(message.contains(expected), "{what}: `{message}` must say `{expected}`");
+        }
+        let mut crowded = room_zone();
+        let room = crowded.presentation.rooms[0].clone();
+        crowded.presentation.rooms = (0..=MAX_ROOMS)
+            .map(|index| {
+                let name = format!("room_{index}");
+                CookedRoom { id: Name::new(&name).as_u64(), name, ..room.clone() }
+            })
+            .collect();
+        crowded.presentation.rooms.sort_unstable_by_key(|room| room.id);
+        let message = Zone::read(&crowded.to_cooked().expect("write")).expect_err("257").to_string();
+        assert!(message.contains("more than the 256"), "{message}");
+    }
+
+    /// Version 9 bytes, as M6 W2 cooked them, read for one release (cooker rule 2): `read` refuses them as stale,
+    /// and `upgrade` makes them this version's, a zone with no rooms whose digest is the one it had.
+    #[test]
+    fn a_version_9_zone_upgrades_to_one_without_rooms() {
+        let current = zone();
+        let old = v9::write(&current);
+        let message = Zone::read(&old).expect_err("stale").to_string();
+        assert!(message.contains("schema version 9") && message.contains("recook"), "{message}");
+        let upgraded = Zone::upgrade(&old).expect("reads").expect("version 9 bytes are rewritten");
+        assert_eq!(upgraded.as_slice(), current.to_cooked().expect("write").as_slice(), "today's very bytes");
+
+        let colliders = colliders();
+        let from_rooms = Zone::upgrade(&v9::write(&room_zone())).expect("reads").expect("rewritten");
+        let read = Zone::read(&from_rooms).expect("read");
+        assert!(read.presentation.rooms.is_empty());
+        let digest = read.simulation_digest(|_| Some(&colliders[..])).expect("digests");
+        assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's");
+        let water = Zone::upgrade(&v9::write(&water_zone())).expect("reads").expect("rewritten");
+        assert_eq!(Zone::read(&water).expect("read").presentation.water.len(), 3, "water comes through");
     }
 }

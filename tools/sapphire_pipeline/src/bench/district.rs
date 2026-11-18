@@ -474,6 +474,7 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
         exits: Vec::new(),
         ambient: crowd(&district, scale, &plan),
         water: Vec::new(),
+        rooms: Vec::new(),
     };
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
     let settings = ZoneSettings { lods: district.cell_levels.clone(), ..ZoneSettings::default() };

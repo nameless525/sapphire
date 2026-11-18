@@ -25,6 +25,8 @@
 //!   alone, cooked to an asset of the zone's own (`.sambient`) beside its cells, never into [`Zone`].
 //! - **Water** ([`water`], M6 W2): lakes, rivers and the sea, their volumes in [`ZoneSimulation`] and their
 //!   surfaces in [`ZonePresentation`], and [`WaterVolumes::at`], the query a fixed step may ask.
+//! - **Rooms** ([`rooms`], M6 U5): where a zone's sound takes a reverb, each a volume with a priority, a reverb
+//!   of the mix's, an outdoor flag and a fade, in [`ZonePresentation`] alone.
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //! - **Prefabs** ([`prefab`], M6 T4): `.assembly.ron`, [`Assembly`], as plain data: what a zone places as a
@@ -64,6 +66,7 @@ pub mod grid;
 pub mod look;
 pub mod prefab;
 pub mod reflections;
+pub mod rooms;
 pub mod water;
 
 pub use ambient::{
@@ -91,6 +94,7 @@ pub use grid::{Bounds, CellCoord, Grid, Place};
 pub use look::{ArchivedZoneFog, ArchivedZoneWeather, ArchivedZoneWind, ZoneFog, ZoneWeather, ZoneWind};
 pub use prefab::Assembly;
 pub use reflections::{ParallaxBox, ReflectionProbe};
+pub use rooms::{ArchivedCookedRoom, CookedRoom, ZoneRoom};
 pub use water::{
     ArchivedCookedWaterSurface, ArchivedCookedWaterVolume, CookedWaterSurface, CookedWaterVolume, Floor,
     RiverPoint, WaterBody, WaterKind, WaterSample, WaterShape, WaterSurface, WaterVolumes,

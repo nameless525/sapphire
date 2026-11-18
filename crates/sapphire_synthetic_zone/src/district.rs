@@ -381,6 +381,7 @@ fn document(cells: u32, kinds: &[&str]) -> ZoneDocument {
         exits: Vec::new(),
         ambient: None,
         water: Vec::new(),
+        rooms: Vec::new(),
     }
 }
 

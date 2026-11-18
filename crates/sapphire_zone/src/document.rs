@@ -50,6 +50,8 @@
 //!         exits: [(name: "to_market", to: "e8c21831-7d98-4a79-b592-912b806cf3e2", arrive: "player_start", prefetch: true)],
 //!         // Its lakes, rivers and sea (the `water` module), which the simulation asks where the water is.
 //!         water: [(name: "well_pool", shape: Lake(outline: [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)], height: -0.4))],
+//!         // Where its sound takes a reverb (the `rooms` module): the listener's room chooses.
+//!         rooms: [(name: "gatehouse", position: (3.2, 2.0, -20.0), volume: Box(half_extents: (3.0, 2.0, 2.0)), reverb: "shelter", fade: 0.4)],
 //!     ),
 //! )
 //! ```
@@ -91,6 +93,7 @@ use crate::cooked::{
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 use crate::reflections::{self, ReflectionProbe};
+use crate::rooms::{self, ZoneRoom};
 use crate::water::{CookedWaterSurface, CookedWaterVolume, MAX_BODIES, WaterBody, WaterKind};
 
 /// The most entries any list of a zone may hold.
@@ -171,6 +174,10 @@ pub struct ZoneDocument {
     /// [`water::MAX_BODIES`](crate::water::MAX_BODIES), and one sea.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub water: Vec<WaterBody>,
+    /// Where its sound takes a reverb (M6 U5), as presentation alone: the [`rooms`] module. At
+    /// most [`rooms::MAX_ROOMS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rooms: Vec<ZoneRoom>,
 }
 
 impl Versioned for ZoneDocument {
@@ -408,7 +415,7 @@ fn unit_scale() -> [f32; 3] {
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's `skip_serializing_if` passes a reference")]
-fn is_false(value: &bool) -> bool {
+pub(crate) fn is_false(value: &bool) -> bool {
     !*value
 }
 
@@ -596,6 +603,7 @@ impl ZoneDocument {
         if let Some(ambient) = &self.ambient {
             ambient.check()?;
         }
+        rooms::check(&self.rooms)?;
         self.check_water()
     }
 
@@ -864,6 +872,7 @@ impl ZoneDocument {
             weather: self.weather,
             fog: self.fog,
             water: self.cooked_water_surfaces(&simulation),
+            rooms: rooms::cook(&self.rooms),
         };
         // In `Place`'s order: the backdrop's entries, then each cell's.
         for place in places {
@@ -968,7 +977,7 @@ impl ZoneDocument {
 }
 
 impl Volume {
-    fn cooked(self) -> CookedVolume {
+    pub(crate) fn cooked(self) -> CookedVolume {
         match self {
             Self::Box { half_extents } => CookedVolume::Box { half_extents },
             Self::Sphere { radius } => CookedVolume::Sphere { radius },
@@ -1144,7 +1153,7 @@ fn check_distinct<'a, T>(
 }
 
 /// Whether a list's names are each good and unique, naming the first that isn't.
-fn check_names<'a>(list: &str, names: impl Iterator<Item = &'a str>) -> Result<(), ZoneError> {
+pub(crate) fn check_names<'a>(list: &str, names: impl Iterator<Item = &'a str>) -> Result<(), ZoneError> {
     let mut seen = BTreeSet::new();
     for (index, name) in names.enumerate() {
         check_name(name).map_err(|problem| ZoneError::invalid(format!("{list}[{index}].name"), problem))?;

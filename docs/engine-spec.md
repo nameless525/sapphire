@@ -4832,6 +4832,13 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 
 **As built (M6 T4):** eight more kinds, fifteen in all: character and environment materials (both `.material.ron`, told apart by the envelope's type), ramps, prefabs (`.assembly.ron`), encounters, dialogues, days (`_day.ron`) and light rig libraries (`_rigs.ron`), with their schemas, fuzz arms and sidecar rows. The prefab's and the ramp's types moved out of the pipeline (§5.27) into `sapphire_zone::prefab` and `sapphire_assets::ramp`, and the light rigs' presets and library out of the world (§5.12) into `sapphire_tod::light_rig`, so the editor's documents link no renderer; `TodTimeline` and `LightRigLibrary` reflect; a serde-untagged enum (`sapphire_reflect::Untagged`) is read through. The committed ramps and the one dialogue moved to their newest versions by their text, so every field is settable on each. Every shipped document of the eight fuzzes to its bytes ([m6-plan.md](m6-plan.md), T4).
 
+**As built (M6 T2):** selection across documents, multi-edit and set steps.
+
+- **Set steps:** each step of a document's history has a `StepId`; a `SetStep` holds a label and the step of each document an edit touched, over the documents' own stacks (the shape of Godot 4's editor undo), so each document's save, dirty state and journal entry stay its own. `DocumentSet::together` and the set gesture (`begin_gesture`, `edit`, `end_gesture`, which `Begin` and `End` run) make one when two documents or more changed. Its undo and redo move every part or none: a document's own later step in the way refuses it (`HistoryError::Later`); a part no longer where undo or redo would find it refuses a bound step, a placement's with its colliders (`Gone`), and lets any other go in this document alone, the editor naming what it left (`Took::Apart`). A save of a document saves the documents a set step joins it to.
+- **Placements and colliders:** `.colliders.ron` is a kind, and `edit_with_colliders` moves the colliders a moved placement or instance names by as far, to the bit where they stood at its number, in the same step (the cook refuses them apart, §5.27). A turn, a scale or a placement added or taken out moves none.
+- **Selection and multi-edit:** objects by document and path (`ObjectId`); a Cmd or Shift click adds a zone pane's row; the Properties pane edits the fields every selected object has, one edit of all as one step (`SelectObjects`, `SetShared`).
+- **Left:** the journal keeps each document's steps, not the set step over them.
+
 **How**
 
 - **Document model first** (after The Machinery's "The Truth"):

@@ -90,9 +90,9 @@ impl Editor {
         self.take_typed();
         self.typing_number = None;
         self.go_to(id);
-        if let Some(file) = self.documents.any_mut(id) {
-            file.begin_gesture(label);
-        }
+        // The set's gesture, which the document joins now: another document an edit reaches joins it too.
+        self.documents.begin_gesture(label);
+        self.documents.edit(id);
     }
 
     pub(super) fn value_row(&mut self, ui: &mut Ui, entry: EntryRef, value: &EntryValue) {
@@ -131,6 +131,7 @@ impl Editor {
                     }
                 }
                 TypedAt::Property { document, .. } => self.make_current(*document),
+                TypedAt::Shared { .. } => {}
             }
             self.typed = (typed.text != literal).then_some(typed);
         }

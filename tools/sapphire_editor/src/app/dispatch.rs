@@ -240,6 +240,16 @@ impl Editor {
             Command::Bones(on) => self.overlays.bones = *on,
             Command::Hurtboxes(on) => self.overlays.hurtboxes = *on,
             Command::SelectPlacement(index) => self.select_placement(*index),
+            Command::SelectObjects(picked) => self.select_objects(picked),
+            Command::SetShared { path, value } => match path.parse::<PropertyPath>() {
+                Ok(path) => {
+                    if self.take_typed() {
+                        let result = self.set_shared(&path, value);
+                        self.after_property_edit(self.current, result.map_err(|error| error.0));
+                    }
+                }
+                Err(error) => self.refuse(format!("`{path}` isn't a path: {error}")),
+            },
             Command::Scrub(frame) => self.scrub_to(*frame),
             Command::PlayTimeline => self.play_timeline(),
             Command::PauseTimeline => self.pause_timeline(),
@@ -372,35 +382,19 @@ impl Editor {
         self.shell.open(crate::shell::Pane::Inspector);
     }
 
-    /// Ends every gesture under way: a drag let go, or a number's typing done.
+    /// Ends every gesture under way: a drag let go, or a number's typing done. A gesture that edited several
+    /// documents is one step of each, which undo takes back whole.
     fn end_gestures(&mut self) {
         self.drag_label = None;
         self.typing_number = None;
-        let ids: Vec<_> = self.documents.ids().collect();
-        for id in ids {
-            if let Some(file) = self.documents.any_mut(id)
-                && file.in_gesture()
-            {
-                file.end_gesture();
-            }
-        }
+        self.documents.end_gesture();
     }
 
     /// Takes back every gesture under way, to where each began.
     fn cancel_gestures(&mut self) {
         self.drag_label = None;
         self.typing_number = None;
-        let ids: Vec<_> = self.documents.ids().collect();
-        let mut taken = false;
-        for id in ids {
-            if let Some(file) = self.documents.any_mut(id)
-                && file.in_gesture()
-            {
-                file.cancel_gesture();
-                taken = true;
-            }
-        }
-        if taken {
+        if self.documents.cancel_gesture() {
             self.after_history();
         }
     }

@@ -1344,6 +1344,84 @@ mod panes {
         assert_eq!(editor.selected_placement(), None);
     }
 
+    const YARD_COLLIDERS: &str = r#"(
+    type: "sapphire::colliders::ColliderDocument",
+    version: 1,
+    data: (
+        colliders: [
+            (name: "ground", shape: Box(half_extents: (24.0, 0.5, 24.0)), position: (0.0, -0.5, 0.0)),
+            // The posts.
+            (name: "post_a", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (-6.0, 2.0, -6.0)),
+            (name: "post_b", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (6.35, 2.0, -6.0)),
+        ],
+    ),
+)
+"#;
+    const YARD_COLLIDERS_META: &str = r#"(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "0aec06e8-ef8a-4f60-8dce-1e159cc277fa",
+        importer: Colliders(()),
+    ),
+)
+"#;
+    const YARD: &str = r#"(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        grid: (cell_size: 16.0),
+        placements: [
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (-6.0, 0.0, -6.0), colliders: ["post_a"]),
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (6.35, 0.0, -6.0), colliders: ["post_b"]),
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (0.0, 0.0, 3.0)),
+        ],
+        colliders: Some("0aec06e8-ef8a-4f60-8dce-1e159cc277fa"),
+    ),
+)
+"#;
+
+    #[test]
+    fn three_placements_selected_take_one_edit_and_one_undo() {
+        let dir = TestDir::new("three_placements");
+        let path = dir.write("y/yard.zone.ron", YARD);
+        let colliders = dir.write("y/yard.colliders.ron", YARD_COLLIDERS);
+        dir.write("y/yard.colliders.ron.meta", YARD_COLLIDERS_META);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            r#"SelectObjects([
+                (document: "y/yard.zone.ron", path: "placements[0]"),
+                (document: "y/yard.zone.ron", path: "placements[1]"),
+                (document: "y/yard.zone.ron", path: "placements[2]"),
+            ]),
+            SetShared(path: "at[1]", value: "1.0"),
+            Save"#,
+        );
+        assert_eq!(editor.selected_placements(), [0, 1, 2]);
+        let raised = file(&path);
+        for at in ["(-6.0, 1.0, -6.0)", "(6.35, 1.0, -6.0)", "(0.0, 1.0, 3.0)"] {
+            assert!(raised.contains(at), "{at} in {raised}");
+        }
+        // A save of the zone alone writes the colliders it moved too, or the cook would refuse what it wrote.
+        let moved = file(&colliders);
+        assert!(moved.contains("position: (-6.0, 3.0, -6.0)"), "{moved}");
+        assert!(moved.contains("position: (6.35, 3.0, -6.0)"), "{moved}");
+        assert!(moved.contains("// The posts."), "its comments stay");
+        run(&mut editor, &dir, "Undo, Save");
+        assert_same(&file(&path), YARD, "one undo for the three");
+        assert_same(&file(&colliders), YARD_COLLIDERS, "and their colliders");
+        let ninth = format!(
+            r#"SelectObjects([(document: {:?}, path: "placements[9]")])"#,
+            path.display().to_string()
+        );
+        assert!(refused(&mut editor, &ninth).contains("nothing at"), "{}", refused(&mut editor, &ninth));
+        let high = refused(&mut editor, r#"SetShared(path: "at[1]", value: "\"high\"")"#);
+        assert!(high.contains("Expected float"), "{high}");
+        assert_same(&file(&path), YARD, "a refused edit moves nothing");
+    }
+
     #[test]
     fn the_sequencer_plays_and_scrubs_its_playhead() {
         let dir = TestDir::new("sequencer");

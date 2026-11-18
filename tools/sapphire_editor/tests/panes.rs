@@ -872,6 +872,94 @@ fn the_zone_pane_lists_placements_and_a_row_selects_one() {
     assert!(harness.query(By::new().label_contains("(backdrop)")).is_some(), "the ground says what it is");
 }
 
+const YARD_COLLIDERS: &str = r#"(
+    type: "sapphire::colliders::ColliderDocument",
+    version: 1,
+    data: (
+        colliders: [
+            (name: "ground", shape: Box(half_extents: (24.0, 0.5, 24.0)), position: (0.0, -0.5, 0.0)),
+            // The posts.
+            (name: "post_a", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (-6.0, 2.0, -6.0)),
+            (name: "post_b", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (6.35, 2.0, -6.0)),
+        ],
+    ),
+)
+"#;
+const YARD_COLLIDERS_META: &str = r#"(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "0aec06e8-ef8a-4f60-8dce-1e159cc277fa",
+        importer: Colliders(()),
+    ),
+)
+"#;
+const YARD: &str = r#"(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        grid: (cell_size: 16.0),
+        placements: [
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (-6.0, 0.0, -6.0), colliders: ["post_a"]),
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (6.35, 0.0, -6.0), colliders: ["post_b"]),
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (0.0, 0.0, 3.0)),
+        ],
+        colliders: Some("0aec06e8-ef8a-4f60-8dce-1e159cc277fa"),
+    ),
+)
+"#;
+
+/// The text of the document open at `path`.
+fn open_text(harness: &mut Harness<'static, Editor>, path: &Path) -> Option<String> {
+    let documents = harness.state_mut().documents_mut();
+    let id = documents.ids().find(|id| documents.path(*id) == Some(path))?;
+    documents.any(id).map(|document| document.text().to_owned())
+}
+
+/// Three placements, one by a click and two by Cmd-clicks, take one edit of a field they share, and their colliders
+/// go with the two that name some: one undo takes back both documents.
+#[test]
+fn three_placements_selected_take_one_edit_and_one_undo() {
+    let dir = TestDir::new("three_placements");
+    let path = dir.write("y/yard.zone.ron", YARD);
+    let colliders = dir.write("y/yard.colliders.ron", YARD_COLLIDERS);
+    dir.write("y/yard.colliders.ron.meta", YARD_COLLIDERS_META);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    harness.get(By::new().label_contains("(-6.00, 0.00, -6.00)")).click();
+    harness.run_steps(2);
+    for row in ["(6.35, 0.00, -6.00)", "(0.00, 0.00, 3.00)"] {
+        harness.get(By::new().label_contains(row)).click_modifiers(Modifiers::COMMAND);
+        harness.run_steps(2);
+    }
+    assert_eq!(harness.state().selected_placements(), [0, 1, 2]);
+    assert_eq!(harness.state().selected_placement(), Some(2), "the gizmo's on the last");
+
+    harness.get_by_label("Properties").click();
+    harness.run_steps(3);
+    let _ = harness.get(By::new().label_contains("3 selected, in 1 document"));
+    beside(&harness, "at[1]", Role::TextInput).click();
+    harness.run_steps(2);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    harness.run_steps(1);
+    beside(&harness, "at[1]", Role::TextInput).type_text("1.0");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    let raised = text_of(&harness);
+    for at in ["(-6.0, 1.0, -6.0)", "(6.35, 1.0, -6.0)", "(0.0, 1.0, 3.0)"] {
+        assert!(raised.contains(at), "{at} in {raised}");
+    }
+    let moved = open_text(&mut harness, &colliders).expect("the colliders opened with the move");
+    assert!(moved.contains("position: (-6.0, 3.0, -6.0)"), "{moved}");
+    assert!(moved.contains("position: (6.35, 3.0, -6.0)"), "{moved}");
+    assert!(moved.contains("// The posts."), "its comments stay");
+
+    undo(&mut harness);
+    assert_eq!(text_of(&harness), YARD, "one undo for the three");
+    assert_eq!(open_text(&mut harness, &colliders).as_deref(), Some(YARD_COLLIDERS), "and their colliders");
+}
+
 /// A timeline opens the sequencer, whose playhead Play moves a frame of a game's at a time on the pass's clock,
 /// stopping at the end, and a press on the tracks puts where it was pressed.
 #[test]

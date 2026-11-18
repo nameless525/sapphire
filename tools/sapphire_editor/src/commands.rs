@@ -37,6 +37,15 @@ pub enum Facing {
     Top,
 }
 
+/// An object a selection holds: a document, by its path, and a place in it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Picked {
+    pub document: PathBuf,
+    /// A property path, as `placements[2]`, or empty for the whole document.
+    pub path: String,
+}
+
 /// One action. The current document is the one the top bar names; the timeline's commands are on the document of
 /// moves it shows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -152,6 +161,11 @@ pub enum Command {
 
     /// Selects a placement of the current zone, or nothing.
     SelectPlacement(Option<usize>),
+    /// Selects these objects, in any documents open, in place of what was selected: none selects nothing.
+    SelectObjects(Vec<Picked>),
+    /// Sets the property at `path` under each selected object, as RON spelled as typed: one step of undo
+    /// however many documents that touches.
+    SetShared { path: String, value: String },
     /// Puts the current timeline's playhead at a frame of 60 a second.
     Scrub(u32),
     /// Plays the current timeline.
@@ -193,11 +207,12 @@ impl Command {
         ron::to_string(self).expect("a command is plain data")
     }
 
-    /// The document it names by its path, if it names one: what a script's folder is the start of.
-    fn path_mut(&mut self) -> Option<&mut PathBuf> {
+    /// The documents it names by their paths: what a script's folder is the start of.
+    fn paths_mut(&mut self) -> Vec<&mut PathBuf> {
         match self {
-            Self::Open(path) | Self::Recover(path) | Self::DropRecovered(path) => Some(path),
-            _ => None,
+            Self::Open(path) | Self::Recover(path) | Self::DropRecovered(path) => vec![path],
+            Self::SelectObjects(picked) => picked.iter_mut().map(|picked| &mut picked.document).collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -258,6 +273,8 @@ impl Command {
             Self::Bones(_) => "Bones",
             Self::Hurtboxes(_) => "Hurtboxes",
             Self::SelectPlacement(_) => "SelectPlacement",
+            Self::SelectObjects(_) => "SelectObjects",
+            Self::SetShared { .. } => "SetShared",
             Self::Scrub(_) => "Scrub",
             Self::PlayTimeline => "PlayTimeline",
             Self::PauseTimeline => "PauseTimeline",
@@ -359,6 +376,10 @@ const COMMANDS: &[Registered] = registry! {
     "Bones", "Bones(true)", None, "Draws the preview's bones";
     "Hurtboxes", "Hurtboxes(true)", None, "Draws the preview's hurtboxes";
     "SelectPlacement", "SelectPlacement(Some(0))", None, "Selects a placement of the zone";
+    "SelectObjects", r#"SelectObjects([(document: "content/", path: "")])"#, None,
+        "Selects objects by document and path, in any documents open";
+    "SetShared", r#"SetShared(path: "", value: "")"#, None,
+        "Sets a property under every object selected, as one step of undo";
     "Scrub", "Scrub(0)", None, "Puts the timeline's playhead at a frame";
     "PlayTimeline", "PlayTimeline", None, "Plays the timeline";
     "PauseTimeline", "PauseTimeline", None, "Pauses the timeline";
@@ -434,10 +455,10 @@ impl Script {
         let mut script = Self::parse(&text).map_err(|error| format!("{}: {error}", path.display()))?;
         let folder = path.parent().unwrap_or(Path::new(""));
         for command in &mut script.commands {
-            if let Some(named) = command.path_mut()
-                && named.is_relative()
-            {
-                *named = folder.join(&*named);
+            for named in command.paths_mut() {
+                if named.is_relative() {
+                    *named = folder.join(&*named);
+                }
             }
         }
         Ok(script)
@@ -469,7 +490,7 @@ impl Script {
             .iter()
             .map(|command| {
                 let mut command = command.clone();
-                if let Some(named) = command.path_mut() {
+                for named in command.paths_mut() {
                     *named = relative(&absolute(named), &folder);
                 }
                 command

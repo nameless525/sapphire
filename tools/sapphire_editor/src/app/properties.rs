@@ -61,6 +61,10 @@ impl Editor {
             ui.label("Open a document.");
             return;
         };
+        if self.selection.len() > 1 {
+            self.selection_section(ui);
+            ui.separator();
+        }
         let Some(document) = self.documents.any(id) else { return };
         if let Some(why) = document.failure_message() {
             ui.colored_label(Color32::from_rgb(255, 120, 110), format!("This can't be edited: {why}"));
@@ -180,16 +184,15 @@ impl Editor {
         if !self.take_typed() {
             return;
         }
-        let Some(document) = self.documents.any_mut(id) else { return };
-        let result = document.set_spelled(label, path, literal);
-        self.after_property_edit(id, result.map(|_| ()).map_err(|error| error.to_string()));
+        let result = self.spell(id, label, path, literal);
+        self.after_property_edit(Some(id), result.map_err(|error| error.0));
     }
 
     pub(super) fn do_asked(&mut self, id: AssetId, asked: Asked) {
         if !self.take_typed() {
             return;
         }
-        let Some(document) = self.documents.any_mut(id) else { return };
+        let Some(document) = self.documents.edit(id) else { return };
         let result = match &asked {
             Asked::Toggle(path, on) => {
                 let (label, variant) = if *on { ("turn on", "Some") } else { ("turn off", "None") };
@@ -199,18 +202,23 @@ impl Editor {
             Asked::Add(path) => document.insert_blank("add an entry", path),
             Asked::Remove(path) => document.remove_entry("remove an entry", path),
         };
-        self.after_property_edit(id, result.map(|_| ()).map_err(|error| error.to_string()));
+        self.after_property_edit(Some(id), result.map(|_| ()).map_err(|error| error.to_string()));
     }
 
-    pub(super) fn after_property_edit(&mut self, id: AssetId, result: Result<(), String>) {
+    /// After an edit of a document's properties, `id`'s or the selection's: the timeline shows its document again
+    /// if that's among them, and what no longer reads leaves the selection.
+    pub(super) fn after_property_edit(&mut self, id: Option<AssetId>, result: Result<(), String>) {
         match result {
             Ok(()) => {
                 self.notice = None;
                 self.link.clear_push();
-                if self.moves == Some(id) {
+                let touched = |editor: &Self, moves: AssetId| {
+                    id == Some(moves) || editor.selection.iter().any(|object| object.document == moves)
+                };
+                if self.moves.is_some_and(|moves| touched(self, moves)) {
                     self.refresh();
-                    self.check_selection();
                 }
+                self.check_selection();
             }
             Err(text) => self.say(Notice { text, trouble: true }),
         }

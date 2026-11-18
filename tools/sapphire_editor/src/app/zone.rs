@@ -1,19 +1,22 @@
-//! The zone pane (M3 E5): the current zone document's placements, one of them selected, and the gizmo that moves
-//! it in the viewport.
+//! The zone pane (M3 E5): the current zone document's placements, those selected, and the gizmo that moves the
+//! last one selected in the viewport. A Cmd or Shift click adds a row to the selection or takes it out (M6 T2),
+//! and the Properties pane edits what the placements selected share.
 //!
 //! The viewport draws a zone as an editor needs it, each placement on its own ([`crate::viewport`]), and the
 //! gizmo on the one selected. A drag of an arrow is one gesture on the document: each frame of it sets the one
 //! number of the placement's `at` that the arrow moves, snapped to [`SNAP`] so the file reads as a person would
 //! write it, and undo takes the whole drag back to the bytes it started from. What the zone's checks refuse
-//! stays as it was. Everything else about a placement is the Properties pane's.
+//! stays as it was. A placement that names colliders takes them with it, so the drag is one step of the zone and
+//! its colliders' document, which undo takes back whole. Everything else about a placement is the Properties
+//! pane's.
 
 use egui::{RichText, Ui};
 use sapphire_assets::AssetId;
-use sapphire_document::{Document, DocumentSet, PropertyPath, write};
+use sapphire_document::{Document, DocumentSet, ObjectId, PropertyPath, write};
 use sapphire_math::Vec3;
 use sapphire_zone::ZoneDocument;
 
-use super::Editor;
+use super::{Editor, selection};
 use crate::commands::Command;
 use crate::gizmo::{Axis, Gizmo, ViewCamera, along};
 use crate::viewport::ZoneShown;
@@ -24,11 +27,9 @@ pub const SNAP: f32 = 0.05;
 /// What a drag of the gizmo is called in the history.
 const MOVE_LABEL: &str = "move a placement";
 
-/// The pane's state: what's selected and what the pointer's doing to the gizmo.
+/// The pane's state: what the pointer's doing to the gizmo. What's selected is the editor's selection.
 #[derive(Debug, Default)]
 pub(super) struct ZonePanel {
-    /// The zone it's for, and the placement selected in it.
-    selected: Option<(AssetId, usize)>,
     drag: Option<GizmoDrag>,
     /// The arrow under the pointer.
     hot: Option<Axis>,
@@ -52,18 +53,18 @@ struct GizmoDrag {
 const CLICK_REACH: f32 = 16.0;
 
 impl ZonePanel {
-    /// The placement selected in `zone`.
-    fn selected_in(&self, zone: AssetId) -> Option<usize> {
-        self.selected.filter(|(id, _)| *id == zone).map(|(_, index)| index)
-    }
-
     /// The pointer's share of the viewport, before the view takes what's left: a press on an arrow starts a drag
     /// of it, which moves the placement until the press ends. What it does is commands, in `asked`, for the editor
     /// to run once the viewport has drawn. Says whether it took the pointer.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the viewport's pointer and camera, and what the editor holds"
+    )]
     pub(super) fn gizmo(
         &mut self,
         documents: &DocumentSet,
         zone: Option<AssetId>,
+        selected: Option<usize>,
         response: &egui::Response,
         camera: Option<&ViewCamera>,
         rect: egui::Rect,
@@ -76,7 +77,7 @@ impl ZonePanel {
         };
         let Some(document) = documents.get::<ZoneDocument>(zone) else { return false };
         let pointer = response.ctx.input(|input| input.pointer.clone());
-        let Some(gizmo) = self.gizmo_on(document, zone, camera) else {
+        let Some(gizmo) = self.gizmo_on(document, selected, camera) else {
             self.drag = None;
             self.click_to_select(document, response, camera, rect, asked);
             return false;
@@ -84,7 +85,7 @@ impl ZonePanel {
         if pointer.primary_pressed()
             && let Some(at) = pointer.press_origin().filter(|at| rect.contains(*at))
             && let Some(axis) = gizmo.pick(camera, rect, at)
-            && let Some(placement) = self.selected_in(zone)
+            && let Some(placement) = selected
             && let Some(pressed) = along(gizmo.origin, axis, camera.ray(at, rect))
         {
             asked.push(Command::Begin(MOVE_LABEL.to_owned()));
@@ -156,14 +157,14 @@ impl ZonePanel {
         asked.push(Command::SelectPlacement(nearest.map(|(_, index)| index)));
     }
 
-    /// The gizmo on what's selected in `document`, as `camera` sees it.
+    /// The gizmo on placement `selected` of `document`, as `camera` sees it.
     fn gizmo_on(
         &self,
         document: &Document<ZoneDocument>,
-        zone: AssetId,
+        selected: Option<usize>,
         camera: &ViewCamera,
     ) -> Option<Gizmo> {
-        let placement = document.value()?.placements.get(self.selected_in(zone)?)?;
+        let placement = document.value()?.placements.get(selected?)?;
         let hot = self.drag.map(|drag| drag.axis).or(self.hot);
         Some(Gizmo { hot, ..Gizmo::at(Vec3::from(placement.at), camera) })
     }
@@ -174,17 +175,18 @@ fn placement_at(placement: usize, axis: Axis) -> PropertyPath {
     format!("placements[{placement}].at[{}]", axis.index()).parse().expect("a path that parses")
 }
 
-/// What the viewport shows of `current`, if it's a zone that's read, with the gizmo where `panel` has it.
+/// What the viewport shows of `current`, if it's a zone that's read, with the gizmo on placement `selected`.
 pub(super) fn zone_shown<'a>(
     documents: &'a DocumentSet,
     panel: &ZonePanel,
     current: Option<AssetId>,
+    selected: Option<usize>,
     camera: Option<&ViewCamera>,
 ) -> Option<ZoneShown<'a>> {
     let id = current?;
     let file = documents.get::<ZoneDocument>(id)?;
     let stem = documents.path(id)?.file_name()?.to_str()?.strip_suffix(".zone.ron")?;
-    let gizmo = camera.and_then(|camera| panel.gizmo_on(file, id, camera));
+    let gizmo = camera.and_then(|camera| panel.gizmo_on(file, selected, camera));
     Some(ZoneShown { id, stem, document: file.last_good()?, gizmo })
 }
 
@@ -197,24 +199,37 @@ impl Editor {
 
     /// The viewport's pointer, for the gizmo first.
     pub(super) fn viewport_pane(&mut self, ui: &mut Ui) {
-        let zone = self.current_zone();
+        let (zone, selected) = (self.current_zone(), self.selected_placement());
         let (documents, panel, asked) = (&self.documents, &mut self.zone, &mut self.asked);
-        self.viewport
-            .ui(ui, |response, camera, rect| panel.gizmo(documents, zone, response, camera, rect, asked));
+        self.viewport.ui(ui, |response, camera, rect| {
+            panel.gizmo(documents, zone, selected, response, camera, rect, asked)
+        });
         if self.viewport.take_asked_to_play() {
             self.asked.push(Command::PlayInViewport(None));
         }
     }
 
-    /// Selects placement `index` of the current zone, or nothing.
+    /// Selects placement `index` of the current zone alone, or nothing.
     pub fn select_placement(&mut self, index: Option<usize>) {
-        self.zone.selected = self.current_zone().zip(index);
+        self.selection = self
+            .current_zone()
+            .zip(index)
+            .map(|(document, index)| ObjectId { document, path: selection::placement_path(index) })
+            .into_iter()
+            .collect();
     }
 
-    /// The placement selected in the current zone.
+    /// The placement of the current zone selected last, which the gizmo is on.
     #[must_use]
     pub fn selected_placement(&self) -> Option<usize> {
-        self.zone.selected_in(self.current_zone()?)
+        self.selected_placements().pop()
+    }
+
+    /// The placements of the current zone selected, in the order they were.
+    #[must_use]
+    pub fn selected_placements(&self) -> Vec<usize> {
+        let Some(zone) = self.current_zone() else { return Vec::new() };
+        self.selection.iter().filter_map(|object| selection::placement_of(object, zone)).collect()
     }
 
     pub(super) fn zone_panel(&mut self, ui: &mut Ui) {
@@ -243,7 +258,7 @@ impl Editor {
             })
             .collect();
         let split = document.has_split();
-        let selected = self.zone.selected_in(id);
+        let selected = self.selected_placements();
         if split {
             ui.label(
                 RichText::new("A split placement cooks into the cells alone: the viewport draws this zone once it's cooked without one.")
@@ -254,13 +269,22 @@ impl Editor {
         egui::ScrollArea::vertical().id_salt("zone").auto_shrink([false, false]).show(ui, |ui| {
             for (index, (name, at)) in rows.into_iter().enumerate() {
                 let text = format!("{index}  {name}  ({:.2}, {:.2}, {:.2})", at[0], at[1], at[2]);
-                if ui.selectable_label(selected == Some(index), text).clicked() {
-                    choose = Some(index);
+                if ui.selectable_label(selected.contains(&index), text).clicked() {
+                    // By the release's own modifiers, which a click has whatever the keys' state says by then.
+                    let adding = ui.input(|input| {
+                        input.events.iter().any(|event| {
+                            matches!(event, egui::Event::PointerButton { pressed: false, modifiers, .. }
+                                if modifiers.command || modifiers.shift)
+                        })
+                    });
+                    choose = Some((index, adding));
                 }
             }
         });
-        if let Some(index) = choose {
-            self.act(Command::SelectPlacement(Some(index)));
+        match choose {
+            Some((index, true)) => self.toggle_placement(id, index),
+            Some((index, false)) => self.act(Command::SelectPlacement(Some(index))),
+            None => {}
         }
     }
 }

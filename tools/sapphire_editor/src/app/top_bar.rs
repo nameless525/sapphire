@@ -148,7 +148,7 @@ impl Editor {
         {
             let entry = match &typed.at {
                 TypedAt::Entry { entry, .. } => Some(*entry),
-                TypedAt::Property { .. } => None,
+                TypedAt::Property { .. } | TypedAt::Shared { .. } => None,
             };
             let said = match entry {
                 Some(entry) => format!(

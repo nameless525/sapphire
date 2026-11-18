@@ -10,6 +10,10 @@
 //! without saving kept: [`Command::Recover`] takes an offer back, as the document it was or in conflict with a
 //! file that moved on, which the top bar's three answers settle as any conflict, and [`Command::DropRecovered`]
 //! lets it go.
+//!
+//! A selection holds objects by document and path, across documents; the Properties pane edits the fields they
+//! share, each edit one step of undo over every document it touched, and undo of any of those documents takes
+//! the whole of it back ([`sapphire_document::SetStep`]).
 
 mod browser;
 mod cvars;
@@ -19,6 +23,7 @@ mod inspector;
 mod palette;
 mod properties;
 mod screen;
+mod selection;
 mod sequencer;
 mod timeline_pane;
 mod top_bar;
@@ -36,7 +41,9 @@ use egui::{Color32, Key, Modifiers, RichText, Sense, TextEdit, Ui, Vec2};
 use sapphire_assets::AssetId;
 use sapphire_core::Name;
 use sapphire_document::disk::Temporary;
-use sapphire_document::{AnyDocument, DocumentSet, Journal, Kind, Noticed, PropertyPath, Rebased, SetError};
+use sapphire_document::{
+    AnyDocument, DocumentSet, Journal, Kind, Noticed, ObjectId, PropertyPath, Rebased, SetError, Took,
+};
 use sapphire_livelink::protocol::MoveAttempt;
 use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument};
 use sapphire_time::Stopwatch;
@@ -224,6 +231,8 @@ pub struct Editor {
     stale: bool,
     selected_move: usize,
     selected_entry: Option<EntryRef>,
+    /// Objects by document and path, across documents, in the order they were picked.
+    selection: Vec<ObjectId>,
     tick: u32,
     /// "Play from frame N": where playing starts, and what it comes back to.
     play_from: u32,
@@ -285,13 +294,15 @@ pub(crate) enum TypedAt {
     Entry { entry: EntryRef, path: String },
     /// A property of any document.
     Property { document: AssetId, path: PropertyPath, label: String },
+    /// A field every selected object has, by its path under each.
+    Shared { path: PropertyPath, label: String },
 }
 
 impl TypedAt {
     fn label(&self) -> &str {
         match self {
             Self::Entry { path, .. } => path,
-            Self::Property { label, .. } => label,
+            Self::Property { label, .. } | Self::Shared { label, .. } => label,
         }
     }
 }
@@ -352,6 +363,7 @@ impl Editor {
             stale: false,
             selected_move: 0,
             selected_entry: None,
+            selection: Vec::new(),
             tick: 0,
             play_from: 0,
             playing: None,
@@ -691,6 +703,7 @@ impl Editor {
     fn close(&mut self, id: AssetId) {
         self.closing = None;
         self.documents.close(id);
+        self.selection.retain(|object| object.document != id);
         self.screen.forget(id);
         if self.moves == Some(id) {
             self.moves = None;
@@ -802,7 +815,8 @@ impl Editor {
     pub fn viewport_frame(&mut self) -> ViewportFrame<'_> {
         let moves = self.moves.and_then(|id| self.documents.path(id)).and_then(Path::file_name);
         let current = self.current;
-        let zone = zone::zone_shown(&self.documents, &self.zone, current, self.viewport.camera());
+        let selected = self.selected_placement();
+        let zone = zone::zone_shown(&self.documents, &self.zone, current, selected, self.viewport.camera());
         let timeline = sequencer::timeline_shown(&self.documents, &mut self.sequencer, current);
         self.screen.follow(&self.documents, current);
         let screen = screen::screen_shown(&self.documents, &self.screen, current);
@@ -1148,7 +1162,15 @@ impl Editor {
             return Err("not saved: what's being typed can't go in".to_owned());
         }
         let Some(id) = self.current else { return Ok(()) };
-        self.documents.save(id).map_err(|error| save_trouble(&error))
+        self.documents.save(id).map_err(|error| save_trouble(&error))?;
+        // What a step of several documents did to the others goes too, or one file says what the other doesn't:
+        // a placement saved without the colliders it moved is a zone the cook refuses.
+        for joined in self.documents.joined(id) {
+            if self.documents.is_dirty(joined) {
+                self.documents.save(joined).map_err(|error| save_trouble(&error))?;
+            }
+        }
+        Ok(())
     }
 
     /// Writes every document with edits, with what's being typed in its own. What goes wrong is in a notice's
@@ -1187,11 +1209,16 @@ impl Editor {
                     self.go_to(*id);
                     self.record(Command::Open(path));
                 }
-                let Some(document) = self.documents.any_mut(*id) else { return true };
+                if self.documents.any(*id).is_none() {
+                    return true;
+                }
                 let label = format!("edit {}", dispatch::last_step(path));
-                let result =
-                    document.set_spelled(&label, path, &typed.text).map(|_| ()).map_err(EditError::from);
+                let result = self.spell(*id, &label, path, &typed.text);
                 (result, Command::SetProperty { path: path.to_string(), value: typed.text.clone() })
+            }
+            TypedAt::Shared { path, .. } => {
+                let result = self.set_shared(path, &typed.text);
+                (result, Command::SetShared { path: path.to_string(), value: typed.text.clone() })
             }
         };
         match result {
@@ -1243,7 +1270,9 @@ impl Editor {
         }
         self.drag = None;
         self.drag_label = None;
-        if self.documents.ids().any(|id| self.documents.any(id).is_some_and(|file| file.in_gesture())) {
+        if self.documents.in_gesture()
+            || self.documents.ids().any(|id| self.documents.any(id).is_some_and(|file| file.in_gesture()))
+        {
             self.act(Command::End);
         }
     }
@@ -1316,22 +1345,51 @@ impl Editor {
             self.typed = None;
             return;
         }
-        let Some(file) = self.current.and_then(|id| self.documents.any_mut(id)) else { return };
-        if file.undo() {
-            self.after_history();
-        } else if let Some(why) = file.why_no_undo() {
-            // At history's floor: it's not that nothing was ever done, and the file doesn't have this text.
-            self.say(Notice { text: why, trouble: false });
+        let Some(id) = self.current else { return };
+        // A step of several documents goes back whole, from any of them, or says which has a step of its own first.
+        match self.documents.undo(id) {
+            Ok(Took::Step) => self.after_history(),
+            Ok(Took::Apart { label, left }) => self.after_apart(&label, &left),
+            Ok(Took::Nothing) => {
+                if let Some(why) = self.documents.any(id).and_then(AnyDocument::why_no_undo) {
+                    // At history's floor: it's not that nothing was ever done, and the file doesn't have this text.
+                    self.say(Notice { text: why, trouble: false });
+                }
+            }
+            Err(error) => self.refuse(error.to_string()),
         }
     }
 
     pub fn redo(&mut self) {
-        if self.take_typed()
-            && let Some(file) = self.current.and_then(|id| self.documents.any_mut(id))
-            && file.redo()
-        {
-            self.after_history();
+        if !self.take_typed() {
+            return;
         }
+        let Some(id) = self.current else { return };
+        match self.documents.redo(id) {
+            Ok(Took::Step) => self.after_history(),
+            Ok(Took::Apart { label, left }) => self.after_apart(&label, &left),
+            Ok(Took::Nothing) => {}
+            Err(error) => self.refuse(error.to_string()),
+        }
+    }
+
+    /// After a step of several documents went in this one alone, since the rest of it was gone: says what it left.
+    fn after_apart(&mut self, label: &str, left: &[PathBuf]) {
+        self.after_history();
+        let names: Vec<String> = left
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
+            })
+            .collect();
+        self.say(Notice {
+            text: format!(
+                "`{label}` went here alone: what it did to {} is gone from its history",
+                names.join(", ")
+            ),
+            trouble: true,
+        });
     }
 
     fn after_history(&mut self) {
@@ -1344,6 +1402,7 @@ impl Editor {
     }
 
     fn check_selection(&mut self) {
+        self.prune_selection();
         let Some(entry) = self.selected_entry else { return };
         let exists = self
             .document()
@@ -1525,8 +1584,8 @@ impl Editor {
             self.say_noticed(noticed);
         }
         self.screen.poll_models(&self.documents);
-        let in_gesture =
-            self.documents.ids().any(|id| self.documents.any(id).is_some_and(|file| file.in_gesture()));
+        let in_gesture = self.documents.in_gesture()
+            || self.documents.ids().any(|id| self.documents.any(id).is_some_and(|file| file.in_gesture()));
         if now >= self.next_rescan && !in_gesture && self.typed.is_none() {
             let look = Stopwatch::start();
             match self.documents.rescan() {

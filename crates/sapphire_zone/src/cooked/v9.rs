@@ -1,5 +1,5 @@
 //! Version 9 of the cooked zone (M6 W2), frozen, read for one release after version 10 (cooker rule 2): the
-//! same halves with no rooms. The simulation's half and every part kept their layout, so it shares them.
+//! same halves with no rooms and no weather plan. The simulation's half and every part kept their layout, so it shares them.
 
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
@@ -89,6 +89,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
             fog,
             water,
             rooms: Vec::new(),
+            weather_plan: None,
         },
     })
 }

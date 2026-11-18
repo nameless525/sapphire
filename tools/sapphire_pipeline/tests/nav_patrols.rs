@@ -36,6 +36,7 @@ fn proving_ground_zone() -> sapphire_serialize::cooked::AlignedVec {
         instances: Vec::new(),
         day: None,
         rigs: None,
+        weather: None,
         navigation: Some(NAVIGATION),
         exit_packs: Vec::new(),
         reflections: None,

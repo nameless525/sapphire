@@ -153,7 +153,9 @@ use sapphire_nav::{NavGraph, PathSearch, Reach, RouteEnd};
 use sapphire_navmesh::NavMesh;
 use sapphire_serialize::postcard;
 use sapphire_tod::TodTimeline;
+use sapphire_tod::weather::{WeatherDocument, WeatherSchedule};
 use sapphire_zone::grid::Grid;
+use sapphire_zone::weather::ZoneWeatherPlan;
 use sapphire_zone::{Bounds, Place, Zone, ZoneDocument, ZoneError, ZoneGeometry};
 use serde::{Deserialize, Serialize};
 
@@ -1040,6 +1042,33 @@ fn rigs_text(bytes: Vec<u8>) -> Result<String, ZoneCookError> {
     Ok(text)
 }
 
+/// `bytes` as the text of a weather plan's `states` (M6 W8a), checked as the runtime will read it, with every
+/// state `plan` names one of the document's.
+fn weather_text(bytes: Vec<u8>, plan: &ZoneWeatherPlan) -> Result<String, ZoneCookError> {
+    let field = "weather_plan.states";
+    let text = String::from_utf8(bytes)
+        .map_err(|error| ZoneCookError::invalid(field, format!("it isn't UTF-8: {error}")))?;
+    let states = WeatherDocument::from_ron(&text)
+        .map_err(|error| ZoneCookError::invalid(field, format!("it doesn't read: {error}")))?;
+    if let Some(missing) = plan.names().into_iter().find(|name| states.state(name).is_none()) {
+        let problem = format!("the plan names `{missing}`, which isn't one of its states");
+        return Err(ZoneCookError::invalid(field, problem));
+    }
+    // The schedule as a trip will build it, by the one rule that caps and rounds its hours.
+    let slots = plan
+        .schedule
+        .iter()
+        .map(|slot| {
+            let choices =
+                slot.states.iter().filter_map(|pick| Some((states.state(&pick.state)?, pick.weight)));
+            (slot.from, choices.collect())
+        })
+        .collect();
+    WeatherSchedule::new(plan.seed, slots, states.states().len())
+        .map_err(|error| ZoneCookError::invalid(format!("weather_plan.{}", error.field), error.problem))?;
+    Ok(text)
+}
+
 /// Whether `bytes`, the source of the material a zone's `sky` names, is a sky material's (M5 M6): another
 /// family's would cook, and then draw nothing in the sky.
 pub fn check_sky_material(bytes: &[u8]) -> Result<(), ZoneCookError> {
@@ -1162,10 +1191,19 @@ pub fn cook(
         .as_deref()
         .map(|rigs| read_document(zone, "rigs", rigs).and_then(|(_, bytes)| rigs_text(bytes)))
         .transpose()?;
+    let weather = document
+        .weather_plan
+        .as_ref()
+        .map(|weather| {
+            read_document(zone, "weather_plan.states", &weather.states)
+                .and_then(|(_, bytes)| weather_text(bytes, weather))
+        })
+        .transpose()?;
     let meshes = places.into_iter().map(|place| (place.place, (place.id, place.bounds))).collect();
     let navigation = plan.navigation_id();
     let reflections = plan.reflections_id();
-    let geometry = ZoneGeometry { meshes, instances, day, rigs, navigation, exit_packs, reflections };
+    let geometry =
+        ZoneGeometry { meshes, instances, day, rigs, weather, navigation, exit_packs, reflections };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;
     Ok(cooked.into_vec())

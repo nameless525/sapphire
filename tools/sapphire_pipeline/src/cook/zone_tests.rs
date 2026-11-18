@@ -470,6 +470,47 @@ fn saving_a_day_or_rig_library_recooks_only_the_zone() {
     assert!(read.presentation.rigs.as_ref().unwrap().as_str().contains("two"));
 }
 
+/// A weather document of the states `names`, each naming nothing but itself.
+fn weather_states(names: &[&str]) -> String {
+    let states: Vec<String> = names.iter().map(|name| format!(r#"(name: "{name}")"#)).collect();
+    format!(
+        r#"(type: "sapphire::world::WeatherDocument", version: 1, data: (states: [{}]))"#,
+        states.join(", ")
+    )
+}
+
+/// A zone's weather plan (M6 W8a) cooks its states' document's text, held to the names the plan gives, and
+/// saving the document recooks the zone alone.
+#[test]
+fn a_weather_plan_cooks_with_its_states_and_recooks_on_a_save() {
+    let tree = tree("zone-weather");
+    tree.write("weather.ron", weather_states(&["clear", "rain"]).as_bytes());
+    let plan = r##"weather_plan: Some((states: "weather.ron", seed: 3, schedule: [(from: 6.0, states: [(state: "clear"), (state: "rain", weight: 2)])])),"##;
+    write_zone(&tree, &format!("{} {plan}", placements()));
+    let report = tree.cook();
+    let bytes = read_zone(&report);
+    let read = Zone::read(&bytes).unwrap();
+    let cooked = read.presentation.weather_plan.as_ref().expect("the plan cooks");
+    assert_eq!(cooked.states.as_str(), weather_states(&["clear", "rain"]));
+    assert_eq!(cooked.seed.to_native(), 3);
+
+    tree.write("weather.ron", weather_states(&["clear", "rain", "snow"]).as_bytes());
+    let report = tree.cook();
+    assert_eq!(cooked_places(&report), [None], "only the zone recooks");
+    let bytes = read_zone(&report);
+    assert!(
+        Zone::read(&bytes)
+            .unwrap()
+            .presentation
+            .weather_plan
+            .as_ref()
+            .unwrap()
+            .states
+            .as_str()
+            .contains("snow")
+    );
+}
+
 /// A static mesh of its own, for a zone's instances.
 fn add_lamp(tree: &Tree) {
     let lamp = tree.write(
@@ -588,6 +629,12 @@ fn what_a_zone_gets_wrong_is_named() {
     let not_rigs = r##"(type: "sapphire::world::TodTimeline", version: 1, data: ())"##;
     tree.write("not_a_day.ron", not_a_day.as_bytes());
     tree.write("not_rigs.ron", not_rigs.as_bytes());
+    tree.write("weather.ron", weather_states(&["clear"]).as_bytes());
+    let plan = |states: &str, state: &str| {
+        format!(
+            r##"weather_plan: Some((states: "{states}", schedule: [(from: 0.0, states: [(state: "{state}")])])),"##
+        )
+    };
     let cases: Vec<(String, &str)> = vec![
         (format!(r##"placements: [(prefab: "{ZONE}")],"##), "placements[0].prefab"),
         (format!(r##"placements: [(prefab: "{WOOD}")],"##), "isn't an assembly"),
@@ -622,6 +669,15 @@ fn what_a_zone_gets_wrong_is_named() {
         (r##"day: Some("missing.ron"),"##.to_owned(), "failed to read"),
         (r##"day: Some("not_a_day.ron"),"##.to_owned(), "`day`"),
         (r##"rigs: Some("not_rigs.ron"),"##.to_owned(), "not a `sapphire::world::LightRigLibrary`"),
+        (plan("not_rigs.ron", "clear"), "`weather_plan.states`: it doesn't read"),
+        (plan("weather.ron", "rain"), "names `rain`, which isn't one of its states"),
+        // Two hours a hundredth apart that the runtime's schedule caps to one: refused at the cook, as a
+        // trip would refuse them.
+        (
+            r##"weather_plan: Some((states: "weather.ron", schedule: [(from: 23.99, states: [(state: "clear")]), (from: 23.996, states: [(state: "clear")])])),"##
+                .to_owned(),
+            "`weather_plan.schedule",
+        ),
     ];
     for (data, expected) in cases {
         write_zone(&tree, &data);

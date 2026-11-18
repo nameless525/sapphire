@@ -4057,7 +4057,9 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     for place in plan.places() {
         dependencies.push(cooked_key(plan.part_id(place), zone::part_name(place), "a mesh")?);
     }
-    for (field, file) in [("day", &document.day), ("rigs", &document.rigs)] {
+    let weather = document.weather_plan.as_ref().map(|plan| plan.states.clone());
+    for (field, file) in [("day", &document.day), ("rigs", &document.rigs), ("weather_plan.states", &weather)]
+    {
         if let Some(file) = file {
             let (_, bytes) = zone::read_document(path, field, file).map_err(zone_error(path))?;
             dependencies.push(Dependency::File { path: file.clone(), hash: blake3::hash(&bytes) });

@@ -27,6 +27,10 @@
 //!   surfaces in [`ZonePresentation`], and [`WaterVolumes::at`], the query a fixed step may ask.
 //! - **Rooms** ([`rooms`], M6 U5): where a zone's sound takes a reverb, each a volume with a priority, a reverb
 //!   of the mix's, an outdoor flag and a fade, in [`ZonePresentation`] alone.
+//! - **A weather plan** ([`weather`], M6 W8a): which of a weather document's states a zone's sky shows by
+//!   the hour (a seeded schedule) and by place (regions), in [`ZonePresentation`] alone.
+//! - **The volume shape** ([`shape`], M6 W8a): [`ZoneShape`], the one shape a zone places a volume of air by
+//!   (a sphere, or a box or an ellipsoid turned about +Y), which the world measures distances from.
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //! - **Prefabs** ([`prefab`], M6 T4): `.assembly.ron`, [`Assembly`], as plain data: what a zone places as a
@@ -67,7 +71,9 @@ pub mod look;
 pub mod prefab;
 pub mod reflections;
 pub mod rooms;
+pub mod shape;
 pub mod water;
+pub mod weather;
 
 pub use ambient::{
     AMBIENT_EXTENSION, AMBIENT_PART, Ambient, ArchivedAmbient, ArchivedCookedCastMember, ArchivedCookedPost,
@@ -95,9 +101,14 @@ pub use look::{ArchivedZoneFog, ArchivedZoneWeather, ArchivedZoneWind, ZoneFog, 
 pub use prefab::Assembly;
 pub use reflections::{ParallaxBox, ReflectionProbe};
 pub use rooms::{ArchivedCookedRoom, CookedRoom, ZoneRoom};
+pub use shape::{ArchivedZoneShape, ZoneShape};
 pub use water::{
     ArchivedCookedWaterSurface, ArchivedCookedWaterVolume, CookedWaterSurface, CookedWaterVolume, Floor,
     RiverPoint, WaterBody, WaterKind, WaterSample, WaterShape, WaterSurface, WaterVolumes,
+};
+pub use weather::{
+    ArchivedCookedWeatherPlan, ArchivedCookedWeatherRegion, CookedWeatherPlan, CookedWeatherRegion,
+    WeatherChoice, WeatherRegion, WeatherSlot, ZoneWeatherPlan,
 };
 
 /// The pack a zone's own assets go in, from the zone source's file stem (`town.zone.ron` →

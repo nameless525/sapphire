@@ -34,6 +34,12 @@
 //!         wind: Some((direction: (0.94, 0.0, 0.33), strength: 0.6, gustiness: 0.3)),
 //!         weather: Some((wetness: 0.7, puddles: 0.4)),
 //!         fog: Some((density: 1.6, height_base: Some(-0.5))),
+//!         // Its weather (the `weather` module): when each state shows, and where a place has its own.
+//!         weather_plan: Some((
+//!             states: "../../weather/presets.weather.ron",
+//!             schedule: [(from: 0.0, states: [(state: "clear", weight: 3), (state: "mist")]), (from: 12.0, states: [(state: "rain")])],
+//!             regions: [(name: "peak", position: (0.0, 80.0, -60.0), shape: Ellipsoid(radii: (40.0, 20.0, 40.0), yaw: 30.0), state: "snow")],
+//!         )),
 //!         colliders: Some("0aec06e8-ef8a-4f60-8dce-1e159cc277fa"),
 //!         navigation: Some((min: (-64.0, -64.0), max: (64.0, 64.0))),
 //!         spawners: [
@@ -95,6 +101,7 @@ use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 use crate::reflections::{self, ReflectionProbe};
 use crate::rooms::{self, ZoneRoom};
 use crate::water::{CookedWaterSurface, CookedWaterVolume, MAX_BODIES, WaterBody, WaterKind};
+use crate::weather::{self, ZoneWeatherPlan};
 
 /// The most entries any list of a zone may hold.
 pub const MAX_ENTRIES: usize = 1 << 20;
@@ -144,6 +151,9 @@ pub struct ZoneDocument {
     /// Its fog over its day's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fog: Option<ZoneFog>,
+    /// Which weather states its sky shows, by the hour and by place (M6 W8a): the [`weather`] module.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather_plan: Option<ZoneWeatherPlan>,
     /// The zone's static colliders: a `.colliders.ron` source, by its sidecar's ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colliders: Option<AssetId>,
@@ -450,6 +460,8 @@ pub struct ZoneGeometry {
     pub day: Option<String>,
     /// The text of the document's `rigs`.
     pub rigs: Option<String>,
+    /// The text of its weather plan's `states`.
+    pub weather: Option<String>,
     /// The navmesh baked for the document's `navigation`.
     pub navigation: Option<AssetId>,
     /// The pack each of the document's exits leads into, in its order.
@@ -563,6 +575,9 @@ impl ZoneDocument {
         }
         if let Some(fog) = &self.fog {
             fog.check().map_err(invalid("fog".to_owned()))?;
+        }
+        if let Some(plan) = &self.weather_plan {
+            weather::check(plan)?;
         }
         check_names("spawners", self.spawners.iter().map(|spawner| spawner.name.as_str()))?;
         for (index, spawner) in self.spawners.iter().enumerate() {
@@ -855,6 +870,17 @@ impl ZoneDocument {
         }
         let places: BTreeSet<Place> =
             geometry.meshes.keys().chain(instances.keys()).chain(lights.keys()).copied().collect();
+        let weather_plan = match (&self.weather_plan, geometry.weather) {
+            (Some(plan), Some(text)) => Some(weather::cook(plan, text)),
+            (None, None) => None,
+            (plan, _) => {
+                let problem = match plan {
+                    Some(_) => "the cook read no text for its states",
+                    None => "the cook read states for a zone with no plan",
+                };
+                return Err(ZoneError::invalid("weather_plan", problem));
+            }
+        };
 
         let mut presentation = ZonePresentation {
             cell_size: self.grid.cell_size,
@@ -873,6 +899,7 @@ impl ZoneDocument {
             fog: self.fog,
             water: self.cooked_water_surfaces(&simulation),
             rooms: rooms::cook(&self.rooms),
+            weather_plan,
         };
         // In `Place`'s order: the backdrop's entries, then each cell's.
         for place in places {
@@ -1117,7 +1144,7 @@ pub(crate) fn check_name(name: &str) -> Result<(), String> {
 }
 
 /// Whether a path to a document is relative with a file at its end, or what's wrong with it.
-fn check_path(path: &str) -> Result<(), String> {
+pub(crate) fn check_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("it's empty".to_owned());
     }

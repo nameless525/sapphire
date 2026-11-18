@@ -32,7 +32,9 @@ use crate::water::{
     ArchivedCookedWaterVolume, ArchivedWaterShape, CookedWaterSurface, CookedWaterVolume, MAX_BODIES,
     WaterShape, WaterSurface, check_shore_margin,
 };
+use crate::weather::CookedWeatherPlan;
 
+mod v10;
 mod v8;
 mod v9;
 
@@ -52,9 +54,9 @@ impl Versioned for Zone {
     /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4). 5:
     /// patrols, and who walks them (P3). 6: a sky material, wind, weather and fog in the presentation (M5 M6).
     /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16). 9: water, in both
-    /// halves (M6 W2). 10: rooms, in the presentation's (M6 U5). Versions 8 and 9 are still read
-    /// ([`Zone::upgrade`]).
-    const VERSION: u32 = 10;
+    /// halves (M6 W2). 10: rooms, in the presentation's (M6 U5). 11: a weather plan, in the presentation's
+    /// (M6 W8a). Versions 8 to 10 are still read ([`Zone::upgrade`]).
+    const VERSION: u32 = 11;
 }
 
 impl Versioned for ZoneSimulation {
@@ -235,6 +237,8 @@ pub struct ZonePresentation {
     pub water: Vec<CookedWaterSurface>,
     /// Where its sound takes a reverb (M6 U5), by ascending ID: the [`rooms`](crate::rooms) module.
     pub rooms: Vec<CookedRoom>,
+    /// Which weather states its sky shows (M6 W8a): the [`weather`](crate::weather) module.
+    pub weather_plan: Option<CookedWeatherPlan>,
 }
 
 /// One cell of a zone's grid.
@@ -332,9 +336,9 @@ impl Zone {
     }
 
     /// Cooked zone bytes of an older version as this version's, checked by [`Self::read`]; `None` for bytes
-    /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water
-    /// and no rooms, version 9 as one with no rooms, each with the digest it had (cooker rule 2, for one
-    /// release). Any other version is [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
+    /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water,
+    /// no rooms and no weather plan, version 9 as one with no rooms and no plan, version 10 as one with no plan,
+    /// each with the digest it had (cooker rule 2, for one release). Any other version is [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
     pub fn upgrade(bytes: &[u8]) -> Result<Option<AlignedVec>, ZoneError> {
         let found = sapphire_serialize::cooked::schema_version::<Self>(bytes)?;
         if found == Self::VERSION {
@@ -343,6 +347,7 @@ impl Zone {
         let zone = match found {
             v8::VERSION => v8::read(bytes)?,
             v9::VERSION => v9::read(bytes)?,
+            v10::VERSION => v10::read(bytes)?,
             _ => return Err(sapphire_serialize::CookedError::Stale { found, current: Self::VERSION }.into()),
         };
         let cooked = zone.to_cooked()?;
@@ -819,6 +824,7 @@ impl ArchivedZone {
             fog.to_native().check().map_err(|problem| ZoneError::invalid("fog", problem))?;
         }
         crate::rooms::validate(presentation)?;
+        crate::weather::validate(presentation)?;
         self.validate_water_surfaces()
     }
 
@@ -1022,7 +1028,9 @@ mod tests {
     use crate::document::{Volume, ZoneDocument, ZoneGeometry};
     use crate::grid::Place;
     use crate::rooms::{MAX_ROOMS, ZoneRoom};
+    use crate::shape::ZoneShape;
     use crate::water::{RiverPoint, WaterBody, WaterKind, WaterVolumes};
+    use crate::weather::{ArchivedWeatherSlot, WeatherChoice, WeatherRegion, WeatherSlot, ZoneWeatherPlan};
 
     const COLLIDERS: AssetId = AssetId::from_text("0aec06e8-ef8a-4f60-8dce-1e159cc277fa");
     const MESH: AssetId = AssetId::from_text("e94f690f-38e2-4630-aeb3-4d34d06fc233");
@@ -1135,33 +1143,34 @@ mod tests {
         cook(&document)
     }
 
-    fn cook(document: &ZoneDocument) -> Zone {
+    /// What a cook makes of [`document`]'s geometry.
+    fn geometry() -> ZoneGeometry {
         let boxed = |min: [f32; 3], max: [f32; 3]| Bounds { min, max };
-        document
-            .cook(ZoneGeometry {
-                meshes: [
-                    (
-                        Place::Backdrop,
-                        (BACKDROP_MESH, boxed([-2000.0, -1.0, -2000.0], [2000.0, 40.0, 2000.0])),
-                    ),
-                    (
-                        Place::Cell(CellCoord { x: 1, z: -1 }),
-                        (CELL_MESH, boxed([33.0, 0.0, -30.0], [60.0, 9.0, -2.0])),
-                    ),
-                ]
-                .into(),
-                instances: vec![
-                    boxed([38.0, 0.0, -11.0], [42.0, 5.0, -7.0]),
-                    boxed([-5.0, 0.0, 68.0], [-1.0, 8.0, 72.0]),
-                    boxed([800.0, 0.0, 800.0], [1000.0, 300.0, 1000.0]),
-                ],
-                day: Some("a day's text".to_owned()),
-                rigs: None,
-                navigation: Some(NAVIGATION),
-                exit_packs: vec!["zone_market".to_owned(), "zone_market".to_owned()],
-                reflections: Some(REFLECTIONS),
-            })
-            .expect("cooks")
+        ZoneGeometry {
+            meshes: [
+                (Place::Backdrop, (BACKDROP_MESH, boxed([-2000.0, -1.0, -2000.0], [2000.0, 40.0, 2000.0]))),
+                (
+                    Place::Cell(CellCoord { x: 1, z: -1 }),
+                    (CELL_MESH, boxed([33.0, 0.0, -30.0], [60.0, 9.0, -2.0])),
+                ),
+            ]
+            .into(),
+            instances: vec![
+                boxed([38.0, 0.0, -11.0], [42.0, 5.0, -7.0]),
+                boxed([-5.0, 0.0, 68.0], [-1.0, 8.0, 72.0]),
+                boxed([800.0, 0.0, 800.0], [1000.0, 300.0, 1000.0]),
+            ],
+            day: Some("a day's text".to_owned()),
+            rigs: None,
+            weather: None,
+            navigation: Some(NAVIGATION),
+            exit_packs: vec!["zone_market".to_owned(), "zone_market".to_owned()],
+            reflections: Some(REFLECTIONS),
+        }
+    }
+
+    fn cook(document: &ZoneDocument) -> Zone {
+        document.cook(geometry()).expect("cooks")
     }
 
     fn colliders() -> AlignedVec {
@@ -1865,5 +1874,104 @@ mod tests {
         assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's");
         let water = Zone::upgrade(&v9::write(&water_zone())).expect("reads").expect("rewritten");
         assert_eq!(Zone::read(&water).expect("read").presentation.water.len(), 3, "water comes through");
+    }
+
+    /// A zone with a weather plan: two slots and two regions, over the shared document's text.
+    fn weather_zone() -> Zone {
+        let mut document = document();
+        let choice = |state: &str, weight: u32| WeatherChoice { state: state.to_owned(), weight };
+        document.weather_plan = Some(ZoneWeatherPlan {
+            states: "presets.weather.ron".to_owned(),
+            seed: 7,
+            schedule: vec![
+                WeatherSlot { from: 6.0, states: vec![choice("clear", 3), choice("rain", 1)] },
+                WeatherSlot { from: 20.0, states: vec![choice("mist", 1)] },
+            ],
+            regions: vec![
+                WeatherRegion {
+                    name: "summit".to_owned(),
+                    position: [0.0, 80.0, -120.0],
+                    shape: ZoneShape::Ellipsoid { radii: [60.0, 30.0, 40.0], yaw: 20.0 },
+                    state: "snow".to_owned(),
+                    priority: 1,
+                },
+                WeatherRegion {
+                    name: "basin".to_owned(),
+                    position: [200.0, 0.0, 0.0],
+                    shape: ZoneShape::Box { half_extents: [50.0, 20.0, 30.0], yaw: -35.0 },
+                    state: "sandstorm".to_owned(),
+                    priority: 0,
+                },
+            ],
+        });
+        let geometry = |weather| ZoneGeometry { weather, ..geometry() };
+        assert!(document.cook(geometry(None)).is_err(), "a plan needs its states' text");
+        document.cook(geometry(Some("(states text)".to_owned()))).expect("cooks")
+    }
+
+    /// A weather plan is presentation: it reads back as written, its regions by ascending ID, and the digest is
+    /// [`digest_pins`'] for the same zone without it.
+    #[test]
+    fn a_weather_plan_reads_back_and_leaves_the_digest_alone() {
+        let zone = weather_zone();
+        let bytes = zone.to_cooked().expect("write");
+        let read = Zone::read(&bytes).expect("read");
+        let plan = read.presentation.weather_plan.as_ref().expect("there");
+        assert_eq!((plan.states.as_str(), plan.seed.to_native()), ("(states text)", 7));
+        let slots: Vec<WeatherSlot> = plan.schedule.iter().map(ArchivedWeatherSlot::to_native).collect();
+        assert_eq!(slots, zone.presentation.weather_plan.as_ref().expect("there").schedule);
+        let mut expected = ["summit", "basin"];
+        expected.sort_unstable_by_key(|name| Name::new(name).as_u64());
+        let regions: Vec<_> = plan.regions.iter().map(|region| region.name.as_str()).collect();
+        assert_eq!(regions, expected);
+        let summit = plan.regions.iter().find(|region| region.name == "summit").expect("there");
+        assert_eq!(summit.shape.to_native(), ZoneShape::Ellipsoid { radii: [60.0, 30.0, 40.0], yaw: 20.0 });
+        assert_eq!(
+            (summit.position(), summit.state.as_str(), summit.priority),
+            ([0.0, 80.0, -120.0], "snow", 1)
+        );
+        let colliders = colliders();
+        let digest = read.simulation_digest(|_| Some(&colliders[..])).expect("digests");
+        assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's: weather isn't the simulation's");
+    }
+
+    #[test]
+    fn a_cooked_plan_the_document_would_refuse_is_refused() {
+        type Tamper = fn(&mut CookedWeatherPlan);
+        let cases: [(&str, &str, Tamper); 5] = [
+            ("an order", "out of order", |plan| plan.regions.swap(0, 1)),
+            ("a shape", "extents", |plan| plan.regions[0].shape = ZoneShape::Sphere { radius: -1.0 }),
+            ("a slot", "hours must rise", |plan| plan.schedule[1].from = 3.0),
+            ("a weight", "weighs nothing", |plan| plan.schedule[0].states[0].weight = 0),
+            ("no text", "empty", |plan| plan.states.clear()),
+        ];
+        for (what, expected, tamper) in cases {
+            let mut tampered = weather_zone();
+            tamper(tampered.presentation.weather_plan.as_mut().expect("there"));
+            let bytes = tampered.to_cooked().expect("write");
+            let message = Zone::read(&bytes).expect_err(what).to_string();
+            assert!(message.contains(expected), "{what}: `{message}` must say `{expected}`");
+        }
+    }
+
+    /// Version 10 bytes, as M6 U5 cooked them, read for one release (cooker rule 2): `read` refuses them as
+    /// stale, and `upgrade` makes them this version's, a zone with no weather plan whose digest is the one it
+    /// had.
+    #[test]
+    fn a_version_10_zone_upgrades_to_one_without_a_weather_plan() {
+        let current = zone();
+        let old = v10::write(&current);
+        let message = Zone::read(&old).expect_err("stale").to_string();
+        assert!(message.contains("schema version 10") && message.contains("recook"), "{message}");
+        let upgraded = Zone::upgrade(&old).expect("reads").expect("version 10 bytes are rewritten");
+        assert_eq!(upgraded.as_slice(), current.to_cooked().expect("write").as_slice(), "today's very bytes");
+        let from_plan = Zone::upgrade(&v10::write(&weather_zone())).expect("reads").expect("rewritten");
+        let read = Zone::read(&from_plan).expect("read");
+        assert!(read.presentation.weather_plan.is_none());
+        let colliders = colliders();
+        let digest = read.simulation_digest(|_| Some(&colliders[..])).expect("digests");
+        assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's");
+        let rooms = Zone::upgrade(&v10::write(&room_zone())).expect("reads").expect("rewritten");
+        assert_eq!(Zone::read(&rooms).expect("read").presentation.rooms.len(), 2, "rooms come through");
     }
 }

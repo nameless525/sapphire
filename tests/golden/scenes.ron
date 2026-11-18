@@ -833,6 +833,17 @@
                        "--capture-step", "1", "--local-air", "off"],
                 ci_seconds: (lavapipe: 60.8, warp: 73.8),
             ),
+            // Local air (M6 Y1) in the stiff wind: the grove with the eight sample wind volumes (a
+            // draught down the courtyard, a vortex at the big tree, a burst among the bushes, and five
+            // more round the plants) and local air sampled per vertex, Desktop-High's default, at tick
+            // 150 under MSAA. Trunks, branches and leaves lean and swing by the volumes they stand
+            // in as well as the wind, against `foliage-wind`'s picture of the wind alone.
+            (
+                name: "foliage-local-air",
+                ticks: 150,
+                args: ["--plain-post", "--fog", "off", "--ao", "off", "--foliage", "grove", "--wind", "2.5",
+                       "--tier", "desktop-high", "--aa", "msaa", "--wind-volumes", "8", "--local-air", "vertex"],
+            ),
             // A character at night under the whole look (the night character light fix): the
             // courtyard at 23:00, nearer the mannequin, with the moon's shadows, the fog and post's
             // layers. Its key is time of day's character key, a little brighter than the moon (about

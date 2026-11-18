@@ -45,9 +45,11 @@ class AppTestsBundleTests(unittest.TestCase):
             "target/content/desktop/shared.spack": b"shared pack bytes",
             "target/content/desktop/zones/ward.spack": b"zone pack bytes",
             "target/content/desktop/release.smanifest": b"the cook's manifest",
-            # The district's folder: the cook's files but its manifest, the district's pack and a manifest of both.
+            # The district's folder: the cook's files but its manifest, the benchmark's zones' packs (the district's
+            # and the nature zone's, M6 W1) and a manifest of them all.
             "target/bench/ci/with-content/desktop/release.smanifest": b"the cook and the district's manifest",
             "target/bench/ci/with-content/desktop/zone_district.spack": b"district pack bytes",
+            "target/bench/ci/with-content/desktop/zone_nature.spack": b"nature pack bytes",
             # Neither the loose cook nor another build's output goes along.
             "target/content/loose/desktop/mesh.smesh": b"loose bytes",
             "target/debug/deps/libsapphire_core-89ab.rlib": b"library bytes",
@@ -118,7 +120,7 @@ class AppTestsBundleTests(unittest.TestCase):
         self.assertEqual(actual["files"]["target/debug/deps/replays-4567ef01"]["mode"], 0o755)
         self.assertEqual(actual["files"]["target/content/desktop/shared.spack"]["mode"], 0o644)
         self.assertFalse((self.consumer / "target/content/loose").exists())
-        # The district's folder travels as its own two files; the cook is laid out in it again on unpack.
+        # The district's folder travels as its own files; the cook is laid out in it again on unpack.
         district = self.consumer / app_tests_bundle.DISTRICT
         self.assertEqual(
             {name for name in actual["files"] if name.startswith(app_tests_bundle.DISTRICT + "/")},
@@ -126,7 +128,7 @@ class AppTestsBundleTests(unittest.TestCase):
         )
         self.assertEqual(
             sorted(path.relative_to(district).as_posix() for path in district.rglob("*") if path.is_file()),
-            ["release.smanifest", "shared.spack", "zone_district.spack", "zones/ward.spack"],
+            ["release.smanifest", "shared.spack", "zone_district.spack", "zone_nature.spack", "zones/ward.spack"],
         )
         self.assertEqual((district / "zones/ward.spack").read_bytes(), b"zone pack bytes")
         self.assertEqual((district / "release.smanifest").read_bytes(), b"the cook and the district's manifest")
@@ -239,10 +241,28 @@ class AppTestsBundleTests(unittest.TestCase):
         self.assertEqual((self.consumer / part).read_bytes(), b"the district's second part")
         self.assertFalse(app_tests_bundle.is_district_member(app_tests_bundle.DISTRICT + "/zone_district.0.spack"))
 
+    def test_the_nature_zone_travels_beside_the_district(self):
+        """The nature zone's pack (M6 W1), and its parts if it has any, are the folder's own, as the district's
+        are: the folder's manifest names the pack, so the bundle carries it."""
+        pack, part = (app_tests_bundle.DISTRICT + "/" + name for name in ("zone_nature.spack", "zone_nature.2.spack"))
+        self.fixture()
+        (self.workspace / part).write_bytes(b"the nature zone's third part")
+        expected = app_tests_bundle.create(self.workspace, self.archive, self.commit, [self.messages])
+        actual = app_tests_bundle.unpack(self.consumer, self.archive, self.commit)
+        self.assertEqual(actual, expected)
+        self.assertIn(pack, app_tests_bundle.district_members())
+        for name in (pack, part):
+            self.assertIn(name, actual["files"])
+        self.assertEqual((self.consumer / pack).read_bytes(), b"nature pack bytes")
+        self.assertEqual((self.consumer / part).read_bytes(), b"the nature zone's third part")
+        for other in ("zone_nature.0.spack", "zone_natures.spack", "zone_ward.spack"):
+            self.assertFalse(app_tests_bundle.is_district_member(app_tests_bundle.DISTRICT + "/" + other), other)
+
     def test_a_district_folder_that_isnt_the_cook_with_the_district_beside_it_cannot_be_packaged(self):
         district = self.workspace / app_tests_bundle.DISTRICT
         cases = (
             ("no district pack", lambda: (district / "zone_district.spack").unlink(), "must hold zone_district.spack"),
+            ("no nature pack", lambda: (district / "zone_nature.spack").unlink(), "must hold zone_nature.spack"),
             ("a cook file changed", lambda: self.replace(district / "shared.spack", b"other bytes"), "isn't the desktop cook's"),
             ("a file the cook lacks", lambda: (district / "extra.spack").write_bytes(b"extra"), "isn't the desktop cook's"),
             ("a cook file missing", lambda: (district / "zones/ward.spack").unlink(), "lacks the desktop cook's"),

@@ -27,8 +27,8 @@
 //!
 //! **What tests draw** ([`with_content`], M5 X4): the golden scenes and CI's scale lane (`cargo xtask counts`)
 //! run a shipping build, which mounts only what its release manifest names, so they take the shipped desktop
-//! cook with the `ci` district's pack beside it, in `target/bench/ci/with-content/desktop/`, and a manifest
-//! naming both that the pipeline writes (`sapphire_pipeline manifest`). The folder is a test's, never an
+//! cook with the `ci` district's and nature zone's packs beside it, in `target/bench/ci/with-content/desktop/`,
+//! and a manifest naming them all that the pipeline writes (`sapphire_pipeline manifest`). The folder is a test's, never an
 //! app's or a release's.
 
 use std::fs::{self, File};
@@ -230,8 +230,9 @@ fn clear_unmarked(dir: &Path) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// The district's pack in a preset's cook: the zone the generated sources are.
-pub const DISTRICT_PACK: &str = "zone_district.spack";
+/// The benchmark's zone packs in a preset's cook, each the zone a part of the generated sources is: the district
+/// (M5 B2) and the nature zone (M6 W1).
+pub const ZONE_PACKS: [&str; 2] = ["zone_district.spack", "zone_nature.spack"];
 
 /// Whether `preset` makes the kinds again: every preset past `ci`, whose kinds are the shipped ones
 /// (`bench/kinds.ron` gives `ci` none).
@@ -367,22 +368,25 @@ pub struct WithKinds {
     _bench: BenchCooked,
 }
 
-/// Makes `out` anew: every file of `shipped` (a cook of `content/`) but its manifest, linked, the district's pack
-/// from `bench` (a preset's cook) beside them, and a manifest of the folder from the pipeline, so a shipping build
-/// mounts both and a `dev` one finds both. [`with_content`]'s, and the benches at scale's (M5 Z1) for each cook.
+/// Makes `out` anew: every file of `shipped` (a cook of `content/`) but its manifest, linked, the benchmark's zone
+/// packs from `bench` (a preset's cook) beside them, and a manifest of the folder from the pipeline, so a shipping
+/// build mounts them all and a `dev` one finds them all. [`with_content`]'s, and the benches at scale's (M5 Z1)
+/// for each cook.
 pub fn put_beside(shipped: &Path, bench: &Path, out: &Path, cook: Cook) -> anyhow::Result<()> {
     if out.exists() {
         fs::remove_dir_all(out)?;
     }
     fs::create_dir_all(out)?;
     link_tree(shipped, out, &|name| name != MANIFEST)?;
-    if !bench.join(DISTRICT_PACK).is_file() {
-        bail!("the benchmark's cook in {} has no {DISTRICT_PACK}", bench.display());
+    for pack in ZONE_PACKS {
+        if !bench.join(pack).is_file() {
+            bail!("the benchmark's cook in {} has no {pack}", bench.display());
+        }
     }
-    // A district over the packer's cap is in parts (M6 K2): `zone_district.<part>.spack` beside its first.
+    // A zone over the packer's cap is in parts (M6 K2): `zone_district.<part>.spack` beside its first.
     for entry in fs::read_dir(bench)? {
         let name = entry?.file_name();
-        if is_district_part(&name.to_string_lossy()) {
+        if is_zone_part(&name.to_string_lossy()) {
             link(&bench.join(&name), &out.join(&name))?;
         }
     }
@@ -391,14 +395,16 @@ pub fn put_beside(shipped: &Path, bench: &Path, out: &Path, cook: Cook) -> anyho
     workspace::run(&mut manifest)
 }
 
-/// Whether a cook's file `name` is the district's pack or one of its parts (`sapphire_assets::pack::part_name`).
-fn is_district_part(name: &str) -> bool {
+/// Whether a cook's file `name` is one of the benchmark's zone packs or one of their parts
+/// (`sapphire_assets::pack::part_name`).
+fn is_zone_part(name: &str) -> bool {
     let Some(rest) = name.strip_suffix(".spack") else { return false };
-    let stem = DISTRICT_PACK.trim_end_matches(".spack");
-    rest == stem
-        || rest.strip_prefix(stem).and_then(|part| part.strip_prefix('.')).is_some_and(|part| {
-            !part.is_empty() && !part.starts_with('0') && part.bytes().all(|byte| byte.is_ascii_digit())
-        })
+    ZONE_PACKS.iter().map(|pack| pack.trim_end_matches(".spack")).any(|stem| {
+        rest == stem
+            || rest.strip_prefix(stem).and_then(|part| part.strip_prefix('.')).is_some_and(|part| {
+                !part.is_empty() && !part.starts_with('0') && part.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    })
 }
 
 /// A cook's release manifest, which [`put_beside`] writes anew.
@@ -471,9 +477,15 @@ mod tests {
     }
 
     #[test]
-    fn the_districts_parts_are_its_pack_and_its_numbered_parts() {
-        for name in ["zone_district.spack", "zone_district.1.spack", "zone_district.12.spack"] {
-            assert!(is_district_part(name), "{name}");
+    fn the_zones_parts_are_their_packs_and_their_numbered_parts() {
+        for name in [
+            "zone_district.spack",
+            "zone_district.1.spack",
+            "zone_district.12.spack",
+            "zone_nature.spack",
+            "zone_nature.2.spack",
+        ] {
+            assert!(is_zone_part(name), "{name}");
         }
         for name in [
             "zone_district.0.spack",
@@ -481,8 +493,10 @@ mod tests {
             "zone_district..spack",
             "zone_districts.spack",
             "zone_district.1",
+            "zone_natures.spack",
+            "shared.spack",
         ] {
-            assert!(!is_district_part(name), "{name}");
+            assert!(!is_zone_part(name), "{name}");
         }
     }
 

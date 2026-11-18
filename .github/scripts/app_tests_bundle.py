@@ -8,8 +8,9 @@ compiled with (`CARGO_BIN_EXE_*`, `CARGO_MANIFEST_DIR`, `CARGO_TARGET_TMPDIR`) h
 same checkout path, and runs a test executable from its package's directory, as `cargo test` does.
 
 The district's folder, `target/bench/ci/with-content/desktop`, is the desktop cook (hard-linked there) with
-the district's pack and a manifest naming both, which the sandbox's district play mounts. The bundle carries
-only those two files of it: `create` refuses a folder whose other files aren't the cook's bytes, and `unpack`
+the benchmark zones' packs (the district's and the nature zone's) and a manifest naming them all, which the sandbox's
+zone play mounts. The bundle carries
+only those files of it: `create` refuses a folder whose other files aren't the cook's bytes, and `unpack`
 lays the cook's files out in it again, linked, so the cook travels once.
 
 `create --tests-only` packages the test executables alone, with no sandbox, tool or cook: the GPU tests'
@@ -36,12 +37,13 @@ FORMAT = 3
 BINARIES = ("target/debug/sapphire_sandbox", "target/debug/sapphire_livelink")
 CONTENT = "target/content/desktop"
 TESTS = "target/debug/deps"
-# The desktop cook with the `ci` district beside it (M5 B5), and the files of it that aren't the cook's: the
-# district's pack and the folder's own release manifest. The cook's own manifest isn't laid out in it.
+# The desktop cook with the `ci` benchmark's zones beside it (M5 B5, M6 W1), and the files of it that aren't
+# the cook's: each zone's pack (`xtask::bench::ZONE_PACKS`: the district and the nature zone) and the folder's
+# own release manifest, which names them all. The cook's own manifest isn't laid out in it.
 DISTRICT = "target/bench/ci/with-content/desktop"
-DISTRICT_OWN = ("release.smanifest", "zone_district.spack")
-# A district over the packer's 128 MiB cap is in parts (M6 K2): its other parts beside the first, its own too.
-DISTRICT_PART = re.compile(r"zone_district\.[1-9][0-9]*\.spack")
+DISTRICT_OWN = ("release.smanifest", "zone_district.spack", "zone_nature.spack")
+# A zone over the packer's 128 MiB cap is in parts (M6 K2): its other parts beside the first, its own too.
+DISTRICT_PART = re.compile(r"zone_(district|nature)\.[1-9][0-9]*\.spack")
 COOK_MANIFEST = "release.smanifest"
 # Written by `unpack` for `run`; `target/tmp` is `CARGO_TARGET_TMPDIR`, which Cargo makes as it builds.
 MANIFEST = "target/app-tests.json"
@@ -109,7 +111,7 @@ def district_files(workspace: Path) -> dict:
         if not (district / name).is_file() or (district / name).is_symlink():
             raise ValueError(f"The district's folder must hold {name}: run `cargo xtask bench-content --with-content`")
         own[f"{DISTRICT}/{name}"] = district / name
-    for path in sorted(district.glob("zone_district.*.spack")):
+    for path in sorted(district.glob("zone_*.*.spack")):
         if DISTRICT_PART.fullmatch(path.name) and path.is_file() and not path.is_symlink():
             own[f"{DISTRICT}/{path.name}"] = path
     laid = set()

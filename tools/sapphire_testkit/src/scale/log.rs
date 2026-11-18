@@ -180,6 +180,10 @@ pub struct Excluded {
     /// A restart's own time within its frame: 0 for a reason that isn't one.
     pub restart_p50: f64,
     pub restart_worst: f64,
+    /// The most a restart's own share allocated on the frame's thread (M6 J2), where the bench counts allocations
+    /// by thread; a log from before J2, a reason that isn't a restart, or a target counting only the whole process
+    /// has none.
+    pub restart_allocations_worst: Option<u64>,
     /// What the frames allocated, all of them, and the most one frame did.
     pub allocations: u64,
     pub allocations_worst: u64,
@@ -320,6 +324,7 @@ impl Log {
                         on_core_worst: float("on_core_us_worst"),
                         restart_p50: read("restart_us_p50"),
                         restart_worst: read("restart_us_worst"),
+                        restart_allocations_worst: int("restart_allocations_worst"),
                         allocations: int("allocations").unwrap_or(0),
                         allocations_worst: int("allocations_worst").unwrap_or(0),
                     },
@@ -723,6 +728,9 @@ mod tests {
              cpu_us_worst=\"9200.0\" worst_tick=1201 on_core_us_worst=\"8900.0\" restart_us_p50=\"7850.0\" \
              restart_us_worst=\"7880.0\" allocations=22200 allocations_worst=11100 bytes=9 step_allocations=0\n\
              x  INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"untimed\" frames=0\n\
+             x  INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"restart\" frames=3 cpu_us_p50=\"1500.0\" \
+             cpu_us_worst=\"2500.0\" worst_tick=1 restart_us_p50=\"4.6\" restart_us_worst=\"21.0\" \
+             restart_allocations_worst=4 allocations=19692 allocations_worst=8754\n\
              x  INFO sapphire::sandbox: frames by core phase=\"cpu\" core=\"efficiency\" samples=20 share=0.020 \
              cpu_us_p50=\"2230.0\" cpu_us_p95=\"3000.0\" cpu_us_worst=\"4000.0\" on_core_us_p50=\"1100.0\" \
              on_core_us_p95=\"1500.0\" gpu_us_p50=None\n\
@@ -734,7 +742,14 @@ mod tests {
         assert_eq!((restart.frames, restart.cpu_worst, restart.worst_tick), (2, 9200.0, Some(1201)));
         assert_eq!((restart.on_core_worst, restart.restart_worst), (Some(8900.0), 7880.0));
         assert_eq!((restart.allocations, restart.allocations_worst), (22_200, 11_100));
+        assert_eq!(restart.restart_allocations_worst, None, "a line from before J2");
         assert_eq!(log.excluded[1].1, Excluded::default(), "none left out");
+        let spread = &log.excluded[2].1;
+        assert_eq!(
+            (spread.frames, spread.restart_worst, spread.restart_allocations_worst),
+            (3, 21.0, Some(4))
+        );
+        assert_eq!(spread.allocations_worst, 8_754, "the frames' own, apart from the restart's share");
         let ((_, core), efficiency) = &log.by_core[0];
         assert_eq!(core, "efficiency");
         assert_eq!(

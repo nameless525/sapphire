@@ -758,8 +758,10 @@ fn excluded_table(out: &mut String, rounds: &Rounds) {
         "Frames left out of the rows: a frame that starts a fight over (or a walk's tour), in the GPU phase one \
          whose timings never came back, and a plain bench's warm-up, each phase's by reason, every round. Times in \
          ms, p50 / worst, a fight's worst frame's tick and its time on the thread's core beside it; a restart's own time within its frame, which \
-         exit test 4 proposes holding under 1 ms a frame (shown, judged on nothing); allocations of the whole \
-         frames, all of them and the most in one.\n"
+         exit test 4 proposes holding under 1 ms a frame (shown, judged on nothing), and since M6 J2 the most it \
+         allocated on the frame's thread; allocations of the whole frames, all of them and the most in one, the \
+         warm-up pool's work beside them included. Since J2 a fight's restart spans several frames (asked, waited \
+         for, stood), so its frames and CPU frame don't compare with a log from before; its own time does.\n"
     );
     let _ = writeln!(
         out,
@@ -773,7 +775,10 @@ fn excluded_table(out: &mut String, rounds: &Rounds) {
                 continue;
             }
             let restart = if reason == "restart" {
-                format!("{} / {}", ms(excluded.restart_p50), ms(excluded.restart_worst))
+                let own = excluded.restart_allocations_worst.map_or_else(String::new, |count| {
+                    format!(", {} allocated on its thread", thousands(count))
+                });
+                format!("{} / {}{own}", ms(excluded.restart_p50), ms(excluded.restart_worst))
             } else {
                 String::new()
             };
@@ -1991,6 +1996,9 @@ mod tests {
                    restart_us_p50=\"7850.0\" restart_us_worst=\"7880.0\" allocations=22200 allocations_worst=11100 \
                    bytes=900000 step_allocations=0\n\
                    x INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"untimed\" frames=0\n\
+                   x INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"restart\" frames=3 \
+                   cpu_us_p50=\"1500.0\" cpu_us_worst=\"2500.0\" worst_tick=1 restart_us_p50=\"4.6\" \
+                   restart_us_worst=\"21.0\" restart_allocations_worst=4 allocations=19692 allocations_worst=8754\n\
                    x INFO sapphire::sandbox: bench excluded phase=\"cpu\" reason=\"warm-up\" frames=60 \
                    cpu_us_p50=\"1200.0\" cpu_us_worst=\"45000.0\" worst_frame=0 allocations=6000 \
                    allocations_worst=5000\n";
@@ -2003,6 +2011,13 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("| r1 | gpu | untimed | none |"), "{out}");
+        assert!(
+            out.contains(
+                "| r1 | gpu | restart | 3 | 1.500 / 2.500 @ tick 1 | not read | 0.005 / 0.021, 4 allocated on its \
+                 thread | 19,692 / 8,754 |"
+            ),
+            "a restart spread over frames (M6 J2), with its share's allocations on the frame's thread: {out}"
+        );
         assert!(
             out.contains("| r1 | cpu | warm-up | 60 | 1.200 / 45.00 | not read |  | 6,000 / 5,000 |"),
             "a plain bench's warm-up, which has no tick: {out}"

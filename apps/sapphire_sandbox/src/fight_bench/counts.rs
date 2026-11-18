@@ -566,7 +566,7 @@ pub(super) fn report_drawn(trace: &[Traced], phase: Phase, every: u32, budgets: 
 
 /// Logs each count row over `phase`'s frames, and its frames' times by the kind of core they ran on.
 pub(super) fn report(trace: &[Traced], phase: Phase, budgets: &RunBudgets) {
-    let frames = || trace.iter().filter(move |frame| frame.phase == phase && frame.restart.is_zero());
+    let frames = || trace.iter().filter(move |frame| frame.phase == phase && frame.restart.is_none());
     if frames().next().is_none() {
         return;
     }

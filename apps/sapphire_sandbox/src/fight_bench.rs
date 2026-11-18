@@ -11,9 +11,11 @@
 //!   has at least `<frames>` frames, so `--bench 1` plays one.
 //! - **Frames as the tier has them:** [`steps_a_frame`] fixed steps a frame at the tier's own rate, two
 //!   on Mobile-Low, with `Stage::fixed_step` and the frame's end around them, as the windowed app does.
-//! - **A fight starting over** happens inside a frame, where a real one would: a replay's new
-//!   [`Combat`] (which reads the file a fight with no file doesn't), or `Combat::restart`. The fight's
-//!   checksums are held to the headless run's at the end of each.
+//! - **A fight starting over** happens as the game's does (M6 J2): a replay's next [`Combat`] (which reads the file
+//!   a fight with no file doesn't) is prepared on the warm-up pool (`Fight::prepare_run_off_frame`) from the
+//!   frame after the last one ends, and stands on the first frame it's ready; a fight with no file starts over
+//!   in place (`Combat::restart`). Each frame of it is a restart frame, with its own share of the restart. The
+//!   fight's checksums are held to the headless run's at the end of each, after the frame that ended it.
 //! - **Sound** runs through `OfflineAudio`: the real mixer and the fight's real cues, with no device, so
 //!   §3.2's audio row is measured and no run that draws opens a device. The mix runs after the frame's
 //!   CPU time, since a phone mixes on the audio callback.
@@ -26,11 +28,12 @@
 //!
 //! **Frames left out are rows of their own** (M6 B3): a frame that starts a fight over, and in the GPU phase one
 //! whose timings never came back, are in no row's spread; each phase logs them by reason (`fight excluded`) with
-//! their count, their CPU frame's median and worst, a restart's own time, and what they allocated. **The thread's
-//! CPU time** (`sapphire_platform::thread_cpu_time`) is read beside the wall time over the frame's CPU span, its
-//! record (`FrameLaps::record_on_core`) and its wait for the GPU, as the `... on core` rows: what the wall has over
-//! it, the thread spent off its core, waiting on the encoders' workers, the driver or the GPU, or set aside by the
-//! machine's other work. Drawn offscreen, the GPU wait stands where a window's acquire would block.
+//! their count, their CPU frame's median and worst, a restart's own time and what it allocated on the frame's
+//! thread (M6 J2, where counts are kept by thread), and what the frames allocated, the warm-up pool's work beside
+//! them included. **The thread's CPU time** (`sapphire_platform::thread_cpu_time`) is read beside the wall time
+//! over the frame's CPU span, its record (`FrameLaps::record_on_core`) and its wait for the GPU, as the
+//! `... on core` rows: what the wall has over it, the thread spent off its core, waiting on the encoders' workers,
+//! the driver or the GPU, or set aside by the machine's other work. Drawn offscreen, the GPU wait stands where a window's acquire would block.
 //!
 //! **Overlapping** (`--bench-overlap`, M6 B7, `crate::bench::overlap`), each phase starts from an empty queue and each
 //! frame waits for the frame graph's submission two frames back, not for everything: the `gpu wait` rows are that
@@ -79,6 +82,7 @@ use crate::offscreen::Stage;
 use crate::options::Options;
 use game_combat::combat::Combat;
 use game_combat::combat::CombatOption;
+use game_combat::fight::NextRun;
 use game_combat::fight::trip::TripPhase;
 use sapphire_stage::FrameLaps;
 use sapphire_stage::audio::OfflineAudio;
@@ -207,8 +211,14 @@ struct Traced {
     /// The thread's CPU time over [`Self::cpu`] and over [`Self::wait`] (M6 B3), `None` where the OS doesn't say.
     cpu_on_core: Option<Duration>,
     wait_on_core: Option<Duration>,
-    /// Starting a fight over, within [`Self::cpu`].
-    restart: Duration,
+    /// Its share of starting a fight over, within [`Self::cpu`]: `None` on a frame that started nothing over. A
+    /// fight's restart spreads over frames (M6 J2), each of them a restart frame with its own share.
+    restart: Option<Duration>,
+    /// Allocations on the frame's thread within [`Self::restart`]: the frame's own share, where
+    /// [`Self::allocations`] counts the whole process, the warm-up pool preparing the next fight included. Where
+    /// counts aren't kept by thread (`alloc::PER_THREAD_COUNTS`, Android's target) it's the process's too, and
+    /// [`report_excluded`] doesn't log it.
+    restart_allocations: u64,
     laps: FrameLaps,
     /// The audio system's update, within [`Self::cpu`].
     audio: Duration,
@@ -427,7 +437,7 @@ fn spread(values: impl Iterator<Item = (Duration, u64)>) -> Option<Spread> {
 /// and GPU rows read only frames whose timings came back.
 fn counts(row: &Row, frame: &Traced, phase: Phase) -> bool {
     frame.phase == phase
-        && frame.restart.is_zero()
+        && frame.restart.is_none()
         && (!row.gpu || frame.gpu.timed)
         && (row.read)(frame).is_some()
 }
@@ -485,8 +495,8 @@ impl Excluded {
     /// is a restart frame first.
     fn holds(self, frame: &Traced, phase: Phase) -> bool {
         match self {
-            Self::Restart => !frame.restart.is_zero(),
-            Self::Untimed => phase == Phase::Gpu && frame.restart.is_zero() && !frame.gpu.timed,
+            Self::Restart => frame.restart.is_some(),
+            Self::Untimed => phase == Phase::Gpu && frame.restart.is_none() && !frame.gpu.timed,
         }
     }
 }
@@ -550,7 +560,7 @@ fn slow_shares(values: &[(Duration, bool)]) -> (f64, f64) {
 /// 60 Hz lock over the frames slow in either, which voids a round.
 fn gpu_reading(backend: wgpu::Backend, frames: &[&Traced], in_flight: &[bool]) {
     let timed: Vec<usize> =
-        (0..frames.len()).filter(|&at| frames[at].gpu.timed && frames[at].restart.is_zero()).collect();
+        (0..frames.len()).filter(|&at| frames[at].gpu.timed && frames[at].restart.is_none()).collect();
     let quiet = timed.iter().filter(|&&at| !in_flight[at]).count();
     let pass = |read: fn(&GpuTimes) -> Option<Duration>| -> Vec<(usize, Duration)> {
         timed.iter().filter_map(|&at| Some((at, read(&frames[at].gpu)?))).collect()
@@ -619,6 +629,8 @@ struct Run<'a> {
     /// the tour sets again, so every phase walks the same stretch of the day (M5 Z1). `None` where time stands
     /// still or for a fight, which nothing here changes.
     walk_hour: Option<f32>,
+    /// A replay's next fight, on the warm-up pool from the frame its restart began until the frame it stands.
+    next_run: Option<NextRun>,
 }
 
 /// The render and compute pipelines the stage's device has: zero where its backend can't say.
@@ -671,6 +683,7 @@ pub(crate) fn run(
         loads,
         walk_hour: None,
         waits: GpuWait::new(options.bench_overlap),
+        next_run: None,
     };
     if option.is_none() && run.stage.scene.time_of_day().clock().day_length().is_some() {
         run.walk_hour = Some(run.stage.scene.time_of_day().clock().hours(1.0));
@@ -737,7 +750,11 @@ impl Run<'_> {
                 first_hour = self.stage.scene.time_of_day().clock().hours(1.0);
             }
             self.check_first_uses()?;
-            start_over = false;
+            // A fight's restart goes on until the next one stands (M6 J2), and no phase ends inside one.
+            start_over = self.next_run.is_some();
+            if start_over {
+                continue;
+            }
             let over = self.stage.show.fight.combat.as_ref().and_then(Combat::ticks_left) == Some(0);
             let endless = self.stage.show.fight.combat.as_ref().and_then(Combat::ticks_left).is_none();
             if played >= frames && (over || endless) {
@@ -787,26 +804,35 @@ impl Run<'_> {
     ) -> Result<Traced, AppInitError> {
         let stage = &mut *self.stage;
         stage.laps = FrameLaps::default();
-        // Checking the last one's checksums and logging is the bench's, not a frame's.
-        if start_over && matches!(self.option, Some(CombatOption::Replay { .. })) {
-            stage.show.fight.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)?;
-        }
         let cues_before =
             stage.show.fight.show.cue_show().map(game_combat::cues::CueShow::stats).unwrap_or_default();
-        let sim_before =
-            stage.show.fight.combat.as_ref().map_or(0, |combat| combat.simulation().stats().allocations);
-        let script_before = stage.show.fight.combat.as_ref().and_then(Combat::script_time);
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
         let cpu = Stopwatch::start();
         let mut on_core = OnCore::start();
-        let mut restart = Duration::ZERO;
+        let mut restart = None;
+        let mut restart_allocations = 0;
+        // The fight a restart ended: checking its checksums and letting it go are the bench's, not a frame's.
+        let mut ended = None;
         if start_over {
+            let scope = AllocScope::begin();
             match self.option {
+                // As a game's run starts over under its wipe (M4 H4): the next fight is prepared on the warm-up pool
+                // while the frames go on, each holding only its share of asking for it, and stands on the first
+                // frame it's ready (M6 J2).
                 Some(option @ CombatOption::Replay { .. }) => {
-                    let combat = stage.show.fight.prepare_stock_combat(option, &mut stage.content)?;
-                    stage.show.fight.attach_prepared_combat(combat, &mut stage.scene, &stage.content)?;
+                    let next =
+                        self.next_run.get_or_insert_with(|| stage.show.fight.prepare_run_off_frame(option));
+                    let ready = next
+                        .poll(&mut stage.show.fight, || Ok(&mut stage.content))
+                        .map_err(AppInitError::msg)?;
+                    if let Some(combat) = ready {
+                        self.next_run = None;
+                        ended = stage.show.fight.combat.take();
+                        stage.show.fight.attach_prepared_combat(*combat, &mut stage.scene, &stage.content)?;
+                    }
                 }
+                // A fight with no file starts over in place, allocating nothing (`FightWorld::restart`).
                 Some(_) => {
                     if let Some(combat) = &mut stage.show.fight.combat {
                         combat.restart();
@@ -820,8 +846,13 @@ impl Run<'_> {
                     }
                 }
             }
-            restart = stopwatch.lap();
+            restart = Some(stopwatch.lap());
+            restart_allocations = scope.counts().allocations;
         }
+        // Of the fight the frame steps, which a restart may just have stood.
+        let sim_before =
+            stage.show.fight.combat.as_ref().map_or(0, |combat| combat.simulation().stats().allocations);
+        let script_before = stage.show.fight.combat.as_ref().and_then(Combat::script_time);
         let scope = AllocScope::begin();
         let mut steps = 0;
         for _ in 0..self.steps {
@@ -851,6 +882,9 @@ impl Run<'_> {
         let wait_on_core = on_core.lap();
         let mix = self.audio.as_mut().map_or(Duration::ZERO, |audio| audio.mix(frame_dt));
         let after = alloc::stats();
+        if let Some(ended) = ended {
+            ended.finish().map_err(AppInitError::msg)?;
+        }
 
         let anim = stage.scene.anim_stats();
         let ambient = stage.scene.ambient_stats();
@@ -896,6 +930,7 @@ impl Run<'_> {
             cpu_on_core,
             wait_on_core,
             restart,
+            restart_allocations,
             laps: stage.laps,
             audio: audio_time,
             mix,
@@ -982,7 +1017,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
     );
     for phase in Phase::ALL {
         let frames = || run.trace.iter().filter(move |frame| frame.phase == phase);
-        let measured = || frames().filter(|frame| frame.restart.is_zero());
+        let measured = || frames().filter(|frame| frame.restart.is_none());
         let in_flight = uploads_in_flight(&frames().map(Traced::uploaded).collect::<Vec<_>>());
         for row in ROWS.iter().filter(|row| row.gpu == (phase == Phase::Gpu)) {
             // Each value with its frame's place in the phase, which names the worst frame's tick and where a
@@ -1083,15 +1118,16 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
 fn overlap_samples<'a>(frames: impl Iterator<Item = &'a Traced>) -> Vec<Sample> {
     frames
         .filter_map(|frame| {
-            let gpu = frame.gpu.start.zip(frame.gpu.end).filter(|_| frame.restart.is_zero());
+            let gpu = frame.gpu.start.zip(frame.gpu.end).filter(|_| frame.restart.is_none());
             Some(Sample { submitted: frame.submitted?, cpu: frame.cpu, wait: frame.wait, gpu })
         })
         .collect()
 }
 
 /// What a phase's frames left out of the rows for `reason` cost (M6 B3), as a row of their own: how many, their
-/// CPU frame's median and worst with the thread's CPU time over that worst frame, a restart's own time, and what
-/// they allocated, all of it and the most in one frame. With none, a line saying so: none left out, not unlogged.
+/// CPU frame's median and worst with the thread's CPU time over that worst frame, a restart's own time and the most
+/// it allocated on the frame's thread (M6 J2, only where counts are kept by thread), and what they allocated, all of
+/// it and the most in one frame. With none, a line saying so: none left out, not unlogged.
 fn report_excluded(frames: &[&Traced], phase: Phase, reason: Excluded) {
     let micros = |duration: Duration| format!("{:.1}", duration.as_secs_f64() * 1e6);
     let Some(cpu) = spread(frames.iter().enumerate().map(|(at, frame)| (frame.cpu, at as u64))) else {
@@ -1099,7 +1135,8 @@ fn report_excluded(frames: &[&Traced], phase: Phase, reason: Excluded) {
         return;
     };
     let worst = frames[cpu.worst_tick as usize];
-    let restart = spread(frames.iter().map(|frame| (frame.restart, frame.tick))).expect("frames");
+    let restart =
+        spread(frames.iter().map(|frame| (frame.restart.unwrap_or_default(), frame.tick))).expect("frames");
     tracing::info!(
         target: LOG_TARGET,
         phase = phase.name(),
@@ -1111,6 +1148,8 @@ fn report_excluded(frames: &[&Traced], phase: Phase, reason: Excluded) {
         on_core_us_worst = worst.cpu_on_core.map(micros),
         restart_us_p50 = micros(restart.p50),
         restart_us_worst = micros(restart.worst),
+        restart_allocations_worst = alloc::PER_THREAD_COUNTS
+            .then(|| frames.iter().map(|frame| frame.restart_allocations).max().unwrap_or(0)),
         allocations = frames.iter().map(|frame| frame.allocations).sum::<u64>(),
         allocations_worst = frames.iter().map(|frame| frame.allocations).max().unwrap_or(0),
         bytes = frames.iter().map(|frame| frame.bytes).sum::<u64>(),
@@ -1247,7 +1286,7 @@ fn trace_line_into(frame: &Traced, line: &mut String) {
     times(&[
         frame.cpu,
         frame.wait,
-        frame.restart,
+        frame.restart.unwrap_or_default(),
         laps.scene_step,
         laps.simulation,
         laps.physics,
@@ -1376,7 +1415,8 @@ mod tests {
             submitted: None,
             cpu_on_core: None,
             wait_on_core: None,
-            restart: Duration::ZERO,
+            restart: None,
+            restart_allocations: 0,
             laps: FrameLaps::default(),
             audio: Duration::ZERO,
             mix: Duration::ZERO,
@@ -1450,7 +1490,10 @@ mod tests {
         let frame = traced(1, 10);
         assert!(counts(cpu, &frame, Phase::Cpu));
         assert!(!counts(cpu, &frame, Phase::Gpu), "another phase's");
-        assert!(!counts(cpu, &Traced { restart: Duration::from_micros(1), ..frame }, Phase::Cpu));
+        assert!(
+            !counts(cpu, &Traced { restart: Some(Duration::ZERO), ..frame }, Phase::Cpu),
+            "a restart's however short"
+        );
         assert!(!counts(gpu, &frame, Phase::Cpu), "never timed");
         let timed = Traced {
             gpu: GpuTimes { timed: true, span: Some(Duration::ZERO), ..GpuTimes::default() },
@@ -1466,7 +1509,7 @@ mod tests {
         let cpu = &ROWS[0];
         let gpu = ROWS.iter().find(|row| row.name == "gpu frame").expect("the GPU frame's row");
         let timed = GpuTimes { timed: true, span: Some(Duration::from_micros(1)), ..GpuTimes::default() };
-        let restart = Duration::from_micros(7);
+        let restart = Some(Duration::from_micros(7));
         let frames = [
             traced(1, 10),
             Traced { restart, ..traced(2, 10) },
@@ -1483,7 +1526,7 @@ mod tests {
                 // Read by the row, or left out for one reason: never both, never neither.
                 assert_eq!(counts(row, &frame, phase), reasons.is_empty(), "{phase:?} {frame:?}");
                 assert!(reasons.len() <= 1, "{reasons:?}");
-                if !frame.restart.is_zero() {
+                if frame.restart.is_some() {
                     assert_eq!(reasons, [Excluded::Restart]);
                 }
             }
@@ -1496,8 +1539,11 @@ mod tests {
     #[test]
     fn the_threads_cpu_time_and_its_rows_allocate_nothing_a_frame() {
         assert!(alloc::is_installed(), "the sandbox counts its allocations");
-        let frame =
-            Traced { restart: Duration::from_micros(5), cpu_on_core: Some(Duration::ZERO), ..traced(3, 100) };
+        let frame = Traced {
+            restart: Some(Duration::from_micros(5)),
+            cpu_on_core: Some(Duration::ZERO),
+            ..traced(3, 100)
+        };
         let rows: Vec<&Row> =
             ROWS.iter().filter(|row| row.name.ends_with(" on core") || row.name == "record").collect();
         assert_eq!(rows.len(), 4);
@@ -1661,7 +1707,7 @@ mod tests {
         let frame = |at: u64| Traced { submitted: Some(ms(at)), gpu: gpu(at + 1), ..traced(at, 2_000) };
         let frames = [
             frame(0),
-            Traced { restart: ms(1), ..frame(10) },
+            Traced { restart: Some(ms(1)), ..frame(10) },
             frame(20),
             Traced { gpu: GpuTimes { timed: true, ..GpuTimes::default() }, ..frame(30) },
             frame(40),

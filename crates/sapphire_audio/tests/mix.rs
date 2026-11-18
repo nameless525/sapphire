@@ -2,7 +2,7 @@
 //! rules do to the samples.
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Bus, Cue, HitstopResponse};
+use sapphire_assets::cue::{Bus, Cue, CueNode, HitstopResponse};
 use sapphire_assets::mix::Mix;
 use sapphire_assets::mouth::MouthCurve;
 use sapphire_assets::sound::DecodedSound;
@@ -54,7 +54,7 @@ fn tone(hz: f32, seconds: f32, envelope: impl Fn(f32) -> f32) -> DecodedSound {
 
 fn cue_on(bus: Bus, sound: AssetId, volume_db: f32) -> Cue {
     Cue {
-        sounds: vec![sound],
+        play: CueNode::one_of(vec![sound]),
         volume_db: [volume_db, volume_db],
         pitch: [1.0, 1.0],
         attenuation: None,
@@ -133,7 +133,7 @@ fn slow_motion(mix: Option<&Mix>) -> Vec<(f32, f32)> {
     let mut left = Vec::new();
     for index in 0..135 {
         let scale = if (15..75).contains(&index) { 0.2 } else { 1.0 };
-        let play = [CueRequest { cue: CUE, target: CueTarget::Flat }];
+        let play = [CueRequest::new(CUE, CueTarget::Flat)];
         let cues: &[CueRequest] = if index == 0 { &play } else { &[] };
         left.extend(step(&mut system, &frame(scale, &[], cues), &mut rng));
     }
@@ -187,7 +187,7 @@ fn a_line_ducks_the_music_and_lets_it_up_in_a_pause() {
     let mut levels = Vec::new();
     for index in 0..150 {
         let cue = if index == music_at { MUSIC_CUE } else { LINE };
-        let play = [CueRequest { cue, target: CueTarget::Flat }];
+        let play = [CueRequest::new(cue, CueTarget::Flat)];
         let cues: &[CueRequest] = if index == music_at || index == line_at { &play } else { &[] };
         levels.push(rms_db(&step(&mut system, &frame(1.0, &[], cues), &mut rng)));
     }
@@ -225,12 +225,12 @@ fn a_pause_holds_the_worlds_tails_and_leaves_the_music() {
         system.add_sound(MUSIC_SOUND, &music);
         system.add_cue(MUSIC_CUE, cue_on(Bus::Music, MUSIC_SOUND, 0.0));
         let mut rng = CueRng::new(1);
-        let play = [CueRequest { cue: MUSIC_CUE, target: CueTarget::Flat }];
+        let play = [CueRequest::new(MUSIC_CUE, CueTarget::Flat)];
         for index in 0..20 {
             let cues: &[CueRequest] = if index == 0 { &play } else { &[] };
             step(&mut system, &frame(1.0, &[], cues), &mut rng);
         }
-        let hit = [CueRequest { cue: CUE, target: CueTarget::Flat }];
+        let hit = [CueRequest::new(CUE, CueTarget::Flat)];
         let pause = [PAUSE_SNAPSHOT];
         (0..90)
             .map(|index| {

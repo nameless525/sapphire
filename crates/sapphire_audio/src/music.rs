@@ -228,7 +228,7 @@ fn next_bar(beats: Option<f64>, loaded: &LoadedScore) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use sapphire_assets::cue::{Bus, Cue, HitstopResponse};
+    use sapphire_assets::cue::{Bus, Cue, CueNode, HitstopResponse};
     use sapphire_assets::mix::{DuckFollow, DuckRule, DuckTarget, Mix};
     use sapphire_assets::score::{Phase, Stem};
     use sapphire_assets::sound::DecodedSound;
@@ -299,7 +299,7 @@ mod tests {
         for id in STEMS.into_iter().chain([LINE_EN, LINE_JA]) {
             system.add_sound(id, &sound);
             let cue = Cue {
-                sounds: vec![id],
+                play: CueNode::one_of(vec![id]),
                 volume_db: [0.0, 0.0],
                 pitch: [1.0, 1.0],
                 attenuation: None,

@@ -3,7 +3,7 @@
 //! `system.rs`.
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Bus, Cue};
+use sapphire_assets::cue::{Bus, Cue, CueNode};
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
     AudioFrame, AudioSystem, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend, Listener,
@@ -74,10 +74,10 @@ fn mixer() -> AudioSystem<KiraBackend<OfflineOutput>> {
     system.add_sound(STEP, &tone(STEP_HZ, 0.3));
     system.add_sound(ROAR, &tone(ROAR_HZ, 2.5));
     system.add_sound(HUM, &sweep(0.5));
-    let flat = Cue { sounds: vec![STEP], bus: Bus::Sfx, ..Cue::default() };
+    let flat = Cue { play: CueNode::one_of(vec![STEP]), bus: Bus::Sfx, ..Cue::default() };
     system.add_cue(STEP, Cue { volume_db: [-30.0, -30.0], priority: 40, ..flat.clone() });
-    system.add_cue(ROAR, Cue { sounds: vec![ROAR], priority: 200, ..flat.clone() });
-    system.add_cue(HUM, Cue { sounds: vec![HUM], priority: 10, looped: true, ..flat });
+    system.add_cue(ROAR, Cue { play: CueNode::one_of(vec![ROAR]), priority: 200, ..flat.clone() });
+    system.add_cue(HUM, Cue { play: CueNode::one_of(vec![HUM]), priority: 10, looped: true, ..flat });
     system
 }
 
@@ -105,14 +105,14 @@ fn step(
 }
 
 fn footsteps(count: usize) -> Vec<CueRequest> {
-    vec![CueRequest { cue: STEP, target: CueTarget::Flat }; count]
+    vec![CueRequest::new(STEP, CueTarget::Flat); count]
 }
 
 /// The boss's roar asked for in a frame of 199 footsteps, after them, and in a frame after 64 footsteps hold
 /// every voice: either way it's mixed, and footsteps make the room.
 #[test]
 fn a_storm_of_footsteps_keeps_the_bosss_roar() {
-    let roar = CueRequest { cue: ROAR, target: CueTarget::Flat };
+    let roar = CueRequest::new(ROAR, CueTarget::Flat);
 
     // 200 requests in one frame.
     let mut system = mixer();
@@ -146,7 +146,7 @@ fn a_storm_of_footsteps_keeps_the_bosss_roar() {
 #[test]
 fn a_virtual_loop_comes_back_in_place_without_a_click() {
     let boss = [Emitter { id: BOSS, position: Vec3::ZERO, hitstop: false }];
-    let hum = [CueRequest { cue: HUM, target: CueTarget::On(BOSS) }];
+    let hum = [CueRequest::new(HUM, CueTarget::On(BOSS))];
     let run = |roar_at: Option<usize>| {
         let mut system = mixer();
         system.set_voice_caps(VoiceCaps { real: 1, virtual_voices: 4 });
@@ -154,12 +154,17 @@ fn a_virtual_loop_comes_back_in_place_without_a_click() {
         system.add_sound(ROAR, &tone(ROAR_HZ, 0.6));
         system.add_cue(
             ROAR,
-            Cue { sounds: vec![ROAR], volume_db: [-50.0, -50.0], priority: 200, ..Cue::default() },
+            Cue {
+                play: CueNode::one_of(vec![ROAR]),
+                volume_db: [-50.0, -50.0],
+                priority: 200,
+                ..Cue::default()
+            },
         );
         let mut rng = CueRng::new(1);
         let (mut out, mut went, mut back) = (Vec::new(), None, None);
         for frame in 0..90 {
-            let roar = [CueRequest { cue: ROAR, target: CueTarget::Flat }];
+            let roar = [CueRequest::new(ROAR, CueTarget::Flat)];
             let cues: &[CueRequest] = if frame == 0 {
                 &hum
             } else if Some(frame) == roar_at {

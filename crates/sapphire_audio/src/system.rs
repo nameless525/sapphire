@@ -19,6 +19,7 @@ use crate::backend::{
     AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, STOP_FADE, StartError, VIRTUAL_FADE,
     VoiceParams, VoiceSlot, VoiceStart,
 };
+use crate::events::{CueParameters, CuePlan, ParameterValue};
 use crate::mix::MixState;
 use crate::music::{Music, MusicRequest};
 use crate::rng::CueRandom;
@@ -142,6 +143,22 @@ pub struct CueRequest {
     /// The cue, added with [`AudioSystem::add_cue`].
     pub cue: AssetId,
     pub target: CueTarget,
+    /// What its tree's switches and blends read (M6 U4a): a footstep's [`SURFACE`](crate::SURFACE).
+    pub parameters: CueParameters,
+}
+
+impl CueRequest {
+    /// `cue` at `target`, with no parameters.
+    #[must_use]
+    pub const fn new(cue: AssetId, target: CueTarget) -> Self {
+        Self { cue, target, parameters: CueParameters::NONE }
+    }
+
+    /// The same, with `name` set to `value` if there's room ([`MAX_CUE_PARAMETERS`](crate::MAX_CUE_PARAMETERS)).
+    #[must_use]
+    pub fn with(self, name: Name, value: ParameterValue) -> Self {
+        Self { parameters: self.parameters.with(name, value), ..self }
+    }
 }
 
 /// One voice line to speak, in the chosen voice language: a cue that language's
@@ -393,7 +410,8 @@ struct Tracked {
 /// them in step with the world's clock and each actor's hitstop. See the [crate docs](crate).
 pub struct AudioSystem<B: AudioBackend> {
     backend: B,
-    cues: HashMap<AssetId, Cue>,
+    /// Each cue, with its tree laid out for starts and what that remembers (M6 U4a).
+    cues: HashMap<AssetId, (Cue, CuePlan)>,
     /// Each sound's length in seconds, kept with [`Self::add_sound`].
     lengths: HashMap<AssetId, f64>,
     /// Real, virtual and just asked for, oldest first.
@@ -549,9 +567,11 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.mouths.get(&sound)
     }
 
-    /// Makes a cue playable. Load-time work, as is [`Self::add_sound`] for each of its sounds.
+    /// Makes a cue playable, its random nodes and sequences remembering nothing yet. Load-time work, as is
+    /// [`Self::add_sound`] for each of its sounds.
     pub fn add_cue(&mut self, id: AssetId, cue: Cue) {
-        self.cues.insert(id, cue);
+        let plan = CuePlan::new(&cue.play);
+        self.cues.insert(id, (cue, plan));
     }
 
     /// Makes a decoded sound playable.
@@ -684,8 +704,8 @@ impl<B: AudioBackend> AudioSystem<B> {
 
     /// One frame: takes the emitters, moves the mix's snapshots and ducks, starts the frame's cues and lines,
     /// follows the music's phase, and brings every voice and bus up to date. Picks come from `random`,
-    /// in request order, lines after cues: one number for the sound, one for the volume, one for the
-    /// pitch, whatever the cue's ranges.
+    /// in request order, lines after cues: one number for the sounds, one for the volume, one for the
+    /// pitch, whatever the cue's tree and ranges.
     pub fn update(&mut self, frame: &AudioFrame<'_>, random: &mut impl CueRandom) {
         profiling::scope!("AudioSystem::update");
         let timer = Stopwatch::start();
@@ -724,7 +744,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             };
             self.stats.lines_asked += 1;
             if state.plays() {
-                self.start_cue(&CueRequest { cue, target: request.target }, &frame.listener, random, None);
+                self.start_cue(&CueRequest::new(cue, request.target), &frame.listener, random, None);
             } else {
                 self.stats.dropped_no_output += 1;
             }
@@ -954,7 +974,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             Some(cue) => {
                 self.stats.lines_asked += 1;
                 if state.plays() {
-                    let request = CueRequest { cue, target: asked.target };
+                    let request = CueRequest::new(cue, asked.target);
                     speech.voice = self.start_cue(&request, listener, random, Some(asked.held));
                 } else {
                     self.stats.dropped_no_output += 1;
@@ -964,9 +984,10 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.speech = Some(speech);
     }
 
-    /// Asks for `request`'s voice, placed with the rest at the end of the update: the conversation's line if
-    /// `speech` says whether it's held. Its own limit and its group's make room or refuse it first. The voice's
-    /// serial and the sound it picked, if it was let in.
+    /// Asks for `request`'s voice, the first sound its tree picks, placed with the rest at the end of the update:
+    /// the conversation's line if `speech` says whether it's held. Its own limit and its group's make room or
+    /// refuse it first. The voice's serial and the sound it picked, if it was let in. What its tree remembers,
+    /// avoid-repeat's last picks and a sequence's next, moves on only if it was.
     fn start_cue(
         &mut self,
         request: &CueRequest,
@@ -974,13 +995,33 @@ impl<B: AudioBackend> AudioSystem<B> {
         random: &mut impl CueRandom,
         speech: Option<bool>,
     ) -> Option<(VoiceId, AssetId)> {
-        let Some(cue) = self.cues.get(&request.cue) else {
+        let started = self.start_picked(request, listener, random, speech);
+        if let Some((_, plan)) = self.cues.get_mut(&request.cue) {
+            plan.settle(started.is_some());
+        }
+        started
+    }
+
+    /// [`Self::start_cue`], its tree's memory left to settle.
+    fn start_picked(
+        &mut self,
+        request: &CueRequest,
+        listener: &Listener,
+        random: &mut impl CueRandom,
+        speech: Option<bool>,
+    ) -> Option<(VoiceId, AssetId)> {
+        let Some((cue, plan)) = self.cues.get_mut(&request.cue) else {
             self.count_unknown(|| format!("cue {} isn't loaded", request.cue));
             return None;
         };
-        // Always the same three numbers, so a change in one cue's ranges moves no other's picks.
+        // Always the same three numbers, whatever the cue's tree and ranges, so one cue's shape moves no other's
+        // picks.
         let (pick, volume, pitch) = (random.next_u32(), random.next_unit(), random.next_unit());
-        let sound = cue.sounds[pick as usize % cue.sounds.len()];
+        let picks = plan.pick(pick, &request.parameters);
+        let Some(&(sound, tree_db)) = picks.as_slice().first() else {
+            self.count_unknown(|| format!("cue {} picked no sound", request.cue));
+            return None;
+        };
         let place = match request.target {
             CueTarget::Flat => Place::Flat,
             CueTarget::At(position) => Place::At(position),
@@ -990,8 +1031,10 @@ impl<B: AudioBackend> AudioSystem<B> {
             cue.group.as_deref().and_then(|name| self.groups.iter().position(|group| group.name == name));
         let [quiet, loud] = cue.volume_db;
         let [slow, fast] = cue.pitch;
+        let gain_db = quiet + (loud - quiet) * volume;
+        let id = VoiceId(self.next_id);
         let mut voice = Voice {
-            id: VoiceId(self.next_id),
+            id,
             mode: Mode::Asked,
             cue: request.cue,
             sound,
@@ -1006,7 +1049,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             seconds: 0.0,
             attenuation: cue.attenuation,
             hitstop: cue.hitstop,
-            gain_db: quiet + (loud - quiet) * volume,
+            gain_db: gain_db + tree_db,
             pitch: slow + (fast - slow) * pitch,
             sent: VoiceParams::NEUTRAL,
             frozen: false,
@@ -1038,7 +1081,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
         self.next_id += 1;
         self.voices.push(voice);
-        Some((voice.id, sound))
+        Some((id, sound))
     }
 
     /// Makes room for `new` among the live voices `counts` picks, `max` at most, by `rule`: whether it may play.
@@ -1352,7 +1395,7 @@ fn moved(now: VoiceParams, sent: VoiceParams) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use sapphire_assets::cue::{AttenuationCurve, Limit};
+    use sapphire_assets::cue::{AttenuationCurve, CueNode, Limit};
 
     use super::*;
     use crate::mock::{MockBackend, MockCall};
@@ -1370,7 +1413,7 @@ mod tests {
 
     fn plain_cue() -> Cue {
         Cue {
-            sounds: vec![SOUND_A],
+            play: CueNode::one_of(vec![SOUND_A]),
             volume_db: [0.0, 0.0],
             pitch: [1.0, 1.0],
             attenuation: None,
@@ -1422,7 +1465,7 @@ mod tests {
     }
 
     fn play(target: CueTarget) -> [CueRequest; 1] {
-        [CueRequest { cue: CUE, target }]
+        [CueRequest::new(CUE, target)]
     }
 
     fn actor_at(position: Vec3) -> Emitter {
@@ -1454,8 +1497,12 @@ mod tests {
 
     #[test]
     fn the_seed_pins_every_pick() {
-        let cue =
-            Cue { sounds: vec![SOUND_A, SOUND_B], volume_db: [-6.0, 0.0], pitch: [0.8, 1.2], ..plain_cue() };
+        let cue = Cue {
+            play: CueNode::one_of(vec![SOUND_A, SOUND_B]),
+            volume_db: [-6.0, 0.0],
+            pitch: [0.8, 1.2],
+            ..plain_cue()
+        };
         let picks = |seed| {
             let mut system = system_with(cue.clone());
             let mut rng = CueRng::new(seed);
@@ -1690,10 +1737,7 @@ mod tests {
         let ui = AssetId::from_text("22222222-2222-4333-8444-555555555555");
         system.add_cue(ui, Cue { bus: Bus::Ui, ..plain_cue() });
         let mut rng = CueRng::new(1);
-        let both = [
-            CueRequest { cue: CUE, target: CueTarget::Flat },
-            CueRequest { cue: ui, target: CueTarget::Flat },
-        ];
+        let both = [CueRequest::new(CUE, CueTarget::Flat), CueRequest::new(ui, CueTarget::Flat)];
         system.update(&frame(&[], &both), &mut rng);
         let calls = system.backend_mut().take_calls();
         assert!(!calls.iter().any(|call| matches!(call, MockCall::SetBus { .. })), "{calls:?}");
@@ -1871,11 +1915,11 @@ mod tests {
         let at = Vec3::ZERO;
         let calm = [actor_at(at), Emitter { id: other, position: at, hitstop: false }];
         let cues = [
-            CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }, // slot 0: plays on
-            CueRequest { cue: duck, target: CueTarget::On(ACTOR) }, // slot 1: ducks
-            CueRequest { cue: freeze, target: CueTarget::On(ACTOR) }, // slot 2: freezes
-            CueRequest { cue: freeze, target: CueTarget::On(other) }, // slot 3: not in hitstop
-            CueRequest { cue: freeze, target: CueTarget::Flat },   // slot 4: on no actor
+            CueRequest::new(CUE, CueTarget::On(ACTOR)),    // slot 0: plays on
+            CueRequest::new(duck, CueTarget::On(ACTOR)),   // slot 1: ducks
+            CueRequest::new(freeze, CueTarget::On(ACTOR)), // slot 2: freezes
+            CueRequest::new(freeze, CueTarget::On(other)), // slot 3: not in hitstop
+            CueRequest::new(freeze, CueTarget::Flat),      // slot 4: on no actor
         ];
         system.update(&frame(&calm, &cues), &mut rng);
         assert_eq!(system.stats().voices, 5);
@@ -1898,10 +1942,8 @@ mod tests {
         assert_eq!(system.backend().calls(), &[]);
 
         // A cue that fires during the hitstop starts as its response says.
-        let fired = [
-            CueRequest { cue: duck, target: CueTarget::On(ACTOR) },
-            CueRequest { cue: freeze, target: CueTarget::On(ACTOR) },
-        ];
+        let fired =
+            [CueRequest::new(duck, CueTarget::On(ACTOR)), CueRequest::new(freeze, CueTarget::On(ACTOR))];
         system.update(&frame(&stopped, &fired), &mut rng);
         let calls = system.backend_mut().take_calls();
         assert!(matches!(
@@ -1940,10 +1982,8 @@ mod tests {
         system.add_cue(freeze, Cue { hitstop: HitstopResponse::Freeze, ..placed_cue() });
         let mut rng = CueRng::new(1);
         let stopped = [Emitter { hitstop: true, ..actor_at(Vec3::new(0.0, 0.0, -1.0)) }];
-        let frozen_too = [
-            CueRequest { cue: CUE, target: CueTarget::On(ACTOR) },
-            CueRequest { cue: freeze, target: CueTarget::On(ACTOR) },
-        ];
+        let frozen_too =
+            [CueRequest::new(CUE, CueTarget::On(ACTOR)), CueRequest::new(freeze, CueTarget::On(ACTOR))];
         system.update(&frame(&stopped, &frozen_too), &mut rng);
         assert_eq!(system.stats().voices, 2);
         system.backend_mut().take_calls();
@@ -1996,11 +2036,11 @@ mod tests {
         let mut system = system_with(plain_cue());
         let mut rng = CueRng::new(1);
         let missing = AssetId::from_text("99999999-2222-4333-8444-555555555555");
-        system.update(&frame(&[], &[CueRequest { cue: missing, target: CueTarget::Flat }]), &mut rng);
+        system.update(&frame(&[], &[CueRequest::new(missing, CueTarget::Flat)]), &mut rng);
         assert_eq!(system.stats().dropped_unknown, 1);
         // A cue naming a sound that never loaded, and an emitter nobody reported.
-        system.add_cue(missing, Cue { sounds: vec![missing], ..plain_cue() });
-        system.update(&frame(&[], &[CueRequest { cue: missing, target: CueTarget::Flat }]), &mut rng);
+        system.add_cue(missing, Cue { play: CueNode::one_of(vec![missing]), ..plain_cue() });
+        system.update(&frame(&[], &[CueRequest::new(missing, CueTarget::Flat)]), &mut rng);
         assert_eq!(system.stats().dropped_unknown, 2);
         system.update(&frame(&[], &play(CueTarget::On(EmitterId(99)))), &mut rng);
         assert_eq!(system.stats().dropped_unknown, 3);
@@ -2243,7 +2283,7 @@ mod tests {
         let mut system = system_with(plain_cue());
         system
             .add_sound(LONG, &DecodedSound { sample_rate: 48_000, channels: 1, samples: vec![0.5; 144_000] });
-        let sounds = |cue: Cue| if long { Cue { sounds: vec![LONG], ..cue } } else { cue };
+        let sounds = |cue: Cue| if long { Cue { play: CueNode::one_of(vec![LONG]), ..cue } } else { cue };
         system.add_cue(CUE, sounds(cue));
         system.add_cue(OTHER, sounds(other));
         system.backend_mut().take_calls();
@@ -2251,7 +2291,7 @@ mod tests {
     }
 
     fn ask(system: &mut AudioSystem<MockBackend>, cue: AssetId, target: CueTarget, rng: &mut CueRng) {
-        system.update(&frame(&[], &[CueRequest { cue, target }]), rng);
+        system.update(&frame(&[], &[CueRequest::new(cue, target)]), rng);
     }
 
     fn stopped(calls: &[MockCall]) -> Vec<(VoiceSlot, Duration)> {
@@ -2295,6 +2335,78 @@ mod tests {
         assert_eq!(stopped(&system.backend_mut().take_calls()), [(VoiceSlot(1), STOP_FADE)]);
         ask(&mut system, CUE, ahead(15.0), &mut rng);
         assert_eq!((system.stats().voices_stolen, system.stats().dropped_voice_limit), (1, 1));
+    }
+
+    fn started_sounds(calls: &[MockCall]) -> Vec<AssetId> {
+        calls
+            .iter()
+            .filter_map(|call| match *call {
+                MockCall::StartVoice { sound, .. } => Some(sound),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// M6 U4a: a start refused by its limit moves its sequence on by nothing, so asking every frame while one
+    /// plays skips no step.
+    #[test]
+    fn a_refused_start_moves_no_sequence_on() {
+        let stepped = Cue {
+            play: CueNode::Sequence(vec![CueNode::Sound(SOUND_A), CueNode::Sound(SOUND_B)]),
+            limit: Some(Limit { max: 1, rule: LimitRule::RefuseNew }),
+            ..plain_cue()
+        };
+        let mut system = system_with(stepped);
+        let mut rng = CueRng::new(1);
+        let mut played = Vec::new();
+        for frame_number in 0..9 {
+            // The one playing ends every third frame.
+            if frame_number % 3 == 2 {
+                let slot = system.voices.iter().find_map(|voice| match voice.mode {
+                    Mode::Real(slot) => Some(slot),
+                    _ => None,
+                });
+                system.backend_mut().finish(slot.expect("one plays"));
+            }
+            ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+            played.extend(started_sounds(&system.backend_mut().take_calls()));
+        }
+        assert_eq!(played, [SOUND_A, SOUND_B, SOUND_A, SOUND_B]);
+        assert_eq!(system.stats().dropped_voice_limit, 5);
+    }
+
+    /// M6 U4a: a start's tree reads the request's parameters, and the draws stay three whatever it reaches.
+    #[test]
+    fn a_switch_reads_the_requests_parameter_and_the_draws_stay_three() {
+        use sapphire_assets::cue::{SwitchCase, SwitchNode};
+
+        let switched = Cue {
+            play: CueNode::Switch(SwitchNode {
+                on: "surface".to_owned(),
+                cases: vec![
+                    SwitchCase { when: "stone".to_owned(), play: CueNode::Sound(SOUND_A) },
+                    SwitchCase { when: "grass".to_owned(), play: CueNode::one_of(vec![SOUND_B, SOUND_A]) },
+                ],
+                default: "stone".to_owned(),
+            }),
+            ..plain_cue()
+        };
+        let mut system = system_with(switched);
+        let mut rng = CueRng::new(3);
+        let grass = CueRequest::new(CUE, CueTarget::Flat)
+            .with(crate::SURFACE, ParameterValue::Case(Name::new("grass")));
+        for request in [CueRequest::new(CUE, CueTarget::Flat), grass] {
+            let mut copy = rng.clone();
+            let (pick, ..) = (copy.next_u32(), copy.next_unit(), copy.next_unit());
+            system.update(&frame(&[], &[request]), &mut rng);
+            assert_eq!(rng, copy, "three numbers a start");
+            let sound = system.backend_mut().take_calls().into_iter().find_map(|call| match call {
+                MockCall::StartVoice { sound, .. } => Some(sound),
+                _ => None,
+            });
+            let expected = if request == grass { [SOUND_B, SOUND_A][pick as usize % 2] } else { SOUND_A };
+            assert_eq!(sound, Some(expected));
+        }
     }
 
     /// M6 U3: a voice group's limit spans its cues, and the lowest priority goes, the newest only if it's lowest.
@@ -2383,10 +2495,8 @@ mod tests {
         let mut rng = CueRng::new(1);
         let (first, second) = (EmitterId(1), EmitterId(2));
         let at = |id, meters: f32| Emitter { id, position: Vec3::new(0.0, 0.0, -meters), hitstop: false };
-        let both = [
-            CueRequest { cue: CUE, target: CueTarget::On(first) },
-            CueRequest { cue: OTHER, target: CueTarget::On(second) },
-        ];
+        let both =
+            [CueRequest::new(CUE, CueTarget::On(first)), CueRequest::new(OTHER, CueTarget::On(second))];
         system.update(&frame(&[at(first, 5.0), at(second, 6.0)], &both), &mut rng);
         system.backend_mut().take_calls();
         // 1 dB louder isn't enough; 6 dB is.
@@ -2407,10 +2517,7 @@ mod tests {
         let mut rng = CueRng::new(1);
         say(&mut system, greet(1, false), &mut rng);
         system.update(
-            &AudioFrame {
-                speech: greet(1, false),
-                ..frame(&[], &[CueRequest { cue: OTHER, target: CueTarget::Flat }])
-            },
+            &AudioFrame { speech: greet(1, false), ..frame(&[], &[CueRequest::new(OTHER, CueTarget::Flat)]) },
             &mut rng,
         );
         assert!(system.speaking().is_some());

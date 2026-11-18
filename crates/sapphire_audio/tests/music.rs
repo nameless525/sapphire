@@ -5,7 +5,7 @@
 #![allow(clippy::print_stdout, reason = "the latencies are what the plan's note reports")]
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Bus, Cue, HitstopResponse};
+use sapphire_assets::cue::{Bus, Cue, CueNode, HitstopResponse};
 use sapphire_assets::mix::{DuckFollow, DuckRule, DuckTarget, Mix};
 use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::DecodedSound;
@@ -184,7 +184,7 @@ fn the_music_goes_down_under_a_line_and_comes_back() {
         &DecodedSound { sample_rate: RATE, channels: 1, samples: vec![0.0; RATE as usize / 2] },
     );
     let cue = Cue {
-        sounds: vec![LINE],
+        play: CueNode::one_of(vec![LINE]),
         volume_db: [0.0, 0.0],
         pitch: [1.0, 1.0],
         attenuation: None,

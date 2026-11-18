@@ -168,6 +168,16 @@ fn beside<'a>(harness: &'a Harness<'static, Editor>, name: &'a str, role: Role) 
 /// Opens a closed place of the Properties pane, by the arrow left of its name.
 fn expand(harness: &mut Harness<'static, Editor>, name: &str) {
     let label = harness.get_by_label(name).rect();
+    expand_at(harness, label);
+}
+
+/// Opens the `nth` property shown with the label `name`, from the top.
+fn expand_nth(harness: &mut Harness<'static, Editor>, name: &str, nth: usize) {
+    let label = harness.get_all_by_label(name).nth(nth).expect("a property of that name").rect();
+    expand_at(harness, label);
+}
+
+fn expand_at(harness: &mut Harness<'static, Editor>, label: egui::Rect) {
     let arrow = egui::pos2(label.left() - 10.0, label.center().y);
     harness.hover_at(arrow);
     harness.run_steps(1);
@@ -202,7 +212,7 @@ fn the_browser_opens_each_document_as_its_kind() {
 
     // A row says what's unsaved, in any document, from any document.
     let id = current.id();
-    let path_of_sound = "sounds[0]".parse().expect("a path");
+    let path_of_sound = "play[0].of[0]".parse().expect("a path");
     harness
         .state_mut()
         .documents_mut()
@@ -389,7 +399,11 @@ fn properties_edit_a_document_the_editor_knows_nothing_of() {
     assert_eq!(text_of(&harness), CUE);
 
     // A list's entry goes, and the comment that was the file's stays where it is on the others.
-    expand(&mut harness, "sounds");
+    // The cue's sounds are a random node's (M6 U4a): `play`, its one field, its `of`, and the first sound's ID.
+    for name in ["play", "0", "of"] {
+        expand(&mut harness, name);
+    }
+    expand_nth(&mut harness, "0", 1);
     harness.get_all(By::new().role(Role::Button).label("x")).next().expect("an entry").click();
     harness.run_steps(3);
     let parsed = text_of(&harness);
@@ -399,7 +413,13 @@ fn properties_edit_a_document_the_editor_knows_nothing_of() {
     assert_eq!(text_of(&harness), CUE);
 
     // A list that can't make a new entry says so: an ID has no default.
-    harness.get(By::new().role(Role::Button).label("+")).click();
+    // The `of` list's, not its weights'.
+    let of = harness.get_by_label("of").rect();
+    harness
+        .get_all(By::new().role(Role::Button).label("+"))
+        .find(|plus| (plus.rect().center().y - of.center().y).abs() < 8.0)
+        .expect("a + on the row of `of`")
+        .click();
     harness.run_steps(3);
     assert!(harness.state().notice().is_some_and(|notice| notice.trouble), "{:?}", harness.state().notice());
     assert_eq!(text_of(&harness), CUE);
@@ -542,7 +562,7 @@ fn several_documents_with_edits_are_all_asked_about_and_saved() {
     row(&harness, "hit_heavy.cue.ron").click();
     harness.run_steps(2);
     let id = harness.state().current().expect("a file").id();
-    let path_of_sound = "sounds[0]".parse().expect("a path");
+    let path_of_sound = "play[0].of[0]".parse().expect("a path");
     let less = {
         let document = harness.state_mut().documents_mut().any_mut(id).expect("open");
         document.remove_entry("x", &path_of_sound).expect("gone");
@@ -601,7 +621,7 @@ fn a_quit_that_cant_save_one_saves_the_rest_and_stays() {
     harness.run_steps(2);
     let id = harness.state().current().expect("a file").id();
     let document = harness.state_mut().documents_mut().any_mut(id).expect("open");
-    document.remove_entry("x", &"sounds[0]".parse().expect("a path")).expect("gone");
+    document.remove_entry("x", &"play[0].of[0]".parse().expect("a path")).expect("gone");
     fs::write(&cue, "someone's").expect("a change on disk");
 
     harness.state_mut().request_quit();

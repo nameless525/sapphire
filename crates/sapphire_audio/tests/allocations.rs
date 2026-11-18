@@ -4,7 +4,10 @@
 //! Music's phase changes (M3 A1) are held to none, once a score plays, in the same test.
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse, Limit, LimitRule};
+use sapphire_assets::cue::{
+    Attenuation, AttenuationCurve, Bus, Cue, CueNode, HitstopResponse, Limit, LimitRule, RandomNode,
+    SwitchCase, SwitchNode,
+};
 use sapphire_assets::mix::{Mix, VoiceGroup};
 use sapphire_assets::mouth::MouthCurve;
 use sapphire_assets::score::{Phase, Score, Stem};
@@ -12,7 +15,7 @@ use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioSystem, BusId, CueRequest, CueRng, CueTarget, Emitter, EmitterId,
     KiraBackend, Listener, MAX_VOICES, MockBackend, MockCall, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT,
-    Room, RoomShape, Rooms, VoiceCaps, VoiceParams, VoiceSlot, VoiceStart,
+    ParameterValue, Room, RoomShape, Rooms, SURFACE, VoiceCaps, VoiceParams, VoiceSlot, VoiceStart,
 };
 use sapphire_core::Name;
 use sapphire_core::alloc::{EngineAllocator, PER_THREAD_COUNTS, count_in_scope, engine_allocator};
@@ -38,7 +41,7 @@ fn sound() -> DecodedSound {
 
 fn cue() -> Cue {
     Cue {
-        sounds: vec![SOUND],
+        play: CueNode::one_of(vec![SOUND]),
         volume_db: [-3.0, 0.0],
         pitch: [0.9, 1.1],
         attenuation: Some(Attenuation { near: 1.0, far: 20.0, curve: AttenuationCurve::Linear }),
@@ -69,7 +72,7 @@ fn what_a_cue_allocates_on_the_calling_thread() {
         return;
     }
     let emitters = [Emitter { id: ACTOR, position: Vec3::new(1.0, 0.0, 0.0), hitstop: false }];
-    let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
+    let requests = [CueRequest::new(CUE, CueTarget::On(ACTOR))];
     let mut rng = CueRng::new(1);
 
     // The system's own work, with a backend that does none: nothing at all, voices or no voices.
@@ -131,6 +134,7 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     assert_eq!(mixing.allocations, 0, "the mix allocated, which the audio callback must never do");
     assert_eq!(converting.allocations, 0, "converting the mix allocated, on the audio callback");
 
+    a_tree_starts_as_a_list_does(play.allocations);
     every_voice_filtering_mixes_with_no_allocation();
     music_changes_phase_with_no_allocation();
     the_mix_moves_with_no_allocation();
@@ -138,6 +142,81 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     rooms_cross_with_no_allocation(2);
     rooms_cross_with_no_allocation(1);
 }
+
+/// A version 3 cue's start (M6 U4a), walking a switch on the surface to a random node keeping clear of its last
+/// pick on grass and to a sequence by default, allocates nothing of the system's own, and through kira no more
+/// than a version 2 list's start, `list`.
+fn a_tree_starts_as_a_list_does(list: u64) {
+    let other = AssetId::from_text("4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5d");
+    let tree = Cue {
+        play: CueNode::Switch(SwitchNode {
+            on: "surface".to_owned(),
+            cases: vec![
+                SwitchCase { when: "stone".to_owned(), play: CueNode::Sequence(vec![CueNode::Sound(SOUND)]) },
+                SwitchCase {
+                    when: "grass".to_owned(),
+                    play: CueNode::Random(RandomNode {
+                        of: vec![CueNode::Sound(SOUND), CueNode::Sound(other)],
+                        weights: vec![2, 1],
+                        avoid_repeat: 1,
+                    }),
+                },
+            ],
+            default: "stone".to_owned(),
+        }),
+        ..cue()
+    };
+    let emitters = [Emitter { id: ACTOR, position: Vec3::new(1.0, 0.0, 0.0), hitstop: false }];
+    let grass = SURFACE_CASE;
+    let requests = [CueRequest::new(CUE, CueTarget::On(ACTOR)).with(SURFACE, ParameterValue::Case(grass))];
+    let stone = [CueRequest::new(CUE, CueTarget::On(ACTOR))];
+    let mut rng = CueRng::new(5);
+
+    let mut system = AudioSystem::new(MockBackend::new());
+    for id in [SOUND, other] {
+        system.add_sound(id, &sound());
+    }
+    system.add_cue(CUE, tree.clone());
+    system.backend_mut().reserve_calls(4096);
+    system.update(&frame(&emitters, &requests), &mut rng);
+    let ((), alone) = count_in_scope(|| {
+        for _ in 0..16 {
+            system.update(&frame(&emitters, &requests), &mut rng);
+            system.update(&frame(&emitters, &stone), &mut rng);
+            system.update(&frame(&emitters, &[]), &mut rng);
+        }
+    });
+    assert_eq!(alone.allocations, 0, "a tree's starts allocated on the system's own account");
+
+    let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
+    for id in [SOUND, other] {
+        system.add_sound(id, &sound());
+    }
+    system.add_cue(CUE, tree);
+    let mut buffer = vec![0.0; GAME_FRAME * 2];
+    for round in 0..9 {
+        let asked: &[CueRequest] = [&requests[..], &stone][round % 2];
+        system.update(&frame(&emitters, asked), &mut rng);
+        for _ in 0..4 {
+            system.backend_mut().output_mut().render_into(&mut buffer);
+            system.update(&frame(&emitters, &[]), &mut rng);
+        }
+    }
+    let ((), start) = count_in_scope(|| system.update(&frame(&emitters, &requests), &mut rng));
+    let ((), default) = count_in_scope(|| system.update(&frame(&emitters, &stone), &mut rng));
+    #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
+    {
+        println!(
+            "a tree's warmed start: {} allocations on grass, {} by default",
+            start.allocations, default.allocations
+        );
+    }
+    assert!(start.allocations <= list, "a tree's start took {}, a list's {list}", start.allocations);
+    assert!(default.allocations <= list, "its default's took {}, a list's {list}", default.allocations);
+}
+
+/// The case `grass` of [`SURFACE`].
+const SURFACE_CASE: Name = Name::new("grass");
 
 /// The room's reverb (M6 U5) on `slots` reverbs, through the real mixer and the shipped mix: 24 voices on an
 /// emitter walking with the listener from a street into a shelter and out again, each sending, so the room
@@ -180,7 +259,7 @@ fn rooms_cross_with_no_allocation(slots: u8) {
         }
     };
     let walker = [Emitter { id: ACTOR, position: Vec3::ZERO, hitstop: false }];
-    let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
+    let requests = [CueRequest::new(CUE, CueTarget::On(ACTOR))];
     for _ in 0..24 {
         system.update(&frame(&walker, &requests), &mut rng);
     }
@@ -226,8 +305,11 @@ fn the_mix_moves_with_no_allocation() {
     system.set_mix(&mix).unwrap();
     system.add_sound(line, &voiced);
     system.add_mouth(line, MouthCurve::analyze(&voiced));
-    system.add_cue(line, Cue { sounds: vec![line], bus: Bus::Voice, attenuation: None, ..cue() });
-    let requests = [CueRequest { cue: line, target: CueTarget::Flat }];
+    system.add_cue(
+        line,
+        Cue { play: CueNode::one_of(vec![line]), bus: Bus::Voice, attenuation: None, ..cue() },
+    );
+    let requests = [CueRequest::new(line, CueTarget::Flat)];
     let mut rng = CueRng::new(1);
     let mut buffer = vec![0.0; GAME_FRAME * 2];
     let mut round = |system: &mut AudioSystem<KiraBackend<OfflineOutput>>, rng: &mut CueRng| {
@@ -351,18 +433,18 @@ fn voice_limits_place_with_no_allocation() {
     mix.groups.push(VoiceGroup { name: "steps".to_owned(), limit: steps });
     let cues = [
         (step, Cue { priority: 40, group: Some("steps".to_owned()), ..cue() }),
-        (roar, Cue { sounds: vec![roar], priority: 200, ..cue() }),
-        (hum, Cue { sounds: vec![hum], priority: 10, looped: true, ..cue() }),
+        (roar, Cue { play: CueNode::one_of(vec![roar]), priority: 200, ..cue() }),
+        (hum, Cue { play: CueNode::one_of(vec![hum]), priority: 10, looped: true, ..cue() }),
     ];
     let emitters: Vec<Emitter> = (0..24)
         .map(|n| Emitter { id: EmitterId(100 + n), position: Vec3::new(n as f32, 0.0, 0.0), hitstop: false })
         .collect();
     let hums: Vec<CueRequest> =
-        emitters.iter().map(|emitter| CueRequest { cue: hum, target: CueTarget::On(emitter.id) }).collect();
+        emitters.iter().map(|emitter| CueRequest::new(hum, CueTarget::On(emitter.id))).collect();
     let mut storm: Vec<CueRequest> = (0..199)
-        .map(|n| CueRequest { cue: step, target: CueTarget::At(Vec3::new(0.0, 0.0, -((n % 20) as f32))) })
+        .map(|n| CueRequest::new(step, CueTarget::At(Vec3::new(0.0, 0.0, -((n % 20) as f32)))))
         .collect();
-    storm.push(CueRequest { cue: roar, target: CueTarget::Flat });
+    storm.push(CueRequest::new(roar, CueTarget::Flat));
     let mut rng = CueRng::new(1);
 
     let mut system = AudioSystem::new(MockBackend::new());
@@ -436,8 +518,8 @@ fn ready<B: AudioBackend>(
     system.set_voice_caps(VoiceCaps { real: 8, virtual_voices: 32 });
     system.add_sound(SOUND, &sound());
     for (id, cue) in cues {
-        if cue.sounds[0] != SOUND {
-            system.add_sound(cue.sounds[0], long);
+        if cue.sounds()[0] != SOUND {
+            system.add_sound(cue.sounds()[0], long);
         }
         system.add_cue(*id, cue.clone());
     }

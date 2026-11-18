@@ -38,7 +38,8 @@ pub const SOUND_COOKER: Stage = Stage { name: "ssound", version: 3 };
 /// The cue importer as cache keys know it.
 pub const CUE_IMPORTER: Stage = Stage { name: "cue document", version: 1 };
 /// The cue cooker. Bump it whenever it changes output for the same document.
-pub const CUE_COOKER: Stage = Stage { name: "scue", version: 1 };
+// Version 2 cooks a cue's tree (M6 U4a).
+pub const CUE_COOKER: Stage = Stage { name: "scue", version: 2 };
 
 /// The score importer as cache keys know it.
 pub const SCORE_IMPORTER: Stage = Stage { name: "score document", version: 1 };
@@ -373,7 +374,7 @@ mod tests {
         let cue: Handle<Cue> = server.load(cue_id).unwrap();
         server.finish(&cue, |upload| panic!("{} was sent to the uploader", upload.kind())).unwrap();
         let cue = server.get(&cue).expect("the cue loaded").to_owned_cue();
-        assert_eq!((cue.sounds.as_slice(), cue.bus), ([sound_id].as_slice(), Bus::Ui));
+        assert_eq!((cue.sounds(), cue.bus), (vec![sound_id], Bus::Ui));
         let sound: Handle<Sound> = server.load(sound_id).unwrap();
         assert_eq!(
             server.get(&sound).expect("loaded with its cue").vorbis.as_slice(),

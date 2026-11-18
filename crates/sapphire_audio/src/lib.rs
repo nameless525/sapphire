@@ -21,6 +21,9 @@
 //! - **Cue playback** ([`AudioSystem`]): a [`Cue`](sapphire_assets::cue::Cue)'s variation, picked
 //!   from randomness the caller owns ([`CueRandom`], [`CueRng`]), and voices placed by distance and
 //!   side from the [`Listener`], following their [`Emitter`] by [`EmitterId`].
+//! - **The cue's tree** (M6 U4a): each start walks its [`CueNode`](sapphire_assets::cue::CueNode)s, random, sequence,
+//!   layer, switch and blend, laid out flat as the cue is added, reading the [`CueParameters`] it was asked with,
+//!   and draws the same count of numbers whatever the tree; it plays the first sound it reaches.
 //! - **The mix** (M6 U2): a [`Mix`](sapphire_assets::mix::Mix) document's bus tree under the five categories,
 //!   each bus's effects and reverb sends, made once on the mixer ([`AudioSystem::set_mix`]); its snapshots,
 //!   offsets to buses moved by attack, release and priority, asked for by name ([`AudioFrame::snapshots`],
@@ -69,6 +72,7 @@
 //! from a fixed step (rule R6) should be queued for the frame's update rather than played there.
 
 mod backend;
+mod events;
 mod kira_backend;
 mod mix;
 mod mock;
@@ -85,6 +89,7 @@ pub use backend::{
     AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, STOP_FADE, StartError, StemStart,
     VIRTUAL_FADE, VoiceParams, VoiceSlot, VoiceStart,
 };
+pub use events::{CueParameters, MAX_CUE_PARAMETERS, ParameterValue, SURFACE};
 pub use kira_backend::KiraBackend;
 pub use mock::{MockBackend, MockCall};
 pub use music::{LEAD_SECONDS, MusicRequest};

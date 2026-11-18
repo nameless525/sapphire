@@ -1089,7 +1089,7 @@ mod panes {
         assert_eq!(editor.current().expect("a file").file_name(), "hit_heavy.cue.ron");
         assert_eq!(editor.selected_move_name(), Some("light_1"), "the timeline stays on the moves");
         assert_same(&text_of(&editor), CUE, "the cue");
-        run(&mut editor, &dir, r#"RemoveEntry("sounds[0]"), Open("a/player.moves.ron")"#);
+        run(&mut editor, &dir, r#"RemoveEntry("play[0].of[0]"), Open("a/player.moves.ron")"#);
         assert_eq!(editor.current().expect("a file").file_name(), "player.moves.ron");
         assert!(editor.is_dirty(), "the cue's edit counts");
         assert_same(&file(&cue), CUE, "nothing's written");
@@ -1173,21 +1173,21 @@ mod panes {
         assert!(!text_of(&editor).contains("attenuation"), "{}", text_of(&editor));
         run(&mut editor, &dir, r#"Undo, PickVariant(path: "bus", variant: "Ambience")"#);
         assert!(text_of(&editor).contains("bus: Ambience,"), "{}", text_of(&editor));
-        run(&mut editor, &dir, r#"Undo, RemoveEntry("sounds[0]")"#);
+        run(&mut editor, &dir, r#"Undo, RemoveEntry("play[0].of[0]")"#);
         assert!(!text_of(&editor).contains("777260c4") && text_of(&editor).contains("impactPunch_heavy_001"));
         run(&mut editor, &dir, "Undo");
         assert_same(&text_of(&editor), CUE, "all undone");
 
-        refused(&mut editor, r#"AddEntry("sounds")"#);
+        refused(&mut editor, r#"AddEntry("play[0].of")"#);
         let first_sound = "\"777260c4-e322-4f49-9a56-69565c28b7a0\"";
         refused(
             &mut editor,
-            &format!(r#"SetProperty(path: "sounds[0]", value: {:?})"#, format!("{first_sound}x")),
+            &format!(r#"SetProperty(path: "play[0].of[0][0]", value: {:?})"#, format!("{first_sound}x")),
         );
         assert_same(&text_of(&editor), CUE, "nothing went in");
         assert!(!editor.is_dirty());
         let other = "\"11111111-2222-4333-8444-555555555555\"";
-        run(&mut editor, &dir, &format!(r#"SetProperty(path: "sounds[0]", value: {other:?})"#));
+        run(&mut editor, &dir, &format!(r#"SetProperty(path: "play[0].of[0][0]", value: {other:?})"#));
         assert_same(&text_of(&editor), &CUE.replacen(first_sound, other, 1), "as typed");
         run(&mut editor, &dir, "Undo");
         assert_same(&text_of(&editor), CUE, "the text");
@@ -1248,7 +1248,7 @@ mod panes {
             &mut editor,
             &dir,
             &format!(
-                r#"SetInstant(entry: {FIRST_CUE}, at: 3), Open("hit_heavy.cue.ron"), RemoveEntry("sounds[0]"), Close, CancelClose"#
+                r#"SetInstant(entry: {FIRST_CUE}, at: 3), Open("hit_heavy.cue.ron"), RemoveEntry("play[0].of[0]"), Close, CancelClose"#
             ),
         );
         assert_eq!(editor.current().expect("a file").file_name(), "hit_heavy.cue.ron");
@@ -1257,7 +1257,7 @@ mod panes {
         assert_same(&file(&cue), CUE, "not saved");
         run(&mut editor, &dir, r#"Open("hit_heavy.cue.ron")"#);
         assert_same(&text_of(&editor), CUE, "opened again from the file");
-        run(&mut editor, &dir, r#"RemoveEntry("sounds[0]")"#);
+        run(&mut editor, &dir, r#"RemoveEntry("play[0].of[0]")"#);
         let less = text_of(&editor);
         run(&mut editor, &dir, "Quit");
         assert!(!editor.may_quit());
@@ -1277,7 +1277,7 @@ mod panes {
             &mut editor,
             &dir,
             &format!(
-                r#"SetInstant(entry: {FIRST_CUE}, at: 3), Open("hit_heavy.cue.ron"), RemoveEntry("sounds[0]")"#
+                r#"SetInstant(entry: {FIRST_CUE}, at: 3), Open("hit_heavy.cue.ron"), RemoveEntry("play[0].of[0]")"#
             ),
         );
         fs::write(&cue, "someone's").expect("a change on disk");

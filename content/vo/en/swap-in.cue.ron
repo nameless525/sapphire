@@ -1,9 +1,9 @@
 // `swap-in` in English: a placeholder voice `sapphire_soundgen` synthesized, with no words.
 (
     type: "sapphire::assets::Cue",
-    version: 2,
+    version: 3,
     data: (
-        sounds: ["43f2881d-f499-4ff8-8629-14fcae5f3e09"],
+        play: Sound("43f2881d-f499-4ff8-8629-14fcae5f3e09"),
         volume_db: (-4.0, -4.0),
         pitch: (1.0, 1.0),
         bus: Voice,

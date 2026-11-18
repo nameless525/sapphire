@@ -440,7 +440,7 @@ fn a_parse_refuses_and_a_check_reports() {
     assert_eq!(moves.issues(), Vec::<String>::new());
     // A cue's `check` is the same kind.
     let mut cue = open("content/audio/hit_heavy.cue.ron", kinds::cue());
-    assert_eq!(cue.set_text("bad", &path("sounds"), "[]"), Ok(Outcome::Changed));
+    assert_eq!(cue.set_text("bad", &path("play"), "Layer([])"), Ok(Outcome::Changed));
     assert!(!cue.issues().is_empty());
 }
 

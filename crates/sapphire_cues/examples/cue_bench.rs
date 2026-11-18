@@ -80,7 +80,7 @@ fn audio() -> AudioSystem<KiraBackend<OfflineOutput>> {
         let cue = Cue::from_document(&fs::read_to_string(&path).expect("reads")).expect("a cue document");
         let sidecar = fs::read_to_string(format!("{}.meta", path.display())).expect("has a sidecar");
         let id = sidecar.split('"').nth(3).expect("type, then id").parse::<AssetId>().expect("an ID");
-        for sound in &cue.sounds {
+        for sound in &cue.sounds() {
             let bytes = fs::read(&sounds[sound]).expect("reads");
             audio.add_sound(*sound, &decode_vorbis(&bytes).expect("decodes"));
         }

@@ -3,7 +3,7 @@
 //! reach it are tested against the mock, in `system.rs`.
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Bus, Cue};
+use sapphire_assets::cue::{Bus, Cue, CueNode};
 use sapphire_assets::mix::Mix;
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
@@ -68,9 +68,10 @@ fn mixer(slots: u8) -> AudioSystem<KiraBackend<OfflineOutput>> {
     system.set_reverb_slots(slots);
     system.add_sound(HUM, &sweep(0.5));
     system.add_sound(CLAP, &clap());
-    let flat = Cue { sounds: vec![HUM], bus: Bus::Sfx, volume_db: [-6.0, -6.0], ..Cue::default() };
+    let flat =
+        Cue { play: CueNode::one_of(vec![HUM]), bus: Bus::Sfx, volume_db: [-6.0, -6.0], ..Cue::default() };
     system.add_cue(HUM, Cue { looped: true, ..flat.clone() });
-    system.add_cue(CLAP, Cue { sounds: vec![CLAP], ..flat });
+    system.add_cue(CLAP, Cue { play: CueNode::one_of(vec![CLAP]), ..flat });
     system
 }
 
@@ -128,7 +129,7 @@ fn walk(slots: u8, path: impl Fn(usize) -> Vec3) -> (Vec<f32>, usize) {
     let run = |rooms: Rooms<'_>| {
         let mut system = mixer(slots);
         let mut rng = CueRng::new(1);
-        let hum = [CueRequest { cue: HUM, target: CueTarget::On(WALKER) }];
+        let hum = [CueRequest::new(HUM, CueTarget::On(WALKER))];
         let (mut out, mut changed) = (Vec::new(), 0);
         for frame in 0..120 {
             let changes = system.stats().room_changes;
@@ -200,7 +201,7 @@ fn the_shelter_rings_on_after_a_clap() {
     let tail = |rooms: Rooms<'_>| {
         let mut system = mixer(2);
         let mut rng = CueRng::new(1);
-        let clap = [CueRequest { cue: CLAP, target: CueTarget::On(WALKER) }];
+        let clap = [CueRequest::new(CLAP, CueTarget::On(WALKER))];
         let mut out = Vec::new();
         for frame in 0..80 {
             let cues: &[CueRequest] = if frame == 40 { &clap } else { &[] };
@@ -222,7 +223,7 @@ fn after_a_wait(slots: u8, away: usize) -> (f32, f32) {
     let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |most, sample| most.max(sample.abs()));
     let mut system = mixer(slots);
     let mut rng = CueRng::new(1);
-    let clap = [CueRequest { cue: CLAP, target: CueTarget::On(WALKER) }];
+    let clap = [CueRequest::new(CLAP, CueTarget::On(WALKER))];
     let (shelter, nowhere, street) = (Vec3::new(0.0, 0.0, -20.0), Vec3::new(0.0, 0.0, 80.0), Vec3::ZERO);
     let entered = 40 + away;
     let mut out = Vec::new();

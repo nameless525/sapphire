@@ -475,7 +475,7 @@ impl AssetKind {
                 Sound::read(bytes)?;
                 Vec::new()
             }
-            Self::Cue => Cue::read(bytes)?.sounds.iter().copied().collect(),
+            Self::Cue => Cue::read(bytes)?.to_owned_cue().sounds(),
             Self::Score => Score::read(bytes)?.stems.iter().map(|stem| stem.sound).collect(),
             Self::VoiceLines => VoiceLines::read(bytes)?.lines.iter().map(|line| line.cue).collect(),
             // A move set's tables are baked into it, and it refers to nothing else.

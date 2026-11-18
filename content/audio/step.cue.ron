@@ -1,17 +1,24 @@
-// A foot taking the weight in a move. Quiet: a string of them shouldn't tire. On stone, as the town's
-// paving is, until a surface says otherwise. Below everything else when the mixer is full, and one of the
-// mix's `footsteps`, which a crowd's feet share (M6 U3).
+// A foot taking the weight in a move. Quiet: a string of them shouldn't tire. It switches on the surface
+// under the foot (M6 U4a), and has only stone yet, as the town's paving is: nothing says a surface until
+// the zone's colliders do, so every footstep takes the default. Below everything else when the mixer is
+// full, and one of the mix's `footsteps`, which a crowd's feet share (M6 U3).
 (
     type: "sapphire::assets::Cue",
-    version: 2,
+    version: 3,
     data: (
-        sounds: [
-            "b6dd6b1f-1eb7-43e3-8ed9-49ded116db1c", // kenney_impact_sounds: footstep_concrete_000
-            "2335d401-1961-4411-8190-59a1d4e3ebe9", // footstep_concrete_001
-            "9b379deb-aa7d-4b2f-8159-b39a982efe2b", // footstep_concrete_002
-            "4b4b02d9-d31e-4477-aa2e-1cee335c363d", // footstep_concrete_003
-            "3cd19ff2-fcc7-443a-a86e-ce99ce7ca406", // footstep_concrete_004
-        ],
+        play: Switch((
+            on: "surface",
+            cases: [
+                (when: "stone", play: Random((of: [
+                    Sound("b6dd6b1f-1eb7-43e3-8ed9-49ded116db1c"), // kenney_impact_sounds: footstep_concrete_000
+                    Sound("2335d401-1961-4411-8190-59a1d4e3ebe9"), // footstep_concrete_001
+                    Sound("9b379deb-aa7d-4b2f-8159-b39a982efe2b"), // footstep_concrete_002
+                    Sound("4b4b02d9-d31e-4477-aa2e-1cee335c363d"), // footstep_concrete_003
+                    Sound("3cd19ff2-fcc7-443a-a86e-ce99ce7ca406"), // footstep_concrete_004
+                ]))),
+            ],
+            default: "stone",
+        )),
         volume_db: (-16.0, -12.0),
         pitch: (0.92, 1.08),
         attenuation: Some((near: 1.0, far: 20.0, curve: Inverse)),

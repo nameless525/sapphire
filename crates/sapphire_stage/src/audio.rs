@@ -337,7 +337,7 @@ impl DeviceAudio {
                 due = Some(repeating.cue);
             }
         }
-        let requests = due.map(|cue| [CueRequest { cue, target: CueTarget::On(CHARACTER) }]);
+        let requests = due.map(|cue| [CueRequest::new(cue, CueTarget::On(CHARACTER))]);
         self.emitters.clear();
         self.emitters.push(Emitter { id: CHARACTER, position: scene.character, hitstop: scene.hitstop });
         self.emitters.extend_from_slice(fight.emitters);
@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn the_voice_language_survives_a_save_apart_from_the_texts() {
-        use sapphire_assets::cue::{Bus, HitstopResponse};
+        use sapphire_assets::cue::{Bus, CueNode, HitstopResponse};
         use sapphire_assets::voice::VoiceLine;
         use sapphire_audio::{LineKey, MockBackend, MockCall};
         use sapphire_save::{SettingsFile, SettingsOutcome};
@@ -898,7 +898,7 @@ mod tests {
         let sound = DecodedSound { sample_rate: 48_000, channels: 1, samples: vec![0.25; 480] };
         let line = |id| {
             let cue = Cue {
-                sounds: vec![id],
+                play: CueNode::one_of(vec![id]),
                 volume_db: [0.0, 0.0],
                 pitch: [1.0, 1.0],
                 attenuation: None,
@@ -952,7 +952,7 @@ mod tests {
     /// playhead, and the curve's loudest moment is the mix's within a frame. A pause holds both.
     #[test]
     fn a_conversations_voice_plays_where_its_line_says_and_its_mouth_keeps_time() {
-        use sapphire_assets::cue::{Bus, HitstopResponse};
+        use sapphire_assets::cue::{Bus, CueNode, HitstopResponse};
         use sapphire_assets::voice::VoiceLine;
         use sapphire_audio::LineKey;
 
@@ -966,7 +966,7 @@ mod tests {
             ["5c0e0000-0000-4000-8000-0000000000c6", "5c0e0000-0000-4000-8000-0000000000c7"]
                 .map(AssetId::from_text);
         let cue = Cue {
-            sounds: vec![sound_id],
+            play: CueNode::one_of(vec![sound_id]),
             volume_db: [-4.0, -4.0],
             pitch: [1.0, 1.0],
             attenuation: None,

@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse, SILENCE_DB};
+use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, CueNode, HitstopResponse, SILENCE_DB};
 use sapphire_assets::mix::Mix;
 use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::{DecodedSound, decode_vorbis};
@@ -47,7 +47,7 @@ fn system(sound: &DecodedSound) -> AudioSystem<KiraBackend<OfflineOutput>> {
     system.add_cue(
         CUE,
         Cue {
-            sounds: vec![SOUND],
+            play: CueNode::one_of(vec![SOUND]),
             volume_db: [-12.0, -6.0],
             pitch: [0.95, 1.05],
             attenuation: Some(Attenuation { near: 1.0, far: 40.0, curve: AttenuationCurve::Inverse }),
@@ -92,7 +92,7 @@ fn min_and_median(times: &mut [Duration]) -> (Duration, Duration) {
 #[ignore = "prints what audio costs: run it optimized, by hand"]
 fn what_audio_costs() {
     let sound = sound();
-    let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
+    let requests = [CueRequest::new(CUE, CueTarget::On(ACTOR))];
     let start = [Emitter { id: ACTOR, position: Vec3::ZERO, hitstop: false }];
 
     // A frame's update, by how many voices it moves, with the mix keeping up beside it.
@@ -335,7 +335,7 @@ fn music_costs() {
         system.add_score(SCORE, score.clone());
         system
     };
-    let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
+    let requests = [CueRequest::new(CUE, CueTarget::On(ACTOR))];
     let start = [Emitter { id: ACTOR, position: Vec3::ZERO, hitstop: false }];
     let (mut updates, mut mixes) = (Vec::new(), Vec::new());
     for _ in 0..ROUNDS {
@@ -403,7 +403,7 @@ fn what_two_reverbs_cost() {
         system.set_reverb_slots(slots);
         let mut random = CueRng::new(7);
         let mut emitters = [Emitter { id: ACTOR, position: Vec3::ZERO, hitstop: false }];
-        let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
+        let requests = [CueRequest::new(CUE, CueTarget::On(ACTOR))];
         for _ in 0..MOBILE_LOW_VOICES {
             system.update(&AudioFrame { rooms, ..frame_at(0, &mut emitters, &requests) }, &mut random);
         }

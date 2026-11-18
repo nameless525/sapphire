@@ -5,7 +5,7 @@ use std::path::Path;
 
 use cpal::Sample;
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
+use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, CueNode, HitstopResponse};
 use sapphire_assets::mix::Mix;
 use sapphire_assets::sound::{DecodedSound, Sound, decode_vorbis};
 use sapphire_audio::{
@@ -439,7 +439,7 @@ mod through_the_system {
 
     fn cue() -> Cue {
         Cue {
-            sounds: vec![SOUND],
+            play: CueNode::one_of(vec![SOUND]),
             volume_db: [0.0, 0.0],
             pitch: [1.0, 1.0],
             attenuation: None,
@@ -459,7 +459,7 @@ mod through_the_system {
         let mut rng = CueRng::new(1);
         let mut out = Vec::new();
         for frame in 0..frames {
-            let request = target.filter(|_| frame == 0).map(|target| CueRequest { cue: CUE, target });
+            let request = target.filter(|_| frame == 0).map(|target| CueRequest::new(CUE, target));
             let cues: &[CueRequest] = request.as_slice();
             system.update(
                 &AudioFrame {

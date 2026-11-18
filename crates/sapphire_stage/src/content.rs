@@ -2821,7 +2821,7 @@ impl Content {
             .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
             .map_err(|error| failed(&error))?;
         let cue = self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?.to_owned_cue();
-        let sounds = self.read_sounds(&cue.sounds, read, renderer, gpu).map_err(|error| failed(&error))?;
+        let sounds = self.read_sounds(&cue.sounds(), read, renderer, gpu).map_err(|error| failed(&error))?;
         Ok((cue, sounds))
     }
 

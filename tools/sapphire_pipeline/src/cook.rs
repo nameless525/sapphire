@@ -3656,7 +3656,7 @@ fn source_dependencies(
         ImportSettings::Sound(_) | ImportSettings::Mix(_) => Ok(Vec::new()),
         // A cue holds only its sounds' IDs, so their contents aren't inputs.
         ImportSettings::Cue(_) => {
-            for id in audio::read_cue(bytes).map_err(audio_error(path))?.sounds {
+            for id in audio::read_cue(bytes).map_err(audio_error(path))?.sounds() {
                 if !assets.get(id).is_some_and(Planned::is_sound) {
                     return Err(CookError::NotASound { path: path.to_owned(), id });
                 }
@@ -3693,7 +3693,7 @@ fn source_dependencies(
                 };
                 let cue = read_source(&planned.asset.path)?;
                 audio::check_line(&line.key, &cue).map_err(audio_error(path))?;
-                for sound in audio::read_cue(&cue).map_err(audio_error(path))?.sounds {
+                for sound in audio::read_cue(&cue).map_err(audio_error(path))?.sounds() {
                     let voiced = assets.get(sound).is_some_and(|planned| {
                         matches!(
                             planned.asset.meta.importer,

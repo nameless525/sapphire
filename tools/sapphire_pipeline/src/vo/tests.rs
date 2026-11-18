@@ -88,8 +88,8 @@ fn each_recording_script_lists_every_voiced_key() {
 #[test]
 fn the_voice_packs_cook_to_pinned_bytes_on_every_machine() {
     let pinned = [
-        ("vo_en", "0950d7f051d5ee8ac33594f03b09cc7d67d692d84443cee28d42bdc5cf600068"),
-        ("vo_ja", "a53b85490074ae8989ae8336c371aa6afccf290bea6b843d2752fbd46e74de37"),
+        ("vo_en", "07d06ef1cba4f42fc79725e73ad328d70d4391dc92b489e51aa48fa6e7efa392"),
+        ("vo_ja", "81bb6179dda09bf0fe3591adf54624768a926903bad17571556bdff172da94ad"),
     ];
     let tree = TempDir::new("vo_packs");
     let cooked = |name: &str| {

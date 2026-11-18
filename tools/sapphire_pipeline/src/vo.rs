@@ -447,7 +447,7 @@ fn cue_document(key: &str, language: &str, sound: sapphire_assets::AssetId) -> S
     format!(
         "// `{key}` in `{language}`: its master's take, as `sapphire_pipeline vo` first wrote it (M6 U11). Its level and\n\
          // pitch are the mix's to tune, and an import keeps them.\n\
-         (\n    type: \"sapphire::assets::Cue\",\n    version: 2,\n    data: (\n        sounds: [\"{sound}\"],\n        \
+         (\n    type: \"sapphire::assets::Cue\",\n    version: 3,\n    data: (\n        play: Sound(\"{sound}\"),\n        \
          volume_db: ({LINE_VOLUME_DB:?}, {LINE_VOLUME_DB:?}),\n        pitch: (1.0, 1.0),\n        bus: Voice,\n    ),\n)\n"
     )
 }

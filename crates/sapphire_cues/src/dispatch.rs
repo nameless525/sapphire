@@ -489,7 +489,9 @@ impl CueDispatcher {
             Site::Actor { actor, hit: None } => CueTarget::On(emitter_of(actor)),
             Site::Place(place) => CueTarget::At(place),
         };
-        self.sounds.push(CueRequest { cue, target });
+        // No parameters: a footstep's cue switches on `sapphire_audio::SURFACE`, and nothing here knows the surface
+        // under a foot until the zone's colliders name one (M6 A6), so it plays its switch's default.
+        self.sounds.push(CueRequest::new(cue, target));
         self.stats.sounds += 1;
     }
 
@@ -544,7 +546,7 @@ impl CueDispatcher {
             self.stats.sounds_dropped += 1;
             return;
         }
-        self.sounds.push(CueRequest { cue, target: CueTarget::Flat });
+        self.sounds.push(CueRequest::new(cue, CueTarget::Flat));
         self.stats.sounds += 1;
     }
 
@@ -837,7 +839,7 @@ mod tests {
         };
         dispatcher.fire_at(Name::new("bell"), place, &mut step);
         dispatcher.fire_at(Name::new("nothing"), place, &mut step);
-        assert_eq!(dispatcher.sounds(), &[CueRequest { cue: SOUND, target: CueTarget::At(place) }]);
+        assert_eq!(dispatcher.sounds(), &[CueRequest::new(SOUND, CueTarget::At(place))]);
         assert_eq!(
             (dispatcher.stats().cues, dispatcher.stats().unmatched, dispatcher.stats().effects),
             (2, 1, 1)

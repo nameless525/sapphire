@@ -1,8 +1,8 @@
-//! The scale lane, behind `cargo xtask counts` (M5 X4): the benchmark district's `ci` preset walked by the
-//! sandbox's zone walk bench at fixed settings, and what each walk counted held to a committed table
-//! (`tests/counts/district-ci.txt`, [`table`]).
+//! The scale lane, behind `cargo xtask counts` (M5 X4): the benchmark's `ci` preset, the district's tour and
+//! the nature zone's walk (M6 W1, [`NATURE`]), walked by the sandbox's zone walk bench at fixed settings, and
+//! what each walk counted held to a committed table (`tests/counts/district-ci.txt`, [`table`]).
 //!
-//! - **Counts, not times.** A walk is `--bench <frames> --draw-every <n>` of the district's tour on one tier's
+//! - **Counts, not times.** A walk is `--bench <frames> --draw-every <n>` of a zone's rail on one tier's
 //!   settings at one hour: every frame steps, streams, prepares and records, every `n`th runs its graph, and
 //!   the bench logs what the frames it drew submitted (`count row`), what the load built and what the zone
 //!   placed ([`WALK_ROWS`]). The walk draws without simulating, so the same build draws the same frames on any
@@ -82,19 +82,56 @@ pub const REPORTED: [(&str, &str); 2] = [
     ("vertex buffers bound", "bound when the next draw's mesh differs, so it follows the draws' order"),
 ];
 
-/// One walk of the lane: the district's tour at a tier's settings and an hour.
+/// One walk of the lane: a zone's rail at a tier's settings and an hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Walk {
-    /// Its name in the table: the tier, then the key.
+    /// Its name in the table: the zone's prefix ([`Tour::prefix`]), the tier, then the key.
     pub name: &'static str,
     pub tier: &'static str,
     /// `--time-of-day`: dusk's key, 19:45, or night's, 23:00.
     pub time_of_day: &'static str,
+    /// The zone and rail it walks.
+    pub tour: Tour,
 }
 
-/// The frames each walk runs: the whole tour, 372 m at the game's run speed of 6 m/s, one step a frame, and
-/// the frames a 30 Hz tier takes at two steps a frame after it reach the tour's end and stand there.
+/// A zone the lane walks, and how: its rail, its frames and what else the walk mounts or leaves out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tour {
+    /// `--zone`: the benchmark zone's stem.
+    pub zone: &'static str,
+    /// `--zone-walk`: the zone's rail.
+    pub rail: &'static str,
+    /// `--bench`: the frames the walk runs.
+    pub frames: u32,
+    /// What a walk's name starts with: nothing for the district, whose walks were named before there was
+    /// another zone, `nature-` for the nature zone's.
+    pub prefix: &'static str,
+    /// The arguments after the shared ones.
+    pub extra: &'static [&'static str],
+}
+
+/// The frames each district walk runs: the whole tour, 372 m at the game's run speed of 6 m/s, one step a
+/// frame, and the frames a 30 Hz tier takes at two steps a frame after it reach the tour's end and stand there.
 pub const FRAMES: u32 = 3_720;
+/// The frames each nature walk runs (M6 W1): the whole `walk` rail, about 790 m from the north meadow down the
+/// river's west bank and past the lake into the clearing the fight stands in, at the run speed, a step a frame.
+pub const NATURE_FRAMES: u32 = 7_980;
+
+/// The district's tour (M5 X4), with the crowd the timed walks draw (M5 Z3: the proving hub's mounted, the
+/// ambient characters on), and without its probe grid and reflection probes, as M5 counted it (M6 B4; the day
+/// units of `bench/scale.ron` draw them).
+pub const DISTRICT: Tour = Tour {
+    zone: "district",
+    rail: "tour",
+    frames: FRAMES,
+    prefix: "",
+    extra: &["--mount", "zone_proving_hub", "--ambient", "on", "--no-probe-grid", "--no-reflection-probes"],
+};
+
+/// The nature zone's walk (M6 W1): terrain cells, trees, grass and water under its probe grid and reflection
+/// probes, in the rain its weather plan has from 19:00. No crowd: the zone has none.
+pub const NATURE: Tour =
+    Tour { zone: "nature", rail: "walk", frames: NATURE_FRAMES, prefix: "nature-", extra: &[] };
 /// Every how many frames a walk draws: a frame in seven, every 0.7 m of the tour at a step a frame, so a
 /// software GPU draws 531 of its frames. Seven shares no factor with the renderer's time-sliced work (its
 /// quarters, faces and cascades every second or fourth frame), so the frames drawn see every slice.
@@ -105,24 +142,29 @@ pub const DRAW_EVERY: u32 = 7;
 /// so the counts compare commits, not a tier's budget at its panel.
 pub const SIZE: &str = "320x180";
 
-/// The lane's walks: each tier at dusk and at night.
-pub const WALKS: [Walk; 8] = [
-    Walk { name: "desktop-high-dusk", tier: "desktop-high", time_of_day: "19.75" },
-    Walk { name: "desktop-high-night", tier: "desktop-high", time_of_day: "23" },
-    Walk { name: "desktop-low-dusk", tier: "desktop-low", time_of_day: "19.75" },
-    Walk { name: "desktop-low-night", tier: "desktop-low", time_of_day: "23" },
-    Walk { name: "mobile-high-dusk", tier: "mobile-high", time_of_day: "19.75" },
-    Walk { name: "mobile-high-night", tier: "mobile-high", time_of_day: "23" },
-    Walk { name: "mobile-low-dusk", tier: "mobile-low", time_of_day: "19.75" },
-    Walk { name: "mobile-low-night", tier: "mobile-low", time_of_day: "23" },
+/// The lane's walks: the district at each tier at dusk and at night, then the nature zone (M6 W1) at each tier
+/// at dusk, in its rain.
+pub const WALKS: [Walk; 12] = [
+    Walk { name: "desktop-high-dusk", tier: "desktop-high", time_of_day: "19.75", tour: DISTRICT },
+    Walk { name: "desktop-high-night", tier: "desktop-high", time_of_day: "23", tour: DISTRICT },
+    Walk { name: "desktop-low-dusk", tier: "desktop-low", time_of_day: "19.75", tour: DISTRICT },
+    Walk { name: "desktop-low-night", tier: "desktop-low", time_of_day: "23", tour: DISTRICT },
+    Walk { name: "mobile-high-dusk", tier: "mobile-high", time_of_day: "19.75", tour: DISTRICT },
+    Walk { name: "mobile-high-night", tier: "mobile-high", time_of_day: "23", tour: DISTRICT },
+    Walk { name: "mobile-low-dusk", tier: "mobile-low", time_of_day: "19.75", tour: DISTRICT },
+    Walk { name: "mobile-low-night", tier: "mobile-low", time_of_day: "23", tour: DISTRICT },
+    Walk { name: "nature-desktop-high-dusk", tier: "desktop-high", time_of_day: "19.75", tour: NATURE },
+    Walk { name: "nature-desktop-low-dusk", tier: "desktop-low", time_of_day: "19.75", tour: NATURE },
+    Walk { name: "nature-mobile-high-dusk", tier: "mobile-high", time_of_day: "19.75", tour: NATURE },
+    Walk { name: "nature-mobile-low-dusk", tier: "mobile-low", time_of_day: "19.75", tour: NATURE },
 ];
 
 impl Walk {
     /// The sandbox's arguments.
     pub fn args(&self) -> Vec<String> {
-        [
+        let mut args: Vec<String> = [
             "--bench",
-            &FRAMES.to_string(),
+            &self.tour.frames.to_string(),
             "--draw-every",
             &DRAW_EVERY.to_string(),
             "--tier",
@@ -130,25 +172,18 @@ impl Walk {
             "--size",
             SIZE,
             "--zone",
-            "district",
+            self.tour.zone,
             "--zone-walk",
-            "tour",
+            self.tour.rail,
             "--time-of-day",
             self.time_of_day,
-            // The crowd the timed walks draw (M5 Z3): the proving hub's mounted, the ambient characters on.
-            "--mount",
-            "zone_proving_hub",
-            "--ambient",
-            "on",
             "--compute-threads",
             &COMPUTE_THREADS.to_string(),
-            // The district as M5 counted it (M6 B4): without its probe grid and reflection probes, which
-            // `bench/scale.ron`'s day units draw.
-            "--no-probe-grid",
-            "--no-reflection-probes",
         ]
         .map(str::to_owned)
-        .to_vec()
+        .to_vec();
+        args.extend(self.tour.extra.iter().map(|&arg| arg.to_owned()));
+        args
     }
 
     /// Where the walk writes its trace, every frame it measured (`--bench-trace`): beside its log in `out`.
@@ -410,26 +445,33 @@ const MOBILE_SOURCES: &str = "sources-mobile: ";
 /// The header `--update` writes.
 fn header(digest: Option<&str>, mobile_digest: Option<&str>) -> Vec<String> {
     let mut header = vec![
-        "The benchmark district's counts (M5 X4): what CI's nightly scale lane holds each walk of the `ci`".to_owned(),
-        "preset's tour to, a walk a job. A row fails on any change, up or down; an `at most` row, which none".to_owned(),
-        "is today, only past its ceiling.".to_owned(),
+        "The benchmark's counts (M5 X4): what CI's scale lane holds each walk of the `ci` preset's district".to_owned(),
+        "tour and nature walk (M6 W1) to, a walk a job. A row fails on any change, up or down; an `at most`".to_owned(),
+        "row, which none is today, only past its ceiling.".to_owned(),
         "Rewrite it with `cargo xtask counts --update` when a count moves on purpose, and say why in the change.".to_owned(),
         String::new(),
         format!("preset: {PRESET}"),
     ];
     if let Some(digest) = digest {
         header.push(format!(
-            "{SOURCES}{digest} (the generated district and cast, FNV-1a 64 over paths, lengths and bytes)"
+            "{SOURCES}{digest} (the generated benchmark, FNV-1a 64 over paths, lengths and bytes)"
         ));
     }
     if let Some(digest) = mobile_digest {
         header.push(format!(
-            "{MOBILE_SOURCES}{digest} (the phones' district, which the phone tiers' walks read, the same digest)"
+            "{MOBILE_SOURCES}{digest} (the phones' benchmark, which the phone tiers' walks read, the same digest)"
         ));
     }
-    header.push(format!(
-        "walks: --bench {FRAMES} --draw-every {DRAW_EVERY} --size {SIZE} --zone district --zone-walk tour --mount zone_proving_hub --ambient on --compute-threads {COMPUTE_THREADS} --no-probe-grid --no-reflection-probes, at each tier's settings and cook"
-    ));
+    for tour in [DISTRICT, NATURE] {
+        header.push(format!(
+            "{}walks: --bench {} --draw-every {DRAW_EVERY} --size {SIZE} --zone {} --zone-walk {} --compute-threads {COMPUTE_THREADS}{}, at each tier's settings and cook",
+            tour.prefix,
+            tour.frames,
+            tour.zone,
+            tour.rail,
+            tour.extra.iter().map(|arg| format!(" {arg}")).collect::<String>()
+        ));
+    }
     header.push("reported in counts.txt, not held (the order cells arrive in is timing):".to_owned());
     header.extend(REPORTED.iter().map(|(row, why)| format!("  {row}: {why}")));
     header
@@ -633,9 +675,16 @@ mod tests {
         for walk in WALKS {
             assert_eq!(
                 walk.name,
-                format!("{}-{}", walk.tier, if walk.time_of_day == "23" { "night" } else { "dusk" })
+                format!(
+                    "{}{}-{}",
+                    walk.tour.prefix,
+                    walk.tier,
+                    if walk.time_of_day == "23" { "night" } else { "dusk" }
+                )
             );
-            assert!(walk.args().windows(2).any(|pair| pair == ["--tier", walk.tier]));
+            let args = walk.args();
+            assert!(args.windows(2).any(|pair| pair == ["--tier", walk.tier]));
+            assert!(args.windows(2).any(|pair| pair == ["--zone", walk.tour.zone]), "{}", walk.name);
         }
     }
 
@@ -718,15 +767,31 @@ mod tests {
         }
     }
 
-    /// The lane's walks count the crowd as the timed walks draw it: the proving hub's crowd mounted, the ambient
-    /// characters on.
+    /// The lane's district walks count the crowd as the timed walks draw it: the proving hub's crowd mounted,
+    /// the ambient characters on. The district's eight walks come first and keep their arguments, so their rows
+    /// stay the ones M5 took; the nature zone's (M6 W1) follow, under its probes.
     #[test]
     fn the_lanes_walks_count_the_crowd() {
-        for walk in WALKS {
+        for (at, walk) in WALKS.into_iter().enumerate() {
             let args = walk.args();
-            assert!(args.windows(2).any(|pair| pair == ["--mount", "zone_proving_hub"]), "{}", walk.name);
-            assert!(args.windows(2).any(|pair| pair == ["--ambient", "on"]), "{}", walk.name);
+            assert_eq!(walk.tour, if at < 8 { DISTRICT } else { NATURE }, "{}", walk.name);
+            let crowd = args.windows(2).any(|pair| pair == ["--mount", "zone_proving_hub"])
+                && args.windows(2).any(|pair| pair == ["--ambient", "on"]);
+            assert_eq!(crowd, walk.tour == DISTRICT, "{}", walk.name);
+            assert_eq!(
+                args.iter().any(|arg| arg == "--no-probe-grid"),
+                walk.tour == DISTRICT,
+                "{}",
+                walk.name
+            );
         }
+        let district = WALKS[0].args().join(" ");
+        assert_eq!(
+            district,
+            "--bench 3720 --draw-every 7 --tier desktop-high --size 320x180 --zone district --zone-walk tour \
+             --time-of-day 19.75 --compute-threads 3 --mount zone_proving_hub --ambient on --no-probe-grid \
+             --no-reflection-probes"
+        );
     }
 
     /// The header names both trees the walks read (M5 Z2): the desktop's sources and the phones' (M5 B6), each

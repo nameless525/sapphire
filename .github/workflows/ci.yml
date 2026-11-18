@@ -432,13 +432,16 @@ jobs:
   # The desktop tiers only: the phone tiers' walks read the mobile cook, whose ASTC textures lavapipe can't
   # sample (Mesa 26.1.3 has no ASTC), so their app can't start here; they are walked on Metal in the local
   # gate (`cargo xtask counts`) and on the Simulator and the emulator (`cargo xtask bench-scale device`).
+  # The nature zone's walks (M6 W1) join it: its 7,980-frame walk at the desktop tiers at dusk, in its rain, under
+  # its probe grid and reflection probes.
   scale-lane:
     name: Scale lane (vulkan-lavapipe, ${{ matrix.walk }})
     needs: golden-build-linux
     strategy:
       fail-fast: false
       matrix:
-        walk: [desktop-high-dusk, desktop-high-night, desktop-low-dusk, desktop-low-night]
+        walk: [desktop-high-dusk, desktop-high-night, desktop-low-dusk, desktop-low-night, nature-desktop-high-dusk,
+               nature-desktop-low-dusk]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -460,7 +463,7 @@ jobs:
           python3 .github/scripts/golden_bundle.py unpack \
             --archive "$RUNNER_TEMP/golden-download/golden-bundle.tar.gz" --destination target/golden-input \
             --commit "$GITHUB_SHA" --family vulkan-lavapipe
-      - name: Walk the district
+      - name: Walk the benchmark
         env:
           WALK: ${{ matrix.walk }}
         run: |

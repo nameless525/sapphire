@@ -33,13 +33,16 @@
 //!   renderer passes it on flat, from one vertex of each triangle, so a triangle's three
 //!   vertices must share it ([`GltfImportError::MixedMaterialIds`]): vertices on a border
 //!   between IDs are split, one per side. In Blender that is an integer attribute named
-//!   `_MATERIAL_ID` on the face-corner domain (so the exporter splits them), exported with
-//!   "Include → Attributes". Without one every vertex has ID 0.
+//!   `_MATERIAL_ID` on faces (or face corners), which the exporter writes to each corner,
+//!   splitting vertices, with "Include → Attributes": the add-on paints and exports it
+//!   (`tools/blender/sapphire`, M6 C3). Without one every vertex has ID 0.
 //! - Missing normals are replaced by flat face normals.
 //! - An `_OUTLINE_NORMAL` attribute (VEC3: float, or normalized byte or short) is an authored
 //!   outline normal, in the same space as `NORMAL`. It wins over the welded bake
 //!   ([`bake::outline_normals`](crate::bake::outline_normals)), which fills in every other
-//!   vertex. Without either, a vertex's outline normal is its shading normal.
+//!   vertex. Without either, a vertex's outline normal is its shading normal. Blender's exporter
+//!   writes custom vectors as Blender stores them, Z-up, so the add-on's export turns it to
+//!   glTF's Y-up as it writes it.
 //!
 //! # Skins
 //!

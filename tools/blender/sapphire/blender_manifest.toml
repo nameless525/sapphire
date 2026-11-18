@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+
+id = "sapphire"
+version = "0.3.0"
+name = "Sapphire"
+tagline = "Author and export anime characters for the Sapphire engine"
+maintainer = "nameless525"
+type = "add-on"
+
+blender_version_min = "5.2.0"
+
+license = ["SPDX:MIT"]
+copyright = ["2026 nameless525"]
+
+[permissions]
+files = "Export glTF files, bake masks, run the Sapphire pipeline"

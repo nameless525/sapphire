@@ -542,6 +542,10 @@
 //!   `hull pixels`, `upscale groups` and `flat upscale groups`. It builds two compute pipelines and adds their
 //!   passes, so it is for a counted run (`--draw-every`), never a timed one. A frame's reading arrives a few
 //!   frames late, so a row's spread is the pixel's and its total isn't a sum of frames.
+//! - `--measure-unfolded-overlays`: on a frame that upscales along edges (the phones), the interface and debug
+//!   draw keep passes of their own rather than drawing in `upscale sharpen`'s (M6 F1), so the bench's
+//!   `gpu_ui_us`, the fight bench's `gpu ui` row and the upscaler's own time read apart, for §3.3's rows. The
+//!   frame is the same to the byte; the folded frame is the cost a phone pays.
 //!
 //! The character triangles by pass (`main character triangles` and the rest) are count rows in every build.
 //!

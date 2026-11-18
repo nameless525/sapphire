@@ -952,6 +952,7 @@ mod memory_ledger;
 mod mesh_pool;
 mod mip_streaming;
 mod outlines;
+mod overlays;
 // The GPU tests' panic counter, for the lib's tests that lose a device on purpose.
 #[cfg(test)]
 #[path = "../tests/gpu/panics.rs"]

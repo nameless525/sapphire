@@ -56,6 +56,7 @@ use crate::measure::{CharacterSwitches, MeasuredPixels, PixelCounter};
 use crate::mesh_pool::{MeshPool, MeshPoolStats, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::mip_streaming::{MipStreaming, MipStreamingStats};
 use crate::outlines::OutlineCull;
+use crate::overlays::Overlays;
 use crate::pipeline_builds::{
     FirstUseReport, PipelineBuilds, PipelineInventory, PipelineStats, PipelineWarmup,
 };
@@ -283,6 +284,12 @@ pub struct RenderSettings {
     /// timed run leaves it off.
     #[doc(hidden)]
     pub measure_pixels: bool,
+    /// The interface and debug draw in passes of their own on a frame that upscales along edges, rather than in
+    /// the sharpen's (M6 F1, the `overlays` module): a measurement switch in B6's style, set only by a dev
+    /// sandbox's `--measure-unfolded-overlays`, so the phones' `gpu ui` row reads again and the upscaler's time
+    /// leaves them out. Off by default and on every tier; the frame is the same to the byte either way.
+    #[doc(hidden)]
+    pub measure_unfolded_overlays: bool,
 }
 
 impl RenderSettings {
@@ -344,6 +351,7 @@ impl Default for RenderSettings {
             main_depth: MainDepth::default(),
             character_switches: CharacterSwitches::SHIPPING,
             measure_pixels: false,
+            measure_unfolded_overlays: false,
         }
     }
 }
@@ -3217,6 +3225,7 @@ impl Renderer {
         self.stats.skinning = self.skinning.stats();
         let draw_runs = self.settings.draw_runs;
         let wants_prepass_depth = self.settings.main_depth_from_prepass();
+        let fold_overlays = !self.settings.measure_unfolded_overlays;
 
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
@@ -4010,8 +4019,27 @@ impl Renderer {
         let shaft_depth = (temporal_targets.is_some() || gtao_runs).then_some(targets.depth);
         let inputs = PostInputs { input: resolved, scene_color, depth, target, distortion, shaft_depth };
         let (insets, counter) = (inset_resolves.into_iter().flatten(), counts.get(Counted::Post));
-        let upscale_input =
-            post.record(graph, inputs, effects, insets, labels, counter, counts.get(Counted::Upscale));
+        // The interface, over the frame and any debug view (M2 I2); then debug draws, over all of it; the
+        // overlay draws over them.
+        let mut pictures: [Option<UiPicture<'f>>; MAX_INSETS] = [None; MAX_INSETS];
+        for ((picture, shown), texture) in pictures.iter_mut().zip(inset_shown).zip(inset_pictures) {
+            *picture = shown.zip(texture).and_then(|(shown, texture)| {
+                Some(UiPicture { inset: shown.inset, group: shown.group?, texture })
+            });
+        }
+        let overlays = Overlays::new(
+            ui.overlay(output, pictures, Some(counts.get(Counted::Ui))),
+            debug_draw.map(|draw| draw.overlay(targets.depth, labels, counts.get(Counted::Debug))),
+        );
+        // On a frame that upscales they draw in the sharpen's pass (M6 F1, the `overlays` module), unless a debug
+        // view draws between post and them, or the measurement switch keeps them apart to time them.
+        let (to_post, after_views) = match debug_view {
+            None if fold_overlays => (overlays, None),
+            _ => (None, overlays),
+        };
+        let upscale_counter = counts.get(Counted::Upscale);
+        let (upscale_input, unfolded) =
+            post.record(graph, inputs, effects, insets, to_post, labels, counter, upscale_counter);
         if let Some(counter) = measure {
             let read = (scene_color, targets.character_ids);
             counter.add_passes(graph, device, read, upscale_input, output, labels);
@@ -4032,17 +4060,9 @@ impl Renderer {
             };
             views.record(graph, frame);
         }
-        // The interface, over the frame and any debug view (M2 I2).
-        let mut pictures: [Option<UiPicture<'f>>; MAX_INSETS] = [None; MAX_INSETS];
-        for ((picture, shown), texture) in pictures.iter_mut().zip(inset_shown).zip(inset_pictures) {
-            *picture = shown.zip(texture).and_then(|(shown, texture)| {
-                Some(UiPicture { inset: shown.inset, group: shown.group?, texture })
-            });
-        }
-        ui.record(graph, target, output, pictures, Some(counts.get(Counted::Ui)));
-        // Debug draws last, over all of it; the overlay draws over them.
-        if let Some(draw) = debug_draw {
-            draw.record(graph, target, targets.depth, labels, counts.get(Counted::Debug));
+        // What didn't draw in post's last pass: in passes of their own.
+        if let Some(overlays) = unfolded.or(after_views) {
+            overlays.record(graph, target);
         }
         // The colour-vision view over all of it (M4 A5).
         if let Some(vision) = color_vision_draw {

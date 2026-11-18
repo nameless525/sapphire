@@ -11,11 +11,15 @@ use std::sync::Arc;
 
 use glam::{Vec2, Vec3};
 use sapphire_core::debug_draw::{Color, DebugLine, Depth};
+use sapphire_look::Dichromacy;
+use sapphire_render::color_vision::COLOR_VISION_PASS;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
+use sapphire_render::post::UPSCALE_SHARPEN_PASS;
 use sapphire_render::{
-    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, PipelineInventory, PostParams,
-    RenderSettings, Renderer, ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, UI_PASS,
-    UiAtlas, UiDrawList, UiFieldFormat, UiPageUpload, UiQuad, ViewData, Vignette,
+    BloomParams, CameraData, ColorGrade, ColorVision, DebugView, DirectionalLight, FramePacketRing, Msaa,
+    PipelineInventory, PostParams, RenderSettings, Renderer, ShaderFile, ShaderSources, ShaderUpdate,
+    SkyGradient, ToneCurve, UI_PASS, UiAtlas, UiDrawList, UiFieldFormat, UiPageUpload, UiQuad, Upscaler,
+    ViewData, Vignette, debug_draw,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_ui::{
@@ -80,12 +84,18 @@ struct Harness {
     ring: FramePacketRing,
     size: (u32, u32),
     target: wgpu::Texture,
+    /// The sky's one colour, linear: black unless a test lights it.
+    sky: Vec3,
 }
 
 impl Harness {
     fn new(size: (u32, u32)) -> Self {
+        Self::with_settings(size, RenderSettings::default())
+    }
+
+    fn with_settings(size: (u32, u32), settings: RenderSettings) -> Self {
         let gpu = gpu();
-        let renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
+        let renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
         let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
@@ -96,7 +106,8 @@ impl Harness {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        Self { gpu, renderer, graph: GraphExecutor::new(), ring: FramePacketRing::new(), size, target }
+        let (graph, ring, sky) = (GraphExecutor::new(), FramePacketRing::new(), Vec3::ZERO);
+        Self { gpu, renderer, graph, ring, size, target, sky }
     }
 
     /// Draws a frame of `ui` and returns its RGBA8 pixels, rows from the top.
@@ -110,6 +121,7 @@ impl Harness {
         let packet = self.ring.current_mut();
         packet.debug.lines.extend_from_slice(lines);
         packet.debug.stats.lines = lines.len() as u32;
+        packet.sky = SkyGradient { zenith: self.sky, horizon: self.sky, ground: self.sky };
         self.renderer.prepare(&self.gpu, self.ring.current());
         let view = self.target.create_view(&wgpu::TextureViewDescriptor::default());
         let mut graph = FrameGraph::new();
@@ -121,7 +133,12 @@ impl Harness {
 
     /// Whether the last frame's graph ran the interface's pass.
     fn drew_ui_pass(&self) -> bool {
-        let ran = |pass: &sapphire_render::graph::PassReport| pass.name == UI_PASS && pass.order.is_some();
+        self.ran(UI_PASS)
+    }
+
+    /// Whether the last frame's graph ran the pass `name`.
+    fn ran(&self, name: &str) -> bool {
+        let ran = |pass: &sapphire_render::graph::PassReport| pass.name == name && pass.order.is_some();
         self.graph.report().is_some_and(|report| report.passes.iter().any(ran))
     }
 }
@@ -681,6 +698,94 @@ fn debug_draw_s_lines_stay_visible_over_the_interface() {
     let (x0, y0, x1, y1) = pixels.bounds_of(LINE, 8, (40, 40, 88, 88)).expect("the line over the disc");
     assert!(x0 <= 41 && x1 >= 86, "across the disc: {x0}..{x1}");
     assert!(y0 >= 60 && y1 <= 67, "on its row: {y0}..{y1}");
+}
+
+/// On a frame that upscales along edges (the phones', M5 L14) the interface and debug draw's lines draw in the
+/// upscaler's sharpen pass, after its triangle (M6 F1): neither runs a pass of its own, and the frame is the same
+/// to the byte as the one they draw over in their own passes at scale 1, over the same flat grey frame (which the
+/// upscaler keeps flat to the code), a translucent disc's blend included, with their counts the same. With a debug
+/// view on, which draws after the sharpen, they keep their own passes after it; with the colour-vision view on,
+/// they draw in the sharpen's pass, which writes what the view reads.
+#[test]
+#[ignore = "needs a GPU"]
+fn on_a_frame_that_upscales_the_interface_and_lines_draw_in_the_sharpen_s_pass() {
+    const HUD: [u8; 4] = [20, 200, 120, 255];
+    const GLASS: [u8; 4] = [200, 60, 90, 120];
+    const LINE: [u8; 3] = [255, 40, 200];
+    const MASKED: [u8; 4] = [240, 220, 30, 255];
+    let size = (129, 129);
+    let atlas = Atlas::paint();
+    let mut quads = Vec::new();
+    let mut painter = Painter::new(&mut quads, &atlas.sprites);
+    let disc = painter.sprites().disc;
+    painter.sprite(disc, Vec2::splat(64.5), Vec2::splat(100.0), 0.0, Paint::fill(HUD));
+    // Over the grey frame and partly past the opaque disc: a blend over what the sharpen drew.
+    painter.sprite(disc, Vec2::new(110.0, 20.0), Vec2::splat(30.0), 0.0, Paint::fill(GLASS));
+    let mut ui = UiDrawList { viewport: [129.0, 129.0], quads, ..UiDrawList::default() };
+    // Last, a masked quad: the list ends with the scissor set, which the lines after it must not keep.
+    ui.set_mask(Some([100.0, 100.0, 120.0, 120.0]));
+    solid(&mut Painter::new(&mut ui.quads, &atlas.sprites), [90.0, 90.0], [128.0, 128.0], MASKED);
+    ui.atlas = Some(atlas.image);
+    let line = DebugLine {
+        from: Vec3::new(-2.0, 0.0, 0.0),
+        to: Vec3::new(2.0, 0.0, 0.0),
+        color: Color::rgb(LINE[0], LINE[1], LINE[2]),
+        depth: Depth::OnTop,
+    };
+    let settings = RenderSettings {
+        msaa: Msaa::X4,
+        upscaler: Upscaler::Edge { sharpen: 50 },
+        ..RenderSettings::default()
+    };
+    let mut harness = Harness::with_settings(size, settings);
+    harness.graph.set_report(true);
+    harness.sky = Vec3::splat(0.3);
+    let shot = |harness: &mut Harness| {
+        let pixels = harness.draw_with_lines(Some(&ui), &[line]);
+        let stats = harness.renderer.stats();
+        let own = (harness.ran(UI_PASS), harness.ran(debug_draw::PASS));
+        (pixels, own, harness.ran(UPSCALE_SHARPEN_PASS), stats.passes.ui, stats.passes.debug)
+    };
+    let (native, own, sharpened, ui_counts, debug_counts) = shot(&mut harness);
+    assert_eq!((own, sharpened), ((true, true), false), "at scale 1, their own passes and no upscale");
+    assert_eq!(native.at(64, 30), HUD);
+    let grey = native.at(2, 126);
+    assert!(grey[0] > 40 && grey[0] < 250, "a grey frame: {grey:?}");
+    let glass = native.at(110, 20);
+    assert!(glass != grey && glass != GLASS, "the translucent disc blends: {glass:?}");
+    assert!(native.bounds_of(LINE, 8, (40, 40, 88, 88)).is_some(), "the line over the disc");
+    assert_eq!(native.at(110, 110), MASKED, "inside the mask");
+    assert!(native.at(95, 95) != MASKED, "the quad cut at the mask: {:?}", native.at(95, 95));
+    harness.renderer.set_render_scale(0.5);
+    let (folded, own, sharpened, folded_ui, folded_debug) = shot(&mut harness);
+    assert!(harness.renderer.stats().post.upscale, "the frame upscaled");
+    assert_eq!((own, sharpened), ((false, false), true), "below scale 1, in the sharpen's pass alone");
+    // The line outside the mask whole, so the mask ended before it as it did between passes.
+    assert!(folded.rgba == native.rgba, "the same frame to the byte, drawn in the sharpen's pass");
+    assert_eq!((folded_ui, folded_debug), (ui_counts, debug_counts), "counted in their own rows still");
+    // The measurement switch keeps their passes on a frame that upscales, to time them apart: the same frame.
+    let mut apart =
+        Harness::with_settings(size, RenderSettings { measure_unfolded_overlays: true, ..settings });
+    apart.graph.set_report(true);
+    apart.sky = harness.sky;
+    apart.renderer.set_render_scale(0.5);
+    let (unfolded, own, sharpened, ..) = shot(&mut apart);
+    assert_eq!((own, sharpened), ((true, true), true), "with the switch, their own passes after the sharpen");
+    assert!(unfolded.rgba == native.rgba, "the same frame to the byte, in their own passes");
+    // A debug view draws over the sharpen's output, and they over it, in their own passes.
+    harness.renderer.set_debug_view(DebugView::Overdraw);
+    let (_, own, sharpened, ..) = shot(&mut harness);
+    assert_eq!((own, sharpened), ((true, true), true), "after a debug view, their own passes");
+    harness.renderer.set_debug_view(DebugView::Off);
+    // The colour-vision view reads the whole frame, so it stays a pass of its own; they draw in the sharpen's.
+    harness.renderer.set_color_vision(ColorVision::Simulated(Dichromacy::Deuteranopia));
+    let (_, own, sharpened, ..) = shot(&mut harness);
+    assert_eq!(
+        (own, sharpened),
+        ((false, false), true),
+        "under the colour-vision view, in the sharpen's pass"
+    );
+    assert!(harness.ran(COLOR_VISION_PASS), "the view drew over them");
 }
 
 // --- Glyph pages (M3 U1) ---

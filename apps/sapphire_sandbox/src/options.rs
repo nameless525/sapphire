@@ -77,6 +77,7 @@ Measuring the character pixel (dev builds; never a shipping look):
   --measure-face-light-constant  A face's light a constant
   --measure-control-unbound      Control maps never read
   --measure-pixels               Count character, hull and flat upscale pixels
+  --measure-unfolded-overlays    Interface and lines in own passes when upscaled
 
 The sapphire_sandbox crate's Arguments documentation lists all scene, capture,
 benchmark, animation, HUD and development options (cargo doc -p sapphire_sandbox).";
@@ -477,6 +478,11 @@ pub(crate) struct Options {
     /// `--measure-pixels` (`dev` builds): count the character and hull pixels and the edge upscaler's flat groups
     /// (M6 B6, `RenderSettings::measure_pixels`), for a counted run, never a timed one.
     pub measure_pixels: bool,
+    /// `--measure-unfolded-overlays` (`dev` builds): on a frame that upscales along edges, the interface and debug
+    /// draw keep passes of their own rather than drawing in the sharpen's (M6 F1,
+    /// `RenderSettings::measure_unfolded_overlays`), so a timed run reads the phones' `gpu ui` row and the upscaler
+    /// without them.
+    pub measure_unfolded_overlays: bool,
     /// `--character-shadows own`: characters receive no other character's shadow (M5 L12), each
     /// casting only onto the world, for comparisons. `--character-shadows others`, the tier's, is
     /// the default.
@@ -941,6 +947,7 @@ impl Options {
             capsule_bins: self.capsule_bins.unwrap_or(tier.capsule_bins),
             character_switches: self.character_switches,
             measure_pixels: self.measure_pixels,
+            measure_unfolded_overlays: self.measure_unfolded_overlays,
             shafts: tier.shafts && self.shafts != Some(Switch::Off),
             foliage: FoliageSettings {
                 local_air: self.local_air.unwrap_or(tier.foliage.local_air),
@@ -1644,6 +1651,15 @@ impl Options {
                         "--measure-control-unbound" => switches.control_unbound = true,
                         _ => options.measure_pixels = true,
                     }
+                }
+                "--measure-unfolded-overlays" => {
+                    if cfg!(not(feature = "dev")) {
+                        return Err(format!(
+                            "{name} times the phones' interface apart, which only `dev` builds measure \
+                             (`--features dev`)"
+                        ));
+                    }
+                    options.measure_unfolded_overlays = true;
                 }
                 "--capsule-bins" => {
                     options.capsule_bins = Some(match value("--capsule-bins")?.as_str() {
@@ -4486,7 +4502,7 @@ mod tests {
     /// a build without `dev` refuses them all.
     #[test]
     fn each_measure_flag_sets_its_one_switch_in_dev_builds_alone() {
-        let flags: [&[&str]; 12] = [
+        let flags: [&[&str]; 13] = [
             &["--measure-no-rim"],
             &["--measure-no-local-lights"],
             &["--measure-light-cap", "8"],
@@ -4499,9 +4515,14 @@ mod tests {
             &["--measure-face-light-constant"],
             &["--measure-control-unbound"],
             &["--measure-pixels"],
+            &["--measure-unfolded-overlays"],
         ];
         let (plain, _) = parse(&[]).expect("no flags");
-        assert!(plain.character_switches.is_shipping() && !plain.measure_pixels);
+        assert!(
+            plain.character_switches.is_shipping()
+                && !plain.measure_pixels
+                && !plain.measure_unfolded_overlays
+        );
         for flag in flags {
             let parsed = parse(flag);
             if cfg!(not(feature = "dev")) {
@@ -4511,8 +4532,9 @@ mod tests {
             }
             let (options, unknown) = parsed.expect("a dev build takes it");
             assert!(unknown.is_empty(), "{flag:?}");
-            let on =
-                usize::from(!options.character_switches.is_shipping()) + usize::from(options.measure_pixels);
+            let on = usize::from(!options.character_switches.is_shipping())
+                + usize::from(options.measure_pixels)
+                + usize::from(options.measure_unfolded_overlays);
             assert_eq!(on, 1, "{flag:?} sets one thing");
         }
         if cfg!(feature = "dev") {

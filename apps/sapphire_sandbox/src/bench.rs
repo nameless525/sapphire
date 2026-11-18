@@ -34,7 +34,10 @@
 //! (`--vfx distort-*`, M5 L6, with the effects' pass §3.3's "Particles, distortion"), a 3D inset's
 //! passes (`--ui-game character`, M3 U6: with `--ui-spin` it turns, and so draws, every frame), a phone tier's
 //! upscale and sharpen below scale 1 (M5 L14: `gpu_upscale_us`, each pass apart, against §3.3's post row with
-//! post's own) and the whole frame.
+//! post's own) and the whole frame. Below scale 1 on those tiers the interface and debug draw draw in the
+//! sharpen's pass (M6 F1), so `gpu_ui_us` and `gpu_debug_draw_us` read nothing there and
+//! `gpu_upscale_sharpen_us` holds them; a dev build's `--measure-unfolded-overlays` keeps their passes, so all
+//! three read apart.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
 //!

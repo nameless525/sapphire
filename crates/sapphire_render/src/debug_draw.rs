@@ -65,7 +65,8 @@ use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 
-/// The pass in the frame graph, for GPU timings.
+/// The pass in the frame graph, for GPU timings. A frame that upscales along edges draws the lines in the
+/// upscaler's sharpen pass instead (M6 F1), whose time then holds theirs.
 pub const PASS: &str = "debug draw";
 
 /// A line's width in pixels on a target of [`LINE_WIDTH_ROWS`] rows or fewer; taller targets widen
@@ -291,32 +292,36 @@ impl DebugDraw {
         stage(belt, encoder, self.buffer.buffer(), 0, bytemuck::cast_slice(&self.lines));
     }
 
-    /// Adds the pass, over `target`, which post (and any debug view) finished. `depth` is the scene
-    /// prepass's, which this makes run. Its draw counts in `counter`, a quad of two triangles a line.
-    pub(crate) fn record<'f>(
+    /// What draws the frame's lines over the finished frame: in a pass of their own ([`LinesOverlay::record`]) or at
+    /// the end of the frame's last ([`Overlays`](crate::overlays::Overlays)). `depth` is the scene prepass's, which
+    /// this makes run. Its draw counts in `counter`, a quad of two triangles a line.
+    pub(crate) fn overlay<'f>(
         &'f self,
-        graph: &mut FrameGraph<'f>,
-        target: TextureId,
         depth: TextureId,
         labels: bool,
         counter: &'f Counter,
-    ) {
-        graph.add_pass(PASS).read(depth).read(target).write(target).record(move |ctx| {
-            // A new one a frame: the depth's view changes with TAA's pair and the transient pool,
-            // and this runs only while something draws.
-            let inputs = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(PASS),
-                layout: &self.bind_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(ctx.view(depth)),
-                    },
-                ],
-            });
+    ) -> LinesOverlay<'f> {
+        LinesOverlay { draw: self, depth, labels, counter }
+    }
+}
+
+/// Debug draw's lines over one frame ([`DebugDraw::overlay`]).
+#[derive(Clone, Copy)]
+pub(crate) struct LinesOverlay<'f> {
+    draw: &'f DebugDraw,
+    /// The scene prepass's depth, which the lines are tested against.
+    pub depth: TextureId,
+    labels: bool,
+    counter: &'f Counter,
+}
+
+impl<'f> LinesOverlay<'f> {
+    /// Adds the pass, over `target`, which post (and any debug view and the interface) finished.
+    pub(crate) fn record(self, graph: &mut FrameGraph<'f>, target: TextureId) {
+        graph.add_pass(PASS).read(self.depth).read(target).write(target).record(move |ctx| {
+            let inputs = self.bind(ctx.view(self.depth));
             let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: labels.then_some(PASS),
+                label: self.labels.then_some(PASS),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: ctx.view(target),
                     depth_slice: None,
@@ -326,12 +331,33 @@ impl DebugDraw {
                 timestamp_writes: ctx.timestamp_writes(),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &inputs, &[]);
-            pass.set_vertex_buffer(0, self.buffer.buffer().slice(..));
-            pass.draw(0..4, 0..self.lines.len() as u32);
-            counter.add(&PassCounts::call(self.lines.len() as u32, 2));
+            self.draw(&mut pass, &inputs);
         });
+    }
+
+    /// The group the lines draw with, reading `depth`, the view of [`Self::depth`]. A new one a frame: the depth's
+    /// view changes with TAA's pair and the transient pool, and this runs only while something draws. Made before
+    /// the render pass it draws in begins.
+    pub(crate) fn bind(&self, depth: &wgpu::TextureView) -> wgpu::BindGroup {
+        let draw = self.draw;
+        draw.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(PASS),
+            layout: &draw.bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: draw.uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
+            ],
+        })
+    }
+
+    /// Draws the lines into `pass`, over whatever it drew before, with `inputs` from [`Self::bind`].
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, inputs: &wgpu::BindGroup) {
+        let draw = self.draw;
+        pass.set_pipeline(&draw.pipeline);
+        pass.set_bind_group(0, inputs, &[]);
+        pass.set_vertex_buffer(0, draw.buffer.buffer().slice(..));
+        pass.draw(0..4, 0..draw.lines.len() as u32);
+        self.counter.add(&PassCounts::call(draw.lines.len() as u32, 2));
     }
 }
 

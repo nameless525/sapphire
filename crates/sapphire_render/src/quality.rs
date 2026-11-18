@@ -519,6 +519,7 @@ impl QualityTier {
             // A dev sandbox's alone (M6 B6).
             character_switches: CharacterSwitches::SHIPPING,
             measure_pixels: false,
+            measure_unfolded_overlays: false,
         }
     }
 

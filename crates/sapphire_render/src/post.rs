@@ -320,6 +320,7 @@ use crate::color_vision::ColorVisionDraw;
 use crate::counts::{Counter, PassCounts};
 use crate::graph::{FrameGraph, TextureId};
 use crate::inset::INSET_RESOLVE_PASS;
+use crate::overlays::Overlays;
 use crate::pipeline_builds::PipelineBuilds;
 use crate::pipelines::SCENE_COLOR_FORMAT;
 use crate::shader_builds::Step;
@@ -772,6 +773,8 @@ struct Fullscreen<'f> {
     counter: &'f Counter,
     /// Where it binds its textures: empty for 0, 1, … in order.
     bindings: &'static [u32],
+    /// What draws over its output in its render pass, after its triangle (M6 F1): the frame's last pass's.
+    overlays: Option<Overlays<'f>>,
 }
 
 impl PostProcess {
@@ -1552,11 +1555,13 @@ impl PostProcess {
     /// renderer draws the effects that come after temporal AA's resolve there, so they go over the blurred
     /// frame and are never blurred themselves. Each of post's own passes counts its draw in `counter`, but the
     /// upscaler's (M5 L14), which count in `upscale_counter`: where [`Self::upscales`] says so, the fused pass
-    /// writes the input's size and they take it to the target's. Returns that pass's output, the edge
-    /// upscaler's input, on a frame that upscales (M6 B6's counters read it).
+    /// writes the input's size and they take it to the target's. `overlays`, the interface and debug lines over
+    /// the finished frame, draw in the sharpen's pass on a frame that upscales (M6 F1, [`Overlays`]). Returns the
+    /// fused pass's output, the edge upscaler's input, on a frame that upscales (M6 B6's counters read it), and the
+    /// overlays it didn't draw, for passes of their own.
     #[expect(
         clippy::too_many_arguments,
-        reason = "the frame's textures, its effects and insets, and its counters"
+        reason = "the frame's textures, its effects, insets and overlays, and its counters"
     )]
     pub(crate) fn record<'f>(
         &'f mut self,
@@ -1564,10 +1569,11 @@ impl PostProcess {
         inputs: PostInputs,
         effects: impl FnOnce(&mut FrameGraph<'f>, TextureId) -> TextureId,
         insets: impl IntoIterator<Item = InsetResolve<'f>>,
+        mut overlays: Option<Overlays<'f>>,
         labels: bool,
         counter: &'f Counter,
         upscale_counter: &'f Counter,
-    ) -> Option<TextureId> {
+    ) -> (Option<TextureId>, Option<Overlays<'f>>) {
         let PostInputs { input, scene_color, depth, target: output, distortion, shaft_depth } = inputs;
         // The upscaler (M5 L14), at the sizes this frame draws at.
         let (input_size, output_size) = (graph.size(input), graph.size(output));
@@ -1620,6 +1626,7 @@ impl PostProcess {
             cache,
             counter,
             bindings: &[],
+            overlays: None,
         };
         let pipeline = |slot| pipelines.get(slot).expect("prepare builds every pipeline its frame draws");
 
@@ -1860,40 +1867,9 @@ impl PostProcess {
                 pass(pipeline(composite_slot), &layouts.composite, composite),
             ),
         }
-        if let Some(UpscaleGroup { shared, .. }) = upscale {
-            let desc = TransientDesc {
-                width: output_size.0,
-                height: output_size.1,
-                format: upscale::FORMAT,
-                sample_count: 1,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            };
-            let upscaled = graph.create_texture(upscale::EDGE_PASS, desc);
-            let draws = [
-                (UpscalePass::Edge, target, upscaled, upscale_edge),
-                (UpscalePass::Sharpen, upscaled, output, upscale_sharpen),
-            ];
-            for (pass, from, into, cache) in draws {
-                add_fullscreen(
-                    graph,
-                    pass.names().0,
-                    [Input::Graph(from)],
-                    into,
-                    Fullscreen {
-                        device,
-                        labels,
-                        pipeline: pipeline(Slot::Upscale(pass)),
-                        shared,
-                        layout: &layouts.one,
-                        cache,
-                        counter: upscale_counter,
-                        bindings: &[],
-                    },
-                );
-            }
-        }
         // Insets' resolves (M3 U6): their scene alone, through the composite's layout for the LUTs; first
-        // its soft backdrop, where it asks for one (M5 L8).
+        // its soft backdrop, where it asks for one (M5 L8). Before the upscaler's passes: the interface reads
+        // their pictures, and on a frame that upscales it draws in the sharpen's pass (M6 F1).
         for InsetResolve { post: inset, scene, picture, soft_backdrop } in insets {
             let InsetPost { ref shared, ref mut cache, ref mut backdrop } = *inset;
             let backdrop_pipeline = pipelines.get(Slot::Focus(FocusPass::Backdrop)).filter(|_| soft_backdrop);
@@ -1925,6 +1901,7 @@ impl PostProcess {
                             cache: backdrop,
                             counter,
                             bindings: &[],
+                            overlays: None,
                         },
                     );
                     soft
@@ -1946,10 +1923,45 @@ impl PostProcess {
                     cache,
                     counter,
                     bindings: &[],
+                    overlays: None,
                 },
             );
         }
-        upscale.map(|_| target)
+        if let Some(UpscaleGroup { shared, .. }) = upscale {
+            let desc = TransientDesc {
+                width: output_size.0,
+                height: output_size.1,
+                format: upscale::FORMAT,
+                sample_count: 1,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            };
+            let upscaled = graph.create_texture(upscale::EDGE_PASS, desc);
+            // The interface and debug lines draw in the sharpen's pass, the frame's last (M6 F1).
+            let draws = [
+                (UpscalePass::Edge, target, upscaled, upscale_edge, None),
+                (UpscalePass::Sharpen, upscaled, output, upscale_sharpen, overlays.take()),
+            ];
+            for (pass, from, into, cache, overlays) in draws {
+                add_fullscreen(
+                    graph,
+                    pass.names().0,
+                    [Input::Graph(from)],
+                    into,
+                    Fullscreen {
+                        device,
+                        labels,
+                        pipeline: pipeline(Slot::Upscale(pass)),
+                        shared,
+                        layout: &layouts.one,
+                        cache,
+                        counter: upscale_counter,
+                        bindings: &[],
+                        overlays,
+                    },
+                );
+            }
+        }
+        (upscale.map(|_| target), overlays)
     }
 }
 
@@ -1980,8 +1992,13 @@ fn add_fullscreen<'f, const N: usize>(
             builder = builder.read(texture);
         }
     }
+    for texture in draw.overlays.iter().flat_map(Overlays::reads) {
+        builder = builder.read(texture);
+    }
     builder.write(output).record(move |ctx| {
-        let Fullscreen { device, labels, pipeline, shared, layout, cache, counter, bindings } = draw;
+        let Fullscreen { device, labels, pipeline, shared, layout, cache, counter, bindings, overlays } =
+            draw;
+        let overlays = overlays.map(|overlays| overlays.bind(ctx));
         let views = inputs.map(|input| match input {
             Input::Graph(texture) => ctx.view(texture),
             Input::View(view) => view,
@@ -2012,6 +2029,9 @@ fn add_fullscreen<'f, const N: usize>(
         pass.set_bind_group(1, group, &[]);
         pass.draw(0..3, 0..1);
         counter.add(&PassCounts::fullscreen());
+        if let Some(overlays) = &overlays {
+            overlays.draw(&mut pass);
+        }
     });
 }
 

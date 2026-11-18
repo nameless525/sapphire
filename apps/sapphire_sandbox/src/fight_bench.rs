@@ -184,6 +184,8 @@ impl GpuTimes {
             vfx: sum(&[vfx::PASS]).map(|effects| {
                 effects + timings.get(DISTORTION_PASS).map_or(Duration::ZERO, |pass| pass.exclusive)
             }),
+            // None on a phone's frame below scale 1, whose interface draws in the upscaler's sharpen pass (M6 F1);
+            // a dev build's `--measure-unfolded-overlays` keeps its pass, for this row.
             ui: sum(&[UI_PASS]),
             start: timings.every_timed_pass.then_some(timings.start).flatten(),
             end: timings.every_timed_pass.then(|| timings.end()).flatten(),

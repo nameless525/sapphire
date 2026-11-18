@@ -1,6 +1,8 @@
 //! The on-screen interface over the finished frame (spec §5.17, M2 I2): the packet's
 //! [`UiDrawList`], as one instanced draw after post and any debug view,
-//! under debug draw and the app's overlay. It knows quads and an atlas, never widgets (rule R4).
+//! under debug draw and the app's overlay. It knows quads and an atlas, never widgets (rule R4). It draws
+//! in a pass of its own, or, on a frame that upscales along edges, in the sharpen's (M6 F1, the
+//! `overlays` module).
 //!
 //! # A frame with no UI costs nothing
 //!
@@ -117,7 +119,8 @@ use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 
-/// The frame graph pass that draws the interface, for GPU timings.
+/// The frame graph pass that draws the interface, for GPU timings. A frame that upscales along edges draws it
+/// in the upscaler's sharpen pass instead (M6 F1), whose time then holds the interface's.
 pub const UI_PASS: &str = "ui";
 
 /// Bytes of a quad, as the shader reads it.
@@ -738,7 +741,7 @@ impl Ui {
         })
     }
 
-    /// A group reading `picture`, an inset's (M3 U6), for [`Self::record`]'s pictures: `None` until the
+    /// A group reading `picture`, an inset's (M3 U6), for [`Self::overlay`]'s pictures: `None` until the
     /// pipeline is built.
     pub(crate) fn picture_group(&self, picture: &wgpu::TextureView) -> Option<wgpu::BindGroup> {
         let built = self.built.as_deref()?;
@@ -753,74 +756,27 @@ impl Ui {
         }))
     }
 
-    /// Adds the pass over `target`, if this frame draws. It keeps what's there and blends over it. Inset
-    /// runs read `pictures`: by inset, its group ([`Self::picture_group`]) and its picture in the graph.
+    /// What draws this frame's interface over a target of `size` pixels, if it draws: in a pass of its own
+    /// ([`UiOverlay::record`]) or at the end of the frame's last ([`Overlays`](crate::overlays::Overlays)).
+    /// Inset runs read `pictures`: by inset, its group ([`Self::picture_group`]) and its picture in the graph.
     /// Its draws count in `counter`, if there is one, a quad of two triangles each.
-    pub(crate) fn record<'f>(
+    pub(crate) fn overlay<'f>(
         &'f self,
-        graph: &mut FrameGraph<'f>,
-        target: TextureId,
         size: (u32, u32),
         pictures: [Option<UiPicture<'f>>; MAX_INSETS],
         counter: Option<&'f Counter>,
-    ) {
-        let Some(built) = self.built.as_deref().filter(|_| !self.quads.is_empty()) else { return };
-        let labels = self.labels;
-        let draws = self.draws.as_slice();
-        // A mask is in points, a scissor in the target's pixels.
-        let viewport = self.uniforms.points_to_clip.map(|to_clip| 2.0 / to_clip);
-        let mut pass = graph.add_pass(UI_PASS).read(target);
-        for picture in pictures.iter().flatten() {
-            pass = pass.read(picture.texture);
-        }
-        pass.write(target).record(move |ctx| {
-            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: labels.then_some(UI_PASS),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: ctx.view(target),
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                timestamp_writes: ctx.timestamp_writes(),
-                ..Default::default()
-            });
-            pass.set_pipeline(&built.pipeline);
-            pass.set_bind_group(1, &built.quads_group, &[]);
-            let mut scissor = None;
-            let mut counts = PassCounts::default();
-            for draw in draws {
-                let wanted = draw.mask.map(|mask| scissor_of(mask, viewport, size));
-                if wanted != scissor {
-                    let [x, y, width, height] = wanted.unwrap_or([0, 0, size.0, size.1]);
-                    pass.set_scissor_rect(x, y, width, height);
-                    scissor = wanted;
-                }
-                if wanted.is_some_and(|[_, _, width, height]| width == 0 || height == 0) {
-                    continue;
-                }
-                let picture = |inset| pictures.iter().flatten().find(|picture| picture.inset == inset);
-                let group = match (draw.texture, built.atlas.as_ref()) {
-                    (UiTexture::Inset(inset), _) => match picture(inset) {
-                        Some(picture) => picture.group,
-                        None => continue,
-                    },
-                    (UiTexture::Page(page), _) => &built.pages[&page].bind_group,
-                    (UiTexture::Field(at), _) => &built.fields[usize::from(at)].bind_group,
-                    (UiTexture::Atlas, Some(atlas)) => &atlas.bind_group,
-                    (UiTexture::Atlas, None) => continue,
-                };
-                let start = u64::from(draw.first) * INDEX_BYTES;
-                let end = start + u64::from(draw.count) * INDEX_BYTES;
-                pass.set_bind_group(0, group, &[]);
-                pass.set_vertex_buffer(0, built.indices.slice(start..end));
-                pass.draw(0..4, 0..draw.count);
-                counts = counts.plus(&PassCounts::call(draw.count, 2));
-            }
-            if let Some(counter) = counter {
-                counter.add(&counts);
-            }
-        });
+    ) -> Option<UiOverlay<'f>> {
+        let built = self.built.as_deref().filter(|_| !self.quads.is_empty())?;
+        Some(UiOverlay {
+            built,
+            draws: &self.draws,
+            // A mask is in points, a scissor in the target's pixels.
+            viewport: self.uniforms.points_to_clip.map(|to_clip| 2.0 / to_clip),
+            size,
+            pictures,
+            counter,
+            labels: self.labels,
+        })
     }
 
     /// The pipeline to build from new sources (shader hot reload, off the frame thread:
@@ -1061,7 +1017,93 @@ fn scissor_of(mask: [f32; 4], viewport: [f32; 2], size: (u32, u32)) -> [u32; 4] 
     [x0, y0, x1 - x0, y1 - y0]
 }
 
-/// An inset's picture, as [`Ui::record`] reads it.
+/// The interface's draws over one frame ([`Ui::overlay`]).
+pub(crate) struct UiOverlay<'f> {
+    built: &'f Built,
+    draws: &'f [UiDraw],
+    /// The list's viewport, in points.
+    viewport: [f32; 2],
+    /// The target's size, in pixels.
+    size: (u32, u32),
+    pictures: [Option<UiPicture<'f>>; MAX_INSETS],
+    counter: Option<&'f Counter>,
+    labels: bool,
+}
+
+impl<'f> UiOverlay<'f> {
+    /// The insets' pictures it reads, which the pass it draws in declares.
+    pub(crate) fn reads(&self) -> impl Iterator<Item = TextureId> + '_ {
+        self.pictures.iter().flatten().map(|picture| picture.texture)
+    }
+
+    /// Adds its pass over `target`, which keeps what's there and blends over it.
+    pub(crate) fn record(self, graph: &mut FrameGraph<'f>, target: TextureId) {
+        let mut pass = graph.add_pass(UI_PASS).read(target);
+        for picture in self.reads() {
+            pass = pass.read(picture);
+        }
+        pass.write(target).record(move |ctx| {
+            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: self.labels.then_some(UI_PASS),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: ctx.view(target),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                timestamp_writes: ctx.timestamp_writes(),
+                ..Default::default()
+            });
+            self.draw(&mut pass);
+        });
+    }
+
+    /// Draws into `pass`, over whatever it drew before, and leaves its scissor on the whole target.
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        let Self { built, draws, viewport, size, ref pictures, counter, .. } = *self;
+        pass.set_pipeline(&built.pipeline);
+        pass.set_bind_group(1, &built.quads_group, &[]);
+        let mut scissor = None;
+        let mut counts = PassCounts::default();
+        for draw in draws {
+            let wanted = draw.mask.map(|mask| scissor_of(mask, viewport, size));
+            if wanted != scissor {
+                let [x, y, width, height] = wanted.unwrap_or([0, 0, size.0, size.1]);
+                pass.set_scissor_rect(x, y, width, height);
+                scissor = wanted;
+            }
+            if wanted.is_some_and(|[_, _, width, height]| width == 0 || height == 0) {
+                continue;
+            }
+            let picture = |inset| pictures.iter().flatten().find(|picture| picture.inset == inset);
+            let group = match (draw.texture, built.atlas.as_ref()) {
+                (UiTexture::Inset(inset), _) => match picture(inset) {
+                    Some(picture) => picture.group,
+                    None => continue,
+                },
+                (UiTexture::Page(page), _) => &built.pages[&page].bind_group,
+                (UiTexture::Field(at), _) => &built.fields[usize::from(at)].bind_group,
+                (UiTexture::Atlas, Some(atlas)) => &atlas.bind_group,
+                (UiTexture::Atlas, None) => continue,
+            };
+            let start = u64::from(draw.first) * INDEX_BYTES;
+            let end = start + u64::from(draw.count) * INDEX_BYTES;
+            pass.set_bind_group(0, group, &[]);
+            pass.set_vertex_buffer(0, built.indices.slice(start..end));
+            pass.draw(0..4, 0..draw.count);
+            counts = counts.plus(&PassCounts::call(draw.count, 2));
+        }
+        // What draws after it in the same pass draws over the whole target.
+        if scissor.is_some() {
+            pass.set_scissor_rect(0, 0, size.0, size.1);
+        }
+        if let Some(counter) = counter {
+            counter.add(&counts);
+        }
+    }
+}
+
+/// An inset's picture, as [`Ui::overlay`] reads it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UiPicture<'f> {
     pub inset: u16,

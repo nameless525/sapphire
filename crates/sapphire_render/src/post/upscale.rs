@@ -25,10 +25,13 @@
 //!   once, which is what its clamp to their range would have made of any kernel: the same to the bit, skipping
 //!   the votes and the kernel where a 32-pixel group of the GPU's is wholly flat (the shader says how it's taken,
 //!   and why it still reads all twelve taps first).
-//! - **What draws after:** the interface, debug draw, the debug views and the colour-vision view draw over the
-//!   target at the output's size, after the sharpen, untouched. The screen effects (the CRT's scanlines and
-//!   grille, the glitch's whole-pixel shifts, the halftone) are the fused pass's, so on these tiers they're drawn
-//!   at the scene's pixels and upscaled with it, as everything else in the frame is.
+//! - **What draws after:** the interface and debug draw draw in the sharpen's own render pass, after its
+//!   triangle, at the output's size, untouched (M6 F1, the renderer's `overlays` module): no pass of their own
+//!   that loads the target the sharpen has just stored. A debug view draws after the sharpen, and they then keep
+//!   their passes after it; the colour-vision view reads all of it, the sharpen writing its input. The screen
+//!   effects (the CRT's scanlines and grille, the glitch's whole-pixel shifts, the halftone) are the fused pass's,
+//!   so on these tiers they're drawn at the scene's pixels and upscaled with it, as everything else in the frame
+//!   is.
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};

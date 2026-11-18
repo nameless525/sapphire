@@ -250,6 +250,7 @@ impl Options {
             boot: true,
             display: OffscreenDisplay::default(),
             shadow_cache: None,
+            local_air: None,
         }
     }
 }
@@ -350,6 +351,7 @@ mod tests {
                 boot: true,
                 display: OffscreenDisplay::default(),
                 shadow_cache: None,
+                local_air: None,
             }
         );
         assert!(!options.saves());

@@ -28,8 +28,8 @@ use game_flow::show::GameShow;
 use game_ui::hud::OffscreenDisplay;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::CascadeCache;
 use sapphire_render::quality::QualitySettings;
+use sapphire_render::{CascadeCache, LocalAir};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_save::ProgressStore;
 
@@ -140,7 +140,8 @@ fn step(stage: &mut impl Steps, through: bool) -> Result<(), AppInitError> {
 
 /// `--game`: the game's own show on the content's flow, from `start`, over `progress`'s save if there is one,
 /// drawn `ticks` frames with no window on the player's `quality` settings (`--tier` and the rest of the
-/// command line's), its cascades kept as `shadow_cache` says (`--shadow-cache`, M5 D8), and written as
+/// command line's), its cascades kept as `shadow_cache` says (`--shadow-cache`, M5 D8), its foliage taking
+/// the wind field's local air as `local_air` says (`--local-air`, M6 Y1), and written as
 /// any capture is (M3 G1). In `language` if one's given, and walking forward
 /// into a cutscene if `forward` (M3 Q4), drawing from frame `draw_from` (`GameCapture::draw_from`), its menus
 /// and HUD as `display` shows them (M4 S5), and the title's version labelled `version` (0.1.0). It keeps no run's file, and the save only in a scratch directory it
@@ -157,7 +158,7 @@ pub(crate) fn game(
         String,
     ),
     (ticks, size, display): (u32, (u32, u32), OffscreenDisplay),
-    (quality, shadow_cache): (QualitySettings, Option<CascadeCache>),
+    (quality, shadow_cache, local_air): (QualitySettings, Option<CascadeCache>, Option<LocalAir>),
 ) -> Result<(), AppInitError> {
     let scratch = progress.map(Scratch::holding).transpose()?;
     let setup =
@@ -179,6 +180,7 @@ pub(crate) fn game(
         boot: false,
         display,
         shadow_cache,
+        local_air,
     };
     let captured = game_flow::capture::capture(platform.host(), show, &first, &capture, None)?;
     write_png(path, size.0, size.1, &captured.pixels)?;

@@ -84,7 +84,13 @@ impl App for OffscreenApp {
                     options.ui_version.clone().unwrap_or_else(|| crate::options::build_version().label()),
                 );
                 let frame = (*ticks, (width, height), options.display);
-                crate::capture::game(platform, path, game, frame, (quality, options.shadow_cache))?;
+                crate::capture::game(
+                    platform,
+                    path,
+                    game,
+                    frame,
+                    (quality, options.shadow_cache, options.local_air),
+                )?;
             }
             OffscreenMode::Capture { path, ticks, frames } => {
                 let mut stage = stage(platform, &options)?;

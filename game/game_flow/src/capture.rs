@@ -13,8 +13,8 @@ use game_ui::hud::OffscreenDisplay;
 use sapphire_platform::{
     AppInitError, Event, Host, KeyEvent, Keycode, Modifiers, Scancode, Timestamp, WindowId,
 };
-use sapphire_render::CascadeCache;
 use sapphire_render::quality::QualitySettings;
+use sapphire_render::{CascadeCache, LocalAir};
 use sapphire_rhi::wgpu;
 use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
 use sapphire_time::TICK_HZ;
@@ -74,6 +74,10 @@ pub struct GameCapture {
     /// pins drawing in turns, as the sandbox's `--shadow-cache` does for its own scenes. Only a capture that
     /// stands the game at once takes it: one that boots ([`boot`](Self::boot)) refuses it.
     pub shadow_cache: Option<CascadeCache>,
+    /// Where foliage takes the wind field's local air, if not as the tier says (M6 Y1): a golden from before
+    /// the field pins it off, as the sandbox's `--local-air` does for its own scenes. As with
+    /// [`shadow_cache`](Self::shadow_cache), a capture that boots refuses it.
+    pub local_air: Option<LocalAir>,
 }
 
 /// A capture's last frame.
@@ -113,9 +117,9 @@ pub fn capture_with(
     show.stand_for(capture.display);
     let gpu = headless_gpu()?;
     let (mut stage, boot) = if capture.boot {
-        if capture.shadow_cache.is_some() {
+        if capture.shadow_cache.is_some() || capture.local_air.is_some() {
             return Err(AppInitError::msg(
-                "a capture that boots takes the tier's shadow cascades as they are",
+                "a capture that boots takes the tier's shadow cascades and local air as they are",
             ));
         }
         let mut boot = Boot::start(host, Arc::new(gpu), FORMAT, capture.quality, show, first)?;
@@ -128,6 +132,9 @@ pub fn capture_with(
         let mut desc = fight_stage(StageDesc::new(host, &gpu, FORMAT, capture.quality));
         if let (Some(cache), Some(shadows)) = (capture.shadow_cache, desc.settings.shadows.as_mut()) {
             shadows.cache = cache;
+        }
+        if let Some(local_air) = capture.local_air {
+            desc.settings.foliage.local_air = local_air;
         }
         let mut content = Content::new(host, desc.character, desc.sky)?;
         let combat = show.shown.fight.prepare_stock_combat(first, &mut content)?;

@@ -843,6 +843,7 @@
                 ticks: 150,
                 args: ["--plain-post", "--fog", "off", "--ao", "off", "--foliage", "grove", "--wind", "2.5",
                        "--tier", "desktop-high", "--aa", "msaa", "--wind-volumes", "8", "--local-air", "vertex"],
+                ci_seconds: (lavapipe: 8.0, warp: 8.1),
             ),
             // A character at night under the whole look (the night character light fix): the
             // courtyard at 23:00, nearer the mannequin, with the moon's shadows, the fog and post's

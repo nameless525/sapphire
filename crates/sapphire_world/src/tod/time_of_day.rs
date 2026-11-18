@@ -8,6 +8,7 @@ use sapphire_ecs::WorldClock;
 use sapphire_math::Vec3;
 use sapphire_render::{CameraData, CharacterLighting, FramePacket, MAX_PROBE_KEYS, ProbeKeys};
 use sapphire_time::{LocalClock, ScaledClock, Stopwatch};
+use sapphire_tod::weather::{WeatherBlend, WeatherDocument};
 use sapphire_tod::{DAY_HOURS, Segment, TodError, TodGroups, TodLook, TodTimeline, celestial_sphere, mix};
 
 use super::clock::TodClock;
@@ -30,6 +31,12 @@ pub struct TimeOfDay {
     cutscene: Option<Playback>,
     /// Seconds of world time the last fixed step took: how far a playing cutscene moved.
     world_step: f64,
+    /// The weather's states (M6 W8a) and the blend between them the weather system chose for this
+    /// frame, if any, which lie over the base timeline under the volumes.
+    weather: Option<Arc<WeatherDocument>>,
+    weather_blend: Option<WeatherBlend>,
+    /// A cutscene's weather state and weight, laid over the world's blend.
+    weather_shot: Option<(usize, f32)>,
     frame: TodFrame,
     /// The hours whose looks the last resolve blended, with their weights: the clock's, and a
     /// playing cutscene's own hour by the track's weight (see [`Self::probe_keys`]).
@@ -139,6 +146,9 @@ impl TimeOfDay {
             next_volume: 0,
             cutscene: None,
             world_step: 0.0,
+            weather: None,
+            weather_blend: None,
+            weather_shot: None,
             frame,
             probe_hours: [(hours, 1.0), (0.0, 0.0)],
             stats: TodStats::default(),
@@ -217,6 +227,38 @@ impl TimeOfDay {
         self.cutscene.as_ref().map(|playback| (&*playback.track, playback.seconds as f32))
     }
 
+    /// The playing track's weather state, by name, and the track's weight, `alpha` of the way through the
+    /// latest step as [`Self::resolve`] reads it: what the weather system lays over the world's
+    /// (`crate::weather::WeatherSystem`). `None` without a track, or a track that sets no weather.
+    pub fn cutscene_weather(&self, alpha: f32) -> Option<(&str, f32)> {
+        let playback = self.cutscene.as_ref()?;
+        let state = playback.track.weather()?;
+        Some((state, playback.track.weight(self.cutscene_seconds(playback, alpha))))
+    }
+
+    /// Sets the weather's states (M6 W8a): the document whose states' looks [`Self::set_weather_blend`]
+    /// blends. `None` takes the weather away.
+    pub fn set_weather(&mut self, document: Option<Arc<WeatherDocument>>) {
+        self.weather = document;
+    }
+
+    /// The weather's states and how they blend this frame, over the base timeline and under the volumes
+    /// (see [`Self::resolve`]): the weather system's choice. `None` shows none of them.
+    pub fn set_weather_blend(&mut self, blend: Option<WeatherBlend>) {
+        self.weather_blend = blend;
+    }
+
+    /// A cutscene's weather state and its weight, laid over [`Self::set_weather_blend`]'s whole blend: the
+    /// weather system's (`crate::weather::WeatherSystem::shot`). `None` lays none.
+    pub fn set_weather_shot(&mut self, shot: Option<(usize, f32)>) {
+        self.weather_shot = shot;
+    }
+
+    /// The weather document [`Self::set_weather`] set, if any.
+    pub fn weather(&self) -> Option<&Arc<WeatherDocument>> {
+        self.weather.as_ref()
+    }
+
     /// Advances one fixed step: the clock, and the playing cutscene track by the step's world
     /// time. Allocates nothing (rule R6).
     pub fn tick(&mut self, world: &ScaledClock) {
@@ -235,11 +277,16 @@ impl TimeOfDay {
     /// weigh themselves by:
     ///
     /// 1. the base timeline at the clock's hour;
-    /// 2. each zone volume's timeline at the same hour, over it, by the volume's weight at the
+    /// 2. the weather's states as [`Self::set_weather_blend`] blends them (M6 W8a), at the same hour,
+    ///    over it ([`WeatherDocument::apply_looks`]);
+    /// 3. each zone volume's timeline at the same hour, over them, by the volume's weight at the
     ///    probe, in priority order;
-    /// 3. the playing cutscene track, by its weight: a crossfade to steps 1 and 2 at the shot's
+    /// 4. the playing cutscene track, by its weight: a crossfade to steps 1 to 3 at the shot's
     ///    hour, if it sets one, then its value keys over the result, and its light rig for
-    ///    [`TodFrame::character_lighting`].
+    ///    [`TodFrame::character_lighting`]. A track's weather state reaches step 2 through the weather
+    ///    system ([`Self::cutscene_weather`]).
+    ///
+    /// The tool's own weather, and the tool's look, are the app's, over all of these.
     ///
     /// Allocates nothing, and costs under a microsecond (see the [module docs](super)).
     pub fn resolve(&mut self, probe: Vec3, alpha: f32) -> &TodFrame {
@@ -251,9 +298,7 @@ impl TimeOfDay {
         let mut shot_rig = None;
         let mut probe_hours = [(hours, 1.0), (0.0, 0.0)];
         if let Some(playback) = &self.cutscene {
-            // Interpolated like the clock, and a track never reads from before its start.
-            let behind = f64::from(1.0 - alpha.clamp(0.0, 1.0)) * self.world_step;
-            let seconds = (playback.seconds - behind).max(0.0) as f32;
+            let seconds = self.cutscene_seconds(playback, alpha);
             let track = &playback.track;
             cutscene_weight = track.weight(seconds);
             if cutscene_weight > 0.0 {
@@ -351,10 +396,26 @@ impl TimeOfDay {
         [(from as u32, 1.0 - t), (to as u32, t)]
     }
 
-    /// The base timeline and zones at `hours`, and how many volumes weighed in.
+    /// Seconds into `playback`'s shot `alpha` of the way through the latest step: interpolated like the
+    /// clock, and never from before the track's start.
+    fn cutscene_seconds(&self, playback: &Playback, alpha: f32) -> f32 {
+        let behind = f64::from(1.0 - alpha.clamp(0.0, 1.0)) * self.world_step;
+        (playback.seconds - behind).max(0.0) as f32
+    }
+
+    /// The base timeline, the weather and zones at `hours`, and how many volumes weighed in.
     fn look_at(&self, hours: f32, probe: Vec3) -> (TodLook, u32) {
         let mut look = TodLook { sphere: celestial_sphere(hours), ..TodLook::default() };
         self.timeline.apply(&mut look, hours, 1.0);
+        if let Some(weather) = &self.weather {
+            if let Some(blend) = self.weather_blend {
+                weather.apply_looks(blend, &mut look, hours);
+            }
+            // A cutscene's state over the world's whole blend, by the shot's weight.
+            if let Some((to, weight)) = self.weather_shot {
+                weather.apply_looks(WeatherBlend { from: None, to, weight }, &mut look, hours);
+            }
+        }
         let mut active = 0;
         for (_, volume) in &self.volumes {
             let weight = volume.weight_at(probe);

@@ -10,11 +10,13 @@ use sapphire_tod::DAY_HOURS;
 ///
 /// The hour is computed from integer clock time every time it is read, never accumulated, so
 /// it doesn't drift however long the session: `anchor hours + elapsed seconds × rate`, wrapped
-/// into the day. With no cycle (the rate 0) it is exactly the hour it was set to.
+/// into the day. With no cycle (the rate 0) it is exactly the hour it was set to. It counts days
+/// too (M6 W8a: a zone's weather schedule picks by the day), from day 0 at its start; setting the
+/// hour keeps the day.
 #[derive(Clone, Debug)]
 pub struct TodClock {
     clock: LocalClock,
-    /// The hour at `anchor` on `clock`.
+    /// The hours since day 0's midnight at `anchor` on `clock`.
     anchor_hours: f64,
     anchor: SimTime,
     /// Hours per second of this clock's time: 24 / the day's length, or 0 without a cycle.
@@ -40,18 +42,33 @@ impl TodClock {
     /// latest, where transforms draw ([`LocalClock::presented_ticks`]); 1 is the latest. A jump
     /// ([`Self::set_hours`]) shows at once: time never reads from before its anchor.
     pub fn hours(&self, alpha: f32) -> f32 {
-        let anchor = self.anchor.as_subticks() as f64 / f64::from(SUBTICKS_PER_TICK);
-        let elapsed = ((self.clock.presented_ticks(alpha) - anchor) / f64::from(TICK_HZ)).max(0.0);
-        let hours = wrap(self.anchor_hours + elapsed * self.hours_per_second) as f32;
+        let hours = wrap(self.total_hours(alpha)) as f32;
         // Rounding to f32 can land on 24 itself, which is the next midnight.
         if hours >= DAY_HOURS { 0.0 } else { hours }
     }
 
-    /// Jumps to `hours` (wrapped into the day). The cycle, if any, carries on from there.
+    /// The day [`Self::hours`] falls on, counting from 0 at the clock's start, at the same `alpha`.
+    pub fn day(&self, alpha: f32) -> i64 {
+        let hours = self.total_hours(alpha);
+        let day = (hours / f64::from(DAY_HOURS)).floor();
+        // `hours` rounding up to the next midnight is that day's, as `hours` reads it.
+        if wrap(hours) as f32 >= DAY_HOURS { day as i64 + 1 } else { day as i64 }
+    }
+
+    /// Hours since day 0's midnight, `alpha` of the way through the latest step.
+    fn total_hours(&self, alpha: f32) -> f64 {
+        let anchor = self.anchor.as_subticks() as f64 / f64::from(SUBTICKS_PER_TICK);
+        let elapsed = ((self.clock.presented_ticks(alpha) - anchor) / f64::from(TICK_HZ)).max(0.0);
+        self.anchor_hours + elapsed * self.hours_per_second
+    }
+
+    /// Jumps to `hours` (wrapped into the day) of the same day. The cycle, if any, carries on from
+    /// there.
     pub fn set_hours(&mut self, hours: f32) {
         if hours.is_finite() {
+            let day = self.day(1.0);
             self.anchor = self.clock.now();
-            self.anchor_hours = wrap(f64::from(hours));
+            self.anchor_hours = day as f64 * f64::from(DAY_HOURS) + wrap(f64::from(hours));
         }
     }
 
@@ -63,9 +80,9 @@ impl TodClock {
     /// Runs a day in `seconds` of this clock's time from the current hour, or stops the cycle
     /// with `None` (or a length that isn't positive and finite).
     pub fn set_day_length(&mut self, seconds: Option<f32>) {
-        let now = self.hours(1.0);
+        let now = self.total_hours(1.0);
         self.anchor = self.clock.now();
-        self.anchor_hours = f64::from(now);
+        self.anchor_hours = now;
         self.hours_per_second = match seconds {
             Some(seconds) if seconds.is_finite() && seconds > 0.0 => {
                 f64::from(DAY_HOURS) / f64::from(seconds)
@@ -180,6 +197,24 @@ mod tests {
         assert!((tod.hours(1.0) - 6.5).abs() < 1e-5, "slow motion slows it: {}", tod.hours(1.0));
         tod.set_hours(18.0);
         assert_eq!(tod.hours(1.0), 18.0);
+    }
+
+    /// Days count from 0 at the start, turn at midnight with the hour, and survive a jump and a new length.
+    #[test]
+    fn days_turn_at_midnight_and_a_jump_keeps_the_day() {
+        let (mut world, mut tod) = clock(23.0);
+        assert_eq!(tod.day(1.0), 0);
+        tod.set_day_length(Some(24.0));
+        run(&mut world, &mut tod, 30);
+        assert_eq!((tod.day(1.0), tod.hours(1.0)), (0, 23.5));
+        run(&mut world, &mut tod, 60);
+        assert_eq!(tod.day(1.0), 1, "past midnight");
+        tod.set_hours(3.0);
+        assert_eq!((tod.day(1.0), tod.hours(1.0)), (1, 3.0), "a jump stays on its day");
+        tod.set_day_length(Some(1.0));
+        run(&mut world, &mut tod, 60 * 3);
+        assert_eq!(tod.day(1.0), 4, "three days in three seconds");
+        assert!((tod.hours(1.0) - 3.0).abs() < 1e-3, "{}", tod.hours(1.0));
     }
 
     #[test]

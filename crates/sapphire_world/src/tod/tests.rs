@@ -296,7 +296,8 @@ fn zones_blend_their_groups_by_weight_and_priority() {
 
     // A higher priority volume applies over it, whatever order they were added in.
     let bright = TodKey { exposure: Some(-2.0), ..key(0.0) };
-    let cover = VolumeShape::Box { center: Vec3::new(20.0, 0.0, 0.0), half_extents: Vec3::splat(2.0) };
+    let cover =
+        VolumeShape::Box { center: Vec3::new(20.0, 0.0, 0.0), half_extents: Vec3::splat(2.0), yaw: 0.0 };
     tod.add_volume(TodVolume { priority: 1, ..TodVolume::new(cover, zone(bright)) });
     let lower = TodKey { exposure: Some(4.0), ..key(0.0) };
     tod.add_volume(TodVolume { priority: -1, ..TodVolume::new(cover, zone(lower)) });
@@ -441,7 +442,7 @@ fn resolving_is_deterministic() {
     let run = || {
         let (mut world, mut tod) = time_of_day(4.0);
         tod.clock_mut().set_day_length(Some(30.0));
-        let shape = VolumeShape::Box { center: Vec3::ZERO, half_extents: Vec3::splat(3.0) };
+        let shape = VolumeShape::Box { center: Vec3::ZERO, half_extents: Vec3::splat(3.0), yaw: 0.0 };
         let fog = TodKey { fog: Some(FogKey::default()), exposure: Some(0.3), ..key(0.0) };
         tod.add_volume(TodVolume { blend_distance: 5.0, strength: 0.7, ..TodVolume::new(shape, zone(fog)) });
         let shot = TodCutscene::new(
@@ -1279,4 +1280,93 @@ fn zones_and_cutscenes_override_the_shadow_hue() {
     tod.seek_cutscene(0.5);
     let easing = tod.resolve(Vec3::ZERO, 0.0).look.character_shade.share;
     assert!(easing > 0.0 && easing < 0.7, "easing in: {easing}");
+}
+
+/// A weather document of two states for the layering tests: `grey` keys exposure and the sky, `dark`
+/// exposure alone.
+fn two_states() -> Arc<weather::WeatherDocument> {
+    let text = r#"(
+        type: "sapphire::world::WeatherDocument",
+        version: 1,
+        data: (states: [
+            (name: "grey", look: (keys: [(time: 0.0, exposure: 1.0, sky: (zenith: (0.5, 0.5, 0.5), horizon: (0.5, 0.5, 0.5), ground: (0.5, 0.5, 0.5)))])),
+            (name: "dark", look: (keys: [(time: 0.0, exposure: -1.0)])),
+        ]),
+    )"#;
+    Arc::new(weather::WeatherDocument::from_ron(text).expect("valid"))
+}
+
+/// M6 W8a's order inside time of day: the day, then the weather's states, then volumes, then a cutscene's
+/// keys. A transition blends the groups both states key between them, never through the day, and fades a
+/// group only one keys over the day.
+#[test]
+fn weather_states_lie_over_the_day_under_volumes_and_cutscenes() {
+    use weather::WeatherBlend;
+    let (_, mut tod) = time_of_day(DAY);
+    let base = *tod.resolve(Vec3::ZERO, 0.0);
+    tod.set_weather(Some(two_states()));
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look, base.look, "no blend shows no state");
+    tod.set_weather_blend(Some(WeatherBlend::settled(0)));
+    let grey = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!((grey.look.exposure, grey.look.sky.zenith), (1.0, Vec3::splat(0.5)));
+    assert_eq!(grey.look.sun, base.look.sun, "groups no state keys stay the day's");
+
+    tod.set_weather_blend(Some(WeatherBlend { from: Some(0), to: 1, weight: 0.5 }));
+    let half = *tod.resolve(Vec3::ZERO, 0.0);
+    assert!(half.look.exposure.abs() < 1e-6, "both key it: halfway between them, {}", half.look.exposure);
+    let lab = |color: Vec3| Vec3::from(linear_srgb_to_oklab(color.to_array()));
+    let fading = lab(base.look.sky.zenith).lerp(lab(Vec3::splat(0.5)), 0.5);
+    assert!(
+        lab(half.look.sky.zenith).abs_diff_eq(fading, 1e-4),
+        "only `grey` keys the sky: half over the day"
+    );
+
+    tod.set_weather_blend(Some(WeatherBlend::settled(0)));
+    let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 5.0 };
+    tod.add_volume(TodVolume::new(shape, zone(TodKey { exposure: Some(3.0), ..key(0.0) })));
+    let covered = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(
+        (covered.look.exposure, covered.look.sky.zenith),
+        (3.0, Vec3::splat(0.5)),
+        "a volume over the state"
+    );
+
+    let shot = TodCutscene::new(4.0, 0.0, 0.0, None, vec![TodKey { exposure: Some(-2.0), ..key(0.0) }], None)
+        .expect("valid")
+        .with_weather("dark")
+        .expect("a name");
+    tod.play_cutscene(Arc::new(shot));
+    assert_eq!(
+        tod.cutscene_weather(1.0),
+        Some(("dark", 1.0)),
+        "for the weather system to lay over the world's"
+    );
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.exposure, -2.0, "a cutscene's keys over everything");
+    tod.stop_cutscene();
+    assert_eq!(tod.cutscene_weather(1.0), None);
+
+    tod.set_weather_blend(None);
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.sky, base.look.sky, "the day's sky back");
+}
+
+/// A cutscene may set the weather alone, by a name a state may take; its document says which.
+#[test]
+fn a_cutscene_may_set_only_the_weather() {
+    let read = |data: &str| {
+        TodCutscene::from_ron(&format!(
+            r#"(type: "sapphire::world::TodCutscene", version: 1, data: ({data}))"#
+        ))
+    };
+    let shot = read(r#"duration: 3.0, weather: "storm""#).expect("valid");
+    assert_eq!(shot.weather(), Some("storm"));
+    assert_eq!(TodCutscene::from_ron(&shot.to_ron().expect("write")).expect("read"), shot);
+    assert_eq!(read("duration: 3.0, time: (hours: 6.0)").expect("valid").weather(), None);
+    let error = read(r#"duration: 3.0, weather: """#).expect_err("no name").to_string();
+    assert!(error.contains("weather"), "{error}");
+    let long = "x".repeat(weather::MAX_NAME + 1);
+    let shot =
+        TodCutscene::new(1.0, 0.0, 0.0, Some(ShotTime { hours: 1.0, hours_per_second: 0.0 }), vec![], None)
+            .expect("valid");
+    assert!(shot.clone().with_weather(long).is_err());
+    assert_eq!(shot.with_weather("mist").expect("a name").weather(), Some("mist"));
 }

@@ -23,8 +23,10 @@ use crate::light_rig::LightRig;
 ///   and before the first key and after the last they hold.
 /// - **The character light rig** ([`Self::light_rig`], M1 C2): a preset for the shot, which
 ///   every character takes over its own (a key fixed to the camera for a close-up, say).
+/// - **The weather** ([`Self::weather`], M6 W8a): a weather state, by name, over the world's
+///   (`crate::weather::WeatherSystem`): a shot set in a storm, whatever the sky outside it.
 ///
-/// All three follow [`Self::weight`]: 0 outside the shot, easing in over `blend_in` seconds and
+/// All four follow [`Self::weight`]: 0 outside the shot, easing in over `blend_in` seconds and
 /// out over `blend_out`. A cutscene is valid however it was made, deserialization included.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
 #[type_path = "sapphire::world"]
@@ -39,6 +41,8 @@ pub struct TodCutscene {
     keys: Vec<TodKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     light_rig: Option<LightRig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    weather: Option<String>,
     #[serde(skip)]
     groups: TodGroups,
 }
@@ -75,14 +79,16 @@ struct UncheckedCutscene {
     keys: Vec<TodKey>,
     #[serde(default)]
     light_rig: Option<LightRig>,
+    #[serde(default)]
+    weather: Option<String>,
 }
 
 impl TryFrom<UncheckedCutscene> for TodCutscene {
     type Error = TodError;
 
     fn try_from(cutscene: UncheckedCutscene) -> Result<Self, TodError> {
-        let UncheckedCutscene { duration, blend_in, blend_out, time, keys, light_rig } = cutscene;
-        Self::new(duration, blend_in, blend_out, time, keys, light_rig)
+        let UncheckedCutscene { duration, blend_in, blend_out, time, keys, light_rig, weather } = cutscene;
+        Self::checked(duration, blend_in, blend_out, time, keys, light_rig, weather)
     }
 }
 
@@ -90,7 +96,7 @@ impl TodCutscene {
     /// A track for a shot `duration` seconds long, checked: a positive duration, blends that fit
     /// in it, a shot time within the day, keys within the shot (as a timeline's: increasing,
     /// the same groups, values in range), a light rig in range, and at least one of a time, keys
-    /// and a light rig.
+    /// and a light rig. [`Self::with_weather`] adds a weather state.
     pub fn new(
         duration: f32,
         blend_in: f32,
@@ -98,6 +104,26 @@ impl TodCutscene {
         time: Option<ShotTime>,
         keys: Vec<TodKey>,
         light_rig: Option<LightRig>,
+    ) -> Result<Self, TodError> {
+        Self::checked(duration, blend_in, blend_out, time, keys, light_rig, None)
+    }
+
+    /// The same track with the weather state named `state` over the world's (M6 W8a), checked: a name a
+    /// weather document's state may take. Whether a document has it is the weather system's to say, which
+    /// shows none for a name it doesn't know.
+    pub fn with_weather(self, state: impl Into<String>) -> Result<Self, TodError> {
+        let Self { duration, blend_in, blend_out, time, keys, light_rig, .. } = self;
+        Self::checked(duration, blend_in, blend_out, time, keys, light_rig, Some(state.into()))
+    }
+
+    fn checked(
+        duration: f32,
+        blend_in: f32,
+        blend_out: f32,
+        time: Option<ShotTime>,
+        keys: Vec<TodKey>,
+        light_rig: Option<LightRig>,
+        weather: Option<String>,
     ) -> Result<Self, TodError> {
         let invalid = |field, problem| Err(TodError::Cutscene { field, problem });
         if !(duration.is_finite() && duration > 0.0) {
@@ -120,19 +146,24 @@ impl TodCutscene {
         if let Some(rig) = &light_rig {
             rig.validate().map_err(|(field, problem)| TodError::CutsceneRig { field, problem })?;
         }
+        if let Some(state) = &weather
+            && (state.is_empty() || state.len() > sapphire_tod::weather::MAX_NAME)
+        {
+            return invalid("weather", "must name a state: 1 to 64 bytes");
+        }
         let groups = if keys.is_empty() {
-            if time.is_none() && light_rig.is_none() {
+            if time.is_none() && light_rig.is_none() && weather.is_none() {
                 return invalid(
                     "keys",
-                    "can't be empty when the cutscene sets no time and no light rig: it would change \
-                     nothing",
+                    "can't be empty when the cutscene sets no time, no light rig and no weather: it would \
+                     change nothing",
                 );
             }
             TodGroups::NONE
         } else {
             check_keys(&keys, KeyTimes::Shot(duration))?
         };
-        Ok(Self { duration, blend_in, blend_out, time, keys, light_rig, groups })
+        Ok(Self { duration, blend_in, blend_out, time, keys, light_rig, weather, groups })
     }
 
     /// Reads a cutscene document, upgrading older schema versions and checking it.
@@ -177,6 +208,11 @@ impl TodCutscene {
     /// The character light rig every character takes during the shot, if the track sets one.
     pub fn light_rig(&self) -> Option<&LightRig> {
         self.light_rig.as_ref()
+    }
+
+    /// The weather state the shot shows over the world's, by name, if the track sets one.
+    pub fn weather(&self) -> Option<&str> {
+        self.weather.as_deref()
     }
 
     /// How strongly the track overrides at `seconds` into the shot: 0 before and after the

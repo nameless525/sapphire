@@ -79,8 +79,8 @@
 //!   grades can need three grades at once; post's two LUTs drop the lightest
 //!   ([`TodStats::dropped_grade_weight`]). A third LUT slot, or baking the mix on the GPU, lifts
 //!   that.
-//! - **Rotated boxes and other volume shapes**, and volumes as zone data (M3's zones and cells),
-//!   with streaming adding and removing them.
+//! - **Volumes as zone data** (M6 V1), placed by `sapphire_zone::ZoneShape` as weather regions are
+//!   (M6 W8a turned boxes and added ellipsoids), with streaming adding and removing them.
 //! - **Curves smoother than per-segment easing** (Catmull-Rom through the keys) if per-segment
 //!   kinks show in time-lapses.
 //! - **Live link** of timelines (A9) through [`TimeOfDay::set_timeline`] and

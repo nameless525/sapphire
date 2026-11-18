@@ -22,6 +22,10 @@
 //!   `CutInLibrary` document): what the character's stand plays, the camera on its joint, its light
 //!   and backdrop, and the interface's panel and when it comes and goes, as a quad of the draw list.
 //!
+//! - **Weather** ([`weather`], M6 W8a): the shipped weather states, a zone's plan of when and where each
+//!   shows, and the system choosing the world's state each frame (by the schedule, a region, a story
+//!   flag's override, a cutscene's key and the tool) and blending a change over seconds of world time,
+//!   into time of day's look and the `WeatherFrame`. Presentation only: the simulation never reads it.
 //! - **Streaming a zone's cells** ([`streaming`], M3 W2): by distance from a focus, within a budget of
 //!   entities or microseconds a frame, for presentation only: the simulation streams nothing.
 //!
@@ -51,3 +55,4 @@ pub mod light_rig;
 pub mod screen_effects;
 pub mod streaming;
 pub mod tod;
+pub mod weather;

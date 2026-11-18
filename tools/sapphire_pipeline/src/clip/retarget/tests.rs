@@ -13,6 +13,8 @@ use sapphire_assets::skeleton::{Joint, JointTransform, Skeleton};
 
 use super::*;
 use crate::anim_graph::LocomotionBounds;
+use crate::clip::contacts::{ContactSettings, PlantedRun, planted_runs};
+use crate::clip::report::Positions;
 use crate::clip::source::ClipSource;
 use crate::clip::tests::{angle_between, root_of};
 use crate::clip::{self, ClipCookError, ClipOptions, ClipSettings, ClipTarget};
@@ -1118,7 +1120,12 @@ pub(crate) fn options_of(entry: &RetargetSettings) -> RetargetOptions {
 
 /// The enemy's model as its sidecar has it, with the sidecar's ID and map.
 pub(crate) fn warrior() -> (AssetId, Skeleton, HumanMap) {
-    let path = third_party().join("../combat/enemy/warrior.glb");
+    model_rig("combat/enemy/warrior.glb")
+}
+
+/// The model at `path` under `content/` as its sidecar has it, with the sidecar's ID and map.
+fn model_rig(path: &str) -> (AssetId, Skeleton, HumanMap) {
+    let path = third_party().join("..").join(path);
     let meta = meta::read(&sidecar_path(&path)).unwrap();
     let source = ClipSource::import(&path, &std::fs::read(&path).unwrap(), &meta.importer).unwrap();
     let skeleton = Skeleton::new(&source.joints);
@@ -1382,4 +1389,106 @@ fn a_followed_hand_block_keeps_the_clips_grip() {
     }
     assert!(moved < without, "the option does something: {moved} against {without}");
     assert!(without > 1.0, "the clip's grip curls well past rest: {without}");
+}
+
+// What every shipped retarget slides (M6 A4).
+
+/// Each rig a sidecar may retarget onto, by its ID: the character, and every model under `combat/`
+/// whose sidecar maps a humanoid, each named by its file. They're found as content, never listed here:
+/// a zone's boss is among them, and code never names one (`sapphire_gameplay`'s `bosses_are_content`).
+fn sidecar_targets() -> Vec<(AssetId, String, Skeleton, HumanMap)> {
+    let (skeleton, map) = character();
+    let character = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
+    let mut targets = vec![(character, "the character".to_owned(), skeleton.clone(), map.clone())];
+    let content = third_party().join("..");
+    let mut models: Vec<PathBuf> = std::fs::read_dir(content.join("combat"))
+        .unwrap()
+        .filter_map(|kind| std::fs::read_dir(kind.unwrap().path()).ok())
+        .flatten()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "glb"))
+        .filter(|path| meta::read(&sidecar_path(path)).is_ok_and(|meta| meta.importer.clips().is_some()))
+        .collect();
+    models.sort();
+    for path in models {
+        let relative = path.strip_prefix(&content).unwrap().to_str().unwrap().to_owned();
+        let (id, skeleton, map) = model_rig(&relative);
+        let who = path.file_stem().unwrap().to_string_lossy().into_owned();
+        targets.push((id, who, skeleton, map));
+    }
+    targets
+}
+
+/// The planted run of `sampled` on `rig` that slides furthest, as A1's report measures it.
+pub(crate) fn worst_run(sampled: &SampledClip, rig: Rig<'_>, settings: &ContactSettings) -> Option<PlantedRun> {
+    let positions = Positions::of(sampled, rig.skeleton);
+    planted_runs(sampled, rig.skeleton, rig.map, &positions, settings)
+        .into_iter()
+        .reduce(|worst, run| if run.slide > worst.slide { run } else { worst })
+}
+
+/// How far the planted run of `sampled` on `rig` that slides furthest slides, in meters.
+pub(crate) fn worst_slide(sampled: &SampledClip, rig: Rig<'_>, settings: &ContactSettings) -> f32 {
+    worst_run(sampled, rig, settings).map_or(0.0, |run| run.slide)
+}
+
+/// One clip the sidecars retarget onto one rig, and what A1's report finds its worst planted run
+/// slides, in meters, on the source's rig and on the target.
+struct ShippedSlide {
+    name: String,
+    target: String,
+    source: f32,
+    worst: Option<PlantedRun>,
+}
+
+impl ShippedSlide {
+    fn slide(&self) -> f32 {
+        self.worst.map_or(0.0, |run| run.slide)
+    }
+}
+
+/// Every clip the sidecars retarget, on every rig they send it to, as the cook makes it (a mirror
+/// mirrored first).
+fn shipped_slides() -> Vec<ShippedSlide> {
+    let targets = sidecar_targets();
+    let mut slides = Vec::new();
+    for file in FILES {
+        let kaykit = Kaykit::open(file);
+        let settings = &kaykit.settings;
+        for entry in &settings.retarget {
+            let (_, who, skeleton, map) =
+                targets.iter().find(|target| target.0 == entry.target).expect("a rig this test knows");
+            let target = Rig { skeleton, map };
+            for name in &entry.names {
+                let sampled = match settings.mirror.get(name) {
+                    Some(of) => clip::mirror::mirror(&kaykit.sampled(of), kaykit.rig()).unwrap(),
+                    None => kaykit.sampled(name),
+                };
+                let out = retarget(&sampled, kaykit.rig(), target, &options_of(entry)).unwrap();
+                slides.push(ShippedSlide {
+                    name: name.clone(),
+                    target: who.clone(),
+                    source: worst_slide(&sampled, kaykit.rig(), &settings.contacts),
+                    worst: worst_run(&out, target, &settings.contacts),
+                });
+            }
+        }
+    }
+    slides
+}
+
+/// A1's report over every shipped retarget, before A4's pass: each clip's worst planted run, in
+/// millimeters, beside the source's own on KayKit's rig. `--nocapture` prints them. Measured before
+/// the pass: 30 of the 35 slide over 5 mm, from 5.2 mm (a strafe on the lancer) to 488 mm
+/// (`Hit_B` on the warrior), and the source itself slides over 5 mm in 24 of them (112 mm in
+/// `Walking_B`, 303 mm in `Melee_1H_Attack_Slice_Diagonal`), which the legs' ratio scales up.
+#[test]
+fn every_shipped_retarget_slides_as_measured() {
+    #![allow(clippy::print_stdout, reason = "the table, with --nocapture")]
+    let slides = shipped_slides();
+    for row in &slides {
+        let (name, target, source) = (&row.name, &row.target, row.source * 1000.0);
+        let at = row.worst.map(|run| format!("{:?} {}..={}", run.foot, run.first, run.last));
+        println!("{name} on {target}: {:.1} mm at {at:?} ({source:.1} on the source's rig)", row.slide() * 1000.0);
+    }
 }

@@ -4484,6 +4484,7 @@
                 ticks: 90,
                 args: ["--environment", "--time-of-day", "12", "--aa", "taa", "--capture-frames", "32",
                        "--shadows", "off", "--ao", "off", "--weather-state", "clear:storm@0.3"],
+                ci_seconds: (lavapipe: 6.7, warp: 10.2),
             ),
             // Two thirds of the way: the same courtyard nearly under the storm, the day's blue gone from the sky.
             (
@@ -4491,6 +4492,7 @@
                 ticks: 90,
                 args: ["--environment", "--time-of-day", "12", "--aa", "taa", "--capture-frames", "32",
                        "--shadows", "off", "--ao", "off", "--weather-state", "clear:storm@0.7"],
+                ci_seconds: (lavapipe: 4.1, warp: 13.1),
             ),
         ],
     ),

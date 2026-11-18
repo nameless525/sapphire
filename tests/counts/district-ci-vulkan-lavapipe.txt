@@ -173,3 +173,18 @@ desktop-low-dusk | scene prepass character triangles | total -117312 p50 -40
 desktop-low-night | character prepass triangles | total -58656
 desktop-low-night | main character triangles | total -117312 p50 -40
 desktop-low-night | scene prepass character triangles | total -117312 p50 -40
+
+# B8's still rows (M6 B8), from the same crowd: they count, over the walk, the skinned instances re-skinned with
+# every joint some of their vertices weigh unchanged, and those vertices (sapphire_render's skinning counts,
+# `still_instances` and `still_vertices`). Only standing people hold a pose still, so the rows follow who stands.
+# Lavapipe counts three more such instance-frames and 2,126 more vertices on all four walks alike, so the
+# difference follows the crowd's choice, not the tier's view or the hour. From #459's first run (44295428085);
+# not traced frame by frame.
+desktop-high-dusk | skinned instances with vertices that held still | total +3
+desktop-high-dusk | skinned vertices that held still | total +2126 p95 +25
+desktop-high-night | skinned instances with vertices that held still | total +3
+desktop-high-night | skinned vertices that held still | total +2126 p95 +1
+desktop-low-dusk | skinned instances with vertices that held still | total +3
+desktop-low-dusk | skinned vertices that held still | total +2126 p95 +25
+desktop-low-night | skinned instances with vertices that held still | total +3
+desktop-low-night | skinned vertices that held still | total +2126 p95 +1

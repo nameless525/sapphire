@@ -231,16 +231,20 @@ pub struct AudioStats {
     pub voices: u32,
     /// Voices kept without being mixed now (M6 U3), each waiting to come back where it would be.
     pub virtual_voices: u32,
-    /// Cues that started a voice, real or virtual, all told.
+    /// Starts that played a voice, real or virtual, all told: one a start, however many sounds its tree picked (M6
+    /// U4a), counted by the first of them the caps let in.
     pub cues_played: u64,
-    /// Cues dropped because the output isn't playing (suspended, no device).
+    /// Cues dropped because the output isn't playing (suspended, no device), one a request.
     pub dropped_no_output: u64,
-    /// Cues that didn't play (M6 U3): refused by their own limit or their group's, or ranked below everything the
-    /// [`VoiceCaps`] keep, or with the mixer full.
+    /// Voices that didn't play (M6 U3), one a sound picked: a start refused by its own limit or its group's or the
+    /// mixer's room counts each of its sounds, and so does one ranked below everything the [`VoiceCaps`] keep,
+    /// stolen before it began, or with the mixer full.
     pub dropped_voice_limit: u64,
-    /// Cues dropped for naming a cue, a sound or an emitter nobody added, or asking for a loop off an emitter.
+    /// Cues dropped for naming a cue, a sound or an emitter nobody added, or asking for a loop off an emitter, one
+    /// a request (a sound nobody added, one a voice).
     pub dropped_unknown: u64,
-    /// Voices ended before their time to make room (M6 U3): by a limit's rule, or outranked with no virtual room.
+    /// Voices ended before their time to make room (M6 U3), one a voice: by a limit's rule, or outranked with no
+    /// virtual room.
     pub voices_stolen: u64,
     /// Voices that went virtual, all told (M6 U3): those outranked as they played, and those asked for that had
     /// no real room yet.
@@ -317,6 +321,10 @@ enum Mode {
 struct Voice {
     id: VoiceId,
     mode: Mode,
+    /// The start it's one of (M6 U4a): its first voice's serial. A start's voices are pushed together and only
+    /// ever removed, so they sit side by side; a start counts once toward a limit while any of them lives, by its
+    /// first live one ([`counts_start`]), and one made room for goes with all of them.
+    start: VoiceId,
     /// The cue it plays, which its own limit counts by.
     cue: AssetId,
     sound: AssetId,
@@ -366,6 +374,34 @@ impl Voice {
     fn audible(&self) -> bool {
         self.params.gain_db > SILENCE_DB
     }
+
+    fn playing(&self) -> bool {
+        matches!(self.mode, Mode::Real(_) | Mode::Virtual)
+    }
+}
+
+/// The voices before `index` that belong to its start, nearest first: at most a start's sounds less one.
+fn start_before(voices: &[Voice], index: usize) -> impl Iterator<Item = &Voice> {
+    let start = voices[index].start;
+    voices[..index].iter().rev().take_while(move |voice| voice.start == start)
+}
+
+/// Whether the voice at `index` stands for its start (M6 U4a): it's live and the first of its start that is, so a
+/// start counts toward its limits for as long as any of its voices lives, whichever of them ends first.
+fn counts_start(voices: &[Voice], index: usize) -> bool {
+    voices[index].live() && start_before(voices, index).all(|voice| !voice.live())
+}
+
+/// The start of the voice at `index` as one, judged against another (M6 U4a): its live voice with the best claim
+/// ([`standing`]), as loud as the loudest of them, so a blend whose first voice is its quiet side counts as loud
+/// as it's heard.
+fn judged(voices: &[Voice], index: usize) -> Voice {
+    let start = voices[index].start;
+    let first = index - start_before(voices, index).count();
+    let sides = voices[first..].iter().take_while(|voice| voice.start == start).filter(|voice| voice.live());
+    let mut best = sides.clone().min_by(|a, b| standing(a, b)).copied().unwrap_or(voices[index]);
+    best.params.gain_db = sides.map(|voice| voice.params.gain_db).fold(best.params.gain_db, f32::max);
+    best
 }
 
 /// Whether `a` has a better claim than `b` on being mixed: the conversation's line first, then what's heard,
@@ -943,7 +979,7 @@ impl<B: AudioBackend> AudioSystem<B> {
     }
 
     /// Starts the line a conversation asks for, cutting the one it said before, or holds or lets go of the
-    /// one it's saying.
+    /// one it's saying: every voice of its start (M6 U4a), the sounds layered with the line's own among them.
     fn follow_speech(
         &mut self,
         asked: Option<SpeechRequest>,
@@ -954,18 +990,21 @@ impl<B: AudioBackend> AudioSystem<B> {
         if let (Some(speech), Some(asked)) = (&self.speech, asked)
             && speech.serial == asked.serial
         {
-            if let Some((id, _)) = speech.voice
-                && let Some(voice) = self.voices.iter_mut().find(|voice| voice.id == id)
-            {
-                voice.held = asked.held;
+            // The line's voice is its start's first, so its serial is the start's.
+            if let Some((start, _)) = speech.voice {
+                for voice in self.voices.iter_mut().filter(|voice| voice.start == start) {
+                    voice.held = asked.held;
+                }
             }
             return;
         }
-        if let Some((id, _)) = self.speech.take().and_then(|speech| speech.voice)
-            && let Some(index) = self.voices.iter().position(|voice| voice.id == id)
-        {
-            self.end_voice(index, STOP_FADE);
-            self.voices.remove(index);
+        if let Some((start, _)) = self.speech.take().and_then(|speech| speech.voice) {
+            for index in (0..self.voices.len()).rev() {
+                if self.voices[index].start == start {
+                    self.end_voice(index, STOP_FADE);
+                    self.voices.remove(index);
+                }
+            }
         }
         let Some(asked) = asked else { return };
         let mut speech = Speech { serial: asked.serial, voice: None };
@@ -984,10 +1023,11 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.speech = Some(speech);
     }
 
-    /// Asks for `request`'s voice, the first sound its tree picks, placed with the rest at the end of the update:
-    /// the conversation's line if `speech` says whether it's held. Its own limit and its group's make room or
-    /// refuse it first. The voice's serial and the sound it picked, if it was let in. What its tree remembers,
-    /// avoid-repeat's last picks and a sequence's next, moves on only if it was.
+    /// Asks for `request`'s voices, one a sound its tree picks, placed with the rest at the end of the update: the
+    /// conversation's line if `speech` says whether it's held. Its own limit and its group's make room or refuse
+    /// it first, counting the start once, and then the mixer's room takes all of its voices or none. The first
+    /// voice's serial and the sound it picked, if it was let in. What its tree remembers, avoid-repeat's last
+    /// picks and a sequence's next, moves on only if it was.
     fn start_cue(
         &mut self,
         request: &CueRequest,
@@ -1036,6 +1076,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         let mut voice = Voice {
             id,
             mode: Mode::Asked,
+            start: id,
             cue: request.cue,
             sound,
             place,
@@ -1068,25 +1109,46 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
         voice.frozen = self.is_frozen(&voice);
         voice.params = self.params_of(&voice, listener);
-        let let_in = voice.protected
+        // The start is judged by its loudest voice, as one already playing is (`judged`).
+        let mut new = voice;
+        for &(sound, tree_db) in &picks.as_slice()[1..] {
+            let side = Voice { sound, gain_db: gain_db + tree_db, ..voice };
+            new.params.gain_db = new.params.gain_db.max(self.params_of(&side, listener).gain_db);
+        }
+        // The conversation's line is outside the room the rest share; the sounds layered with it aren't.
+        let sharing = picks.as_slice().len() - usize::from(voice.protected);
+        let let_in = (voice.protected
             || (limit.is_none_or(|limit| {
-                self.make_room(&voice, limit.max.into(), Some(limit.rule), |other| other.cue == voice.cue)
+                self.make_room(&new, limit.max.into(), Some(limit.rule), |other| other.cue == voice.cue)
             }) && group.is_none_or(|group| {
                 let limit = self.groups[group].limit;
-                self.make_room(&voice, limit.max.into(), Some(limit.rule), |other| other.group == voice.group)
-            }) && self.make_room(&voice, MAX_LIVE, None, |_| true));
+                self.make_room(&new, limit.max.into(), Some(limit.rule), |other| other.group == voice.group)
+            })))
+            && (sharing == 0 || self.make_room(&new, MAX_LIVE + 1 - sharing, None, |_| true));
         if !let_in {
-            self.stats.dropped_voice_limit += 1;
+            self.stats.dropped_voice_limit += picks.as_slice().len() as u64;
             return None;
         }
-        self.next_id += 1;
-        self.voices.push(voice);
-        Some((id, sound))
+        for (index, &(sound, tree_db)) in picks.as_slice().iter().enumerate() {
+            let mut voice = voice;
+            if index > 0 {
+                voice.id = VoiceId(self.next_id);
+                (voice.protected, voice.sound) = (false, sound);
+                voice.length = self.lengths.get(&sound).copied().unwrap_or_default();
+                voice.gain_db = gain_db + tree_db;
+                voice.params = self.params_of(&voice, listener);
+            }
+            self.next_id += 1;
+            self.voices.push(voice);
+        }
+        Some((voice.id, voice.sound))
     }
 
     /// Makes room for `new` among the live voices `counts` picks, `max` at most, by `rule`: whether it may play.
-    /// No rule is the room kept for live voices, where what has the worst claim goes if the new one's is
-    /// better. The conversation's line counts toward no limit and is never what goes.
+    /// A limit's rule counts starts, each by the first of its voices still live; no rule is the room kept for live
+    /// voices, counting each, where what has the worst claim goes if the new one's is better. A start is judged by
+    /// its loudest voice, `new` as well, and whatever goes takes its whole start with it. The conversation's line
+    /// counts toward no limit and is never what goes.
     fn make_room(
         &mut self,
         new: &Voice,
@@ -1094,21 +1156,28 @@ impl<B: AudioBackend> AudioSystem<B> {
         rule: Option<LimitRule>,
         counts: impl Fn(&Voice) -> bool,
     ) -> bool {
-        let members = |voice: &&Voice| voice.live() && !voice.protected && counts(voice);
-        while self.voices.iter().filter(members).count() >= max {
-            let candidates = self.voices.iter().enumerate().filter(|(_, voice)| members(voice));
+        let members = |voices: &[Voice], index: usize| {
+            let voice = &voices[index];
+            let stands = if rule.is_some() { counts_start(voices, index) } else { voice.live() };
+            stands && !voice.protected && counts(voice)
+        };
+        while (0..self.voices.len()).filter(|&index| members(&self.voices, index)).count() >= max {
+            // Each judged as its start: as loud as its loudest voice, and with the best claim any of them has.
+            let candidates = (0..self.voices.len())
+                .filter(|&index| members(&self.voices, index))
+                .map(|index| (index, judged(&self.voices, index)));
             let victim = match rule {
                 Some(LimitRule::RefuseNew) => return false,
-                Some(LimitRule::StopOldest) => candidates.min_by_key(|(_, voice)| voice.id),
+                Some(LimitRule::StopOldest) => candidates.min_by_key(|(_, voice)| voice.start),
                 Some(LimitRule::StopQuietest) => candidates.min_by(|(_, a), (_, b)| {
-                    a.params.gain_db.total_cmp(&b.params.gain_db).then(a.id.cmp(&b.id))
+                    a.params.gain_db.total_cmp(&b.params.gain_db).then(a.start.cmp(&b.start))
                 }),
                 Some(LimitRule::StopLowestPriority) => {
-                    candidates.min_by_key(|(_, voice)| (voice.priority, voice.id))
+                    candidates.min_by_key(|(_, voice)| (voice.priority, voice.start))
                 }
                 None => candidates.max_by(|(_, a), (_, b)| standing(a, b)),
             };
-            let Some((index, victim)) = victim else { return false };
+            let Some((index, ref victim)) = victim else { return false };
             let refused = match rule {
                 Some(LimitRule::StopQuietest) => new.params.gain_db <= victim.params.gain_db,
                 Some(LimitRule::StopLowestPriority) => new.priority < victim.priority,
@@ -1123,15 +1192,23 @@ impl<B: AudioBackend> AudioSystem<B> {
         true
     }
 
-    /// Ends the voice at `index` to make room: one asked for this frame never starts.
+    /// Ends the voice at `index` to make room, and the rest of its start with it but the conversation's line: one
+    /// asked for this frame never starts.
     fn steal(&mut self, index: usize) {
-        match self.voices[index].mode {
-            Mode::Asked => self.stats.dropped_voice_limit += 1,
-            Mode::Real(_) | Mode::Virtual => self.stats.voices_stolen += 1,
-            Mode::Gone => {}
+        let start = self.voices[index].start;
+        for index in (0..self.voices.len()).rev() {
+            let voice = &self.voices[index];
+            if voice.start != start || voice.protected {
+                continue;
+            }
+            match voice.mode {
+                Mode::Asked => self.stats.dropped_voice_limit += 1,
+                Mode::Real(_) | Mode::Virtual => self.stats.voices_stolen += 1,
+                Mode::Gone => {}
+            }
+            self.end_voice(index, STOP_FADE);
+            self.voices.remove(index);
         }
-        self.end_voice(index, STOP_FADE);
-        self.voices.remove(index);
     }
 
     /// Whether `voice` should wait where it is: held by its speech, or frozen by its emitter's hitstop.
@@ -1210,7 +1287,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             (Mode::Asked, false, true) => {
                 self.voices[index].mode = Mode::Virtual;
                 self.voices[index].frozen = frozen;
-                self.stats.cues_played += 1;
+                self.stats.cues_played += u64::from(self.first_to_play(index));
                 self.stats.voices_virtualized += 1;
             }
             (Mode::Virtual, false, true) => self.voices[index].frozen = frozen,
@@ -1224,6 +1301,12 @@ impl<B: AudioBackend> AudioSystem<B> {
             }
             (Mode::Gone, ..) => {}
         }
+    }
+
+    /// Whether the voice at `index`, asked for and now playing real or virtual, is its start's first to (M6 U4a):
+    /// a start is one cue played, whichever of its voices the caps let in.
+    fn first_to_play(&self, index: usize) -> bool {
+        start_before(&self.voices, index).all(|voice| !voice.playing())
     }
 
     /// Starts the voice at `index` in the mixer: one just asked for from its sound's start, a virtual one where
@@ -1257,13 +1340,13 @@ impl<B: AudioBackend> AudioSystem<B> {
                 if revived {
                     self.stats.voices_revived += 1;
                 } else {
-                    self.stats.cues_played += 1;
+                    self.stats.cues_played += u64::from(self.first_to_play(index));
                 }
             }
             Err(StartError::MixerFull) if kept && voice.can_wait() => {
                 if !revived {
                     self.voices[index].mode = Mode::Virtual;
-                    self.stats.cues_played += 1;
+                    self.stats.cues_played += u64::from(self.first_to_play(index));
                     self.stats.voices_virtualized += 1;
                 }
             }
@@ -2337,6 +2420,41 @@ mod tests {
         assert_eq!((system.stats().voices_stolen, system.stats().dropped_voice_limit), (1, 1));
     }
 
+    /// M6 U4a: a layer's sounds are one start's voices. They start together, count once toward a limit, and go
+    /// together when the limit makes room; the start counts as one cue played.
+    #[test]
+    fn a_layers_voices_count_once_and_go_together() {
+        let layered = Cue {
+            play: CueNode::Layer(vec![CueNode::Sound(SOUND_A), CueNode::Sound(SOUND_B)]),
+            limit: Some(Limit { max: 2, rule: LimitRule::StopOldest }),
+            ..plain_cue()
+        };
+        let mut system = system_with(layered);
+        let mut rng = CueRng::new(1);
+        let starts = |calls: &[MockCall]| {
+            calls
+                .iter()
+                .filter_map(|call| match *call {
+                    MockCall::StartVoice { slot, sound, .. } => Some((slot, sound)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        let first = starts(&system.backend_mut().take_calls());
+        assert_eq!(first, [(VoiceSlot(0), SOUND_A), (VoiceSlot(1), SOUND_B)]);
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        assert_eq!(starts(&system.backend_mut().take_calls()).len(), 2, "two starts are within a limit of 2");
+        assert_eq!(system.stats().voices, 4);
+        // The third ends the first start, both its voices.
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        let calls = system.backend_mut().take_calls();
+        assert_eq!(stopped(&calls), [(VoiceSlot(1), STOP_FADE), (VoiceSlot(0), STOP_FADE)]);
+        assert_eq!(starts(&calls).len(), 2);
+        let stats = system.stats();
+        assert_eq!((stats.cues_played, stats.voices_stolen, stats.dropped_voice_limit), (3, 2, 0));
+    }
+
     fn started_sounds(calls: &[MockCall]) -> Vec<AssetId> {
         calls
             .iter()
@@ -2345,6 +2463,175 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// M6 U4a: a start counts toward its limit while any of its voices lives, so a layer's short sound ending
+    /// leaves its long one still counted, and still what a rule makes room by.
+    #[test]
+    fn a_start_counts_toward_its_limit_until_its_last_voice_ends() {
+        let layered = |rule| Cue {
+            play: CueNode::Layer(vec![CueNode::Sound(SOUND_A), CueNode::Sound(LONG)]),
+            limit: Some(Limit { max: 1, rule }),
+            ..plain_cue()
+        };
+        let mut rng = CueRng::new(1);
+        for rule in [LimitRule::RefuseNew, LimitRule::StopOldest] {
+            let mut system = rivals(layered(rule), plain_cue(), false);
+            ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+            assert_eq!(started_sounds(&system.backend_mut().take_calls()), [SOUND_A, LONG]);
+            // The short one plays out, and 30 frames on the long one still plays.
+            system.backend_mut().finish(VoiceSlot(0));
+            for _ in 0..30 {
+                system.update(&frame(&[], &[]), &mut rng);
+            }
+            assert_eq!(system.stats().voices, 1);
+            system.backend_mut().take_calls();
+            ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+            let calls = system.backend_mut().take_calls();
+            let stats = system.stats();
+            if matches!(rule, LimitRule::RefuseNew) {
+                assert!(started_sounds(&calls).is_empty(), "{calls:?}");
+                assert_eq!((stats.cues_played, stats.dropped_voice_limit), (1, 2), "a voice a sound refused");
+            } else {
+                assert_eq!(stopped(&calls), [(VoiceSlot(1), STOP_FADE)]);
+                assert_eq!(started_sounds(&calls), [SOUND_A, LONG]);
+                assert_eq!((stats.cues_played, stats.voices_stolen), (2, 1));
+            }
+        }
+    }
+
+    /// M6 U4a: a blend's start is one cue played by whichever of its voices the caps let in, and its limit holds
+    /// by that one when the first is ranked out.
+    #[test]
+    fn a_blends_start_counts_by_whichever_voice_plays() {
+        use sapphire_assets::cue::{BlendNode, BlendPoint};
+
+        let point = |at, sound| BlendPoint { at, play: CueNode::Sound(sound) };
+        let blended = Cue {
+            play: CueNode::Blend(BlendNode {
+                on: "speed".to_owned(),
+                points: vec![point(0.0, SOUND_A), point(1.0, SOUND_B)],
+            }),
+            limit: Some(Limit { max: 1, rule: LimitRule::RefuseNew }),
+            ..plain_cue()
+        };
+        let mut system = system_with(blended);
+        system.set_voice_caps(VoiceCaps { real: 1, virtual_voices: 0 });
+        let mut rng = CueRng::new(1);
+        // Near the second point the second is much the louder, so the first is the one ranked out.
+        let fast =
+            CueRequest::new(CUE, CueTarget::Flat).with(Name::new("speed"), ParameterValue::Number(0.9));
+        system.update(&frame(&[], &[fast]), &mut rng);
+        assert_eq!(started_sounds(&system.backend_mut().take_calls()), [SOUND_B]);
+        let stats = system.stats();
+        assert_eq!((stats.cues_played, stats.dropped_voice_limit), (1, 1));
+        system.update(&frame(&[], &[fast]), &mut rng);
+        assert!(started_sounds(&system.backend_mut().take_calls()).is_empty());
+        let stats = system.stats();
+        assert_eq!((stats.cues_played, stats.dropped_voice_limit), (1, 3));
+    }
+
+    /// M6 U4a: a layered line holds, lets go and is cut as one, every voice of its start and not its own alone.
+    #[test]
+    fn a_layered_lines_voices_hold_and_end_with_it() {
+        let layered = Cue {
+            play: CueNode::Layer(vec![CueNode::Sound(SOUND_A), CueNode::Sound(SOUND_B)]),
+            bus: Bus::Voice,
+            ..plain_cue()
+        };
+        let mut system = system_with(layered);
+        let line = sapphire_assets::voice::VoiceLine { key: "greet".to_owned(), cue: CUE };
+        system.add_voice_lines(&VoiceLines { locale: "en".to_owned(), lines: vec![line] }).unwrap();
+        assert!(system.set_voice_language("en"));
+        let mut rng = CueRng::new(1);
+        say(&mut system, greet(1, false), &mut rng);
+        assert_eq!(started_sounds(&system.backend_mut().take_calls()), [SOUND_A, SOUND_B]);
+        for held in [true, false] {
+            say(&mut system, greet(1, held), &mut rng);
+            let calls = system.backend_mut().take_calls();
+            for slot in [VoiceSlot(0), VoiceSlot(1)] {
+                assert!(calls.contains(&MockCall::FreezeVoice { slot, frozen: held }), "{held}: {calls:?}");
+            }
+        }
+        // The next line cuts both, and the conversation's end both of the next.
+        say(&mut system, greet(2, false), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let mut ends: Vec<_> = stopped(&calls).into_iter().map(|(slot, _)| slot.0).collect();
+        ends.sort_unstable();
+        assert_eq!(ends, [0, 1]);
+        assert_eq!(started_sounds(&calls), [SOUND_A, SOUND_B]);
+        say(&mut system, None, &mut rng);
+        let mut ends: Vec<_> =
+            stopped(&system.backend_mut().take_calls()).into_iter().map(|(slot, _)| slot.0).collect();
+        ends.sort_unstable();
+        assert_eq!(ends, [2, 3]);
+        assert_eq!(system.speaking(), None);
+    }
+
+    /// M6 U4a: a start is as loud as its loudest voice to a limit, so a blend near its second point, its quiet side
+    /// first, isn't refused for that side, nor stolen for it.
+    #[test]
+    fn a_start_is_as_loud_as_its_loudest_voice() {
+        use sapphire_assets::cue::{BlendNode, BlendPoint};
+
+        let point = |at, sound| BlendPoint { at, play: CueNode::Sound(sound) };
+        let blended = |max| Cue {
+            play: CueNode::Blend(BlendNode {
+                on: "speed".to_owned(),
+                points: vec![point(0.0, SOUND_A), point(1.0, SOUND_B)],
+            }),
+            limit: Some(Limit { max, rule: LimitRule::StopQuietest }),
+            ..plain_cue()
+        };
+        let at = |speed| {
+            CueRequest::new(CUE, CueTarget::Flat).with(Name::new("speed"), ParameterValue::Number(speed))
+        };
+        let mut rng = CueRng::new(1);
+        // Halfway each side is 3 dB down; at 0.9 the first is 16 dB down and the second 0.1.
+        let mut system = system_with(blended(1));
+        system.update(&frame(&[], &[at(0.5)]), &mut rng);
+        system.backend_mut().take_calls();
+        system.update(&frame(&[], &[at(0.9)]), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        assert_eq!(stopped(&calls).len(), 2, "the even start gives way: {calls:?}");
+        assert_eq!(started_sounds(&calls), [SOUND_A, SOUND_B]);
+        // With two playing, the even one goes, not the one whose quiet side is first.
+        let mut system = system_with(blended(2));
+        system.update(&frame(&[], &[at(0.9)]), &mut rng);
+        system.update(&frame(&[], &[at(0.5)]), &mut rng);
+        system.backend_mut().take_calls();
+        system.update(&frame(&[], &[at(0.9)]), &mut rng);
+        let mut ends: Vec<_> =
+            stopped(&system.backend_mut().take_calls()).into_iter().map(|(slot, _)| slot.0).collect();
+        ends.sort_unstable();
+        assert_eq!(ends, [2, 3]);
+    }
+
+    /// M6 U4a: the mixer's room takes all of a start's voices or none: with one place left among the live voices,
+    /// a layer of two that outranks nothing is refused whole, and a single sound fits.
+    #[test]
+    fn the_mixers_room_takes_all_of_a_starts_voices_or_none() {
+        const SINGLE: AssetId = AssetId::from_text("77777777-2222-4333-8444-555555555555");
+        let mut system = system_with(plain_cue());
+        system
+            .add_sound(LONG, &DecodedSound { sample_rate: 48_000, channels: 1, samples: vec![0.5; 144_000] });
+        let long = |play, priority| Cue { play, priority, ..plain_cue() };
+        system.add_cue(OTHER, long(CueNode::Sound(LONG), 200));
+        system.add_cue(CUE, long(CueNode::Layer(vec![CueNode::Sound(LONG), CueNode::Sound(LONG)]), 10));
+        system.add_cue(SINGLE, long(CueNode::Sound(LONG), 10));
+        let mut rng = CueRng::new(1);
+        let live = |system: &AudioSystem<MockBackend>| {
+            let stats = system.stats();
+            (stats.voices + stats.virtual_voices) as usize
+        };
+        system.update(&frame(&[], &vec![CueRequest::new(OTHER, CueTarget::Flat); MAX_LIVE - 1]), &mut rng);
+        assert_eq!(live(&system), MAX_LIVE - 1);
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        assert_eq!((live(&system), system.stats().dropped_voice_limit), (MAX_LIVE - 1, 2), "neither voice");
+        ask(&mut system, SINGLE, CueTarget::Flat, &mut rng);
+        assert_eq!((live(&system), system.stats().dropped_voice_limit), (MAX_LIVE, 2));
+        ask(&mut system, CUE, CueTarget::Flat, &mut rng);
+        assert_eq!((live(&system), system.stats().dropped_voice_limit), (MAX_LIVE, 4));
     }
 
     /// M6 U4a: a start refused by its limit moves its sequence on by nothing, so asking every frame while one

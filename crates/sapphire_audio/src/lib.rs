@@ -23,7 +23,8 @@
 //!   side from the [`Listener`], following their [`Emitter`] by [`EmitterId`].
 //! - **The cue's tree** (M6 U4a): each start walks its [`CueNode`](sapphire_assets::cue::CueNode)s, random, sequence,
 //!   layer, switch and blend, laid out flat as the cue is added, reading the [`CueParameters`] it was asked with,
-//!   and draws the same count of numbers whatever the tree; it plays the first sound it reaches.
+//!   and draws the same count of numbers whatever the tree; the sounds it reaches are its voices, counted once
+//!   toward a limit.
 //! - **The mix** (M6 U2): a [`Mix`](sapphire_assets::mix::Mix) document's bus tree under the five categories,
 //!   each bus's effects and reverb sends, made once on the mixer ([`AudioSystem::set_mix`]); its snapshots,
 //!   offsets to buses moved by attack, release and priority, asked for by name ([`AudioFrame::snapshots`],

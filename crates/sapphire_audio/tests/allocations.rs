@@ -145,7 +145,7 @@ fn what_a_cue_allocates_on_the_calling_thread() {
 
 /// A version 3 cue's start (M6 U4a), walking a switch on the surface to a random node keeping clear of its last
 /// pick on grass and to a sequence by default, allocates nothing of the system's own, and through kira no more
-/// than a version 2 list's start, `list`.
+/// than a version 2 list's start, `list`; a layer of two takes two voices' worth.
 fn a_tree_starts_as_a_list_does(list: u64) {
     let other = AssetId::from_text("4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5d");
     let tree = Cue {
@@ -166,10 +166,13 @@ fn a_tree_starts_as_a_list_does(list: u64) {
         }),
         ..cue()
     };
+    let layered = Cue { play: CueNode::Layer(vec![CueNode::Sound(SOUND), CueNode::Sound(other)]), ..cue() };
+    let layer = AssetId::from_text("11111111-2222-4333-8444-555555555556");
     let emitters = [Emitter { id: ACTOR, position: Vec3::new(1.0, 0.0, 0.0), hitstop: false }];
     let grass = SURFACE_CASE;
     let requests = [CueRequest::new(CUE, CueTarget::On(ACTOR)).with(SURFACE, ParameterValue::Case(grass))];
     let stone = [CueRequest::new(CUE, CueTarget::On(ACTOR))];
+    let layers = [CueRequest::new(layer, CueTarget::On(ACTOR))];
     let mut rng = CueRng::new(5);
 
     let mut system = AudioSystem::new(MockBackend::new());
@@ -177,12 +180,14 @@ fn a_tree_starts_as_a_list_does(list: u64) {
         system.add_sound(id, &sound());
     }
     system.add_cue(CUE, tree.clone());
+    system.add_cue(layer, layered.clone());
     system.backend_mut().reserve_calls(4096);
     system.update(&frame(&emitters, &requests), &mut rng);
     let ((), alone) = count_in_scope(|| {
         for _ in 0..16 {
             system.update(&frame(&emitters, &requests), &mut rng);
             system.update(&frame(&emitters, &stone), &mut rng);
+            system.update(&frame(&emitters, &layers), &mut rng);
             system.update(&frame(&emitters, &[]), &mut rng);
         }
     });
@@ -193,9 +198,10 @@ fn a_tree_starts_as_a_list_does(list: u64) {
         system.add_sound(id, &sound());
     }
     system.add_cue(CUE, tree);
+    system.add_cue(layer, layered);
     let mut buffer = vec![0.0; GAME_FRAME * 2];
     for round in 0..9 {
-        let asked: &[CueRequest] = [&requests[..], &stone][round % 2];
+        let asked: &[CueRequest] = [&requests[..], &stone, &layers][round % 3];
         system.update(&frame(&emitters, asked), &mut rng);
         for _ in 0..4 {
             system.backend_mut().output_mut().render_into(&mut buffer);
@@ -204,15 +210,17 @@ fn a_tree_starts_as_a_list_does(list: u64) {
     }
     let ((), start) = count_in_scope(|| system.update(&frame(&emitters, &requests), &mut rng));
     let ((), default) = count_in_scope(|| system.update(&frame(&emitters, &stone), &mut rng));
+    let ((), two) = count_in_scope(|| system.update(&frame(&emitters, &layers), &mut rng));
     #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
     {
         println!(
-            "a tree's warmed start: {} allocations on grass, {} by default",
-            start.allocations, default.allocations
+            "a tree's warmed start: {} allocations on grass, {} by default; a layer of two: {}",
+            start.allocations, default.allocations, two.allocations
         );
     }
     assert!(start.allocations <= list, "a tree's start took {}, a list's {list}", start.allocations);
     assert!(default.allocations <= list, "its default's took {}, a list's {list}", default.allocations);
+    assert!(two.allocations <= 2 * list, "a layer of two took {}", two.allocations);
 }
 
 /// The case `grass` of [`SURFACE`].

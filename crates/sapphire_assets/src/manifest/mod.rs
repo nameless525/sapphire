@@ -48,7 +48,8 @@
 //! each the signer's public key (32) and the signature (64). An unsigned manifest is its body and a zero.
 //! Nothing follows. A file's only flag is bit 0, [`ReleasedFile::patchable`]; the others are 0.
 //!
-//! A pack's name is 1 to [`MAX_NAME_LEN`] bytes of `a-z`, `0-9`, `_` and `-`. A file's path is 1 to
+//! A pack's name is 1 to [`MAX_NAME_LEN`] bytes of `a-z`, `0-9`, `_` and `-`, and a part's (M6 K2,
+//! [`crate::pack::part_name`]) its pack's, `.` and the part's number, from 1, with no leading zero. A file's path is 1 to
 //! [`MAX_PATH_LEN`] bytes of `/`-separated steps, each of ASCII letters, digits, `.`, `_` and `-` and none
 //! starting with `.`, so no entry can name a place outside the install, or a hidden file; no two paths differ
 //! only by case, and none ends in `.spack` or is the manifest's own name.
@@ -408,8 +409,11 @@ impl Manifest {
 /// What a pack's name breaks, if anything.
 fn name_problem(name: &str) -> Option<&'static str> {
     let good = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-');
-    if name.is_empty() || name.len() > MAX_NAME_LEN || !name.bytes().all(good) {
-        return Some("a pack's name is 1 to 64 bytes of a-z, 0-9, `_` and `-`");
+    let (pack, _) = crate::pack::pack_of_part(name);
+    if name.is_empty() || name.len() > MAX_NAME_LEN || pack.is_empty() || !pack.bytes().all(good) {
+        return Some(
+            "a pack's name is 1 to 64 bytes of a-z, 0-9, `_` and `-`, and a part's adds `.` and its number",
+        );
     }
     None
 }

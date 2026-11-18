@@ -121,7 +121,7 @@ use crate::zone;
 /// The packer as cache keys know it. Its name carries the encoders' versions, which a test keeps
 /// in step with `Cargo.lock`: a new zstd or lz4_flex may compress differently, so it re-encodes
 /// everything. Bump the version when the codec policy, block encoding or pack layout changes.
-pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 4 };
+pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 5 };
 
 /// What a cooked asset reaches, as cache keys know it. Bump the version whenever that changes for the
 /// same bytes ([`AssetKind::reach`]).

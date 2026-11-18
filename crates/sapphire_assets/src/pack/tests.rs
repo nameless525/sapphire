@@ -253,7 +253,12 @@ fn bad_headers_are_rejected() {
     // With matching hashes, the fields themselves are checked.
     assert!(matches!(edit(12, &1u32.to_le_bytes(), true), Err(PackError::Header(_))), "flags");
     assert!(matches!(edit(16, &4096u32.to_le_bytes(), true), Err(PackError::Header(_))), "block size");
-    assert!(matches!(edit(100, &[1], true), Err(PackError::Header(_))), "reserved");
+    assert!(matches!(edit(104, &[1], true), Err(PackError::Header(_))), "a stamp in a pack of one part");
+    assert!(matches!(edit(112, &[1], true), Err(PackError::Header(_))), "reserved");
+    assert!(matches!(edit(96, &1u32.to_le_bytes(), true), Err(PackError::Header(_))), "part 1 of 1");
+    assert!(matches!(edit(100, &0u32.to_le_bytes(), true), Err(PackError::Header(_))), "no parts");
+    let too_many = MAX_PARTS + 1;
+    assert!(matches!(edit(100, &too_many.to_le_bytes(), true), Err(PackError::Header(_))), "too many parts");
     assert!(
         matches!(edit(20, &7u32.to_le_bytes(), true), Err(PackError::Header(_))),
         "counts against length"
@@ -503,4 +508,68 @@ fn a_pack_of_the_format_before_is_refused() {
     let mut bytes = write_pack(vec![mesh_with_keys(2, Vec::new())]).unwrap();
     bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
     assert_eq!(PackReader::new(&bytes).unwrap_err(), PackError::UnsupportedVersion(1));
+}
+
+/// Format 4, before parts, had zeros where format 5 says which part a file is: it's refused, saying to cook
+/// again, and a newer format says which build reads it.
+#[test]
+fn a_pack_from_before_parts_is_refused_with_what_to_do() {
+    let mut bytes = write_pack(vec![mesh_with_keys(2, Vec::new())]).unwrap();
+    bytes[4..8].copy_from_slice(&4u32.to_le_bytes());
+    bytes[96..104].fill(0);
+    let refused = PackReader::new(&bytes).unwrap_err();
+    assert_eq!(refused, PackError::UnsupportedVersion(4));
+    assert_eq!(
+        refused.to_string(),
+        "pack format 4 is older than this build's 5, which cuts packs into parts: cook the content again \
+         (`cargo xtask content`)"
+    );
+    bytes[4..8].copy_from_slice(&6u32.to_le_bytes());
+    let refused = PackReader::new(&bytes).unwrap_err().to_string();
+    assert!(refused.contains("newer than this build's 5"), "{refused}");
+}
+
+#[test]
+fn a_part_says_which_it_is_and_its_name_says_the_same() {
+    let bytes = write_part(vec![mesh_with_keys(2, Vec::new())], 2, 3, *b"cut stmp").unwrap();
+    let header = *PackReader::new(&bytes).unwrap().toc().header();
+    assert_eq!((header.part, header.parts, header.cut), (2, 3, *b"cut stmp"));
+    assert_eq!(PackReader::new(&write_pack(Vec::new()).unwrap()).unwrap().toc().header().cut, [0; 8]);
+    let range = |part, parts| write_part(Vec::new(), part, parts, *b"cut stmp");
+    assert!(matches!(range(3, 3), Err(PackError::PartRange { part: 3, parts: 3 })), "a part past its pack's");
+    assert!(matches!(range(0, MAX_PARTS + 1), Err(PackError::PartRange { .. })));
+    assert!(matches!(range(0, 1), Err(PackError::Header(_))), "a stamp on a pack of one part");
+    assert!(
+        write_part(Vec::new(), 1, 4, *b"cut stmp").is_ok_and(|part| PackReader::new(&part).is_ok()),
+        "empty"
+    );
+
+    assert_eq!(
+        (part_name("zone_district", 0), part_name("zone_district", 12)),
+        ("zone_district".into(), "zone_district.12".into())
+    );
+    for part in [0, 1, 9, 10, MAX_PARTS - 1] {
+        assert_eq!(pack_of_part(&part_name("vo_en", part)), ("vo_en", part));
+    }
+    // Only a whole number from 1, with no leading zero, is a part's.
+    for name in ["shared", "a.0", "a.01", "a.", "a.1x", "a.-1"] {
+        assert_eq!(pack_of_part(name), (name, 0), "{name}");
+    }
+}
+
+#[test]
+fn a_packs_length_is_at_most_its_assets_packed_lengths_and_the_overhead() {
+    let mut named = mesh_with_keys(200, two_keys().to_vec());
+    named.name = Some("a clip's name".into());
+    let assets: Vec<PackAsset> = samples()
+        .into_iter()
+        .map(|sample| {
+            PackAsset::encode(sample.id, AssetKind::Rig, sample.codec, &sample.bytes, sample.dependencies, 3)
+                .unwrap()
+        })
+        .chain([named])
+        .collect();
+    let bound: u64 = assets.iter().map(PackAsset::packed_len).sum::<u64>() + PACK_OVERHEAD;
+    let len = write_pack(assets).unwrap().len() as u64;
+    assert!(len <= bound && bound - len < 16 * 64, "{len} against {bound}");
 }

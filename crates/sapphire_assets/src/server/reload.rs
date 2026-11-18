@@ -9,11 +9,11 @@ use sapphire_serialize::cooked::AlignedVec;
 
 use super::handle::{SlotKey, UntypedHandle};
 use super::{
-    AssetServer, AssetSlot, Handle, LOG_TARGET, LoadError, MountError, MountKey, Slot, SlotState, Version,
-    error_chain, mounts,
+    AssetServer, AssetSlot, Handle, LOG_TARGET, LoadError, MountError, MountKey, Parts, Slot, SlotState,
+    Version, error_chain, mounts,
 };
 use crate::mesh::Mesh;
-use crate::pack::{Entry, Toc};
+use crate::pack::Entry;
 use crate::{Asset, AssetId, AssetKind};
 
 /// A change hot reload made to a loaded asset, from [`AssetServer::take_changes`].
@@ -106,29 +106,29 @@ impl AssetServer {
             .metadata_budget
             .begin()
             .map_err(|source| MountError::Pack { name: name.to_owned(), source })?;
-        let (file, toc) = mounts::read_pack(&self.source, name, self.release.as_deref(), &mut metadata)?;
+        let (files, parts) = mounts::read_pack(&self.source, name, self.release.as_deref(), &mut metadata)?;
         let old = &self.mounts[mount];
-        // The header holds the table of contents' hash, so an equal one is the same pack, laid out
-        // the same: reads in flight from the earlier file stay good.
-        if toc.header() == old.toc.header() {
+        // The headers hold the tables of contents' hashes, so equal ones are the same pack, laid out
+        // the same: reads in flight from the earlier files stay good.
+        if parts.same_as(&old.parts) {
             return Ok(RemountReport::default());
         }
-        self.check_duplicates(name, &toc, Some(mount))?;
+        self.check_duplicates(name, &parts, Some(mount))?;
         let mut report = RemountReport::default();
-        for entry in toc.entries() {
-            report.changed += u32::from(old.toc.find(entry.id).is_none_or(|old| old.hash != entry.hash));
+        for entry in parts.entries() {
+            report.changed += u32::from(old.parts.find(entry.id).is_none_or(|old| old.hash != entry.hash));
         }
-        report.removed = old.toc.entries().iter().filter(|entry| toc.find(entry.id).is_none()).count() as u32;
+        report.removed = old.parts.entries().filter(|entry| parts.find(entry.id).is_none()).count() as u32;
 
-        let toc = Arc::new(toc);
-        let old_file = std::mem::replace(&mut self.mounts[mount].file, file);
-        self.mounts[mount].toc = toc.clone();
+        let parts = Arc::new(parts);
+        let old_files = std::mem::replace(&mut self.mounts[mount].files, files);
+        self.mounts[mount].parts = parts.clone();
         self.index.retain(|_, &mut (other, _)| other != mount);
         self.index
-            .extend(toc.entries().iter().enumerate().map(|(index, entry)| (entry.id, (mount, index as u32))));
-        report.reloading = self.settle_mount(mount, &toc);
-        // Reads still queued for the earlier file are superseded, so their failures are ignored.
-        drop(old_file);
+            .extend(parts.entries().enumerate().map(|(index, entry)| (entry.id, (mount, index as u32))));
+        report.reloading = self.settle_mount(mount, &parts);
+        // Reads still queued for the earlier files are superseded, so their failures are ignored.
+        drop(old_files);
         tracing::info!(
             target: LOG_TARGET,
             pack = name,
@@ -140,11 +140,11 @@ impl AssetServer {
         Ok(report)
     }
 
-    /// Brings loaded assets in line with mount `mount`, whose table of contents is now `toc`:
-    /// the mount's assets move to their entries there, assets that left their packs and that `toc`
-    /// holds join them, and what changed starts loading. Returns how many assets are now loading
+    /// Brings loaded assets in line with mount `mount`, whose parts are now `parts`:
+    /// the mount's assets move to their entries there, assets that left their packs and that `parts`
+    /// hold join them, and what changed starts loading. Returns how many assets are now loading
     /// a new version, or loading again.
-    pub(super) fn settle_mount(&mut self, mount: MountKey, toc: &Toc) -> u32 {
+    pub(super) fn settle_mount(&mut self, mount: MountKey, parts: &Parts) -> u32 {
         // An ID under another kind isn't this asset: `gone` reported it when it left.
         let keys: Vec<SlotKey> = self
             .slots
@@ -152,7 +152,7 @@ impl AssetServer {
             .filter(|(_, slot)| {
                 slot.mount == mount
                     || (slot.entry.is_none()
-                        && toc.find(slot.handle.id()).is_some_and(|entry| entry.kind == slot.handle.kind()))
+                        && parts.find(slot.handle.id()).is_some_and(|entry| entry.kind == slot.handle.kind()))
             })
             .map(|(key, _)| key)
             .collect();
@@ -164,16 +164,16 @@ impl AssetServer {
             let (id, kind) = (slot.handle.id(), slot.handle.kind());
             let was_present = slot.entry.is_some();
             slot.mount = mount;
-            let found = toc.entries().binary_search_by(|entry| entry.id.cmp(&id)).ok();
-            let found_kind = found.map(|index| toc.entries()[index].kind);
-            slot.entry = found.filter(|_| found_kind == Some(kind)).map(|index| index as u32);
+            let found = parts.position(id);
+            let found_kind = found.map(|index| parts.entry(index).kind);
+            slot.entry = found.filter(|_| found_kind == Some(kind));
             moved.push((key, found_kind, was_present));
         }
         // Found before any load starts: the loads below retry some of them, but not all they hold up.
         let failed_on_this_pack: Vec<SlotKey> = self
             .slots
             .iter()
-            .filter(|(_, slot)| failed_dependency(slot).is_some_and(|id| toc.find(id).is_some()))
+            .filter(|(_, slot)| failed_dependency(slot).is_some_and(|id| parts.position(id).is_some()))
             .map(|(key, _)| key)
             .collect();
         let mut reloading = 0;
@@ -184,7 +184,7 @@ impl AssetServer {
                 if was_present {
                     self.gone(key, found_kind);
                 }
-            } else if self.relocate(key, toc) {
+            } else if self.relocate(key, parts) {
                 reloading += 1;
             }
         }
@@ -244,12 +244,12 @@ impl AssetServer {
         std::mem::take(&mut self.changes)
     }
 
-    /// Starts loading what changed of the asset in `key`, which has moved to its entry in `toc`,
-    /// its mount's new table of contents. Returns whether it is now loading a new version, or
-    /// loading again.
-    fn relocate(&mut self, key: SlotKey, toc: &Toc) -> bool {
+    /// Starts loading what changed of the asset in `key`, which has moved to its entry in `parts`,
+    /// its mount's new parts. Returns whether it is now loading a new version, or loading again.
+    fn relocate(&mut self, key: SlotKey, parts: &Parts) -> bool {
         let slot = &self.slots[key];
-        let entry = toc.entries()[slot.entry.expect("only assets the new pack holds are relocated") as usize];
+        let index = slot.entry.expect("only assets the new pack holds are relocated");
+        let entry = *parts.entry(index);
         let changed = entry.hash != slot.hash;
         match slot.state {
             SlotState::Loading | SlotState::Waiting | SlotState::Queued => {
@@ -285,7 +285,7 @@ impl AssetServer {
                     self.remove(key);
                     return false;
                 }
-                self.start_reload(key, toc.dependencies(&entry), &entry);
+                self.start_reload(key, parts.dependencies(index), &entry);
                 true
             }
             SlotState::Failed(_) => {

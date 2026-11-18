@@ -34,7 +34,10 @@
 //! | 56 | 4 | pipeline key count (u32) |
 //! | 60 | 4 | bytes of names (u32), a multiple of 16 |
 //! | 64 | 32 | blake3 of the table of contents |
-//! | 96 | 32 | reserved, 0 |
+//! | 96 | 4 | this file's part of its pack, from 0 (u32) |
+//! | 100 | 4 | how many parts the pack is in, 1 to [`MAX_PARTS`] (u32) |
+//! | 104 | 8 | the cut's stamp: the same in every part of a pack, 0 in a pack of one part |
+//! | 112 | 16 | reserved, 0 |
 //! | 128 | 32 | blake3 of bytes 0..128: the header hash |
 //! | 160 | 96 | signature: scheme (u32), 28 bytes for the signing key's ID, 64 signature bytes; all 0 while unsigned |
 //!
@@ -80,6 +83,22 @@
 //! such a material's frames build beyond its own pipelines. Format 1 had no keys, and format 3's had no reflection
 //! byte.
 //!
+//! # Parts
+//!
+//! A pack may be cut into parts (M6 K2), each a file of this layout holding some of its assets, with its own
+//! header, table of contents and hashes: part 0 is `<name>.spack` and part `k` is `<name>.<k>.spack`
+//! ([`part_name`]). A part is a pack in every other way: a release manifest names each by its file's name, a
+//! patch replaces the parts whose bytes changed and keeps the rest, and the asset server mounts a pack's parts
+//! together, as one table of contents, by the pack's name. Each header says which part it is and how many the
+//! pack has, and the stamp of the cut that made it, so a mount finds every part from the first and refuses a
+//! set whose parts disagree on their place, their count or their cut. The packer decides the cut and its stamp
+//! (`sapphire_pipeline::pack`'s "Parts"); a small pack is one part, under its own name.
+//!
+//! **Format 5** added the part fields where format 4 had reserved bytes. A pack of another format is refused,
+//! saying what to do ([`PackError::UnsupportedVersion`]). Nothing needs to read an older pack: an app reads only
+//! what its own cook wrote, or a patch made for that cook (`sapphire_patch`), so a cook made before format 5 is
+//! simply cooked again.
+//!
 //! [`PackReader`] reads packs held in memory (tools and tests). The runtime reads ranges through
 //! the asset server's IO ([`crate::PackSource`]) and decodes them with [`Toc::decode_asset`].
 
@@ -95,12 +114,15 @@ use serde::{Deserialize, Serialize};
 use crate::{AssetId, AssetKind, PipelineKey};
 
 pub use metadata::{PackMetadataBudget, PackMetadataRead};
-pub use write::{PackAsset, StoredBlock, write_pack};
+pub use write::{PACK_OVERHEAD, PackAsset, StoredBlock, write_pack, write_part};
 
 /// Conventional file extension for packs.
 pub const PACK_EXTENSION: &str = "spack";
-/// The pack layout this build reads and writes. Readers reject other versions.
-pub const PACK_VERSION: u32 = 4;
+/// The pack layout this build reads and writes. Readers reject other versions (see "Parts" above).
+pub const PACK_VERSION: u32 = 5;
+/// The most parts a pack's header can count. A release names at most [`crate::manifest::MAX_PACKS`] files
+/// of packs, parts included, and the packer holds a cook to that, so a shipped pack has fewer.
+pub const MAX_PARTS: u32 = 4096;
 /// Bytes per block of an asset (its last block may be shorter).
 pub const BLOCK_SIZE: usize = 64 * 1024;
 /// Bytes in a pack's header.
@@ -125,6 +147,22 @@ const DATA_ALIGN: u64 = 16;
 /// The file a pack named `name` is stored in: `<name>.spack`.
 pub fn file_name(name: &str) -> String {
     format!("{name}.{PACK_EXTENSION}")
+}
+
+/// The name part `part` of pack `pack` is stored and released under: the pack's own for part 0, and
+/// `<pack>.<part>` for the others (see "Parts" above).
+pub fn part_name(pack: &str, part: u32) -> String {
+    if part == 0 { pack.to_owned() } else { format!("{pack}.{part}") }
+}
+
+/// The pack a file named `name` (without `.spack`) belongs to, and which part of it the name says it is:
+/// [`part_name`]'s inverse. A name without a part number is part 0 of the pack of that name.
+pub fn pack_of_part(name: &str) -> (&str, u32) {
+    let part = name.rsplit_once('.').and_then(|(pack, part)| {
+        let number = !part.starts_with('0') && part.bytes().all(|byte| byte.is_ascii_digit());
+        part.parse().ok().filter(|_| number).map(|part| (pack, part))
+    });
+    part.unwrap_or((name, 0))
 }
 
 /// How a block's bytes are stored.
@@ -171,8 +209,22 @@ impl fmt::Display for Codec {
 pub enum PackError {
     #[error("not a pack (no `SPAK` magic)")]
     NotAPack,
-    #[error("pack format {0} is not supported (this build reads format {PACK_VERSION})")]
+    #[error("{}", unsupported_version(*.0))]
     UnsupportedVersion(u32),
+    #[error(
+        "the file is part {part} of {parts} of its pack, where part {expected} of {expected_parts} belongs: its \
+         parts come from different cooks, or a part was asked for by its own name; cook again, and mount a pack \
+         by its pack's name"
+    )]
+    Part { part: u32, parts: u32, expected: u32, expected_parts: u32 },
+    #[error(
+        "part {part} was cut otherwise than its pack's part 0: its parts come from different cooks; cook again"
+    )]
+    OtherCut { part: u32 },
+    #[error("part {part} of {parts} isn't one of 1 to {MAX_PARTS} parts")]
+    PartRange { part: u32, parts: u32 },
+    #[error("the pack can't be cut into at most {MAX_PARTS} parts of {cap} bytes")]
+    Uncuttable { cap: u64 },
     #[error("the pack's header doesn't match its hash: the file is corrupt")]
     HeaderHash,
     #[error("the pack's header is inconsistent: {0}")]
@@ -203,6 +255,20 @@ pub enum PackError {
     Encode { id: AssetId, codec: Codec, reason: String },
 }
 
+/// What a pack of format `found` takes to be read, said to whoever has it.
+fn unsupported_version(found: u32) -> String {
+    if found < PACK_VERSION {
+        format!(
+            "pack format {found} is older than this build's {PACK_VERSION}, which cuts packs into parts: cook the \
+             content again (`cargo xtask content`)"
+        )
+    } else {
+        format!(
+            "pack format {found} is newer than this build's {PACK_VERSION}: read it with the build that cooked it"
+        )
+    }
+}
+
 /// A pack's header, checked ([`Self::read`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PackHeader {
@@ -212,6 +278,12 @@ pub struct PackHeader {
     pub pipeline_key_count: u32,
     /// Bytes of names, padding included: 0 where no asset has one.
     pub names_len: u32,
+    /// This file's part of its pack, from 0 (see "Parts" in the [module docs](self)).
+    pub part: u32,
+    /// How many parts the pack is in.
+    pub parts: u32,
+    /// The stamp of the cut that made the part: the same in every part of a pack, zeros in a pack of one part.
+    pub cut: [u8; 8],
     /// Where block data starts in the file: right after the table of contents.
     pub data_offset: u64,
     pub data_len: u64,
@@ -251,8 +323,15 @@ impl PackHeader {
         if u32_at(header, 16) as usize != BLOCK_SIZE {
             return Err(PackError::Header("the block size isn't 64 KiB"));
         }
-        if header[96..128].iter().any(|&byte| byte != 0) {
+        if header[112..128].iter().any(|&byte| byte != 0) {
             return Err(PackError::Header("reserved bytes aren't zero"));
+        }
+        let (part, parts) = (u32_at(header, 96), u32_at(header, 100));
+        if parts == 0 || parts > MAX_PARTS || part >= parts {
+            return Err(PackError::Header("the part isn't one of 1 to 4096 parts"));
+        }
+        if parts == 1 && header[104..112].iter().any(|&byte| byte != 0) {
+            return Err(PackError::Header("a pack of one part has a cut's stamp"));
         }
         if !(u32_at(header, 60) as usize).is_multiple_of(NAMES_ALIGN) {
             return Err(PackError::Header("the names' length isn't a multiple of 16"));
@@ -263,6 +342,9 @@ impl PackHeader {
             dependency_count: u32_at(header, 28),
             pipeline_key_count: u32_at(header, 56),
             names_len: u32_at(header, 60),
+            part,
+            parts,
+            cut: *header[104..112].first_chunk().expect("8 bytes"),
             data_offset: u64_at(header, 40),
             data_len: u64_at(header, 48),
             toc_hash: *header[64..96].first_chunk().expect("32 bytes"),
@@ -337,6 +419,9 @@ impl PackHeader {
         header[56..60].copy_from_slice(&self.pipeline_key_count.to_le_bytes());
         header[60..64].copy_from_slice(&self.names_len.to_le_bytes());
         header[64..96].copy_from_slice(&self.toc_hash);
+        header[96..100].copy_from_slice(&self.part.to_le_bytes());
+        header[100..104].copy_from_slice(&self.parts.to_le_bytes());
+        header[104..112].copy_from_slice(&self.cut);
         let hash = blake3::hash(&header[..HASHED_HEADER_LEN]);
         header[HASHED_HEADER_LEN..HASHED_HEADER_LEN + 32].copy_from_slice(hash.as_bytes());
         header

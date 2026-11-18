@@ -2,6 +2,7 @@
 //! [`AssetServer`]'s docs ("Mounting", "Unmounting") say what an app sees; this file holds the server's
 //! half.
 
+use std::collections::HashSet;
 use std::io;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, mpsc};
@@ -13,8 +14,9 @@ use super::handle::SlotKey;
 use super::{
     AssetServer, Completion, LOG_TARGET, LoadError, LoadPriority, MountError, PackFile, PackSource, SlotState,
 };
+use crate::AssetId;
 use crate::manifest::ReleasedPack;
-use crate::pack::{HEADER_LEN, PackHeader, PackMetadataRead, Toc};
+use crate::pack::{Entry, HEADER_LEN, PackError, PackHeader, PackMetadataRead, Toc, part_name};
 
 slotmap::new_key_type! {
     /// A mounted pack. A slot's mount outlasts the pack only while the slot has no entry, which no read
@@ -25,8 +27,82 @@ slotmap::new_key_type! {
 /// A mounted pack.
 pub(super) struct Mount {
     pub name: String,
-    pub file: OpenPack,
-    pub toc: Arc<Toc>,
+    /// Each part's file, in part order.
+    pub files: Vec<OpenPack>,
+    pub parts: Arc<Parts>,
+}
+
+/// A pack's parts' tables of contents, read as one (see "Parts" in [`crate::pack`]): an asset's place in the
+/// pack, which [`AssetServer`]'s index and slots hold, runs on through the parts in order.
+pub(super) struct Parts {
+    tocs: Vec<Arc<Toc>>,
+    /// Where each part's assets start among the pack's.
+    starts: Vec<u32>,
+}
+
+impl Parts {
+    /// The parts whose tables are `tocs`, in part order.
+    pub fn new(tocs: Vec<Toc>) -> Self {
+        let mut starts = Vec::with_capacity(tocs.len());
+        let mut next = 0u32;
+        for toc in &tocs {
+            starts.push(next);
+            // Each part holds fewer than 2^32 entries, and a pack at most 4,096 parts of 128 MiB or so.
+            next = next.saturating_add(toc.entries().len() as u32);
+        }
+        Self { tocs: tocs.into_iter().map(Arc::new).collect(), starts }
+    }
+
+    /// Each part's table, in part order.
+    pub fn tocs(&self) -> &[Arc<Toc>] {
+        &self.tocs
+    }
+
+    /// The part that holds the pack's asset `index`, and the asset's entry there.
+    pub fn locate(&self, index: u32) -> (usize, &Entry) {
+        let part = self.starts.partition_point(|&start| start <= index) - 1;
+        (part, &self.tocs[part].entries()[(index - self.starts[part]) as usize])
+    }
+
+    /// The pack's asset `index`.
+    pub fn entry(&self, index: u32) -> &Entry {
+        self.locate(index).1
+    }
+
+    /// What the pack's asset `index` depends on.
+    pub fn dependencies(&self, index: u32) -> &[AssetId] {
+        let (part, entry) = self.locate(index);
+        self.tocs[part].dependencies(entry)
+    }
+
+    /// Where asset `id` is in the pack, if it holds it.
+    pub fn position(&self, id: AssetId) -> Option<u32> {
+        self.tocs.iter().zip(&self.starts).find_map(|(toc, &start)| {
+            let index = toc.entries().binary_search_by(|entry| entry.id.cmp(&id)).ok()?;
+            Some(start + index as u32)
+        })
+    }
+
+    /// Asset `id`'s entry, if the pack holds it.
+    pub fn find(&self, id: AssetId) -> Option<&Entry> {
+        self.position(id).map(|index| self.entry(index))
+    }
+
+    /// Every asset, part by part, each part's in ID order: the pack's asset `index` is the `index`th.
+    pub fn entries(&self) -> impl Iterator<Item = &Entry> {
+        self.tocs.iter().flat_map(|toc| toc.entries())
+    }
+
+    /// Whether `other` is the same pack, laid out the same: its parts' headers hold their tables' hashes.
+    pub fn same_as(&self, other: &Self) -> bool {
+        self.tocs.len() == other.tocs.len()
+            && self.tocs.iter().zip(&other.tocs).all(|(a, b)| a.header() == b.header())
+    }
+
+    /// The bytes of every part's file.
+    pub fn file_len(&self) -> u64 {
+        self.tocs.iter().map(|toc| toc.header().file_len()).sum()
+    }
 }
 
 /// A pack a worker is opening.
@@ -91,10 +167,53 @@ fn read_now(source: &dyn PackSource, file: PackFile, offset: u64, len: usize) ->
     receiver.recv().unwrap_or_else(|_| Err(io::Error::other("the pack source dropped a read")))
 }
 
-/// Opens the pack called `name` and reads and checks its header and table of contents, waiting for them
-/// on the calling thread. With a `release`, the pack must be one it names, with the length and header it
-/// names, before its table of contents is read.
+/// Opens the pack called `name` and reads and checks each of its parts' header and table of contents, waiting
+/// for them on the calling thread: its first part, which says how many there are, then the rest. Each must say
+/// it is the part its name says, of as many as the first.
 pub(super) fn read_pack(
+    source: &Arc<dyn PackSource>,
+    name: &str,
+    release: Option<&[ReleasedPack]>,
+    metadata: &mut PackMetadataRead,
+) -> Result<(Vec<OpenPack>, Parts), MountError> {
+    let (first_file, first) = read_part(source, name, release, metadata)?;
+    let parts = first.header().parts;
+    let check = |part_name: &str, toc: &Toc, expected: u32| {
+        let header = toc.header();
+        if header.part == expected && header.parts == parts {
+            Ok(())
+        } else {
+            Err(MountError::Pack {
+                name: part_name.to_owned(),
+                source: PackError::Part {
+                    part: header.part,
+                    parts: header.parts,
+                    expected,
+                    expected_parts: parts,
+                },
+            })
+        }
+    };
+    check(name, &first, 0)?;
+    let cut = first.header().cut;
+    let (mut files, mut tocs) = (vec![first_file], vec![first]);
+    for part in 1..parts {
+        let part_name = part_name(name, part);
+        let (file, toc) = read_part(source, &part_name, release, metadata)?;
+        check(&part_name, &toc, part)?;
+        if toc.header().cut != cut {
+            return Err(MountError::Pack { name: part_name, source: PackError::OtherCut { part } });
+        }
+        files.push(file);
+        tocs.push(toc);
+    }
+    Ok((files, Parts::new(tocs)))
+}
+
+/// Opens the file called `name`, a pack's part, and reads and checks its header and table of contents. With a
+/// `release`, the part must be one it names, with the length and header it names, before its table of contents
+/// is read.
+fn read_part(
     source: &Arc<dyn PackSource>,
     name: &str,
     release: Option<&[ReleasedPack]>,
@@ -129,8 +248,9 @@ pub(super) fn read_pack(
 }
 
 impl AssetServer {
-    /// Starts mounting the pack called `name` ([`crate::pack::file_name`] in the source) and returns at
-    /// once, with nothing read: a worker opens it and reads and checks its header and table of contents.
+    /// Starts mounting the pack called `name` ([`crate::pack::file_name`] in the source, and its other parts'
+    /// files, [`crate::pack::part_name`]) and returns at once, with nothing read: a worker opens each part and
+    /// reads and checks its header and table of contents.
     /// Its assets can load from the [`Self::update`] that finds that done, which
     /// [`Self::mount_state`] shows, and until then they're in no mounted pack. An asset may be in one
     /// mounted pack only. Loaded assets that lost their pack and that this one holds move to it, and
@@ -199,12 +319,16 @@ impl AssetServer {
     }
 
     /// A worker finished opening a pack: it joins the mounted packs, unless it's been unmounted since.
-    pub(super) fn complete_mount(&mut self, request: u64, result: Result<(OpenPack, Toc), MountError>) {
+    pub(super) fn complete_mount(
+        &mut self,
+        request: u64,
+        result: Result<(Vec<OpenPack>, Parts), MountError>,
+    ) {
         let Some(pending) = self.pending_mounts.iter().position(|pending| pending.request == request) else {
             return;
         };
         let PendingMount { name, .. } = self.pending_mounts.remove(pending);
-        let attached = result.and_then(|(file, toc)| self.attach(&name, file, toc));
+        let attached = result.and_then(|(files, parts)| self.attach(&name, files, parts));
         if let Err(error) = attached {
             tracing::warn!(target: LOG_TARGET, pack = name, %error, "pack didn't mount");
             self.failed_mounts.push((name, error));
@@ -212,38 +336,47 @@ impl AssetServer {
     }
 
     /// Makes pack `name`'s assets loadable, if no other mounted pack holds them.
-    fn attach(&mut self, name: &str, file: OpenPack, toc: Toc) -> Result<(), MountError> {
-        self.check_duplicates(name, &toc, None)?;
-        let toc = Arc::new(toc);
-        let mount = self.mounts.insert(Mount { name: name.to_owned(), file, toc: toc.clone() });
+    fn attach(&mut self, name: &str, files: Vec<OpenPack>, parts: Parts) -> Result<(), MountError> {
+        self.check_duplicates(name, &parts, None)?;
+        let parts = Arc::new(parts);
+        let mount = self.mounts.insert(Mount { name: name.to_owned(), files, parts: parts.clone() });
         self.index
-            .extend(toc.entries().iter().enumerate().map(|(index, entry)| (entry.id, (mount, index as u32))));
-        let reloading = self.settle_mount(mount, &toc);
+            .extend(parts.entries().enumerate().map(|(index, entry)| (entry.id, (mount, index as u32))));
+        let reloading = self.settle_mount(mount, &parts);
         tracing::info!(
             target: LOG_TARGET,
             pack = name,
-            assets = toc.entries().len(),
-            bytes = toc.header().file_len(),
+            parts = parts.tocs().len(),
+            assets = parts.entries().count(),
+            bytes = parts.file_len(),
             reloading,
             "pack mounted"
         );
         Ok(())
     }
 
-    /// Fails if pack `name`'s `toc` holds an asset another mounted pack holds, besides mount
+    /// Fails if pack `name`'s `parts` hold an asset twice, or one another mounted pack holds, besides mount
     /// `except` (the one a remount replaces).
     pub(super) fn check_duplicates(
         &self,
         name: &str,
-        toc: &Toc,
+        parts: &Parts,
         except: Option<MountKey>,
     ) -> Result<(), MountError> {
-        for entry in toc.entries() {
+        let duplicate =
+            |id, first: &str| MountError::Duplicate { id, first: first.to_owned(), second: name.to_owned() };
+        for entry in parts.entries() {
             if let Some(&(other, _)) = self.index.get(&entry.id)
                 && Some(other) != except
             {
-                let first = self.mounts[other].name.clone();
-                return Err(MountError::Duplicate { id: entry.id, first, second: name.to_owned() });
+                return Err(duplicate(entry.id, &self.mounts[other].name));
+            }
+        }
+        // Each part's entries are distinct and sorted; another part may still hold one of them.
+        if parts.tocs().len() > 1 {
+            let mut seen = HashSet::with_capacity(parts.entries().count());
+            if let Some(entry) = parts.entries().find(|entry| !seen.insert(entry.id)) {
+                return Err(duplicate(entry.id, name));
             }
         }
         Ok(())

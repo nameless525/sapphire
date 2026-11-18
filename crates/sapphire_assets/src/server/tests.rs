@@ -7,7 +7,7 @@ use crate::material::{AnimeCharacterMaterial, Material};
 use crate::mesh::{
     MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
-use crate::pack::{Codec, PACK_VERSION, PackAsset, write_pack};
+use crate::pack::{Codec, PACK_VERSION, PackAsset, write_pack, write_part};
 use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat, TextureTail};
 use crate::texture_level::TextureLevel;
 
@@ -1096,6 +1096,93 @@ fn mounting_checks_packs() {
     // Texture 1 is in both.
     assert!(matches!(server.mount_now("zone"), Err(MountError::Duplicate { .. })));
     assert!(!server.contains(id(4)));
+}
+
+/// The cut's stamp the tests' parts carry.
+const CUT: [u8; 8] = *b"cut stmp";
+
+/// Writes `parts`, each a part's assets, as pack `name`'s parts in `source`.
+fn insert_parts(source: &MemoryPackSource, name: &str, parts: Vec<Vec<PackAsset>>) {
+    let count = parts.len() as u32;
+    let cut = if count == 1 { [0; 8] } else { CUT };
+    for (part, assets) in (0..).zip(parts) {
+        source.insert(&crate::pack::part_name(name, part), write_part(assets, part, count, cut).unwrap());
+    }
+}
+
+/// A pack in parts (M6 K2) mounts as one, by its name: an asset depends across parts, and a remount that
+/// moves an asset between parts reloads only what changed.
+#[test]
+fn a_pack_in_parts_mounts_loads_and_remounts_as_one() {
+    let source = Arc::new(MemoryPackSource::new());
+    let [texture, material, mesh]: [PackAsset; 3] = character().try_into().unwrap();
+    insert_parts(&source, "shared", vec![vec![mesh.clone()], vec![material.clone()], vec![texture.clone()]]);
+    let mut server = AssetServer::new(source.clone(), unlimited());
+    server.mount_now("shared").unwrap();
+    assert!(server.is_mounted("shared"));
+    assert_eq!(server.stats().mounts, 1, "one pack, however many parts");
+    assert_eq!(server.assets_of_kind("shared", AssetKind::Material), [id(MATERIAL)]);
+    let handle: Handle<Mesh> = server.load(id(MESH)).unwrap();
+    let mut order = Vec::new();
+    server.finish(&handle, record(&mut order)).unwrap();
+    assert_eq!(
+        order,
+        [(AssetKind::Texture, id(TEXTURE)), (AssetKind::Material, id(MATERIAL)), (AssetKind::Mesh, id(MESH))]
+    );
+
+    // Two parts now, the material moved to the first, unchanged, and the texture changed.
+    let texture_again = packed(id(TEXTURE), AssetKind::Texture, &texture_bytes(4, 4, 9));
+    insert_parts(&source, "shared", vec![vec![mesh, material], vec![texture_again]]);
+    let report = server.remount("shared").unwrap();
+    assert_eq!((report.changed, report.removed), (1, 0), "only the texture's bytes changed");
+    server.finish(&handle, |_| Ok(())).unwrap();
+    assert_eq!(server.state(&handle), LoadState::Ready);
+    let changes = server.take_changes();
+    assert!(
+        changes
+            .iter()
+            .all(|change| matches!(change, AssetChange::Reloaded { id: found, .. } if *found == id(TEXTURE))),
+        "nothing but the texture reloads, nothing is removed: {changes:?}"
+    );
+    assert_eq!(server.unmount("shared").unwrap().held, 3);
+}
+
+/// Each part must be the part its name says, of as many as the first and cut as the first: a set mixed from
+/// two cooks, even two cuts into as many parts, or a part asked for by its own name, is refused by the part's
+/// name.
+#[test]
+fn a_pack_whose_parts_disagree_doesnt_mount() {
+    let source = Arc::new(MemoryPackSource::new());
+    let [texture, material, mesh]: [PackAsset; 3] = character().try_into().unwrap();
+    insert_parts(&source, "shared", vec![vec![texture.clone()], vec![material.clone()], vec![mesh.clone()]]);
+    source.insert("mixed", write_part(vec![texture.clone()], 0, 2, CUT).unwrap());
+    source.insert("mixed.1", write_part(vec![material.clone()], 1, 3, CUT).unwrap());
+    source.insert("cuts", write_part(vec![texture.clone()], 0, 2, CUT).unwrap());
+    source.insert("cuts.1", write_part(vec![material.clone()], 1, 2, *b"other cu").unwrap());
+    source.insert("lone", write_part(vec![texture.clone()], 0, 2, CUT).unwrap());
+    source.insert("twice", write_part(vec![texture.clone()], 0, 2, CUT).unwrap());
+    source.insert("twice.1", write_part(vec![texture, mesh], 1, 2, CUT).unwrap());
+    let mut server = AssetServer::new(source, unlimited());
+    let refused = server.mount_now("shared.1").unwrap_err();
+    assert!(
+        matches!(&refused, MountError::Pack { name, source: PackError::Part { part: 1, parts: 3, expected: 0, expected_parts: 3 } } if name == "shared.1"),
+        "{refused:?}"
+    );
+    let refused = server.mount_now("mixed").unwrap_err();
+    assert!(
+        matches!(&refused, MountError::Pack { name, source: PackError::Part { part: 1, parts: 3, expected: 1, expected_parts: 2 } } if name == "mixed.1"),
+        "{refused:?}"
+    );
+    let refused = server.mount_now("cuts").unwrap_err();
+    assert!(
+        matches!(&refused, MountError::Pack { name, source: PackError::OtherCut { part: 1 } } if name == "cuts.1"),
+        "two cuts into as many parts: {refused:?}"
+    );
+    assert!(matches!(server.mount_now("lone"), Err(MountError::Io { name, .. }) if name == "lone.1"));
+    assert!(
+        matches!(server.mount_now("twice"), Err(MountError::Duplicate { id: found, .. }) if found == id(TEXTURE))
+    );
+    server.mount_now("shared").unwrap();
 }
 
 /// A shipping build's mount (M4 P1): only what the release names, with the length and header it names.

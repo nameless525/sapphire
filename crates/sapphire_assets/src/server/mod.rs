@@ -23,7 +23,7 @@ use slotmap::SlotMap;
 use self::admission::ReadOrder;
 pub use self::handle::{Asset, Handle, TextureAsset, UntypedHandle, WeakHandle};
 use self::handle::{HandleInner, SlotKey};
-use self::mounts::{Mount, MountKey, OpenPack, PendingMount};
+use self::mounts::{Mount, MountKey, OpenPack, Parts, PendingMount};
 pub use self::mounts::{MountState, UnmountReport};
 pub use self::reload::{AssetChange, RemountReport};
 use self::reload::{Next, NextStage};
@@ -593,11 +593,16 @@ enum Version {
 }
 
 /// Something that finished off the server's thread.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "each crosses the completion channel once and is taken at once; since a mount's parts moved its \
+              tables behind `Arc`s (M6 K2) the decode result is the larger, and boxing it would allocate a load"
+)]
 enum Completion {
     /// A decode job's result.
     Asset { key: SlotKey, request: u32, result: Result<Decoded, LoadError> },
     /// A pack opened, with its header and table of contents read and checked ([`AssetServer::mount`]).
-    Mount { request: u64, result: Result<(OpenPack, Toc), MountError>, metadata: PackMetadataRead },
+    Mount { request: u64, result: Result<(Vec<OpenPack>, Parts), MountError>, metadata: PackMetadataRead },
 }
 
 /// Mounts packs and loads the assets in them (spec §5.10).
@@ -964,20 +969,22 @@ impl AssetServer {
     /// What the meshes of every mounted pack draw through, each key once: what a load prewarms (M3 K1). A pack
     /// mounted later adds its own ([`Self::pipeline_keys_of`]).
     pub fn pipeline_keys(&self) -> BTreeSet<PipelineKey> {
-        self.mounts.values().flat_map(|mount| mount.toc.pipeline_keys().iter().copied()).collect()
+        let tocs = self.mounts.values().flat_map(|mount| mount.parts.tocs());
+        tocs.flat_map(|toc| toc.pipeline_keys().iter().copied()).collect()
     }
 
     /// What the meshes of the mounted pack `pack` draw through, each key once: nothing if it isn't mounted.
     pub fn pipeline_keys_of(&self, pack: &str) -> BTreeSet<PipelineKey> {
         let mount = self.mounts.values().find(|mount| mount.name == pack);
-        mount.iter().flat_map(|mount| mount.toc.pipeline_keys().iter().copied()).collect()
+        let tocs = mount.iter().flat_map(|mount| mount.parts.tocs());
+        tocs.flat_map(|toc| toc.pipeline_keys().iter().copied()).collect()
     }
 
     /// The assets of `kind` in the mounted pack `pack`, in its order: nothing if it isn't mounted. What finds a
     /// zone by its pack, so that no code has to name its ID.
     pub fn assets_of_kind(&self, pack: &str, kind: AssetKind) -> Vec<AssetId> {
         let mount = self.mounts.values().find(|mount| mount.name == pack);
-        let entries = mount.iter().flat_map(|mount| mount.toc.entries());
+        let entries = mount.iter().flat_map(|mount| mount.parts.entries());
         entries.filter(|entry| entry.kind == kind).map(|entry| entry.id).collect()
     }
 
@@ -985,11 +992,11 @@ impl AssetServer {
     /// the packs' tables, so it's for a tool's start or a person's question rather than a frame: a game
     /// keeps the [`AssetId`].
     pub fn named(&self, kind: AssetKind) -> impl Iterator<Item = NamedAsset<'_>> {
-        self.mounts.values().flat_map(move |mount| {
-            mount.toc.named().filter(move |(entry, _)| entry.kind == kind).map(|(entry, name)| NamedAsset {
+        self.mounts.values().flat_map(|mount| mount.parts.tocs()).flat_map(move |toc| {
+            toc.named().filter(move |(entry, _)| entry.kind == kind).map(|(entry, name)| NamedAsset {
                 id: entry.id,
                 name,
-                dependencies: mount.toc.dependencies(entry),
+                dependencies: toc.dependencies(entry),
             })
         })
     }
@@ -1041,8 +1048,7 @@ impl AssetServer {
             return Ok(handle);
         }
         let &(mount, entry_index) = self.index.get(&id).ok_or(LoadError::NotFound(id))?;
-        let toc = self.mounts[mount].toc.clone();
-        let entry = toc.entries()[entry_index as usize];
+        let entry = *self.mounts[mount].parts.entry(entry_index);
         let key = self.slots.insert_with_key(|key| Slot {
             handle: UntypedHandle { inner: Arc::new(HandleInner { key, id, kind: entry.kind }) },
             mount,
@@ -1084,9 +1090,9 @@ impl AssetServer {
             self.fail(key, LoadError::Removed(id));
             return;
         };
-        let toc = self.mounts[slot.mount].toc.clone();
-        let entry = toc.entries()[entry as usize];
-        match self.load_dependencies(key, toc.dependencies(&entry)) {
+        let parts = self.mounts[slot.mount].parts.clone();
+        let (dependencies, entry) = (parts.dependencies(entry), *parts.entry(entry));
+        match self.load_dependencies(key, dependencies) {
             Ok(children) => {
                 self.set_children(key, children);
                 let before = self.resident(key);
@@ -1177,7 +1183,7 @@ impl AssetServer {
             return Some(self.slots[key].handle.kind());
         }
         let &(mount, entry) = self.index.get(&id)?;
-        Some(self.mounts[mount].toc.entries()[entry as usize].kind)
+        Some(self.mounts[mount].parts.entry(entry).kind)
     }
 
     /// A strong handle from a weak one, if its asset is still loaded. A weak handle is only an
@@ -1438,7 +1444,7 @@ impl AssetServer {
             } else if slot.data.is_some() {
                 slot.state = SlotState::Waiting;
             } else if let Some(entry) = slot.entry {
-                let entry = self.mounts[slot.mount].toc.entries()[entry as usize];
+                let entry = *self.mounts[slot.mount].parts.entry(entry);
                 if entry.hash == slot.hash { self.request_read(key) } else { self.resolve(key) }
             } else {
                 let id = slot.handle.id();
@@ -1563,8 +1569,8 @@ impl AssetServer {
         let slot = &self.slots[key];
         let (request, priority) = (slot.request, slot.priority);
         let mount = &self.mounts[slot.mount];
-        let (file, toc) = (mount.file.file(), mount.toc.clone());
-        let entry = toc.entries()[slot.entry.expect("only assets their pack holds are read") as usize];
+        let (part, entry) = mount.parts.locate(slot.entry.expect("only assets their pack holds are read"));
+        let (file, toc, entry) = (mount.files[part].file(), mount.parts.tocs()[part].clone(), *entry);
         let range = toc.stored_range(&entry);
         let copy = entry.kind == AssetKind::Mesh && self.mesh_copies.contains(&entry.id);
         let sender = self.sender.clone();

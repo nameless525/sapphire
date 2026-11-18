@@ -6,9 +6,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     BLOCK_LEN, BLOCK_SIZE, Codec, DATA_ALIGN, DEPENDENCY_LEN, ENTRY_LEN, HEADER_LEN, MAX_ASSET_SIZE,
-    NAMES_ALIGN, PIPELINE_KEY_LEN, PackError, PackHeader, block_len,
+    MAX_PARTS, NAMES_ALIGN, PIPELINE_KEY_LEN, PackError, PackHeader, block_len,
 };
 use crate::{AssetId, AssetKind, PipelineKey};
+
+/// What a pack's file holds besides its assets' [`PackAsset::packed_len`], at most: its header and its names'
+/// padding.
+pub const PACK_OVERHEAD: u64 = (HEADER_LEN + NAMES_ALIGN) as u64;
 
 /// An asset encoded for a pack: its blocks as stored, and what its table of contents entry
 /// records. Pack layouts are built from these, so an asset is compressed once however many
@@ -110,6 +114,21 @@ impl PackAsset {
         self.blocks.iter().map(|block| block.bytes.len() as u64).sum()
     }
 
+    /// The most bytes it adds to a pack's file: its entry, its rows of blocks, dependencies and pipeline keys,
+    /// its name's length and bytes (a nameless asset has a length when another has a name) and its blocks, each
+    /// with the most padding that can come before it. A pack's file is at most [`PACK_OVERHEAD`] more than its
+    /// assets', so a packer can cap a file's length before laying it out.
+    pub fn packed_len(&self) -> u64 {
+        let rows = ENTRY_LEN
+            + self.blocks.len() * BLOCK_LEN
+            + self.dependencies.len() * DEPENDENCY_LEN
+            + self.pipeline_keys.len() * PIPELINE_KEY_LEN
+            + 2
+            + self.name.as_ref().map_or(0, String::len);
+        let blocks: u64 = self.blocks.iter().map(|block| block.bytes.len() as u64 + (DATA_ALIGN - 1)).sum();
+        rows as u64 + blocks
+    }
+
     /// Checks what [`super::Toc::read`] will check of this asset's entry and blocks.
     fn validate(&self) -> Result<(), PackError> {
         let invalid = |reason| PackError::Invalid { id: self.id, reason };
@@ -152,9 +171,27 @@ impl PackAsset {
     }
 }
 
-/// Lays out a pack holding `assets`, in any order: they are sorted by ID, which fixes the
+/// Lays out a pack of one part holding `assets`, in any order: they are sorted by ID, which fixes the
 /// table of contents and the data order, so the same assets always make the same bytes.
-pub fn write_pack(mut assets: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
+pub fn write_pack(assets: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
+    write_part(assets, 0, 1, [0; 8])
+}
+
+/// Lays out part `part` of a pack of `parts` parts cut as `cut` stamps (the same in every part, zeros for a
+/// pack of one part), holding `assets`, as [`write_pack`] lays out a pack (see "Parts" in the
+/// [module docs](super)).
+pub fn write_part(
+    mut assets: Vec<PackAsset>,
+    part: u32,
+    parts: u32,
+    cut: [u8; 8],
+) -> Result<Vec<u8>, PackError> {
+    if parts == 0 || parts > MAX_PARTS || part >= parts {
+        return Err(PackError::PartRange { part, parts });
+    }
+    if parts == 1 && cut != [0; 8] {
+        return Err(PackError::Header("a pack of one part has a cut's stamp"));
+    }
     assets.sort_unstable_by_key(|asset| asset.id);
     if let Some(pair) = assets.windows(2).find(|pair| pair[0].id == pair[1].id) {
         return Err(PackError::Duplicate(pair[0].id));
@@ -215,6 +252,9 @@ pub fn write_pack(mut assets: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
         dependency_count,
         pipeline_key_count,
         names_len,
+        part,
+        parts,
+        cut,
         data_offset: (HEADER_LEN + toc.len()) as u64,
         data_len,
         toc_hash: *blake3::hash(&toc).as_bytes(),

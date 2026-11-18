@@ -188,9 +188,29 @@ fn what_a_manifest_names_is_held_to_its_rules() {
     invalid(&|manifest| manifest.files.push(file("notices.txt", "", true)));
     invalid(&|manifest| manifest.files.swap(1, 2));
     invalid(&|manifest| manifest.files[0].size = MAX_FILE_SIZE + 1);
-    for name in ["", "Shared", "zone/town", "..", "a.b", &"x".repeat(MAX_NAME_LEN + 1)] {
+    // A part's name is its pack's, `.` and its number from 1 (M6 K2).
+    for name in [
+        "",
+        "Shared",
+        "zone/town",
+        "..",
+        "a.b",
+        "a.0",
+        "a.01",
+        "a.",
+        ".1",
+        "A.1",
+        "a.1.2",
+        &"x".repeat(MAX_NAME_LEN + 1),
+    ] {
         invalid(&|manifest| manifest.packs[0].name = name.to_owned());
     }
+    let mut parts = release(1);
+    for part in ["zone_town.1", "zone_town.10", "zone_town.2"] {
+        parts.packs.push(released(part, &pack_bytes(9)));
+    }
+    let bytes = parts.encode(&[]).expect("parts' names are a pack's");
+    assert_eq!(Manifest::read(&bytes).expect("reads").packs, parts.packs);
     invalid(&|manifest| manifest.packs.swap(0, 1));
     invalid(&|manifest| manifest.packs[1].name = manifest.packs[0].name.clone());
     invalid(&|manifest| manifest.packs[0].size = 255);

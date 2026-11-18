@@ -29,13 +29,15 @@ pub mod set;
 pub mod text;
 pub mod walk;
 pub mod write;
+pub mod zone;
 
-pub use document::{Document, Outcome, ReadFailure, Rebased, Refused, RefusedRecord};
+pub use document::{Document, Mark, Outcome, ReadFailure, Rebased, Refused, RefusedRecord, StepId};
 pub use identity::IdentityError;
 pub use journal::{Journal, JournalEntry, JournalStats, Offer};
 pub use kinds::{Kind, Schema, registry_of};
 pub use patch::RonPatch;
 pub use path::{PropertyPath, Step};
 pub use record::{Change, ChangeRecord, HistoryStep, ObjectId, Op};
-pub use set::{AnyDocument, DocumentSet, DocumentStats, Noticed, SetError};
+pub use set::{AnyDocument, DocumentSet, DocumentStats, HistoryError, Noticed, SetError, SetStep, Took};
 pub use walk::{Property, PropertyKind};
+pub use zone::{ZoneEditError, edit_with_colliders};

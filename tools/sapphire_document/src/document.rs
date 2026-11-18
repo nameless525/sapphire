@@ -13,6 +13,9 @@
 //! the nearest undo (or, with no undo, the next redo) always stays, however large. What that leaves is a document that can't undo as far back as it
 //! was, and says so ([`Document::why_no_undo`]): its text and its dirtiness are as they were, since dirty is
 //! the bytes and never the history. A rebase that can no longer find the last save says [`Rebased::beneath`].
+//!
+//! Each step has a [`StepId`] of its own for as long as the document holds it, in undo or redo, which is how a
+//! [`crate::set::SetStep`] names the steps it's made of in each document it touched.
 
 use bevy_reflect::{
     FromReflect, GetTypeRegistration, PartialReflect, Reflect, ReflectFromReflect, ReflectMut, ReflectRef,
@@ -34,6 +37,37 @@ use crate::write::{self, ValueTextError};
 /// A drag holds about a kilobyte however long it runs, so this is several thousand edits of the largest file
 /// there is. A whole-file take counts both the removed and inserted bytes.
 pub const HISTORY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// Which step of a document's history: unique among every step any document has held in this process, so a
+/// document closed and opened again never has one a set step named before, and the same whether the step is in
+/// undo or redo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StepId(u64);
+
+/// The next [`StepId`].
+static NEXT_STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A step as history holds it.
+#[derive(Clone, Debug)]
+struct Held {
+    id: StepId,
+    step: HistoryStep,
+}
+
+impl Held {
+    /// `step`, with an ID of its own.
+    fn new(step: HistoryStep) -> Self {
+        Self { id: StepId(NEXT_STEP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)), step }
+    }
+}
+
+/// The text and a gesture's records at one moment, for a [`crate::set::DocumentSet`] to take an edit of several
+/// documents back to, inside a gesture: what [`Document::together`] keeps for one.
+#[derive(Clone, Debug)]
+pub struct Mark {
+    text: String,
+    records: Option<Vec<ChangeRecord>>,
+}
 
 /// An edit that didn't land. The text is as it was.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -130,8 +164,8 @@ pub struct Document<T> {
     last_good: Option<T>,
     /// What the file held when last read, written or settled. Its bytes, since a file can stop being text.
     disk: Vec<u8>,
-    undo: Vec<HistoryStep>,
-    redo: Vec<HistoryStep>,
+    undo: Vec<Held>,
+    redo: Vec<Held>,
     /// How many steps of undo there were when `disk` was the text. `None` once that can't be got back to.
     saved_at: Option<usize>,
     gesture: Option<Gesture>,
@@ -178,7 +212,10 @@ where
         let mut document = Self::open(text, schema, registry);
         document.disk = disk;
         match unsaved {
-            Some(steps) => document.undo = steps,
+            Some(steps) => {
+                let held: Vec<Held> = steps.into_iter().map(Held::new).collect();
+                document.undo = held;
+            }
             None => document.saved_at = None,
         }
         document.forget_past_limit();
@@ -238,7 +275,7 @@ where
     /// adds up. An active gesture holds its starting text and records separately until it ends.
     #[must_use]
     pub fn history(&self) -> (usize, usize) {
-        let held = self.undo.iter().chain(&self.redo).map(HistoryStep::bytes).sum();
+        let held = self.undo.iter().chain(&self.redo).map(|held| held.step.bytes()).sum();
         (held, self.undo.len() + self.redo.len())
     }
 
@@ -800,20 +837,65 @@ where
         if self.saved_at.is_some_and(|saved| saved > self.undo.len()) {
             self.saved_at = None;
         }
-        self.undo.push(step);
+        let held = Held::new(step);
+        self.undo.push(held);
         self.redo.clear();
         self.forget_past_limit();
+    }
+
+    /// The ID of the step undo would take back, a gesture under way having ended. `None` with nothing to undo,
+    /// or with a gesture under way that has changed the text, which is a step with no ID yet.
+    #[must_use]
+    pub fn undo_id(&self) -> Option<StepId> {
+        match &self.gesture {
+            Some(gesture) if gesture.start != self.text => None,
+            _ => self.undo.last().map(|held| held.id),
+        }
+    }
+
+    /// The ID of the step redo would bring back.
+    #[must_use]
+    pub fn redo_id(&self) -> Option<StepId> {
+        self.redo.last().map(|held| held.id)
+    }
+
+    /// Whether the step is in this document's undo (with `redo`, in its redo): not once undo or redo moved it to
+    /// the other, the cap let it go, a new edit cleared the redo it was in, or a rebase laid it back as a step of
+    /// its own.
+    #[must_use]
+    pub fn holds(&self, id: StepId, redo: bool) -> bool {
+        let steps = if redo { &self.redo } else { &self.undo };
+        steps.iter().any(|held| held.id == id)
+    }
+
+    /// The text and what a gesture under way has recorded, now.
+    #[must_use]
+    pub fn mark(&self) -> Mark {
+        Mark {
+            text: self.text.clone(),
+            records: self.gesture.as_ref().map(|gesture| gesture.records.clone()),
+        }
+    }
+
+    /// Takes the text back to `mark`, inside the gesture it was made in, as [`Self::together`] does when its edit
+    /// fails. A gesture that has ended since keeps what it did: nothing is taken back.
+    pub fn roll_back(&mut self, mark: Mark) {
+        let (Some(gesture), Some(records)) = (&mut self.gesture, mark.records) else { return };
+        gesture.records = records;
+        if mark.text != self.text {
+            self.set_raw_text(mark.text);
+        }
     }
 
     /// Lets go of the oldest steps until what's held fits, or only the newest is left. A save point that goes
     /// with them can't be got back to, which is what `saved_at` being `None` says.
     fn forget_past_limit(&mut self) {
-        let mut held: usize = self.undo.iter().chain(&self.redo).map(HistoryStep::bytes).sum();
+        let mut held: usize = self.undo.iter().chain(&self.redo).map(|held| held.step.bytes()).sum();
         let mut gone = 0;
         // Keep the nearest undo step when possible. Redo runs from the vector's end, so dropping
         // its prefix later forgets the farthest future without breaking the remaining splice chain.
         while held > self.history_limit && gone + 1 < self.undo.len() {
-            held -= self.undo[gone].bytes();
+            held -= self.undo[gone].step.bytes();
             gone += 1;
         }
         if gone > 0 {
@@ -823,7 +905,7 @@ where
         }
         let mut gone_redo = 0;
         while held > self.history_limit && self.undo.len() + self.redo.len() - gone_redo > 1 {
-            held -= self.redo[gone_redo].bytes();
+            held -= self.redo[gone_redo].step.bytes();
             gone_redo += 1;
         }
         if gone_redo > 0 {
@@ -850,7 +932,7 @@ where
     #[must_use]
     pub fn unsaved(&self) -> Option<Vec<HistoryStep>> {
         let saved = self.saved_at.filter(|saved| *saved <= self.undo.len())?;
-        let mut steps = self.undo[saved..].to_vec();
+        let mut steps: Vec<HistoryStep> = self.undo[saved..].iter().map(|held| held.step.clone()).collect();
         if let Some(gesture) = &self.gesture
             && gesture.start != self.text
         {
@@ -866,7 +948,7 @@ where
     /// The last step of undo.
     #[must_use]
     pub fn last_step(&self) -> Option<&HistoryStep> {
-        self.undo.last()
+        self.undo.last().map(|held| &held.step)
     }
 
     /// What undo would take back.
@@ -874,31 +956,31 @@ where
     pub fn undo_label(&self) -> Option<&str> {
         match &self.gesture {
             Some(gesture) if gesture.start != self.text => Some(&gesture.label),
-            _ => self.undo.last().map(|step| step.label.as_str()),
+            _ => self.undo.last().map(|held| held.step.label.as_str()),
         }
     }
 
     /// What redo would bring back.
     #[must_use]
     pub fn redo_label(&self) -> Option<&str> {
-        self.redo.last().map(|step| step.label.as_str())
+        self.redo.last().map(|held| held.step.label.as_str())
     }
 
     /// Takes back the last step. A gesture in progress ends first.
     pub fn undo(&mut self) -> bool {
         self.end_gesture();
-        let Some(step) = self.undo.pop() else { return false };
-        self.set_raw_text(step.change.undo(&self.text).expect("undo runs in the order it was done"));
-        self.redo.push(step);
+        let Some(held) = self.undo.pop() else { return false };
+        self.set_raw_text(held.step.change.undo(&self.text).expect("undo runs in the order it was done"));
+        self.redo.push(held);
         true
     }
 
     /// Does the last undone step again.
     pub fn redo(&mut self) -> bool {
         self.end_gesture();
-        let Some(step) = self.redo.pop() else { return false };
-        self.set_raw_text(step.change.redo(&self.text).expect("redo runs in the order it was done"));
-        self.undo.push(step);
+        let Some(held) = self.redo.pop() else { return false };
+        self.set_raw_text(held.step.change.redo(&self.text).expect("redo runs in the order it was done"));
+        self.undo.push(held);
         true
     }
 
@@ -941,7 +1023,9 @@ where
         }
         let was_dirty = self.is_dirty();
         let unsaved: Vec<HistoryStep> = match self.saved_at {
-            Some(saved) if saved <= self.undo.len() => self.undo.split_off(saved),
+            Some(saved) if saved <= self.undo.len() => {
+                self.undo.split_off(saved).into_iter().map(|held| held.step).collect()
+            }
             _ => Vec::new(),
         };
         for step in unsaved.iter().rev() {

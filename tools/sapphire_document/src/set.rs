@@ -16,6 +16,8 @@
 //!
 //! [`AnyDocument`] is what a panel that doesn't care about the kind sees: an inspector over a walker, a list
 //! of what's unsaved.
+//!
+//! An edit of several documents at once is a [`SetStep`] over each one's own step: [`steps`] says how.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -27,13 +29,17 @@ use bevy_reflect::{FromReflect, GetTypeRegistration, PartialReflect, Reflect, Ty
 use sapphire_assets::AssetId;
 
 use crate::disk::{self, Temporary};
-use crate::document::{Document, Outcome, Rebased, Refused};
+use crate::document::{Document, Mark, Outcome, Rebased, Refused, StepId};
 use crate::identity::{self, IdentityError, Sidecars};
 use crate::journal::JournalEntry;
 use crate::kinds::Schema;
 use crate::path::PropertyPath;
 use crate::record::HistoryStep;
 use crate::walk::Property;
+
+pub mod steps;
+
+pub use steps::{HistoryError, SetStep, Took};
 
 /// A document, whatever its kind.
 pub trait AnyDocument: Any {
@@ -68,6 +74,16 @@ pub trait AnyDocument: Any {
     fn redo_label(&self) -> Option<&str>;
     fn undo(&mut self) -> bool;
     fn redo(&mut self) -> bool;
+    /// [`Document::undo_id`].
+    fn undo_id(&self) -> Option<StepId>;
+    /// [`Document::redo_id`].
+    fn redo_id(&self) -> Option<StepId>;
+    /// [`Document::holds`].
+    fn holds(&self, id: StepId, redo: bool) -> bool;
+    /// [`Document::mark`].
+    fn mark(&self) -> Mark;
+    /// [`Document::roll_back`].
+    fn roll_back(&mut self, mark: Mark);
     /// [`Document::why_no_undo`].
     fn why_no_undo(&self) -> Option<String>;
     /// [`Document::forgotten`].
@@ -178,6 +194,26 @@ where
 
     fn redo(&mut self) -> bool {
         Self::redo(self)
+    }
+
+    fn undo_id(&self) -> Option<StepId> {
+        Self::undo_id(self)
+    }
+
+    fn redo_id(&self) -> Option<StepId> {
+        Self::redo_id(self)
+    }
+
+    fn holds(&self, id: StepId, redo: bool) -> bool {
+        Self::holds(self, id, redo)
+    }
+
+    fn mark(&self) -> Mark {
+        Self::mark(self)
+    }
+
+    fn roll_back(&mut self, mark: Mark) {
+        Self::roll_back(self, mark);
     }
 
     fn why_no_undo(&self) -> Option<String> {
@@ -292,6 +328,8 @@ pub struct DocumentStats {
     pub text_bytes: usize,
     /// How many times it has walked the roots.
     pub scans: u64,
+    /// Steps of several documents at once that a document open still holds a part of.
+    pub set_steps: usize,
 }
 
 struct OpenFile {
@@ -320,13 +358,24 @@ pub struct DocumentSet {
     sidecars: Sidecars,
     scans: u64,
     files: BTreeMap<AssetId, OpenFile>,
+    /// Steps of several documents at once, oldest first: see [`steps`].
+    steps: Vec<SetStep>,
+    /// The set's gesture under way.
+    gesture: Option<steps::SetGesture>,
 }
 
 impl DocumentSet {
     /// A set that finds a moved file, and a second claim on an ID, under `roots`.
     #[must_use]
     pub fn new(roots: Vec<PathBuf>) -> Self {
-        Self { roots, sidecars: Sidecars::default(), scans: 0, files: BTreeMap::new() }
+        Self {
+            roots,
+            sidecars: Sidecars::default(),
+            scans: 0,
+            files: BTreeMap::new(),
+            steps: Vec::new(),
+            gesture: None,
+        }
     }
 
     /// The roots it looks under.
@@ -365,6 +414,15 @@ impl DocumentSet {
         self.scans += 1;
         self.sidecars = Sidecars::scan(&self.roots)?;
         Ok(())
+    }
+
+    /// Where the file with this ID is, by the last look at the sidecars, or by a new one if that can't say.
+    pub(crate) fn find(&mut self, id: AssetId) -> Option<PathBuf> {
+        if let Some(path) = self.sidecars.source_of(id) {
+            return Some(path);
+        }
+        self.look().ok()?;
+        self.sidecars.source_of(id)
     }
 
     /// The last look at what's under the roots: [`Self::rescan`] makes a new one.
@@ -585,6 +643,10 @@ impl DocumentSet {
     /// what's replaced. A sidecar that's gone comes back with the ID it held, since the next cook would
     /// otherwise make a new one.
     pub fn save(&mut self, id: AssetId) -> Result<(), SetError> {
+        // A save ends a gesture, the set's too: what follows is a step of its own.
+        if self.gesture.is_some() {
+            self.end_gesture();
+        }
         self.relocate_if_gone(id);
         let file = self.files.get_mut(&id).ok_or(SetError::NotOpen(id))?;
         file.document.end_gesture();
@@ -790,14 +852,20 @@ impl DocumentSet {
 
     /// Stops holding it. What wasn't saved is dropped, so a caller asks first.
     pub fn close(&mut self, id: AssetId) -> bool {
-        self.files.remove(&id).is_some()
+        let closed = self.files.remove(&id).is_some();
+        self.prune_steps();
+        closed
     }
 
     /// What the open documents cost.
     #[must_use]
     pub fn stats(&self) -> DocumentStats {
-        let mut stats =
-            DocumentStats { open: self.files.len(), scans: self.scans, ..DocumentStats::default() };
+        let mut stats = DocumentStats {
+            open: self.files.len(),
+            scans: self.scans,
+            set_steps: self.set_steps().len(),
+            ..DocumentStats::default()
+        };
         for file in self.files.values() {
             let (history_bytes, steps) = file.document.history();
             stats.dirty += usize::from(file.document.is_dirty());

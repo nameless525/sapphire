@@ -7,9 +7,13 @@
 mod support;
 
 use bevy_reflect::{FromReflect, GetTypeRegistration, PartialReflect, Reflect, ReflectRef, Typed};
+use sapphire_assets::AssetId;
 use sapphire_document::text::comments;
 use sapphire_document::walk::{self, PropertyKind};
-use sapphire_document::{Document, Kind, Outcome, Property, PropertyPath, Refused, Schema, Step, kinds};
+use sapphire_document::{
+    AnyDocument, Document, DocumentSet, HistoryError, Kind, Outcome, Property, PropertyPath, Refused, Schema,
+    Step, Took, kinds, write,
+};
 use sapphire_time::Stopwatch;
 use support::{Random, Tally, another_value, open, value_of};
 
@@ -574,4 +578,191 @@ fn entries_written_new_spell_only_what_they_have_to() {
     entries_written_new(open("content/combat/enemy/warrior.moves.ron", kinds::moves()), false);
     entries_written_new(open("content/lookdev/character/character.animgraph.ron", kinds::graph()), false);
     entries_written_new(open("crates/sapphire_vfx/default_effects.ron", kinds::effects()), true);
+}
+
+/// A folder of copies of real documents, gone when the test ends.
+struct Copies(std::path::PathBuf);
+
+impl Copies {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("sapphire_document_fuzz_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        Self(dir)
+    }
+}
+
+impl Drop for Copies {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// One edit of a property, chosen at random, that isn't a list's: what lands, or is refused with the text as it
+/// was. `None` if it found nothing to try.
+fn a_random_edit(document: &mut dyn AnyDocument, random: &mut Random) -> Option<Result<Outcome, Refused>> {
+    let properties: Vec<_> =
+        document.properties().into_iter().filter(|property| property.kind != PropertyKind::List).collect();
+    let property = &properties[random.below(properties.len())];
+    let ron = {
+        let value = walk::get(document.value_reflect()?, &property.path).ok()?;
+        let new = another_value(value, property.kind, document.registry(), random.below(16))?;
+        write::canonical(new.as_ref(), document.registry()).ok()?
+    };
+    Some(document.set_ron("fuzz", &property.path, &ron))
+}
+
+/// Whether an undo or a redo did something. One refused because another document has a step of its own to
+/// take first did nothing, and the loop that called it goes round again.
+fn went(result: Result<Took, HistoryError>) -> bool {
+    match result {
+        Ok(took) => took.moved(),
+        Err(HistoryError::Later { .. }) => false,
+        Err(error) => panic!("{error}"),
+    }
+}
+
+/// Undoes every document as far as it goes, set steps whole, until none can go further.
+fn undo_everything(set: &mut DocumentSet, ids: &[AssetId]) {
+    loop {
+        let mut moved = false;
+        for id in ids {
+            while went(set.undo(*id)) {
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+}
+
+/// The shipped documents the mixed fuzz copies: two kinds of moves, a cue, a ramp and a zone's colliders.
+const MIXED: [(&str, &str); 5] = [
+    ("player.moves.ron", "content/combat/player/player.moves.ron"),
+    ("warrior.moves.ron", "content/combat/enemy/warrior.moves.ron"),
+    ("hit_heavy.cue.ron", "content/audio/hit_heavy.cue.ron"),
+    ("swatch.ramp.ron", "content/samples/swatch.ramp.ron"),
+    ("lantern_ward.colliders.ron", "content/zones/lantern_ward/lantern_ward.colliders.ron"),
+];
+
+/// What the mixed fuzz did, for its report.
+#[derive(Debug, Default)]
+struct Mixed {
+    own: usize,
+    set_steps: usize,
+    gestures: usize,
+    refused_whole: usize,
+    saves: usize,
+    held: usize,
+}
+
+/// Mixed steps over several documents at once (M6 T2): edits of one document, set steps across several, set
+/// gestures over a few edits, undos and redos of either at random, and saves between. Whatever happens, an
+/// undo or a redo is whole or refused with every text as it was, a save writes its own file alone, and at the
+/// end every document undoes to the bytes it opened with, which its file holds once saved.
+#[test]
+fn mixed_steps_across_documents_undo_every_file_to_its_bytes() {
+    let mut tally = Mixed::default();
+    for seed in 1..=3_u64 {
+        mixed_run(seed, &mut tally);
+    }
+    println!("mixed steps: {tally:?}");
+    assert!(tally.set_steps > 20 && tally.saves > 10 && tally.held > 5, "the fuzz did too little: {tally:?}");
+}
+
+fn mixed_run(seed: u64, tally: &mut Mixed) {
+    let copies = Copies::new(&format!("mixed_{seed}"));
+    let mut set = DocumentSet::new(vec![copies.0.clone()]);
+    let (mut ids, mut originals) = (Vec::new(), Vec::new());
+    for (name, relative) in MIXED {
+        let path = copies.0.join(name);
+        std::fs::write(&path, support::read(relative)).expect("a copy");
+        let kind = Kind::of(&path).expect("a kind");
+        ids.push(kind.open(&mut set, &path).expect("opens"));
+        originals.push(support::read(relative));
+    }
+    let texts = |set: &DocumentSet| -> Vec<String> {
+        ids.iter().map(|id| set.any(*id).expect("open").text().to_owned()).collect()
+    };
+    let on_disk = |set: &DocumentSet, id: AssetId| std::fs::read(set.path(id).expect("a path")).ok();
+    let mut random = Random(seed);
+    for _ in 0..run_length() {
+        let before = texts(&set);
+        let id = ids[random.below(ids.len())];
+        match random.below(10) {
+            // One document's own step.
+            0..=2 => {
+                if let Some(Ok(Outcome::Changed)) = a_random_edit(set.edit(id).expect("open"), &mut random) {
+                    tally.own += 1;
+                }
+            }
+            // A set step: each of two to four documents takes an edit, or none does.
+            3 | 4 => {
+                let picked: Vec<AssetId> =
+                    (0..2 + random.below(3)).map(|_| ids[random.below(ids.len())]).collect();
+                let result = set.together("fuzz together", |set| {
+                    for id in &picked {
+                        if let Some(Err(refused)) = a_random_edit(set.edit(*id).expect("open"), &mut random) {
+                            return Err(refused);
+                        }
+                    }
+                    Ok(())
+                });
+                match result {
+                    Ok(()) => tally.set_steps += 1,
+                    Err(_) => assert_eq!(texts(&set), before, "a refused set step changed a text"),
+                }
+            }
+            // A set gesture over a few edits, a refused one leaving its text as it was.
+            5 => {
+                set.begin_gesture("fuzz gesture");
+                for _ in 0..1 + random.below(4) {
+                    let id = ids[random.below(ids.len())];
+                    let _ = a_random_edit(set.edit(id).expect("open"), &mut random);
+                }
+                set.end_gesture();
+                tally.gestures += 1;
+            }
+            6 | 7 => {
+                let result = if random.below(3) == 0 { set.redo(id) } else { set.undo(id) };
+                if result.is_err() {
+                    tally.refused_whole += 1;
+                    assert_eq!(texts(&set), before, "a refused undo or redo changed a text");
+                }
+            }
+            // A save of one: its file holds its text, and no other file moves.
+            _ => {
+                let others = |set: &DocumentSet| -> Vec<_> {
+                    ids.iter().filter(|other| **other != id).map(|other| on_disk(set, *other)).collect()
+                };
+                let was = others(&set);
+                set.save(id).expect("saves");
+                assert_eq!(on_disk(&set, id).as_deref(), Some(set.any(id).expect("open").text().as_bytes()));
+                assert_eq!(others(&set), was, "a save wrote another file");
+                tally.saves += 1;
+            }
+        }
+    }
+    tally.held += set.stats().set_steps;
+    undo_everything(&mut set, &ids);
+    assert_eq!(texts(&set), originals, "seed {seed}: undoing everything didn't give the bytes back");
+    assert!(set.save_all().is_empty());
+    for (id, original) in ids.iter().zip(&originals) {
+        assert_eq!(on_disk(&set, *id).as_deref(), Some(original.as_bytes()), "seed {seed}");
+    }
+    // Everything redone that can be, then undone again, is the same bytes once more.
+    loop {
+        let mut moved = false;
+        for id in &ids {
+            while set.redo(*id).is_ok_and(|took| took.moved()) {
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    undo_everything(&mut set, &ids);
+    assert_eq!(texts(&set), originals, "seed {seed}: redoing and undoing again moved a byte");
 }

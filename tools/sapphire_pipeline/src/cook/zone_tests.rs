@@ -982,6 +982,36 @@ fn a_placement_and_the_collider_it_names_move_together_or_the_cook_refuses() {
     assert!(text.contains("`placements[1].colliders[1]`") && text.contains("`wall`"), "`{text}`");
 }
 
+/// The editor's move of a placement (M6 T2) takes the colliders it names with it, as one step of the zone and
+/// its colliders' documents, so what it saves cooks where moving the zone alone is refused; undone, both files
+/// are their bytes again, and cook again.
+#[test]
+fn a_placement_moved_by_the_editor_takes_its_collider_and_cooks() {
+    use sapphire_document::{DocumentSet, Kind, edit_with_colliders};
+
+    let tree = tree("zone-claims-editor");
+    let colliders = tree.write("zone.colliders.ron", block_colliders(5.0).as_bytes());
+    tree.sidecar(&colliders, COLLIDERS, ImportSettings::Colliders(Default::default()));
+    let zone = write_zone(&tree, &claimed_block(5.0, r#""block""#));
+    tree.cook();
+    let (zone_bytes, colliders_bytes) = (fs::read(&zone).unwrap(), fs::read(&colliders).unwrap());
+
+    let mut set = DocumentSet::new(vec![tree.content()]);
+    let id = Kind::Zone.open(&mut set, &zone).expect("the zone opens");
+    let path = "placements[1].at[0]".parse().expect("a path");
+    edit_with_colliders(&mut set, id, "move a placement", |zone| zone.set_spelled("move", &path, "8.0"))
+        .expect("the zone and its collider move");
+    assert_eq!(set.stats().set_steps, 1, "one step of both documents");
+    assert!(set.save_all().is_empty());
+    assert_eq!(fs::read_to_string(&colliders).unwrap(), block_colliders(8.0), "only the block's x moved");
+    tree.cook();
+
+    assert_eq!(set.undo(id), Ok(sapphire_document::Took::Step));
+    assert!(set.save_all().is_empty());
+    assert_eq!((fs::read(&zone).unwrap(), fs::read(&colliders).unwrap()), (zone_bytes, colliders_bytes));
+    tree.cook();
+}
+
 #[test]
 fn a_zones_navmesh_cooks_from_its_colliders_and_ships_with_it() {
     let data = format!("{} {NAV_SPAWNERS}", nav_zone(&placements()));

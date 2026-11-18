@@ -1,0 +1,19 @@
+// The fight that ships (M6 B5): `district-encounter`'s run, whose heroine leads the party up the avenue and, as she
+// comes to the plaza's twelve, presses the ultimate. Her meter starts full, so it fires, and its cinematic plays the
+// cut-in from its cue track while the twelve close; the rounds of strings, dodges and swaps go on after it.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "`district-encounter`, with the heroine pressing the ultimate as she comes to the plaza's twelve, so its cinematic plays its cut-in in the district (M6 B5)",
+        ticks: 1600,
+        like: "district-encounter",
+        tracks: [
+            (
+                presses: [
+                    (at: [(410, [Ultimate])]),
+                ],
+            ),
+        ],
+    ),
+)

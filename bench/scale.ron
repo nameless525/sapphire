@@ -30,7 +30,8 @@
 // The district has a probe grid, reflection probes and a midday key since M6 B4: every run M5 measured in it pins
 // the grid and the probes off (`--no-probe-grid --no-reflection-probes`) and stands between 19:45 and 23:00, whose
 // keys are M5's, so it draws the frame M5 measured; M6 B4's day runs (`tour-day`, `district-fight-day`, their arms
-// and `counted-day`) draw the district as a shipped zone would be, at midday with the grid and the probes.
+// and `counted-day`) draw the district as a shipped zone would be, at midday with the grid and the probes, and M6
+// B5's (`fight-ships`, its cut-in's pair and `counted-ships`) fight there as a game does, cues, effects and ultimate.
 //
 // Planning figures (`frames_a_second`, `startup_seconds`) are B4's walks on the M5 Mac: about 265 s a desktop
 // walk of three phases and 147 s a phone one. They size the sittings and measure nothing.
@@ -574,6 +575,59 @@
                     "--mount", "zone_proving_hub", "--ambient", "on", "--no-hot-reload", "--live-link", "off",
                 ],
                 frames: Lap,
+                phases: 1,
+                read: [Counts, Pipelines],
+                timed: false,
+            ),
+            // M6 B5: the fight that ships, the unit M6's exit test 3 judges against each tier's GPU frame line (12, 14,
+            // 13 and 26 ms). B4's district at midday with the probe grid and the reflection probes, and the fight as a
+            // game plays it: its cues on (`--cues`), so its hits, trails, dust, decals and bends draw, its sounds mix
+            // and its screen effects (the flashes, the impact frames and the effects pack) play over post, and the
+            // heroine casts the ultimate as she comes to the plaza's twelve (`district-ultimate`: M5's encounter with
+            // that one press), whose cinematic plays its cut-in. M5's `district-fight` stays as it was, at night with
+            // neither, so M5's figures still compare; `district-fight-day` is this fight with no cue, its baseline.
+            (
+                name: "fight-ships",
+                about: "the district's encounter as it ships: midday, the probe grid and the reflection probes, the cues' effects and screen effects, and the heroine's ultimate with its cut-in",
+                args: [
+                    "--arena", "--replay", "{replays}/district-ultimate.sreplay", "--party", "--time-of-day", "13",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--cues", "--no-hot-reload",
+                    "--live-link", "off",
+                ],
+                frames: Count(1600),
+                read: [Cpu, Gpu, Counts, Cast, Pipelines],
+                trace: true,
+            ),
+            // The cut-in's own cost in that fight (spec §5.17 measured +1.02 ms of GPU and +1.05 ms of CPU on
+            // Desktop-High in the arena): its frames alone (`--bench-ticks`, the 50 ticks a trace of the fight shows
+            // its inset drawn on, from 5 ticks after the press), with cut-ins played against cut off, every other cue
+            // the same.
+            (
+                name: "fight-ships-cutin",
+                about: "the fight that ships over its cut-in's ticks, the cut-in played against cut off",
+                args: [
+                    "--arena", "--replay", "{replays}/district-ultimate.sreplay", "--party", "--time-of-day", "13",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--cues", "--no-hot-reload",
+                    "--live-link", "off", "--bench-ticks", "415-464",
+                ],
+                frames: Count(1600),
+                read: [Cpu, Gpu],
+                variants: [(name: "on", args: []), (name: "off", args: ["--cutins", "off"])],
+                rows: ["cpu frame", "record", "animation and ik", "secondary motion", "gpu frame", "gpu main", "gpu ui",
+                    "gpu post", "inset draws"],
+                serves: [3],
+            ),
+            // The fight that ships by counts, a frame in seven drawn, failing on any pipeline built after the load, as
+            // `counted-fight` does: whatever its cues and cut-in draw is in its load's inventory.
+            (
+                name: "counted-ships",
+                about: "the fight that ships by counts, a frame in seven drawn",
+                args: [
+                    "--draw-every", "7", "--arena", "--replay", "{replays}/district-ultimate.sreplay", "--party",
+                    "--time-of-day", "13", "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--cues",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(1600),
                 phases: 1,
                 read: [Counts, Pipelines],
                 timed: false,

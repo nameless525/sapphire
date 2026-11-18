@@ -1446,6 +1446,122 @@ fn the_district_encounter_plays_with_no_hitch_cold_and_warm() {
     }
 }
 
+/// The fight that ships (M6 B5) on the `ci` district, as `bench/scale.ron`'s `counted-ships` plays it: the district
+/// fight at midday with the probe grid and the reflection probes, its cues on and the heroine's ultimate
+/// (`district-ultimate`), by a fight's bench under `--draw-every` on Desktop-High and Mobile-Low. It reaches the
+/// replay's checksum, builds no pipeline its load didn't (no first use, none on the frame's thread, no frame that
+/// waited), and draws what it's measured for, by count: effect sprites and the effects' pixels on some drawn frames,
+/// and the cut-in on every drawn frame inside the ticks `fight-ships-cutin` reads (`--bench-ticks`) and on none
+/// outside them. With `--cutins off`, the pair's other side, no frame draws a cut-in and the effects are the same.
+#[cfg(feature = "dev")]
+#[test]
+#[ignore = "needs a GPU and the `ci` district beside the cooked content (`cargo xtask bench-content --preset ci --with-content`)"]
+fn the_fight_that_ships_draws_its_effects_and_its_cut_in_with_no_hitch() {
+    const DRAW_EVERY: &str = "3";
+    let manifest = fs::read_to_string(workspace().join("bench").join("scale.ron")).expect("the manifest");
+    let (first, last) = manifest
+        .split("\"--bench-ticks\", \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next()?.split_once('-'))
+        .expect("the cut-in pair's ticks");
+    let cut_in = first.parse::<u64>().expect("a tick")..=last.parse::<u64>().expect("a tick");
+    let content = district_content();
+    let temp = Temp::new("ships");
+    let replay = workspace().join("tests").join("replays").join("district-ultimate.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    let mut effects = Vec::new();
+    for (tier, cutins) in [("desktop-high", "on"), ("mobile-low", "on"), ("desktop-high", "off")] {
+        let what = format!("{tier}, cut-ins {cutins}");
+        let trace = temp.path(&format!("{tier}-{cutins}.csv"));
+        let output = sandbox(
+            &[
+                "--bench",
+                "1",
+                "--draw-every",
+                DRAW_EVERY,
+                "--bench-trace",
+                trace.to_str().expect("UTF-8"),
+                "--arena",
+                "--replay",
+                replay.to_str().expect("UTF-8"),
+                "--party",
+                "--time-of-day",
+                "13",
+                "--ambient",
+                "on",
+                "--mount",
+                "zone_proving_hub",
+                "--tier",
+                tier,
+                "--size",
+                "64x36",
+                "--hud",
+                "live",
+                "--cues",
+                "--cutins",
+                cutins,
+                "--no-hot-reload",
+                "--live-link",
+                "off",
+            ],
+            &content,
+        );
+        let log = log_of(&output);
+        assert!(output.status.success(), "{what}: {log}");
+        let end = format!("checksum={:016x}", played.trail.end());
+        assert!(log.lines().any(|line| line.contains(&end)), "{what}: no {end}: {log}");
+        let rows: Vec<&str> = log.lines().filter(|line| line.contains("fight pipelines")).collect();
+        assert!(!rows.is_empty(), "{what}: {log}");
+        for row in rows {
+            for part in ["first_use=0", "frame_thread=0", "frame_waits=0", "rebuilt=0"] {
+                assert!(row.contains(part), "{what}: {row}");
+            }
+        }
+
+        let text = fs::read_to_string(&trace).expect("the bench's trace");
+        let mut lines = text.lines();
+        let header: Vec<&str> = lines.next().expect("a header").split(',').collect();
+        let column = |name: &str| header.iter().position(|held| *held == name).expect("a column");
+        let (frame, tick, sprites, pixels, insets) = (
+            column("frame"),
+            column("tick"),
+            column("sprites"),
+            column("effect_pixels"),
+            column("pipelines_insets"),
+        );
+        let every: u64 = DRAW_EVERY.parse().expect("a number");
+        let (mut with_effects, mut cut_in_frames, mut most_pixels) = (0, 0, 0);
+        for line in lines {
+            let cells: Vec<&str> = line.split(',').collect();
+            let number = |at: usize| cells[at].parse::<u64>().expect("a count");
+            if number(frame) % every != 0 {
+                continue;
+            }
+            if number(sprites) > 0 && number(pixels) > 0 {
+                with_effects += 1;
+            }
+            most_pixels = most_pixels.max(number(pixels));
+            // Played, the cut-in draws on every frame the pair reads, so the pair's ticks and the cut-in's agree
+            // both ways: a cinematic retimed fails here, not in a pair that quietly reads frames with none.
+            if cutins == "on" && cut_in.contains(&number(tick)) {
+                assert!(number(insets) > 0, "{what}: no cut-in drawn at tick {}: {line}", number(tick));
+            }
+            if number(insets) > 0 {
+                assert!(
+                    cut_in.contains(&number(tick)),
+                    "{what}: a cut-in drawn at tick {}: {line}",
+                    number(tick)
+                );
+                cut_in_frames += 1;
+            }
+        }
+        assert!(with_effects > 10, "{what}: {with_effects} drawn frames with effects");
+        assert_eq!(cut_in_frames > 0, cutins == "on", "{what}: {cut_in_frames} drawn frames with a cut-in");
+        effects.push((tier, with_effects, most_pixels));
+    }
+    assert_eq!(effects[0], effects[2], "the cut-in changes no effect drawn: {effects:?}");
+}
+
 /// Exit test 2's "nothing loads on the frame's thread" on the benchmark district (M5 Z2): the lane's counting walk
 /// of the `ci` district's tour on Desktop-High, and with textures streaming as a game's do on Desktop-High and
 /// Mobile-Low, read, decode and check nothing on the bench's thread, by the walk's line and its count row.

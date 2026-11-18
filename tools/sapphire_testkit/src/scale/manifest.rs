@@ -773,14 +773,25 @@ mod tests {
             manifest.runs.iter().filter(|run| run.beside.as_deref() == Some(run.name.as_str())).count();
         assert_eq!(baseline * manifest.tiers.len(), 8);
         assert!(!manifest.counting(None).is_empty());
-        // The district has had a probe grid and reflection probes since M6 B4: every run in it but B4's day runs
-        // pins both off, so it measures the frame M5 measured (B7's arms compare against M5's district fight).
-        const DAY: [&str; 5] =
-            ["tour-day", "tour-day-probes", "district-fight-day", "district-fight-day-probes", "counted-day"];
+        // The district has had a probe grid and reflection probes since M6 B4: every run in it but B4's day runs and
+        // B5's fight that ships pins both off, so it measures the frame M5 measured (B7's arms compare against M5's
+        // district fight).
+        const DAY: [&str; 8] = [
+            "tour-day",
+            "tour-day-probes",
+            "district-fight-day",
+            "district-fight-day-probes",
+            "counted-day",
+            "fight-ships",
+            "fight-ships-cutin",
+            "counted-ships",
+        ];
         let mut district = 0;
         for run in &manifest.runs {
             let zone = run.args.windows(2).any(|pair| pair[0] == "--zone" && pair[1].starts_with("district"));
-            let fight = run.args.iter().any(|arg| arg.ends_with("/district-encounter.sreplay"));
+            let fight = run.args.iter().any(|arg| {
+                arg.ends_with("/district-encounter.sreplay") || arg.ends_with("/district-ultimate.sreplay")
+            });
             if !(zone || fight) || DAY.contains(&run.name.as_str()) {
                 continue;
             }
@@ -957,6 +968,40 @@ mod tests {
         for (name, count) in [("fight-pool.", 3 * 2 * 2), ("fight-overlap.", 2 * 4 * 2)] {
             assert_eq!(units.iter().filter(|unit| unit.name.starts_with(name)).count(), count, "{name}");
         }
+    }
+
+    /// M6 B5's fight that ships is B4's day fight with the cues on and the ultimate's replay, on every tier, unpinned;
+    /// its cut-in's pair is that fight over the cut-in's ticks with cut-ins played and cut off, and its counted run
+    /// that fight a frame in seven, so all three draw the same fight.
+    #[test]
+    fn the_fight_that_ships_is_the_day_fight_with_its_cues_and_ultimate() {
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let day = manifest.run("district-fight-day").unwrap();
+        let ships = manifest.run("fight-ships").unwrap();
+        let mut expected: Vec<String> = day
+            .args
+            .iter()
+            .map(|arg| arg.replace("/district-encounter.sreplay", "/district-ultimate.sreplay"))
+            .collect();
+        let at = expected.iter().position(|arg| arg == "--no-hot-reload").unwrap();
+        expected.insert(at, "--cues".to_owned());
+        assert_eq!(ships.args, expected);
+        assert!(ships.tiers.is_empty() && ships.trace && ships.timed, "every tier, traced, timed");
+        assert!(
+            !ships.args.iter().any(|arg| arg.starts_with("--no-probe") || arg == "--no-reflection-probes")
+        );
+        let cutin = manifest.run("fight-ships-cutin").unwrap();
+        let ticks = cutin.args.iter().position(|arg| arg == "--bench-ticks").expect("its ticks");
+        assert_eq!(cutin.args[..ticks], ships.args[..]);
+        assert_eq!(cutin.args.len(), ticks + 2, "the ticks last");
+        let arms: Vec<(&str, &[String])> =
+            cutin.variants.iter().map(|variant| (variant.name.as_str(), variant.args.as_slice())).collect();
+        assert_eq!(arms, [("on", &[][..]), ("off", &["--cutins".to_owned(), "off".to_owned()][..])]);
+        assert!(cutin.tiers.is_empty() && cutin.serves.contains(&3), "a pair on every tier");
+        let counted = manifest.run("counted-ships").unwrap();
+        assert_eq!(counted.args[..2], ["--draw-every", "7"]);
+        assert_eq!(counted.args[2..], ships.args[..]);
+        assert!(!counted.timed && counted.read.contains(&Read::Pipelines));
     }
 
     /// Z1's counting walks count the crowd the timed walks draw: the proving hub's crowd mounted, the ambient

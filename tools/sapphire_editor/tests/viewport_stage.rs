@@ -23,6 +23,8 @@ use game_combat::documents::FightDocuments;
 use game_combat::fight::Fight;
 use sapphire_assets::ui::UiDocument;
 use sapphire_document::PropertyPath;
+use sapphire_editor::commands::{SCRIPT_SUFFIX, Script};
+use sapphire_editor::cook::{CookPlan, CookRefusal, Cooked, Cooker, Pipeline, Runner, Running};
 use sapphire_editor::edits::{EntryRef, Track, set_window};
 use sapphire_editor::gizmo::{Axis, Gizmo};
 use sapphire_editor::recovery::Recovery;
@@ -1272,11 +1274,12 @@ fn drag_arrow(harness: &mut Harness<'_, Editor>, origin: sapphire_math::Vec3, ax
 /// many frames as a change settles for: what a capture of the viewport's frames draws.
 fn capture_zone(
     gpu: &Arc<GpuContext>,
+    cook: &Path,
     size: (u32, u32),
     outside: Option<OutsideView>,
     rounds: &[(Vec<sapphire_stage::scene::LaidOut>, Option<Gizmo>)],
 ) -> (Stage<ViewShow>, Image) {
-    let mut stage = stand_zone_stage(&Host::with_content_at(&editor_cook()), gpu).expect("stands");
+    let mut stage = stand_zone_stage(&Host::with_content_at(cook), gpu).expect("stands");
     stage.show.outside = outside;
     let pack = sapphire_zone::pack_name("proving_ground");
     let frame = capture(&mut stage, &vec![size; rounds.len()], |stage, round| {
@@ -1354,7 +1357,8 @@ fn a_drag_of_the_gizmo_moves_one_number() {
     assert_eq!(differences(&drawn, &shell, rect, 1.0, 0).1, 0, "the pane is its frame");
     let (_, moved_from, _) = differences(&before, &shell, egui::Rect::ZERO, 1.0, 0);
     assert!(moved_from > 500, "the move shows: {moved_from} pixels differ");
-    let (capture_stage, frame) = capture_zone(&gpu, pixels, outside, &[opened, selected, moved]);
+    let (capture_stage, frame) =
+        capture_zone(&gpu, &editor_cook(), pixels, outside, &[opened, selected, moved]);
     is_a_picture(&frame, "zone_moved");
     let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
     println!("after a drag: {count} of {all} pixels differ from a capture, by at most {most}");
@@ -1366,6 +1370,216 @@ fn a_drag_of_the_gizmo_moves_one_number() {
     let current = harness.state().current().expect("open");
     assert_eq!(current.text().as_bytes(), file.as_bytes(), "undo is the file's bytes");
     assert!(!current.is_dirty());
+}
+
+/// A cook that lands as soon as it's asked for, writing nothing: what a fight's viewport does when one lands.
+#[derive(Debug)]
+struct LandsAtOnce;
+
+impl Runner for LandsAtOnce {
+    fn reads(&self, _: &Path) -> bool {
+        true
+    }
+
+    fn start(&mut self, _: bool) -> Result<Option<Box<dyn Running>>, CookRefusal> {
+        Ok(Some(Box::new(LandsAtOnce)))
+    }
+}
+
+impl Running for LandsAtOnce {
+    fn finish(&mut self, _: bool) -> Option<Result<Cooked, CookRefusal>> {
+        Some(Ok(Cooked::default()))
+    }
+}
+
+/// A fight's stage stands again when a cook lands, rather than reading packs again under a simulation that holds
+/// the old cook's bodies; it draws again on the new stage.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_fights_viewport_stands_again_when_a_cook_lands() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fight_takes_a_cook");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder");
+    // A material's document, which the viewport stands a fight for, saved as it is.
+    let path = dir.join("swatch.material.ron");
+    let swatch = root().join("content/samples/swatch_bands.material.ron");
+    std::fs::copy(&swatch, &path).expect("copied");
+    // An ID of its own, so the copy isn't the content's swatch under another path.
+    let meta = std::fs::read_to_string(swatch.with_extension("ron.meta")).expect("its sidecar");
+    let meta = meta.replace("8b6875d6-81eb-47a7-bded-495a2ca02352", "3f9a6c2e-7d41-4b8e-a5c0-1e2d3c4b5a69");
+    std::fs::write(path.with_extension("ron.meta"), meta).expect("its sidecar");
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut editor =
+        Editor::new(Options { file: Some(path), content: Some(editor_cook()), link: None, pipeline: None });
+    editor.cook_with(Box::new(LandsAtOnce));
+    editor.shell_mut().open(Pane::Viewport);
+    let mut harness = harness_on(&painter, editor, (900.0, 600.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(view.stands(), 1);
+    let frames = view.frames();
+
+    let script = dir.join(format!("save{SCRIPT_SUFFIX}"));
+    // A script's commands name their document: a property set makes the material the one `Save` writes.
+    let commands = r#"SetProperty(path: "base_color_map", value: "Some(\"5e1f0c2a-6b7d-4f1e-9a3c-2d8e4b6f0a17\")"), Save"#;
+    std::fs::write(&script, format!("(version: 1, commands: [{commands}])")).expect("a script");
+    harness.state_mut().run_script(&Script::read(&script).expect("reads")).expect("runs");
+    harness.state_mut().finish_cooks();
+    assert_eq!(
+        harness.state().cooks_landed(),
+        1,
+        "{:?} {:?}",
+        harness.state().cook_stats(),
+        harness.state().cook_refusal()
+    );
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(view.stands(), 2, "the fight stood again on the new cook");
+    assert_eq!(harness.state_mut().viewport().note(), None);
+    assert!(view.frames() > frames, "and drew");
+    drop((harness, view));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A prefab nothing has cooked: a lantern from the kit, which takes the place of the pillar at (2, 0, 2).
+const BEACON: &str = r#"// A prefab no cook has seen until a test's placement names it (M6 T5).
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {"kenney": "../../../third_party/kenney_fantasy_town_kit/glb"},
+        slots: [(name: "iron", tile: (1.0, 1.0))],
+        surfaces: [],
+        place: [(piece: "kenney/lantern", slot: Some("iron"))],
+    ),
+)
+"#;
+const BEACON_ID: &str = "7d3b5c1e-2f4a-4c8b-9e6d-0a1b2c3d4e5f";
+
+/// A copy of `content/` in a folder of the test's own, laid out as a repository is, cooked by this tree's pipeline
+/// into an editor's cook of its own through the repository's cache: a tree a test can change and cook. The folder,
+/// and the plan its saves cook by.
+fn cooked_copy(name: &str) -> (PathBuf, CookPlan) {
+    let dir = std::env::temp_dir().join(format!("sapphire_editor_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_tree(&root().join("content"), &dir.join("content"));
+    let packs = dir.join("target/content/editor");
+    std::fs::create_dir_all(&packs).expect("its cook's folder");
+    let mut plan = CookPlan::for_cook(&packs, None).expect("a plan");
+    plan.pipeline = root().join(format!("target/tools/sapphire_pipeline{}", std::env::consts::EXE_SUFFIX));
+    plan.cache = root().join("target/content/cache");
+    plan.code = Some(root());
+    let mut cooker = Cooker::new(Box::new(Pipeline::new(plan.clone())));
+    cooker.ask(0.0);
+    let first = cooker.settle().expect("a cook ran");
+    assert!(first.is_ok(), "the copy cooks: {first:?}");
+    (dir, plan)
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("a folder");
+    for entry in std::fs::read_dir(from).expect("a folder") {
+        let entry = entry.expect("an entry");
+        let (path, name) = (entry.path(), entry.file_name());
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            copy_tree(&path, &to.join(&name));
+        } else {
+            std::fs::copy(&path, to.join(&name)).expect("copied");
+        }
+    }
+}
+
+/// A prefab no cook has seen, named by a placement and saved, draws with no step but the save: a script saves, the
+/// editor's passes go on as a window's do, the cook its save asked for lands after its quiet, and the viewport
+/// remounts the zone's pack and lays the zone out again. It then shows what a stage stood on the new cook captures,
+/// the beacon's pipelines were built when its pack was read again rather than on first use, and the counters say
+/// one cook, none refused.
+#[test]
+#[ignore = "needs a GPU, this tree's pipeline and its cache: cargo xtask content --cook editor"]
+fn a_prefab_never_cooked_draws_once_its_placement_is_saved() {
+    let (dir, plan) = cooked_copy("new_prefab");
+    let prefabs = dir.join("content/zones/proving_ground/prefabs");
+    std::fs::write(prefabs.join("beacon.assembly.ron"), BEACON).expect("the prefab");
+    let pillar = std::fs::read_to_string(prefabs.join("pillar.assembly.ron.meta")).expect("a sidecar");
+    let beacon_meta = pillar.replace("2c0ce8b4-10c6-4cdd-b546-4249a9601188", BEACON_ID).replace(
+        r#""stone": "30ccc7f0-62ba-410e-9d3d-1d3e77ee1d1e""#,
+        r#""iron": "c532189a-26a8-424b-81a8-edc34f3b8440""#,
+    );
+    assert!(beacon_meta.contains(BEACON_ID) && beacon_meta.contains("iron"), "{beacon_meta}");
+    std::fs::write(prefabs.join("beacon.assembly.ron.meta"), beacon_meta).expect("its sidecar");
+    let zone = dir.join("content/zones/proving_ground/proving_ground.zone.ron");
+
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let options = Options { file: Some(zone), content: Some(plan.packs.clone()), link: None, pipeline: None };
+    let mut editor = Editor::new(options);
+    editor.cook_with(Box::new(Pipeline::new(plan.clone())));
+    editor.shell_mut().open(Pane::Viewport);
+    let mut harness = harness_on(&painter, editor, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(harness.state_mut().viewport().note(), None, "every placement's shape is in the copy's cook");
+    let before = painter.paint(&gpu, &harness);
+    let opened = zone_as_shown(&mut harness);
+
+    let script = dir.join(format!("beacon{SCRIPT_SUFFIX}"));
+    let commands = format!(r#"SetProperty(path: "placements[0].prefab", value: "\"{BEACON_ID}\""), Save"#);
+    std::fs::write(&script, format!("(version: 1, commands: [{commands}])")).expect("a script");
+    let script = Script::read(&script).expect("reads");
+    harness.state_mut().run_script(&script).expect("runs");
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let note = harness.state_mut().viewport().note().map(ToOwned::to_owned);
+    assert!(note.as_deref().is_some_and(|note| note.starts_with("1 placements aren't drawn")), "{note:?}");
+
+    // A window's passes, until the cook its save asked for lands.
+    let waited = Stopwatch::start();
+    while harness.state().cooks_landed() == 0 {
+        assert!(
+            waited.elapsed().as_secs() < 300,
+            "the cook never landed: {:?}",
+            harness.state().cook_refusal()
+        );
+        harness.step();
+        view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let stats = harness.state().cook_stats().expect("a cook ran");
+    println!("save to a landed cook: {:?} ({stats:?})", waited.elapsed());
+    assert_eq!((stats.started, stats.cooks, stats.cooks_failed), (1, 1, 0));
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(harness.state_mut().viewport().note(), None, "the beacon draws");
+    let pipelines = view.stage().expect("stood").renderer.stats().pipelines;
+    assert_eq!(pipelines.first_use_builds, 0, "{}", view.stage().expect("stood").renderer.first_use_report());
+    assert_eq!(view.stands(), 1, "a zone's stage took the cook, rather than standing again");
+
+    let shell = painter.paint(&gpu, &harness);
+    let rect = harness.state_mut().viewport().rect().expect("shown");
+    let (_, pixels) = on_pixels(rect, 1.0);
+    let (_, changed, _) = differences(&before, &shell, egui::Rect::ZERO, 1.0, 0);
+    assert!(changed > 100, "the beacon shows where the pillar stood: {changed} pixels differ");
+    let outside = view.stage().expect("stood").show.outside;
+    let shown = zone_as_shown(&mut harness);
+    let (_, frame) = capture_zone(&gpu, &plan.packs, pixels, outside, &[opened, shown]);
+    // The zone with nothing selected has fewer colours than `is_a_picture` asks of a gizmo's frames: 1,589 here.
+    let mut colours: Vec<&[u8]> = frame.pixels.chunks(4).collect();
+    colours.sort_unstable();
+    colours.dedup();
+    assert!(colours.len() > 1000, "zone_beacon: {} colours", colours.len());
+    keep(&frame, "zone_beacon");
+    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    println!("after the cook: {count} of {all} pixels differ from a capture on it, by at most {most}");
+    // Not to the pixel, as a capture of the same rounds is: the pane drew the frames of a cook's wait, the beacon
+    // missing, which temporal AA's history keeps and a capture can't play (7,394 pixels by at most 29 of 226,200
+    // here, on an Apple M5). That the beacon is drawn is the note gone and the pane's own change above.
+    assert!(
+        most <= 40 && count < all / 20,
+        "after the cook: {count} of {all} pixels differ, by up to {most}"
+    );
+    drop((harness, view));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A save while the gizmo's arrow is held ends the drag's gesture there, and the rest of the drag is one step of its

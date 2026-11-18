@@ -18,6 +18,7 @@
 pub mod blank;
 pub mod disk;
 pub mod document;
+pub mod graph_layout;
 pub mod identity;
 pub mod journal;
 pub mod kinds;

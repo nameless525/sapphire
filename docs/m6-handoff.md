@@ -51,6 +51,10 @@ The final run's verdicts and the rule for running a round again are in [m5-exit-
 
 Nothing here has been run, for want of a device or a person. [m5-exit-run.md](m5-exit-run.md)'s "What stays owed" has M5's, and the older runbooks theirs.
 
+**M6's** (each package's own):
+
+- **Android's memory pressure** (M6 X2): `Content::memory_warning` trims on iOS only, because SDL folds every `onTrimMemory` level into `LowMemory`, the one Android sends on each trip to the background included, so on Android the game never trims, even at `TRIM_MEMORY_RUNNING_CRITICAL` or `TRIM_MEMORY_COMPLETE`. To do: take the trim level from the activity's `onTrimMemory` (a `ComponentCallbacks2`), pass it down through sapphire_platform as a pressure level with the event, and have `memory_warning` trim at `TRIM_MEMORY_RUNNING_LOW` and above. Done when the emulator's `am send-trim-memory <package> RUNNING_LOW` trims the game (its `memory warning: unused assets unloaded` line) and a trip to the background doesn't.
+
 **M5's** ([m5-plan.md](m5-plan.md) §1, each exit test's "Owed"):
 
 - **The district on a reference device** (exit test 1): every device's frame times, and exclusive GPU pass times on a Vulkan or DX12 GPU, since Metal overlaps its passes. Those would end the exit run's stated deviation for Metal ("Everything deferred", "The benchmark and its measurement").

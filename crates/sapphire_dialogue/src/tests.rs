@@ -345,7 +345,7 @@ fn faces_stay_out_of_the_digest_and_version_1_still_loads() {
         assert!(DialogueDocument::from_ron(&GUIDE.replacen("version: 2,", version, 1)).is_err(), "{version}");
     }
     let committed = include_str!("../../../content/dialogue/ward_guide.dialogue.ron");
-    assert!(committed.contains("version: 1,") && DialogueDocument::from_ron(committed).is_ok());
+    assert!(committed.contains("version: 2,") && DialogueDocument::from_ron(committed).is_ok());
 }
 
 /// M5 C6: a voiced line names whose mouth its voice moves; that's presentation's, so the digest holds, and

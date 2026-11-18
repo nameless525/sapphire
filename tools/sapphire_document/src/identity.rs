@@ -234,9 +234,17 @@ impl Sidecars {
         }
     }
 
-    /// The files whose names say they're documents, in path order, as of this look.
+    /// The files whose names (and for a material, envelopes) say they're documents, in path order, as of this
+    /// look.
     pub fn documents(&self) -> impl Iterator<Item = (&Path, Kind)> {
         self.documents.iter().map(|(path, kind)| (path.as_path(), *kind))
+    }
+
+    /// The kind this look found a file to be, reading nothing: a material's kind is its envelope's, so asking
+    /// [`Kind::of`] would read the file.
+    #[must_use]
+    pub fn kind(&self, path: &Path) -> Option<Kind> {
+        self.documents.get(path).copied()
     }
 
     /// Every source with a sidecar and its ID, as of this look. What two sidecars claim is listed by the first.

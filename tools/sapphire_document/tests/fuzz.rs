@@ -249,6 +249,14 @@ fn run<T>(name: &str, relative: &str, schema: Schema<T>, may_refuse: bool)
 where
     T: Reflect + FromReflect + Typed + GetTypeRegistration + Clone + PartialEq,
 {
+    assert!(fuzz(name, relative, schema, may_refuse) > 200, "{name}: the fuzz did too little");
+}
+
+/// The fuzz over one file, and how many edits landed.
+fn fuzz<T>(name: &str, relative: &str, schema: Schema<T>, may_refuse: bool) -> usize
+where
+    T: Reflect + FromReflect + Typed + GetTypeRegistration + Clone + PartialEq,
+{
     let clock = Stopwatch::start();
     let each = every_property(open(relative, schema), may_refuse);
     let lists = every_list(open(relative, schema), may_refuse);
@@ -274,7 +282,7 @@ where
         random.refused_by_document,
         clock.elapsed().as_secs_f64(),
     );
-    assert!(each.edits + lists.edits + random.edits > 200, "{name}: the fuzz did too little");
+    each.edits + lists.edits + random.edits
 }
 
 #[test]
@@ -337,6 +345,78 @@ fn every_property_of_the_default_effects_undoes_or_is_refused() {
     run("default_effects.ron", "crates/sapphire_vfx/default_effects.ron", kinds::effects(), true);
 }
 
+/// Every shipped document of `kind`: each in the content, and those compiled in beside a crate (`extra`).
+fn shipped(kind: Kind, extra: &[&str]) -> Vec<String> {
+    let mut found: Vec<String> = documents_in_the_content()
+        .into_iter()
+        .filter(|(_, of)| *of == kind)
+        .map(|(relative, _)| relative)
+        .chain(extra.iter().map(|&relative| relative.to_owned()))
+        .collect();
+    found.sort();
+    assert!(!found.is_empty(), "{kind:?}: none shipped");
+    found
+}
+
+/// Each shipped document of a kind T4 added, fuzzed whole: every property edit undoes to its bytes, and each
+/// edit the kind's reading refuses leaves the text as it was. A small file has little to edit, so the kind's
+/// files are held to the fuzz's floor together.
+fn every_shipped<T>(kind: Kind, extra: &[&str], schema: Schema<T>, may_refuse: bool)
+where
+    T: Reflect + FromReflect + Typed + GetTypeRegistration + Clone + PartialEq,
+{
+    let edits: usize =
+        shipped(kind, extra).iter().map(|relative| fuzz(relative, relative, schema, may_refuse)).sum();
+    assert!(edits > 200, "{kind:?}: the fuzz did too little");
+}
+
+#[test]
+fn every_property_of_every_character_material_undoes_to_the_same_bytes() {
+    every_shipped(Kind::Material, &[], kinds::material(), false);
+}
+
+#[test]
+fn every_property_of_every_environment_material_undoes_to_the_same_bytes() {
+    every_shipped(Kind::EnvironmentMaterial, &[], kinds::environment_material(), false);
+}
+
+#[test]
+fn every_property_of_every_ramp_undoes_to_the_same_bytes() {
+    every_shipped(Kind::Ramp, &[], kinds::ramp(), false);
+}
+
+#[test]
+fn every_property_of_every_prefab_undoes_to_the_same_bytes() {
+    every_shipped(Kind::Assembly, &[], kinds::assembly(), false);
+}
+
+#[test]
+fn every_property_of_every_encounter_undoes_to_the_same_bytes() {
+    every_shipped(Kind::Encounter, &[], kinds::encounter(), false);
+}
+
+#[test]
+fn every_property_of_every_dialogue_undoes_to_the_same_bytes() {
+    every_shipped(Kind::Dialogue, &[], kinds::dialogue(), false);
+}
+
+/// A day checks everything as it reads, so a value it can't take is refused with the text as it was.
+#[test]
+fn every_property_of_every_day_undoes_or_is_refused() {
+    every_shipped(Kind::Day, &["crates/sapphire_world/default_day.ron"], kinds::day(), true);
+}
+
+/// A library of light rigs checks everything as it reads, likewise.
+#[test]
+fn every_property_of_every_light_rig_library_undoes_or_is_refused() {
+    every_shipped(
+        Kind::LightRigs,
+        &["crates/sapphire_world/default_light_rigs.ron"],
+        kinds::light_rigs(),
+        true,
+    );
+}
+
 /// A path goes through its text and back.
 #[test]
 fn every_path_prints_and_parses_back() {
@@ -350,13 +430,10 @@ fn every_path_prints_and_parses_back() {
     assert!(steps.iter().any(|step| matches!(step, Step::Some)));
 }
 
-/// The walker agrees with every document of each kind in the content, not just the one a kind's fuzz runs on: a
-/// file it disagrees with opens read only, which nothing else would notice.
-#[test]
-fn every_document_in_the_content_opens_for_editing() {
-    let root = support::repository_root().join("content");
-    let (mut seen, mut count) = (std::collections::BTreeSet::new(), 0);
-    let mut stack = vec![root];
+/// Every file in the content a kind knows, by its path from the repository's root, in no order.
+fn documents_in_the_content() -> Vec<(String, Kind)> {
+    let mut found = Vec::new();
+    let mut stack = vec![support::repository_root().join("content")];
     while let Some(folder) = stack.pop() {
         for entry in std::fs::read_dir(folder).expect("a folder") {
             let path = entry.expect("an entry").path();
@@ -366,24 +443,58 @@ fn every_document_in_the_content_opens_for_editing() {
             }
             let Some(kind) = Kind::of(&path) else { continue };
             let relative = path.strip_prefix(support::repository_root()).expect("inside");
-            let relative = relative.to_string_lossy().into_owned();
-            let failure = match kind {
-                Kind::Moves => open(&relative, kinds::moves()).failure().cloned(),
-                Kind::Graph => open(&relative, kinds::graph()).failure().cloned(),
-                Kind::Cue => open(&relative, kinds::cue()).failure().cloned(),
-                Kind::Effects => open(&relative, kinds::effects()).failure().cloned(),
-                Kind::Timeline => open(&relative, kinds::timeline()).failure().cloned(),
-                Kind::Ui => open(&relative, kinds::ui()).failure().cloned(),
-                Kind::Zone => open(&relative, kinds::zone()).failure().cloned(),
-            };
-            assert_eq!(failure, None, "{relative}");
-            seen.insert(kind);
-            count += 1;
+            found.push((relative.to_string_lossy().into_owned(), kind));
         }
+    }
+    found
+}
+
+/// The walker agrees with every document of each kind in the content, not just the one a kind's fuzz runs on: a
+/// file it disagrees with opens read only, which nothing else would notice.
+#[test]
+fn every_document_in_the_content_opens_for_editing() {
+    let (mut seen, mut count) = (std::collections::BTreeSet::new(), 0);
+    for (relative, kind) in documents_in_the_content() {
+        let failure = match kind {
+            Kind::Moves => open(&relative, kinds::moves()).failure().cloned(),
+            Kind::Graph => open(&relative, kinds::graph()).failure().cloned(),
+            Kind::Cue => open(&relative, kinds::cue()).failure().cloned(),
+            Kind::Effects => open(&relative, kinds::effects()).failure().cloned(),
+            Kind::Timeline => open(&relative, kinds::timeline()).failure().cloned(),
+            Kind::Ui => open(&relative, kinds::ui()).failure().cloned(),
+            Kind::Zone => open(&relative, kinds::zone()).failure().cloned(),
+            Kind::Material => open(&relative, kinds::material()).failure().cloned(),
+            Kind::EnvironmentMaterial => open(&relative, kinds::environment_material()).failure().cloned(),
+            Kind::Ramp => open(&relative, kinds::ramp()).failure().cloned(),
+            Kind::Assembly => open(&relative, kinds::assembly()).failure().cloned(),
+            Kind::Encounter => open(&relative, kinds::encounter()).failure().cloned(),
+            Kind::Dialogue => open(&relative, kinds::dialogue()).failure().cloned(),
+            Kind::Day => open(&relative, kinds::day()).failure().cloned(),
+            Kind::LightRigs => open(&relative, kinds::light_rigs()).failure().cloned(),
+        };
+        assert_eq!(failure, None, "{relative}");
+        seen.insert(kind);
+        count += 1;
     }
     let missing: Vec<_> = Kind::ALL.into_iter().filter(|kind| !seen.contains(kind)).collect();
     assert_eq!(missing, [Kind::Effects], "every kind but effects, which the content has none of");
-    assert!(count >= 30, "{count}");
+    assert!(count >= 220, "{count}");
+}
+
+/// A material's kind is its envelope's family, and a family with no kind here is no kind.
+#[test]
+fn a_materials_kind_is_the_family_its_envelope_names() {
+    let mut families = std::collections::BTreeMap::new();
+    for (relative, kind) in documents_in_the_content() {
+        if relative.ends_with(".material.ron") {
+            *families.entry(kind).or_insert(0) += 1;
+        }
+    }
+    assert!(families[&Kind::Material] >= 50 && families[&Kind::EnvironmentMaterial] >= 30, "{families:?}");
+    assert_eq!(families.len(), 2, "{families:?}");
+    let sky = support::read("content/samples/sky.material.ron");
+    assert_eq!(Kind::of_material(&sky), None, "a sky's material has no kind yet");
+    assert_eq!(Kind::of(std::path::Path::new("nowhere/missing.material.ron")), None);
 }
 
 /// What one edit costs, for a person dragging: it prints, and asserts nothing, since this Mac's load moves it.

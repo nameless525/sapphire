@@ -66,11 +66,24 @@ fn the_kinds_say_the_importer_a_cook_would_give_them() {
         ("a.ui.ron", kinds::ui().importer),
         ("a.timeline.ron", kinds::timeline().importer),
         ("a.zone.ron", kinds::zone().importer),
+        ("a.material.ron", kinds::material().importer),
+        ("a.material.ron", kinds::environment_material().importer),
+        ("a.ramp.ron", kinds::ramp().importer),
+        ("a.assembly.ron", kinds::assembly().importer),
+        ("a.encounter.ron", kinds::encounter().importer),
+        ("a.dialogue.ron", kinds::dialogue().importer),
     ] {
         let id = meta::new_id().expect("an ID");
         let settings = ImportSettings::for_new_sidecar(Path::new(name)).expect("a source");
         let cooker = to_ron(&AssetMeta::new(id, settings)).expect("writes");
         assert_eq!(identity::sidecar_text(id, importer), cooker, "{name}");
+    }
+    // A day and a library of light rigs are read by what names them or compiles them in, never cooked alone.
+    for (name, importer) in
+        [("a_day.ron", kinds::day().importer), ("a_rigs.ron", kinds::light_rigs().importer)]
+    {
+        assert_eq!(importer, None, "{name}");
+        assert!(ImportSettings::for_new_sidecar(Path::new(name)).is_none(), "{name}");
     }
 }
 

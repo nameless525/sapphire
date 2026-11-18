@@ -2,7 +2,7 @@
 // reads, a choice that shows only once the ward is lit, a branch, and a way out.
 (
     type: "sapphire::dialogue::DialogueDocument",
-    version: 1,
+    version: 2,
     data: (
         start: "greet",
         // It opens from the game's flow (M3 G1), after the court's gate cutscene: no trigger opens it, since

@@ -43,15 +43,13 @@ impl Editor {
                 && !rows.iter().any(|(_, listed)| *listed == path)
                 && shows(path)
             {
-                rows.push((Kind::of(path).unwrap_or(Kind::Moves), path));
+                let text = || self.documents.any(id).map(|document| document.text().to_owned());
+                rows.push((Kind::of_text(path, text).unwrap_or(Kind::Moves), path));
             }
         }
-        let others: Vec<(PathBuf, AssetId)> = self
-            .documents
-            .sidecars()
-            .assets()
-            .filter(|(path, _)| Kind::of(path).is_none() && shows(path))
-            .collect();
+        let sidecars = self.documents.sidecars();
+        let others: Vec<(PathBuf, AssetId)> =
+            sidecars.assets().filter(|(path, _)| sidecars.kind(path).is_none() && shows(path)).collect();
 
         let mut open = None;
         let mut pick = None;

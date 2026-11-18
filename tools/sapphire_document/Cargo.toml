@@ -17,10 +17,12 @@ getrandom.workspace = true
 ron.workspace = true
 # The documents it knows by kind.
 sapphire_assets.workspace = true
+sapphire_dialogue.workspace = true
 sapphire_moves.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 sapphire_timeline.workspace = true
+sapphire_tod.workspace = true
 sapphire_vfx.workspace = true
 sapphire_zone.workspace = true
 serde.workspace = true

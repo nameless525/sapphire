@@ -25,8 +25,8 @@ desktop-high-dusk | bytes given back | not exercised
 desktop-high-dusk | bytes over budget in use | not exercised
 desktop-high-dusk | cached cascades redrawn | not exercised
 desktop-high-dusk | capsule bits in fullest cluster | p50 53 p95 83 worst 95 total 27796
-desktop-high-dusk | capsule bits set | p50 757 p95 1342 worst 2204 total 436696
-desktop-high-dusk | capsule clusters marked | p50 251 p95 540 worst 747 total 145857
+desktop-high-dusk | capsule bits set | p50 757 p95 1340 worst 2219 total 436654
+desktop-high-dusk | capsule clusters marked | p50 251 p95 540 worst 747 total 145862
 desktop-high-dusk | cascade 0 draws | p50 71 p95 97 worst 107 total 37907
 desktop-high-dusk | cascade 1 draws | p50 109 p95 154 worst 164 total 60280
 desktop-high-dusk | cascade 2 draws | p50 0 p95 231 worst 236 total 50062
@@ -130,8 +130,8 @@ desktop-high-night | bytes given back | not exercised
 desktop-high-night | bytes over budget in use | not exercised
 desktop-high-night | cached cascades redrawn | not exercised
 desktop-high-night | capsule bits in fullest cluster | p50 51 p95 82 worst 94 total 27566
-desktop-high-night | capsule bits set | p50 761 p95 1257 worst 1998 total 433968
-desktop-high-night | capsule clusters marked | p50 260 p95 535 worst 759 total 150780
+desktop-high-night | capsule bits set | p50 761 p95 1257 worst 1998 total 433909
+desktop-high-night | capsule clusters marked | p50 260 p95 535 worst 759 total 150743
 desktop-high-night | cascade 0 draws | p50 50 p95 71 worst 80 total 26695
 desktop-high-night | cascade 1 draws | p50 100 p95 118 worst 123 total 51671
 desktop-high-night | cascade 2 draws | p50 0 p95 231 worst 246 total 44753
@@ -235,8 +235,8 @@ desktop-low-dusk | bytes given back | not exercised
 desktop-low-dusk | bytes over budget in use | not exercised
 desktop-low-dusk | cached cascades redrawn | not exercised
 desktop-low-dusk | capsule bits in fullest cluster | p50 54 p95 84 worst 95 total 27801
-desktop-low-dusk | capsule bits set | p50 744 p95 1321 worst 2083 total 431177
-desktop-low-dusk | capsule clusters marked | p50 254 p95 540 worst 759 total 145864
+desktop-low-dusk | capsule bits set | p50 744 p95 1301 worst 2102 total 431131
+desktop-low-dusk | capsule clusters marked | p50 253 p95 540 worst 759 total 145870
 desktop-low-dusk | cascade 0 draws | p50 66 p95 85 worst 95 total 34463
 desktop-low-dusk | cascade 1 draws | p50 98 p95 137 worst 150 total 54333
 desktop-low-dusk | cascade 2 draws | p50 0 p95 213 worst 236 total 45845
@@ -340,8 +340,8 @@ desktop-low-night | bytes given back | not exercised
 desktop-low-night | bytes over budget in use | not exercised
 desktop-low-night | cached cascades redrawn | not exercised
 desktop-low-night | capsule bits in fullest cluster | p50 54 p95 83 worst 94 total 27600
-desktop-low-night | capsule bits set | p50 760 p95 1247 worst 1896 total 429907
-desktop-low-night | capsule clusters marked | p50 261 p95 529 worst 771 total 150918
+desktop-low-night | capsule bits set | p50 760 p95 1244 worst 1896 total 429831
+desktop-low-night | capsule clusters marked | p50 261 p95 529 worst 771 total 150870
 desktop-low-night | cascade 0 draws | p50 43 p95 66 worst 80 total 22850
 desktop-low-night | cascade 1 draws | p50 82 p95 104 worst 109 total 42543
 desktop-low-night | cascade 2 draws | p50 0 p95 203 worst 222 total 40357
@@ -445,8 +445,8 @@ mobile-high-dusk | bytes given back | not exercised
 mobile-high-dusk | bytes over budget in use | not exercised
 mobile-high-dusk | cached cascades redrawn | not exercised
 mobile-high-dusk | capsule bits in fullest cluster | p50 26 p95 36 worst 44 total 12525
-mobile-high-dusk | capsule bits set | p50 471 p95 985 worst 1315 total 275762
-mobile-high-dusk | capsule clusters marked | p50 235 p95 489 worst 648 total 136980
+mobile-high-dusk | capsule bits set | p50 471 p95 985 worst 1315 total 275748
+mobile-high-dusk | capsule clusters marked | p50 235 p95 489 worst 648 total 136973
 mobile-high-dusk | cascade 0 draws | p50 69 p95 95 worst 105 total 36832
 mobile-high-dusk | cascade 1 draws | p50 0 p95 254 worst 259 total 31475
 mobile-high-dusk | cascade 2 draws | not exercised
@@ -550,8 +550,8 @@ mobile-high-night | bytes given back | not exercised
 mobile-high-night | bytes over budget in use | not exercised
 mobile-high-night | cached cascades redrawn | not exercised
 mobile-high-night | capsule bits in fullest cluster | p50 25 p95 36 worst 43 total 12416
-mobile-high-night | capsule bits set | p50 469 p95 895 worst 1229 total 265942
-mobile-high-night | capsule clusters marked | p50 236 p95 474 worst 651 total 134561
+mobile-high-night | capsule bits set | p50 469 p95 895 worst 1229 total 265898
+mobile-high-night | capsule clusters marked | p50 236 p95 474 worst 651 total 134529
 mobile-high-night | cascade 0 draws | p50 48 p95 69 worst 78 total 25629
 mobile-high-night | cascade 1 draws | p50 0 p95 259 worst 259 total 30910
 mobile-high-night | cascade 2 draws | not exercised
@@ -655,8 +655,8 @@ mobile-low-dusk | bytes given back | not exercised
 mobile-low-dusk | bytes over budget in use | not exercised
 mobile-low-dusk | cached cascades redrawn | not exercised
 mobile-low-dusk | capsule bits in fullest cluster | p50 22 p95 35 worst 40 total 11846
-mobile-low-dusk | capsule bits set | p50 478 p95 960 worst 1304 total 272969
-mobile-low-dusk | capsule clusters marked | p50 243 p95 489 worst 648 total 138586
+mobile-low-dusk | capsule bits set | p50 478 p95 960 worst 1304 total 272952
+mobile-low-dusk | capsule clusters marked | p50 243 p95 489 worst 648 total 138583
 mobile-low-dusk | cascade 0 draws | p50 63 p95 82 worst 92 total 33094
 mobile-low-dusk | cascade 1 draws | p50 0 p95 240 worst 250 total 36729
 mobile-low-dusk | cascade 2 draws | not exercised
@@ -760,8 +760,8 @@ mobile-low-night | bytes given back | not exercised
 mobile-low-night | bytes over budget in use | not exercised
 mobile-low-night | cached cascades redrawn | not exercised
 mobile-low-night | capsule bits in fullest cluster | p50 22 p95 35 worst 40 total 11745
-mobile-low-night | capsule bits set | p50 469 p95 880 worst 1205 total 261769
-mobile-low-night | capsule clusters marked | p50 236 p95 473 worst 642 total 135324
+mobile-low-night | capsule bits set | p50 469 p95 880 worst 1205 total 261724
+mobile-low-night | capsule clusters marked | p50 236 p95 470 worst 642 total 135290
 mobile-low-night | cascade 0 draws | p50 41 p95 64 worst 78 total 21703
 mobile-low-night | cascade 1 draws | p50 0 p95 246 worst 251 total 34308
 mobile-low-night | cascade 2 draws | not exercised

@@ -66,7 +66,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use game_combat::combat::{Combat, CombatOption};
-use game_combat::fight::{FightStand, PreparedRun, StandPlan, fight_stage};
+use game_combat::fight::{FightStand, NextRun, StandPlan, fight_stage};
 use game_ui::boot::{BOOT_SCREEN, BootScreen};
 use sapphire_platform::{AppInitError, ContentFs, Host, thread_cpu_time};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
@@ -811,21 +811,14 @@ impl Boot {
             Remade::Content(show, first, content) => {
                 // Its setup and its scenario's documents, 65 ms of a frame on an M5, on the warm-up pool.
                 let prepared = show.shown.fight.prepare_run_off_frame(&first);
-                Ok(Remade::Preparing(show, first, content, prepared))
+                Ok(Remade::Preparing(show, content, prepared))
             }
-            Remade::Preparing(mut show, first, mut content, prepared) => {
-                let combat = match prepared.try_recv() {
-                    Ok(PreparedRun::Ready(combat)) => Ok(Some(*combat)),
-                    // The stock arena's fight, whose setup reads content: a build with no flow's.
-                    Ok(PreparedRun::OnTheFrame) => {
-                        show.shown.fight.prepare_stock_combat(&first, &mut content).map(Some)
-                    }
-                    Ok(PreparedRun::Failed(error)) => Err(AppInitError::msg(error)),
-                    Err(mpsc::TryRecvError::Empty) => Ok(None),
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        Err(AppInitError::msg("the run's preparation on the warm-up pool panicked"))
-                    }
-                };
+            Remade::Preparing(mut show, mut content, mut prepared) => {
+                // The stock arena's fight, a build with no flow's, is prepared on this frame: its setup reads content.
+                let combat = prepared
+                    .poll(&mut show.shown.fight, || Ok(&mut *content))
+                    .map(|combat| combat.map(|combat| *combat))
+                    .map_err(AppInitError::msg);
                 combat.map(|combat| match combat {
                     Some(combat) => {
                         // Read beside the renderer's build, as `start`'s is: tens of milliseconds of documents.
@@ -837,7 +830,7 @@ impl Boot {
                         });
                         Remade::Run(show, content, combat, planned)
                     }
-                    None => Remade::Preparing(show, first, content, prepared),
+                    None => Remade::Preparing(show, content, prepared),
                 })
             }
             Remade::Run(show, content, combat, planned) => match planned.try_recv() {
@@ -1026,7 +1019,7 @@ enum Remade {
     /// The content, its packs mounted and the character asked for.
     Content(Box<GameShow>, CombatOption, Box<Content>),
     /// The run, preparing on the warm-up pool.
-    Preparing(Box<GameShow>, CombatOption, Box<Content>, mpsc::Receiver<PreparedRun>),
+    Preparing(Box<GameShow>, Box<Content>, NextRun),
     /// The run, prepared, with its plan reading on the warm-up pool.
     Run(Box<GameShow>, Box<Content>, Combat, mpsc::Receiver<Result<StandPlan, String>>),
     /// All of it.

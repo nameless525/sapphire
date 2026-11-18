@@ -24,13 +24,12 @@
 //!
 //! **The build's version (0.1.0)** is the app's to give: [`GameShow::show_version`] puts its label on the title.
 
-use std::sync::mpsc;
 use std::time::Duration;
 
 use game_combat::combat::{Combat, CombatOption, RunSoFar, read_bindings};
 use game_combat::dialogue::{DialogueEnded, DialogueRunError};
 use game_combat::documents::{FightDocuments, error_chain};
-use game_combat::fight::{FightStand, PreparedRun};
+use game_combat::fight::{FightStand, NextRun};
 use game_ui::dialogue::DialoguePanel;
 use game_ui::hud::{FightHud, HudMode, HudOptions, OffscreenDisplay, ShownFight};
 use game_ui::menus::{
@@ -160,7 +159,7 @@ enum HeldPlay {
 /// Where a restart's run is, under the held wipe: prepared on the warm-up pool, then the last run ended on a
 /// frame, then this one stood on the next, so no frame of the wipe holds all of it (M4 H4).
 enum RunStanding {
-    Preparing(mpsc::Receiver<PreparedRun>, CombatOption),
+    Preparing(NextRun),
     Ending(Box<Combat>),
     Standing(Box<Combat>),
 }
@@ -587,8 +586,7 @@ impl GameShow {
             self.follow_flow();
             return;
         };
-        let prepared = self.shown.fight.prepare_run_off_frame(&option);
-        self.run_standing = Some(RunStanding::Preparing(prepared, option));
+        self.run_standing = Some(RunStanding::Preparing(self.shown.fight.prepare_run_off_frame(&option)));
         self.follow_flow();
     }
 
@@ -596,18 +594,10 @@ impl GameShow {
     fn stand_run_part(&mut self, standing: RunStanding, scene: &mut Scene, content: &mut Content) {
         let fight = &mut self.shown.fight;
         let next = match standing {
-            RunStanding::Preparing(prepared, option) => match prepared.try_recv() {
-                Ok(PreparedRun::Ready(combat)) => Ok(Some(RunStanding::Ending(combat))),
-                Ok(PreparedRun::OnTheFrame) => fight
-                    .prepare_stock_combat(&option, content)
-                    .map_err(|error| error.to_string())
-                    .and_then(|combat| {
-                        game_combat::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
-                        Ok(Some(RunStanding::Ending(Box::new(combat))))
-                    }),
-                Ok(PreparedRun::Failed(error)) => Err(error),
-                Err(mpsc::TryRecvError::Empty) => Ok(Some(RunStanding::Preparing(prepared, option))),
-                Err(mpsc::TryRecvError::Disconnected) => Err("the run's preparation panicked".to_owned()),
+            RunStanding::Preparing(mut next) => match next.poll(fight, move || Ok(content)) {
+                Ok(Some(combat)) => Ok(Some(RunStanding::Ending(combat))),
+                Ok(None) => Ok(Some(RunStanding::Preparing(next))),
+                Err(error) => Err(error),
             },
             RunStanding::Ending(combat) => {
                 keep_ended_run(&mut self.ended_runs, fight.combat.as_ref());

@@ -961,3 +961,33 @@ fn the_stock_profile_does_not_move_with_the_heroines_kind() {
     let refused = stock_arena::StockArenaAssets::load(&mut content, &elsewhere).err();
     assert!(refused.is_some_and(|error| error.contains("another mesh")), "a kind on other assets stood");
 }
+
+/// M6 J2: once a `Fight`'s first stock fight has loaded the arena's bodies, a run starting over is prepared on the
+/// warm-up pool with the bodies it kept, reading no content, and stands the fight a setup on the frame stands, to
+/// its tables, its checksum and its cast. Reads the desktop cook (`cargo xtask content`), and stops without one.
+#[test]
+fn the_stock_arena_starts_over_off_the_frame_on_the_bodies_it_kept() {
+    let packs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/content/desktop");
+    let host = sapphire_platform::Host::with_content_at(&packs);
+    let Ok(mut content) = Content::new(&host, playable::KIND, SKY) else { return };
+    let option = CombatOption::Fight { script: None, party: false };
+    let mut fight = Fight::default();
+    fight.prepare_stock_combat(&option, &mut content).expect("the first stock fight loads the bodies");
+    let mut next = fight.prepare_run_off_frame(&option);
+    let mut polls = 0_u32;
+    let combat = loop {
+        // Content that can't be read: a run the pool couldn't prepare would fail here, on the frame.
+        let polled = next.poll(&mut fight, || Err(AppInitError::msg("the kept bodies read no content")));
+        if let Some(combat) = polled.expect("the stock arena stands off the frame") {
+            break combat;
+        }
+        polls += 1;
+        assert!(polls < 10_000, "still preparing after ten seconds");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let again =
+        fight.prepare_stock_combat(&option, &mut content).expect("the stock arena stands on the frame");
+    assert_eq!(combat.simulation().tables_hash(), again.simulation().tables_hash());
+    assert_eq!(combat.simulation().checksum(), again.simulation().checksum());
+    assert_eq!(combat.cast(), again.cast());
+}

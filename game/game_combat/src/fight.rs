@@ -214,14 +214,58 @@ impl FightStand {
     }
 }
 
-/// A run [`Fight::prepare_run_off_frame`] prepared.
-pub enum PreparedRun {
+/// What the warm-up pool made of a [`NextRun`].
+enum PreparedRun {
     /// Set up and checked.
     Ready(Box<Combat>),
-    /// One to prepare on the frame, with the content: the stock arena's fight.
+    /// One to prepare on the frame, with the content: the stock arena's fight before its bodies are loaded.
     OnTheFrame,
     /// Why it can't stand.
     Failed(String),
+}
+
+/// A run starting over off the frame (M4 H4, M6 J2), from [`Fight::prepare_run_off_frame`]: set up and checked on
+/// the warm-up pool, while the frames go on (a game's under its restart's wipe, a bench's after its fight's end),
+/// and taken by [`Self::poll`] on the first frame it's ready. What's left on that frame is standing it, which
+/// is the caller's. It answers once, with the run or why there's none, and is spent after; dropping it before
+/// then lets go of the run the pool's preparing.
+pub struct NextRun {
+    prepared: mpsc::Receiver<PreparedRun>,
+    option: CombatOption,
+    /// Whether [`Self::poll`] has answered, after which it's spent.
+    answered: bool,
+}
+
+impl NextRun {
+    /// The run once it's ready, `Ok(None)` while the pool's still at it: a frame's whole share of the preparation,
+    /// which allocates nothing until it's ready. The stock arena's fight before its bodies are loaded (each
+    /// [`Fight`]'s first) is prepared here, on the frame, with what `content` gives.
+    ///
+    /// # Errors
+    ///
+    /// Why it can't stand, that its preparation panicked, or that it has already answered.
+    pub fn poll<'a>(
+        &mut self,
+        fight: &mut Fight,
+        content: impl FnOnce() -> Result<&'a mut Content, AppInitError>,
+    ) -> Result<Option<Box<Combat>>, String> {
+        if self.answered {
+            return Err("the run was already taken or refused".to_owned());
+        }
+        let received = self.prepared.try_recv();
+        self.answered = !matches!(received, Err(mpsc::TryRecvError::Empty));
+        let combat = match received {
+            Ok(PreparedRun::Ready(combat)) => return Ok(Some(combat)),
+            Ok(PreparedRun::OnTheFrame) => {
+                fight.prepare_stock_combat_with(&self.option, content).map_err(|error| error.to_string())?
+            }
+            Ok(PreparedRun::Failed(error)) => return Err(error),
+            Err(mpsc::TryRecvError::Empty) => return Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => return Err("the run's preparation panicked".to_owned()),
+        };
+        crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+        Ok(Some(Box::new(combat)))
+    }
 }
 
 /// The part of a [`FightStand`] that's next.
@@ -2237,7 +2281,10 @@ pub struct Fight {
     pub combat: Option<Combat>,
     /// What it has on the scene.
     pub show: FightShow,
-    stock_arena: Option<stock_arena::StockArenaAssets>,
+    /// The stock arena's bodies, loaded by this `Fight`'s first stock fight's setup and kept for every one after,
+    /// on the frame or off it ([`Self::prepare_run_off_frame`]). A boot's remake after an update builds a new
+    /// `Fight`, which loads them again.
+    stock_arena: Option<Arc<stock_arena::StockArenaAssets>>,
     /// The numbers [`Self::stand`] stands it on: Sapphire's, unless a game's said otherwise.
     pub documents: FightDocuments,
     /// The steps [`Self::step_alone`] ran no tick for, while a timeline held the simulation (M3 Q3).
@@ -2295,7 +2342,7 @@ impl Fight {
             let content = content().map_err(|error| error.to_string())?;
             if self.stock_arena.is_none() {
                 let look = playable::look(content, playable::of_scenario(scenario.name)?)?;
-                self.stock_arena = Some(stock_arena::StockArenaAssets::load(content, &look)?);
+                self.stock_arena = Some(Arc::new(stock_arena::StockArenaAssets::load(content, &look)?));
             }
             self.stock_arena
                 .as_ref()
@@ -2821,18 +2868,26 @@ impl Fight {
         Ok(followed)
     }
 
-    /// Prepares `option`'s run on the warm-up pool, its scenario checked, for a game's restart under its wipe
-    /// (M4 H4): the simulation's setup and the scenario's documents are most of a restart's frame. The stock
-    /// arena's fight, whose setup reads content, comes back [`PreparedRun::OnTheFrame`].
+    /// Prepares `option`'s run on the warm-up pool, its scenario checked, for a restart under a fade (M4 H4, M6 J2):
+    /// the simulation's setup and the scenario's documents are a restart's whole cost, 8 to 9 ms of a frame on an
+    /// M5 for the district's fight, and none of it is left on a frame. The stock arena's fight installs the bodies
+    /// [`Self::prepare_stock_combat`] loaded, which it keeps; before they're loaded (this `Fight`'s first stock
+    /// fight) it's prepared on the frame ([`NextRun::poll`]), since loading them reads content.
     #[must_use]
-    pub fn prepare_run_off_frame(&self, option: &CombatOption) -> mpsc::Receiver<PreparedRun> {
-        let (option, live) = (option.clone(), self.documents.live());
+    pub fn prepare_run_off_frame(&self, option: &CombatOption) -> NextRun {
+        let (asked, live, stock) = (option.clone(), self.documents.live(), self.stock_arena.clone());
         let (sender, prepared) = mpsc::channel();
         sapphire_jobs::spawn_warm_up(move || {
             let mut on_the_frame = false;
-            let combat = Combat::from_live_with_setup(&option, &live, None, |scenario, _, _| {
-                on_the_frame = scenario.name == crate::arena::FIGHT_SCENARIO;
-                if on_the_frame { Err("the stock arena reads content".to_owned()) } else { Ok(()) }
+            let combat = Combat::from_live_with_setup(&asked, &live, None, |scenario, simulation, cast| {
+                if scenario.name != crate::arena::FIGHT_SCENARIO {
+                    return Ok(());
+                }
+                let Some(stock) = &stock else {
+                    on_the_frame = true;
+                    return Err("the stock arena's bodies aren't loaded".to_owned());
+                };
+                stock.install(simulation, cast)
             });
             let checked = combat.and_then(|combat| {
                 crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
@@ -2844,7 +2899,7 @@ impl Fight {
                 Err(error) => PreparedRun::Failed(error),
             });
         });
-        prepared
+        NextRun { prepared, option: option.clone(), answered: false }
     }
 
     /// An error if a replay has left its recorded checksums so far.
@@ -3019,6 +3074,64 @@ mod impact_tests {
         assert!(!ImpactPair::retains(held, [Some(cut), Some(warrior)]));
         assert!(!ImpactPair::retains(held, [None, Some(warrior)]));
         assert!(!ImpactPair::retains(held, [Some(GraphStepStamp { step: 53, ..hero }), Some(warrior)]));
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use std::time::Duration;
+
+    use sapphire_core::alloc::{self, PER_THREAD_COUNTS};
+    use sapphire_platform::AppInitError;
+
+    use super::Fight;
+    use crate::combat::{Combat, CombatOption};
+
+    /// The most a restart's ask may allocate on the frame's thread: the option's copy, the channel and the task.
+    const ASKING: u64 = 32;
+
+    /// M6 J2: a run starting over leaves its preparation off the frame. Asking for it and every poll until it's
+    /// ready allocate next to nothing on the asking thread, where setting the same run up there takes thousands,
+    /// and the run that's taken is the one a fresh setup makes, to its tables and its checksum.
+    #[test]
+    fn a_run_starting_over_leaves_its_preparation_off_the_frame() {
+        if !PER_THREAD_COUNTS {
+            return;
+        }
+        assert!(alloc::is_installed(), "the tests count allocations as an app does");
+        // The party's fight, which reads no content: the stock arena's first is prepared on the frame.
+        let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: true };
+        let mut fight = Fight::default();
+        let (fresh, on_the_frame) = alloc::count_in_scope(|| Combat::new(&option));
+        let fresh = fresh.expect("the party's fight stands");
+        let (mut next, asked) = alloc::count_in_scope(|| fight.prepare_run_off_frame(&option));
+        let mut polls = 0_u32;
+        let combat = loop {
+            let (polled, counts) = alloc::count_in_scope(|| {
+                next.poll(&mut fight, || Err(AppInitError::msg("the party's fight reads no content")))
+            });
+            let polled = polled.expect("it stands");
+            assert_eq!(counts.allocations, 0, "a poll took room on the frame");
+            if let Some(combat) = polled {
+                break combat;
+            }
+            polls += 1;
+            assert!(polls < 10_000, "still preparing after ten seconds");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(
+            asked.allocations <= ASKING && on_the_frame.allocations > 50 * ASKING,
+            "asking took {} allocations, setting the run up on the thread {}",
+            asked.allocations,
+            on_the_frame.allocations
+        );
+        assert_eq!(combat.simulation().tables_hash(), fresh.simulation().tables_hash());
+        assert_eq!(combat.simulation().checksum(), fresh.simulation().checksum());
+        assert_eq!(combat.cast(), fresh.cast());
+        assert!(
+            next.poll(&mut fight, || Err(AppInitError::msg("a spent run reads no content"))).is_err(),
+            "a run once taken is spent"
+        );
     }
 }
 

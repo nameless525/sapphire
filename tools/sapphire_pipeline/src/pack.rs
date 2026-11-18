@@ -56,6 +56,29 @@
 //! [`LOC`] or [`UI`], whose bytes a font's change must not move. No zone reaches a font or a chain, so what
 //! zones reach never moves one.
 //!
+//! # Parts
+//!
+//! A pack whose file would hold more than [`PART_CAP`] (128 MiB) is cut into parts (M6 K2), each a file of
+//! `sapphire_assets::pack`'s layout ("Parts" there) of at most that, mounted together by the pack's name. A
+//! patch replaces the parts whose bytes it changes, so what an install writes, the room it asks for and the
+//! disk it holds go with the parts a patch touches rather than the pack: before parts, a 5.6 MB patch to the
+//! benchmark's 1.12 GB district rewrote and hashed the whole pack (M5 M7).
+//!
+//! The cut has to keep a small change in one part, so it never depends on where an asset falls in an order
+//! that its neighbours' sizes shift. Assets go by units: a texture with its levels, which a change to the
+//! texture cooks again together, and every other asset alone. A unit goes in the bucket the first bits of its
+//! ID's blake3 hash name, and a pack takes the fewest buckets, a power of two, in which every bucket fits the
+//! cap; each bucket is a part, in bucket order, an empty one an empty part, so emptying a bucket or filling an
+//! empty one moves no other part. A unit too large to share a part (a texture of over 128 MiB with its levels)
+//! is a part alone, after them, in ID order. Every part's header holds the count and the cut's stamp (the
+//! bucket count and the units alone, so parts of two cuts never mount as one), so an edit that changes the
+//! count or the stamp rewrites every part, as a format change does, and its patch installs the whole pack: one
+//! that changes the bucket count, when a bucket outgrows the cap, or adds or removes a unit alone. A
+//! patch-sized edit seldom does. Parts hold between about a quarter and all of the cap: a pack of 1.04 GiB in
+//! 16 buckets would hold about 66 MiB a part. A pack that fits is one part, under its own name, and a cook of
+//! `content/` cuts none. A cook's parts, every pack's together, are at most a release manifest's packs, and a
+//! part's name at most its name length.
+//!
 //! # Notices
 //!
 //! A font's license can require every build that ships it to ship the license too: the OFL's second
@@ -105,6 +128,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::code_names::CodeName;
 use sapphire_assets::font::{FONTS_PACK, Font};
+use sapphire_assets::manifest;
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
@@ -122,6 +146,9 @@ use crate::zone;
 /// in step with `Cargo.lock`: a new zstd or lz4_flex may compress differently, so it re-encodes
 /// everything. Bump the version when the codec policy, block encoding or pack layout changes.
 pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 5 };
+
+/// The most bytes a pack's file holds: a pack larger is cut into parts (see "Parts" in the [module docs](self)).
+pub const PART_CAP: u64 = 128 << 20;
 
 /// What a cooked asset reaches, as cache keys know it. Bump the version whenever that changes for the
 /// same bytes ([`AssetKind::reach`]).
@@ -246,6 +273,18 @@ pub enum PackError {
     MoveSetNameClash { first: PathBuf, second: PathBuf },
     #[error("{} changed after it was cooked; cook again", path.display())]
     Changed { path: PathBuf },
+    #[error("pack {name} can't be named with a `.`, which marks a part's file: rename what it's named after")]
+    PackName { name: String },
+    #[error(
+        "part {name}'s name is over {} bytes, which a release manifest refuses: give its pack a shorter name",
+        manifest::MAX_NAME_LEN
+    )]
+    PartName { name: String },
+    #[error(
+        "the cook's packs are {files} files in parts, and a release names at most {}: cut fewer or larger packs",
+        manifest::MAX_PACKS
+    )]
+    TooManyFiles { files: usize },
     #[error("the pack directory {} holds cooked file {}: packing would prune it", packs.display(), output.display())]
     Overlap { packs: PathBuf, output: PathBuf },
     #[error("failed to pack {}", path.display())]
@@ -341,6 +380,17 @@ pub fn check_code_names(
 /// the same output tree (xtask holds that tree's content lock). Publication is atomic per
 /// file; the directory is not a transaction across packs, notices and pruning.
 pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Result<PackReport, PackError> {
+    pack_cooked_in_parts(report, out, cache, PART_CAP)
+}
+
+/// [`pack_cooked`], cutting a pack whose file would be over `cap` bytes into parts of at most `cap` (see
+/// "Parts"): tests cut small packs.
+pub(crate) fn pack_cooked_in_parts(
+    report: &CookReport,
+    out: &Path,
+    cache: Option<&Path>,
+    cap: u64,
+) -> Result<PackReport, PackError> {
     // Pruning the pack directory would delete loose cooked files kept in it, including
     // symlink names whose targets lie elsewhere.
     if let Some(asset) = report.assets.iter().find(|asset| asset.output.starts_with(out)) {
@@ -368,7 +418,10 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
     let mut packs = Vec::with_capacity(groups.len());
     let workers = std::thread::available_parallelism().map_or(1, usize::from).min(4);
     for (name, assets) in groups {
-        packs.push(pack_group(&name, &assets, &ids, out, cache.as_ref(), workers)?);
+        packs.extend(pack_group(&name, &assets, &ids, out, cache.as_ref(), workers, cap)?);
+        if packs.len() > manifest::MAX_PACKS {
+            return Err(PackError::TooManyFiles { files: packs.len() });
+        }
     }
     let paths: HashSet<&Path> = packs.iter().map(|pack| pack.path.as_path()).collect();
     let mut extensions = vec![PACK_EXTENSION];
@@ -759,7 +812,7 @@ fn check_move_set_names(report: &CookReport) -> Result<(), PackError> {
     Ok(())
 }
 
-/// Brings pack `name`, holding `assets`, up to date.
+/// Brings pack `name`, holding `assets`, up to date, in parts of at most `cap` bytes: one [`PackedPack`] a part.
 fn pack_group(
     name: &str,
     assets: &[&CookedAsset],
@@ -767,8 +820,12 @@ fn pack_group(
     out: &Path,
     cache: Option<&Cache>,
     workers: usize,
-) -> Result<PackedPack, PackError> {
-    let path = out.join(format::file_name(name));
+    cap: u64,
+) -> Result<Vec<PackedPack>, PackError> {
+    if name.contains('.') {
+        return Err(PackError::PackName { name: name.to_owned() });
+    }
+    let path = |part| out.join(format::file_name(&format::part_name(name, part)));
     let mut packing = assets
         .iter()
         .map(|&asset| {
@@ -796,20 +853,24 @@ fn pack_group(
         .filter(|packing| carries_a_name(packing.kind))
         .map(|packing| (packing.asset.id, packing.asset.name.as_str()))
         .collect();
-    let pack_key = CacheKey::pack(PACKER, name, &keys, &rows, &names);
-    let current = file_hash(&path)?;
-    let done = |encoded, bytes, status| PackedPack {
-        name: name.to_owned(),
-        path: path.clone(),
-        assets: packing.len(),
-        bytes,
-        encoded,
-        status,
-    };
-    if let (Some(cache), Some((hash, len))) = (cache, current)
-        && cache.get(&pack_key)?.is_some_and(|recorded| recorded == hash.as_bytes())
+    // The cap decides the cut, so it's in the key, which records each part's file hash and asset count.
+    let pack_key = CacheKey::pack(PACKER, &format!("{name} in parts of {cap}"), &keys, &rows, &names);
+    if let Some(cache) = cache
+        && let Some(recorded) = cache.get(&pack_key)?
+        && let Some(packed) = up_to_date(&recorded, path)?
     {
-        return Ok(done(0, len, PackStatus::UpToDate));
+        return Ok(packed
+            .into_iter()
+            .enumerate()
+            .map(|(part, (assets, bytes))| PackedPack {
+                name: format::part_name(name, part as u32),
+                path: path(part as u32),
+                assets,
+                bytes,
+                encoded: 0,
+                status: PackStatus::UpToDate,
+            })
+            .collect());
     }
 
     // A cache miss for duplicated content must encode once, just as the serial cache did.
@@ -830,7 +891,7 @@ fn pack_group(
         remaining[job] += 1;
     }
     let mut results = encode_jobs(&packing, &jobs, cache, workers);
-    let mut encoded = 0;
+    let mut encoded = Vec::with_capacity(packing.len());
     let mut packed = Vec::with_capacity(packing.len());
     for (index, item) in packing.iter().enumerate() {
         let asset = item.asset;
@@ -844,7 +905,7 @@ fn pack_group(
                 Err(_) => return Err(results[job].take().expect("the failed job is present").unwrap_err()),
             }
         };
-        encoded += usize::from(fresh && jobs[job] == index);
+        encoded.push(fresh && jobs[job] == index);
         // Identical cooks share an encoding; each asset keeps its own ID, and what it draws through,
         // which its materials say rather than its bytes.
         pack_asset.id = asset.id;
@@ -853,18 +914,155 @@ fn pack_group(
         if let Some(&missing) = pack_asset.dependencies.iter().find(|id| !ids.contains_key(*id)) {
             return Err(PackError::MissingDependency { path: asset.output.clone(), id: missing });
         }
-        packed.push(pack_asset);
+        packed.push(Some(pack_asset));
     }
-    let bytes =
-        format::write_pack(packed).map_err(|source| PackError::Format { path: path.clone(), source })?;
-    let hash = blake3::hash(&bytes);
-    if current.map(|(hash, _)| hash) != Some(hash) {
-        cook::write_atomically(&path, &bytes)?;
+
+    let Cut { parts: cut, stamp } =
+        cut(packed.iter().flatten(), cap).map_err(|source| PackError::Format { path: path(0), source })?;
+    let parts = cut.len() as u32;
+    let last = format::part_name(name, parts - 1);
+    if last.len() > manifest::MAX_NAME_LEN {
+        return Err(PackError::PartName { name: last });
+    }
+    let mut written = Vec::with_capacity(cut.len());
+    let mut record = Vec::with_capacity(cut.len() * RECORD_LEN);
+    for (part, members) in (0..parts).zip(cut) {
+        let path = path(part);
+        let fresh = members.iter().filter(|&&index| encoded[index]).count();
+        let assets: Vec<PackAsset> =
+            members.iter().map(|&index| packed[index].take().expect("each asset is in one part")).collect();
+        let count = assets.len();
+        let bytes = format::write_part(assets, part, parts, stamp)
+            .map_err(|source| PackError::Format { path: path.clone(), source })?;
+        let hash = blake3::hash(&bytes);
+        if file_hash(&path)?.map(|(hash, _)| hash) != Some(hash) {
+            cook::write_atomically(&path, &bytes)?;
+        }
+        record.extend_from_slice(hash.as_bytes());
+        record.extend_from_slice(&(count as u32).to_le_bytes());
+        written.push(PackedPack {
+            name: format::part_name(name, part),
+            path,
+            assets: count,
+            bytes: bytes.len() as u64,
+            encoded: fresh,
+            status: PackStatus::Packed,
+        });
     }
     if let Some(cache) = cache {
-        cache.put(&pack_key, hash.as_bytes())?;
+        cache.put(&pack_key, &record)?;
     }
-    Ok(done(encoded, bytes.len() as u64, PackStatus::Packed))
+    Ok(written)
+}
+
+/// Bytes a pack's record in the cache gives each part: its file's hash and its asset count.
+const RECORD_LEN: usize = 36;
+
+/// Each part's asset count and file length, if `record` says what the part files `path` names hold now.
+fn up_to_date(record: &[u8], path: impl Fn(u32) -> PathBuf) -> Result<Option<Vec<(usize, u64)>>, PackError> {
+    let (parts, rest) = record.as_chunks::<RECORD_LEN>();
+    if parts.is_empty() || !rest.is_empty() {
+        return Ok(None);
+    }
+    let mut found = Vec::with_capacity(parts.len());
+    for (part, recorded) in (0u32..).zip(parts) {
+        match file_hash(&path(part))? {
+            Some((hash, len)) if hash.as_bytes()[..] == recorded[..32] => {
+                let assets = u32::from_le_bytes(*recorded[32..].first_chunk().expect("4 bytes"));
+                found.push((assets as usize, len));
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(found))
+}
+
+/// A pack's cut: each part's assets, by their place in what was cut, and the stamp every part's header carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cut {
+    pub parts: Vec<Vec<usize>>,
+    /// The cut's shape (its bucket count and the units alone), the same for every cut that puts each asset in
+    /// the same part; zeros for a pack of one part.
+    pub stamp: [u8; 8],
+}
+
+/// How a pack of `assets` is cut into parts whose files hold at most `cap` bytes (see "Parts" in the
+/// [module docs](self)): one part if they fit. A texture goes with its levels, a unit. A unit too large for a
+/// part with others is a part alone, after the rest, which are cut by the first bits of their units' hashed
+/// IDs into the fewest buckets, a power of two, that each fit; a bucket that holds nothing is an empty part, so
+/// the count and the numbering hold while the bucket count does. A tool that lays a cooked pack out again (a
+/// patch's rehearsal) cuts it the same way.
+pub fn cut<'a>(assets: impl Iterator<Item = &'a PackAsset>, cap: u64) -> Result<Cut, format::PackError> {
+    let assets: Vec<&PackAsset> = assets.collect();
+    let room = cap.saturating_sub(format::PACK_OVERHEAD);
+    let total: u64 = assets.iter().map(|asset| asset.packed_len()).sum();
+    if total <= room {
+        return Ok(Cut { parts: vec![(0..assets.len()).collect()], stamp: [0; 8] });
+    }
+    // Each asset's unit, by the place of the asset that leads it: a texture leads its levels.
+    let places: HashMap<AssetId, usize> =
+        assets.iter().enumerate().map(|(index, asset)| (asset.id, index)).collect();
+    let mut unit: Vec<usize> = (0..assets.len()).collect();
+    for (index, asset) in assets.iter().enumerate().filter(|(_, asset)| asset.kind == AssetKind::Texture) {
+        for level in 0..texture_level::MAX_LEVELS {
+            match places.get(&TextureLevel::id(asset.id, level)) {
+                Some(&at) if assets[at].kind == AssetKind::TextureLevel => unit[at] = index,
+                _ => break,
+            }
+        }
+    }
+    let mut units: BTreeMap<usize, (u64, Vec<usize>)> = BTreeMap::new();
+    for (index, &lead) in unit.iter().enumerate() {
+        let entry = units.entry(lead).or_default();
+        entry.0 += assets[index].packed_len();
+        entry.1.push(index);
+    }
+    let hashed = |lead: usize| {
+        let hash = blake3::hash(&assets[lead].id.to_bytes());
+        u64::from_be_bytes(*hash.as_bytes().first_chunk().expect("8 bytes"))
+    };
+    let (alone, rest): (Vec<_>, Vec<_>) = units.into_iter().partition(|(_, (len, _))| *len > room);
+    let rest: Vec<(u64, u64, Vec<usize>)> =
+        rest.into_iter().map(|(lead, (len, members))| (hashed(lead), len, members)).collect();
+    let most_bits = format::MAX_PARTS.ilog2();
+    let bits = (0..=most_bits)
+        .find(|&bits| {
+            let mut buckets = vec![0u64; 1 << bits];
+            for (hash, len, _) in &rest {
+                buckets[bucket(*hash, bits)] += len;
+            }
+            buckets.iter().all(|&len| len <= room)
+        })
+        .ok_or(format::PackError::Uncuttable { cap })?;
+    // With nothing to share a part, there are no buckets.
+    let mut parts: Vec<Vec<usize>> = if rest.is_empty() { Vec::new() } else { vec![Vec::new(); 1 << bits] };
+    for (hash, _, members) in rest {
+        parts[bucket(hash, bits)].extend(members);
+    }
+    // The shape: which bucket each unit goes in follows from the bucket count, so a part of one cut and a part
+    // of another with the same shape never hold an asset twice or lose one between them.
+    let mut shape = blake3::Hasher::new();
+    shape.update(b"sapphire pack cut");
+    shape.update(&(parts.len() as u32).to_le_bytes());
+    // `alone` is in its leads' order, which is ID order.
+    for (lead, (_, members)) in alone {
+        shape.update(&assets[lead].id.to_bytes());
+        parts.push(members);
+    }
+    if parts.len() > format::MAX_PARTS as usize {
+        return Err(format::PackError::Uncuttable { cap });
+    }
+    for members in &mut parts {
+        members.sort_unstable();
+    }
+    shape.update(&(parts.len() as u32).to_le_bytes());
+    let stamp = *shape.finalize().as_bytes().first_chunk().expect("8 bytes");
+    Ok(Cut { parts, stamp })
+}
+
+/// The bucket of `bits` bits a unit whose ID hashes to `hash` goes in: its hash's first bits.
+fn bucket(hash: u64, bits: u32) -> usize {
+    if bits == 0 { 0 } else { (hash >> (64 - bits)) as usize }
 }
 
 /// An encoding and whether this run compressed it rather than reading its cache entry.

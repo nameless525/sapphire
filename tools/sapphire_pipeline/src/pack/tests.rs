@@ -13,6 +13,8 @@ use crate::samples;
 use crate::test_util::{TempDir, read_aligned};
 use crate::texture::{ColorSettings, TextureClass, TextureSettings};
 
+mod parts;
+
 const ALBEDO: &str = "5b7e1c2d-3a4f-4b6c-8d9e-0f1a2b3c4d5e";
 const HAIR: &str = "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d";
 const MANNEQUIN: &str = "1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f9";
@@ -191,6 +193,20 @@ fn packing_is_deterministic_and_cached() {
     assert!(scratch.shared(Cook::Mobile) != scratch.shared(Cook::Desktop));
 }
 
+/// Packs `assets` as pack `name`, which fits one part.
+fn pack_one(
+    name: &str,
+    assets: &[&CookedAsset],
+    ids: &HashMap<AssetId, &CookedAsset>,
+    out: &Path,
+    cache: Option<&Cache>,
+    workers: usize,
+) -> Result<PackedPack, PackError> {
+    let mut parts = pack_group(name, assets, ids, out, cache, workers, PART_CAP)?;
+    assert_eq!(parts.len(), 1, "a small pack is one part");
+    Ok(parts.remove(0))
+}
+
 #[test]
 fn parallel_packing_keeps_bytes_and_shared_encoding_counts() {
     let scratch = Scratch::new("pack_parallel");
@@ -204,7 +220,7 @@ fn parallel_packing_keeps_bytes_and_shared_encoding_counts() {
     for workers in [1, 2, 4] {
         let out = scratch.dir.path().join(format!("workers-{workers}"));
         let cache = Cache::new(scratch.dir.path().join(format!("cache-{workers}")));
-        let packed = pack_group(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap();
+        let packed = pack_one(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap();
         assert_eq!((packed.assets, packed.encoded), (4, 3), "one encoding for identical content");
         let bytes = fs::read(&packed.path).unwrap();
         if let Some(expected) = &expected {
@@ -213,7 +229,7 @@ fn parallel_packing_keeps_bytes_and_shared_encoding_counts() {
             expected = Some(bytes.clone());
         }
         fs::remove_file(&packed.path).unwrap();
-        assert_eq!(pack_group(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap().encoded, 0);
+        assert_eq!(pack_one(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap().encoded, 0);
         assert_eq!(fs::read(&packed.path).unwrap(), bytes);
 
         // A damaged shared encoding is regenerated exactly once, not once per duplicate asset.
@@ -221,11 +237,11 @@ fn parallel_packing_keeps_bytes_and_shared_encoding_counts() {
         let key = CacheKey::packed(&texture.output_hash, AssetKind::Texture, PACKER, Codec::Zstd, ZSTD_LEVEL);
         fs::write(cache.entry_path(&key), b"damaged entry").unwrap();
         fs::remove_file(&packed.path).unwrap();
-        assert_eq!(pack_group(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap().encoded, 1);
+        assert_eq!(pack_one(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap().encoded, 1);
         assert_eq!(fs::read(&packed.path).unwrap(), bytes);
 
         let uncached = out.join("uncached");
-        assert_eq!(pack_group(SHARED, &assets, &ids, &uncached, None, workers).unwrap().encoded, 4);
+        assert_eq!(pack_one(SHARED, &assets, &ids, &uncached, None, workers).unwrap().encoded, 4);
         assert_eq!(fs::read(uncached.join(format::file_name(SHARED))).unwrap(), bytes);
     }
 }
@@ -249,7 +265,7 @@ fn parallel_encoding_reports_the_first_error_in_asset_order() {
     let first = &report.assets[0];
     for workers in [1, 2, 4] {
         let out = scratch.dir.path().join(format!("workers-{workers}"));
-        let error = pack_group(SHARED, &assets, &ids, &out, None, workers).unwrap_err();
+        let error = pack_one(SHARED, &assets, &ids, &out, None, workers).unwrap_err();
         assert!(matches!(error, PackError::Invalid { path, .. } if path == first.output));
         assert!(!out.join(format::file_name(SHARED)).exists(), "an unsuccessful pack is never published");
     }

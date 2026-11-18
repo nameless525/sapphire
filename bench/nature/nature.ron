@@ -1,0 +1,143 @@
+// The benchmark's nature zone (M6 W1): terrain, a lake and a river, grass, trees, a dusk day that rains, probes, and
+// the named areas later packages fill. `sapphire_pipeline::bench::nature` generates it; its water, the clearing's
+// fight and what that fight stands on are `sapphire_synthetic_zone::nature`'s, compiled in. +X is east, +Z south;
+// the zone runs 1,024 m either way east to west and 640 m north to south.
+(
+    type: "sapphire::pipeline::BenchNature",
+    version: 1,
+    data: (
+        cell_size: 64.0,
+        // Terrain a tile a cell, at 4 m: the cell meshes W12's height fields replace.
+        hills: (amplitude: 7.0, wavelength: 160.0, octaves: 3, seed: 11),
+        ground: "meadow",
+        // The named areas, each plain ground shaped as its row asks, with a stone marker at its middle, until the
+        // package named fills it in its own pull request (m6-plan, W1).
+        areas: [
+            (
+                name: "forest",
+                about: "the forest block, 1,024 m square (1.05 km²): today's trees densely, until G6a's and G2b's forest",
+                min: (-1024.0, -640.0),
+                max: (0.0, 384.0),
+                shape: Plain,
+                ground: "forest_floor",
+                forest: true,
+            ),
+            (
+                name: "coast",
+                about: "the coast, falling to the east: plain sand until H1b's ocean and shore",
+                min: (832.0, -640.0),
+                max: (1024.0, 640.0),
+                shape: Slope(6.0),
+                ground: "sand",
+            ),
+            (
+                name: "cave",
+                about: "the cave's hill: a rock mound until V2's and V3's cave",
+                min: (576.0, 416.0),
+                max: (768.0, 608.0),
+                shape: Mound(16.0),
+                ground: "rock",
+            ),
+            (
+                name: "valley",
+                about: "the valley: a rock bowl until V2's and V3's valley",
+                min: (448.0, -608.0),
+                max: (768.0, -288.0),
+                shape: Bowl(10.0),
+                ground: "rock",
+            ),
+            (
+                name: "frozen_pond",
+                about: "the frozen pond and its snowy ground: W2's frozen lake, plain until V6's ice",
+                min: (-640.0, 400.0),
+                max: (-320.0, 624.0),
+                shape: Plain,
+                ground: "snow",
+            ),
+        ],
+        // The trees part's four species at their three ages (`bench/trees/`), by ID.
+        trees: [
+            (species: "broadleaf", ages: ["young", "mature", "old"]),
+            (species: "blossom", ages: ["young", "mature", "old"]),
+            (species: "conifer", ages: ["young", "mature", "old"]),
+            (species: "willow", ages: ["young", "mature", "old"]),
+        ],
+        grass: (
+            blades: 48,
+            radius: 1.0,
+            height: (0.3, 0.6),
+            width: 0.06,
+            root: (0.05, 0.12, 0.03),
+            tip: (0.35, 0.55, 0.16),
+            wind: (sway: 0.0, bend: 0.12, flutter: 0.02, flutter_frequency: 1.6),
+            reach: 24.0,
+        ),
+        corridor: 3.0,
+        // The rails a zone walk follows (`--zone-walk <name>`), each point at the terrain's height.
+        walks: [
+            // The nature walk: down the river's west bank, across the meadow, past the lake's west shore and into the
+            // clearing, about 790 m.
+            (
+                name: "walk",
+                points: [
+                    (200.0, -420.0), (225.0, -330.0), (250.0, -220.0), (300.0, -80.0), (340.0, 40.0), (365.0, 150.0),
+                    (370.0, 235.0), (335.0, 300.0), (322.0, 330.0),
+                ],
+            ),
+            // Into the forest block from its east edge, about 850 m.
+            (
+                name: "forest",
+                points: [(-16.0, -100.0), (-120.0, -140.0), (-260.0, -90.0), (-420.0, -160.0), (-600.0, -120.0), (-800.0, -200.0)],
+            ),
+            // Standing off the forest's east edge 30 m over the ground, above its tallest trees (18 m), looking west
+            // over its canopy: a few steps, then still.
+            (name: "overlook", points: [(40.0, -118.0), (24.0, -120.0)], corridor: false, lift: 30.0),
+            // Along the coast, north to south, and down the beach to the east.
+            (name: "coast", points: [(900.0, -560.0), (900.0, 560.0)]),
+            (name: "coast_dive", points: [(850.0, 0.0), (1010.0, 0.0)]),
+        ],
+        day: "nature_day.ron",
+        // Clear by day and rain from 19:00, so the dusk key stands in rain: the shares wet as Y2 integrates them.
+        weather_plan: (
+            states: "nature.weather.ron",
+            seed: 7,
+            schedule: [(from: 6.0, states: [(state: "clear")]), (from: 19.0, states: [(state: "rain")])],
+        ),
+        wind: Some((direction: (0.6, 0.0, 0.8), strength: 0.5, gustiness: 0.35)),
+        fog: Some((density: 1.0)),
+        // The ambient probe grid over the walk's end: the lake, its shore and the clearing, at the shipped zones'
+        // settings but 4 m apart on the desktops and 8 m on the phones.
+        probe_grid: (
+            min: (256.0, 96.0),
+            max: (544.0, 376.0),
+            floor: -4.0,
+            top: 16.0,
+            visibility: (desktop: L2, mobile: L1),
+            rays: (desktop: 128, mobile: 64),
+            surfel_rays: 32,
+            surfel_spacing: 1.0,
+            bounces: 2,
+            bounce_strength: 1.0,
+        ),
+        // A reflection probe over each water body, which its surface names, the clearing and the meadow.
+        reflections: [
+            (name: "lake", position: (480.0, 1.5, 160.0), parallax: (min: (400.0, -4.0, 104.0), max: (560.0, 16.0, 216.0))),
+            (name: "river", position: (300.0, 1.5, -200.0), parallax: (min: (240.0, -4.0, -300.0), max: (380.0, 16.0, -100.0))),
+            (name: "frozen_pond", position: (-480.0, 1.5, 512.0), parallax: (min: (-528.0, -4.0, 472.0), max: (-432.0, 12.0, 552.0))),
+            (name: "clearing", position: (320.0, 1.6, 320.0), parallax: (min: (272.0, -1.0, 272.0), max: (368.0, 14.0, 368.0))),
+            (name: "meadow", position: (340.0, 4.0, 40.0), parallax: (min: (280.0, -4.0, -40.0), max: (420.0, 16.0, 120.0))),
+        ],
+        presets: (
+            // Small: the route end to end, its trees and grass sparse, its tiles and probe bricks coarse.
+            ci: (
+                texture_size: 256, forest_spacing: 24.0, meadow_spacing: 48.0, grass_spacing: 6.0, tile_quads: 8,
+                probe_spacing: (desktop: 8.0, mobile: 16.0),
+            ),
+            // The shipped game's: the forest at 12 m, grass at 3 m, tiles of 16 quads and probe bricks at 4 m.
+            budget: (
+                texture_size: 1024, forest_spacing: 12.0, meadow_spacing: 32.0, grass_spacing: 3.0, tile_quads: 16,
+                probe_spacing: (desktop: 4.0, mobile: 8.0),
+            ),
+        ),
+    ),
+)

@@ -1,0 +1,15 @@
+// Meadow turf: soft, mottled green with a little earth showing. The ground of the nature zone outside its areas.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 21,
+        pattern: Plain,
+        grain: (scale: 6, octaves: 7, depth: 0.25),
+        colors: [(0.0, "#4a6a2e"), (0.55, "#6a8c3c"), (1.0, "#8ea852")],
+        relief: 0.006,
+        roughness: (0.8, 1.0),
+        specular: 0.06,
+    ),
+)

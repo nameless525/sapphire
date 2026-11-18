@@ -1,0 +1,15 @@
+// Pale beach sand, finely grained. The coast's ground.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 23,
+        pattern: Plain,
+        grain: (scale: 12, octaves: 6, depth: 0.12),
+        colors: [(0.0, "#b8a682"), (0.5, "#d2c29c"), (1.0, "#e6d8b6")],
+        relief: 0.003,
+        roughness: (0.75, 0.95),
+        specular: 0.1,
+    ),
+)

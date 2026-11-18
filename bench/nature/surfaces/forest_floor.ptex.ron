@@ -1,0 +1,15 @@
+// Forest floor: dark earth under needles and leaf litter, a little moss. The forest block's ground.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 22,
+        pattern: Plain,
+        grain: (scale: 10, octaves: 7, depth: 0.35),
+        colors: [(0.0, "#2e2a1e"), (0.5, "#4a3e2a"), (1.0, "#5e6a34")],
+        relief: 0.008,
+        roughness: (0.85, 1.0),
+        specular: 0.05,
+    ),
+)

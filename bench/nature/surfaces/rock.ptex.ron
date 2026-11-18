@@ -1,0 +1,16 @@
+// Grey-brown rock in broken slabs. The cave's and the valley's ground.
+(
+    type: "sapphire::pipeline::ProceduralTexture",
+    version: 1,
+    data: (
+        size: 2048,
+        seed: 24,
+        pattern: Stones((cells: 4, joint: 0.006, bevel: 0.02)),
+        grain: (scale: 8, octaves: 7, depth: 0.4),
+        colors: [(0.0, "#56524a"), (0.6, "#77716a"), (1.0, "#948c80")],
+        joint_color: "#2e2c28",
+        relief: 0.012,
+        roughness: (0.6, 0.9),
+        specular: 0.2,
+    ),
+)

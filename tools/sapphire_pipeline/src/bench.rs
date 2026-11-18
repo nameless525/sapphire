@@ -12,9 +12,9 @@
 //! # Parts
 //!
 //! The tree is made of parts ([`PARTS`]), each a folder of `bench/` and a generator of its own: the
-//! district ([`district`], M5 B2's), the cast ([`cast`], M5 B3's) and the trees ([`trees`], M6 G6a's). A part reads its own folder, so its
-//! presets and documents are its own, and returns its sources ([`Source`]) relative to its folder in the
-//! output. This module writes them, gives each its sidecar with an ID derived from its path ([`asset_id`]),
+//! district ([`district`], M5 B2's), the cast ([`cast`], M5 B3's), the trees ([`trees`], M6 G6a's) and the
+//! nature zone ([`nature`], M6 W1's). A part reads its own folder, so its presets and documents are its own,
+//! and returns its sources ([`Source`]) relative to its folder in the output. This module writes them, gives each its sidecar with an ID derived from its path ([`asset_id`]),
 //! and removes whatever an earlier run wrote that this one didn't. A part names another part's assets by
 //! the same IDs, without reading its files.
 //!
@@ -64,12 +64,13 @@ use crate::tree::TreeError;
 pub mod cast;
 pub mod district;
 pub mod kinds;
+pub mod nature;
 #[cfg(test)]
 mod tests;
 pub mod trees;
 
 /// The root every benchmark asset's ID derives from ([`asset_id`]).
-pub const BENCH_ROOT: AssetId = AssetId::from_text("4b0c8e31-5d27-4f6a-9a83-2e61c07db5f4");
+pub const BENCH_ROOT: AssetId = sapphire_synthetic_zone::BENCH_ROOT;
 
 /// The file a generated tree holds at its root, which says what made it. [`generate`] only removes files
 /// from a directory that holds one, or an empty one, so it can't empty a directory it didn't write. Hidden,
@@ -77,8 +78,12 @@ pub const BENCH_ROOT: AssetId = AssetId::from_text("4b0c8e31-5d27-4f6a-9a83-2e61
 pub const MARKER: &str = ".bench-source";
 
 /// Every part: its folder under `bench/` and in the output, and its generator.
-pub const PARTS: [(&str, Generator); 3] =
-    [("district", district::generate), ("cast", cast::generate), (trees::PART, trees::generate)];
+pub const PARTS: [(&str, Generator); 4] = [
+    ("district", district::generate),
+    ("cast", cast::generate),
+    (trees::PART, trees::generate),
+    (nature::PART, nature::generate),
+];
 
 /// A part's generator: its folder under `bench/`, the preset and the cook the tree is for, to its sources.
 pub type Generator = fn(&Path, Preset, Cook) -> Result<Vec<Source>, BenchError>;

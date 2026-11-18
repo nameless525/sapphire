@@ -64,6 +64,12 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
         ("district/materials", "57aaa0fc00432b725fe541e79abfa9e0b89db350aad58b9d6045af8e407685b0"),
         ("district/prefabs", "fd7f488cd15839048f1ecd7c2dc0f05d588fed511ddaedc1270d2e4b4923476c"),
         ("district/textures", "3e8613b7430eec9bb2d03163a999abe8ff34be45744a6c7908f0b94d853005c0"),
+        ("nature", "85251cf6e7fd82264f3cb28e0395551b54465a6bbd808ae262a984de2a5784f7"),
+        ("nature/grass", "682d33944411dc8bbc6a3a9a51066bdeb666845447e5bc9cb8a9cc0c471e915e"),
+        ("nature/materials", "b7f4a5ffa29354ce656185c46925c330f55c656edd6d8080d226527aa11ce777"),
+        ("nature/prefabs", "b77048e1c3441bb87338c631c08778f75bbf03445d5efcee98c32168832262f0"),
+        ("nature/terrain", "2a7fb42b504afb3a38a5d7076ad94ad95739e13834f23fcdb01e14c21f665eed"),
+        ("nature/textures", "b222255b26aa4cf6ec4249430cbe90cf8d5d8cf7307ab2c9eaa40fac4676430b"),
         ("trees/blossom", "78a5f9d6bcf5faa07948468101050cbd5c40d12498dcf12287debdf9eef8a103"),
         ("trees/broadleaf", "e11e019c52e3729e626569cdca84cee1f3e29b162afefedec02a6f492703c4d2"),
         ("trees/conifer", "0cb8d797e6d4280496b8d658e8058b3ef9595e8b3f91763137bd60e6ddba9e97"),
@@ -88,6 +94,49 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
     assert!(found == pinned, "the ci preset's folders hash otherwise; found:\n{found:#?}");
 }
 
+/// The nature zone's part (M6 W1), pinned whole at `ci` and `budget`: blake3 over each of its files' paths,
+/// lengths and bytes, in path order, as the `ci` tree's folders are above. Its terrain, water, scatter and
+/// tufts are integer hashes, the four operations, `floor`, `ceil` and `sqrt`, so these hold on every machine. A
+/// package that fills one of its areas moves them on purpose (m6-plan, W1): pin them again then, and the
+/// orchestrator re-baselines the units the change moves.
+#[test]
+fn the_nature_zone_generates_the_same_bytes_on_every_machine() {
+    const PINNED: &[(Preset, &str)] = &[
+        (
+            Preset::Ci,
+            "752fdc0de53a38ed904102990f6bb30afde6272bf89e78da8ddfc7e702da0aaa \
+             6d255aeb8c61ad93f0052980408137784f4f179f8c7e60266fbaa768e74175ff",
+        ),
+        (
+            Preset::Budget,
+            "ae33cdd93e2682f5ff423b1c7933b62d8b8c878bb6ae748b8c6a5ebe9a9c7380 \
+             9199d9952c4dfd4ce0d6bd32823929b407be74f12ffbe257079ac424a2d7b08e",
+        ),
+    ];
+    let dir = TempDir::new("bench_nature");
+    let mut found = Vec::new();
+    for &(preset, _) in PINNED {
+        let mut hasher = blake3::Hasher::new();
+        for source in nature::generate(&bench_dir().join(nature::PART), preset, Cook::Desktop).unwrap() {
+            hasher.update(source.path.as_bytes());
+            hasher.update(&(source.bytes.len() as u64).to_le_bytes());
+            hasher.update(&source.bytes);
+        }
+        let out = dir.path().join(preset.name());
+        generate(&bench_dir(), preset, Cook::Desktop, &out).unwrap();
+        let mut written = blake3::Hasher::new();
+        for (path, bytes) in tree(&out).into_iter().filter(|(path, _)| path.starts_with("nature/")) {
+            written.update(path.as_bytes());
+            written.update(&(bytes.len() as u64).to_le_bytes());
+            written.update(&bytes);
+        }
+        found.push((preset, format!("{} {}", hasher.finalize().to_hex(), written.finalize().to_hex())));
+    }
+    let pinned: Vec<(Preset, String)> =
+        PINNED.iter().map(|&(preset, hash)| (preset, hash.to_owned())).collect();
+    assert!(found == pinned, "the nature zone hashes otherwise; found:\n{found:#?}");
+}
+
 #[test]
 fn a_preset_scales_the_district_and_the_cast() {
     let dir = TempDir::new("bench_presets");
@@ -96,15 +145,22 @@ fn a_preset_scales_the_district_and_the_cast() {
         generate(&bench_dir(), preset, Cook::Desktop, &out).unwrap();
         tree(&out).keys().filter(|path| path.ends_with(pattern)).count()
     };
-    assert_eq!(count(Preset::Ci, ".ptex.ron"), 4 * 3);
-    assert_eq!(count(Preset::Budget, ".ptex.ron"), 160 * 3);
-    // The cast's models, and the trees' four species at three ages at every preset.
-    assert_eq!((count(Preset::Ci, ".vrm"), count(Preset::Ci, ".glb")), (1, 3 + 12));
-    assert_eq!((count(Preset::Budget, ".vrm"), count(Preset::Budget, ".glb")), (3, 3 + 6 + 12));
+    // The district's sets, and the nature zone's five grounds (M6 W1) at every preset.
+    assert_eq!(count(Preset::Ci, ".ptex.ron"), 4 * 3 + 5 * 3);
+    assert_eq!(count(Preset::Budget, ".ptex.ron"), 160 * 3 + 5 * 3);
+    // The cast's models, the trees' four species at three ages, and the nature zone's 32 × 20 terrain cells and
+    // its grass tuft at every preset.
+    let nature = 32 * 20 + 1;
+    assert_eq!((count(Preset::Ci, ".vrm"), count(Preset::Ci, ".glb")), (1, 3 + 12 + nature));
+    assert_eq!((count(Preset::Budget, ".vrm"), count(Preset::Budget, ".glb")), (3, 3 + 6 + 12 + nature));
 
-    // Every source but the control maps, the face's threshold masks and the district's day has a
-    // sidecar, every sidecar's ID is its own, and the zone reaches every material.
-    let day = format!("district/{}", district::DAY);
+    // Every source but the control maps, the face's threshold masks, the district's day and the nature zone's
+    // day and weather states has a sidecar, every sidecar's ID is its own, and the zone reaches every material.
+    let inputs = [
+        format!("district/{}", district::DAY),
+        format!("nature/{}", nature::DAY),
+        format!("nature/{}", nature::WEATHER),
+    ];
     let files = tree(&dir.path().join("budget"));
     let mut ids = BTreeSet::new();
     for (path, bytes) in &files {
@@ -119,7 +175,7 @@ fn a_preset_scales_the_district_and_the_cast() {
         } else if path != MARKER
             && !path.ends_with("_control.png")
             && !path.contains("_threshold_")
-            && *path != day
+            && !inputs.contains(path)
         {
             assert!(files.contains_key(&format!("{path}.meta")), "{path} has no sidecar");
         }

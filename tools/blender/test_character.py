@@ -10,7 +10,10 @@ Run it headless; it starts from an empty scene, saves no .blend and writes only 
 It enables the add-on installed in Blender if there is one (`--installed` requires it), else imports it
 from this checkout. With `--check`, it then runs the add-on's Check on the folder (the pipeline binary from
 `--pipeline` or `$SAPPHIRE_PIPELINE`); with `--bake <dir>`, it bakes the face's masks into that folder and
-draws their sheet; with `--hull`, it shows the body's hull preview and confirms it doubles the body.
+draws their sheet; with `--hull`, it shows the body's hull preview and confirms it doubles the body. With
+`--send <content tree>` it exports with Send (M6 C4) into a content tree that holds `--out`, where a running
+`cargo xtask content --watch` cooks it; `--skin-shade r,g,b` changes the skin's shade color first, so a
+re-export changes something to see.
 
 The character is made here from numbers, so it is the project's own (MIT): a figure about 1.6 m tall, facing
 -Y, on a 17-joint armature, in four objects and four materials, each set with what the importer reads:
@@ -109,6 +112,16 @@ def parse_arguments():
     parser.add_argument("--pipeline", default="", help="the sapphire_pipeline binary (default: $SAPPHIRE_PIPELINE)")
     parser.add_argument("--bake", default="", help="bake the face's masks into this folder and draw their sheet")
     parser.add_argument("--hull", action="store_true", help="show the body's hull preview and confirm it")
+    parser.add_argument(
+        "--send",
+        default="",
+        help="export with Send into this content tree, which must hold --out (`cargo xtask content --watch` cooks it)",
+    )
+    parser.add_argument(
+        "--skin-shade",
+        default="",
+        help="the Skin material's shade color as r,g,b, in place of the committed character's: a changed export",
+    )
     return parser.parse_args(argv)
 
 
@@ -435,16 +448,23 @@ def main():
     args = parse_arguments()
     if args.pipeline:
         os.environ["SAPPHIRE_PIPELINE"] = os.path.abspath(args.pipeline)
+    if args.skin_shade:
+        base, extras = MATERIALS["Skin"]
+        MATERIALS["Skin"] = (base, {**extras, "shade_color": tuple(float(c) for c in args.skin_shade.split(","))})
     empty_scene()
     sapphire = enable_addon(args.installed)
     build(sapphire)
     if args.hull:
         confirm_hull(sapphire)
     out = os.path.abspath(args.out)
-    result = bpy.ops.sapphire.export(filepath=os.path.join(out, "test_character.glb"))
+    if args.send:
+        bpy.context.scene.sapphire.content_root = os.path.abspath(args.send)
+        result = bpy.ops.sapphire.send(filepath=os.path.join(out, "test_character.glb"))
+    else:
+        result = bpy.ops.sapphire.export(filepath=os.path.join(out, "test_character.glb"))
     if result != {"FINISHED"}:
         raise SystemExit(f"the export didn't finish: {result}")
-    print(f"exported {os.path.join(out, 'test_character.glb')}")
+    print(f"{'sent' if args.send else 'exported'} {os.path.join(out, 'test_character.glb')}")
     if args.bake:
         bpy.context.view_layer.objects.active = bpy.data.objects["Face"]
         bake = os.path.abspath(args.bake)

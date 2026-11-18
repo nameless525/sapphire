@@ -34,6 +34,9 @@ class SAPPHIRE_PT_export(_Sidebar, bpy.types.Panel):
         row.prop(settings, "images")
         row.prop(settings, "apply_modifiers")
         layout.operator("sapphire.export", icon="EXPORT")
+        # Send: into the content tree, which `cargo xtask content --watch` cooks on each change (M6 C4).
+        layout.prop(settings, "content_root")
+        layout.operator("sapphire.send", icon="FILE_REFRESH")
 
 
 class SAPPHIRE_PT_material_ids(_Sidebar, bpy.types.Panel):

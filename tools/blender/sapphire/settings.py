@@ -93,7 +93,10 @@ class SapphireSettings(bpy.types.PropertyGroup):
     )
     content_root: StringProperty(
         name="Content",
-        description="The source tree Check reads (default: the exported file's folder)",
+        description=(
+            "The content tree: where Send exports to, and what Check reads (default for Check: the exported "
+            "file's folder)"
+        ),
         subtype="DIR_PATH",
         default="",
     )

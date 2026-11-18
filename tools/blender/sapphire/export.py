@@ -10,6 +10,10 @@
   corners white (`every_materials_data_color`).
 - The hull preview's modifiers are switched off while it runs, so applying modifiers never exports them.
 
+Send (M6 C4) is the export into the content tree: the file must be in the scene's content folder, where a
+running `cargo xtask content --watch` cooks it, and the running app's hot reload or live link shows it. Every
+export writes a hidden file and renames it into place, so a watch never cooks half a file.
+
 Each run writes the same bytes for the same scene and Blender version: the exporter's output depends on
 the scene alone, and the scene's add-on settings stay out of its extras (`settings`)."""
 
@@ -126,24 +130,54 @@ def hull_previews_off():
             modifier.show_viewport, modifier.show_render = viewport, render
 
 
+def _writing(filepath):
+    """The name a file is written under before it takes its own: hidden, beside it, and still a `.glb` for the
+    exporter. A cook skips hidden names, so a watch of the tree never cooks half a file."""
+    folder, name = os.path.split(filepath)
+    return os.path.join(folder, f".{name}.writing.glb")
+
+
 def export_glb(filepath, *, selected_only=False, animations=False, images=False, apply_modifiers=False):
-    """Exports the scene (or the selection) to `filepath` with the engine's settings."""
+    """Exports the scene (or the selection) to `filepath` with the engine's settings. The file is written under
+    a hidden name and renamed into place, so whoever reads it (`cargo xtask content --watch`) sees it whole."""
     filepath = bpy.path.abspath(filepath)
     if not filepath.lower().endswith(".glb"):
         raise ValueError(f"{filepath}: the export writes a .glb")
     os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
-    with every_materials_data_color(), outline_normals_in_gltf_space(), hull_previews_off():
-        result = bpy.ops.export_scene.gltf(
-            filepath=filepath,
-            use_selection=selected_only,
-            export_animations=animations,
-            export_image_format="AUTO" if images else "NONE",
-            export_apply=apply_modifiers,
-            **ENGINE_SETTINGS,
-        )
-    if result != {"FINISHED"}:
-        raise RuntimeError(f"Blender's glTF exporter didn't finish: {result}")
+    writing = _writing(filepath)
+    try:
+        with every_materials_data_color(), outline_normals_in_gltf_space(), hull_previews_off():
+            result = bpy.ops.export_scene.gltf(
+                filepath=writing,
+                use_selection=selected_only,
+                export_animations=animations,
+                export_image_format="AUTO" if images else "NONE",
+                export_apply=apply_modifiers,
+                **ENGINE_SETTINGS,
+            )
+        if result != {"FINISHED"}:
+            raise RuntimeError(f"Blender's glTF exporter didn't finish: {result}")
+        os.replace(writing, filepath)
+    finally:
+        if os.path.exists(writing):
+            os.remove(writing)
     return filepath
+
+
+def inside(path, folder):
+    """Whether `path` is in the tree at `folder`, both as Blender's paths (`//` relative to the .blend)."""
+    path, folder = (os.path.realpath(bpy.path.abspath(p)) for p in (path, folder))
+    return os.path.commonpath([path, folder]) == folder
+
+
+def send_glb(filepath, content_root, **options):
+    """Send: exports to `filepath`, which must be in the content tree at `content_root`, where a running
+    `cargo xtask content --watch` cooks it and the running app reloads it."""
+    if not content_root:
+        raise ValueError("choose the Content folder: the tree `cargo xtask content --watch` cooks")
+    if not inside(filepath, content_root):
+        raise ValueError(f"{bpy.path.abspath(filepath)} isn't in the content tree {bpy.path.abspath(content_root)}")
+    return export_glb(filepath, **options)
 
 
 class SAPPHIRE_OT_export(bpy.types.Operator):
@@ -160,27 +194,55 @@ class SAPPHIRE_OT_export(bpy.types.Operator):
     )
 
     def execute(self, context):
-        settings = context.scene.sapphire
-        path = self.filepath or settings.export_path
-        if not path:
-            self.report({"ERROR"}, "choose the .glb to export to")
-            return {"CANCELLED"}
-        try:
-            written = export_glb(
-                path,
-                selected_only=settings.selected_only,
-                animations=settings.animations,
-                images=settings.images,
-                apply_modifiers=settings.apply_modifiers,
-            )
-        except (ValueError, RuntimeError, mesh_data.MeshDataError) as error:
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-        settings.export_path = path
-        self.report({"INFO"}, f"wrote {written}")
-        return {"FINISHED"}
+        return _run(self, context, lambda path, options: export_glb(path, **options), "wrote {}")
 
 
-CLASSES = (SAPPHIRE_OT_export,)
+class SAPPHIRE_OT_send(bpy.types.Operator):
+    """Export into the content tree, where `cargo xtask content --watch` cooks it and the running app
+    reloads it"""
+
+    bl_idname = "sapphire.send"
+    bl_label = "Send to Sapphire"
+
+    filepath: StringProperty(
+        name="File",
+        description="The .glb to write, in the content tree (default: the scene's export file)",
+        subtype="FILE_PATH",
+        default="",
+    )
+
+    def execute(self, context):
+        root = context.scene.sapphire.content_root
+
+        def send(path, options):
+            return send_glb(path, root, **options)
+
+        return _run(self, context, send, "sent {}: a running `cargo xtask content --watch` cooks it")
+
+
+def _run(operator, context, write, done):
+    """Runs `write(path, options)` for an operator with the scene's export settings, and reports `done`."""
+    settings = context.scene.sapphire
+    path = operator.filepath or settings.export_path
+    if not path:
+        operator.report({"ERROR"}, "choose the .glb to export to")
+        return {"CANCELLED"}
+    options = {
+        "selected_only": settings.selected_only,
+        "animations": settings.animations,
+        "images": settings.images,
+        "apply_modifiers": settings.apply_modifiers,
+    }
+    try:
+        written = write(path, options)
+    except (ValueError, RuntimeError, mesh_data.MeshDataError) as error:
+        operator.report({"ERROR"}, str(error))
+        return {"CANCELLED"}
+    settings.export_path = path
+    operator.report({"INFO"}, done.format(written))
+    return {"FINISHED"}
+
+
+CLASSES = (SAPPHIRE_OT_export, SAPPHIRE_OT_send)
 
 register, unregister = bpy.utils.register_classes_factory(CLASSES)

@@ -84,7 +84,8 @@
 //! [`resolve`] keeps these rules:
 //!
 //! - **IDs never change.** A missing sidecar is created on first import, with a fresh random
-//!   ID and the default settings of the importer for the file's extension. An existing
+//!   ID and the default settings of the importer for the file's extension, or for a VRM its
+//!   character preset's (M6 C5, [`crate::preset::for_cook`]). An existing
 //!   sidecar is only ever read; one that doesn't parse is an error, never replaced. A new
 //!   sidecar appears whole or not at all, so cooks racing to create it agree on its ID, and a
 //!   cook killed while writing it leaves no partial one behind.
@@ -418,6 +419,58 @@ impl ImportSettings {
         Some(settings)
     }
 
+    /// Whether `other` names the same importer, whatever its settings: the same variant, and for a
+    /// character map the same kind of document. A sidecar made for a source by one importer is no use to
+    /// another (M6 C5's presets and scaffold refuse it).
+    pub fn same_importer(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::CharacterMap(a, _), Self::CharacterMap(b, _)) => a.kind() == b.kind(),
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+
+    /// The importer's name in messages: `glTF`, `VRM`, `material`.
+    pub fn importer_name(&self) -> &'static str {
+        match self {
+            Self::Gltf(_) => "glTF",
+            Self::Fbx(_) => "FBX",
+            Self::Texture(_) => "texture",
+            Self::CharacterMap(settings, _) => settings.kind().name(),
+            Self::Material(_) => "material",
+            Self::Vrm(_) => "VRM",
+            Self::ProbeGrid(_) => "probe grid",
+            Self::Assembly(_) => "assembly",
+            Self::KeyPose(_) => "key pose",
+            Self::Colliders(_) => "colliders",
+            Self::Encounter(_) => "encounter",
+            Self::Enemy(_) => "enemy",
+            Self::Playable(_) => "playable kind",
+            Self::Motion(_) => "motion",
+            Self::Sound(_) => "sound",
+            Self::Cue(_) => "cue",
+            Self::Score(_) => "score",
+            Self::VoiceLines(_) => "voice lines",
+            Self::Mix(_) => "mix",
+            Self::Effects(_) => "effects",
+            Self::Font(_) => "font",
+            Self::FontChains(_) => "font chains",
+            Self::MoveSet(_) => "move set",
+            Self::AnimGraph(_) => "animation graph",
+            Self::Script(_) => "script",
+            Self::Fluent(_) => "Fluent",
+            Self::Locale(_) => "locale",
+            Self::Ui(_) => "UI",
+            Self::GltfClips(_) => "glTF clips",
+            Self::FbxClips(_) => "FBX clips",
+            Self::Vrma(_) => "VRMA",
+            Self::Zone(_) => "zone",
+            Self::Timeline(_) => "timeline",
+            Self::Dialogue(_) => "dialogue",
+            Self::ProceduralTexture(_) => "procedural texture",
+            Self::Bvh(_) => "BVH",
+        }
+    }
+
     /// The settings of a mesh importer, or `None` for other kinds of source.
     pub fn mesh(&self) -> Option<&MeshSettings> {
         match self {
@@ -591,6 +644,43 @@ pub fn new_id() -> Result<AssetId, getrandom::Error> {
     bytes[6] = 0x40 | (bytes[6] & 0x0f);
     bytes[8] = 0x80 | (bytes[8] & 0x3f);
     Ok(AssetId::from_bytes(bytes))
+}
+
+/// Where the IDs of new sidecars come from (M6 C5): every command that makes sidecars draws from one,
+/// so a test can make the same IDs on every run and compare what was written byte for byte.
+#[derive(Clone, Debug)]
+pub enum IdSource {
+    /// The OS's randomness, [`new_id`]: what every command uses.
+    Random,
+    /// A sequence fixed by `seed`, the same on every run and machine, for tests: each ID is the start of
+    /// blake3 over the seed and its place in the sequence, laid out as a version 4 UUID as [`new_id`]'s are.
+    Seeded { seed: u64, next: u64 },
+}
+
+impl IdSource {
+    /// A sequence fixed by `seed` ([`Self::Seeded`]).
+    pub fn seeded(seed: u64) -> Self {
+        Self::Seeded { seed, next: 0 }
+    }
+
+    /// The next fresh ID.
+    pub fn next_id(&mut self) -> Result<AssetId, MetaError> {
+        match self {
+            Self::Random => new_id().map_err(MetaError::Entropy),
+            Self::Seeded { seed, next } => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"sapphire seeded asset id");
+                hasher.update(&seed.to_le_bytes());
+                hasher.update(&next.to_le_bytes());
+                *next += 1;
+                let hash = hasher.finalize();
+                let mut bytes: [u8; 16] = hash.as_bytes()[..16].try_into().expect("16 of 32 bytes");
+                bytes[6] = 0x40 | (bytes[6] & 0x0f);
+                bytes[8] = 0x80 | (bytes[8] & 0x3f);
+                Ok(AssetId::from_bytes(bytes))
+            }
+        }
+    }
 }
 
 /// The ID of sub-asset `name` of the source whose ID is `parent`: [`AssetId::sub_asset`].
@@ -879,15 +969,16 @@ pub fn resolve(tree: &SourceTree, locked: bool) -> Result<Resolved, MetaError> {
         }
     }
     let mut created = Vec::new();
+    let mut ids = IdSource::Random;
     let mut assets = Vec::with_capacity(tree.sources.len());
     for (source, meta) in tree.sources.iter().zip(metas) {
         let meta = match meta {
             Some(meta) => meta,
             None => {
                 let sidecar = sidecar_path(source);
-                let importer =
-                    ImportSettings::for_new_sidecar(source).expect("scanned sources have an importer");
-                let fresh = AssetMeta::new(new_id().map_err(MetaError::Entropy)?, importer);
+                // From its kind's preset, if a cook gives it one (M6 C5).
+                let fresh = crate::preset::for_cook(source, ids.next_id()?)
+                    .expect("scanned sources have an importer");
                 let meta = if create(&sidecar, &fresh)? {
                     created.push(sidecar.clone());
                     fresh
@@ -1045,6 +1136,23 @@ mod tests {
         let (a, b) = (new_id().unwrap(), new_id().unwrap());
         assert_ne!(a, b);
         for id in [a, b] {
+            let text = id.to_string();
+            assert_eq!(&text[14..15], "4", "version: {text}");
+            assert!("89ab".contains(&text[19..20]), "variant: {text}");
+        }
+    }
+
+    #[test]
+    fn a_seeded_id_source_repeats_and_makes_version_4_uuids() {
+        let ids = |seed| {
+            let mut source = IdSource::seeded(seed);
+            [(); 3].map(|()| source.next_id().unwrap())
+        };
+        assert_eq!(ids(7), ids(7), "a seed makes the same sequence on every run");
+        assert_ne!(ids(7), ids(8));
+        let [a, b, c] = ids(7);
+        assert!(a != b && b != c && a != c, "a sequence repeats no ID");
+        for id in [a, b, c] {
             let text = id.to_string();
             assert_eq!(&text[14..15], "4", "version: {text}");
             assert!("89ab".contains(&text[19..20]), "variant: {text}");

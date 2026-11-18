@@ -177,6 +177,7 @@ pub mod nav;
 pub mod optimize;
 pub mod pack;
 pub mod playable;
+pub mod preset;
 pub mod probes;
 pub mod procedural;
 pub mod reflections;

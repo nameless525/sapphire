@@ -1,0 +1,39 @@
+// An FBX character's sidecar as it starts (M6 C5): what `new-character` copies into the sidecar of an
+// .fbx it scaffolds, from Maya, 3ds Max or Blender. A cook meeting a new FBX gives it the cook's
+// defaults instead, since it can't tell a character from a prop. The mesh settings are the cook's
+// own, which are a character's: levels at a half, a quarter and an eighth of the triangles, within
+// 4 mm, 2 cm and 6 cm on a 2 m figure, the phones starting at the first. `check` holds it to the hero
+// row of spec §3.4; `new-character --role` casts it otherwise.
+(
+    type: "sapphire::pipeline::ImportPreset",
+    version: 1,
+    data: (
+        importer: Fbx((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [
+                    (
+                        triangle_ratio: 0.5,
+                        max_error: 0.002,
+                    ),
+                    (
+                        triangle_ratio: 0.25,
+                        max_error: 0.01,
+                    ),
+                    (
+                        triangle_ratio: 0.125,
+                        max_error: 0.03,
+                    ),
+                ],
+                mobile_skip: 1,
+            ),
+            position_format: Unorm16,
+            materials: {},
+        )),
+        budget: (
+            role: Hero,
+        ),
+    ),
+)

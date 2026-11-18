@@ -1111,7 +1111,7 @@ fn insert_parts(source: &MemoryPackSource, name: &str, parts: Vec<Vec<PackAsset>
 }
 
 /// A pack in parts (M6 K2) mounts as one, by its name: an asset depends across parts, and a remount that
-/// moves an asset between parts reloads only what changed.
+/// moves an asset between parts reloads only what changed, with the material that binds it sent again.
 #[test]
 fn a_pack_in_parts_mounts_loads_and_remounts_as_one() {
     let source = Arc::new(MemoryPackSource::new());
@@ -1135,15 +1135,19 @@ fn a_pack_in_parts_mounts_loads_and_remounts_as_one() {
     insert_parts(&source, "shared", vec![vec![mesh, material], vec![texture_again]]);
     let report = server.remount("shared").unwrap();
     assert_eq!((report.changed, report.removed), (1, 0), "only the texture's bytes changed");
-    server.finish(&handle, |_| Ok(())).unwrap();
+    // Until the reload lands, as the reload tests wait: a check before it would see no change at all.
+    reload::settle(&mut server, |_| Ok(()));
     assert_eq!(server.state(&handle), LoadState::Ready);
-    let changes = server.take_changes();
-    assert!(
-        changes
-            .iter()
-            .all(|change| matches!(change, AssetChange::Reloaded { id: found, .. } if *found == id(TEXTURE))),
-        "nothing but the texture reloads, nothing is removed: {changes:?}"
-    );
+    let changes: Vec<(AssetKind, AssetId, u32)> = server
+        .take_changes()
+        .into_iter()
+        .map(|change| match change {
+            AssetChange::Reloaded { id, kind, generation, .. } => (kind, id, generation),
+            other => panic!("only reloads, nothing removed: {other:?}"),
+        })
+        .collect();
+    // The texture's new version, then the material that binds it, sent again; the mesh is as it was.
+    assert_eq!(changes, [(AssetKind::Texture, id(TEXTURE), 1), (AssetKind::Material, id(MATERIAL), 1)]);
     assert_eq!(server.unmount("shared").unwrap().held, 3);
 }
 

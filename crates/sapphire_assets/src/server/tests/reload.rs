@@ -58,7 +58,10 @@ fn loaded_character(server: &mut AssetServer) -> (Handle<Mesh>, HashMap<AssetId,
 }
 
 /// Runs frames until nothing is read, decoded, waiting or queued: what follows a remount.
-fn settle(server: &mut AssetServer, mut upload: impl FnMut(Upload<'_>) -> Result<(), UploadError>) {
+pub(super) fn settle(
+    server: &mut AssetServer,
+    mut upload: impl FnMut(Upload<'_>) -> Result<(), UploadError>,
+) {
     for _ in 0..1000 {
         server.update();
         let report = server.upload(&mut upload);

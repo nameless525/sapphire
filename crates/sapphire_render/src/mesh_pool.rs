@@ -195,6 +195,9 @@ pub(crate) struct MeshRecord {
     /// What each palette entry's vertices fill in the bind pose (the `bounds` module): empty without
     /// a skin.
     pub palette_reach: Vec<PaletteReach>,
+    /// The sets of palette entries its vertices follow, for counting the vertices whose joints held
+    /// still (M6 B8): empty without a skin.
+    pub joint_sets: crate::skinning::JointSets,
     /// Maximum bind-space displacement per morph target, for conservative posed bounds.
     pub morph_reach: Vec<f32>,
     /// A static mesh's foliage stream (M1 W6): its first element in the pool's foliage buffer,
@@ -307,6 +310,7 @@ impl MeshRecord {
             slots: Vec::new(),
             bounds: Sphere::around([[0.0; 3], [0.0; 3]]),
             palette_reach: Vec::new(),
+            joint_sets: Default::default(),
             morph_reach: Vec::new(),
             foliage: None,
         }
@@ -808,12 +812,13 @@ impl MeshPool {
             self.foliage_used += foliage_len;
         }
 
+        let lod_vertices: Vec<u32> = mesh.lods.iter().map(|lod| lod.vertex_count.to_native()).collect();
         let record = MeshRecord {
             streams: record_streams,
             dequantize,
             lods: aligned_lods(mesh, first_index, materials),
             texel_density: crate::coverage::TexelDensity::of_mesh(mesh),
-            lod_vertices: mesh.lods.iter().map(|lod| lod.vertex_count.to_native()).collect(),
+            lod_vertices: lod_vertices.clone(),
             lod_errors: mesh.lods.iter().map(|lod| lod.error.to_native()).collect(),
             placement: Placement {
                 vertices: (first_vertex, vertex_len),
@@ -834,6 +839,7 @@ impl MeshPool {
                 Sphere::around([bounds.min, bounds.max])
             },
             palette_reach: palette_reach(mesh),
+            joint_sets: crate::skinning::JointSets::of_mesh(mesh, &lod_vertices),
             morph_reach: crate::bounds::morph_reach(mesh),
             foliage: (foliage_len > 0).then_some(first_foliage),
         };

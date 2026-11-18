@@ -81,6 +81,20 @@ fn run_lit(
     posed: impl Fn(u32) -> bool,
     lights: &[LocalLight],
 ) -> Vec<Frame> {
+    run_posing(gpu, settings, mesh, frames_count, detail, |frame| posed(frame).then_some(frame), lights)
+}
+
+/// [`run_lit`], posing on the frames `pose` says with the pose of the frame it names, so a frame can
+/// send an earlier frame's pose again.
+fn run_posing(
+    gpu: &GpuContext,
+    settings: RenderSettings,
+    mesh: &Mesh,
+    frames_count: u32,
+    detail: impl Fn(u32) -> CharacterDetail,
+    pose: impl Fn(u32) -> Option<u32>,
+    lights: &[LocalLight],
+) -> Vec<Frame> {
     let mut frames = Frames::with_settings(gpu, FORMAT, settings).expect("renderer");
     frames.renderer.set_render_scale(1.0);
     // The depth read below reads the scene prepass, which a tier may otherwise leave unbuilt.
@@ -115,9 +129,9 @@ fn run_lit(
         if frame == 0 {
             packet.instances.changed.push(instance(1, mesh, Mat4::IDENTITY));
         }
-        if posed(frame) {
-            let pose = bend(0.15 * frame as f32, 0.03 * frame as f32);
-            packet.push_skinned(InstanceId(1), pose.iter().copied(), [0.1 * frame as f32]);
+        if let Some(at) = pose(frame) {
+            let pose = bend(0.15 * at as f32, 0.03 * at as f32);
+            packet.push_skinned(InstanceId(1), pose.iter().copied(), [0.1 * at as f32]);
         }
         let base = Vec3::new(0.0, -1.0, 0.0);
         packet.characters.push(CharacterInstance {
@@ -187,6 +201,35 @@ fn a_character_held_at_each_level_draws_its_triangles_and_skins_its_prefix() {
     assert!(kept == whole, "whole, as level 0");
     assert_eq!(kept_stats.passes.main.levels[1], 0);
     assert_eq!(kept_stats.skinning.vertices, full);
+}
+
+/// A character posed again as it was counts as the same pose and its vertices as still (M6 B8), but
+/// only over what its outputs held at that pose: when its level gets finer, the vertices the coarser
+/// prefix never skinned count as moved.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_same_pose_counts_only_what_the_last_prefix_held() {
+    let gpu = gpu();
+    let leveled = sphere_with_levels();
+    let full = leveled.streams.len() as u32;
+    // Level 1 for two frames, then level 0; the first frame's pose throughout.
+    let detail = |frame| if frame < 2 { CharacterDetail::ByError } else { CharacterDetail::Whole };
+    let frames =
+        run_posing(&gpu, with_levels(LevelsMode::Fixed(1), moving()), &leveled, 4, detail, |_| Some(1), &[]);
+    let counted = |frame: usize| {
+        let stats = frames[frame].1.skinning;
+        (
+            stats.vertices,
+            (stats.same_pose, stats.same_pose_vertices),
+            (stats.still_vertices, stats.still_instances),
+        )
+    };
+    assert_eq!(counted(0), (CAP_VERTICES, (0, 0), (0, 0)), "a first pose: nothing to compare with");
+    assert_eq!(counted(1), (CAP_VERTICES, (1, CAP_VERTICES), (CAP_VERTICES, 1)), "the same pose, at level 1");
+    let (skinned, same, still) = counted(2);
+    assert!(skinned >= full, "level 0 skins the whole mesh: {skinned}");
+    assert_eq!((same, still), ((1, CAP_VERTICES), (CAP_VERTICES, 1)), "only the cap's prefix held that pose");
+    assert_eq!(counted(3), (full, (1, full), (full, 1)), "level 0 again: the whole mesh held it");
 }
 
 #[test]

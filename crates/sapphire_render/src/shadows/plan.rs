@@ -1187,6 +1187,7 @@ mod tests {
             slots: Vec::new(),
             bounds: Sphere::around([[-0.5; 3], [0.5; 3]]),
             palette_reach: Vec::new(),
+            joint_sets: Default::default(),
             morph_reach: Vec::new(),
             foliage: None,
         };

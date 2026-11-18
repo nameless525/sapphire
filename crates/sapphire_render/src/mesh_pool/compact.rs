@@ -300,6 +300,7 @@ mod tests {
             slots: Vec::new(),
             bounds: Sphere::around([[0.0; 3], [1.0; 3]]),
             palette_reach: Vec::new(),
+            joint_sets: Default::default(),
             morph_reach: Vec::new(),
             foliage: (placement.foliage.1 > 0).then_some(placement.foliage.0),
         }

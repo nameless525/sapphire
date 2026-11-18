@@ -878,3 +878,123 @@ fn waiting_poses_take_turns_and_keep_their_latest_pose() {
     let (stats, _) = skinner.frame(&[], &[]);
     assert_eq!((stats.skinned, stats.deferred_poses), (0, 0));
 }
+
+/// The counts of what a pose skinned again kept of the last (M6 B8): the instances whose every joint and
+/// morph weight held, and the vertices whose joints held and, where a morph target moves them, whose
+/// weights did too. A talking face whose joints held keeps only the vertices no morph target moves, never
+/// its mouth's; the same pose again keeps everything; a joint nudged by one bit keeps exactly the vertices
+/// that don't follow it; a first pose counts nothing, and a lost frame takes nothing from what the next
+/// compares with. Counting changes nothing skinned. That telling allocates nothing is the unit tests'
+/// (`stillness`, `fingerprint`).
+#[test]
+#[ignore = "needs a GPU"]
+fn instances_skinned_again_with_the_same_pose_and_still_vertices_are_counted() {
+    let mut rng = Rng(59);
+    let mesh = random_mesh(&mut rng, 200, 40, PositionFormat::Unorm16);
+    let vertices = mesh.streams.len() as u32;
+    let mut skinner = Skinner::new(1 << 20);
+    let handle = upload(&mut skinner.renderer, &mesh);
+    let close = |error: Option<f32>| error.is_some_and(|error| error < 2e-6);
+    // The whole-pose count, then the still one: instances and their vertices, vertices and their instances.
+    let counted = |skinner: &Skinner| {
+        let stats = skinner.renderer.stats().skinning;
+        ((stats.same_pose, stats.same_pose_vertices), (stats.still_vertices, stats.still_instances))
+    };
+    // The vertices no morph target moves, and those that don't follow joint 7.
+    let mut morphed = vec![false; vertices as usize];
+    for delta in &mesh.morph_deltas {
+        morphed[delta.vertex() as usize] = true;
+    }
+    let unmorphed = morphed.iter().filter(|&&morphed| !morphed).count() as u32;
+    let skin = mesh.skin.as_ref().expect("skinned");
+    let off_seven = (0..mesh.streams.len())
+        .filter(|&vertex| {
+            let influence = skin.influences.get(vertex).expect("every vertex has influences");
+            !influence.binds.iter().zip(&influence.weights).any(|(&joint, &weight)| joint == 7 && weight > 0)
+        })
+        .count() as u32;
+    assert!(0 < unmorphed && unmorphed < vertices, "some vertices are morphed and some aren't: {unmorphed}");
+    assert!(0 < off_seven && off_seven < vertices, "some follow joint 7 and some don't: {off_seven}");
+
+    // The bind poses, then the first poses: no pose before to compare with.
+    skinner.frame(&[(0, handle), (1, handle)], &[]);
+    assert_eq!(counted(&skinner), ((0, 0), (0, 0)));
+    let face = random_pose(&mut rng, &mesh);
+    let body = random_pose(&mut rng, &mesh);
+    skinner.frame(&[], &[(0, &face), (1, &body)]);
+    assert_eq!(counted(&skinner), ((0, 0), (0, 0)));
+
+    // The first's face talks, its joints held and its weights moved: its unmorphed vertices are still and
+    // its mouth's aren't. The second's body moved whole.
+    let talking: Pose = (face.0.clone(), vec![0.9, 0.0, 0.1]);
+    let moved = random_pose(&mut rng, &mesh);
+    let (_, words) = skinner.frame(&[], &[(0, &talking), (1, &moved)]);
+    assert_eq!(counted(&skinner), ((0, 0), (unmorphed, 1)));
+    assert_eq!(skinner.renderer.stats().skinning.skinned, 2, "both skinned whole, as before");
+    assert!(close(skinner.error(&words, 0, &mesh, &talking)));
+    assert!(close(skinner.error(&words, 1, &mesh, &moved)));
+
+    // The same poses again: both whole.
+    let (_, words) = skinner.frame(&[], &[(0, &talking), (1, &moved)]);
+    assert_eq!(counted(&skinner), ((2, 2 * vertices), (2 * vertices, 2)));
+    assert!(close(skinner.error(&words, 0, &mesh, &talking)));
+    assert!(close(skinner.error(&words, 1, &mesh, &moved)));
+
+    // A frame lost after taking new poses for both: the next compares with the poses it last ran. The
+    // first's face talks on; the second is posed as it was.
+    let again: Pose = (face.0.clone(), vec![0.2, 0.0, 0.7]);
+    let lost = random_pose(&mut rng, &mesh);
+    skinner.lost_frame(&[], &[(0, &again), (1, &lost)]);
+    let (_, words) = skinner.frame(&[], &[(1, &moved)]);
+    assert_eq!(counted(&skinner), ((1, vertices), (unmorphed + vertices, 2)));
+    assert!(close(skinner.error(&words, 0, &mesh, &again)));
+    assert!(close(skinner.error(&words, 1, &mesh, &moved)));
+
+    // One bit of joint 7, the weights as they were: the vertices that don't follow it are still.
+    let mut nudged = again.clone();
+    let x = &mut nudged.0[7].translation.x;
+    *x = f32::from_bits(x.to_bits() ^ 1);
+    let (_, words) = skinner.frame(&[], &[(0, &nudged)]);
+    assert_eq!(counted(&skinner), ((0, 0), (off_seven, 1)));
+    assert!(close(skinner.error(&words, 0, &mesh, &nudged)));
+
+    // Nothing posed: nothing skinned, nothing counted.
+    skinner.frame(&[], &[]);
+    assert_eq!(skinner.renderer.stats().skinning.skinned, 0);
+    assert_eq!(counted(&skinner), ((0, 0), (0, 0)));
+}
+
+/// A mesh's sets, read at upload (M6 B8), count each level's prefix apart: every vertex of a level's
+/// prefix in one set of that level and in its total, and the morphed ones, some past the coarser
+/// prefix, in its morphed total. No GPU needed.
+#[test]
+fn a_meshs_sets_count_each_levels_prefix() {
+    let mut rng = Rng(61);
+    let mut mesh = random_mesh(&mut rng, 200, 40, PositionFormat::Unorm16);
+    // A second level over the first 120 vertices' 40 triangles.
+    let first_index = mesh.indices.len() as u32;
+    mesh.indices.extend(0..120);
+    let submeshes = vec![Submesh { first_index, index_count: 120, material: 0 }];
+    mesh.lods.push(sapphire_assets::mesh::Lod { vertex_count: 120, error: 0.01, submeshes });
+    let mut morphed = [false; 200];
+    for delta in &mesh.morph_deltas {
+        morphed[delta.vertex() as usize] = true;
+    }
+    let morphed_below = |prefix: usize| morphed[..prefix].iter().filter(|&&morphed| morphed).count() as u32;
+    assert!(morphed[120..].contains(&true), "a morphed vertex past the coarser prefix");
+    let bytes = mesh.to_cooked().expect("cook");
+    let sets = super::JointSets::of_mesh(Mesh::read(&bytes).expect("valid"), &[200, 120]);
+    assert_eq!(sets.levels, 2);
+    assert_eq!(sets.totals, [200, 120]);
+    assert_eq!(sets.morphed_totals, [morphed_below(200), morphed_below(120)]);
+    for level in 0..2 {
+        let in_sets: u32 = sets.vertices.chunks(2).map(|counts| counts[level]).sum();
+        assert_eq!(in_sets, sets.totals[level], "level {level}: every vertex in one set");
+    }
+    // Every joint held and a weight moved: each level's unmorphed vertices, the coarsest's past the last.
+    let joints = [7u64; 40];
+    for (level, prefix) in [(0, 200), (1, 120), (5, 120)] {
+        let still = sets.stillness(level, &joints, &joints, false);
+        assert_eq!(still.vertices, prefix as u32 - morphed_below(prefix), "level {level}");
+    }
+}

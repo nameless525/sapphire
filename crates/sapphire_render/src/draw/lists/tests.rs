@@ -34,6 +34,7 @@ fn mesh(streams: MeshStreams, submeshes: Vec<SubmeshDraw>) -> MeshRecord {
         slots: Vec::new(),
         bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
         palette_reach: Vec::new(),
+        joint_sets: Default::default(),
         morph_reach: Vec::new(),
         foliage: None,
     }

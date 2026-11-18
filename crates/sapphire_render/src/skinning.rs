@@ -99,7 +99,7 @@ use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
 use glam::Affine3A;
-use sapphire_assets::mesh::PositionFormat;
+use sapphire_assets::mesh::{MAX_INFLUENCES, PositionFormat};
 use sapphire_rhi::wgpu;
 
 use crate::bounds::posed_bounds;
@@ -172,6 +172,150 @@ pub struct SkinningStats {
     /// C11): those [`CharacterDetail::ByError`](crate::CharacterDetail::ByError) left coarser, so each
     /// skins only a level's prefix. Counted at the record; a frame not recorded counts none.
     pub coarser: u32,
+    /// Of [`Self::skinned`], the instances skinned with a new pose that is their last pose again (M6
+    /// B8): every joint's matrix and every morph weight as it was, so a skin of the whole instance
+    /// did its work again for nothing. What a level of an instance's appearance, skinned less often,
+    /// would save. Each joint's matrix and the dense weights are told by a 64-bit hash of their bits
+    /// (`fingerprint`), so a pose that differs is counted the same only on a collision. A morphed
+    /// mesh with no skin counts when its weights are the same. Counted at the record, as
+    /// [`Self::coarser`] is; counting changes nothing the pass skins or draws.
+    pub same_pose: u32,
+    /// The vertices those instances skin that their outputs held at the last pose: all of theirs,
+    /// short of a prefix that grew (M5 D5), whose new vertices that pose never had.
+    pub same_pose_vertices: u32,
+    /// Of the vertices instances skinned with a new pose skin, those whose output can't have changed
+    /// since that instance's last pose (M6 B8), whatever its other vertices did: every joint they
+    /// follow kept its matrix and, if a morph target moves them, every weight is as it was. A
+    /// breathing body's legs while only its arms move, say; never a talking face's mouth. What blocks
+    /// of a mesh skinned only when their joints or weights move would save. Read from each mesh's sets
+    /// of joints (`JointSets`), over what its outputs held at the last pose, as
+    /// [`Self::same_pose_vertices`] is; an instance [`Self::same_pose`] counts counts all those here.
+    pub still_vertices: u32,
+    /// The instances with any of those vertices.
+    pub still_instances: u32,
+}
+
+/// What a pose skinned again kept of the last (M6 B8), from [`JointSets::stillness`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Stillness {
+    /// Every joint and weight as it was: the same pose.
+    same: bool,
+    /// The vertices of the level skinned whose joints, and weights if morphed, held.
+    vertices: u32,
+}
+
+/// The sets of joints a deformable mesh's vertices follow (M6 B8): each distinct set of palette entries
+/// some vertex weighs above 0, apart for the vertices a morph target moves and those none does, and per
+/// level of detail how many of that level's vertices are in each. Read once at upload, so a frame counts
+/// the vertices whose joints held set by set, never vertex by vertex, and only when some joints held and
+/// some didn't. A morphed mesh with no skin has one set or two with no joints.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JointSets {
+    /// Each set's palette entries, sorted, the sets one after another.
+    joints: Vec<u16>,
+    /// Per set: where its entries end in [`Self::joints`].
+    ends: Vec<u32>,
+    /// Per set: a morph target moves its vertices.
+    morphed: Vec<bool>,
+    /// Per set, per level: its vertices in that level's prefix, [`Self::levels`] to a set.
+    vertices: Vec<u32>,
+    /// Per level: the vertices of its prefix, and of those the morphed ones.
+    totals: Vec<u32>,
+    morphed_totals: Vec<u32>,
+    levels: usize,
+}
+
+impl JointSets {
+    /// `mesh`'s sets, counted over each of `lod_vertices`' prefixes: none for a mesh with neither a skin
+    /// nor morph targets.
+    pub(crate) fn of_mesh(mesh: &sapphire_assets::mesh::ArchivedMesh, lod_vertices: &[u32]) -> Self {
+        if mesh.skin.is_none() && mesh.morph_targets.is_empty() {
+            return Self::default();
+        }
+        let levels = lod_vertices.len();
+        let vertex_count = mesh.streams.len();
+        let mut sets =
+            Self { levels, totals: vec![0; levels], morphed_totals: vec![0; levels], ..Self::default() };
+        let mut morphed = vec![false; vertex_count];
+        for target in mesh.morph_targets.iter() {
+            let first = target.first_delta.to_native() as usize;
+            let deltas = &mesh.morph_deltas[first..first + target.delta_count.to_native() as usize];
+            for delta in deltas {
+                if let Some(vertex) = morphed.get_mut(delta.vertex() as usize) {
+                    *vertex = true;
+                }
+            }
+        }
+        // A set's entries padded with `u16::MAX`, so finding one allocates nothing.
+        type Key = ([u16; MAX_INFLUENCES], bool);
+        let mut found = std::collections::HashMap::<Key, usize>::new();
+        for (vertex, &morphed) in morphed.iter().enumerate() {
+            let mut joints = [u16::MAX; MAX_INFLUENCES];
+            let mut len = 0;
+            if let Some(skin) = mesh.skin.as_ref() {
+                let Some(influence) = skin.influences.get(vertex) else { continue };
+                for (&joint, &weight) in influence.binds.iter().zip(&influence.weights) {
+                    if weight > 0 && !joints[..len].contains(&joint) {
+                        joints[len] = joint;
+                        len += 1;
+                    }
+                }
+                joints[..len].sort_unstable();
+            }
+            let set = *found.entry((joints, morphed)).or_insert_with(|| {
+                sets.joints.extend_from_slice(&joints[..len]);
+                sets.ends.push(sets.joints.len() as u32);
+                sets.morphed.push(morphed);
+                sets.vertices.resize(sets.vertices.len() + levels, 0);
+                sets.ends.len() - 1
+            });
+            for (level, &prefix) in lod_vertices.iter().enumerate() {
+                if (vertex as u32) < prefix {
+                    sets.vertices[set * levels + level] += 1;
+                    sets.totals[level] += 1;
+                    sets.morphed_totals[level] += u32::from(morphed);
+                }
+            }
+        }
+        sets
+    }
+
+    /// What a pose kept of the last, over `level`'s prefix (the coarsest's past the levels it has, as
+    /// [`prefix`] reads): `taken` and `posed` are the two poses' joint fingerprints, and `weights_held`
+    /// says whether their morph weights are the same. One pass over the joints settles it when none
+    /// held, or all; only when some did and some didn't does it walk the sets. Allocates nothing.
+    fn stillness(&self, level: u8, taken: &[u64], posed: &[u64], weights_held: bool) -> Stillness {
+        let (mut any, mut all) = (false, true);
+        for (taken, posed) in taken.iter().zip(posed) {
+            let held = taken == posed;
+            (any, all) = (any | held, all & held);
+        }
+        let same = all && weights_held;
+        let Some(last) = self.levels.checked_sub(1) else { return Stillness { same, vertices: 0 } };
+        let level = usize::from(level).min(last);
+        let moved_by_weights = if weights_held { 0 } else { self.morphed_totals[level] };
+        let vertices = if all {
+            self.totals[level] - moved_by_weights
+        } else if !any {
+            // A skinned vertex follows at least one joint: its weights sum to 1.
+            0
+        } else {
+            let mut start = 0;
+            let mut count = 0;
+            for (set, &end) in self.ends.iter().enumerate() {
+                let end = end as usize;
+                let joints_held = self.joints[start..end]
+                    .iter()
+                    .all(|&joint| taken.get(usize::from(joint)) == posed.get(usize::from(joint)));
+                if joints_held && (weights_held || !self.morphed[set]) {
+                    count += self.vertices[set * self.levels + level];
+                }
+                start = end;
+            }
+            count
+        };
+        Stillness { same, vertices }
+    }
 }
 
 /// One instance's work in the frame's dispatch (WGSL `Job` in `shaders/skinning.wgsl`, read as
@@ -231,6 +375,14 @@ struct Deformed {
     moved: bool,
     /// The skin the next recorded frame applies.
     pending: Option<Pending>,
+    /// The last skin a record took from it, skinned or kept, was a pose (M6 B8): not the bind pose,
+    /// and not before any.
+    taken_pose: bool,
+    /// Which of its two copies of [`Skinning::joint_hashes`] and of [`Self::weight_hashes`] holds that
+    /// pose's: the other holds the pending pose's.
+    joints_taken: usize,
+    /// Two copies of a 64-bit hash of a pose's dense morph weights (M6 B8), as for its joints.
+    weight_hashes: [u64; 2],
     /// Bounds of the last pose whose graph ran, and of the next pending pose. Preparation
     /// exposes their union until admission is known, so a deferred shrink cannot cull old geometry.
     drawn_bounds: Option<crate::bounds::Sphere>,
@@ -287,6 +439,9 @@ struct Taken {
     /// [`Held::drawn`] before.
     copied: bool,
     held_drawn: bool,
+    /// [`Deformed::taken_pose`] and [`Deformed::joints_taken`] before.
+    taken_pose: bool,
+    joints_taken: usize,
 }
 
 /// The pose a deformed instance no view drew last took (M5 D3; see the module docs): two copies,
@@ -347,6 +502,10 @@ pub(crate) struct Skinning {
     live: Vec<u32>,
     /// Per instance slot: the pose it took while no view drew it (M5 D3).
     held: Vec<Held>,
+    /// Per instance slot, two copies (M6 B8): a 64-bit hash of each palette matrix of the last pose a
+    /// record took and of the pending pose, which [`Deformed::joints_taken`] tells apart. Sized at
+    /// [`Self::add`], so counting allocates nothing a frame.
+    joint_hashes: Vec<[Vec<u64>; 2]>,
     /// The recorded frame's kept poses being skinned again: their palettes and weights, uploaded
     /// after the frame's own.
     held_rows: Vec<PaletteRows>,
@@ -415,6 +574,7 @@ impl Skinning {
             jobs: Vec::new(),
             taken: Vec::new(),
             held: Vec::new(),
+            joint_hashes: Vec::new(),
             held_rows: Vec::new(),
             held_weights: Vec::new(),
             workgroups: 0,
@@ -582,6 +742,10 @@ impl Skinning {
             deferred_poses: self.deferred,
             past_bounds,
             coarser: 0,
+            same_pose: 0,
+            same_pose_vertices: 0,
+            still_vertices: 0,
+            still_instances: 0,
         };
     }
 
@@ -630,9 +794,19 @@ impl Skinning {
             drawn: false,
             moved: false,
             pending: Some(Pending::Rest),
+            taken_pose: false,
+            joints_taken: 0,
+            weight_hashes: [0; 2],
             drawn_bounds: None,
             pending_bounds: None,
         });
+        if self.joint_hashes.len() <= slot as usize {
+            self.joint_hashes.resize_with(slot as usize + 1, Default::default);
+        }
+        for copy in &mut self.joint_hashes[slot as usize] {
+            copy.clear();
+            copy.resize(source.palette_len() as usize, 0);
+        }
         self.live.push(slot);
         self.queued.push(slot);
     }
@@ -707,12 +881,19 @@ impl Skinning {
                 at
             }
         };
-        for (rows, matrix) in self.palettes[palette_at..][..palette.len()].iter_mut().zip(palette) {
+        let rows = &mut self.palettes[palette_at..][..palette.len()];
+        for (rows, matrix) in rows.iter_mut().zip(palette) {
             *rows = palette_rows(matrix);
+        }
+        // Its joints' fingerprints, in the copy the last pose taken isn't in (M6 B8).
+        let hashes = &mut self.joint_hashes[slot as usize][state.joints_taken ^ 1];
+        for (hash, rows) in hashes.iter_mut().zip(rows.iter()) {
+            *hash = fingerprint(std::slice::from_ref(rows));
         }
         let dense = &mut self.weights[weights_at..][..targets];
         dense[..weights.len()].copy_from_slice(weights);
         dense[weights.len()..].fill(0.0);
+        state.weight_hashes[state.joints_taken ^ 1] = fingerprint(dense);
         state.pending =
             Some(Pending::Pose { palette: palette_at as u32, weights: weights_at as u32, morphs });
         true
@@ -767,6 +948,8 @@ impl Skinning {
         }
         self.admit(records, returning);
         let (mut skinned, mut vertices, mut joints) = (0, 0, 0);
+        let (mut same_pose, mut same_pose_vertices) = (0, 0);
+        let (mut still_vertices, mut still_instances) = (0, 0);
         for &slot in &self.queued {
             let Some(state) = self.instances.get_mut(slot as usize).and_then(Option::as_mut) else {
                 continue;
@@ -790,6 +973,8 @@ impl Skinning {
                 prefix: state.prefix,
                 copied: false,
                 held_drawn: held.drawn,
+                taken_pose: state.taken_pose,
+                joints_taken: state.joints_taken,
             };
             // Drawn again with a new pose, or over a longer prefix: the kept one, positions
             // alone, into the half its previous positions are read from.
@@ -820,7 +1005,27 @@ impl Skinning {
             vertices += vertex_count;
             if let Pending::Pose { .. } = pending {
                 joints += source.palette_len();
+                // What it kept of its last pose (M6 B8), over what its outputs held of it: a prefix
+                // that grew (M5 D5) skins vertices that pose never had, so they count as moved.
+                let counted = vertex_count.min(taken.prefix);
+                let counted_level = record.lod_vertices.iter().position(|&vertices| vertices == counted);
+                if state.taken_pose
+                    && let Some(level) = counted_level
+                {
+                    let [first, second] = &self.joint_hashes[slot as usize];
+                    let (taken, posed) =
+                        if state.joints_taken == 0 { (first, second) } else { (second, first) };
+                    let weights_held = state.weight_hashes[0] == state.weight_hashes[1];
+                    let still = record.joint_sets.stillness(level as u8, taken, posed, weights_held);
+                    if still.same {
+                        same_pose += 1;
+                        same_pose_vertices += counted;
+                    }
+                    still_vertices += still.vertices;
+                    still_instances += u32::from(still.vertices > 0);
+                }
             }
+            take_pose(state, pending);
             // Short of the whole mesh: a copy, for the frame its prefix grows (M5 D5).
             held.drawn = vertex_count < prefix(record, 0);
             if held.drawn {
@@ -855,6 +1060,8 @@ impl Skinning {
                 prefix: state.prefix,
                 copied: false,
                 held_drawn: held.drawn,
+                taken_pose: state.taken_pose,
+                joints_taken: state.joints_taken,
             });
             held.active = false;
             // The copy is what its outputs hold now, if short of the whole mesh.
@@ -887,6 +1094,10 @@ impl Skinning {
         self.stats.palette_bytes = joints * size_of::<PaletteRows>() as u32;
         self.stats.coarser =
             self.live.iter().filter(|&&slot| drawn(slot).is_some_and(|level| level > 0)).count() as u32;
+        self.stats.same_pose = same_pose;
+        self.stats.same_pose_vertices = same_pose_vertices;
+        self.stats.still_vertices = still_vertices;
+        self.stats.still_instances = still_instances;
         // The poses left waiting go first in the next record.
         self.queued.clear();
         std::mem::swap(&mut self.queued, &mut self.waiting);
@@ -944,6 +1155,7 @@ impl Skinning {
             }
             held.active = taken.held;
             held.drawn = taken.held_drawn;
+            (state.taken_pose, state.joints_taken) = (taken.taken_pose, taken.joints_taken);
             state.prefix = taken.prefix;
             state.drawn = taken.drawn;
             if taken.pending.is_some() {
@@ -976,8 +1188,12 @@ impl Skinning {
                 prefix: state.prefix,
                 copied: false,
                 held_drawn: held.drawn,
+                taken_pose: state.taken_pose,
+                joints_taken: state.joints_taken,
             });
             held.keep(pending, source, palettes, weights);
+            // Its last pose now, though no job skins it: the one its next is compared with (M6 B8).
+            take_pose(state, pending);
             // The latest copy is no longer what its outputs hold: its return skins it whole.
             held.drawn = false;
             held.active = true;
@@ -1285,6 +1501,26 @@ fn held_job(
     job
 }
 
+/// A palette matrix's fingerprint, or a pose's dense morph weights' (M6 B8): their bits folded a word at
+/// a time by a multiply, which a pose computes as it writes them. Told from the last pose's for a count,
+/// never for what's drawn, so a collision costs a miscount and nothing else.
+fn fingerprint<T: Pod>(values: &[T]) -> u64 {
+    let words: &[u32] = bytemuck::cast_slice(values);
+    words.iter().fold(0x2545_F491_4F6C_DD1D ^ words.len() as u64, |hash, &word| {
+        (hash.rotate_left(5) ^ u64::from(word)).wrapping_mul(0x51_7C_C1_B7_27_22_0A_95)
+    })
+}
+
+/// A record took `pending` from `state` (M6 B8): a pose's joint hashes become the ones the next pose is
+/// compared with, and the bind pose leaves none to compare with.
+fn take_pose(state: &mut Deformed, pending: Pending) {
+    let posed = matches!(pending, Pending::Pose { .. });
+    if posed {
+        state.joints_taken ^= 1;
+    }
+    state.taken_pose = posed;
+}
+
 /// `matrix` as the shader reads it: its three rows.
 fn palette_rows(matrix: &Affine3A) -> PaletteRows {
     let (axes, t) = (matrix.matrix3, matrix.translation);
@@ -1443,6 +1679,75 @@ mod tests {
         );
     }
 
+    /// A fingerprint follows every bit of a matrix or of weights, and their count, so a joint that moves
+    /// at all, even by one bit of one row, reads as moved (M6 B8), and taking one allocates nothing.
+    #[test]
+    fn a_fingerprint_tells_any_move_apart() {
+        let rows = palette_rows(&(Affine3A::from_rotation_y(0.7) * Affine3A::from_translation(Vec3::Y)));
+        let hash = fingerprint(&[rows]);
+        assert_eq!(fingerprint(&[{ rows }]), hash, "the same matrix, the same fingerprint");
+        for (row, column) in [(0, 0), (1, 3), (2, 2)] {
+            let mut moved = rows;
+            moved[row][column] = f32::from_bits(moved[row][column].to_bits() ^ 1);
+            assert_ne!(fingerprint(&[moved]), hash, "row {row}, column {column}");
+        }
+        assert_ne!(fingerprint(&[[[0.0f32; 4]; 3]]), fingerprint(&[[[-0.0f32; 4]; 3]]), "a zero's sign");
+        assert_ne!(fingerprint(&[0.5f32, 0.0]), fingerprint(&[0.5f32, 0.0, 0.0]), "a weight more");
+        assert_ne!(fingerprint(&[0.5f32, 0.0]), fingerprint(&[0.5f32, 1e-30]), "a weight that moved");
+        let (_, allocated) = sapphire_core::alloc::count_in_scope(|| fingerprint(&[rows]));
+        assert_eq!(allocated.allocations, 0, "a fingerprint allocates nothing");
+    }
+
+    /// What a pose kept of the last (M6 B8): the vertices of the sets whose every joint held, and whose
+    /// weights did too if a morph target moves them, over the level's prefix, the coarsest's past the levels
+    /// there are; the whole pose only when every joint and weight held. No joint held, or all, is settled
+    /// without the sets; a mix walks them. None of it allocates.
+    #[test]
+    fn stillness_is_the_sets_whose_joints_and_weights_held() {
+        // Sets {0}, {0, 3}, {5} and {5} morphed; two levels.
+        let sets = JointSets {
+            joints: vec![0, 0, 3, 5, 5],
+            ends: vec![1, 3, 4, 5],
+            morphed: vec![false, false, false, true],
+            vertices: vec![10, 6, 4, 2, 7, 0, 3, 1],
+            totals: vec![24, 9],
+            morphed_totals: vec![3, 1],
+            levels: 2,
+        };
+        let taken = [1, 2, 3, 4, 5, 6];
+        let moved = |which: &[usize]| {
+            let mut posed = taken;
+            for &joint in which {
+                posed[joint] += 100;
+            }
+            posed
+        };
+        let still = |level, posed: &[u64], weights| sets.stillness(level, &taken, posed, weights);
+        let all = moved(&[]);
+        assert_eq!(still(0, &all, true), Stillness { same: true, vertices: 24 }, "the same pose");
+        assert_eq!(still(1, &all, true), Stillness { same: true, vertices: 9 });
+        assert_eq!(still(0, &all, false), Stillness { same: false, vertices: 21 }, "the face's mouth moved");
+        assert_eq!(
+            still(9, &all, false),
+            Stillness { same: false, vertices: 8 },
+            "past the levels: the coarsest's"
+        );
+        let none = moved(&[0, 1, 2, 3, 4, 5]);
+        assert_eq!(still(0, &none, true), Stillness { same: false, vertices: 0 }, "every joint moved");
+        assert_eq!(still(0, &moved(&[3]), true).vertices, 20, "the set with 3 moves");
+        assert_eq!(still(0, &moved(&[3]), false).vertices, 17, "and the morphed set");
+        assert_eq!(still(0, &moved(&[0]), true).vertices, 10, "both sets with 0 move");
+        assert_eq!(still(0, &moved(&[5]), true).vertices, 14, "both sets with 5 move");
+        assert_eq!(still(0, &moved(&[1]), true).vertices, 24, "a joint no vertex follows");
+        assert!(!still(0, &moved(&[1]), true).same, "is still another pose");
+        for (posed, weights) in [(&moved(&[3]), false), (&all, false), (&none, true)] {
+            let (_, allocated) = sapphire_core::alloc::count_in_scope(|| still(0, posed, weights));
+            assert_eq!(allocated.allocations, 0, "telling what held allocates nothing");
+        }
+        let unskinned = JointSets::default();
+        assert_eq!(unskinned.stillness(0, &[], &[], true), Stillness { same: true, vertices: 0 }, "no sets");
+    }
+
     #[test]
     fn dispatches_cover_every_workgroup_within_the_limit() {
         assert_eq!(dispatch_size(1), (1, 1));
@@ -1465,6 +1770,9 @@ mod tests {
             drawn: false,
             moved: false,
             pending: None,
+            taken_pose: false,
+            joints_taken: 0,
+            weight_hashes: [0; 2],
             drawn_bounds: None,
             pending_bounds: None,
         };

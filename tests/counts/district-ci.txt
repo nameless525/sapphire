@@ -91,9 +91,12 @@ desktop-high-dusk | shadow capsules | p50 60 p95 60 worst 60 total 31920
 desktop-high-dusk | shadow character triangles | p50 36038 p95 36038 worst 36038 total 19172216
 desktop-high-dusk | shadow draws above level 0 | p50 28 p95 503 worst 537 total 43254
 desktop-high-dusk | shadow triangles | p50 903052 p95 1485477 worst 2225097 total 488925555
+desktop-high-dusk | skinned again with the same pose | p50 0 p95 0 worst 1 total 4
 desktop-high-dusk | skinned instances | p50 15 p95 33 worst 36 total 7992
 desktop-high-dusk | skinned instances above level 0 | p50 14 p95 33 worst 36 total 7867
+desktop-high-dusk | skinned instances with vertices that held still | p50 0 p95 1 worst 2 total 63
 desktop-high-dusk | skinned vertices | p50 56481 p95 127907 worst 155316 total 31183496
+desktop-high-dusk | skinned vertices that held still | p50 0 p95 1320 worst 6138 total 97669
 desktop-high-dusk | spot draws | not exercised
 desktop-high-dusk | spot load bytes | not exercised
 desktop-high-dusk | spot tiles cached | not exercised
@@ -114,6 +117,7 @@ desktop-high-dusk | triangles | p50 1888482 p95 2578276 worst 3428135 total 1002
 desktop-high-dusk | ui draws | not exercised
 desktop-high-dusk | upscale draws | not exercised
 desktop-high-dusk | upscale groups | not exercised
+desktop-high-dusk | vertices skinned again with the same pose | p50 0 p95 0 worst 3788 total 15007
 desktop-high-dusk | worst texture debt frames | not exercised
 
 desktop-high-night | ambient characters in view | p50 18 p95 37 worst 39 total 10152
@@ -196,9 +200,12 @@ desktop-high-night | shadow capsules | p50 60 p95 60 worst 60 total 31920
 desktop-high-night | shadow character triangles | p50 36038 p95 36038 worst 36038 total 19172216
 desktop-high-night | shadow draws above level 0 | p50 28 p95 529 worst 553 total 41725
 desktop-high-night | shadow triangles | p50 536031 p95 1861337 worst 2214497 total 424956516
+desktop-high-night | skinned again with the same pose | p50 0 p95 0 worst 1 total 4
 desktop-high-night | skinned instances | p50 15 p95 33 worst 36 total 7992
 desktop-high-night | skinned instances above level 0 | p50 14 p95 33 worst 36 total 7867
+desktop-high-night | skinned instances with vertices that held still | p50 0 p95 1 worst 2 total 62
 desktop-high-night | skinned vertices | p50 56481 p95 127907 worst 155316 total 31183496
+desktop-high-night | skinned vertices that held still | p50 0 p95 1319 worst 6138 total 94600
 desktop-high-night | spot draws | not exercised
 desktop-high-night | spot load bytes | not exercised
 desktop-high-night | spot tiles cached | not exercised
@@ -219,6 +226,7 @@ desktop-high-night | triangles | p50 1736681 p95 2769216 worst 3489276 total 938
 desktop-high-night | ui draws | not exercised
 desktop-high-night | upscale draws | not exercised
 desktop-high-night | upscale groups | not exercised
+desktop-high-night | vertices skinned again with the same pose | p50 0 p95 0 worst 3788 total 15007
 desktop-high-night | worst texture debt frames | not exercised
 
 desktop-low-dusk | ambient characters in view | p50 20 p95 38 worst 41 total 10933
@@ -301,9 +309,12 @@ desktop-low-dusk | shadow capsules | p50 60 p95 60 worst 60 total 31836
 desktop-low-dusk | shadow character triangles | p50 36038 p95 36038 worst 36038 total 19172216
 desktop-low-dusk | shadow draws above level 0 | p50 81 p95 644 worst 753 total 79595
 desktop-low-dusk | shadow triangles | p50 710376 p95 1821210 worst 2159654 total 438775825
+desktop-low-dusk | skinned again with the same pose | p50 0 p95 0 worst 1 total 1
 desktop-low-dusk | skinned instances | p50 16 p95 34 worst 36 total 8319
 desktop-low-dusk | skinned instances above level 0 | p50 16 p95 34 worst 36 total 8240
+desktop-low-dusk | skinned instances with vertices that held still | p50 0 p95 1 worst 2 total 62
 desktop-low-dusk | skinned vertices | p50 61758 p95 131985 worst 187004 total 32504785
+desktop-low-dusk | skinned vertices that held still | p50 0 p95 1320 worst 6138 total 98029
 desktop-low-dusk | spot draws | not exercised
 desktop-low-dusk | spot load bytes | not exercised
 desktop-low-dusk | spot tiles cached | not exercised
@@ -324,6 +335,7 @@ desktop-low-dusk | triangles | p50 1735764 p95 2888583 worst 3240769 total 95272
 desktop-low-dusk | ui draws | not exercised
 desktop-low-dusk | upscale draws | not exercised
 desktop-low-dusk | upscale groups | not exercised
+desktop-low-dusk | vertices skinned again with the same pose | p50 0 p95 0 worst 3788 total 3788
 desktop-low-dusk | worst texture debt frames | not exercised
 
 desktop-low-night | ambient characters in view | p50 19 p95 37 worst 39 total 10477
@@ -406,9 +418,12 @@ desktop-low-night | shadow capsules | p50 60 p95 60 worst 60 total 31836
 desktop-low-night | shadow character triangles | p50 36038 p95 36038 worst 36038 total 19172216
 desktop-low-night | shadow draws above level 0 | p50 32 p95 559 worst 731 total 70833
 desktop-low-night | shadow triangles | p50 496522 p95 1471952 worst 1911821 total 362255323
+desktop-low-night | skinned again with the same pose | p50 0 p95 0 worst 1 total 1
 desktop-low-night | skinned instances | p50 16 p95 34 worst 36 total 8319
 desktop-low-night | skinned instances above level 0 | p50 16 p95 34 worst 36 total 8240
+desktop-low-night | skinned instances with vertices that held still | p50 0 p95 1 worst 2 total 61
 desktop-low-night | skinned vertices | p50 61758 p95 131985 worst 187004 total 32504785
+desktop-low-night | skinned vertices that held still | p50 0 p95 1319 worst 6138 total 94960
 desktop-low-night | spot draws | not exercised
 desktop-low-night | spot load bytes | not exercised
 desktop-low-night | spot tiles cached | not exercised
@@ -429,6 +444,7 @@ desktop-low-night | triangles | p50 1617149 p95 2497919 worst 3320527 total 8762
 desktop-low-night | ui draws | not exercised
 desktop-low-night | upscale draws | not exercised
 desktop-low-night | upscale groups | not exercised
+desktop-low-night | vertices skinned again with the same pose | p50 0 p95 0 worst 3788 total 3788
 desktop-low-night | worst texture debt frames | not exercised
 
 mobile-high-dusk | ambient characters in view | p50 8 p95 20 worst 23 total 5162
@@ -511,9 +527,12 @@ mobile-high-dusk | shadow capsules | p50 23 p95 29 worst 31 total 11472
 mobile-high-dusk | shadow character triangles | not exercised
 mobile-high-dusk | shadow draws above level 0 | p50 11 p95 66 worst 70 total 10350
 mobile-high-dusk | shadow triangles | p50 118700 p95 632069 worst 690435 total 115361310
+mobile-high-dusk | skinned again with the same pose | not exercised
 mobile-high-dusk | skinned instances | p50 6 p95 17 worst 20 total 3782
 mobile-high-dusk | skinned instances above level 0 | not exercised
+mobile-high-dusk | skinned instances with vertices that held still | p50 0 p95 0 worst 1 total 18
 mobile-high-dusk | skinned vertices | p50 23331 p95 64765 worst 75404 total 14526215
+mobile-high-dusk | skinned vertices that held still | p50 0 p95 0 worst 3069 total 26020
 mobile-high-dusk | spot draws | not exercised
 mobile-high-dusk | spot load bytes | not exercised
 mobile-high-dusk | spot tiles cached | not exercised
@@ -534,6 +553,7 @@ mobile-high-dusk | triangles | p50 775699 p95 1351646 worst 1561725 total 443908
 mobile-high-dusk | ui draws | not exercised
 mobile-high-dusk | upscale draws | not exercised
 mobile-high-dusk | upscale groups | not exercised
+mobile-high-dusk | vertices skinned again with the same pose | not exercised
 mobile-high-dusk | worst texture debt frames | not exercised
 
 mobile-high-night | ambient characters in view | p50 8 p95 20 worst 22 total 4918
@@ -616,9 +636,12 @@ mobile-high-night | shadow capsules | p50 23 p95 29 worst 31 total 11472
 mobile-high-night | shadow character triangles | not exercised
 mobile-high-night | shadow draws above level 0 | p50 11 p95 66 worst 70 total 10618
 mobile-high-night | shadow triangles | p50 93986 p95 629909 worst 681013 total 102554225
+mobile-high-night | skinned again with the same pose | not exercised
 mobile-high-night | skinned instances | p50 6 p95 17 worst 20 total 3782
 mobile-high-night | skinned instances above level 0 | not exercised
+mobile-high-night | skinned instances with vertices that held still | p50 0 p95 0 worst 1 total 18
 mobile-high-night | skinned vertices | p50 23331 p95 64765 worst 75404 total 14526215
+mobile-high-night | skinned vertices that held still | p50 0 p95 0 worst 3069 total 26020
 mobile-high-night | spot draws | not exercised
 mobile-high-night | spot load bytes | not exercised
 mobile-high-night | spot tiles cached | not exercised
@@ -639,6 +662,7 @@ mobile-high-night | triangles | p50 734336 p95 1357410 worst 1609383 total 43110
 mobile-high-night | ui draws | not exercised
 mobile-high-night | upscale draws | not exercised
 mobile-high-night | upscale groups | not exercised
+mobile-high-night | vertices skinned again with the same pose | not exercised
 mobile-high-night | worst texture debt frames | not exercised
 
 mobile-low-dusk | ambient characters in view | p50 8 p95 20 worst 22 total 5095
@@ -721,9 +745,12 @@ mobile-low-dusk | shadow capsules | p50 19 p95 27 worst 31 total 9398
 mobile-low-dusk | shadow character triangles | not exercised
 mobile-low-dusk | shadow draws above level 0 | p50 11 p95 62 worst 70 total 11348
 mobile-low-dusk | shadow triangles | p50 117024 p95 551308 worst 601446 total 116066519
+mobile-low-dusk | skinned again with the same pose | not exercised
 mobile-low-dusk | skinned instances | p50 6 p95 17 worst 20 total 3787
 mobile-low-dusk | skinned instances above level 0 | not exercised
+mobile-low-dusk | skinned instances with vertices that held still | p50 0 p95 0 worst 2 total 24
 mobile-low-dusk | skinned vertices | p50 23331 p95 64765 worst 76877 total 14562673
+mobile-low-dusk | skinned vertices that held still | p50 0 p95 0 worst 6138 total 34466
 mobile-low-dusk | spot draws | not exercised
 mobile-low-dusk | spot load bytes | not exercised
 mobile-low-dusk | spot tiles cached | not exercised
@@ -744,6 +771,7 @@ mobile-low-dusk | triangles | p50 481391 p95 921556 worst 980638 total 290164013
 mobile-low-dusk | ui draws | not exercised
 mobile-low-dusk | upscale draws | not exercised
 mobile-low-dusk | upscale groups | not exercised
+mobile-low-dusk | vertices skinned again with the same pose | not exercised
 mobile-low-dusk | worst texture debt frames | not exercised
 
 mobile-low-night | ambient characters in view | p50 8 p95 19 worst 21 total 4849
@@ -826,9 +854,12 @@ mobile-low-night | shadow capsules | p50 19 p95 27 worst 31 total 9398
 mobile-low-night | shadow character triangles | not exercised
 mobile-low-night | shadow draws above level 0 | p50 7 p95 66 worst 70 total 10715
 mobile-low-night | shadow triangles | p50 86636 p95 548069 worst 585449 total 97593700
+mobile-low-night | skinned again with the same pose | not exercised
 mobile-low-night | skinned instances | p50 6 p95 17 worst 20 total 3787
 mobile-low-night | skinned instances above level 0 | not exercised
+mobile-low-night | skinned instances with vertices that held still | p50 0 p95 0 worst 2 total 24
 mobile-low-night | skinned vertices | p50 23331 p95 64765 worst 76877 total 14562673
+mobile-low-night | skinned vertices that held still | p50 0 p95 0 worst 6138 total 34466
 mobile-low-night | spot draws | not exercised
 mobile-low-night | spot load bytes | not exercised
 mobile-low-night | spot tiles cached | not exercised
@@ -849,4 +880,5 @@ mobile-low-night | triangles | p50 430631 p95 937182 worst 1037263 total 2716911
 mobile-low-night | ui draws | not exercised
 mobile-low-night | upscale draws | not exercised
 mobile-low-night | upscale groups | not exercised
+mobile-low-night | vertices skinned again with the same pose | not exercised
 mobile-low-night | worst texture debt frames | not exercised

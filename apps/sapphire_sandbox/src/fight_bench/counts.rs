@@ -105,6 +105,14 @@ pub(crate) struct Counted {
     pub ambient_springs: u32,
     /// Skinned instances every view drew past their first level (M5 C11, `SkinningStats::coarser`).
     pub skinned_coarser: u32,
+    /// Instances skinned with a new pose that is their last pose again, every joint and morph weight, and
+    /// the vertices they skinned (M6 B8, `SkinningStats::same_pose`).
+    pub same_pose: u32,
+    pub same_pose_vertices: u32,
+    /// Vertices skinned with a new pose whose joints, and weights if a morph target moves them, held since
+    /// their instance's last pose, and the instances with any (M6 B8, `SkinningStats::still_vertices`).
+    pub still_vertices: u32,
+    pub still_instances: u32,
     /// Instances the main view drew last frame at another level of detail (M5 D4, `LevelStats`).
     pub level_switches: u32,
     /// The texture streamer's (M5 M5): textures in debt and the worst debt in frames, levels raised and
@@ -225,6 +233,10 @@ impl Counted {
             joints: render.skinning.joints,
             skinned_vertices: render.skinning.vertices,
             skinned_coarser: render.skinning.coarser,
+            same_pose: render.skinning.same_pose,
+            same_pose_vertices: render.skinning.same_pose_vertices,
+            still_vertices: render.skinning.still_vertices,
+            still_instances: render.skinning.still_instances,
             lights: render.lights.drawn,
             lights_culled: render.lights.culled,
             lights_dropped: render.lights.dropped,
@@ -367,7 +379,7 @@ const GROUPS: [&str; 14] = [
 /// and the main view's switches, M5 D4), the state the mesh passes changed, the instanced runs,
 /// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's, the
 /// characters' capsules by cluster, and the character pixel's (M6 B6).
-pub(crate) const COUNT_ROWS: [CountRow; 98] = [
+pub(crate) const COUNT_ROWS: [CountRow; 102] = [
     // Every call the frame submitted, across all passes: m5-plan §3's second row, with no budget.
     row(FRAME, "draw calls", |c| u64::from(c.passes.total().draws)),
     row(FRAME, "triangles", |c| c.passes.total().triangles),
@@ -439,6 +451,14 @@ pub(crate) const COUNT_ROWS: [CountRow; 98] = [
     row(SKINNING, "skinned vertices", |c| u64::from(c.skinned_vertices)),
     // Skinned instances every view draws past level 0, a character's levels (M5 D5, C11).
     row(SKINNING, "skinned instances above level 0", |c| u64::from(c.skinned_coarser)),
+    // Of the skinned, those posed again as their last pose was, every joint and morph weight, and their
+    // vertices (M6 B8): what an instance's appearance skinned less often would save.
+    row(SKINNING, "skinned again with the same pose", |c| u64::from(c.same_pose)),
+    row(SKINNING, "vertices skinned again with the same pose", |c| u64::from(c.same_pose_vertices)),
+    // The skinned vertices whose own joints held, and weights if morphed, whatever the rest did, and the
+    // instances with any (M6 B8): what skinning only the blocks whose joints or weights moved would save.
+    row(SKINNING, "skinned vertices that held still", |c| u64::from(c.still_vertices)),
+    row(SKINNING, "skinned instances with vertices that held still", |c| u64::from(c.still_instances)),
     // §3.4: 64 lights a desktop frame, 8 a phone's.
     CountRow {
         name: "lights",

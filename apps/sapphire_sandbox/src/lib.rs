@@ -477,6 +477,8 @@
 //!     graph's submission two frames back rather than for everything, so CPU and GPU overlap as a shipped frame's
 //!     do, and logs `bench overlap` over the GPU timing's frames: whether the frames were CPU- or GPU-limited, and
 //!     the work queued ahead of each and the queue's age on the GPU's clock (`bench::overlap`). Off by default.
+//!     `--bench-ticks <first>-<last>` (M6 B5) has a fight's bench read only the frames drawn at those ticks, as a
+//!     cut-in's while it plays, and report the rest as left out.
 //!   - `--offscreen` (`dev` builds): keep drawing at up to 60 frames a second, one fixed step
 //!     each, until the process is told to quit (Ctrl-C, `kill`) or `--frames N` have been drawn,
 //!     with hot reload and live link on (`serve.rs`): what a device runs, without a window.

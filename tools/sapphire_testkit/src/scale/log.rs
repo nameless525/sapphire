@@ -165,9 +165,9 @@ pub struct GpuReading {
     pub lock: Option<f64>,
 }
 
-/// Frames a phase left out of every row's spread for one reason (M6 B3, `fight excluded`): a restart, or in the GPU
-/// phase a frame whose timings never came back. Times in µs; with no such frame, `frames` is 0 and nothing else
-/// was read.
+/// Frames a phase left out of every row's spread for one reason (M6 B3, `fight excluded`): a restart, a frame drawn
+/// outside a fight's `--bench-ticks` (`outside`, M6 B5, logged only by a run with them), or in the GPU phase a frame
+/// whose timings never came back. Times in µs; with no such frame, `frames` is 0 and nothing else was read.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Excluded {
     pub frames: u64,

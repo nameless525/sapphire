@@ -160,6 +160,9 @@ pub(crate) struct Counted {
     pub hull_pixels: u32,
     pub upscale_groups: u32,
     pub flat_upscale_groups: u32,
+    /// The pixels the frame's effect sprites and ribbons shade, every layer counted (M6 B5, `VfxRenderStats::pixels`):
+    /// the effects' fill, estimated from their quads as they're sorted.
+    pub effect_pixels: u64,
 }
 
 impl Counted {
@@ -280,6 +283,7 @@ impl Counted {
             hull_pixels: render.measured.hull_pixels,
             upscale_groups: render.measured.upscale_groups,
             flat_upscale_groups: render.measured.flat_upscale_groups,
+            effect_pixels: render.vfx.pixels,
             ..Self::default()
         }
     }
@@ -355,9 +359,10 @@ const CROWD: &str = "a zone's crowd";
 const STREAMING: &str = "texture streaming";
 const CAPSULES: &str = "capsules by cluster";
 const CHARACTER_PIXEL: &str = "the character pixel";
+const EFFECTS: &str = "effects";
 /// Every group, in the rows' order (a test holds `COUNT_ROWS` to it).
 #[cfg(test)]
-const GROUPS: [&str; 14] = [
+const GROUPS: [&str; 15] = [
     FRAME,
     PASSES,
     CULLING,
@@ -372,14 +377,15 @@ const GROUPS: [&str; 14] = [
     STREAMING,
     CAPSULES,
     CHARACTER_PIXEL,
+    EFFECTS,
 ];
 
 /// What's logged, the frame's whole first, then pass by pass (spot lights' shadow tiles among them), the
 /// ambient pass's dispatches, then what culled, the levels drawn (the main view's and the shadows' apart,
 /// and the main view's switches, M5 D4), the state the mesh passes changed, the instanced runs,
 /// skinning, lights, the asset server's, animation's, a zone's crowd's, the texture streamer's, the
-/// characters' capsules by cluster, and the character pixel's (M6 B6).
-pub(crate) const COUNT_ROWS: [CountRow; 102] = [
+/// characters' capsules by cluster, the character pixel's (M6 B6) and the effects' pixels (M6 B5).
+pub(crate) const COUNT_ROWS: [CountRow; 103] = [
     // Every call the frame submitted, across all passes: m5-plan §3's second row, with no budget.
     row(FRAME, "draw calls", |c| u64::from(c.passes.total().draws)),
     row(FRAME, "triangles", |c| c.passes.total().triangles),
@@ -548,6 +554,9 @@ pub(crate) const COUNT_ROWS: [CountRow; 102] = [
     row(CHARACTER_PIXEL, "hull pixels", |c| u64::from(c.hull_pixels)),
     row(CHARACTER_PIXEL, "upscale groups", |c| u64::from(c.upscale_groups)),
     row(CHARACTER_PIXEL, "flat upscale groups", |c| u64::from(c.flat_upscale_groups)),
+    // The effects' fill (M6 B5): the pixels their sprites and ribbons shade, every layer counted, from their quads
+    // through the view, which N10 reads per world and N12's gauge shows.
+    row(EFFECTS, "effect pixels", |c| c.effect_pixels),
 ];
 
 /// A frame's counts, the tick it was drawn at and the metres walked by then.
@@ -566,7 +575,7 @@ pub(super) fn report_drawn(trace: &[Traced], phase: Phase, every: u32, budgets: 
 
 /// Logs each count row over `phase`'s frames, and its frames' times by the kind of core they ran on.
 pub(super) fn report(trace: &[Traced], phase: Phase, budgets: &RunBudgets) {
-    let frames = || trace.iter().filter(move |frame| frame.phase == phase && frame.restart.is_none());
+    let frames = || trace.iter().filter(move |frame| frame.phase == phase && frame.read());
     if frames().next().is_none() {
         return;
     }

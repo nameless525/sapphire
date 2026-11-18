@@ -45,6 +45,7 @@ desktop-high-dusk | culled by view | p50 913 p95 1202 worst 1337 total 480494
 desktop-high-dusk | culled past outline cutoff | p50 0 p95 10 worst 12 total 846
 desktop-high-dusk | draw calls | p50 839 p95 1129 worst 1407 total 439320
 desktop-high-dusk | draw instances | p50 933 p95 1350 worst 1832 total 494730
+desktop-high-dusk | effect pixels | not exercised
 desktop-high-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 desktop-high-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 desktop-high-dusk | entities removed | not exercised
@@ -154,6 +155,7 @@ desktop-high-night | culled by view | p50 913 p95 1202 worst 1337 total 480494
 desktop-high-night | culled past outline cutoff | p50 0 p95 10 worst 12 total 846
 desktop-high-night | draw calls | p50 770 p95 1151 worst 1456 total 412345
 desktop-high-night | draw instances | p50 844 p95 1397 worst 1896 total 462700
+desktop-high-night | effect pixels | not exercised
 desktop-high-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 desktop-high-night | entities placed | p50 244 p95 244 worst 244 total 244
 desktop-high-night | entities removed | not exercised
@@ -263,6 +265,7 @@ desktop-low-dusk | culled by view | p50 913 p95 1202 worst 1337 total 478445
 desktop-low-dusk | culled past outline cutoff | p50 0 p95 12 worst 18 total 868
 desktop-low-dusk | draw calls | p50 800 p95 1179 worst 1382 total 430774
 desktop-low-dusk | draw instances | p50 874 p95 1530 worst 1777 total 482879
+desktop-low-dusk | effect pixels | not exercised
 desktop-low-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 desktop-low-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 desktop-low-dusk | entities removed | not exercised
@@ -372,6 +375,7 @@ desktop-low-night | culled by view | p50 913 p95 1202 worst 1337 total 478445
 desktop-low-night | culled past outline cutoff | p50 0 p95 12 worst 18 total 868
 desktop-low-night | draw calls | p50 730 p95 1113 worst 1373 total 398196
 desktop-low-night | draw instances | p50 803 p95 1322 worst 1793 total 444726
+desktop-low-night | effect pixels | not exercised
 desktop-low-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 desktop-low-night | entities placed | p50 244 p95 244 worst 244 total 244
 desktop-low-night | entities removed | not exercised
@@ -481,6 +485,7 @@ mobile-high-dusk | culled by view | p50 802 p95 1064 worst 1179 total 419712
 mobile-high-dusk | culled past outline cutoff | not exercised
 mobile-high-dusk | draw calls | p50 528 p95 830 worst 958 total 290799
 mobile-high-dusk | draw instances | p50 623 p95 1106 worst 1322 total 349324
+mobile-high-dusk | effect pixels | not exercised
 mobile-high-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-high-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-high-dusk | entities removed | not exercised
@@ -590,6 +595,7 @@ mobile-high-night | culled by view | p50 802 p95 1064 worst 1179 total 419712
 mobile-high-night | culled past outline cutoff | not exercised
 mobile-high-night | draw calls | p50 494 p95 813 worst 969 total 279031
 mobile-high-night | draw instances | p50 591 p95 1112 worst 1367 total 337511
+mobile-high-night | effect pixels | not exercised
 mobile-high-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-high-night | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-high-night | entities removed | not exercised
@@ -699,6 +705,7 @@ mobile-low-dusk | culled by view | p50 410 p95 543 worst 604 total 215930
 mobile-low-dusk | culled past outline cutoff | not exercised
 mobile-low-dusk | draw calls | p50 318 p95 562 worst 600 total 188824
 mobile-low-dusk | draw instances | p50 362 p95 750 worst 789 total 226384
+mobile-low-dusk | effect pixels | not exercised
 mobile-low-dusk | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-low-dusk | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-low-dusk | entities removed | not exercised
@@ -808,6 +815,7 @@ mobile-low-night | culled by view | p50 410 p95 543 worst 604 total 215930
 mobile-low-night | culled past outline cutoff | not exercised
 mobile-low-night | draw calls | p50 289 p95 567 worst 623 total 175012
 mobile-low-night | draw instances | p50 333 p95 762 worst 838 total 211867
+mobile-low-night | effect pixels | not exercised
 mobile-low-night | entities in the zone | p50 244 p95 244 worst 244 total 244
 mobile-low-night | entities placed | p50 244 p95 244 worst 244 total 244
 mobile-low-night | entities removed | not exercised

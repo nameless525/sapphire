@@ -54,6 +54,10 @@ const COUNTS: [&str; 13] = [
     "level switches",
 ];
 
+/// Count rows the counts table shows only where a round counted them, as the fights with effects do: the effects'
+/// pixels (M6 B5), the fill N10 and N12 read.
+const EFFECT_COUNTS: [&str; 1] = ["effect pixels"];
+
 /// The streamer's and admission's rows: exit test 2.
 const STREAMING: [&str; 13] = [
     "texture pool bytes",
@@ -556,10 +560,14 @@ fn section(
             }
             Read::Counts => {
                 let budgeted = budgeted_counts(rounds);
+                let phase = phase_of_counts(rounds);
                 let rows: Vec<&str> = budgeted
                     .iter()
                     .map(String::as_str)
                     .chain(COUNTS.into_iter().filter(|row| !budgeted.iter().any(|b| b == row)))
+                    .chain(EFFECT_COUNTS.into_iter().filter(|row| {
+                        matches!(rounds.counted(phase, row), CountCell::Read(_) | CountCell::Differs(_))
+                    }))
                     .collect();
                 count_table(out, failures, run, tier, rounds, beside, beside_name, &rows);
             }
@@ -752,16 +760,18 @@ fn spans_table(out: &mut String, rounds: &Rounds) {
     let _ = writeln!(out);
 }
 
-/// The frames each round's phases left out of every row (M6 B3), by reason: a fight's restarts, the GPU phase's
-/// frames whose timings never came back and a plain bench's warm-up, each a row with its count, its CPU frame and
-/// what it allocated. Nothing where no round logged them (a log from before they were).
+/// The frames each round's phases left out of every row (M6 B3), by reason: a fight's restarts, its frames outside
+/// `--bench-ticks` (M6 B5), the GPU phase's frames whose timings never came back and a plain bench's warm-up, each
+/// a row with its count, its CPU frame and what it allocated. Nothing where no round logged them (a log from before
+/// they were).
 fn excluded_table(out: &mut String, rounds: &Rounds) {
     if !rounds.rounds.iter().any(|round| !round.log.excluded.is_empty()) {
         return;
     }
     let _ = writeln!(
         out,
-        "Frames left out of the rows: a frame that starts a fight over (or a walk's tour), in the GPU phase one \
+        "Frames left out of the rows: a frame that starts a fight over (or a walk's tour), one a fight drew outside \
+         the ticks its unit reads (`outside`, since M6 B5, a unit with `--bench-ticks` only), in the GPU phase one \
          whose timings never came back, and a plain bench's warm-up, each phase's by reason, every round. Times in \
          ms, p50 / worst, a fight's worst frame's tick and its time on the thread's core beside it; a restart's own time within its frame, which \
          exit test 4 proposes holding under 1 ms a frame (shown, judged on nothing), and since M6 J2 the most it \
@@ -1626,6 +1636,26 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(budgeted_counts(&rounds(&[&log])), ["main draws"]);
+    }
+
+    /// The effects' pixels (M6 B5) join a run's counts table where a round counted them, as a fight with its cues
+    /// does, and stay out of a walk's, which plays none.
+    #[test]
+    fn the_effects_pixels_show_where_a_round_counted_them() {
+        let manifest = manifest();
+        let run = manifest.runs.iter().find(|run| run.read.contains(&Read::Counts)).expect("a run of counts");
+        let table = |log: &str| {
+            let mut out = String::new();
+            section(&mut out, &mut Vec::new(), &manifest, run, &manifest.tiers[0], &rounds(&[log]), None);
+            out.lines().find(|line| line.starts_with("| Effect pixels |")).map(str::to_owned)
+        };
+        let fight = count_line("cpu", "effect pixels", [4_100, 61_000, 240_000], None);
+        let line = table(&fight).expect("a fight's effects counted");
+        assert!(line.contains("4,100 / 61,000 / 240,000"), "{line}");
+        let walk = "2026-11-15T10:00:00.000000Z  INFO sapphire::sandbox: count row not exercised phase=\"cpu\" \
+                    row=\"effect pixels\"";
+        assert_eq!(table(walk), None, "a walk's none");
+        assert_eq!(table(""), None, "nor a log from before them");
     }
 
     /// Exit test 2's rows, the 30-frame line and the trips read a timed walk's cold lap as well as its warm one:

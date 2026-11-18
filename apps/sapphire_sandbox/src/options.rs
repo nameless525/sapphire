@@ -599,6 +599,14 @@ pub(crate) struct Options {
     /// bench waits for the GPU every frame, as it always has. With `--bench` of anything timed: not with
     /// `--draw-every`, which times nothing, or `--serial-passes`, which waits after every pass.
     pub bench_overlap: bool,
+    /// `--bench-ticks <first>-<last>`: a fight's bench reads only the frames drawn at those ticks of the fight,
+    /// both counted (M6 B5), as a cut-in's are while it plays: every row, timed or counted, and the GPU reading's
+    /// frame counts. The rest are left out as their own reason (`fight excluded`, `outside`), as a restart's frame
+    /// is. The whole fight is still read where the sitting is judged, not the ticks: the GPU reading's slow shares
+    /// and display lock, which a cut-in's 50 frames hold too few slow ones to show, and the `fight phase` line's
+    /// summaries. With `--bench` of a fight that's timed: a replay or a script, not with `--draw-every`, nor with
+    /// `--bench-overlap`, whose reading takes the whole fight's queue.
+    pub bench_ticks: Option<std::ops::RangeInclusive<u64>>,
     /// `--compute-threads <n>`: the job system's compute pool runs `n` threads, not one a physical core but the
     /// main thread's (M5 X4's lane: a counted walk's worker count is the walk's, so its animation jobs are the
     /// scene's and not the machine's). Read before the job system starts ([`compute_threads_requested`]), so any
@@ -1797,6 +1805,7 @@ impl Options {
                 "--combat-input" => options.combat_input = true,
                 "--serial-passes" => options.serial_passes = true,
                 "--bench-overlap" => options.bench_overlap = true,
+                "--bench-ticks" => options.bench_ticks = Some(parse_ticks(&value("--bench-ticks")?)?),
                 "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
                 "--spin" => {
                     let speed: f32 = number(&value("--spin")?, "--spin")?;
@@ -2266,6 +2275,17 @@ impl Options {
                  --serial-passes, which waits for the GPU after every pass"
             ));
         }
+        if options.bench_ticks.is_some() && !(benching && fight && options.draw_every.is_none()) {
+            return Err(format!(
+                "--bench-ticks needs a timed {BENCH_FLAG} of a fight (--replay, or --fight with --script): its ticks \
+                 are the fight's, and --draw-every reads no rows"
+            ));
+        }
+        if options.bench_ticks.is_some() && options.bench_overlap {
+            return Err("--bench-ticks doesn't go with --bench-overlap, whose reading takes the whole fight's queue, \
+                        not the ticks'"
+                .to_owned());
+        }
         if options.draw_every.is_some() && !(capturing || serve || bench_of_a_load) {
             return Err(format!(
                 "--draw-every needs {CAPTURE_FLAG}, {OFFSCREEN_FLAG}, or {BENCH_FLAG} of a fight (--replay, or \
@@ -2405,6 +2425,19 @@ impl Options {
             under(path);
         }
     }
+}
+
+/// `<first>-<last>`: a fight's ticks, both counted, the first no later than the last.
+fn parse_ticks(raw: &str) -> Result<std::ops::RangeInclusive<u64>, String> {
+    let invalid =
+        || format!("--bench-ticks expects FIRST-LAST, a fight's ticks with FIRST at most LAST, got {raw:?}");
+    let (first, last) = raw.split_once('-').ok_or_else(invalid)?;
+    let tick = |raw: &str| raw.trim().parse::<u64>().map_err(|_| invalid());
+    let (first, last) = (tick(first)?, tick(last)?);
+    if first > last {
+        return Err(invalid());
+    }
+    Ok(first..=last)
 }
 
 fn number<T: std::str::FromStr>(raw: &str, name: &str) -> Result<T, String> {
@@ -4280,6 +4313,34 @@ mod tests {
             );
         }
         assert!(parse(&[&walk[..], &["--bench-pace", "0"]].concat()).is_err());
+    }
+
+    /// A fight's bench reads the ticks `--bench-ticks` names (M6 B5), both counted, and only a timed bench of a fight
+    /// takes it.
+    #[test]
+    fn the_ticks_read_go_with_a_timed_bench_of_a_fight() {
+        let fight = ["--bench", "1", "--replay", "x"];
+        assert_eq!(parse(&fight).unwrap().0.bench_ticks, None);
+        let (options, _) = parse(&[&fight[..], &["--bench-ticks", "416-460"]].concat()).unwrap();
+        assert_eq!(options.bench_ticks, Some(416..=460));
+        let (options, _) = parse(&[&fight[..], &["--bench-ticks", "7-7"]].concat()).unwrap();
+        assert_eq!(options.bench_ticks, Some(7..=7));
+        for ticks in ["460-416", "416", "a-b", "-4"] {
+            let error = parse(&[&fight[..], &["--bench-ticks", ticks]].concat()).unwrap_err();
+            assert!(error.contains("FIRST-LAST"), "{ticks}: {error}");
+        }
+        for args in [
+            &["--bench", "1"][..],
+            &["--bench", "1", "--zone", "district", "--zone-walk", "tour"],
+            &["--capture", "x.png", "--replay", "x"],
+            &["--bench", "1", "--replay", "x", "--draw-every", "7"],
+        ] {
+            let error = parse(&[args, &["--bench-ticks", "1-2"]].concat()).unwrap_err();
+            assert!(error.contains("--bench-ticks needs"), "{args:?}: {error}");
+        }
+        let error = parse(&[&fight[..], &["--bench-ticks", "1-2", "--bench-overlap"]].concat()).unwrap_err();
+        assert!(error.contains("--bench-overlap"), "{error}");
+        assert!(parse(&[&fight[..], &["--bench-overlap"]].concat()).is_ok(), "the overlap alone stays");
     }
 
     /// The overlap mode (M6 B7) is off unless asked, and goes with a timed bench alone: a plain one, a fight's or

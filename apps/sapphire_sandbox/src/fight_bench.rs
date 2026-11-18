@@ -26,8 +26,9 @@
 //! tick that frame fell on and the budget it has on this tier. `--bench-trace <csv>` writes every frame:
 //! a spike's tick says which moment of the fight it was. Nothing it records allocates in a frame.
 //!
-//! **Frames left out are rows of their own** (M6 B3): a frame that starts a fight over, and in the GPU phase one
-//! whose timings never came back, are in no row's spread; each phase logs them by reason (`fight excluded`) with
+//! **Frames left out are rows of their own** (M6 B3): a frame that starts a fight over, one drawn at a tick outside
+//! `--bench-ticks` (`outside`, M6 B5, logged only by a run with them) and in the GPU phase one whose timings never
+//! came back are in no row's spread; each phase logs them by reason (`fight excluded`) with
 //! their count, their CPU frame's median and worst, a restart's own time and what it allocated on the frame's
 //! thread (M6 J2, where counts are kept by thread), and what the frames allocated, the warm-up pool's work beside
 //! them included. **The thread's CPU time** (`sapphire_platform::thread_cpu_time`) is read beside the wall time
@@ -62,6 +63,7 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::num::NonZeroU32;
+use std::ops::RangeInclusive;
 use std::path::Path;
 use std::time::Duration;
 
@@ -216,6 +218,8 @@ struct Traced {
     /// Its share of starting a fight over, within [`Self::cpu`]: `None` on a frame that started nothing over. A
     /// fight's restart spreads over frames (M6 J2), each of them a restart frame with its own share.
     restart: Option<Duration>,
+    /// Drawn at a tick outside `--bench-ticks` (M6 B5): in no row, as a frame that starts a fight over isn't.
+    outside: bool,
     /// Allocations on the frame's thread within [`Self::restart`]: the frame's own share, where
     /// [`Self::allocations`] counts the whole process, the warm-up pool preparing the next fight included. Where
     /// counts aren't kept by thread (`alloc::PER_THREAD_COUNTS`, Android's target) it's the process's too, and
@@ -335,7 +339,7 @@ const fn low(desktop: u32, mobile: u32) -> [Option<u32>; 4] {
 const UNBUDGETED: [Option<u32>; 4] = [None; 4];
 
 /// What's logged, in the order of spec §3: the whole, §3.2's rows, what §3.2 has no row for, §3.3's.
-const ROWS: [Row; 38] = [
+const ROWS: [Row; 39] = [
     cpu_row("cpu frame", |t| Some(t.cpu), [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
     cpu_row("game side", |t| Some(t.cpu.saturating_sub(t.laps.prepare + t.laps.record)), low(6_000, 13_600)),
     cpu_row("simulation", |t| Some(t.laps.simulation), low(1_000, 3_000)),
@@ -388,6 +392,10 @@ const ROWS: [Row; 38] = [
     gpu_row("gpu effects", |t| t.gpu.vfx, low(1_200, 3_000)).proposing(800, 1_000),
     gpu_row("gpu taa", |t| t.gpu.taa, low(800, 1_000)).proposing(900, 600),
     gpu_row("gpu post", |t| t.gpu.post, low(700, 2_500)).proposing(800, 1_200),
+    // Post on the frames a screen effect plays on (M6 B5): what the fight's flashes, impact frames and the effects
+    // pack add to the fused pass, which has no share of its own in §3.3, read beside the row and held to its line.
+    gpu_row("gpu post under screen effects", |t| t.gpu.post.filter(|_| t.layers > 0), low(700, 2_500))
+        .proposing(800, 1_200),
     gpu_row("gpu ui", |t| t.gpu.ui, low(300, 1_000)).proposing(200, 500),
     // Skinning and morphs, the whole cast's compute (§3.3's new row, M5 B4): a proposal on every tier, as the spec
     // says, so shown and judged on nothing (the orchestrator's ruling, M5 Z2): 0.4, 0.5, 0.6 and 1.0 ms.
@@ -438,13 +446,15 @@ fn spread(values: impl Iterator<Item = (Duration, u64)>) -> Option<Spread> {
 /// Whether `row` counts this frame in `phase`: a frame that started a fight over is reported on its own,
 /// and GPU rows read only frames whose timings came back.
 fn counts(row: &Row, frame: &Traced, phase: Phase) -> bool {
-    frame.phase == phase
-        && frame.restart.is_none()
-        && (!row.gpu || frame.gpu.timed)
-        && (row.read)(frame).is_some()
+    frame.phase == phase && frame.read() && (!row.gpu || frame.gpu.timed) && (row.read)(frame).is_some()
 }
 
 impl Traced {
+    /// Whether the rows read it: it started no fight over, and its tick is one `--bench-ticks` names, if given.
+    fn read(&self) -> bool {
+        self.restart.is_none() && !self.outside
+    }
+
     /// Bytes the frame uploaded, new assets and raised texture levels both.
     fn uploaded(&self) -> u64 {
         self.counted.uploaded + self.counted.raised
@@ -474,31 +484,40 @@ impl OnCore {
 enum Excluded {
     /// It started a fight over (or a walk's tour), which a row would read as the fight's worst frame.
     Restart,
+    /// Drawn at a tick outside `--bench-ticks` (M6 B5), which reads only the fight's ticks it names.
+    Outside,
     /// A GPU phase's frame whose timings never came back, which the GPU rows can't read.
     Untimed,
 }
 
 impl Excluded {
-    const ALL: [Self; 2] = [Self::Restart, Self::Untimed];
+    const ALL: [Self; 3] = [Self::Restart, Self::Outside, Self::Untimed];
 
     const fn name(self) -> &'static str {
         match self {
             Self::Restart => "restart",
+            Self::Outside => "outside",
             Self::Untimed => "untimed",
         }
     }
 
-    /// Whether a phase can leave frames out for this reason: only the GPU phase times the GPU.
-    fn applies(self, phase: Phase) -> bool {
-        self == Self::Restart || phase == Phase::Gpu
+    /// Whether a phase can leave frames out for this reason: only the GPU phase times the GPU, and only a run with
+    /// `--bench-ticks` (`ticks`) draws frames outside them.
+    fn applies(self, phase: Phase, ticks: bool) -> bool {
+        match self {
+            Self::Restart => true,
+            Self::Outside => ticks,
+            Self::Untimed => phase == Phase::Gpu,
+        }
     }
 
     /// Whether `frame`, of a phase this [`applies`](Self::applies) to, is left out for this reason. A restart frame
-    /// is a restart frame first.
+    /// is a restart frame first, and one outside the ticks read is that before it's untimed.
     fn holds(self, frame: &Traced, phase: Phase) -> bool {
         match self {
             Self::Restart => frame.restart.is_some(),
-            Self::Untimed => phase == Phase::Gpu && frame.restart.is_none() && !frame.gpu.timed,
+            Self::Outside => frame.restart.is_none() && frame.outside,
+            Self::Untimed => phase == Phase::Gpu && frame.read() && !frame.gpu.timed,
         }
     }
 }
@@ -559,13 +578,14 @@ fn slow_shares(values: &[(Duration, bool)]) -> (f64, f64) {
 /// The GPU phase's reading (M5 Z2), for the exit run's rules on a backend that overlaps its passes: the
 /// backend; the timed frames and those with no upload in flight, which its pass rows are read on; the uploads'
 /// cost, the share of frames slow in TAA and in post with an upload in flight and without; and the display's
-/// 60 Hz lock over the frames slow in either, which voids a round.
+/// 60 Hz lock over the frames slow in either, which voids a round. The counts are of the frames the rows read; the
+/// shares and the lock are the sitting's, read over every timed frame that isn't a restart, `--bench-ticks` or
+/// not (M6 B5): a display's beat is the machine's, and the 50 frames of a cut-in hold too few slow ones to show it.
 fn gpu_reading(backend: wgpu::Backend, frames: &[&Traced], in_flight: &[bool]) {
-    let timed: Vec<usize> =
-        (0..frames.len()).filter(|&at| frames[at].gpu.timed && frames[at].restart.is_none()).collect();
+    let (timed, sitting) = reading_frames(frames);
     let quiet = timed.iter().filter(|&&at| !in_flight[at]).count();
     let pass = |read: fn(&GpuTimes) -> Option<Duration>| -> Vec<(usize, Duration)> {
-        timed.iter().filter_map(|&at| Some((at, read(&frames[at].gpu)?))).collect()
+        sitting.iter().filter_map(|&at| Some((at, read(&frames[at].gpu)?))).collect()
     };
     let (taa, post) = (pass(|gpu| gpu.taa), pass(|gpu| gpu.post));
     let shares = |values: &[(usize, Duration)]| {
@@ -604,6 +624,15 @@ fn gpu_reading(backend: wgpu::Backend, frames: &[&Traced], in_flight: &[bool]) {
     );
 }
 
+/// Of a GPU phase's `frames`, the timed ones the rows read and the timed ones of the sitting, every one that isn't a
+/// restart, which [`gpu_reading`]'s shares and lock are read over.
+fn reading_frames(frames: &[&Traced]) -> (Vec<usize>, Vec<usize>) {
+    let timed = |keep: fn(&Traced) -> bool| -> Vec<usize> {
+        (0..frames.len()).filter(|&at| frames[at].gpu.timed && keep(frames[at])).collect()
+    };
+    (timed(Traced::read), timed(|frame| frame.restart.is_none()))
+}
+
 /// What's mutable across the phases.
 struct Run<'a> {
     stage: &'a mut Stage,
@@ -614,6 +643,8 @@ struct Run<'a> {
     steps: u32,
     bloom_levels: u32,
     draw_every: Option<NonZeroU32>,
+    /// `--bench-ticks`: the fight's ticks the rows read (M6 B5), every tick where `None`.
+    ticks: Option<RangeInclusive<u64>>,
     trace: Vec<Traced>,
     /// The graph frame the phase's first frame is, as [`GpuTimings::frame`] counts.
     first_graph_frame: u64,
@@ -679,6 +710,7 @@ pub(crate) fn run(
         steps,
         bloom_levels: settings.bloom_levels,
         draw_every: options.draw_every,
+        ticks: options.bench_ticks.clone(),
         trace: Vec::with_capacity(per_phase * 2 * Phase::ALL.len()),
         first_graph_frame: 1,
         first_traced: 0,
@@ -937,6 +969,7 @@ impl Run<'_> {
             cpu_on_core,
             wait_on_core,
             restart,
+            outside: self.ticks.as_ref().is_some_and(|ticks| !ticks.contains(&tick)),
             restart_allocations,
             laps: stage.laps,
             audio: audio_time,
@@ -1024,7 +1057,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
     );
     for phase in Phase::ALL {
         let frames = || run.trace.iter().filter(move |frame| frame.phase == phase);
-        let measured = || frames().filter(|frame| frame.restart.is_none());
+        let measured = || frames().filter(|frame| frame.read());
         let in_flight = uploads_in_flight(&frames().map(Traced::uploaded).collect::<Vec<_>>());
         for row in ROWS.iter().filter(|row| row.gpu == (phase == Phase::Gpu)) {
             // Each value with its frame's place in the phase, which names the worst frame's tick and where a
@@ -1108,7 +1141,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             ribbon_points_worst = frames().map(|frame| frame.ribbon_points).max().unwrap_or(0),
             "fight phase",
         );
-        for reason in Excluded::ALL.into_iter().filter(|reason| reason.applies(phase)) {
+        for reason in Excluded::ALL.into_iter().filter(|reason| reason.applies(phase, run.ticks.is_some())) {
             report_excluded(
                 &frames().filter(|frame| reason.holds(frame, phase)).collect::<Vec<_>>(),
                 phase,
@@ -1274,9 +1307,13 @@ script,prefetch,trip,resident,mesh_pool,textures,entities,process,";
 /// columns, so a reader by position keeps its own; empty where the OS doesn't say.
 const ON_CORE_COLUMNS: &str = ",cpu_on_core,record_on_core,wait_on_core";
 
+/// The pixels the frame's effect sprites and ribbons shade (M6 B5, the `effect pixels` count row), last, so every
+/// reader by position keeps its own.
+const EFFECT_COLUMNS: &str = ",effect_pixels";
+
 /// `--bench-trace`'s whole header.
 fn trace_header() -> String {
-    format!("{TRACE_HEADER}{}{ON_CORE_COLUMNS}", counts::TRACE_COLUMNS)
+    format!("{TRACE_HEADER}{}{ON_CORE_COLUMNS}{EFFECT_COLUMNS}", counts::TRACE_COLUMNS)
 }
 
 /// One frame's line of `--bench-trace`'s file.
@@ -1386,6 +1423,7 @@ fn trace_line_into(frame: &Traced, line: &mut String) {
             None => line.push(','),
         }
     }
+    let _ = write!(line, ",{}", frame.counted.effect_pixels);
 }
 
 #[cfg(test)]
@@ -1423,6 +1461,7 @@ mod tests {
             cpu_on_core: None,
             wait_on_core: None,
             restart: None,
+            outside: false,
             restart_allocations: 0,
             laps: FrameLaps::default(),
             audio: Duration::ZERO,
@@ -1509,8 +1548,9 @@ mod tests {
         assert!(counts(gpu, &timed, Phase::Cpu));
     }
 
-    /// Every frame a row leaves out is a frame of a reason reported on its own (M6 B3): a restart in any phase, and
-    /// in the GPU phase a frame whose timings never came back; a restart frame is reported once, as a restart.
+    /// Every frame a row leaves out is a frame of a reason reported on its own (M6 B3): a restart in any phase, one
+    /// drawn at a tick outside `--bench-ticks` (M6 B5), and in the GPU phase a frame whose timings never came back; a
+    /// restart frame is reported once, as a restart, and a frame outside the ticks as that, timed or not.
     #[test]
     fn every_frame_a_row_leaves_out_is_reported_with_its_reason() {
         let cpu = &ROWS[0];
@@ -1522,23 +1562,49 @@ mod tests {
             Traced { restart, ..traced(2, 10) },
             Traced { gpu: timed, ..traced(3, 10) },
             Traced { gpu: timed, restart, ..traced(4, 10) },
+            Traced { outside: true, ..traced(5, 10) },
+            Traced { gpu: timed, outside: true, ..traced(6, 10) },
+            Traced { restart, outside: true, ..traced(7, 10) },
         ];
         for phase in Phase::ALL {
             let row = if phase == Phase::Gpu { gpu } else { cpu };
             for frame in frames.map(|frame| Traced { phase, ..frame }) {
                 let reasons: Vec<Excluded> = Excluded::ALL
                     .into_iter()
-                    .filter(|reason| reason.applies(phase) && reason.holds(&frame, phase))
+                    .filter(|reason| reason.applies(phase, true) && reason.holds(&frame, phase))
                     .collect();
                 // Read by the row, or left out for one reason: never both, never neither.
                 assert_eq!(counts(row, &frame, phase), reasons.is_empty(), "{phase:?} {frame:?}");
                 assert!(reasons.len() <= 1, "{reasons:?}");
                 if frame.restart.is_some() {
                     assert_eq!(reasons, [Excluded::Restart]);
+                } else if frame.outside {
+                    assert_eq!(reasons, [Excluded::Outside]);
                 }
             }
         }
-        assert!(!Excluded::Untimed.applies(Phase::Cpu), "a CPU phase times no GPU");
+        assert!(!Excluded::Untimed.applies(Phase::Cpu, true), "a CPU phase times no GPU");
+        assert!(!Excluded::Outside.applies(Phase::Gpu, false), "a run with no ticks draws none outside them");
+        assert!(Excluded::Restart.applies(Phase::Cpu, false) && Excluded::Untimed.applies(Phase::Gpu, false));
+    }
+
+    /// The GPU reading counts the frames the rows read, and reads the display's lock over the sitting's (M6 B5): a
+    /// frame outside `--bench-ticks` is the sitting's, a restart's isn't, and an untimed one is neither.
+    #[test]
+    fn the_gpu_reading_reads_the_lock_over_frames_outside_the_ticks() {
+        let timed = GpuTimes { timed: true, ..GpuTimes::default() };
+        let restart = Some(Duration::from_micros(7));
+        let frames = [
+            Traced { gpu: timed, ..traced(1, 10) },
+            Traced { gpu: timed, outside: true, ..traced(2, 10) },
+            Traced { gpu: timed, restart, ..traced(3, 10) },
+            Traced { gpu: timed, restart, outside: true, ..traced(4, 10) },
+            Traced { outside: true, ..traced(5, 10) },
+            traced(6, 10),
+        ];
+        let (read, sitting) = reading_frames(&frames.iter().collect::<Vec<_>>());
+        assert_eq!(read, [0]);
+        assert_eq!(sitting, [0, 1]);
     }
 
     /// What the bench adds a frame for the thread's CPU time allocates nothing (M6 B3): the clock's reads, the rows
@@ -1745,18 +1811,22 @@ mod tests {
         assert!(line.starts_with("cpu,0,0,12,1,345.0,"), "{line}");
     }
 
-    /// The thread's CPU time is the trace's last three columns (M6 B3), after every older one, and empty where the OS
-    /// doesn't say.
+    /// The thread's CPU time is the three columns after every older one (M6 B3), empty where the OS doesn't say, and
+    /// the effects' pixels the last (M6 B5).
     #[test]
-    fn a_trace_line_ends_with_the_threads_cpu_time() {
+    fn a_trace_line_ends_with_the_threads_cpu_time_and_the_effects_pixels() {
         let header = trace_header();
-        assert!(header.starts_with(TRACE_HEADER) && header.ends_with(ON_CORE_COLUMNS), "{header}");
+        assert!(
+            header.starts_with(TRACE_HEADER)
+                && header.ends_with(&format!("{ON_CORE_COLUMNS}{EFFECT_COLUMNS}"))
+        );
         let mut frame = traced(12, 345);
         frame.cpu_on_core = Some(Duration::from_micros(300));
         frame.laps.record_on_core = Some(Duration::from_nanos(41_300));
+        frame.counted.effect_pixels = 51_840;
         let line = trace_line(&frame);
-        assert!(line.ends_with(",300.0,41.3,"), "{line}");
-        assert!(trace_line(&traced(12, 345)).ends_with(",,,"));
+        assert!(line.ends_with(",300.0,41.3,,51840"), "{line}");
+        assert!(trace_line(&traced(12, 345)).ends_with(",,,0"));
     }
 
     /// The trace's `gpu_end` column holds the frame's end on the GPU's clock in µs, and is empty untimed (M5 Z2).

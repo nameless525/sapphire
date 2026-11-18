@@ -4,104 +4,104 @@
 // into lavender, as the Lancer's do. Night rows, which time of day blends in from dusk, lean further blue.
 (
     type: "sapphire::pipeline::RampMap",
-    version: 1,
+    version: 2,
     data: (
         interpolation: OkLab,
         materials: [
             (
                 name: "skin",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#c4848e"),
                         (at: 0.7, color: "#dea2a6"),
                         (at: 1.0, color: "#f0c0bc"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#9a7aa4"),
                         (at: 1.0, color: "#c8a2bc"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "hair",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#665a8c"),
                         (at: 1.0, color: "#8a7ca8"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#525090"),
                         (at: 1.0, color: "#7872aa"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "tunic",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#8a5a78"),
                         (at: 0.7, color: "#a6728a"),
                         (at: 1.0, color: "#bc8c9c"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#6c5486"),
                         (at: 1.0, color: "#94709a"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "pants",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#66649c"),
                         (at: 0.7, color: "#7e7cb2"),
                         (at: 1.0, color: "#9694c2"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#5458a0"),
                         (at: 1.0, color: "#8084bc"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "pack",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#66649c"),
                         (at: 0.7, color: "#7e7cb2"),
                         (at: 1.0, color: "#9694c2"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#5458a0"),
                         (at: 1.0, color: "#8084bc"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "band",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#66649c"),
                         (at: 0.7, color: "#7e7cb2"),
                         (at: 1.0, color: "#9694c2"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#5458a0"),
                         (at: 1.0, color: "#8084bc"),
                     ],
-                )),
+                ))),
             ),
         ],
     ),

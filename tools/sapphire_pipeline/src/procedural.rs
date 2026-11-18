@@ -54,7 +54,7 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::Stage;
-use crate::character_maps::ramp::SrgbColor;
+use crate::character_maps::ramp::{Linear, SrgbColor};
 use crate::color;
 use crate::cook::Cook;
 use crate::import::image::{ChannelLayout, SourceImage};

@@ -5,101 +5,101 @@
 // which time of day blends in from dusk, lean further blue.
 (
     type: "sapphire::pipeline::RampMap",
-    version: 1,
+    version: 2,
     data: (
         interpolation: OkLab,
         materials: [
             (
                 name: "cloth",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#62629a"),
                         (at: 0.7, color: "#7c7cb0"),
                         (at: 1.0, color: "#9494c0"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#5458a0"),
                         (at: 1.0, color: "#8084bc"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "lacquer",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#8a4468"),
                         (at: 1.0, color: "#b06478"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#6c4480"),
                         (at: 1.0, color: "#94608e"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "porcelain",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#8486b4"),
                         (at: 0.7, color: "#a0a0c4"),
                         (at: 1.0, color: "#b6b4cc"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#7278ac"),
                         (at: 1.0, color: "#989cc8"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "steel",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#6a7498"),
                         (at: 1.0, color: "#8e98b4"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#5a66a0"),
                         (at: 1.0, color: "#808ab8"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "ink",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#5a5a86"),
                         (at: 1.0, color: "#7a7aa0"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#4e5290"),
                         (at: 1.0, color: "#7072a8"),
                     ],
-                )),
+                ))),
             ),
             (
                 name: "glow",
-                day: (
+                day: Stops((
                     stops: [
                         (at: 0.0, color: "#d8eeee"),
                         (at: 1.0, color: "#eef8f8"),
                     ],
-                ),
-                night: Some((
+                )),
+                night: Some(Stops((
                     stops: [
                         (at: 0.0, color: "#cce4ee"),
                         (at: 1.0, color: "#e6f2f8"),
                     ],
-                )),
+                ))),
             ),
         ],
     ),

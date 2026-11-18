@@ -11,7 +11,7 @@ use sapphire_serialize::{from_ron, to_ron};
 
 use super::face_sdf::{Edges, ThresholdMask};
 use super::ilm::{ChannelInput, Encoding, ImageChannel, MaterialIdInput};
-use super::ramp::{ColorStop, ImageRamp, Interpolation, MaterialRamps, Ramp, SrgbColor, StopRamp};
+use super::ramp::{ColorStop, Evaluate, ImageRamp, Interpolation, MaterialRamps, Ramp, SrgbColor, StopRamp};
 use super::*;
 use crate::cook::{CookError, CookOptions, CookReport, CookStatus, cook_dir};
 use crate::meta::{self, AssetMeta, ImportSettings, sidecar_path};
@@ -905,15 +905,29 @@ fn a_painted_strip_cooks_as_its_stops() {
 }
 
 /// A version 1 document and its rewrite at version 2 bake the same rows: the upgrade keeps
-/// every stop, interpolation and night ramp.
+/// every stop, interpolation and night ramp. The swatch is written at version 2 (M6 T4), so its
+/// version 1 form is made from it here.
 #[test]
 fn a_version_1_document_bakes_as_its_version_2_rewrite() {
     let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/samples");
     let path = samples.join("swatch.ramp.ron");
-    let old = fs::read_to_string(&path).unwrap();
-    assert!(old.contains("version: 1"), "the swatch is committed at version 1");
-    let rewritten = to_ron(&from_ron::<RampMap>(&old).unwrap()).unwrap();
+    let rewritten = fs::read_to_string(&path).unwrap();
     assert!(rewritten.contains("version: 2") && rewritten.contains("Stops(("), "{rewritten}");
+    let current = from_ron::<RampMap>(&rewritten).unwrap();
+    let stops = |ramp: &Ramp| match ramp {
+        Ramp::Stops(stops) => stops.clone(),
+        Ramp::Image(_) => panic!("the swatch's ramps are stops"),
+    };
+    let materials = current.materials.iter().map(|material| ramp::v1::MaterialRamps {
+        name: material.name.clone(),
+        day: stops(&material.day),
+        night: material.night.as_ref().map(stops),
+    });
+    let old =
+        to_ron(&ramp::v1::RampMap { interpolation: current.interpolation, materials: materials.collect() })
+            .unwrap();
+    assert!(old.contains("version: 1") && !old.contains("Stops("), "{old}");
+    assert_eq!(from_ron::<RampMap>(&old).unwrap(), current);
     let settings = MapKind::Ramp.default_settings();
     let bake = |text: &str| generate(&path, text.as_bytes(), &settings).unwrap();
     assert_eq!(bake(&old), bake(&rewritten));

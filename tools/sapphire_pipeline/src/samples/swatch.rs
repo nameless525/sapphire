@@ -35,7 +35,9 @@ use sapphire_serialize::to_ron;
 
 use crate::character_maps::IlmMap;
 use crate::character_maps::ilm::{ChannelInput, Encoding, ImageChannel, MaterialIdInput};
-use crate::character_maps::ramp::{ColorStop, Interpolation, RampMap, SrgbColor, StopRamp, v1};
+use crate::character_maps::ramp::{
+    ColorStop, Interpolation, MaterialRamps, Ramp, RampMap, SrgbColor, StopRamp,
+};
 
 /// File names, in the samples directory.
 pub const RAMP_FILE_NAME: &str = "swatch.ramp.ron";
@@ -64,23 +66,23 @@ const BIAS_PATCHES: [([f32; 2], [f32; 2], f32); 2] =
     [([0.24, 0.32], [0.55, 0.7], 0.0), ([0.04, 0.12], [0.3, 0.45], 1.0)];
 
 /// The ramp document: day and night ramps for IDs 0 to 3; IDs past the last repeat it. Written at
-/// version 1, as committed: its stops read the same at version 2, which would only move its cache
-/// key (`character_maps::ramp`'s "Versions").
+/// version 2 since M6 T4, as every committed ramp is: the move left its rows as they were.
 pub fn ramp_document() -> String {
-    let ramp = |interpolation, stops: &[(f32, &str)]| StopRamp {
-        interpolation,
-        stops: stops
-            .iter()
-            .map(|&(at, color)| ColorStop {
-                at,
-                color: color.parse::<SrgbColor>().expect("a hex color"),
-                interpolation: None,
-            })
-            .collect(),
+    let ramp = |interpolation, stops: &[(f32, &str)]| {
+        Ramp::Stops(StopRamp {
+            interpolation,
+            stops: stops
+                .iter()
+                .map(|&(at, color)| ColorStop {
+                    at,
+                    color: color.parse::<SrgbColor>().expect("a hex color"),
+                    interpolation: None,
+                })
+                .collect(),
+        })
     };
-    let material =
-        |name: &str, day, night| v1::MaterialRamps { name: name.to_owned(), day, night: Some(night) };
-    let document = v1::RampMap {
+    let material = |name: &str, day, night| MaterialRamps { name: name.to_owned(), day, night: Some(night) };
+    let document = RampMap {
         interpolation: Interpolation::OkLab,
         materials: vec![
             material(
@@ -105,7 +107,7 @@ pub fn ramp_document() -> String {
             ),
         ],
     };
-    RampMap::from(document.clone()).validate().expect("the swatch ramps are valid");
+    document.validate().expect("the swatch ramps are valid");
     to_ron(&document).expect("a ramp document serializes")
 }
 

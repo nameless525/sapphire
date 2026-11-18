@@ -134,6 +134,7 @@ pub mod mouth;
 pub mod pack;
 mod pipeline_key;
 pub mod probes;
+pub mod ramp;
 pub mod reflections;
 pub mod rig;
 pub mod score;

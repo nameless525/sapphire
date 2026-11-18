@@ -10,8 +10,8 @@ use std::fmt;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::Bus;
-use sapphire_assets::mix::{Mix, OutputProfile};
+use sapphire_assets::cue::{Bus, SILENCE_DB};
+use sapphire_assets::mix::{Mix, OutputProfile, Reverb};
 use sapphire_assets::sound::DecodedSound;
 
 /// A voice's place in the backend: an index below twice [`MAX_VOICES`](crate::MAX_VOICES), so the voices a frame
@@ -37,7 +37,7 @@ impl BusId {
 /// What a voice sounds like right now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VoiceParams {
-    /// Gain in decibels. [`SILENCE_DB`](sapphire_assets::cue::SILENCE_DB) and below is silent.
+    /// Gain in decibels. [`SILENCE_DB`] and below is silent.
     pub gain_db: f32,
     /// Left (-1) to right (1).
     pub pan: f32,
@@ -46,11 +46,15 @@ pub struct VoiceParams {
     /// The voice's own low-pass cutoff in hertz (M6 U1): one pole, so 6 dB an octave. Any value that isn't
     /// finite, [`f32::INFINITY`] as [`Self::NEUTRAL`] has it, takes the filter out.
     pub low_pass_hz: f32,
+    /// Its level to the reverb of the room the listener stands in (M6 U5), in decibels from the voice as it's
+    /// heard, its gain, pan and filter on it. [`SILENCE_DB`] and below sends nothing.
+    pub send_db: f32,
 }
 
 impl VoiceParams {
-    /// The sound as authored: full gain, centred, at its own pitch, unfiltered.
-    pub const NEUTRAL: Self = Self { gain_db: 0.0, pan: 0.0, pitch: 1.0, low_pass_hz: f32::INFINITY };
+    /// The sound as authored: full gain, centred, at its own pitch, unfiltered, sending nothing.
+    pub const NEUTRAL: Self =
+        Self { gain_db: 0.0, pan: 0.0, pitch: 1.0, low_pass_hz: f32::INFINITY, send_db: SILENCE_DB };
 }
 
 /// How long a voice ended for good takes to fade: short of hearing as a fade, and long enough not to click.
@@ -99,7 +103,7 @@ impl BusParams {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StemStart {
     pub sound: AssetId,
-    /// The gain it starts at: [`SILENCE_DB`](sapphire_assets::cue::SILENCE_DB) for a stem the phase
+    /// The gain it starts at: [`SILENCE_DB`] for a stem the phase
     /// doesn't play.
     pub gain_db: f32,
 }
@@ -245,6 +249,14 @@ pub trait AudioBackend {
     /// Plays the whole mix through `profile`'s volume and effects, or `Home`'s if the mix has none for it,
     /// smoothly enough not to click.
     fn set_output_profile(&mut self, profile: OutputProfile);
+
+    /// Plays `reverb` as the room's (M6 U5), what voices send to by [`VoiceParams::send_db`]: crossfaded from the
+    /// last over `fade` with two reverbs, or retuned over it with one; none fades the last out. Allocates nothing.
+    fn set_room(&mut self, reverb: Option<&Reverb>, fade: Duration);
+
+    /// How many reverbs the room's plays on (M6 U5), 1 or 2: two crossfade on a change, one is retuned, and costs
+    /// half. The room playing stays.
+    fn set_reverb_slots(&mut self, slots: u8);
 
     /// Readies `stems` to loop together on the [`Music`](Bus::Music) category's bus, on a clock that will count
     /// `tempo_bpm` beats a minute from their first frame, and ends any music playing over `fade`. They

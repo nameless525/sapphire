@@ -75,6 +75,7 @@ fn frame<'a>(world_time_scale: f32, snapshots: &'a [Name], cues: &'a [CueRequest
         lines: &[],
         speech: None,
         music: None,
+        rooms: sapphire_audio::Rooms::NONE,
     }
 }
 

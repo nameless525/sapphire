@@ -1,6 +1,7 @@
 //! What audio costs, for spec §3.2's budget and the plan's "As built": prints the numbers, and fails
 //! on none of them, since a loaded machine would fail it. `#[ignore]`d, and only meaningful optimized:
 //! `cargo test -p sapphire_audio --release --test costs -- --ignored --nocapture --test-threads=1`.
+//! The room's reverbs alone (M6 U5's kill line): the same with `what_two_reverbs_cost`.
 //! Update/mix lines give the observed minimum and median pooled across all rounds; decoding gives
 //! the observed minimum. These describe this instrumented workload, not stable tail estimates.
 //! One immutable tone is synthesized per process; mixer construction and PCM conversion still
@@ -13,13 +14,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
+use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse, SILENCE_DB};
+use sapphire_assets::mix::Mix;
 use sapphire_assets::score::{Phase, Score, Stem};
 use sapphire_assets::sound::{DecodedSound, decode_vorbis};
 use sapphire_audio::{
     AudioFrame, AudioSystem, BusId, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend, Listener,
-    MAX_VOICES, MusicRequest, OfflineOutput,
+    MAX_VOICES, MusicRequest, OfflineOutput, Room, RoomShape, Rooms, VoiceCaps,
 };
+use sapphire_core::Name;
 use sapphire_math::Vec3;
 use sapphire_time::Stopwatch;
 
@@ -71,6 +74,7 @@ fn frame_at<'a>(tick: usize, emitters: &'a mut [Emitter; 1], cues: &'a [CueReque
         lines: &[],
         speech: None,
         music: None,
+        rooms: Rooms::NONE,
     }
 }
 
@@ -211,6 +215,7 @@ fn voice_against_kiras_static_sound(sound: &DecodedSound) {
         pan: 0.3,
         pitch: 0.95 + 0.003 * n as f32,
         low_pass_hz,
+        send_db: SILENCE_DB,
     };
     let kira_frames: Arc<[Frame]> = sound.samples.iter().map(|&sample| Frame::from_mono(sample)).collect();
     let kiras = || {
@@ -368,5 +373,75 @@ fn music_costs() {
         micros(fastest),
         micros(median),
         median.as_secs_f64() / length.as_secs_f64() * 100.0
+    );
+}
+
+/// Mobile-Low's real voices (M6 U3's caps), each placed and sending.
+const MOBILE_LOW_VOICES: usize = 24;
+
+/// M6 U5's measure-first row: the mix at Mobile-Low's settings, its 24 voices playing through the shipped mix in a
+/// room of the shipped `shelter`, on two reverbs, on one, and with no room at all; the kill line is two reverbs
+/// costing over 2% of real time. Each arm is timed in turn within a round, so a load that comes and goes falls on
+/// all three. What the reverbs cost is the difference from no room.
+#[test]
+#[ignore = "prints what the room's reverbs cost: run it optimized, by hand"]
+fn what_two_reverbs_cost() {
+    let sound = sound();
+    let mix = Mix::from_document(include_str!("../../../content/audio/game.mix.ron")).unwrap();
+    let shelter = [Room {
+        position: Vec3::new(0.0, 1.5, 0.0),
+        shape: RoomShape::Box { half_extents: Vec3::splat(20.0) },
+        priority: 0,
+        reverb: Name::new("shelter"),
+        outdoor: false,
+        fade: 0.5,
+    }];
+    let arm = |rooms: Rooms<'_>, slots: u8| {
+        let mut system = system(&sound);
+        system.set_mix(&mix).unwrap();
+        system.set_voice_caps(VoiceCaps { real: MOBILE_LOW_VOICES as u16, virtual_voices: 128 });
+        system.set_reverb_slots(slots);
+        let mut random = CueRng::new(7);
+        let mut emitters = [Emitter { id: ACTOR, position: Vec3::ZERO, hitstop: false }];
+        let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
+        for _ in 0..MOBILE_LOW_VOICES {
+            system.update(&AudioFrame { rooms, ..frame_at(0, &mut emitters, &requests) }, &mut random);
+        }
+        assert_eq!(system.stats().voices as usize, MOBILE_LOW_VOICES);
+        (system, emitters, random)
+    };
+    let in_room = Rooms { rooms: &shelter, origin: Vec3::ZERO };
+    let arms = [("two reverbs", in_room, 2), ("one reverb", in_room, 1), ("no room", Rooms::NONE, 2)];
+    let mut times: [Vec<Duration>; 3] = Default::default();
+    for _ in 0..ROUNDS {
+        let mut systems: Vec<_> = arms.iter().map(|&(_, rooms, slots)| (arm(rooms, slots), rooms)).collect();
+        let mut block = vec![0.0; BLOCK * 2];
+        for tick in 1..64 {
+            for (((system, emitters, random), rooms), times) in systems.iter_mut().zip(times.iter_mut()) {
+                system.update(&AudioFrame { rooms: *rooms, ..frame_at(tick, emitters, &[]) }, random);
+                let timer = Stopwatch::start();
+                system.backend_mut().output_mut().render_into(&mut block);
+                times.push(timer.elapsed());
+            }
+        }
+        let ((system, ..), _) = &systems[0];
+        assert_eq!(system.stats().room_changes, 1, "the room played from the first frame");
+    }
+    let length = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
+    let share = |time: Duration| time.as_secs_f64() / length.as_secs_f64() * 100.0;
+    let medians = times.each_mut().map(|times| min_and_median(times));
+    for ((name, ..), (fastest, median)) in arms.iter().zip(medians) {
+        println!(
+            "mix of {BLOCK} frames, {MOBILE_LOW_VOICES} voices, {name}: {:.1} us, median {:.1} us, {:.2}% of real time at the median",
+            micros(fastest),
+            micros(median),
+            share(median)
+        );
+    }
+    let (two, one, none) = (medians[0].1, medians[1].1, medians[2].1);
+    println!(
+        "the room's reverbs at Mobile-Low's settings, over no room at the median: two {:.2}% of real time, one {:.2}%; the kill line is 2% for two",
+        share(two.saturating_sub(none)),
+        share(one.saturating_sub(none)),
     );
 }

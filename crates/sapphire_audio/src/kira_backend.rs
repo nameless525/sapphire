@@ -2,12 +2,14 @@
 //!
 //! The mix (M6 U2) is a sub-track for each of a [`Mix`]'s buses, each under its parent and the five
 //! categories under a master track, each with room for every voice. A bus some snapshot low-passes carries
-//! that filter first, out of the signal until the snapshot asks for it, then its own effects, and sends to
-//! the mix's reverbs, which are kira's send tracks. Pausing a bus pauses its track, which holds every voice
-//! under it where it is, tails and all. The master carries every output profile's volume and effects, each
-//! effect switched in only for its own profile. A voice is the engine's own sound on kira's public `Sound`
-//! trait (M6 U1, `voice_sound`), on its bus's track: it keeps each sound in its authored channels and filters
-//! on its own.
+//! that filter first, out of the signal until the snapshot asks for it, then its own effects. Pausing a bus
+//! pauses its track, which holds every voice under it where it is, tails and all. The master carries every
+//! output profile's volume and effects, each effect switched in only for its own profile. A voice is the
+//! engine's own sound on kira's public `Sound` trait (M6 U1, `voice_sound`), on its bus's track: it keeps each
+//! sound in its authored channels and filters on its own.
+//!
+//! The room's reverb (M6 U5, `room_reverb`) is one send track no bus feeds: each voice sends it its own share of
+//! what it plays, and it crossfades two Freeverbs on a change of room.
 //!
 //! Music (M3 A1) is a score's stems, looping voices on the music track, all started by one
 //! kira clock that counts the score's beats: a stem's fade waits on the clock for its beat, so it
@@ -25,14 +27,13 @@ use kira::clock::{ClockHandle, ClockSpeed, ClockTime};
 use kira::effect::compressor::CompressorBuilder;
 use kira::effect::eq_filter::{EqFilterBuilder, EqFilterKind};
 use kira::effect::filter::{FilterBuilder, FilterHandle, FilterMode};
-use kira::effect::reverb::ReverbBuilder;
 use kira::effect::{Effect, EffectBuilder};
 use kira::info::Info;
 use kira::track::{MainTrackBuilder, SendTrackBuilder, SendTrackHandle, TrackBuilder, TrackHandle};
 use kira::{AudioManager, AudioManagerSettings, Capacities, Decibels, Frame, Mix as Share, StartTime, Tween};
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Bus;
-use sapphire_assets::mix::{BusEffect, EqKind, Mix, OutputProfile};
+use sapphire_assets::mix::{BusEffect, EqKind, Mix, OutputProfile, Reverb};
 use sapphire_assets::score::MAX_STEMS;
 use sapphire_assets::sound::DecodedSound;
 
@@ -42,6 +43,7 @@ use crate::backend::{
     VoiceStart,
 };
 use crate::output::Output;
+use crate::room_reverb::{RoomHandle, RoomReverbBuilder, RoomTap};
 use crate::system::MAX_SLOTS;
 use crate::voice_sound::{LoopRegion, SoundStorage, Start, Voice, VoiceHandle, VoiceSettings};
 
@@ -67,7 +69,7 @@ struct BusTrack {
     open: bool,
 }
 
-/// What a [`Mix`] made: the master, every bus under it, the reverbs, and which profile each of the master's
+/// What a [`Mix`] made: the master, every bus under it, the room's reverb, and which profile each of the master's
 /// effects belongs to. The handles keep their tracks: dropped, kira removes them, and everything under them.
 struct MixTracks {
     /// Each profile, with its volume, by [`Mix::profiles`]' order.
@@ -76,8 +78,9 @@ struct MixTracks {
     switches: Vec<(usize, Arc<AtomicBool>)>,
     /// The profile playing, by place.
     profile: usize,
-    /// Each reverb, with its own volume.
-    sends: Vec<(SendTrackHandle, f32)>,
+    /// The room's reverb (M6 U5), and its track, which takes the profile's volume itself.
+    room: RoomHandle,
+    room_track: SendTrackHandle,
     /// By [`Mix::buses`]' order.
     buses: Vec<BusTrack>,
     master: TrackHandle,
@@ -108,6 +111,10 @@ pub struct KiraBackend<O: Output> {
     /// What `sounds` hold, in bytes.
     decoded_bytes: u64,
     voices: Vec<Option<VoiceHandle>>,
+    /// What every voice sends the room's reverb.
+    room: Arc<RoomTap>,
+    /// How many reverbs the room's plays on, kept for the next mix.
+    reverb_slots: u8,
     music: Music,
     /// Whether the main track folds to mono, which its effect reads in the mixer's own time.
     mono: Arc<AtomicBool>,
@@ -125,7 +132,8 @@ impl<O: Output> KiraBackend<O> {
             internal_buffer_size: INTERNAL_BUFFER_FRAMES,
             backend_settings: settings,
         })?;
-        let Some(mix) = build_mix(&mut manager, &Mix::plain()) else {
+        let room = Arc::new(RoomTap::new(INTERNAL_BUFFER_FRAMES));
+        let Some(mix) = build_mix(&mut manager, &Mix::plain(), &room, 2) else {
             unreachable!("a new mixer has room for the plain mix")
         };
         let Ok(clock) = manager.add_clock(ClockSpeed::TicksPerMinute(120.0)) else {
@@ -137,6 +145,8 @@ impl<O: Output> KiraBackend<O> {
             sounds: HashMap::new(),
             decoded_bytes: 0,
             voices: std::iter::repeat_with(|| None).take(MAX_SLOTS).collect(),
+            room,
+            reverb_slots: 2,
             music: Music { clock, stems: Vec::with_capacity(MAX_STEMS) },
             mono,
         })
@@ -156,22 +166,21 @@ impl<O: Output> KiraBackend<O> {
     }
 }
 
-/// Makes a checked `mix`'s tracks on `manager`: none if the mixer has no room for them, which kira's default
-/// capacities leave for many mixes.
-fn build_mix<O: Output>(manager: &mut AudioManager<O>, mix: &Mix) -> Option<MixTracks> {
+/// Makes a checked `mix`'s tracks on `manager`, the room's reverb taking `tap` in on `slots` reverbs: none if the
+/// mixer has no room for them, which kira's default capacities leave for many mixes.
+fn build_mix<O: Output>(
+    manager: &mut AudioManager<O>,
+    mix: &Mix,
+    tap: &Arc<RoomTap>,
+    slots: u8,
+) -> Option<MixTracks> {
     let home = mix.profile(OutputProfile::Home);
     let home_db = mix.profiles[home].volume_db;
-    let mut sends = Vec::with_capacity(mix.sends.len());
-    for send in &mix.sends {
-        let reverb = ReverbBuilder::new()
-            .feedback(f64::from(send.feedback))
-            .damping(f64::from(send.damping))
-            .stereo_width(f64::from(send.stereo_width))
-            .mix(Share::WET);
-        // A send track ends in the main track, not the master: it takes the profile's volume itself.
-        let builder = SendTrackBuilder::new().volume(Decibels(send.volume_db + home_db)).with_effect(reverb);
-        sends.push((manager.add_send_track(builder).ok()?, send.volume_db));
-    }
+    // A send track ends in the main track, not the master: it takes the profile's volume itself.
+    let mut room_track = SendTrackBuilder::new().volume(Decibels(home_db));
+    let mut room = room_track.add_effect(RoomReverbBuilder { tap: Arc::clone(tap) });
+    room.set_slots(slots);
+    let room_track = manager.add_send_track(room_track).ok()?;
 
     let mut master =
         TrackBuilder::new().volume(Decibels(home_db)).sound_capacity(0).sub_track_capacity(Bus::ALL.len());
@@ -206,10 +215,6 @@ fn build_mix<O: Output>(manager: &mut AudioManager<O>, mix: &Mix) -> Option<MixT
         for effect in &bus.effects {
             builder.add_built_effect(build_effect(effect));
         }
-        for send in &bus.sends {
-            let to = &sends[mix.send(&send.to)?].0;
-            builder = builder.with_send(to, Decibels(send.volume_db));
-        }
         let parent = match mix.parent(place) {
             Some(parent) => &mut buses[parent].track,
             None => &mut master,
@@ -221,7 +226,8 @@ fn build_mix<O: Output>(manager: &mut AudioManager<O>, mix: &Mix) -> Option<MixT
         profiles: mix.profiles.iter().map(|profile| (profile.profile, profile.volume_db)).collect(),
         switches,
         profile: home,
-        sends,
+        room,
+        room_track,
         buses,
         master,
     })
@@ -388,7 +394,7 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
         for mut voice in self.voices.iter_mut().filter_map(Option::take) {
             voice.stop(Duration::ZERO);
         }
-        match build_mix(&mut self.manager, mix) {
+        match build_mix(&mut self.manager, mix, &self.room, self.reverb_slots) {
             Some(tracks) => self.mix = tracks,
             None => {
                 tracing::error!(target: LOG_TARGET, "the mixer has no room for the mix, and keeps the last")
@@ -432,7 +438,7 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
             frozen: start.frozen,
             fade_in: start.fade_in,
         };
-        let voice = Voice { storage, settings };
+        let voice = Voice { storage, settings, room: Some(Arc::clone(&self.room)) };
         let Some(BusTrack { track, .. }) = self.mix.buses.get_mut(bus.index()) else {
             tracing::warn!(target: LOG_TARGET, bus = bus.0, "a sound asked for a bus the mix hasn't");
             return Err(StartError::MixerFull);
@@ -510,12 +516,19 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
         let volume_db = mix.profiles[place].1;
         let moving = tween(Duration::from_secs_f32(PROFILE_EASE_SECONDS));
         mix.master.set_volume(Decibels(volume_db), moving);
-        for (send, own_db) in &mut mix.sends {
-            send.set_volume(Decibels(*own_db + volume_db), moving);
-        }
+        mix.room_track.set_volume(Decibels(volume_db), moving);
         for (of, on) in &mix.switches {
             on.store(*of == place, Ordering::Relaxed);
         }
+    }
+
+    fn set_room(&mut self, reverb: Option<&Reverb>, fade: Duration) {
+        self.mix.room.set_room(reverb, fade);
+    }
+
+    fn set_reverb_slots(&mut self, slots: u8) {
+        self.reverb_slots = slots.clamp(1, 2);
+        self.mix.room.set_slots(self.reverb_slots);
     }
 
     fn load_music(&mut self, tempo_bpm: f32, stems: &[StemStart], fade: Duration) -> Result<(), StartError> {
@@ -538,6 +551,8 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
                     frozen: false,
                     fade_in: Duration::ZERO,
                 },
+                // The score is never in a room.
+                room: None,
             };
             match self.mix.buses[BusId::category(Bus::Music).index()].track.play(voice) {
                 Ok(handle) => self.music.stems.push(handle),

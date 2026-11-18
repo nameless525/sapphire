@@ -92,6 +92,7 @@
 //!         lines: cues.lines(),
 //!         speech: None,
 //!         music: None, // A score's phase, if the table names a score.
+//!         rooms: sapphire_audio::Rooms::NONE,
 //!     },
 //!     &mut random,
 //! );

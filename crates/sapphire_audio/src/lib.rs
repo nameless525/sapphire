@@ -75,6 +75,8 @@ mod mock;
 mod music;
 mod output;
 mod rng;
+mod room_reverb;
+mod rooms;
 mod system;
 mod voice;
 mod voice_sound;
@@ -88,6 +90,7 @@ pub use mock::{MockBackend, MockCall};
 pub use music::{LEAD_SECONDS, MusicRequest};
 pub use output::{CpalOutput, OfflineOutput, Output, device_opens};
 pub use rng::{CueRandom, CueRng};
+pub use rooms::{Room, RoomShape, Rooms, Space};
 pub use system::{
     AudioFrame, AudioStats, AudioSystem, CueRequest, CueTarget, Emitter, EmitterId, LineRequest, Listener,
     MAX_VIRTUAL_VOICES, MAX_VOICES, PAUSE_SNAPSHOT, SHORTEST_VIRTUAL_SECONDS, Speaking, SpeechRequest,

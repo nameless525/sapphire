@@ -9,16 +9,23 @@
 //   carries, and lets them back up in its pauses. The music's -9 dB was the score's own `duck_db` before.
 // - `Portable` is a phone's speaker: narrower and louder. Which one plays is a later package's (U10).
 // - `footsteps` (M6 U3): six feet heard at once, the oldest giving way, however many walk.
+// - The reverbs (M6 U5) are what a zone's rooms sound like, by name: `shelter` a small covered space that rings
+//   briefly, `street` open lanes between walls, short and dark. The world's buses and the voices reach the
+//   listener's room from the same space only; the interface and the music never do.
 (
     type: "sapphire::assets::Mix",
-    version: 2,
+    version: 3,
     data: (
         buses: [
-            (name: "sfx"),
-            (name: "ambience"),
+            (name: "sfx", room_db: Some(-10.0)),
+            (name: "ambience", room_db: Some(-14.0)),
             (name: "ui"),
             (name: "music"),
-            (name: "voice"),
+            (name: "voice", room_db: Some(-16.0)),
+        ],
+        reverbs: [
+            (name: "shelter", feedback: 0.72, damping: 0.45, stereo_width: 1.0, volume_db: -2.0),
+            (name: "street", feedback: 0.5, damping: 0.6, stereo_width: 0.8, volume_db: -6.0),
         ],
         snapshots: [
             (

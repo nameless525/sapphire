@@ -187,6 +187,7 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
             lines: cues.lines(),
             speech: None,
             music: None,
+            rooms: sapphire_audio::Rooms::NONE,
         };
         let timer = Stopwatch::start();
         let ((), update) = count_in_scope(|| sinks.audio.update(&audio_frame, &mut sinks.random));

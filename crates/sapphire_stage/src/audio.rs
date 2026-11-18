@@ -31,7 +31,7 @@
 //! asks for its `pause` snapshot ([`CueSounds::paused`]).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
@@ -44,7 +44,7 @@ use sapphire_assets::voice::VoiceLines;
 pub use sapphire_audio::Volumes;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
-    EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT,
+    EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT, Room, Rooms,
     SpeechRequest, VoiceCaps,
 };
 use sapphire_core::Name;
@@ -175,7 +175,7 @@ pub fn named_cue(name: &str) -> Result<AssetId, String> {
 }
 
 /// What the audio system hears of the scene this frame.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SceneSound {
     pub(crate) listener: Listener,
     /// The world clock's speed.
@@ -184,8 +184,32 @@ pub struct SceneSound {
     pub(crate) character: Vec3,
     /// Whether the character's clock is held by hitstop.
     pub(crate) hitstop: bool,
-    /// The quality tier, whose [`voice_caps`] the mixer keeps to (M6 U3).
+    /// The quality tier, whose [`voice_caps`] and [`reverb_slots`] the mixer keeps to (M6 U3, U5).
     pub(crate) tier: TierId,
+    /// The rooms of the zone on stage (M6 U5), in its space, if one is.
+    pub(crate) rooms: Option<Arc<[Room]>>,
+    /// Where the zone's origin lies in the world.
+    pub(crate) rooms_origin: Vec3,
+}
+
+impl SceneSound {
+    fn rooms(&self) -> Rooms<'_> {
+        self.rooms.as_deref().map_or(Rooms::NONE, |rooms| Rooms { rooms, origin: self.rooms_origin })
+    }
+}
+
+/// Whether Mobile-Low's room reverb crossfades on two reverbs, as every other tier's does, or glides one to the
+/// next room's settings (M6 U5): its measure-first row's switch, two while two reverbs cost under 2% of real
+/// time at its settings.
+const MOBILE_LOW_REVERBS: u8 = 2;
+
+/// The reverbs `tier`'s room reverb plays on (M6 U5, spec §5.15): two crossfade on a change of room, one glides.
+#[must_use]
+pub fn reverb_slots(tier: TierId) -> u8 {
+    match tier {
+        TierId::MobileLow => MOBILE_LOW_REVERBS,
+        TierId::DesktopHigh | TierId::DesktopLow | TierId::MobileHigh => 2,
+    }
 }
 
 /// The voices `tier` mixes and keeps (M6 U3, spec §5.15): past them, what ranks lowest waits virtual or ends.
@@ -327,8 +351,10 @@ impl DeviceAudio {
             lines: fight.lines,
             speech: fight.speech,
             music: music(self.score, &fight),
+            rooms: scene.rooms(),
         };
         self.system.set_voice_caps(voice_caps(scene.tier));
+        self.system.set_reverb_slots(reverb_slots(scene.tier));
         self.system.update(&frame, &mut self.random);
         self.report_in -= dt;
         if self.report_in <= 0.0 {
@@ -727,8 +753,10 @@ impl OfflineAudio {
             lines: fight.lines,
             speech: fight.speech,
             music: music(self.score, &fight),
+            rooms: scene.rooms(),
         };
         self.system.set_voice_caps(voice_caps(scene.tier));
+        self.system.set_reverb_slots(reverb_slots(scene.tier));
         self.system.update(&frame, &mut self.random);
     }
 
@@ -907,6 +935,7 @@ mod tests {
             lines: &dodge,
             speech: None,
             music: None,
+            rooms: Rooms::NONE,
         };
         system.backend_mut().take_calls();
         system.update(&frame, &mut CueRng::new(1));
@@ -953,6 +982,8 @@ mod tests {
             character: Vec3::ZERO,
             hitstop: false,
             tier: TierId::DesktopHigh,
+            rooms: None,
+            rooms_origin: Vec3::ZERO,
         };
         // Each frame: what the mouth read after the update, and the mix's power over the frame after it, for a
         // line asked for from `ASKED` on and held over `held`.
@@ -976,7 +1007,7 @@ mod tests {
                     target: CueTarget::Flat,
                     held: held.contains(&frame),
                 });
-                audio.update(DT, scene, CueSounds { speech, ..CueSounds::NONE });
+                audio.update(DT, scene.clone(), CueSounds { speech, ..CueSounds::NONE });
                 let said = audio.said();
                 audio.mix(DT);
                 let samples = (DT * OFFLINE_RATE as f32) as usize * 2;

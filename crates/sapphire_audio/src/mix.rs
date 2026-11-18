@@ -441,7 +441,7 @@ mod tests {
             name: "sfx/hits".to_owned(),
             volume_db: -3.0,
             effects: Vec::new(),
-            sends: Vec::new(),
+            room_db: None,
         });
         mix.check().unwrap();
         let mut state = MixState::new(&mix);

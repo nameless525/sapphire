@@ -5,7 +5,8 @@
 //! ([`SoundStorage`]), so a mono second costs 96 KB where kira's own static sound held it as two `f32`s a
 //! frame, 384 KB. On the way out a voice resamples for its pitch and the mixer's rate, by linear
 //! interpolation; filters through a one-pole low-pass of its own, out of the signal while open; and pans
-//! by equal power, as kira does. It can start part way in, wait for a clock's tick, and loop a region.
+//! by equal power, as kira does. It can start part way in, wait for a clock's tick, and loop a region. What it
+//! plays goes to the room's reverb too, by its own level (M6 U5, [`RoomTap`]).
 //!
 //! The audio thread allocates nothing for a voice: its parameters arrive through kira's command
 //! buffers, made with the voice on the calling thread, and a voice that has played out is handed back
@@ -22,9 +23,11 @@ use kira::command::{CommandReader, CommandWriter, command_writer_and_reader};
 use kira::info::{Info, WhenToStart};
 use kira::sound::{Sound, SoundData};
 use kira::{Decibels, Frame, Parameter, Tween, Value};
+use sapphire_assets::cue::SILENCE_DB;
 use sapphire_assets::sound::DecodedSound;
 
 use crate::backend::VoiceParams;
+use crate::room_reverb::RoomTap;
 
 /// What an integer sample's full scale is, either way.
 const INTEGER_SCALE: f32 = 32_767.0;
@@ -185,6 +188,8 @@ impl VoiceSettings {
 pub(crate) struct Voice {
     pub storage: Arc<SoundStorage>,
     pub settings: VoiceSettings,
+    /// Where it sends the room's reverb what it plays, by [`VoiceParams::send_db`].
+    pub room: Option<Arc<RoomTap>>,
 }
 
 /// Where a voice is: what its handle reads, and the audio thread writes.
@@ -258,6 +263,8 @@ struct Ramp {
     step: f64,
     /// The low-pass's coefficient: 1 passes everything.
     coefficient: f32,
+    /// The level to the room's reverb, an amplitude.
+    send: f32,
 }
 
 /// Where a voice is in its sound, and what it carries from one frame to the next.
@@ -358,6 +365,8 @@ struct VoiceSound {
     pan: Parameter<f32>,
     pitch: Parameter<f32>,
     cutoff_hz: Parameter<f32>,
+    send_db: Parameter<f32>,
+    room: Option<Arc<RoomTap>>,
     /// Whether the low-pass is asked to open, and leaves the signal once its cutoff gets there.
     opening: bool,
     /// What the last buffer ended on, which the next one ramps from: none before the first.
@@ -376,7 +385,7 @@ impl SoundData for Voice {
     type Handle = VoiceHandle;
 
     fn into_sound(self) -> Result<(Box<dyn Sound>, VoiceHandle), Infallible> {
-        let Self { storage, settings } = self;
+        let Self { storage, settings, room } = self;
         let (set_writer, set) = command_writer_and_reader();
         let (freeze_writer, freeze) = command_writer_and_reader();
         let (stop_writer, stop) = command_writer_and_reader();
@@ -402,6 +411,8 @@ impl SoundData for Voice {
             pan: fixed(params.pan),
             pitch: fixed(params.pitch),
             cutoff_hz: fixed(cutoff_of(params.low_pass_hz)),
+            send_db: fixed(params.send_db),
+            room,
             opening: !params.low_pass_hz.is_finite(),
             last: None,
             fade_rate: fade_rate(settings.fade_in),
@@ -446,6 +457,11 @@ impl VoiceSound {
             step: f64::from(self.storage.sample_rate) * f64::from(self.pitch.value().max(0.0))
                 / f64::from(rate),
             coefficient: 1.0 - (-std::f32::consts::TAU * cutoff / rate).exp(),
+            send: if self.send_db.value() > SILENCE_DB {
+                Decibels(self.send_db.value()).as_amplitude()
+            } else {
+                0.0
+            },
         }
     }
 }
@@ -457,6 +473,7 @@ impl Sound for VoiceSound {
             self.pan.set(Value::Fixed(params.pan), tween);
             self.pitch.set(Value::Fixed(params.pitch), tween);
             self.cutoff_hz.set(Value::Fixed(cutoff_of(params.low_pass_hz)), tween);
+            self.send_db.set(Value::Fixed(params.send_db), tween);
             self.opening = !params.low_pass_hz.is_finite();
         }
         if let Some(Freeze { frozen, fade }) = self.freeze.read() {
@@ -487,6 +504,7 @@ impl Sound for VoiceSound {
         self.pan.update(length, info);
         self.pitch.update(length, info);
         self.cutoff_hz.update(length, info);
+        self.send_db.update(length, info);
         if let Start::OnClock(time) = self.start {
             match info.when_to_start(time) {
                 WhenToStart::Now => self.start = Start::Now,
@@ -539,6 +557,11 @@ impl Sound for VoiceSound {
                 playhead.render::<_, false>(Stereo(samples.as_chunks().0), out, from, to, fade_to, fade_step)
             }
         };
+        if let Some(room) = &self.room
+            && (from.send > 0.0 || to.send > 0.0)
+        {
+            room.add(out, from.send, to.send);
+        }
         let silent = self.playhead.fade == 0.0;
         if ended || (self.state == State::Stopping && silent) {
             self.set_state(State::Stopped);
@@ -567,7 +590,7 @@ mod tests {
     }
 
     fn play(storage: &Arc<SoundStorage>, settings: VoiceSettings) -> (Box<dyn Sound>, VoiceHandle) {
-        let Ok(played) = Voice { storage: Arc::clone(storage), settings }.into_sound();
+        let Ok(played) = Voice { storage: Arc::clone(storage), settings, room: None }.into_sound();
         played
     }
 
@@ -758,5 +781,38 @@ mod tests {
         let out = render(&mut *sound, 128, &info);
         let at = out[0].left * 4_800.0;
         assert!((256.0..=256.0 + BUFFER as f32).contains(&at), "{at}");
+    }
+
+    /// M6 U5: a voice sends the room what it plays, by its own level, and nothing at silence.
+    #[test]
+    fn a_voice_sends_the_room_what_it_plays_by_its_level() {
+        let info = MockInfoBuilder::new().build();
+        let tap = Arc::new(RoomTap::new(BUFFER));
+        let params = VoiceParams { gain_db: -6.0, pan: 0.5, send_db: -12.0, ..VoiceParams::NEUTRAL };
+        let settings = VoiceSettings::once(params, false);
+        let Ok((mut sound, _)) =
+            Voice { storage: storage(vec![0.5; 4_800], 1), settings, room: Some(Arc::clone(&tap)) }
+                .into_sound();
+        let heard = render(&mut *sound, BUFFER, &info);
+        let mut sent = vec![Frame::ZERO; BUFFER];
+        tap.take_into(&mut sent);
+        let share = Decibels(-12.0).as_amplitude();
+        for (sent, heard) in sent.iter().zip(&heard) {
+            assert!(
+                (sent.left - heard.left * share).abs() < 1e-6
+                    && (sent.right - heard.right * share).abs() < 1e-6
+            );
+        }
+        let mut again = vec![Frame::ZERO; BUFFER];
+        tap.take_into(&mut again);
+        assert!(again.iter().all(|frame| *frame == Frame::ZERO), "taken, it's clear");
+
+        let quiet = VoiceSettings::once(VoiceParams { send_db: SILENCE_DB, ..params }, false);
+        let Ok((mut sound, _)) =
+            Voice { storage: storage(vec![0.5; 4_800], 1), settings: quiet, room: Some(Arc::clone(&tap)) }
+                .into_sound();
+        let _ = render(&mut *sound, BUFFER, &info);
+        tap.take_into(&mut again);
+        assert!(again.iter().all(|frame| *frame == Frame::ZERO), "silence sends nothing");
     }
 }

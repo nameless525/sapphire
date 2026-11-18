@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, Bus, Cue, HitstopResponse, LimitRule, SILENCE_DB};
-use sapphire_assets::mix::{DuckFollow, Mix, MixError, OutputProfile, VoiceGroup};
+use sapphire_assets::mix::{DuckFollow, Mix, MixError, OutputProfile, Reverb, VoiceGroup};
 use sapphire_assets::mouth::MouthCurve;
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::DecodedSound;
@@ -22,6 +22,7 @@ use crate::backend::{
 use crate::mix::MixState;
 use crate::music::{Music, MusicRequest};
 use crate::rng::CueRandom;
+use crate::rooms::{Rooms, Space};
 use crate::voice::{LineKey, VoiceRoute, VoiceRouteError};
 
 /// The most voices mixed at once (M6 U3, Desktop-High's real voices): [`VoiceCaps::real`] at most. Past it,
@@ -197,6 +198,9 @@ pub struct AudioFrame<'a> {
     pub speech: Option<SpeechRequest>,
     /// The score and phase to play, or none: what played fades out.
     pub music: Option<MusicRequest<'a>>,
+    /// Where the listener and the emitters stand among the zone's rooms (M6 U5): the listener's chooses the reverb,
+    /// and a voice reaches it from the same space. [`Rooms::NONE`] plays none.
+    pub rooms: Rooms<'a>,
 }
 
 /// The system's counters (rule R9). [`Self::update`] is what spec §3.2's "Audio update" row budgets.
@@ -234,6 +238,10 @@ pub struct AudioStats {
     pub music_phase_changes: u64,
     /// Changes to a phase the score lacks, which leave the stems as they were.
     pub music_unknown_phases: u64,
+    /// Changes of the reverb the listener's room plays (M6 U5), to one or to none, all told.
+    pub room_changes: u64,
+    /// Rooms entered naming a reverb the mix hasn't, which play none (M6 U5), all told.
+    pub reverbs_unknown: u64,
     /// The output's own counters.
     pub device: DeviceStatus,
     /// The bytes of decoded sound the mixer holds (M6 U1): [`AudioBackend::decoded_bytes`], kept with each
@@ -419,6 +427,18 @@ pub struct AudioSystem<B: AudioBackend> {
     volume_db: f32,
     /// What the player's volume for each bus takes off its voices on top (M4 A2), by [`Bus::index`].
     bus_volume_db: [f32; Bus::ALL.len()],
+    /// The mix's reverbs, which rooms name (M6 U5).
+    reverbs: Vec<Reverb>,
+    /// Each bus's level to the room's reverb, by place: its category's.
+    room_db: Vec<Option<f32>>,
+    /// The listener's room, as last placed: its reverb, by place in [`Self::reverbs`], none if it plays none, and
+    /// its fade.
+    room: Option<(usize, f32)>,
+    /// Where the listener stood this frame, among the rooms: in which, and in what space.
+    listener_room: Option<usize>,
+    listener_space: Space,
+    /// How many reverbs the room's plays on.
+    reverb_slots: u8,
     stats: AudioStats,
     /// A dropped cue's reason has been logged once.
     warned_unknown: bool,
@@ -453,6 +473,12 @@ impl<B: AudioBackend> AudioSystem<B> {
             interrupted: false,
             volume_db: 0.0,
             bus_volume_db: [0.0; Bus::ALL.len()],
+            reverbs: Vec::new(),
+            room_db: vec![None; plain.buses.len()],
+            room: None,
+            listener_room: None,
+            listener_space: Space::Outdoors,
+            reverb_slots: 2,
             stats: AudioStats::default(),
             warned_unknown: false,
             warned_no_output: false,
@@ -479,7 +505,21 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.sent = sent_of(mix);
         self.levels = vec![0.0; mix.ducking.len()];
         self.groups.clone_from(&mix.groups);
+        self.reverbs.clone_from(&mix.reverbs);
+        self.room_db = (0..mix.buses.len()).map(|bus| mix.room_db(bus)).collect();
+        // The new mix's room plays nothing until the next update places the listener.
+        (self.room, self.listener_room) = (None, None);
         Ok(())
+    }
+
+    /// How many reverbs the room's plays on (M6 U5), 1 or 2: the quality tier's. Two crossfade on a change of room;
+    /// one is retuned, at half the cost.
+    pub fn set_reverb_slots(&mut self, slots: u8) {
+        let slots = slots.clamp(1, 2);
+        if slots != self.reverb_slots {
+            self.reverb_slots = slots;
+            self.backend.set_reverb_slots(slots);
+        }
     }
 
     /// How many voices are mixed and kept from the next update on (M6 U3), brought within [`VoiceCaps::MAX`]:
@@ -665,6 +705,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.end_loops_left_behind();
         self.advance_speech();
         self.step_mix(frame);
+        self.follow_room(&frame.rooms, &frame.listener);
         for request in frame.cues {
             if state.plays() {
                 self.start_cue(request, &frame.listener, random, None);
@@ -693,7 +734,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.stats.music_phase_changes = self.music.counts.phase_changes;
         self.stats.music_unknown_phases = self.music.counts.unknown_phases;
         if state.plays() {
-            self.place_voices(&frame.listener);
+            self.place_voices(&frame.listener, &frame.rooms);
         }
         self.follow_bus_gains(frame.dt);
 
@@ -822,6 +863,62 @@ impl<B: AudioBackend> AudioSystem<B> {
                 );
                 sent.paused = now.paused;
             }
+        }
+    }
+
+    /// Plays the reverb of the listener's room (M6 U5), crossfading from the last when it changes: over the fade of
+    /// the room entered, or of the room left for none. A room whose reverb the mix hasn't plays none, counted.
+    fn follow_room(&mut self, rooms: &Rooms<'_>, listener: &Listener) {
+        let at = rooms.at(listener.position);
+        self.listener_space = rooms.space_at(listener.position);
+        let room = at.map(|index| &rooms.rooms[index]);
+        let reverb = room
+            .and_then(|room| self.reverbs.iter().position(|reverb| Name::new(&reverb.name) == room.reverb));
+        if at != self.listener_room {
+            self.listener_room = at;
+            if room.is_some() && reverb.is_none() {
+                self.stats.reverbs_unknown += 1;
+                if self.stats.reverbs_unknown == 1 {
+                    tracing::warn!(target: LOG_TARGET, "the listener's room names a reverb the mix hasn't: it plays none");
+                }
+            }
+        }
+        if reverb == self.room.map(|(playing, _)| playing) {
+            return;
+        }
+        // The room entered's fade, or for none the room left's.
+        let fade = match (reverb, room, self.room) {
+            (Some(_), Some(room), _) => room.fade,
+            (None, _, Some((_, fade))) => fade,
+            _ => 0.0,
+        };
+        self.backend.set_room(reverb.map(|reverb| &self.reverbs[reverb]), seconds(fade));
+        self.room = reverb.map(|reverb| (reverb, fade));
+        self.stats.room_changes += 1;
+    }
+
+    /// `voice`'s level to the room's reverb (M6 U5): its bus's, moving with the bus's gain, if a room's reverb
+    /// plays and the voice is in the listener's space; nothing otherwise. A voice in no place is at the listener.
+    fn send_of(&self, voice: &Voice, rooms: &Rooms<'_>) -> f32 {
+        let bus = BusId::category(voice.bus).index();
+        let (Some(_), Some(level)) = (self.room, self.room_db[bus]) else { return SILENCE_DB };
+        let space = self.position_of(voice).map_or(self.listener_space, |position| rooms.space_at(position));
+        if space != self.listener_space {
+            return SILENCE_DB;
+        }
+        (level + self.sent[bus].gain_db).max(SILENCE_DB)
+    }
+
+    /// Where `voice` sounds from: none for one played flat.
+    fn position_of(&self, voice: &Voice) -> Option<Vec3> {
+        match voice.place {
+            Place::Flat => None,
+            Place::At(position) => Some(position),
+            Place::On(id) => self
+                .emitters
+                .iter()
+                .find(|tracked| tracked.emitter.id == id)
+                .map(|tracked| tracked.emitter.position),
         }
     }
 
@@ -1011,10 +1108,11 @@ impl<B: AudioBackend> AudioSystem<B> {
     /// [`VoiceCaps::real`] are real and the next [`VoiceCaps::virtual_voices`] that can wait are virtual, and the
     /// rest end. A voice going virtual fades out over [`VIRTUAL_FADE`] and one coming back fades in over it, where
     /// it would be. Then the backend hears of each change, oldest voice first.
-    fn place_voices(&mut self, listener: &Listener) {
+    fn place_voices(&mut self, listener: &Listener, rooms: &Rooms<'_>) {
         for index in 0..self.voices.len() {
             let voice = self.voices[index];
-            self.voices[index].params = self.params_of(&voice, listener);
+            let send_db = self.send_of(&voice, rooms);
+            self.voices[index].params = VoiceParams { send_db, ..self.params_of(&voice, listener) };
         }
         let voices = &self.voices;
         self.order.clear();
@@ -1185,15 +1283,7 @@ impl<B: AudioBackend> AudioSystem<B> {
 
     /// What `voice` should sound like now.
     fn params_of(&self, voice: &Voice, listener: &Listener) -> VoiceParams {
-        let position = match voice.place {
-            Place::Flat => None,
-            Place::At(position) => Some(position),
-            Place::On(id) => self
-                .emitters
-                .iter()
-                .find(|tracked| tracked.emitter.id == id)
-                .map(|tracked| tracked.emitter.position),
-        };
+        let position = self.position_of(voice);
         // The music bus carries the player's volume itself, for the score's stems ([`Self::follow_bus_gains`]),
         // so a cue on it takes it there and not again here (M4 A8).
         let volume_db = match voice.bus {
@@ -1237,6 +1327,11 @@ fn decibels_of(volume: f32) -> f32 {
     if volume > 0.0 { (20.0 * volume.log10()).clamp(SILENCE_DB, 0.0) } else { SILENCE_DB }
 }
 
+/// `seconds` as a duration, none for one that isn't a positive number.
+fn seconds(seconds: f32) -> Duration {
+    Duration::from_secs_f32(if seconds.is_finite() { seconds.max(0.0) } else { 0.0 })
+}
+
 /// Distance to `position` and how far to the listener's right it lies, -1 to 1.
 fn relative(listener: &Listener, position: Vec3) -> (f32, f32) {
     let offset = position - listener.position;
@@ -1252,6 +1347,7 @@ fn moved(now: VoiceParams, sent: VoiceParams) -> bool {
     (now.gain_db - sent.gain_db).abs() > GAIN_STEP_DB
         || (now.pan - sent.pan).abs() > PAN_STEP
         || (now.pitch - sent.pitch).abs() > PITCH_STEP
+        || (now.send_db - sent.send_db).abs() > GAIN_STEP_DB
 }
 
 #[cfg(test)]
@@ -1312,6 +1408,7 @@ mod tests {
             lines: &[],
             speech: None,
             music: None,
+            rooms: Rooms::NONE,
         }
     }
 
@@ -2344,5 +2441,110 @@ mod tests {
         assert_eq!(system.voice_caps(), VoiceCaps::MAX);
         system.set_voice_caps(VoiceCaps { real: 0, virtual_voices: 1_000 });
         assert_eq!(system.voice_caps(), VoiceCaps { real: 1, virtual_voices: MAX_VIRTUAL_VOICES as u16 });
+    }
+
+    /// M6 U5: a room 5 m ahead, of the shipped `shelter` unless named otherwise.
+    fn shelter(reverb: &str) -> [crate::Room; 1] {
+        [crate::Room {
+            position: Vec3::new(0.0, 0.0, -5.0),
+            shape: crate::RoomShape::Box { half_extents: Vec3::splat(2.0) },
+            priority: 0,
+            reverb: Name::new(reverb),
+            outdoor: false,
+            fade: 0.4,
+        }]
+    }
+
+    fn at<'a>(
+        listener: Vec3,
+        rooms: &'a [crate::Room],
+        emitters: &'a [Emitter],
+        cues: &'a [CueRequest],
+    ) -> AudioFrame<'a> {
+        AudioFrame {
+            listener: Listener { position: listener, ..Listener::default() },
+            rooms: Rooms { rooms, origin: Vec3::ZERO },
+            ..frame(emitters, cues)
+        }
+    }
+
+    fn rooms_asked(calls: &[MockCall]) -> Vec<(Option<f32>, Duration)> {
+        calls
+            .iter()
+            .filter_map(|call| match *call {
+                MockCall::SetRoom { feedback, fade } => Some((feedback, fade)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// M6 U5: the listener's room plays its reverb from the frame it's entered, over its fade, once; leaving
+    /// fades it out over the same.
+    #[test]
+    fn the_listeners_room_plays_its_reverb_and_leaving_fades_it_out() {
+        let mut system = system_with(plain_cue());
+        system.set_mix(&shipped()).unwrap();
+        system.backend_mut().take_calls();
+        let mut rng = CueRng::new(1);
+        let rooms = shelter("shelter");
+        let fade = Duration::from_secs_f32(0.4);
+        system.update(&at(Vec3::ZERO, &rooms, &[], &[]), &mut rng);
+        assert_eq!(rooms_asked(&system.backend_mut().take_calls()), []);
+        for _ in 0..3 {
+            system.update(&at(Vec3::new(0.5, 0.0, -5.0), &rooms, &[], &[]), &mut rng);
+        }
+        assert_eq!(rooms_asked(&system.backend_mut().take_calls()), [(Some(0.72), fade)]);
+        system.update(&at(Vec3::ZERO, &rooms, &[], &[]), &mut rng);
+        assert_eq!(rooms_asked(&system.backend_mut().take_calls()), [(None, fade)]);
+        assert_eq!((system.stats().room_changes, system.stats().reverbs_unknown), (2, 0));
+    }
+
+    /// M6 U5: a room naming a reverb the mix hasn't plays none, counted once a visit.
+    #[test]
+    fn a_room_of_a_reverb_the_mix_hasnt_plays_none_and_is_counted() {
+        let mut system = system_with(plain_cue());
+        system.set_mix(&shipped()).unwrap();
+        system.backend_mut().take_calls();
+        let mut rng = CueRng::new(1);
+        let rooms = shelter("cellar");
+        for _ in 0..3 {
+            system.update(&at(Vec3::new(0.0, 0.0, -5.0), &rooms, &[], &[]), &mut rng);
+        }
+        assert_eq!(rooms_asked(&system.backend_mut().take_calls()), []);
+        assert_eq!((system.stats().room_changes, system.stats().reverbs_unknown), (0, 1));
+    }
+
+    /// M6 U5: a voice reaches the room's reverb by its bus's level, and only from the listener's space; with no
+    /// room playing, none does.
+    #[test]
+    fn a_voice_reaches_the_reverb_from_the_listeners_space_by_its_bus() {
+        let mut system = system_with(placed_cue());
+        system.set_mix(&shipped()).unwrap();
+        let mut rng = CueRng::new(1);
+        let rooms = shelter("shelter");
+        let mut send = |listener: Vec3, actor: Vec3| {
+            let here = [actor_at(actor)];
+            system.backend_mut().take_calls();
+            system.update(&at(listener, &rooms, &here, &play(CueTarget::On(ACTOR))), &mut rng);
+            let send = started(&mut system).send_db;
+            system.stop_voices();
+            send
+        };
+        let (room, inside) = (Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, -4.0));
+        let sfx = shipped().room_db(Bus::Sfx.index()).unwrap();
+        assert!((send(room, inside) - sfx).abs() < 0.01);
+        assert_eq!(send(room, Vec3::new(0.0, 0.0, 3.0)), SILENCE_DB, "from outdoors");
+        assert_eq!(send(Vec3::ZERO, inside), SILENCE_DB, "no room plays outdoors");
+    }
+
+    /// M6 U5: the tier's reverb count reaches the backend once a change, held to one or two.
+    #[test]
+    fn the_reverb_slots_reach_the_backend_once_a_change() {
+        let mut system = system_with(plain_cue());
+        system.set_reverb_slots(0);
+        system.set_reverb_slots(1);
+        system.set_reverb_slots(5);
+        let calls = system.backend_mut().take_calls();
+        assert_eq!(calls, [MockCall::SetReverbSlots(1), MockCall::SetReverbSlots(2)]);
     }
 }

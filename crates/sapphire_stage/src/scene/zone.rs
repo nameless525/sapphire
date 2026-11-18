@@ -31,6 +31,7 @@
 //! tool's (`Scene::set_weather`, the sandbox's `--weather`). The simulation never reads it.
 
 use std::f32::consts::PI;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use sapphire_assets::material::Material;
@@ -39,6 +40,8 @@ use sapphire_assets::reflections::ReflectionProbes;
 use sapphire_assets::{
     AssetId, AssetServer, Handle, LoadPriority, LoadState, MountError, MountState, UnmountReport,
 };
+use sapphire_audio::{Room, RoomShape};
+use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_platform::AppInitError;
@@ -52,7 +55,9 @@ use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer}
 use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline};
 #[cfg(any(test, feature = "dev"))]
 use sapphire_world::tod::{TodError, TodGroups};
-use sapphire_zone::{ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, Zone, ZoneFog};
+use sapphire_zone::{
+    ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, CookedVolume, Zone, ZoneFog,
+};
 
 use super::{Figure, LOG_TARGET, Lamp, Scene};
 use crate::content::Content;
@@ -387,6 +392,8 @@ pub struct ZoneLook {
     wind: Option<Wind>,
     weather: Option<Weather>,
     fog: Option<ZoneFog>,
+    /// Where its sound takes a reverb (M6 U5).
+    rooms: Arc<[Room]>,
 }
 
 impl ZoneLook {
@@ -414,8 +421,30 @@ impl ZoneLook {
             let weather = weather.to_native();
             Weather { wetness: weather.wetness, puddles: weather.puddles }
         });
-        Self { day, rigs, wind, weather, fog: presentation.fog.as_ref().map(|fog| fog.to_native()) }
+        let fog = presentation.fog.as_ref().map(|fog| fog.to_native());
+        Self { day, rigs, wind, weather, fog, rooms: rooms_of(presentation) }
     }
+}
+
+/// A zone's rooms as the mixer takes them (M6 U5), in its space.
+fn rooms_of(presentation: &ArchivedZonePresentation) -> Arc<[Room]> {
+    presentation
+        .rooms
+        .iter()
+        .map(|room| Room {
+            position: Vec3::from(room.position()),
+            shape: match room.volume.to_native() {
+                CookedVolume::Box { half_extents } => {
+                    RoomShape::Box { half_extents: Vec3::from(half_extents) }
+                }
+                CookedVolume::Sphere { radius } => RoomShape::Sphere { radius },
+            },
+            priority: room.priority,
+            reverb: Name::new(room.reverb.as_str()),
+            outdoor: room.outdoor,
+            fade: room.fade.to_native(),
+        })
+        .collect()
 }
 
 /// A zone's day and rigs, parsed on a job, or why they don't read.
@@ -442,7 +471,7 @@ fn parse_look(day: Option<&str>, rigs: Option<&str>) -> ParsedLook {
 impl ZoneLook {
     /// A look naming `day` and `rigs`, and no air.
     pub(crate) fn of(day: Option<TodTimeline>, rigs: Option<LightRigLibrary>) -> Self {
-        Self { day, rigs, wind: None, weather: None, fog: None }
+        Self { day, rigs, wind: None, weather: None, fog: None, rooms: Arc::new([]) }
     }
 }
 
@@ -489,6 +518,8 @@ pub(super) struct ZoneAir {
     fog: Option<ZoneFog>,
     /// Its sky material on the renderer, once it's there (`Content::zone_sky_material`).
     pub(super) sky: Option<MaterialHandle>,
+    /// Its rooms (M6 U5), which [`Scene::sound`] hands the mixer while a zone is on stage.
+    pub(super) rooms: Arc<[Room]>,
 }
 
 /// What the stage looked like before a zone's: see [`ZoneAir::own`].
@@ -642,7 +673,7 @@ impl Scene {
         // Its grid, sky and reflections load while a boot screen draws, so lighting it waits for none (M5 X3).
         content.ask_for_zone_look(&handle)?;
         let zone = content.read(&handle).expect("a zone just loaded");
-        let (position, yaw) = match zone.simulation.spawner(sapphire_core::Name::new(at)) {
+        let (position, yaw) = match zone.simulation.spawner(Name::new(at)) {
             Some(spawner) => (Vec3::from(spawner.position()), spawner.yaw()),
             None => standing_place(at)
                 .ok_or_else(|| AppInitError::msg(format!("zone {stem} has no spawner {at:?}")))?,
@@ -870,10 +901,10 @@ impl Scene {
     }
 
     /// Takes `look` in place of what the stage has (M5 M6): its day, light rigs and wind, or the stage's own again
-    /// for what it names none of; its weather, dry with none; and its fog over the day's, its height base in the
-    /// zone's space. Its probe grid and sky are the content's.
+    /// for what it names none of; its weather, dry with none; its fog over the day's, its height base in the
+    /// zone's space; and its rooms (M6 U5). Its probe grid and sky are the content's.
     pub fn take_zone_look(&mut self, look: ZoneLook) -> Result<(), String> {
-        let ZoneLook { day, rigs, wind, weather, fog } = look;
+        let ZoneLook { day, rigs, wind, weather, fog, rooms } = look;
         let (zone_day, zone_rigs) = (day.is_some(), rigs.is_some());
         let world = self.ecs.world();
         let own = self.zone_air.own.get_or_insert_with(|| StageLook {
@@ -892,6 +923,7 @@ impl Scene {
         self.wind = wind;
         self.zone_air.weather = weather.unwrap_or_default();
         self.zone_air.fog = fog;
+        self.zone_air.rooms = rooms;
         Ok(())
     }
 

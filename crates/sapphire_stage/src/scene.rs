@@ -2899,6 +2899,8 @@ impl Scene {
                 .get::<EntityClock>(self.character)
                 .is_some_and(|clock| clock.0.hitstop_ticks() > 0),
             tier: self.tier,
+            rooms: self.zone.as_ref().map(|_| Arc::clone(&self.zone_air.rooms)),
+            rooms_origin: self.zone.as_ref().map_or(Vec3::ZERO, |zone| -zone.stand),
         }
     }
 

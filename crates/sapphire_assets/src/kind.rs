@@ -124,7 +124,7 @@ pub enum AssetKind {
     /// walks there, the zone's own sub-asset beside its cells. Its cast and graph are the stage's to load, so it
     /// depends on nothing, but they ship with it ([`Self::reach`]). CPU data, never uploaded.
     Ambient = 30,
-    /// A game's mix (`.smix`, M6 U2): [`Mix`], its buses, sends, snapshots, ducking and output profiles. It
+    /// A game's mix (`.smix`, M6 U2): [`Mix`], its buses, reverbs, snapshots, ducking and output profiles. It
     /// names buses by path and sounds not at all, so it depends on nothing. CPU data, never uploaded.
     Mix = 31,
     /// An effects library (`.seffects`, M6 N1): [`Effects`], `sapphire_vfx`'s library as its document, what a

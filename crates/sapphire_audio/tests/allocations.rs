@@ -12,7 +12,7 @@ use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioSystem, BusId, CueRequest, CueRng, CueTarget, Emitter, EmitterId,
     KiraBackend, Listener, MAX_VOICES, MockBackend, MockCall, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT,
-    VoiceCaps, VoiceParams, VoiceSlot, VoiceStart,
+    Room, RoomShape, Rooms, VoiceCaps, VoiceParams, VoiceSlot, VoiceStart,
 };
 use sapphire_core::Name;
 use sapphire_core::alloc::{EngineAllocator, PER_THREAD_COUNTS, count_in_scope, engine_allocator};
@@ -59,6 +59,7 @@ fn frame<'a>(emitters: &'a [Emitter], cues: &'a [CueRequest]) -> AudioFrame<'a> 
         lines: &[],
         speech: None,
         music: None,
+        rooms: Rooms::NONE,
     }
 }
 
@@ -134,6 +135,69 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     music_changes_phase_with_no_allocation();
     the_mix_moves_with_no_allocation();
     voice_limits_place_with_no_allocation();
+    rooms_cross_with_no_allocation(2);
+    rooms_cross_with_no_allocation(1);
+}
+
+/// The room's reverb (M6 U5) on `slots` reverbs, through the real mixer and the shipped mix: 24 voices on an
+/// emitter walking with the listener from a street into a shelter and out again, each sending, so the room
+/// changes twice a round and every voice's send moves. Once warmed, its frames and its mixing allocate nothing.
+fn rooms_cross_with_no_allocation(slots: u8) {
+    let mix = Mix::from_document(include_str!("../../../content/audio/game.mix.ron")).unwrap();
+    let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
+    system.set_mix(&mix).unwrap();
+    system.set_reverb_slots(slots);
+    system.add_sound(SOUND, &DecodedSound { samples: vec![0.25; RATE as usize * 4], ..sound() });
+    system.add_cue(CUE, Cue { looped: true, ..cue() });
+    let rooms = [
+        Room {
+            position: Vec3::ZERO,
+            shape: RoomShape::Box { half_extents: Vec3::splat(50.0) },
+            priority: 0,
+            reverb: Name::new("street"),
+            outdoor: true,
+            fade: 0.5,
+        },
+        Room {
+            position: Vec3::new(0.0, 0.0, -10.0),
+            shape: RoomShape::Sphere { radius: 4.0 },
+            priority: 1,
+            reverb: Name::new("shelter"),
+            outdoor: false,
+            fade: 0.3,
+        },
+    ];
+    let mut rng = CueRng::new(1);
+    let mut buffer = vec![0.0; GAME_FRAME * 2];
+    let mut round = |system: &mut AudioSystem<KiraBackend<OfflineOutput>>, rng: &mut CueRng| {
+        for n in 0..90 {
+            let at = Vec3::new(0.0, 0.0, if (30..60).contains(&n) { -10.0 } else { 0.0 });
+            let walker = [Emitter { id: ACTOR, position: at, hitstop: false }];
+            let listener = Listener { position: at, ..Listener::default() };
+            let rooms = Rooms { rooms: &rooms, origin: Vec3::ZERO };
+            system.update(&AudioFrame { listener, rooms, ..frame(&walker, &[]) }, rng);
+            system.backend_mut().output_mut().render_into(&mut buffer);
+        }
+    };
+    let walker = [Emitter { id: ACTOR, position: Vec3::ZERO, hitstop: false }];
+    let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
+    for _ in 0..24 {
+        system.update(&frame(&walker, &requests), &mut rng);
+    }
+    round(&mut system, &mut rng);
+    let changes = system.stats().room_changes;
+    let ((), crossing) = count_in_scope(|| round(&mut system, &mut rng));
+    #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
+    {
+        println!(
+            "90 frames into a shelter and out on {slots} reverb(s), 24 voices: {} allocations",
+            crossing.allocations
+        );
+    }
+    assert_eq!(system.stats().voices, 24, "they play");
+    assert_eq!(system.stats().room_changes - changes, 2, "in and out");
+    assert!(buffer.iter().any(|sample| *sample != 0.0), "it's heard");
+    assert_eq!(crossing.allocations, 0, "a room's change, a send or the reverbs allocated");
 }
 
 /// A frame of the shipped mix: the world's clock at `scale`, paused or not.
@@ -194,8 +258,13 @@ fn every_voice_filtering_mixes_with_no_allocation() {
         stereo,
         &DecodedSound { sample_rate: RATE, channels: 2, samples: vec![0.25; 2 * RATE as usize] },
     );
-    let params =
-        |n: u32| VoiceParams { gain_db: -6.0, pan: 0.5, pitch: 0.9 + 0.01 * n as f32, low_pass_hz: 800.0 };
+    let params = |n: u32| VoiceParams {
+        gain_db: -6.0,
+        pan: 0.5,
+        pitch: 0.9 + 0.01 * n as f32,
+        low_pass_hz: 800.0,
+        send_db: -12.0,
+    };
     for n in 0..MAX_VOICES as u32 {
         let sound = if n % 2 == 0 { SOUND } else { stereo };
         backend

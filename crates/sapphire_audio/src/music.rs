@@ -337,6 +337,7 @@ mod tests {
             lines,
             speech: None,
             music,
+            rooms: crate::Rooms::NONE,
         };
         system.update(&frame, &mut CueRng::new(1));
         system.backend_mut().take_calls()

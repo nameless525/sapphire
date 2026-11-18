@@ -174,6 +174,7 @@ impl Fight {
                 lines: self.cues.lines(),
                 speech: None,
                 music: None,
+                rooms: sapphire_audio::Rooms::NONE,
             },
             &mut self.random,
         );

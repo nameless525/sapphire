@@ -80,6 +80,7 @@ fn play_until(
             lines: std::mem::take(&mut lines),
             speech: None,
             music: Some(MusicRequest { score: SCORE, phase, instead: None }),
+            rooms: sapphire_audio::Rooms::NONE,
         };
         system.update(&frame, &mut CueRng::new(1));
         system.backend_mut().output_mut().render_into(&mut block);

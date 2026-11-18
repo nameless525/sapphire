@@ -4,19 +4,19 @@
 //! ```ron
 //! (
 //!     type: "sapphire::assets::Mix",
-//!     version: 2,
+//!     version: 3,
 //!     data: (
 //!         // The five categories first, in this order; a bus under one is named by its path.
 //!         buses: [
-//!             (name: "sfx"),
+//!             (name: "sfx", room_db: Some(-12.0)),
 //!             (name: "ambience"),
 //!             (name: "ui"),
 //!             (name: "music"),
 //!             (name: "voice"),
-//!             (name: "sfx/hits", volume_db: -2.0, effects: [HighPass(cutoff_hz: 80.0)], sends: [(to: "room", volume_db: -12.0)]),
+//!             (name: "sfx/hits", volume_db: -2.0, effects: [HighPass(cutoff_hz: 80.0)]),
 //!         ],
-//!         // At most two reverbs the buses send to.
-//!         sends: [(name: "room", feedback: 0.8, damping: 0.3, stereo_width: 1.0)],
+//!         // M6 U5: the reverbs a zone's rooms name.
+//!         reverbs: [(name: "shelter", feedback: 0.8, damping: 0.3, stereo_width: 1.0)],
 //!         snapshots: [
 //!             (
 //!                 name: "slow_motion",
@@ -41,9 +41,12 @@
 //!
 //! - **Buses** make a tree under the five categories a cue names ([`Bus`]): `sfx`, `ambience`, `ui`, `music`
 //!   and `voice` are its roots, the first five buses in that order, and a bus below one is named by its path,
-//!   its parent listed before it. Each has a volume, up to [`MAX_EFFECTS`] effects in order, and a level to each
-//!   reverb send.
-//! - **Sends** are reverbs any bus may send to, at most [`MAX_SENDS`].
+//!   its parent listed before it. Each has a volume and up to [`MAX_EFFECTS`] effects in order, and a category
+//!   its voices' level to the reverb of the room the listener stands in (`room_db`, version 3). Voices play on
+//!   the categories, so a bus below one may not name a level of its own.
+//! - **Reverbs** (version 3, M6 U5) are kira's Freeverb, by name, at most [`MAX_REVERBS`]: what a zone's rooms
+//!   sound like. The room the listener stands in plays its reverb, crossfaded from the last on a change, and a
+//!   voice reaches it only from the same space.
 //! - **Snapshots** are offsets to buses, with an attack and a release (seconds for a change to go about two
 //!   thirds of the way) and a priority. A snapshot is in by how far the game asks for it: wholly while it's
 //!   asked by name, or by how far the world's clock has slowed toward a floor
@@ -55,6 +58,9 @@
 //! - **Output profiles** are the master's volume and effects for where the sound is heard ([`OutputProfile`]).
 //! - **Voice groups** (version 2, M6 U3) are kinds of sound sharing a [`Limit`] on how many play at once, by
 //!   Unreal's rules, whichever cues name them. A version 1 mix reads as written, with none.
+//!
+//! Versions 1 and 2 had two fixed reverb sends and each bus's levels to them, which version 3's rooms replace: an
+//! older mix reads as written if it has none, and is refused, naming them, if it has any.
 //!
 //! [`Mix::from_document`] says what's wrong by field path, or by the document's own line. The cooked form is
 //! the same type. Making the buses, moving the snapshots and following the envelopes are `sapphire_audio`'s.
@@ -76,8 +82,8 @@ pub const MAX_BUSES: usize = 64;
 /// The most effects one bus or profile may have.
 pub const MAX_EFFECTS: usize = 4;
 
-/// The most reverb sends a mix may have: two, so a change of space can crossfade them.
-pub const MAX_SENDS: usize = 2;
+/// The most reverbs a mix may have (M6 U5).
+pub const MAX_REVERBS: usize = 32;
 
 /// The most snapshots a mix may have.
 pub const MAX_SNAPSHOTS: usize = 32;
@@ -116,9 +122,9 @@ const MAX_SECONDS: f32 = 10.0;
 pub struct Mix {
     /// The bus tree, each parent before its children: the five categories and what's under them.
     pub buses: Vec<MixBus>,
-    /// The reverbs buses send to.
+    /// What rooms sound like (M6 U5): the reverbs a zone's rooms name.
     #[serde(default)]
-    pub sends: Vec<ReverbSend>,
+    pub reverbs: Vec<Reverb>,
     #[serde(default)]
     pub snapshots: Vec<Snapshot>,
     #[serde(default)]
@@ -132,29 +138,65 @@ pub struct Mix {
 }
 
 impl Versioned for Mix {
-    /// Version 2 (M6 U3): `groups`, none in a version 1 mix.
-    const VERSION: u32 = 2;
+    /// Version 2 (M6 U3): `groups`, none in a version 1 mix. Version 3 (M6 U5): `reverbs` and each bus's `room_db`
+    /// in place of two fixed sends and each bus's levels to them, which an older mix may not have.
+    const VERSION: u32 = 3;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
         match version {
-            1 => data.decode::<v1::Mix>().map(Into::into).map_err(VersionError::Decode),
+            1 => data.decode::<older::MixV1>().map(Into::into).map_err(VersionError::Decode),
+            2 => data.decode::<older::MixV2>().map(Into::into).map_err(VersionError::Decode),
             found => Err(VersionError::TooOld { found, oldest: 1 }),
         }
     }
 }
 
-/// Version 1 (M6 U2), as its documents read: version 2's fields but the groups.
-mod v1 {
+/// Versions 1 (M6 U2) and 2 (M6 U3), as their documents read: version 3's fields but the reverbs and each bus's
+/// `room_db`, with fixed sends instead, and in version 1 no groups. A mix with a send, or a bus sending to one, is
+/// refused as it's read: a fixed reverb has no room to play in, and dropping it would change what the mix sounds
+/// like.
+mod older {
     use serde::Deserialize;
+    use serde::de::{Error, IgnoredAny};
 
-    use super::{DuckRule, MixBus, Profile, ReverbSend, Snapshot};
+    use super::{BusEffect, DuckRule, MixBus, Profile, Snapshot, VoiceGroup};
+
+    /// Why an older mix with sends doesn't read.
+    const NO_SENDS: &str = "a mix's fixed `sends` are gone since version 3: name `reverbs` for rooms, and give a \
+                            bus a `room_db`";
 
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
-    pub(super) struct Mix {
-        buses: Vec<MixBus>,
+    struct Bus {
+        name: String,
         #[serde(default)]
-        sends: Vec<ReverbSend>,
+        volume_db: f32,
+        #[serde(default)]
+        effects: Vec<BusEffect>,
+        #[serde(default, deserialize_with = "no_sends")]
+        #[expect(dead_code, reason = "read only to refuse any")]
+        sends: (),
+    }
+
+    /// An older document's sends, which must be none.
+    fn no_sends<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
+        let sends: Vec<IgnoredAny> = Vec::deserialize(deserializer)?;
+        if sends.is_empty() { Ok(()) } else { Err(D::Error::custom(NO_SENDS)) }
+    }
+
+    impl From<Bus> for MixBus {
+        fn from(Bus { name, volume_db, effects, .. }: Bus) -> Self {
+            Self { name, volume_db, effects, room_db: None }
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct MixV1 {
+        buses: Vec<Bus>,
+        #[serde(default, deserialize_with = "no_sends")]
+        #[expect(dead_code, reason = "read only to refuse any")]
+        sends: (),
         #[serde(default)]
         snapshots: Vec<Snapshot>,
         #[serde(default)]
@@ -162,9 +204,38 @@ mod v1 {
         profiles: Vec<Profile>,
     }
 
-    impl From<Mix> for super::Mix {
-        fn from(Mix { buses, sends, snapshots, ducking, profiles }: Mix) -> Self {
-            Self { buses, sends, snapshots, ducking, profiles, groups: Vec::new() }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct MixV2 {
+        buses: Vec<Bus>,
+        #[serde(default, deserialize_with = "no_sends")]
+        #[expect(dead_code, reason = "read only to refuse any")]
+        sends: (),
+        #[serde(default)]
+        snapshots: Vec<Snapshot>,
+        #[serde(default)]
+        ducking: Vec<DuckRule>,
+        profiles: Vec<Profile>,
+        #[serde(default)]
+        groups: Vec<VoiceGroup>,
+    }
+
+    impl From<MixV1> for super::Mix {
+        fn from(MixV1 { buses, snapshots, ducking, profiles, .. }: MixV1) -> Self {
+            MixV2 { buses, sends: (), snapshots, ducking, profiles, groups: Vec::new() }.into()
+        }
+    }
+
+    impl From<MixV2> for super::Mix {
+        fn from(MixV2 { buses, snapshots, ducking, profiles, groups, .. }: MixV2) -> Self {
+            Self {
+                buses: buses.into_iter().map(Into::into).collect(),
+                reverbs: Vec::new(),
+                snapshots,
+                ducking,
+                profiles,
+                groups,
+            }
         }
     }
 }
@@ -215,30 +286,12 @@ pub struct MixBus {
     /// What it does to what plays through it, in order.
     #[serde(default)]
     pub effects: Vec<BusEffect>,
-    /// How much of it goes to each reverb, after its effects and before its volume.
-    #[serde(default)]
-    pub sends: Vec<BusSend>,
-}
-
-/// A bus's level to a reverb send.
-#[derive(
-    Reflect,
-    Clone,
-    Debug,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    rkyv::Archive,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-)]
-#[reflect(Serialize, Deserialize)]
-#[rkyv(derive(Debug))]
-#[serde(deny_unknown_fields)]
-pub struct BusSend {
-    /// The send, by name.
-    pub to: String,
-    pub volume_db: f32,
+    /// Its voices' level to the reverb of the room the listener stands in, in decibels, from each voice as it's
+    /// heard (M6 U5): taken before this bus's effects and snapshot filter, and moving with its gain. A voice reaches
+    /// the reverb only from the listener's space ([`Reverb`]). Only a category's: voices play on the categories,
+    /// so a bus below one with a level is refused. None sends nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_db: Option<f32>,
 }
 
 /// An effect on a bus or a profile: kira's own.
@@ -292,7 +345,9 @@ pub enum EqKind {
     HighShelf,
 }
 
-/// A reverb buses send to: kira's Freeverb.
+/// What a room sounds like (M6 U5): kira's Freeverb, which a zone's room names. The room the listener stands in
+/// plays it, and a voice reaches it from that room, or from anywhere outdoors when the room is outdoors, at its
+/// bus's `room_db`.
 #[derive(
     Reflect,
     Clone,
@@ -307,7 +362,8 @@ pub enum EqKind {
 #[reflect(Serialize, Deserialize)]
 #[rkyv(derive(Debug))]
 #[serde(deny_unknown_fields)]
-pub struct ReverbSend {
+pub struct Reverb {
+    /// What a room names it by.
     pub name: String,
     /// How long it rings, 0 to under 1.
     pub feedback: f32,
@@ -315,7 +371,7 @@ pub struct ReverbSend {
     pub damping: f32,
     /// 0 is mono, 1 full width.
     pub stereo_width: f32,
-    /// Its return's gain, in decibels.
+    /// What it gives back, in decibels.
     #[serde(default)]
     pub volume_db: f32,
 }
@@ -551,11 +607,11 @@ impl Mix {
             name: bus.mix_name().to_owned(),
             volume_db: 0.0,
             effects: Vec::new(),
-            sends: Vec::new(),
+            room_db: None,
         };
         Self {
             buses: Bus::ALL.map(bus).to_vec(),
-            sends: Vec::new(),
+            reverbs: Vec::new(),
             snapshots: Vec::new(),
             ducking: Vec::new(),
             profiles: vec![Profile { profile: OutputProfile::Home, volume_db: 0.0, effects: Vec::new() }],
@@ -610,10 +666,22 @@ impl Mix {
         }
     }
 
-    /// The send called `name`, by its place in [`Self::sends`].
+    /// The reverb called `name`, by its place in [`Self::reverbs`].
     #[must_use]
-    pub fn send(&self, name: &str) -> Option<usize> {
-        self.sends.iter().position(|send| send.name == name)
+    pub fn reverb(&self, name: &str) -> Option<usize> {
+        self.reverbs.iter().position(|reverb| reverb.name == name)
+    }
+
+    /// The level the voices of bus `bus` (by place) send to the listener's room at (M6 U5): its category's
+    /// `room_db`, since only a category has one; none sends nothing.
+    #[must_use]
+    pub fn room_db(&self, mut bus: usize) -> Option<f32> {
+        loop {
+            if let Some(level) = self.buses[bus].room_db {
+                return Some(level);
+            }
+            bus = self.parent(bus)?;
+        }
     }
 
     /// The profile for `profile`, by its place in [`Self::profiles`]: `Home`'s if the mix has none for it.
@@ -627,7 +695,7 @@ impl Mix {
     /// Checks that every value can be mixed, naming the first that can't by its path.
     pub fn check(&self) -> Result<(), MixError> {
         self.check_buses()?;
-        self.check_sends()?;
+        self.check_reverbs()?;
         self.check_snapshots()?;
         self.check_ducking()?;
         self.check_profiles()?;
@@ -697,44 +765,44 @@ impl Mix {
             }
             check_gain(&format!("{field}.volume_db"), bus.volume_db)?;
             check_effects(&format!("{field}.effects"), &bus.effects)?;
-            for (at, send) in bus.sends.iter().enumerate() {
-                let field = format!("{field}.sends[{at}]");
-                if self.send(&send.to).is_none() {
-                    return Err(invalid(
-                        format!("{field}.to"),
-                        format!("{:?} isn't one of the mix's sends", send.to),
-                    ));
+            if let Some(level) = bus.room_db {
+                if index >= Bus::ALL.len() {
+                    let problem = "voices play on the categories, so only a category sends to the room's reverb: \
+                                   give the category under which it lies a `room_db`";
+                    return Err(invalid(format!("{field}.room_db"), problem.to_owned()));
                 }
-                if bus.sends[..at].iter().any(|earlier| earlier.to == send.to) {
-                    return Err(invalid(format!("{field}.to"), format!("{:?} is sent to twice", send.to)));
-                }
-                check_gain(&format!("{field}.volume_db"), send.volume_db)?;
+                check_gain(&format!("{field}.room_db"), level)?;
             }
         }
         Ok(())
     }
 
-    fn check_sends(&self) -> Result<(), MixError> {
-        if self.sends.len() > MAX_SENDS {
-            return Err(invalid("sends", format!("{} sends is more than {MAX_SENDS}", self.sends.len())));
+    fn check_reverbs(&self) -> Result<(), MixError> {
+        if self.reverbs.len() > MAX_REVERBS {
+            let count = self.reverbs.len();
+            return Err(invalid("reverbs", format!("{count} reverbs is more than {MAX_REVERBS}")));
         }
-        for (index, send) in self.sends.iter().enumerate() {
-            let field = format!("sends[{index}]");
-            if send.name.is_empty() || self.sends[..index].iter().any(|earlier| earlier.name == send.name) {
+        for (index, reverb) in self.reverbs.iter().enumerate() {
+            let field = format!("reverbs[{index}]");
+            let name = &reverb.name;
+            if name.is_empty()
+                || name.trim() != name
+                || self.reverbs[..index].iter().any(|earlier| earlier.name == *name)
+            {
                 return Err(invalid(
                     format!("{field}.name"),
-                    format!("{:?} is empty or named twice", send.name),
+                    format!("{name:?} is empty, padded or named twice"),
                 ));
             }
-            if !(send.feedback.is_finite() && (0.0..1.0).contains(&send.feedback)) {
+            if !(reverb.feedback.is_finite() && (0.0..1.0).contains(&reverb.feedback)) {
                 return Err(invalid(
                     format!("{field}.feedback"),
-                    format!("{} isn't from 0 to under 1", send.feedback),
+                    format!("{} isn't from 0 to under 1", reverb.feedback),
                 ));
             }
-            check_share(&format!("{field}.damping"), send.damping)?;
-            check_share(&format!("{field}.stereo_width"), send.stereo_width)?;
-            check_gain(&format!("{field}.volume_db"), send.volume_db)?;
+            check_share(&format!("{field}.damping"), reverb.damping)?;
+            check_share(&format!("{field}.stereo_width"), reverb.stereo_width)?;
+            check_gain(&format!("{field}.volume_db"), reverb.volume_db)?;
         }
         Ok(())
     }
@@ -973,7 +1041,7 @@ mod tests {
     /// A good mix document of the current version, with `extra` lines added to its data.
     fn document(buses: &str, extra: &str) -> String {
         format!(
-            "(\n    type: \"sapphire::assets::Mix\",\n    version: 2,\n    data: (\n        buses: [{buses}],\n{extra}\n        profiles: [(profile: Home)],\n    ),\n)\n"
+            "(\n    type: \"sapphire::assets::Mix\",\n    version: 3,\n    data: (\n        buses: [{buses}],\n{extra}\n        profiles: [(profile: Home)],\n    ),\n)\n"
         )
     }
 
@@ -998,10 +1066,10 @@ mod tests {
     #[test]
     fn a_full_mix_reads_and_cooks_back() {
         let buses = format!(
-            r#"{CATEGORIES}, (name: "sfx/hits", volume_db: -2.0, effects: [HighPass(cutoff_hz: 80.0), Eq(kind: Bell, frequency_hz: 2000.0, gain_db: 3.0, q: 1.0)], sends: [(to: "room", volume_db: -12.0)]), (name: "sfx/hits/heavy")"#
+            r#"{CATEGORIES}, (name: "sfx/hits", volume_db: -2.0, effects: [HighPass(cutoff_hz: 80.0), Eq(kind: Bell, frequency_hz: 2000.0, gain_db: 3.0, q: 1.0)]), (name: "sfx/hits/heavy")"#
         );
         let extra = r#"
-        sends: [(name: "room", feedback: 0.8, damping: 0.3, stereo_width: 1.0)],
+        reverbs: [(name: "shelter", feedback: 0.8, damping: 0.3, stereo_width: 1.0)],
         snapshots: [
             (name: "slow_motion", priority: 10, attack: 0.03, release: 0.25, driver: WorldTimeScale(floor: 0.2),
              buses: [(bus: "sfx", low_pass_hz: Some(900.0), pitch: Some(0.75))]),
@@ -1012,6 +1080,10 @@ mod tests {
         assert_eq!(mix.parent(mix.bus("sfx/hits/heavy").unwrap()), mix.bus("sfx/hits"));
         assert_eq!(mix.parent(mix.bus("sfx/hits").unwrap()), Some(mix.category(Bus::Sfx)));
         assert_eq!(mix.parent(mix.category(Bus::Music)), None);
+        assert_eq!(mix.reverb("shelter"), Some(0));
+        let heavy = mix.bus("sfx/hits/heavy").unwrap();
+        let sfx = mix.category(Bus::Sfx);
+        assert_eq!((mix.room_db(heavy), mix.room_db(sfx)), (None, None), "none sends nothing");
         assert_eq!(mix.snapshots[1].priority, 0);
         assert_eq!(mix.snapshots[1].driver, SnapshotDriver::Asked);
         assert_eq!(mix.profile(OutputProfile::Portable), 0, "Home stands in for a profile the mix lacks");
@@ -1024,7 +1096,8 @@ mod tests {
         let cases = [
             (format!("{CATEGORIES}, (name: \"sfx/hits\", volume_db: 40.0)"), "", "buses[5].volume_db"),
             (format!("{CATEGORIES}, (name: \"sfx/hits\", effects: [LowPass(cutoff_hz: 5.0)])"), "", "buses[5].effects[0].cutoff_hz"),
-            (format!("{CATEGORIES}, (name: \"sfx/hits\", sends: [(to: \"hall\", volume_db: 0.0)])"), "", "buses[5].sends[0].to"),
+            (format!("{CATEGORIES}, (name: \"sfx/hits\", room_db: Some(-12.0))"), "", "buses[5].room_db"),
+            (r#"(name: "sfx", room_db: Some(30.0)), (name: "ambience"), (name: "ui"), (name: "music"), (name: "voice")"#.to_owned(), "", "buses[0].room_db"),
             (format!("{CATEGORIES}, (name: \"hits\")"), "", "buses[5].name"),
             (format!("{CATEGORIES}, (name: \"sfx/a/b\")"), "", "buses[5].name"),
             (format!("{CATEGORIES}, (name: \"sfx\")"), "", "buses[5].name"),
@@ -1032,7 +1105,9 @@ mod tests {
             (r#"(name: "sfx"), (name: "ui"), (name: "ambience"), (name: "music"), (name: "voice")"#.to_owned(), "", "buses[1].name"),
             (r#"(name: "sfx"), (name: "sfx/hits"), (name: "ambience"), (name: "ui"), (name: "music"), (name: "voice")"#.to_owned(), "", "buses[1].name"),
             (format!("{CATEGORIES}, (name: \"music/stings\")"), r#"snapshots: [(name: "s", attack: 0.1, release: 0.1, buses: [(bus: "music/stings", pause: true)])],"#, "snapshots[0].buses[0].pause"),
-            (CATEGORIES.to_owned(), r#"sends: [(name: "a", feedback: 1.0, damping: 0.0, stereo_width: 1.0)],"#, "sends[0].feedback"),
+            (CATEGORIES.to_owned(), r#"reverbs: [(name: "a", feedback: 1.0, damping: 0.0, stereo_width: 1.0)],"#, "reverbs[0].feedback"),
+            (CATEGORIES.to_owned(), r#"reverbs: [(name: "a", feedback: 0.5, damping: 2.0, stereo_width: 1.0)],"#, "reverbs[0].damping"),
+            (CATEGORIES.to_owned(), r#"reverbs: [(name: "a", feedback: 0.5, damping: 0.5, stereo_width: 1.0), (name: "a", feedback: 0.5, damping: 0.5, stereo_width: 1.0)],"#, "reverbs[1].name"),
             (CATEGORIES.to_owned(), r#"snapshots: [(name: "s", attack: -1.0, release: 0.1, buses: [(bus: "sfx")])],"#, "snapshots[0].attack"),
             (CATEGORIES.to_owned(), r#"snapshots: [(name: "s", attack: 0.1, release: 0.1, buses: [(bus: "nope")])],"#, "snapshots[0].buses[0].bus"),
             (CATEGORIES.to_owned(), r#"snapshots: [(name: "s", attack: 0.1, release: 0.1, buses: [(bus: "sfx", pitch: Some(9.0))])],"#, "snapshots[0].buses[0].pitch"),
@@ -1071,10 +1146,30 @@ mod tests {
         assert_eq!(Mix::read(&cooked).unwrap().to_mix(), mix);
 
         let first = |extra: &str| {
-            Mix::from_document(&document(CATEGORIES, extra).replace("version: 2", "version: 1"))
+            Mix::from_document(&document(CATEGORIES, extra).replace("version: 3", "version: 1"))
         };
         assert_eq!(first("").unwrap(), Mix::from_document(&document(CATEGORIES, "")).unwrap());
         assert!(first("").unwrap().groups.is_empty());
         assert!(first(groups).unwrap_err().to_string().contains("groups"));
+    }
+
+    /// M6 U5: an older mix reads as it did if it has no sends, and is refused, naming them, if it has any: reverbs
+    /// are rooms' now.
+    #[test]
+    fn an_older_mix_reads_without_sends_and_is_refused_with_them() {
+        let now = Mix::from_document(&document(CATEGORIES, "")).unwrap();
+        let sending =
+            format!("{CATEGORIES}, (name: \"sfx/hits\", sends: [(to: \"room\", volume_db: -12.0)])");
+        let reverb = r#"sends: [(name: "room", feedback: 0.8, damping: 0.3, stereo_width: 1.0)],"#;
+        for version in ["version: 1", "version: 2"] {
+            let older = |buses: &str, extra: &str| {
+                Mix::from_document(&document(buses, extra).replace("version: 3", version))
+            };
+            assert_eq!(older(CATEGORIES, "sends: [],").unwrap(), now, "{version}");
+            for (buses, extra) in [(sending.as_str(), reverb), (CATEGORIES, reverb)] {
+                let message = older(buses, extra).unwrap_err().to_string();
+                assert!(message.contains("`sends` are gone since version 3"), "{version}: {message}");
+            }
+        }
     }
 }

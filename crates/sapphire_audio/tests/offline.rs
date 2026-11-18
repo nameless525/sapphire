@@ -472,6 +472,7 @@ mod through_the_system {
                     lines: &[],
                     speech: None,
                     music: None,
+                    rooms: sapphire_audio::Rooms::NONE,
                 },
                 &mut rng,
             );

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
-use sapphire_assets::mix::{Mix, OutputProfile};
+use sapphire_assets::mix::{Mix, OutputProfile, Reverb};
 use sapphire_assets::sound::DecodedSound;
 
 use crate::backend::{
@@ -59,6 +59,12 @@ pub enum MockCall {
         fade: Duration,
     },
     SetOutputProfile(OutputProfile),
+    /// The room's reverb (M6 U5), by its feedback, or none.
+    SetRoom {
+        feedback: Option<f32>,
+        fade: Duration,
+    },
+    SetReverbSlots(u8),
     /// The stems are [`MockBackend::stems`].
     LoadMusic {
         tempo_bpm: f32,
@@ -204,6 +210,14 @@ impl AudioBackend for MockBackend {
 
     fn set_output_profile(&mut self, profile: OutputProfile) {
         self.calls.push(MockCall::SetOutputProfile(profile));
+    }
+
+    fn set_room(&mut self, reverb: Option<&Reverb>, fade: Duration) {
+        self.calls.push(MockCall::SetRoom { feedback: reverb.map(|reverb| reverb.feedback), fade });
+    }
+
+    fn set_reverb_slots(&mut self, slots: u8) {
+        self.calls.push(MockCall::SetReverbSlots(slots));
     }
 
     fn load_music(&mut self, tempo_bpm: f32, stems: &[StemStart], fade: Duration) -> Result<(), StartError> {

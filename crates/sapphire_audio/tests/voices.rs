@@ -98,6 +98,7 @@ fn step(
         lines: &[],
         speech: None,
         music: None,
+        rooms: sapphire_audio::Rooms::NONE,
     };
     system.update(&frame, rng);
     left(&system.backend_mut().output_mut().render(GAME_FRAME))

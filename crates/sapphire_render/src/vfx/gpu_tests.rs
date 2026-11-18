@@ -64,3 +64,43 @@ fn dormant_effects_release_depth_bindings_and_active_effects_reuse_them() {
         assert!(vfx.gpu.as_ref().expect("built").depth_groups.is_empty());
     }
 }
+
+/// The effects' pixels (M6 B5) are the prepared quads' share of the frame at the size they draw at: the output's
+/// after the resolve, the scene's in the main pass. A 1 × 2 m sprite facing a 90° camera from 5 m covers a fiftieth
+/// of the frame; a frame prepared with none counts none.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_effects_pixels_are_counted_at_the_size_they_draw_at() {
+    let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+    let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+    let layouts = crate::pipelines::Layouts::new(gpu.device(), shaders::ProbeRead::Faces);
+    let builds = PipelineBuilds::new(None);
+    let sources = ShaderSources::compiled_in();
+    let frame = layouts.frame(crate::pipelines::FrameGroup::World);
+    let camera =
+        CameraData::look_at(Vec3::Z * 5.0, Vec3::ZERO, Vec3::Y, std::f32::consts::FRAC_PI_2, 1.0, 0.1);
+    let sprite = VfxSprite {
+        position: Vec3::ZERO,
+        axis: Vec3::ZERO,
+        rotation: 0.0,
+        half_width: 0.5,
+        half_length: 1.0,
+        color: Vec3::ONE,
+        alpha: 1.0,
+        additive: 1.0,
+        soft: 0.0,
+        shape: VfxShape::SoftDot,
+        light: VfxLight::Emissive,
+    };
+    let active = VfxFrame { sprites: vec![sprite], ..VfxFrame::default() };
+    for (after_resolve, pixels) in [(true, 200), (false, 50)] {
+        let mut vfx =
+            Vfx::new(&gpu, frame, &layouts.view, 1, after_resolve, DistortionResolution::Off, &builds);
+        vfx.prepare(&active, Some(&camera), 1.0, false, &sources, BuildOn::ThisThread);
+        assert!(vfx.split_for_record((100, 100), (50, 50)).is_some());
+        assert_eq!(vfx.stats().pixels, pixels, "after the resolve: {after_resolve}");
+        vfx.prepare(&VfxFrame::default(), Some(&camera), 1.0, false, &sources, BuildOn::ThisThread);
+        assert!(vfx.split_for_record((100, 100), (50, 50)).is_none());
+        assert_eq!(vfx.stats().pixels, 0);
+    }
+}

@@ -52,9 +52,9 @@
 //! # Order
 //!
 //! Instances are `sprites + ribbon points`, sprites back to front, sorted here each frame (premultiplied
-//! quads that cover need it, and light doesn't mind), then ribbons. The sort and the upload are the
-//! frame's only per-effect CPU work here; the simulation's is `sapphire_vfx`'s, and §3.2 budgets the two
-//! of them together.
+//! quads that cover need it, and light doesn't mind), then ribbons. The sort, the count of the pixels they
+//! shade (M6 B5, the `pixels` module) and the upload are the frame's only per-effect CPU work here; the
+//! simulation's is `sapphire_vfx`'s, and §3.2 budgets the two of them together.
 //!
 //! They draw as one range, sprites then ribbons, **unless a sprite covers** (`additive` under 1: dust).
 //! Then each ribbon's stretches behind that sprite must draw before it, or their light lands on top of a
@@ -89,6 +89,7 @@ pub(crate) mod distortion;
 #[cfg(test)]
 mod gpu_tests;
 pub(crate) mod mesh;
+mod pixels;
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
@@ -156,6 +157,11 @@ pub struct VfxRenderStats {
     pub color_draws: u32,
     /// Whether they draw after temporal AA's resolve, in [`PASS`], rather than in the main pass.
     pub after_resolve: bool,
+    /// The pixels the last recorded frame's sprites and ribbons shade, every layer counted (M6 B5, the `pixels`
+    /// module): their quads' area through the view, cut to the frame, at the size they draw at. An estimate of the
+    /// effects' fill, with no depth test and no mask draw; 0 on a frame with none, one prepared and not recorded,
+    /// or one whose sprite pipeline isn't built yet, which draws none of them.
+    pub pixels: u64,
     /// What the simulation reported with the frame.
     pub simulation: VfxStats,
 }
@@ -890,6 +896,9 @@ pub(crate) struct Vfx {
     emissive: f32,
     /// The frame's post reads scene color's alpha.
     mask_read: bool,
+    /// The share of the frame the prepared sprites and ribbons shade (the `pixels` module), which the record
+    /// turns into [`VfxRenderStats::pixels`] at the size they draw at.
+    screen_share: f64,
     stats: VfxRenderStats,
 }
 
@@ -926,6 +935,7 @@ impl Vfx {
             steps: Vec::new(),
             emissive: 1.0,
             mask_read: false,
+            screen_share: 0.0,
             stats: VfxRenderStats { after_resolve, ..VfxRenderStats::default() },
         }
     }
@@ -1099,6 +1109,8 @@ impl Vfx {
         self.stats.rejected = 0;
         self.stats.bytes = 0;
         self.stats.color_draws = 0;
+        self.stats.pixels = 0;
+        self.screen_share = 0.0;
         self.stats.simulation = frame.stats;
         let Some(camera) = camera.filter(|_| !frame.is_empty()) else {
             if let Some(gpu) = &mut self.gpu {
@@ -1174,6 +1186,7 @@ impl Vfx {
         let points = &frame.ribbon_points[..frame.ribbon_points.len().min(max_points)];
         pack_ribbon_points(points, &mut self.points);
         plan_color_draws(&self.sprites, &self.order, &self.points, camera, &mut self.plan);
+        self.screen_share = pixels::screen_share(&self.sprites, &self.points, camera);
         self.stats.sprites = self.sprites.len() as u32;
         self.stats.ribbon_points = self.points.len() as u32;
         let total = frame.sprites.len() + frame.ribbon_points.len();
@@ -1203,6 +1216,10 @@ impl Vfx {
         output: (u32, u32),
         post_input: (u32, u32),
     ) -> Option<(VfxUpload<'_>, VfxDraw<'_>)> {
+        // The sprites and ribbons draw at the output's size after the resolve, else at the scene's in the main pass,
+        // which is what post reads there.
+        let (width, height) = if self.after_resolve { output } else { post_input };
+        let pixels = (self.screen_share * f64::from(width) * f64::from(height)).round() as u64;
         let instances = (self.sprites.len() + self.points.len()) as u32;
         let sprites = self.gpu.as_mut().filter(|_| instances > 0).and_then(|gpu| {
             let color = gpu.pipelines.color.as_ref()?;
@@ -1241,6 +1258,8 @@ impl Vfx {
             });
             Some((upload, main, after))
         });
+        // Counted only where they draw: a frame whose colour pipeline isn't built yet shades none.
+        self.stats.pixels = if sprites.is_some() { pixels } else { 0 };
         let meshes = self.meshes.split_for_record(output, self.emissive, self.after_resolve, self.mask_read);
         let decals = self.decals.split_for_record(self.emissive);
         let distortion = self.distortions.split_for_record(post_input);

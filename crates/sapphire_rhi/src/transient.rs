@@ -11,6 +11,12 @@
 //! though it outweighs the frames after it, which a step back reuses; a lone frame using little
 //! costs the next nothing; and a window dragged through a size a frame holds three sets, not sixty
 //! (review RA-O06). A phone's own limit may still lower it once phones' memory is measured.
+//!
+//! **Memoryless attachments** (M6 X2): a texture made with `TRANSIENT_ATTACHMENT` on an adapter that
+//! says it saves memory (`AdapterInfo::transient_saves_memory`: Metal's memoryless storage, Vulkan's
+//! lazily allocated memory) lives in tile memory only, so [`TransientStats::bytes`] counts it as nothing
+//! and [`TransientStats::memoryless_bytes`] says what it would weigh. That's a report only: the pool
+//! keeps and releases textures by their whole estimates, as before.
 
 use crate::GpuContext;
 
@@ -42,6 +48,14 @@ impl TransientDesc {
         let blocks =
             u64::from(self.width.div_ceil(block_width)) * u64::from(self.height.div_ceil(block_height));
         blocks * block_bytes(self.format) * u64::from(self.sample_count)
+    }
+
+    /// Whether a texture of this descriptor takes no memory of its own on `adapter`: it's a
+    /// `TRANSIENT_ATTACHMENT`, and the adapter says such attachments save memory. Where the adapter
+    /// doesn't say (`None`, the web), it counts as memory.
+    pub fn memoryless_on(&self, adapter: &wgpu::AdapterInfo) -> bool {
+        self.usage.contains(wgpu::TextureUsages::TRANSIENT_ATTACHMENT)
+            && adapter.transient_saves_memory == Some(true)
     }
 }
 
@@ -79,10 +93,14 @@ pub struct TransientStats {
     /// Textures released after going unused.
     pub evicted: u64,
     /// The resident textures' estimated bytes ([`TransientDesc::estimated_bytes`]), the unused
-    /// ones waiting to be released included.
+    /// ones waiting to be released included, with memoryless attachments counted as nothing (the
+    /// module docs).
     pub bytes: u64,
     /// The most [`Self::bytes`] has been since the pool was made.
     pub peak_bytes: u64,
+    /// The resident memoryless attachments' estimated bytes, which [`Self::bytes`] leaves out: what
+    /// they'd weigh on an adapter without tile memory (M6 X2).
+    pub memoryless_bytes: u64,
 }
 
 /// Textures and their default views, reused by descriptor.
@@ -110,7 +128,8 @@ impl TransientPool {
     /// A texture matching `desc` for the rest of the frame: one not yet acquired this frame,
     /// or a new one.
     pub fn acquire(&mut self, gpu: &GpuContext, desc: &TransientDesc) -> TransientTexture {
-        TransientTexture(self.slots.acquire(desc, || create(gpu, desc)))
+        let memoryless = desc.memoryless_on(&gpu.caps().adapter);
+        TransientTexture(self.slots.acquire(desc, memoryless, || create(gpu, desc)))
     }
 
     pub fn texture(&self, texture: TransientTexture) -> &wgpu::Texture {
@@ -151,6 +170,9 @@ struct SlotPool<K, T> {
     /// The most bytes a frame has used lately, and the frame that was seen at: what the unused
     /// textures may weigh (the module docs).
     recent_use: (u64, u64),
+    /// Every resident texture's estimated bytes, memoryless ones too: what the budget and releases
+    /// go by, whatever the stats count.
+    held: u64,
     stats: TransientStats,
 }
 
@@ -160,11 +182,32 @@ struct Slot<K, T> {
     value: T,
     in_use: bool,
     last_used: u64,
+    /// It takes no memory of its own ([`TransientDesc::memoryless_on`]).
+    memoryless: bool,
 }
 
 impl<K, T> SlotPool<K, T> {
     fn new(weigh: fn(&K) -> u64) -> Self {
-        Self { slots: Vec::new(), frame: 0, weigh, recent_use: (0, 0), stats: TransientStats::default() }
+        Self {
+            slots: Vec::new(),
+            frame: 0,
+            weigh,
+            recent_use: (0, 0),
+            held: 0,
+            stats: TransientStats::default(),
+        }
+    }
+
+    /// Counts a texture of `weight` bytes into the pool's bytes as it `joins`, or out of them as it goes.
+    fn count(&mut self, weight: u64, memoryless: bool, joins: bool) {
+        let counted = if memoryless { &mut self.stats.memoryless_bytes } else { &mut self.stats.bytes };
+        if joins {
+            self.held += weight;
+            *counted += weight;
+        } else {
+            self.held -= weight;
+            *counted -= weight;
+        }
     }
 }
 
@@ -172,15 +215,18 @@ impl<K: PartialEq + Copy, T> SlotPool<K, T> {
     fn begin_frame(&mut self) {
         self.frame += 1;
         let (frame, weigh) = (self.frame, self.weigh);
-        let (before, mut released) = (self.slots.len(), 0);
+        let before = self.slots.len();
+        // Released bytes, the memoryless ones apart.
+        let mut released = [0; 2];
         self.slots.retain(|slot| {
             let kept = frame - slot.last_used <= EVICT_AFTER_FRAMES;
             if !kept {
-                released += weigh(&slot.key);
+                released[usize::from(slot.memoryless)] += weigh(&slot.key);
             }
             kept
         });
-        self.stats.bytes -= released;
+        self.count(released[0], false, false);
+        self.count(released[1], true, false);
         self.give_up_spares();
         self.stats.evicted += (before - self.slots.len()) as u64;
         for slot in &mut self.slots {
@@ -200,7 +246,7 @@ impl<K: PartialEq + Copy, T> SlotPool<K, T> {
             self.recent_use = (used, self.frame);
         }
         let budget = self.recent_use.0.max(MIN_SPARE_BYTES);
-        let mut spare = self.stats.bytes - used;
+        let mut spare = self.held - used;
         while spare > budget {
             let oldest = self
                 .slots
@@ -209,13 +255,15 @@ impl<K: PartialEq + Copy, T> SlotPool<K, T> {
                 .filter(|(_, slot)| !slot.in_use)
                 .min_by_key(|(_, slot)| slot.last_used);
             let Some((oldest, _)) = oldest else { break };
-            let weight = weigh(&self.slots.remove(oldest).key);
+            let slot = self.slots.remove(oldest);
+            let weight = weigh(&slot.key);
             spare -= weight;
-            self.stats.bytes -= weight;
+            self.count(weight, slot.memoryless, false);
         }
     }
 
-    fn acquire(&mut self, key: &K, create: impl FnOnce() -> T) -> usize {
+    /// A slot of `key` for the rest of the frame: a free one, or a new one, `memoryless` or not.
+    fn acquire(&mut self, key: &K, memoryless: bool, create: impl FnOnce() -> T) -> usize {
         let frame = self.frame;
         if let Some((index, slot)) =
             self.slots.iter_mut().enumerate().find(|(_, slot)| !slot.in_use && slot.key == *key)
@@ -224,10 +272,10 @@ impl<K: PartialEq + Copy, T> SlotPool<K, T> {
             slot.last_used = frame;
             return index;
         }
-        self.slots.push(Slot { key: *key, value: create(), in_use: true, last_used: frame });
+        self.slots.push(Slot { key: *key, value: create(), in_use: true, last_used: frame, memoryless });
         self.stats.created += 1;
         self.stats.textures = self.slots.len();
-        self.stats.bytes += (self.weigh)(key);
+        self.count((self.weigh)(key), memoryless, true);
         self.stats.peak_bytes = self.stats.peak_bytes.max(self.stats.bytes);
         self.slots.len() - 1
     }
@@ -250,12 +298,12 @@ mod tests {
     fn slots_are_reused_across_frames_by_matching_keys_only() {
         let mut pool = pool();
         pool.begin_frame();
-        let a = pool.acquire(&1, || 'a');
-        let b = pool.acquire(&1, || 'b');
+        let a = pool.acquire(&1, false, || 'a');
+        let b = pool.acquire(&1, false, || 'b');
         assert_ne!(a, b, "both in use at once");
         pool.begin_frame();
-        assert_eq!(pool.acquire(&2, || 'c'), 2, "a different key never shares");
-        assert_eq!(pool.acquire(&1, || 'd'), a, "a free slot is reused");
+        assert_eq!(pool.acquire(&2, false, || 'c'), 2, "a different key never shares");
+        assert_eq!(pool.acquire(&1, false, || 'd'), a, "a free slot is reused");
         assert_eq!(*pool.get(a), 'a');
         assert_eq!(pool.stats.created, 3);
     }
@@ -264,13 +312,13 @@ mod tests {
     fn frames_free_everything_and_evict_idle_slots() {
         let mut pool = pool();
         pool.begin_frame();
-        let a = pool.acquire(&1, || 'a');
-        pool.acquire(&2, || 'b');
+        let a = pool.acquire(&1, false, || 'a');
+        pool.acquire(&2, false, || 'b');
         pool.begin_frame();
-        assert_eq!(pool.acquire(&1, || 'x'), a, "free again in the next frame");
+        assert_eq!(pool.acquire(&1, false, || 'x'), a, "free again in the next frame");
         for _ in 0..EVICT_AFTER_FRAMES {
             pool.begin_frame();
-            pool.acquire(&1, || 'y');
+            pool.acquire(&1, false, || 'y');
         }
         assert_eq!(pool.stats.textures, 1, "key 2 went unused and was evicted");
         assert_eq!((pool.stats.created, pool.stats.evicted), (2, 1));
@@ -281,22 +329,22 @@ mod tests {
     fn bytes_follow_what_is_resident_and_keep_their_peak() {
         let mut pool = pool();
         pool.begin_frame();
-        pool.acquire(&1, || 'a');
-        pool.acquire(&1, || 'b');
-        pool.acquire(&4, || 'c');
+        pool.acquire(&1, false, || 'a');
+        pool.acquire(&1, false, || 'b');
+        pool.acquire(&4, false, || 'c');
         assert_eq!((pool.stats.bytes, pool.stats.peak_bytes), (600, 600));
         // A frame of the same requests reuses them: nothing new.
         pool.begin_frame();
-        pool.acquire(&4, || 'x');
-        pool.acquire(&1, || 'y');
+        pool.acquire(&4, false, || 'x');
+        pool.acquire(&1, false, || 'y');
         assert_eq!((pool.stats.bytes, pool.stats.peak_bytes, pool.stats.created), (600, 600, 3));
         // A resize: the new size's texture joins the old ones until they are released.
         pool.begin_frame();
-        pool.acquire(&2, || 'd');
+        pool.acquire(&2, false, || 'd');
         assert_eq!((pool.stats.bytes, pool.stats.peak_bytes), (800, 800));
         for _ in 0..EVICT_AFTER_FRAMES {
             pool.begin_frame();
-            pool.acquire(&2, || 'z');
+            pool.acquire(&2, false, || 'z');
         }
         assert_eq!((pool.stats.textures, pool.stats.bytes, pool.stats.peak_bytes), (1, 200, 800));
     }
@@ -310,7 +358,7 @@ mod tests {
         let mut pool = SlotPool::new(|_: &u32| SET);
         for size in 0..EVICT_AFTER_FRAMES as u32 + 5 {
             pool.begin_frame();
-            pool.acquire(&size, || 'x');
+            pool.acquire(&size, false, || 'x');
         }
         assert_eq!(pool.stats.textures, 3);
         assert_eq!(pool.stats.peak_bytes, 3 * SET, "three sets at most, not {} of them", EVICT_AFTER_FRAMES);
@@ -321,7 +369,7 @@ mod tests {
         let last = EVICT_AFTER_FRAMES as u32 + 4;
         let created = pool.stats.created;
         pool.begin_frame();
-        pool.acquire(&(last - 1), || 'y');
+        pool.acquire(&(last - 1), false, || 'y');
         assert_eq!(pool.stats.created, created, "the spare set came back");
     }
 
@@ -332,20 +380,20 @@ mod tests {
         let spare = MIN_SPARE_BYTES / 4;
         pool.begin_frame();
         for key in [spare, spare + 1, spare + 2] {
-            pool.acquire(&key, || 'a');
+            pool.acquire(&key, false, || 'a');
         }
         for _ in 0..2 {
             pool.begin_frame();
-            pool.acquire(&1, || 'b');
+            pool.acquire(&1, false, || 'b');
         }
         assert_eq!(pool.stats.textures, 4, "under the floor: the age still decides");
 
         for key in [spare + 3, spare + 4] {
             pool.begin_frame();
-            pool.acquire(&key, || 'c');
+            pool.acquire(&key, false, || 'c');
         }
         pool.begin_frame();
-        pool.acquire(&(spare + 4), || 'd');
+        pool.acquire(&(spare + 4), false, || 'd');
         // Those outweigh the floor now: the oldest went, and the newest spare stayed.
         assert!(pool.slots.iter().all(|slot| slot.key != spare), "the oldest went");
         assert!(pool.slots.iter().any(|slot| slot.key == spare + 3), "the newest spare stayed");
@@ -362,7 +410,7 @@ mod tests {
         let frame = |pool: &mut SlotPool<(u64, u32), char>, bytes: u64| {
             pool.begin_frame();
             for index in 0..8 {
-                pool.acquire(&(bytes, index), || 'x');
+                pool.acquire(&(bytes, index), false, || 'x');
             }
         };
         frame(&mut pool, TEXTURE);
@@ -383,7 +431,7 @@ mod tests {
         let mut pool = SlotPool::new(|&key: &u32| if key == 0 { SET } else { 1 });
         for frame in 0..20 {
             pool.begin_frame();
-            pool.acquire(&(frame % 2), || 'x');
+            pool.acquire(&(frame % 2), false, || 'x');
         }
         assert_eq!(pool.stats.created, 2, "both stayed");
         assert_eq!(pool.stats.evicted, 0);
@@ -396,12 +444,67 @@ mod tests {
         const SMALL: u64 = 2 * MIN_SPARE_BYTES;
         let mut pool = SlotPool::new(|&key: &u32| if key == 0 { 8 * SMALL } else { SMALL });
         pool.begin_frame();
-        pool.acquire(&0, || 'x');
+        pool.acquire(&0, false, || 'x');
         for size in 1..EVICT_AFTER_FRAMES as u32 + 10 {
             pool.begin_frame();
-            pool.acquire(&size, || 'x');
+            pool.acquire(&size, false, || 'x');
         }
         assert_eq!(pool.stats.bytes, 3 * SMALL, "this frame's, the last frame's and one set more");
+    }
+
+    /// Memoryless attachments count as nothing in the bytes, and apart in their own, but the budget
+    /// and the releases still weigh them whole (M6 X2): the pool keeps what it kept before.
+    #[test]
+    fn memoryless_attachments_count_apart_and_keep_their_weight() {
+        let mut pool = pool();
+        pool.begin_frame();
+        pool.acquire(&4, true, || 'm');
+        pool.acquire(&1, false, || 'a');
+        assert_eq!((pool.stats.bytes, pool.stats.memoryless_bytes, pool.stats.peak_bytes), (100, 400, 100));
+        assert_eq!(pool.held, 500);
+        // Unused, both age out and leave nothing counted.
+        for _ in 0..=EVICT_AFTER_FRAMES {
+            pool.begin_frame();
+        }
+        assert_eq!((pool.stats.textures, pool.stats.bytes, pool.stats.memoryless_bytes), (0, 0, 0));
+        assert_eq!((pool.held, pool.stats.evicted), (0, 2));
+
+        // The spare budget weighs a memoryless texture whole: the same frames release the same textures
+        // whether their attachments are memoryless or not.
+        let evicted = |memoryless: bool| {
+            let mut pool =
+                SlotPool::new(|&key: &u32| if key == 0 { 8 * MIN_SPARE_BYTES } else { 2 * MIN_SPARE_BYTES });
+            pool.begin_frame();
+            pool.acquire(&0, memoryless, || 'x');
+            for size in 1..EVICT_AFTER_FRAMES as u32 + 10 {
+                pool.begin_frame();
+                pool.acquire(&size, memoryless, || 'x');
+            }
+            (pool.stats.evicted, pool.held)
+        };
+        assert_eq!(evicted(true), evicted(false));
+    }
+
+    #[test]
+    fn only_transient_attachments_on_an_adapter_that_saves_are_memoryless() {
+        let attachment = |usage| TransientDesc {
+            width: 64,
+            height: 64,
+            format: wgpu::TextureFormat::Depth32Float,
+            sample_count: 4,
+            usage,
+        };
+        let transient =
+            attachment(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT);
+        let stored = attachment(wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let caps = |saves| wgpu::AdapterInfo {
+            transient_saves_memory: saves,
+            ..wgpu::AdapterInfo::new(wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Metal)
+        };
+        assert!(transient.memoryless_on(&caps(Some(true))));
+        assert!(!stored.memoryless_on(&caps(Some(true))));
+        assert!(!transient.memoryless_on(&caps(Some(false))));
+        assert!(!transient.memoryless_on(&caps(None)), "unknown counts as memory");
     }
 
     #[test]

@@ -1132,7 +1132,7 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(walk.scene.time_of_day().timeline(), &lookdev::day(), "its day");
     assert!(in_first.sky_material.is_some(), "its sky");
     assert_eq!(in_first.sky_material, walk.content.zone_sky_material());
-    assert_eq!((in_first.wind.strength, in_first.wind.direction), (2.5, Vec3::Z), "its wind");
+    assert_eq!((in_first.wind.global.strength, in_first.wind.global.direction), (2.5, Vec3::Z), "its wind");
     assert_eq!((in_first.weather.wetness, in_first.weather.puddles), (0.7, 0.3), "its weather");
     let built = walk.renderer.stats().pipelines.first_use_builds - first_uses;
     assert_eq!(built, 0, "its wet surfaces (M5 L4) built as it came, none on its frames");

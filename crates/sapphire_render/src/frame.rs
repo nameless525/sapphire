@@ -11,8 +11,9 @@
 //!   character rig's key light, the day/night factor, the emission scale and post-processing.
 //!   Time of day resolves all of them from one set of keys (`sapphire_world::tod`, M1 W1; look
 //!   pillar 1); the renderer sees only the values. The weather's wetness ([`Weather`], M5 L4)
-//!   joins them, resolved by the stage from a zone and its day, and the wind foliage sways in
-//!   ([`Wind`], M1 W6), calm until the world sends one.
+//!   joins them, resolved by the stage from a zone and its day, and the wind field foliage sways
+//!   in ([`WindField`], M1 W6, M6 Y1: the global [`Wind`], turbulence and local volumes), calm
+//!   until the world sends one.
 //! - **Local lights** are rewritten whole every frame too: a frame has a few dozen at most
 //!   (spec §3.4), and the renderer culls and lists them per frame anyway.
 //! - **Characters** are rewritten whole every frame as well: each [`CharacterInstance`] gives an
@@ -49,8 +50,9 @@ use sapphire_look::{
     AmbientLight, Celestial, CharacterLight, CharacterLighting, DirectionalLight, Fog, PostParams,
     SkyGradient, SkyLayers, UiDrawList, VfxFrame,
 };
-// The frame's weather is the look's plain data (M5 L4), re-exported here as it always was.
-pub use sapphire_look::Weather;
+// The frame's weather is the look's plain data (M5 L4), re-exported here as it always was, and so is
+// its wind (M6 Y1).
+pub use sapphire_look::{Weather, Wind, WindField, WindVolume};
 
 use crate::{MaterialHandle, MeshHandle, ProbeKeys};
 
@@ -118,8 +120,10 @@ pub struct FramePacket {
     /// The weather's wetness inputs, which the environment's wet surfaces read (M5 L4). The
     /// default is dry, which draws as the world drew before weather.
     pub weather: Weather,
-    /// The wind foliage sways in (M1 W6). The default is calm.
-    pub wind: Wind,
+    /// The wind field foliage sways in (M1 W6, M6 Y1; `sapphire_look::wind`): the global wind,
+    /// turbulence and the volumes alive this frame, strongest first. A tier's GPU readers take the
+    /// first of them (`WindSettings::volumes`). The default is calm.
+    pub wind: WindField,
     /// Time of day's curve for the character rig's key light: the world resolves each
     /// character's [`CharacterLighting`] from it, so the renderer reads it only through
     /// [`Self::characters`].
@@ -265,7 +269,7 @@ impl FramePacket {
         *fog = Fog::default();
         *shadow_tint = Vec3::ZERO;
         *weather = Weather::default();
-        *wind = Wind::default();
+        *wind = WindField::default();
         *character_light = CharacterLight::default();
         *day_night = 0.0;
         *emission_scale = 1.0;
@@ -317,7 +321,7 @@ impl Default for FramePacket {
             fog: Fog::default(),
             shadow_tint: Vec3::ZERO,
             weather: Weather::default(),
-            wind: Wind::default(),
+            wind: WindField::default(),
             character_light: CharacterLight::default(),
             day_night: 0.0,
             emission_scale: 1.0,
@@ -650,29 +654,6 @@ impl CameraData {
     }
 }
 
-/// The wind foliage sways in (M1 W6, the [`foliage`](crate::foliage) module): resolved by the
-/// world each frame (a zone's wind, its gusts through the day), and plain data here (rule R4).
-/// Foliage materials say how far each level of a plant moves at unit strength; the time is the
-/// packet's [`FramePacket::time_seconds`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Wind {
-    /// The direction the wind blows toward. Only its horizontal part counts; with none the air
-    /// is calm.
-    pub direction: Vec3,
-    /// 0 is calm and 1 the strength materials' responses are authored at; a gale is a few.
-    pub strength: f32,
-    /// How much gusts swell and ease the strength as they travel downwind, 0 (steady) to 1
-    /// (from calm to double).
-    pub gustiness: f32,
-}
-
-impl Default for Wind {
-    /// Calm: foliage stands still.
-    fn default() -> Self {
-        Self { direction: Vec3::X, strength: 0.0, gustiness: 0.0 }
-    }
-}
-
 /// One character's data for a frame: the character light rig that lights the instance `id`
 /// (M1 C2), the character's face (M1 C3), its body, which its shadow is cast from (M1 R4), how
 /// much of it draws (M1 C7) and what the game drives on its materials (M5 L11). A character drawn
@@ -960,7 +941,7 @@ mod tests {
         packet.fog.far.density = 0.01;
         packet.shadow_tint = Vec3::splat(0.4);
         packet.weather = Weather { wetness: 0.5, puddles: 0.25 };
-        packet.wind = Wind { direction: Vec3::Z, strength: 1.5, gustiness: 0.5 };
+        packet.wind = WindField::new(Wind { direction: Vec3::Z, strength: 1.5, gustiness: 0.5 });
         packet.day_night = 1.0;
         packet.emission_scale = 0.25;
         packet.time_seconds = 1.5;

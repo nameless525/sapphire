@@ -111,10 +111,13 @@ pub enum ShaderFile {
     Reflections,
     /// The character pixel's counters (M6 B6): dev builds' measurement alone, which stands alone.
     Measure,
+    /// The wind field's one sampler (M6 Y1), which every reader of the air includes before its own
+    /// file: foliage's today.
+    Wind,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -148,6 +151,7 @@ impl ShaderFile {
         Self::ProbeFaces,
         Self::Reflections,
         Self::Measure,
+        Self::Wind,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -186,6 +190,7 @@ impl ShaderFile {
             Self::ProbeFaces => "probe_faces.wgsl",
             Self::Reflections => "reflections.wgsl",
             Self::Measure => "measure.wgsl",
+            Self::Wind => "wind.wgsl",
         }
     }
 
@@ -230,6 +235,7 @@ impl ShaderFile {
             Self::ProbeFaces => include_str!("../shaders/probe_faces.wgsl"),
             Self::Reflections => include_str!("../shaders/reflections.wgsl"),
             Self::Measure => include_str!("../shaders/measure.wgsl"),
+            Self::Wind => include_str!("../shaders/wind.wgsl"),
         }
     }
 
@@ -345,7 +351,7 @@ impl Program {
             Self::Post => &[F::Post, F::Focus, F::PostDistortion, F::PostUpscale, F::PostShafts],
             Self::Temporal => &[F::Temporal],
             Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
-            Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Foliage],
+            Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Wind, F::Foliage],
             Self::Ambient => &[F::Frame, F::Materials, F::Ambient, F::Probes, F::Occlusion],
             Self::DebugView => &[F::Frame, F::Materials, F::Lights, F::DebugView],
             Self::DebugDraw => &[F::DebugDraw],
@@ -827,7 +833,6 @@ mod tests {
         GpuCharacterShadow, GpuCharacterStyle, GpuFace, GpuReceived, GpuRig,
     };
     use crate::fog::GpuFog;
-    use crate::foliage::{WindState, WindUniforms};
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
     use crate::lights::GpuLight;
     use crate::pipelines::{
@@ -838,6 +843,7 @@ mod tests {
     use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, GpuSpotShadow, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
     use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
+    use crate::wind::{WindBuffer, WindSettings};
 
     const PASSES: [(Program, &[&str]); 21] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
@@ -1384,8 +1390,9 @@ mod tests {
             (Program::Foliage, "InstanceData", size_of::<InstanceData>()),
             (Program::Foliage, "FoliageParams", size_of::<FoliageParams>()),
             (Program::Foliage, "LocalLight", size_of::<GpuLight>()),
-            (Program::Foliage, "WindState", size_of::<WindState>()),
-            (Program::Foliage, "WindUniforms", size_of::<WindUniforms>()),
+            (Program::Foliage, "WindState", size_of::<sapphire_look::WindState>()),
+            (Program::Foliage, "WindVolume", size_of::<sapphire_look::WindVolumeState>()),
+            (Program::Foliage, "WindUniforms", size_of::<WindBuffer>()),
             (Program::AnimeCharacter, "CharacterAmbient", size_of::<GpuCharacterAmbient>()),
             (Program::Environment, "AmbientUniforms", size_of::<AmbientUniforms>()),
             (Program::Environment, "AmbientCapsule", size_of::<GpuAmbientCapsule>()),
@@ -1972,16 +1979,20 @@ mod tests {
         let owned = |fields: Vec<(&str, usize)>| -> Vec<(String, usize)> {
             fields.into_iter().map(|(name, offset)| (name.to_owned(), offset)).collect()
         };
+        use sapphire_look::wind::{self, WindState, WindVolumeState};
         assert_eq!(fields("WindState"), owned(offsets!(WindState { direction, time })));
-        assert_eq!(fields("WindUniforms"), owned(offsets!(WindUniforms { current, previous })));
-        // The wind's numbers, which `foliage::wind_offset` mirrors.
-        assert_eq!(f64::from(wgsl_f32(&module, "WIND_PERIOD")), foliage::WIND_PERIOD);
+        assert_eq!(fields("WindVolume"), owned(offsets!(WindVolumeState { center, velocity, swirl })));
+        assert_eq!(fields("WindUniforms"), owned(offsets!(WindBuffer { current, previous, volumes })));
+        // The wind's numbers, which `foliage::wind_offset` and the field's sampler mirror.
+        assert_eq!(f64::from(wgsl_f32(&module, "WIND_PERIOD")), wind::WIND_PERIOD);
+        assert_eq!(wgsl_u32(&module, "MAX_WIND_VOLUMES") as usize, wind::MAX_WIND_VOLUMES);
         let numbers = [
             ("WIND_SWAY_HZ", foliage::SWAY_HZ),
             ("WIND_BEND_HZ", foliage::BEND_HZ),
             ("WIND_BOB_HZ", foliage::BOB_HZ),
-            ("WIND_GUST_HZ", foliage::GUST_HZ),
-            ("WIND_GUST_WAVELENGTH", foliage::GUST_WAVELENGTH),
+            ("WIND_GUST_HZ", wind::GUST_HZ),
+            ("WIND_GUST_WAVELENGTH", wind::GUST_WAVELENGTH),
+            ("WIND_AXIS_FLOOR", wind::AXIS_FLOOR),
             ("WIND_LEAN", foliage::LEAN),
             ("WIND_SWING", foliage::SWING),
             ("TAU", std::f32::consts::TAU),
@@ -1990,6 +2001,8 @@ mod tests {
             assert_eq!(wgsl_f32(&module, name), value, "{name}");
         }
         assert_eq!(wgsl_vec3(&module, "WIND_FLUTTER_SPREAD"), foliage::FLUTTER_SPREAD.to_array());
+        assert_eq!(wgsl_vec4(&module, "WIND_TURBULENCE_HZ"), wind::TURBULENCE_HZ);
+        assert_eq!(wgsl_vec4_array(&module, "WIND_TURBULENCE"), wind::TURBULENCE_WAVES);
         let overrides: Vec<&str> = module.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
         use crate::shadows::override_constant as shadows;
         assert_eq!(
@@ -1999,9 +2012,12 @@ mod tests {
                 shadows::SHADOWS,
                 shadows::TENT,
                 shadows::SPOTS,
+                // wind.wgsl's, before foliage's own (M6 Y1).
+                crate::wind::VOLUMES_CONSTANT,
                 "PERMUTATION_ALPHA_TEST",
                 override_constant::SAMPLES,
                 override_constant::WIND_LEVELS,
+                override_constant::LOCAL_AIR,
                 override_constant::TRANSLUCENCY,
                 // The ambient terms, by the names the environment shader's take (M1 W5).
                 crate::ambient::override_constant::PROBES,
@@ -2343,6 +2359,37 @@ mod tests {
         values.try_into().unwrap_or_else(|values| panic!("{name}: {values:?}"))
     }
 
+    /// The f32 components of `module`'s composed global expression `handle`, by its constant's `name`.
+    fn wgsl_floats(module: &naga::Module, name: &str, handle: naga::Handle<naga::Expression>) -> Vec<f32> {
+        match module.global_expressions[handle] {
+            naga::Expression::Compose { ref components, .. } => {
+                components.iter().flat_map(|&component| wgsl_floats(module, name, component)).collect()
+            }
+            naga::Expression::Literal(naga::Literal::F32(value)) => vec![value],
+            ref other => panic!("{name}: {other:?} is not an f32 literal"),
+        }
+    }
+
+    fn wgsl_constant(module: &naga::Module, name: &str) -> naga::Handle<naga::Expression> {
+        let (_, constant) = module
+            .constants
+            .iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no WGSL const {name}"));
+        constant.init
+    }
+
+    fn wgsl_vec4(module: &naga::Module, name: &str) -> [f32; 4] {
+        let values = wgsl_floats(module, name, wgsl_constant(module, name));
+        values.try_into().unwrap_or_else(|values| panic!("{name}: {values:?}"))
+    }
+
+    fn wgsl_vec4_array<const N: usize>(module: &naga::Module, name: &str) -> [[f32; 4]; N] {
+        let values = wgsl_floats(module, name, wgsl_constant(module, name));
+        assert_eq!(values.len(), 4 * N, "{name}: {values:?}");
+        std::array::from_fn(|row| std::array::from_fn(|lane| values[4 * row + lane]))
+    }
+
     /// Outlines v2's numbers (M1 C4): the outline frame that frame.wgsl and skinning.wgsl build
     /// as `sapphire_assets::mesh` does, and the outline curve's fade.
     #[test]
@@ -2481,18 +2528,34 @@ mod tests {
         // Foliage's surfaces under every tier's settings and sample count, and its prepasses and
         // casters (whose constants are their coverage's and the wind levels) alike.
         let tiers = [
-            FoliageSettings::default(),
-            FoliageSettings { wind_levels: 2, translucency: false, ..FoliageSettings::default() },
-            FoliageSettings { wind_levels: 0, alpha_to_coverage: false, translucency: false },
+            (FoliageSettings::default(), WindSettings::default()),
+            (
+                FoliageSettings {
+                    wind_levels: 2,
+                    translucency: false,
+                    local_air: foliage::LocalAir::Root,
+                    ..FoliageSettings::default()
+                },
+                WindSettings { volumes: 4, cpu_volumes: 4 },
+            ),
+            (
+                FoliageSettings {
+                    wind_levels: 0,
+                    alpha_to_coverage: false,
+                    translucency: false,
+                    local_air: foliage::LocalAir::Off,
+                },
+                WindSettings { volumes: 0, cpu_volumes: 4 },
+            ),
         ];
         let mut foliage = Vec::new();
         for (name, constants) in surfaces(|shading| shading == Shading::Foliage) {
-            for settings in &tiers {
+            for (settings, wind) in &tiers {
                 for samples in [1u32, 4] {
                     let mut constants = constants.clone();
-                    constants.extend(settings.constants());
+                    constants.extend(settings.constants(wind));
                     constants.push((foliage::override_constant::SAMPLES, f64::from(samples)));
-                    foliage.push((format!("{name} {settings:?} {samples}x"), constants));
+                    foliage.push((format!("{name} {settings:?} {wind:?} {samples}x"), constants));
                 }
             }
         }

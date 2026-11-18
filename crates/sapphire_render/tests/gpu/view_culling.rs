@@ -196,7 +196,7 @@ fn render(
         packet.views.push(main);
         packet.time_seconds = 0.25 * index as f64;
         if wind {
-            packet.wind = Wind { direction: Vec3::NEG_X, strength: 3.0, gustiness: 0.0 };
+            packet.wind = Wind { direction: Vec3::NEG_X, strength: 3.0, gustiness: 0.0 }.into();
         }
         packet.sun = DirectionalLight {
             direction: Vec3::new(-0.3, -0.4, -1.0).normalize(),

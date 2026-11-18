@@ -455,7 +455,7 @@ fn prepare_scene(frames: &mut Frames, gpu: &GpuContext, frame: u32, changed: &[M
     packet.ambient = frames.ambient;
     packet.post = frames.post;
     packet.time_seconds = f64::from(frame) / 60.0;
-    packet.wind = Wind { direction: Vec3::new(1.0, 0.0, 0.5), strength: 1.0, gustiness: 0.3 };
+    packet.wind = Wind { direction: Vec3::new(1.0, 0.0, 0.5), strength: 1.0, gustiness: 0.3 }.into();
     packet.instances.changed.extend_from_slice(changed);
     packet.push_skinned(InstanceId(0), bend(0.05 * t, 0.0), [0.1 * t]);
     let key = DirectionalLight { direction: Vec3::NEG_Y, color: Vec3::ONE, intensity: 1.0 };

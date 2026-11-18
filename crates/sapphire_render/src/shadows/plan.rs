@@ -38,7 +38,7 @@ const YIELD_BAND: f32 = 0.5;
 const UNSURE_RANK: f32 = 1.0e4;
 
 /// How far the frame's wind can carry a mesh's vertices past its cooked bounds, in meters:
-/// foliage's margin (`foliage::wind_margin`), 0 for every other mesh.
+/// foliage's margin (`foliage::WindPush::margin`), 0 for every other mesh.
 pub(crate) type WindMargin<'a> = dyn Fn(&MeshRecord) -> f32 + 'a;
 
 /// What each instance slot casts into this frame.

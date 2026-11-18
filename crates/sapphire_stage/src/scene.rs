@@ -112,8 +112,8 @@ use sapphire_render::color_vision::COLOR_VISION;
 use sapphire_render::quality::TierId;
 use sapphire_render::{
     CharacterBody, CharacterDetail, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket,
-    HeadBasis, MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer,
-    ShadowRole, SkyLayers, ViewData, Weather, Wind,
+    HeadBasis, MaterialDrive, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, RenderSettings,
+    Renderer, ShadowRole, SkyLayers, ViewData, Weather, Wind, WindField, WindVolume,
 };
 #[cfg(feature = "samples")]
 use sapphire_render::{LightKind, LocalLight};
@@ -506,6 +506,9 @@ pub struct Scene {
     foliage_view: Option<FoliageView>,
     /// The air foliage moves in: calm unless `--foliage` or `--wind` set it.
     wind: Wind,
+    /// The wind field's local volumes that may blow this frame (M6 Y1), and how many of them the
+    /// field takes, nearest and strongest first ([`Self::set_wind_volumes`], [`Self::follow_render_settings`]).
+    wind_volumes: (Vec<WindVolume>, usize),
     /// The arcade, with `--probes`.
     #[cfg(feature = "samples")]
     arcade: Option<Entity>,
@@ -739,6 +742,7 @@ impl Scene {
             #[cfg(feature = "samples")]
             foliage_view: None,
             wind: Wind::default(),
+            wind_volumes: (Vec::new(), usize::MAX),
             #[cfg(feature = "samples")]
             arcade: None,
             probe_hours: Vec::new(),
@@ -1397,6 +1401,21 @@ impl Scene {
     /// Sets the wind foliage moves in.
     pub fn set_wind(&mut self, wind: Wind) {
         self.wind = wind;
+    }
+
+    /// Sets the wind field's local volumes (M6 Y1): each frame the field takes as many of them as
+    /// [`Self::follow_render_settings`] allows, the strongest for their distance from the camera first.
+    pub fn set_wind_volumes(&mut self, volumes: &[WindVolume]) {
+        self.wind_volumes.0.clear();
+        self.wind_volumes.0.extend_from_slice(volumes);
+    }
+
+    /// Follows the renderer's `settings` from the next frame on: each frame's wind field takes at most
+    /// their tier's `wind.cpu_volumes` volumes (M6 Y1). A stage calls it with its renderer's before
+    /// each frame's packet, so a tier change moves it with no call of the app's. Until then the field
+    /// takes as many as it holds (8).
+    pub fn follow_render_settings(&mut self, settings: &RenderSettings) {
+        self.wind_volumes.1 = settings.wind.cpu_volumes as usize;
     }
 
     /// Places the courtyard's arcade (`--probes`), drawing `mesh`, where its probe grid was baked
@@ -2671,6 +2690,7 @@ impl Scene {
         let (focus, shafts) = (self.focus, self.shafts);
         let (probe_hours, reflection_hours) = (&self.probe_hours, &self.reflection_hours);
         let (zone_air, zone_origin) = (&self.zone_air, self.zone.as_ref().map_or(0.0, |zone| -zone.stand.y));
+        let (wind_volumes, wind_cap) = (&self.wind_volumes.0, self.wind_volumes.1);
         let vfx = &mut self.vfx;
         let view_cut = &mut self.view_cut;
         if let Some(aspect) = drawable_aspect(target_size) {
@@ -2721,7 +2741,8 @@ impl Scene {
             if plain_post {
                 packet.post = packet.post.plain();
             }
-            packet.wind = wind;
+            packet.wind = WindField::new(wind);
+            packet.wind.choose(wind_volumes, probe, wind_cap);
             // The effects gameplay pushed, over whatever post's look is (M1 P3).
             packet.post.effects = effects.resolve(alpha);
             show.adjust_post(&mut packet.post);
@@ -4482,6 +4503,27 @@ mod tests {
         scene.step();
         let slowed = shown(&mut scene, 0.0);
         assert!(slowed >= before, "slowed: {slowed} after {before}");
+    }
+
+    #[test]
+    fn the_wind_field_takes_as_many_volumes_as_the_renderer_s_tier() {
+        // As a stage follows its renderer's settings each frame: a tier change moves the cap.
+        let tiers = sapphire_render::quality::TierTable::shipped();
+        let mut scene = scene();
+        let draughts: Vec<WindVolume> = (0..8u8)
+            .map(|index| WindVolume::directional(Vec3::new(f32::from(index) * 3.0, 0.0, 0.0), 5.0, Vec3::X))
+            .collect();
+        scene.set_wind_volumes(&draughts);
+        let mut taken = |id: TierId| {
+            scene.follow_render_settings(&tiers.get(id).render_settings());
+            let count = scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).wind.volumes().len();
+            scene.end_frame();
+            count
+        };
+        assert_eq!(taken(TierId::DesktopHigh), 8);
+        assert_eq!(taken(TierId::MobileHigh), 4);
+        assert_eq!(taken(TierId::MobileLow), 4, "its CPU readers take 4 where its GPU takes none");
+        assert_eq!(taken(TierId::DesktopLow), 8);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::characters::GpuCharacter;
 use crate::draw::DrawSet;
 use crate::environment::{self, EnvironmentSettings};
 use crate::fog;
-use crate::foliage::{self, FoliageSettings, WindUniforms};
+use crate::foliage::{self, FoliageSettings};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::{GpuLight, capsule_bins};
 use crate::measure::CharacterSwitches;
@@ -28,6 +28,7 @@ use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::{Cancel, Step};
 use crate::shaders::{self, BuildOn, ProbeRead, Program, ShaderSources};
 use crate::shadows::{self as shadow, ShadowSettings, ShadowUniforms};
+use crate::wind::{WindBuffer, WindSettings};
 
 /// Reverse-Z depth: cleared to 0, tested with `Greater`. 32-bit float keeps precision all
 /// the way out with an infinite far plane.
@@ -496,7 +497,7 @@ pub(crate) const MESH_FAMILIES: [MaterialFamily; 4] = [
 /// The fog card family's scene group binding of the depth cards fade against (`fog_card.wgsl`).
 pub(crate) const FOG_CARD_DEPTH_BINDING: u32 = 2;
 
-/// The foliage family's scene group binding of the frame's wind ([`WindUniforms`], `foliage.wgsl`).
+/// The foliage family's scene group binding of the frame's wind ([`WindBuffer`], `wind.wgsl`).
 pub(crate) const FOLIAGE_WIND_BINDING: u32 = 2;
 
 /// What a surface's pipeline shades with: its material family's shader, and for anime characters
@@ -1198,7 +1199,7 @@ fn scene_entries(family: MaterialFamily) -> Vec<wgpu::BindGroupLayoutEntry> {
         }
         MaterialFamily::Foliage => {
             let uniform = wgpu::BufferBindingType::Uniform;
-            entries.push(buffer_entry(FOLIAGE_WIND_BINDING, S::VERTEX, uniform, size_of::<WindUniforms>()));
+            entries.push(buffer_entry(FOLIAGE_WIND_BINDING, S::VERTEX, uniform, size_of::<WindBuffer>()));
         }
         _ => {}
     }
@@ -2233,6 +2234,8 @@ struct PipelineTarget {
     environment: EnvironmentSettings,
     /// Foliage's tier settings: its wind levels, alpha-to-coverage and translucency.
     foliage: FoliageSettings,
+    /// How many of the wind field's volumes the tier's GPU readers loop over (M6 Y1).
+    wind: WindSettings,
     /// Foliage's shadow casters, while shadows are on: no group 0 (it holds the maps they draw
     /// into, as the shared casters' layout leaves it out), the view, foliage's scene group and
     /// its group 3, for the alpha test.
@@ -2300,7 +2303,7 @@ impl Pipelines {
         color_format: wgpu::TextureFormat,
         sample_count: u32,
         environment: EnvironmentSettings,
-        foliage: FoliageSettings,
+        (foliage, wind): (FoliageSettings, WindSettings),
         builds: &PipelineBuilds,
         sources: &ShaderSources,
         shadows: Option<&ShadowSettings>,
@@ -2364,6 +2367,7 @@ impl Pipelines {
             sample_count,
             environment,
             foliage,
+            wind,
             foliage_caster_layout,
             builds: builds.clone(),
             shadows: shadows.map(ShadowSettings::constants),
@@ -3066,7 +3070,7 @@ fn build_surface(
             "fog card"
         }
         Shading::Foliage => {
-            constants.extend(target.foliage.constants());
+            constants.extend(target.foliage.constants(&target.wind));
             // Foliage reads no reflection probes, and its module doesn't declare their constant.
             let probes = ambient::override_constant::REFLECTION_PROBES;
             constants.extend(target.ambient.iter().copied().filter(|&(name, _)| name != probes));
@@ -3192,7 +3196,7 @@ fn build_foliage_prepass(
     coverage: Coverage,
 ) -> wgpu::RenderPipeline {
     let mut constants = coverage.constants().to_vec();
-    constants.push(target.foliage.wind_constant());
+    constants.extend(target.foliage.wind_constants(&target.wind));
     constants.push(target.velocity_constant());
     target.build_prepass(
         device,
@@ -3216,7 +3220,7 @@ fn build_foliage_caster(
 ) -> wgpu::RenderPipeline {
     let layout = target.foliage_caster_layout.as_ref().expect("built while shadows are on");
     let mut constants = coverage.constants().to_vec();
-    constants.push(target.foliage.wind_constant());
+    constants.extend(target.foliage.wind_constants(&target.wind));
     let compilation_options =
         wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
     let cut_out = coverage == Coverage::AlphaTest;

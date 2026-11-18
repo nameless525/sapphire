@@ -20,6 +20,7 @@ use sapphire_assets::mesh::{
     VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
 use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
+use sapphire_render::LocalAir;
 use sapphire_render::foliage::wind_offset;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::TierTable;
@@ -28,7 +29,7 @@ use sapphire_render::{
     AmbientLight, BloomParams, CameraData, ColorGrade, DirectionalLight, Fog, FogLayer, FoliageSettings,
     FramePacketRing, HeightFog, InstanceId, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams,
     PrepassTargets, RenderError, RenderSettings, Renderer, ShadowSettings, SkyGradient, ToneCurve, ViewData,
-    Vignette, Wind,
+    Vignette, Wind, WindField, WindVolume,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -242,7 +243,7 @@ struct Harness {
     shadow_tint: Vec3,
     sky: SkyGradient,
     fog: Fog,
-    wind: Wind,
+    wind: WindField,
     time_seconds: f64,
     added: Vec<MeshInstance>,
     next_id: u64,
@@ -274,7 +275,7 @@ impl Harness {
             shadow_tint: Vec3::ZERO,
             sky: SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO },
             fog: Fog::default(),
-            wind: Wind::default(),
+            wind: WindField::default(),
             time_seconds: 0.0,
             added: Vec::new(),
             next_id: 0,
@@ -459,7 +460,7 @@ fn velocity_compares_with_the_wind_of_the_last_frame_that_ran() {
     let data = stored(FoliageVertex { sway: 1.0, bend: 0.0, flutter: 0.0, phase: 0.0, gradient: 1.0 });
     let run = |lost: bool| {
         let mut harness = Harness::exact();
-        harness.wind = Wind { direction: Vec3::X, strength: 1.0, gustiness: 0.0 };
+        harness.wind = Wind { direction: Vec3::X, strength: 1.0, gustiness: 0.0 }.into();
         harness.camera = CameraData::look_at(
             Vec3::new(0.0, 4.5, 0.0),
             Vec3::new(0.0, 2.0, 0.0),
@@ -497,13 +498,19 @@ fn velocity_compares_with_the_wind_of_the_last_frame_that_ran() {
 #[ignore = "needs a GPU"]
 fn wind_moves_cards_in_every_pass_and_their_velocity_follows() {
     // A level card 2 m above its plant's root, swaying as a whole (sway weight 1), seen from above
-    // with the sun overhead. Without gusts the wind moves every vertex alike.
+    // with the sun overhead. Without gusts the wind moves every vertex alike; so does a draught
+    // (M6 Y1) wide enough to blow the whole card at its full speed, across the wind, on a tier
+    // that takes local air.
     let response = WindResponse { sway: 0.4, ..STILL };
     let data = stored(FoliageVertex { sway: 1.0, bend: 0.0, flutter: 0.0, phase: 0.0, gradient: 1.0 });
-    let wind = Wind { direction: Vec3::X, strength: 1.0, gustiness: 0.0 };
+    let breeze = WindField::new(Wind { direction: Vec3::X, strength: 1.0, gustiness: 0.0 });
+    let mut draught = breeze;
+    draught.push(WindVolume::directional(Vec3::new(0.0, 2.0, 0.0), 10.0, Vec3::Z * 1.5).with_falloff(0.25));
     let (start, end) = (10.0, 10.4);
-    for levels in [3, 0] {
-        let foliage = FoliageSettings { wind_levels: levels, ..FoliageSettings::default() };
+    for (levels, local_air, wind) in
+        [(3, LocalAir::Off, breeze), (0, LocalAir::Off, breeze), (3, LocalAir::Vertex, draught)]
+    {
+        let foliage = FoliageSettings { wind_levels: levels, local_air, ..FoliageSettings::default() };
         let settings = RenderSettings {
             msaa: Msaa::Off,
             temporal: false,
@@ -538,14 +545,20 @@ fn wind_moves_cards_in_every_pass_and_their_velocity_follows() {
         let frame = harness.render_reading(&reads);
         let (depths, velocities) = (depths.texels(&harness.gpu), velocities.texels(&harness.gpu));
 
+        let settings = RenderSettings { foliage, ..RenderSettings::default() };
         let offset = |time: f64| {
-            wind_offset(&wind, time, levels, &response, &data, Vec3::new(0.0, 2.0, 0.0), Vec3::ZERO)
+            wind_offset(&wind, time, &settings, &response, &data, Vec3::new(0.0, 2.0, 0.0), Vec3::ZERO)
         };
         let (now, before) = (offset(end), offset(start));
         if levels == 0 {
             assert_eq!((now, before), (Vec3::ZERO, Vec3::ZERO), "no levels, no wind");
         } else {
             assert!(now.x > 0.05 && now.distance(before) > 0.04, "a breeze moves it: {before} to {now}");
+        }
+        if local_air == LocalAir::Vertex {
+            assert!(now.z > 0.05, "the draught blows it across the wind: {now}");
+        } else {
+            assert_eq!(now.z, 0.0, "the breeze alone moves it downwind: {now}");
         }
 
         // The main pass draws the card where the wind took it: its corners' pixels, moved.
@@ -566,7 +579,7 @@ fn wind_moves_cards_in_every_pass_and_their_velocity_follows() {
                 && near(drawn.1, expected.1)
                 && near(drawn.2, expected.2)
                 && near(drawn.3, expected.3),
-            "{levels} levels: drawn over {drawn:?}, the wind says {expected:?}"
+            "{levels} levels, {local_air:?}: drawn over {drawn:?}, the wind says {expected:?}"
         );
 
         // The scene prepass holds it there, and its velocity is the wind's motion since the last
@@ -584,7 +597,7 @@ fn wind_moves_cards_in_every_pass_and_their_velocity_follows() {
         }
         assert!(
             (velocity[0] - expected[0]).abs() < 0.002 && (velocity[1] - expected[1]).abs() < 0.002,
-            "{levels} levels: velocity {velocity:?}, the wind's motion {expected:?}"
+            "{levels} levels, {local_air:?}: velocity {velocity:?}, the wind's motion {expected:?}"
         );
     }
 }
@@ -722,7 +735,7 @@ fn the_scene_prepass_cuts_cards_out_as_the_main_pass_does() {
     // A checkered card fluttering in the wind, seen face on: the prepass's depth holds exactly the
     // pixels the main pass draws, the wind's displacement and the holes alike.
     let mut harness = Harness::exact();
-    harness.wind = Wind { direction: Vec3::new(1.0, 0.0, 0.4), strength: 1.5, gustiness: 0.5 };
+    harness.wind = Wind { direction: Vec3::new(1.0, 0.0, 0.4), strength: 1.5, gustiness: 0.5 }.into();
     harness.time_seconds = 37.25;
     let map =
         card_map(&harness.gpu, |u, v| f32::from(((u * 6.0) as u32 + (v * 6.0) as u32).is_multiple_of(2)));

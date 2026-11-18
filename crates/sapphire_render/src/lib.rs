@@ -39,7 +39,7 @@
 //! - Foliage ([`foliage`], M1 W6): trees, bushes and grass of the foliage family, lit by the
 //!   environment's light model on the volume normals the cooker transferred onto their cards,
 //!   with canopy occlusion, a color gradient and light through thin leaves; swayed in the vertex
-//!   stage by the packet's [`Wind`] in three levels (trunk, branch, leaf), alike in every pass
+//!   stage by the packet's [`WindField`] in three levels (trunk, branch, leaf), alike in every pass
 //!   that draws them, with the wind in their velocity; cut out by an alpha test in the main pass,
 //!   the scene prepass and the shadow casters, or by alpha-to-coverage under MSAA where the tier
 //!   asks ([`FoliageSettings`]).
@@ -973,6 +973,7 @@ mod ui;
 pub mod vfx;
 mod view_cull;
 mod warm_up;
+pub mod wind;
 
 pub use ambient::{
     AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionProbesHandle,
@@ -987,12 +988,12 @@ pub use debug_view::{CullPose, DebugView, DebugViewStats, StreamedTops};
 pub use draw::{DrawRuns, RunStats};
 pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};
 pub use fog::FogStats;
-pub use foliage::FoliageSettings;
+pub use foliage::{FoliageSettings, LocalAir};
 pub use frame::{
     CameraData, CharacterBody, CharacterDetail, CharacterFace, CharacterInstance, FaceExpression,
     FramePacket, FramePacketRing, HeadBasis, InsetCutIn, InsetView, InstanceDeltas, InstanceId, LightKind,
     LocalLight, MaterialDrive, MeshInstance, PacketRange, ShadowRole, SkinnedInstance, ViewData, Weather,
-    Wind,
+    Wind, WindField, WindVolume,
 };
 pub use inset::{InsetSettings, InsetStats, MAX_INSETS};
 pub use interface_screen::InterfaceScreen;
@@ -1014,6 +1015,7 @@ pub use post::{
     PostEffectSettings, PostEffects, PostParams, PostStats, PostVariants, RadialBlur, SHAFT_MARCH_PASS,
     SHAFT_MASK_PASS, SHAFT_PASSES, SpeedLines, ToneCurve, UPSCALE_PASSES, Upscaler, Vignette, shaft_taps,
 };
+pub use wind::WindSettings;
 // The frame's look, which the packet carries and time of day resolves: plain data of a crate of
 // its own, beneath the renderer and time of day, so tools that light by it link neither.
 pub use levels::{LevelSettings, LevelStats, LevelsMode};

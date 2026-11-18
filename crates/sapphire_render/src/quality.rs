@@ -128,7 +128,7 @@ use crate::{
     DistortionResolution, DrawRuns, EnvironmentSettings, FoliageSettings, GtaoSettings, InsetSettings,
     LOG_TARGET, LevelSettings, LevelsMode, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE,
     MainDepth, Msaa, PostEffectSettings, PostVariants, ReflectionSettings, RenderSettings, ShadowSettings,
-    SkySettings, Upscaler, scaled_size,
+    SkySettings, Upscaler, WindSettings, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, Pressure, ResolutionBudget, ResolutionSignal,
@@ -285,6 +285,10 @@ pub struct QualityTier {
     /// A table without it gets the desktop tiers' foliage.
     #[serde(default)]
     pub foliage: FoliageSettings,
+    /// How many of the wind field's volumes its readers take, on the GPU and the CPU (M6 Y1,
+    /// [`RenderSettings::wind`]). A table without it gets the desktop tiers' every volume.
+    #[serde(default)]
+    pub wind: WindSettings,
     /// The reflection cube a probe grid's environment specular reads (M1 W5,
     /// [`RenderSettings::reflections`]). A table without it gets the desktop tiers'.
     #[serde(default)]
@@ -496,6 +500,7 @@ impl QualityTier {
             post_effects: self.post_effects,
             post_variants: PostVariants::COMPOSITING,
             foliage: self.foliage,
+            wind: self.wind,
             ambient_occlusion: self.ambient_occlusion,
             reflections: self.reflections,
             inset: self.inset,
@@ -591,6 +596,9 @@ impl QualityTier {
             return invalid(field, problem);
         }
         if let Err((field, problem)) = self.foliage.validate() {
+            return invalid(field, problem);
+        }
+        if let Err((field, problem)) = self.wind.validate() {
             return invalid(field, problem);
         }
         if let Err((field, problem)) = self.ambient_occlusion.validate() {

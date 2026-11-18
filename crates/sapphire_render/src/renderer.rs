@@ -41,7 +41,7 @@ use crate::draw::{
 };
 use crate::environment::EnvironmentSettings;
 use crate::fog::{FogAdmission, FogCards, FogStats, GpuFog};
-use crate::foliage::{self, FoliageSettings, FoliageWind};
+use crate::foliage::{self, FoliageSettings, WindPush};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::inset::{
@@ -92,7 +92,8 @@ use crate::warm_up::{
     Done as WarmUpDone, Job as WarmUpJob, WarmUpProgress, WarmUpRequest, WarmUpStats, WarmUps,
     Warmed as WarmedParts,
 };
-use crate::{CameraData, FramePacket, InstanceId, LOG_TARGET, MeshHandle, Wind};
+use crate::wind::{GpuWind, WindSettings};
+use crate::{CameraData, FramePacket, InstanceId, LOG_TARGET, MeshHandle};
 
 /// The first shadow view in the view buffer: after the main view and the sky cube's faces.
 const FIRST_SHADOW_VIEW: u32 = 1 + sky::CUBE_FACES;
@@ -208,6 +209,9 @@ pub struct RenderSettings {
     /// Foliage's wind levels, alpha-to-coverage under MSAA and translucency (M1 W6, the
     /// [`foliage`] module).
     pub foliage: FoliageSettings,
+    /// How many of the wind field's volumes the tier's readers take (M6 Y1, the [`wind`](crate::wind)
+    /// module): the GPU's loop is a pipeline constant every reader of the air takes.
+    pub wind: WindSettings,
     /// Ambient occlusion (M1 W5, the [`ambient`](crate::ambient) module): capsule AO from the
     /// characters' bodies, and GTAO. Off draws none: no passes, and shaders compiled as they were
     /// without it.
@@ -324,6 +328,7 @@ impl Default for RenderSettings {
             post_effects: PostEffectSettings::default(),
             post_variants: PostVariants::COMPOSITING,
             foliage: FoliageSettings::default(),
+            wind: WindSettings::default(),
             ambient_occlusion: AmbientOcclusion::OFF,
             reflections: ReflectionSettings::default(),
             inset: InsetSettings::default(),
@@ -797,7 +802,7 @@ pub struct Renderer {
     /// is the largest thing a renderer holds.
     shadows: Box<Shadows>,
     /// The wind foliage sways in, this frame's and the last drawn one's.
-    wind: FoliageWind,
+    wind: GpuWind,
     /// The ambient probe grid, the reflection cube, GTAO and their passes (M1 W5).
     ambient: Box<Ambient>,
     meshes: MeshPool,
@@ -893,8 +898,8 @@ struct Shared {
 struct PreparedFrame {
     camera: CameraData,
     constants: FrameUniforms,
-    /// The packet's wind, which grows foliage's bounds for culling.
-    wind: Wind,
+    /// How hard the packet's wind field pushes foliage, which grows its bounds for culling.
+    wind: WindPush,
 }
 
 /// The renderer's own share of what [`Renderer::record`] changes, to take back if the frame never
@@ -1005,7 +1010,7 @@ impl Renderer {
                             SCENE_COLOR_FORMAT,
                             samples,
                             settings.environment,
-                            settings.foliage,
+                            (settings.foliage, settings.wind),
                             builds,
                             shaders_ref,
                             settings.shadows.as_ref(),
@@ -1141,7 +1146,7 @@ impl Renderer {
             },
         );
         let scene = Box::new(GpuScene::new(&device));
-        let wind = FoliageWind::new(&device);
+        let wind = GpuWind::new(&device);
         let scene_bind_groups =
             create_scene_bind_groups(&device, &layouts, &scene, &materials, &fog_cards, &wind);
         let skinning = Skinning::new(&device);
@@ -1744,7 +1749,7 @@ impl Renderer {
         size: (u32, u32),
         output: (u32, u32),
         jitter: [f32; 2],
-        (wind, cut): (&Wind, bool),
+        (wind, cut): (&WindPush, bool),
     ) {
         let pad = view_cull::PAD_PIXELS + jitter[0].abs().max(jitter[1].abs());
         let hull = self.outlines.widest();
@@ -2830,7 +2835,8 @@ impl Renderer {
             fresh,
         );
         let materials = &self.materials;
-        let margin = |record: &MeshRecord| wind_margin(materials, record, &packet.wind);
+        let push = WindPush::new(&packet.wind, &self.settings);
+        let margin = |record: &MeshRecord| wind_margin(materials, record, &push);
         let least_texels =
             if self.settings.view_culling.thresholds() { self.settings.culling.least_texels } else { 0.0 };
         self.shadows.prepare(
@@ -2880,7 +2886,7 @@ impl Renderer {
         self.prepared = main_view.zip(fog.as_ref()).map(|(view, fog)| PreparedFrame {
             camera: view.camera,
             constants: FrameUniforms::new(packet, lights, self.outline_distance, fog.uniforms),
-            wind: packet.wind,
+            wind: push,
         });
         // A sky material with a nebula or lit clouds builds its variants the first time it draws.
         self.checked_build(|renderer| {
@@ -4307,6 +4313,12 @@ impl Renderer {
         self.outline_distance = if scale.is_finite() { scale.max(0.0) } else { 1.0 };
     }
 
+    /// The settings it draws with, its tier's as the caller resolved them: a stage takes the tier's
+    /// CPU wind volumes from them before each frame's packet (M6 Y1).
+    pub fn settings(&self) -> &RenderSettings {
+        &self.settings
+    }
+
     /// Shows `view` from the next [`Self::prepare`] (M1 F5, the [`debug_view`](crate::debug_view)
     /// module): the frame as a wireframe, as overdraw or as the light-cluster heatmap, drawn over
     /// the finished frame after post; `Off` draws it as it looks. The hook for the `r.debug_view`
@@ -4784,9 +4796,9 @@ fn draw_main_reversed<'p>(
 }
 
 /// How far `wind` carries foliage mesh `record` past its bounds: its materials' reach
-/// (`foliage::wind_margin`), 0 for every other mesh. Shadow casters' culling and the main view's
+/// (`foliage::WindPush::margin`), 0 for every other mesh. Shadow casters' culling and the main view's
 /// grow foliage's bounds by it.
-fn wind_margin(materials: &Materials, record: &MeshRecord, wind: &Wind) -> f32 {
+fn wind_margin(materials: &Materials, record: &MeshRecord, wind: &WindPush) -> f32 {
     if record.foliage.is_none() {
         return 0.0;
     }
@@ -4796,7 +4808,7 @@ fn wind_margin(materials: &Materials, record: &MeshRecord, wind: &Wind) -> f32 {
         .filter_map(|slot| materials.foliage_wind(slot.material.handle))
         .map(foliage::wind_reach)
         .fold(0.0, f32::max);
-    foliage::wind_margin(reach, wind)
+    wind.margin(reach)
 }
 
 /// Checks a material a mesh embeds, before anything is uploaded: valid, of a family meshes draw
@@ -4995,7 +5007,7 @@ fn create_scene_bind_groups(
     scene: &GpuScene,
     materials: &Materials,
     fog_cards: &FogCards,
-    wind: &FoliageWind,
+    wind: &GpuWind,
 ) -> [wgpu::BindGroup; MESH_FAMILIES.len()] {
     std::array::from_fn(|group| {
         let family = MESH_FAMILIES[group];

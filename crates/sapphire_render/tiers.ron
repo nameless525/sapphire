@@ -23,7 +23,17 @@
 //   tiers resolve cards with TAA (MSAA is off, so alpha-to-coverage never applies) and run every
 //   level with translucency. Phones cover cards' edges in tile memory with alpha-to-coverage;
 //   Mobile-Low keeps trunks and branches moving but drops the leaves' flutter, which a 590-row
-//   scene barely resolves, and translucency, a per-pixel `pow` the canopy reads without.
+//   scene barely resolves, and translucency, a per-pixel `pow` the canopy reads without. Its
+//   `local_air` (M6 Y1: `Off`, `Vertex` or `Root`) is whether and where plants sway in the wind
+//   field's local air: at each vertex wherever the GPU takes volumes (both desktops and
+//   Mobile-High), off on Mobile-Low, whose GPU takes none. `Root` is the Y1 row's kill-line
+//   fallback, one switch away (`--local-air root`).
+// - `wind` (M6 Y1): how many of the wind field's local volumes (draughts, vortices, bursts) its
+//   readers take: `volumes` on the GPU, a pipeline constant every reader of the air loops to
+//   (foliage's vertex stages, with `local_air` on), and `cpu_volumes` for the CPU's (springs,
+//   effects, audio). The desktops take all 8; Mobile-High 4; Mobile-Low's GPU none, so its loop
+//   compiles out and its plants sway in the global wind alone (its `local_air` is off), while its
+//   CPU readers take 4.
 // - `ambient_occlusion` (M1 W5): capsule AO from the characters' bodies on every tier, a short
 //   loop per pixel; GTAO at half resolution on desktop (two slices of four steps out to 1 m, the
 //   same on both desktop tiers, as with the sky) and Mobile-High (one slice of four steps, out to
@@ -186,7 +196,8 @@
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
                 environment: (specular: Full, probes: PerPixel),
                 post_effects: (radial_blur_taps: 16),
-                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
+                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true, local_air: Vertex),
+                wind: (volumes: 8, cpu_volumes: 8),
                 reflections: (cube_size: 128),
                 inset: (max_side: 960, supersample: 2, cutin_side: 1920),
                 depth_of_field: (view: true, insets: true),
@@ -236,7 +247,8 @@
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
                 environment: (specular: Full, probes: PerPixel),
                 post_effects: (radial_blur_taps: 12),
-                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
+                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true, local_air: Vertex),
+                wind: (volumes: 8, cpu_volumes: 8),
                 reflections: (cube_size: 128),
                 inset: (max_side: 720, supersample: 2, cutin_side: 1440),
                 depth_of_field: (view: true, insets: true),
@@ -285,7 +297,8 @@
                 sky: (cube_size: 128, cube_interval: 1, cirrus: true),
                 environment: (specular: Approximate, probes: PerPixel),
                 post_effects: (radial_blur_taps: 8),
-                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
+                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true, local_air: Vertex),
+                wind: (volumes: 4, cpu_volumes: 4),
                 reflections: (cube_size: 64),
                 inset: (max_side: 720, supersample: 1, cutin_side: 1280),
                 depth_of_field: (insets: true),
@@ -341,7 +354,8 @@
                 // characters and the frame's atmosphere.
                 environment: (specular: Off, probes: PerVertex),
                 post_effects: (radial_blur_taps: 8),
-                foliage: (wind_levels: 2, alpha_to_coverage: true, translucency: false),
+                foliage: (wind_levels: 2, alpha_to_coverage: true, translucency: false, local_air: Off),
+                wind: (volumes: 0, cpu_volumes: 4),
                 reflections: (cube_size: 32),
                 inset: (max_side: 512, supersample: 1, cutin_side: 960),
                 culling: (distance: 4500, least_pixels: 1.5, least_texels: 1.0),

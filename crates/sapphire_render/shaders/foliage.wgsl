@@ -41,9 +41,13 @@
 //
 // **Wind** (`wind_offset`): three levels, each a material amplitude (`FoliageParams::wind`, meters
 // at unit strength) × the vertex's cooked weight × the frame's wind (`WindUniforms`, the
-// foliage scene group's): the trunk leans downwind and sways slowly, each plant in its own
-// phase; branches swing faster in their own phases; leaves flutter fast in a direction that
-// wanders across the canopy. Gusts swell and travel downwind across the world. Every term is a
+// foliage scene group's, sampled through wind.wgsl): the trunk leans downwind and sways slowly,
+// each plant in its own phase; branches swing faster in their own phases; leaves flutter fast in a
+// direction that wanders across the canopy. Gusts swell and travel downwind across the world. With
+// `FOLIAGE_LOCAL_AIR` on, the field's local air (turbulence and volumes, M6 Y1), sampled at the
+// vertex or at the plant's root, moves the same levels again along its own horizontal direction at
+// its own speed, without gusts (`wind_local_offset`), on frames that have some. Off, it compiles
+// out, and foliage draws exactly as before the field. Every term is a
 // continuous function of the vertex's position and cooked data; the bake gives a card's vertices
 // one phase, and its branch's sway and bend where they meet (sapphire_pipeline's
 // `bake::foliage`), so a card moves as one piece, swaying and bending with its branch. The tier
@@ -70,16 +74,10 @@
 const FOLIAGE_BASE_COLOR: u32 = 0u;
 const FOLIAGE_MASK: u32 = 1u;
 
-// The wrapped time's period in seconds (`foliage::WIND_PERIOD`): every oscillator runs a whole
-// number of cycles in it, so the time wraps without a jump.
-const WIND_PERIOD: f32 = 1024.0;
-// The trunk's swing, the branches' and the vertical bob's frequencies, and the gusts' swell.
+// The trunk's swing, the branches' and the vertical bob's frequencies (the gusts' are wind.wgsl's).
 const WIND_SWAY_HZ: f32 = 0.31;
 const WIND_BEND_HZ: f32 = 0.83;
 const WIND_BOB_HZ: f32 = 1.27;
-const WIND_GUST_HZ: f32 = 0.09;
-// Meters between gust fronts traveling downwind.
-const WIND_GUST_WAVELENGTH: f32 = 36.0;
 // The trunk's lean downwind and its swing around it, as shares of its sway.
 const WIND_LEAN: f32 = 0.6;
 const WIND_SWING: f32 = 0.4;
@@ -89,7 +87,6 @@ const WIND_FLUTTER_SPREAD: vec3<f32> = vec3<f32>(1.37, 0.91, 1.13);
 const WIND_PLANT_PHASE: vec2<f32> = vec2<f32>(0.0713, 0.0917);
 // Alpha gained per mip level, so cards keep their coverage as the map's mips average it away.
 const ALPHA_MIP_SCALE: f32 = 0.25;
-const TAU: f32 = 6.28318530717959;
 
 // Static permutations and the tier's settings (`pipelines::SurfaceVariant`,
 // `foliage::FoliageSettings`), set per pipeline. The sample count is the main pass's, which
@@ -97,6 +94,9 @@ const TAU: f32 = 6.28318530717959;
 override PERMUTATION_ALPHA_TEST: bool = false;
 override FOLIAGE_SAMPLES: u32 = 4u;
 override FOLIAGE_WIND_LEVELS: u32 = 3u;
+// Where the field's local air is sampled (`FoliageSettings::local_air`): 0 nowhere (compiled out),
+// 1 at each vertex, 2 at the plant's root.
+override FOLIAGE_LOCAL_AIR: u32 = 0u;
 override FOLIAGE_TRANSLUCENCY: bool = true;
 // The ambient terms beyond the hemisphere, as the environment shader's (M1 W5,
 // `ambient::override_constant`): a probe grid, read per vertex on the tiers that say so, and the
@@ -107,25 +107,10 @@ override AMBIENT_PROBES_PER_VERTEX: bool = false;
 override CAPSULE_AO: bool = false;
 override GTAO: bool = false;
 
-// The wind at one frame (`foliage::WindState`).
-struct WindState {
-    // xyz: unit horizontal direction the wind blows toward; w: strength, 1 the materials' unit
-    // wind, 0 calm.
-    direction: vec4<f32>,
-    // x: time in seconds, wrapped to WIND_PERIOD; y: gustiness, 0 to 1.
-    time: vec4<f32>,
-}
-
-// This frame's wind, and the last drawn frame's, for velocity (`foliage::WindUniforms`).
-struct WindUniforms {
-    current: WindState,
-    previous: WindState,
-}
-
 // The frame's light lists: a list per cluster or per instance slot (see lights.wgsl).
 @group(0) @binding(2) var<storage, read> light_lists: array<u32>;
 // The foliage family's blocks, by the draw record's material slot, and the wind (the foliage
-// pipelines' scene group).
+// pipelines' scene group), which wind.wgsl reads.
 @group(2) @binding(1) var<storage, read> foliage_materials: array<FoliageParams>;
 @group(2) @binding(2) var<uniform> wind: WindUniforms;
 
@@ -164,12 +149,6 @@ struct FoliageVaryings {
     @location(7) probe: vec4<f32>,
 }
 
-// Cycles of an oscillator at `hz` at wrapped time `t`, in [0, 1). The frequency is rounded to a
-// whole number of cycles per WIND_PERIOD (steps of 1/1024 Hz), so `t` wrapping changes nothing.
-fn wind_cycles(hz: f32, t: f32) -> f32 {
-    return fract(round(hz * WIND_PERIOD) / WIND_PERIOD * t);
-}
-
 // How far the wind `state` moves a vertex at world position `position` (before wind), of an
 // instance whose origin (the plant's root) is at `origin`, with cooked `weights` (sway, bend,
 // flutter, phase) under a material whose response is `response` (sway, bend and flutter in
@@ -186,9 +165,8 @@ fn wind_offset(
     let t = state.time.x;
     // Phases are taken in cycles and wrapped before they become angles, so `sin` stays precise
     // however far from the origin the plant stands.
-    // Gusts: a slow swell traveling downwind, so a field ripples as fronts pass.
-    let downwind = dot(position.xz, direction.xz) / WIND_GUST_WAVELENGTH;
-    let gust = 1.0 + state.time.y * sin(TAU * fract(wind_cycles(WIND_GUST_HZ, t) - downwind));
+    // Gusts: a slow swell traveling downwind, so a field ripples as fronts pass (wind.wgsl's).
+    let gust = wind_gust(state, position);
     // Each plant's own timing, from where it stands.
     let plant = dot(origin.xz, WIND_PLANT_PHASE);
     let phase = weights.w;
@@ -218,9 +196,50 @@ fn wind_offset(
     return offset;
 }
 
-// A vertex's world position under the wind `state`, through `world_from_object`.
+// How far the field's `local` air (wind.wgsl's `wind_local`: turbulence and volumes) moves the same
+// vertex, beside `wind_offset`: the same levels along the air's own horizontal direction at its own
+// speed, without gusts, drooping alike. Exactly nothing where there is none. Kept apart from
+// `wind_offset`, whose operations stay as they were, so a frame without local air draws as before.
+// `foliage::local_offset` mirrors it for tests.
+fn wind_local_offset(
+    state: WindState,
+    local: vec3<f32>,
+    position: vec3<f32>,
+    origin: vec3<f32>,
+    weights: vec4<f32>,
+    response: vec4<f32>,
+) -> vec3<f32> {
+    let t = state.time.x;
+    let plant = dot(origin.xz, WIND_PLANT_PHASE);
+    let phase = weights.w;
+    let push = vec3<f32>(local.x, 0.0, local.z);
+    let speed = sqrt(dot(push, push));
+    var offset = vec3<f32>(0.0);
+    if FOLIAGE_WIND_LEVELS >= 1u {
+        let swing = sin(TAU * fract(wind_cycles(WIND_SWAY_HZ, t) + plant));
+        offset += push * (response.x * weights.x * (WIND_LEAN + WIND_SWING * swing));
+    }
+    if FOLIAGE_WIND_LEVELS >= 2u {
+        let branch = TAU * fract(wind_cycles(WIND_BEND_HZ, t) + phase + plant);
+        let bob = TAU * fract(wind_cycles(WIND_BOB_HZ, t) + phase);
+        offset += (push * sin(branch) + vec3<f32>(0.0, 0.4 * cos(bob) * speed, 0.0)) * (response.y * weights.y);
+    }
+    if FOLIAGE_WIND_LEVELS >= 3u {
+        let a = TAU * fract(wind_cycles(response.w, t) + phase + fract(dot(position, WIND_FLUTTER_SPREAD)));
+        let wander = vec3<f32>(sin(a), 0.6 * sin(2.0 * a + 1.3), cos(3.0 * a + 0.4));
+        offset += wander * (response.z * weights.z * speed);
+    }
+    let height = max(position.y - origin.y, 0.0);
+    let sideways = dot(offset.xz, offset.xz);
+    offset.y -= min(sideways / (2.0 * max(height, 0.1)), sqrt(sideways));
+    return offset;
+}
+
+// A vertex's world position under the wind `state` and its local air from volume `first` on
+// (wind.wgsl's `wind_local`), through `world_from_object`.
 fn foliage_position(
     state: WindState,
+    first: u32,
     world_from_object: mat4x4<f32>,
     object: vec3<f32>,
     weights: vec4<f32>,
@@ -228,7 +247,13 @@ fn foliage_position(
 ) -> vec3<f32> {
     let world = (world_from_object * vec4<f32>(object, 1.0)).xyz;
     let origin = world_from_object[3].xyz;
-    return world + wind_offset(state, world, origin, weights, response);
+    var moved = world + wind_offset(state, world, origin, weights, response);
+    // A tier that takes local air pays for it only on frames with some (a uniform branch).
+    if FOLIAGE_LOCAL_AIR != 0u && wind_has_local(state) {
+        let local = wind_local(state, first, select(world, origin, FOLIAGE_LOCAL_AIR == 2u));
+        moved += wind_local_offset(state, local, world, origin, weights, response);
+    }
+    return moved;
 }
 
 @vertex
@@ -241,7 +266,7 @@ fn vs_foliage(
     let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
     let response = foliage_materials[draw.material].wind;
-    let world = foliage_position(wind.current, instance.world_from_object, vertex.position, foliage.wind, response);
+    let world = foliage_position(wind.current, 0u, instance.world_from_object, vertex.position, foliage.wind, response);
     var out: FoliageVaryings;
     out.clip_position = view.clip_from_world * vec4<f32>(world, 1.0);
     out.world_position = world;
@@ -517,13 +542,14 @@ fn vs_foliage_prepass(
     let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
     let response = foliage_materials[draw.material].wind;
-    let world = foliage_position(wind.current, instance.world_from_object, vertex.position, foliage.wind, response);
+    let world = foliage_position(wind.current, 0u, instance.world_from_object, vertex.position, foliage.wind, response);
     var out: FoliagePrepassVaryings;
     out.clip_position = view.clip_from_world * vec4<f32>(world, 1.0);
     if SCENE_PREPASS_VELOCITY {
         let previous_object = object_position(previous_position, draw);
         let previous = foliage_position(
             wind.previous,
+            MAX_WIND_VOLUMES,
             instance.previous_world_from_object,
             previous_object,
             foliage.wind,
@@ -578,7 +604,7 @@ fn vs_foliage_caster(
     let instance = instances[draw.instance];
     let response = foliage_materials[draw.material].wind;
     let object = object_position(position, draw);
-    let world = foliage_position(wind.current, instance.world_from_object, object, foliage.wind, response);
+    let world = foliage_position(wind.current, 0u, instance.world_from_object, object, foliage.wind, response);
     var out: FoliageCasterVaryings;
     out.clip_position = view.clip_from_world * vec4<f32>(world, 1.0);
     out.uv = draw.uv_transform.xy + draw.uv_transform.zw * uv;

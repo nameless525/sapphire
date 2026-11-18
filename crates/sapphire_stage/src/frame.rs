@@ -733,6 +733,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.content.update(&mut self.renderer, &self.gpu);
         self.scene.follow_content(&mut self.content, &mut self.show);
         self.scene.animate(&self.content, alpha, &mut self.show);
+        self.scene.follow_render_settings(self.renderer.settings());
         let packet = self.scene.frame_packet(alpha, None, &mut self.show);
         self.renderer.prepare(&self.gpu, packet);
     }
@@ -807,6 +808,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.laps.animation_allocations = next_scope(&mut scope);
         self.show.begin_interface(self.renderer.ui_page_state());
         self.outline_cull_pose((width, height));
+        self.scene.follow_render_settings(self.renderer.settings());
         let packet = self.scene.frame_packet(alpha, Some((width, height)), &mut self.show);
         self.laps.packet += laps.lap();
         self.laps.packet_allocations = next_scope(&mut scope);

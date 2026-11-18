@@ -20,7 +20,7 @@
 //!   jitter, and the spheres grow by a share of their size for rounding (the cooked positions'
 //!   quantization, the GPU's transforms), so a triangle that could cover a sample at the edge, or
 //!   a line of the wireframe view, is never left out.
-//! - **Foliage** grows by the frame's wind margin (`foliage::wind_margin`), as shadow casters do.
+//! - **Foliage** grows by the frame's wind margin (`foliage::WindPush::margin`), as shadow casters do.
 //! - **Fog cards** that face the camera turn about their instance's origin keeping their scale
 //!   (`fog_card.wgsl`): their sphere is the origin's, of the mesh's farthest reach from it.
 //! - **Outline hulls** reach past their surface by a width in screen pixels, or close up in

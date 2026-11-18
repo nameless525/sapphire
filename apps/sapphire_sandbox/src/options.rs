@@ -11,8 +11,9 @@ use sapphire_render::quality::{
 };
 use sapphire_render::{
     CascadeCache, CharacterSwitches, ColorVision, CullPose, CullingMode, CullingThresholds, DebugView,
-    DrawRuns, EffectScale, LevelSettings, LevelsMode, LightPath, MIN_RENDER_SCALE, MainDepth, MaterialDrive,
-    MaterialRead, Msaa, PostVariants, RenderSettings, ShadowSettings, Upscaler, Weather, Wind,
+    DrawRuns, EffectScale, FoliageSettings, LevelSettings, LevelsMode, LightPath, LocalAir, MIN_RENDER_SCALE,
+    MainDepth, MaterialDrive, MaterialRead, Msaa, PostVariants, RenderSettings, ShadowSettings, Upscaler,
+    Weather, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -28,7 +29,7 @@ use sapphire_stage::anim_graph::GraphScript;
 use sapphire_stage::audio::CueOption;
 use sapphire_stage::debug_shapes::DebugDrawDemo;
 use sapphire_stage::faces::{FaceLayout, MaterialOverrides};
-use sapphire_stage::foliage::{DEFAULT_WIND, FoliageView};
+use sapphire_stage::foliage::{self, DEFAULT_WIND, FoliageView};
 use sapphire_stage::lookdev::{self, Shot};
 use sapphire_stage::rims::RimLayout;
 use sapphire_stage::scene::{self, CharacterLods, Fade, Scene};
@@ -299,6 +300,13 @@ pub(crate) struct Options {
     /// `--wind <strength>`: the wind's strength, 0 (calm) to 4, instead of `--foliage`'s breeze
     /// of 1.
     pub wind: Option<f32>,
+    /// `--wind-volumes <0..8>`: that many of the grove's local wind volumes
+    /// (`sapphire_stage::foliage::wind_volumes`, M6 Y1); none without it. Foliage takes them where
+    /// the tier's `local_air` says, or `--local-air`.
+    pub wind_volumes: usize,
+    /// `--local-air off|vertex|root`: whether and where foliage sways in the wind field's local air
+    /// (`FoliageSettings::local_air`), instead of the tier's.
+    pub local_air: Option<LocalAir>,
     /// `--probes`: the courtyard with its arcade, lit by the ambient probe grid baked for both
     /// (M1 W5). Implies `--environment`.
     pub probes: bool,
@@ -704,6 +712,7 @@ impl Options {
         if let Some(wind) = self.wind() {
             scene.set_wind(wind);
         }
+        scene.set_wind_volumes(&foliage::wind_volumes(self.wind_volumes));
         scene.set_cloud_cover(self.cloud_cover);
         scene.set_plain_sky(self.plain_sky);
         scene.set_weather(self.weather);
@@ -917,6 +926,10 @@ impl Options {
             character_switches: self.character_switches,
             measure_pixels: self.measure_pixels,
             shafts: tier.shafts && self.shafts != Some(Switch::Off),
+            foliage: FoliageSettings {
+                local_air: self.local_air.unwrap_or(tier.foliage.local_air),
+                ..tier.foliage
+            },
             shadows: tier.shadows.map(|shadows| ShadowSettings {
                 others: if self.own_shadows_only { 0 } else { shadows.others },
                 spots: if self.no_spot_shadows { 0 } else { shadows.spots },
@@ -1166,6 +1179,26 @@ impl Options {
                         return Err(format!("--wind expects 0 to 4, got {strength}"));
                     }
                     options.wind = Some(strength);
+                }
+                "--wind-volumes" => {
+                    let count: usize = number(&value("--wind-volumes")?, "--wind-volumes")?;
+                    if count > foliage::MAX_WIND_VOLUMES {
+                        return Err(format!(
+                            "--wind-volumes expects 0 to {}, got {count}",
+                            foliage::MAX_WIND_VOLUMES
+                        ));
+                    }
+                    options.wind_volumes = count;
+                }
+                "--local-air" => {
+                    options.local_air = Some(match value("--local-air")?.as_str() {
+                        "off" => LocalAir::Off,
+                        "vertex" => LocalAir::Vertex,
+                        "root" => LocalAir::Root,
+                        other => {
+                            return Err(format!("--local-air expects off, vertex or root, got {other:?}"));
+                        }
+                    });
                 }
                 "--probes" => (options.probes, options.environment) = (true, true),
                 "--hud" => {
@@ -2994,6 +3027,17 @@ mod tests {
         assert!(parse(&["--foliage"]).is_err(), "needs a view");
         assert!(parse(&["--wind", "5"]).is_err());
         assert!(parse(&["--wind", "NaN"]).is_err());
+        assert_eq!(defaults.wind_volumes, 0, "no local air without the switch");
+        assert_eq!(parse(&["--wind-volumes", "8"]).unwrap().0.wind_volumes, 8);
+        assert!(parse(&["--wind-volumes", "9"]).is_err(), "the field holds 8");
+        assert!(parse(&["--wind-volumes", "-1"]).is_err());
+        let local_air = |args: &[&str]| {
+            parse(args).unwrap().0.render_settings(RenderSettings::default()).foliage.local_air
+        };
+        assert_eq!(local_air(&[]), LocalAir::Vertex, "the tier's");
+        assert_eq!(local_air(&["--wind-volumes", "8", "--local-air", "root"]), LocalAir::Root);
+        assert_eq!(local_air(&["--local-air", "off"]), LocalAir::Off);
+        assert!(parse(&["--local-air", "everywhere"]).is_err());
     }
 
     #[test]

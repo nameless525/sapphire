@@ -949,6 +949,7 @@ impl SandboxApp {
             if target.is_some() {
                 self.show.begin_interface(self.renderer.ui_page_state());
             }
+            self.scene.follow_render_settings(self.renderer.settings());
             let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size), &mut self.show);
             self.stages.extract = presentation + stopwatch.lap();
             // Before `prepare`, which culls hulls by it, and readies the debug view.

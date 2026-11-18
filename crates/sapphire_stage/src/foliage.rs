@@ -9,7 +9,9 @@
 //!   rocks, pillars and lantern posts. They never move but for the wind, which the shader adds,
 //!   so their instances are extracted once.
 //! - **The wind** is the scene's (`--wind`, a breeze by default): plain data in every frame's
-//!   packet ([`DEFAULT_WIND`]).
+//!   packet ([`DEFAULT_WIND`]). `--wind-volumes <n>` adds the first `n` of [`wind_volumes`]'s
+//!   local air (M6 Y1): draughts, vortices and bursts over the grove, so a bench prices the field's
+//!   volumes against none.
 //! - **The camera** depends on the view [`FoliageView`] names: the grove from in front, with the
 //!   character in it; the big tree against the key light, for light through its leaves; or low
 //!   over the grass and a bush.
@@ -18,7 +20,7 @@
 
 use sapphire_assets::AssetId;
 use sapphire_math::{Mat4, Quat, Vec3};
-use sapphire_render::{MeshHandle, Wind};
+use sapphire_render::{MeshHandle, Wind, WindVolume};
 
 use crate::orbit::OrbitCamera;
 
@@ -106,6 +108,30 @@ const PLANTS: [(Plant, f32, f32, f32, f32); 14] = [
     (Plant::Grass, 0.2, 2.6, 0.8, 0.9),
 ];
 
+/// The most volumes [`wind_volumes`] lays out: the wind field's most (`MAX_WIND_VOLUMES`).
+pub const MAX_WIND_VOLUMES: usize = 8;
+
+/// The first `count` (at most [`MAX_WIND_VOLUMES`]) of a fixed layout of local air over the grove
+/// (M6 Y1): a draught down the courtyard, a vortex at the big tree, a burst among the bushes, and
+/// on round the plants in that order of kinds, each reaching some of them. Every volume is one
+/// iteration of the GPU's loop wherever it stands, so a bench reads the volumes' cost from the
+/// count, here or on any other walk.
+pub fn wind_volumes(count: usize) -> Vec<WindVolume> {
+    (0..count.min(MAX_WIND_VOLUMES))
+        .map(|index| {
+            let turn = index as f32 * 0.8;
+            let center =
+                Vec3::new(1.5 + 3.5 * turn.cos(), 0.5 + 0.25 * index as f32, -2.0 + 3.5 * turn.sin());
+            let radius = 3.0 + 0.5 * index as f32;
+            match index % 3 {
+                0 => WindVolume::directional(center, radius, Vec3::new(-turn.sin(), 0.0, turn.cos()) * 1.5),
+                1 => WindVolume::vortex(center, radius, Vec3::Y, 2.0, 0.3),
+                _ => WindVolume::burst(center, radius, 1.5),
+            }
+        })
+        .collect()
+}
+
 /// Where the plants stand: each plant with its world transform, about its root.
 pub(crate) fn placements() -> impl Iterator<Item = (Plant, Mat4)> {
     PLANTS.into_iter().map(|(plant, x, z, scale, turn)| {
@@ -169,6 +195,22 @@ mod tests {
             if plant != Plant::Grass {
                 assert!(distance > 2.0, "{plant:?} at {root} crowds the character");
             }
+        }
+    }
+
+    #[test]
+    fn the_volumes_are_a_fixed_layout_of_every_kind_over_the_grove() {
+        assert!(wind_volumes(0).is_empty());
+        let all = wind_volumes(MAX_WIND_VOLUMES + 3);
+        assert_eq!(all.len(), MAX_WIND_VOLUMES, "never more than the field holds");
+        assert_eq!(wind_volumes(4), all[..4], "a smaller count takes the first of the same layout");
+        let kinds = (all[0].velocity != Vec3::ZERO, all[1].swirl != Vec3::ZERO, all[2].radial > 0.0);
+        assert_eq!(kinds, (true, true, true), "a draught, a vortex and a burst");
+        for volume in &all {
+            let reaches = placements().any(|(_, place)| {
+                place.transform_point3(Vec3::ZERO).distance(volume.center) < volume.radius + 1.0
+            });
+            assert!(reaches, "{volume:?} reaches a plant");
         }
     }
 

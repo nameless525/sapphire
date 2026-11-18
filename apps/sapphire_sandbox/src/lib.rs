@@ -179,6 +179,13 @@
 //!   show the grove whole, the big tree against the key light (light through its leaves), or the
 //!   grass and a bush up close.
 //! - `--wind <0..4>`: the wind's strength instead of `--foliage`'s breeze of 1; 0 is calm.
+//! - `--wind-volumes <0..8>`: that many of the wind field's local volumes (draughts, vortices and
+//!   bursts over the grove, M6 Y1), as many as the tier's CPU takes; the GPU loops over as many
+//!   as its tier's `wind.volumes`. A bench's switch between none and the field's most.
+//! - `--local-air off|vertex|root`: whether and where foliage sways in the wind field's local air
+//!   (M6 Y1), instead of the tier's (at each vertex where the GPU takes volumes, off on
+//!   Mobile-Low). Golden scenes made before the field pin it off; `root` is the Y1 row's
+//!   kill-line fallback.
 //! - `--probes`: the courtyard with its arcade (a gateway through the wall and a roofed loggia
 //!   along it), lit by the ambient probe grid the cooker baked for both (M1 W5) in place of the
 //!   ambient hemisphere, seen through a longer lens turned to the arcade. Implies

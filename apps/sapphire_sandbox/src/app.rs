@@ -983,6 +983,7 @@ impl SandboxApp {
                         input: Some(&self.input),
                         scene: &self.scene,
                         assets: self.content.stats(),
+                        texture_bytes: self.content.texture_bytes(),
                         streaming: self.content.texture_streaming_stats(),
                         audio: self.audio.as_ref().map(DeviceAudio::stats),
                         combat: self.show.fight.combat.as_ref(),

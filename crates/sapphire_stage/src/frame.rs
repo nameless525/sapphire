@@ -22,7 +22,7 @@ use sapphire_render::quality::{
     DeviceProfile, FrameTiming, GpuTable, Quality, QualitySettings, TierId, TierTable,
 };
 use sapphire_render::{
-    CullPose, MeshHandle, PipelineWarmup, RenderSettings, Renderer, TierBuild, TierRefused,
+    CullPose, MemoryLedger, MeshHandle, PipelineWarmup, RenderSettings, Renderer, TierBuild, TierRefused,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 use sapphire_time::Stopwatch;
@@ -687,6 +687,18 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
     /// Whether something draws over the frames: see [`FrameHooks::overlay_visible`].
     pub fn overlay_visible(&self) -> bool {
         self.hooks.overlay_visible()
+    }
+
+    /// What the stage holds after its last frame, by the engine's accounting and the OS's (M6 X2): the memory
+    /// ledger a bench logs and the overlay shows.
+    pub fn memory_ledger(&self) -> MemoryLedger {
+        MemoryLedger::of(
+            &self.renderer.stats(),
+            &self.graph.stats().pool,
+            &self.content.stats(),
+            self.content.texture_bytes(),
+            sapphire_platform::process_memory().map_or(0, |memory| memory.now),
+        )
     }
 
     /// A 2D render target in the stage's format with `usage` on top of `RENDER_ATTACHMENT`.

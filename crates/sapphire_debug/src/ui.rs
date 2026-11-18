@@ -16,8 +16,8 @@ use sapphire_render::debug_view::{
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
 use sapphire_render::{
-    DebugDrawPassStats, DebugView, DebugViewStats, MAIN_PASS, PREPASSES, ambient, post, shadows, temporal,
-    vfx,
+    DebugDrawPassStats, DebugView, DebugViewStats, LEDGER_ROWS, MAIN_PASS, MemoryLedger, PREPASSES, ambient,
+    post, shadows, temporal, vfx,
 };
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
@@ -620,10 +620,11 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ui,
             "Texture pool",
             format!(
-                "{} resident (~{}, peak {}), {} created, {} evicted",
+                "{} resident (~{}, peak {}; ~{} memoryless), {} created, {} evicted",
                 graph.pool.textures,
                 format_bytes(graph.pool.bytes),
                 format_bytes(graph.pool.peak_bytes),
+                format_bytes(graph.pool.memoryless_bytes),
                 graph.pool.created,
                 graph.pool.evicted
             ),
@@ -635,6 +636,10 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
 
     ui.separator();
     assets(ui, frame);
+    if let Some(ledger) = &frame.memory {
+        ui.separator();
+        memory(ui, ledger);
+    }
     if let Some(stats) = frame.audio {
         ui.separator();
         audio(ui, &stats);
@@ -773,6 +778,21 @@ fn audio(ui: &mut Ui, stats: &sapphire_audio::AudioStats) {
                 device.xruns
             ),
         );
+    });
+}
+
+/// The memory ledger (M6 X2): what the engine holds by its own accounting, row by row, and the process as
+/// its OS counts it. The rows overlap, so they're no sum.
+fn memory(ui: &mut Ui, ledger: &MemoryLedger) {
+    egui::Grid::new("memory").num_columns(2).show(ui, |ui| {
+        ui.label("Memory");
+        ui.weak("the ledger, after the last frame");
+        ui.end_row();
+        for row in &LEDGER_ROWS {
+            ui.label(row.name);
+            ui.monospace(format_bytes((row.read)(ledger)));
+            ui.end_row();
+        }
     });
 }
 

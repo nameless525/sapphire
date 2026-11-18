@@ -11,7 +11,7 @@ use sapphire_input::DeviceKind;
 use sapphire_platform::{Event, FingerId, FramePacing, Scancode, Timestamp, TouchEvent, TouchPhase};
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::QualityStats;
-use sapphire_render::{CameraData, CharacterInstance, RenderStats};
+use sapphire_render::{CameraData, CharacterInstance, MemoryLedger, RenderStats};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_time::{ScaledClock, Stopwatch};
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
@@ -93,6 +93,9 @@ pub struct OverlayFrame<'a> {
     pub combat: Option<&'a CombatSnapshot>,
     /// The asset server's counters, if the app runs one.
     pub assets: Option<AssetStats>,
+    /// The memory ledger after the previous frame (M6 X2, `sapphire_render::LEDGER_ROWS`), if the app keeps
+    /// one: the stats panel's memory rows.
+    pub memory: Option<MemoryLedger>,
     /// The audio system's counters, if the app plays sound (M2 E1).
     pub audio: Option<AudioStats>,
     /// A zone's streaming, if one is open (M3 W2).

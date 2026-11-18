@@ -948,6 +948,7 @@ mod levels;
 mod lights;
 mod materials;
 mod measure;
+mod memory_ledger;
 mod mesh_pool;
 mod mip_streaming;
 mod outlines;
@@ -1002,6 +1003,7 @@ pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
 #[doc(hidden)]
 pub use measure::{CharacterSwitches, MaterialRead, MeasuredPixels};
+pub use memory_ledger::{LEDGER_ROWS, LedgerRow, MemoryLedger};
 pub use mesh_pool::{MeshHandle, MeshPoolStats};
 pub use pipeline_builds::{
     FirstUseBuild, FirstUseReport, PipelineFamily, PipelineInventory, PipelineStats, PipelineWarmup,

@@ -1,10 +1,11 @@
 //! What a bench of a walk through a zone adds to a fight's (M3 Z1): memory across the walk, by the engine's
 //! own accounting and the process's as its OS counts it, and each zone trip's time, step by step.
 //!
-//! - **Memory** is read after every frame: what the asset server holds, of it meshes and textures against their
-//!   budgets, the renderer's mesh pool and textures, its meshes and materials, the scene's entities, the heap,
-//!   and the process ([`sapphire_platform::process_memory`]). Each phase logs it at its first frame, at its
-//!   last, and at its most, with the tick each most fell on.
+//! - **Memory** is read after every frame: the memory ledger ([`MemoryLedger`], `Stage::memory_ledger`: what
+//!   the asset server holds, of it meshes and textures against their budgets, the renderer's mesh pool and
+//!   textures, the transient pool, what's retiring, staged and decoded and waiting, and the process), then the
+//!   renderer's meshes and materials, the scene's entities and the heap. Each phase logs it at its first
+//!   frame, at its last, and at its most, with the tick each most fell on.
 //! - **A trip** (`zone-trip`'s, or a game flow's) is timed from the frame its exit was taken through the
 //!   frame the wipe covered, the swap (its zone ready and the simulation in it), its first cells placed, and
 //!   the wipe gone: in frames, and in the bench's ms, each frame's CPU and its wait for the GPU. What the load
@@ -14,74 +15,63 @@
 use std::time::Duration;
 
 use sapphire_assets::AssetKind;
+use sapphire_render::{LEDGER_ROWS, MemoryLedger};
 
 use super::{Phase, Traced, spread};
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
 use game_combat::fight::trip::TripPhase;
 
-/// What the engine held after a frame, in bytes but for the counts.
+/// What the engine held after a frame: the memory ledger, in bytes, then counts and the heap.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Held {
-    /// All the asset server holds, cooked.
-    resident: u64,
-    resident_meshes: u64,
-    resident_textures: u64,
-    mesh_pool: u64,
-    textures: u64,
+    ledger: MemoryLedger,
     meshes: u32,
     materials: u32,
     entities: u32,
     heap: u64,
-    /// The process, as its OS counts it: 0 where it isn't read.
-    process: u64,
 }
+
+/// The memory line's fields: the ledger's rows in MiB, then the counts and the heap.
+const FIELDS: usize = LEDGER_ROWS.len() + 4;
 
 impl Held {
     pub(super) fn of(stage: &Stage, heap: usize) -> Self {
-        let assets = stage.content.stats();
         let render = stage.renderer.stats();
         Self {
-            resident: assets.resident.iter().sum(),
-            resident_meshes: assets.resident[AssetKind::Mesh.index()],
-            // Tails and the levels above them alike (M5 M4).
-            resident_textures: assets.resident[AssetKind::Texture.index()]
-                + assets.resident[AssetKind::TextureLevel.index()],
-            mesh_pool: render.mesh_pool_bytes,
-            textures: stage.content.texture_bytes(),
+            ledger: stage.memory_ledger(),
             meshes: render.meshes,
             materials: render.materials,
             entities: stage.scene.world().entities().len(),
             heap: heap as u64,
-            process: sapphire_platform::process_memory().map_or(0, |memory| memory.now),
         }
     }
 
     /// `--bench-trace`'s columns from `resident`: bytes, and counts.
     pub(super) fn trace_into(&self, line: &mut String) {
         use std::fmt::Write as _;
+        let ledger = &self.ledger;
         let _ = write!(
             line,
             "{},{},{},{},{}",
-            self.resident, self.mesh_pool, self.textures, self.entities, self.process
+            ledger.resident, ledger.mesh_pool, ledger.textures, self.entities, ledger.process
         );
     }
 
     /// Each field's reading, by name, with bytes in MiB.
-    fn fields(&self) -> [(&'static str, f64); 10] {
+    fn fields(&self) -> [(&'static str, f64); FIELDS] {
         let mib = |bytes: u64| bytes as f64 / 1_048_576.0;
-        [
-            ("resident_mib", mib(self.resident)),
-            ("resident_meshes_mib", mib(self.resident_meshes)),
-            ("resident_textures_mib", mib(self.resident_textures)),
-            ("mesh_pool_mib", mib(self.mesh_pool)),
-            ("textures_mib", mib(self.textures)),
+        let mut fields = [("", 0.0); FIELDS];
+        for (field, row) in fields.iter_mut().zip(&LEDGER_ROWS) {
+            *field = (row.field, mib((row.read)(&self.ledger)));
+        }
+        fields[LEDGER_ROWS.len()..].copy_from_slice(&[
             ("meshes", f64::from(self.meshes)),
             ("materials", f64::from(self.materials)),
             ("entities", f64::from(self.entities)),
             ("heap_mib", mib(self.heap)),
-            ("process_mib", mib(self.process)),
-        ]
+        ]);
+        fields
     }
 }
 

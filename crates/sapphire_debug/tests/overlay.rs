@@ -82,6 +82,8 @@ impl App {
             screen_effects: None,
             combat: None,
             assets: None,
+            // The ledger's rows draw whenever the stats panel shows (M6 X2).
+            memory: Some(Default::default()),
             audio: None,
             streaming: None,
             hot_reload: None,

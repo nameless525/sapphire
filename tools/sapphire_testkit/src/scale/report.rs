@@ -89,14 +89,20 @@ const CAST_COUNTED: [&str; 8] = [
 const SPANS: [(&str, &str); 3] =
     [("cpu frame", "cpu frame on core"), ("record", "record on core"), ("gpu wait", "gpu wait on core")];
 
-/// The memory line's fields the report shows, in MiB, and the names it gives them.
-const MEMORY: [(&str, &str); 6] = [
+/// The memory line's fields the report shows, in MiB, and the names it gives them: the memory ledger's rows
+/// (`sapphire_render::LEDGER_ROWS`), those since M6 X2 last, and the heap.
+const MEMORY: [(&str, &str); 11] = [
     ("process_mib", "Process"),
     ("textures_mib", "Textures"),
     ("resident_textures_mib", "Textures resident in the asset server"),
     ("mesh_pool_mib", "Mesh pool"),
     ("resident_mib", "Asset server, all"),
     ("heap_mib", "Heap"),
+    ("transient_mib", "Transient pool, memoryless attachments as nothing"),
+    ("memoryless_mib", "Memoryless attachments, not counted"),
+    ("retiring_mib", "Textures retiring"),
+    ("staging_mib", "Raises' staging"),
+    ("decoded_waiting_mib", "Decoded, waiting for the GPU"),
 ];
 
 /// What the report reads: the manifest, the commit's folder of logs and statuses, and the baseline's folder,

@@ -610,6 +610,7 @@ impl FrameHooks<ShownFight> for StageTools {
             input: None,
             scene,
             assets: content.stats(),
+            texture_bytes: content.texture_bytes(),
             streaming: content.texture_streaming_stats(),
             audio: None,
             combat: show.fight.combat.as_ref(),

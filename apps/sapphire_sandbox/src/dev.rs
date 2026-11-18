@@ -24,7 +24,7 @@ use sapphire_platform::{
 };
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::Quality;
-use sapphire_render::{RenderStats, Renderer};
+use sapphire_render::{MemoryLedger, RenderStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
@@ -91,6 +91,8 @@ pub(crate) struct FrameState<'a> {
     pub input: Option<&'a SandboxInput>,
     pub scene: &'a Scene,
     pub assets: AssetStats,
+    /// The bytes of the textures the content uploaded (`Content::texture_bytes`), for the memory ledger.
+    pub texture_bytes: u64,
     /// The texture streamer's counters, for the counts panel (M5 X1).
     pub streaming: TextureStreamingStats,
     /// The audio system's counters, with `--cue`.
@@ -403,6 +405,16 @@ impl DevTools {
             screen_effects: Some(frame.scene.screen_effects()),
             combat,
             assets: Some(frame.assets),
+            // The process's footprint is a system call (a file's read on Linux): only while something shows.
+            memory: self.overlay.is_visible().then(|| {
+                MemoryLedger::of(
+                    &frame.render,
+                    &executor.stats().pool,
+                    &frame.assets,
+                    frame.texture_bytes,
+                    sapphire_platform::process_memory().map_or(0, |memory| memory.now),
+                )
+            }),
             audio: frame.audio,
             streaming: frame.scene.stream_stats(),
             hot_reload: Some(self.reload.status()),

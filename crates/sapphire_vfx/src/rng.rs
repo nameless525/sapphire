@@ -10,6 +10,8 @@ pub(crate) struct Rng {
 
 const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 const INCREMENT: u64 = 1_442_695_040_888_963_407;
+/// What sets a fork's state apart from its parent's.
+const FORK: u64 = 0x666F_726B_6564;
 
 impl Rng {
     /// A generator from `seed` and `stream`, which keep two effects spawned from one seed apart:
@@ -19,6 +21,12 @@ impl Rng {
         rng.next_u32();
         rng.next_u32();
         rng
+    }
+
+    /// A generator of its own, from where this one is and `salt`: this one isn't advanced, so what it draws
+    /// next is what it would have drawn without the fork (M6 N2, an emitter's forces).
+    pub(crate) fn fork(&self, salt: u64) -> Self {
+        Self::new(self.state ^ FORK, salt)
     }
 
     pub(crate) fn next_u32(&mut self) -> u32 {
@@ -53,6 +61,17 @@ mod tests {
         assert_eq!(sequence(7, 1), sequence(7, 1));
         assert_ne!(sequence(7, 1), sequence(7, 2));
         assert_ne!(sequence(7, 1), sequence(8, 1));
+    }
+
+    #[test]
+    fn a_fork_leaves_its_parent_as_it_was() {
+        let parent = Rng::new(7, 1);
+        let mut fork = parent.fork(3);
+        assert_eq!(parent, Rng::new(7, 1));
+        let mut copy = parent;
+        assert_ne!(fork.next_u32(), copy.next_u32());
+        assert_ne!(parent.fork(3).next_u32(), parent.fork(4).next_u32());
+        assert_eq!(parent.fork(3).next_u32(), parent.fork(3).next_u32());
     }
 
     #[test]

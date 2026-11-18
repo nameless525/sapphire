@@ -30,6 +30,10 @@ pub struct VfxBudget {
     /// What a decal's fixed life is multiplied by, 0 to 1: under 1, scorches go sooner. A telegraph's life,
     /// till its strike, is never shortened.
     pub decal_life: f32,
+    /// Whether a noise force runs only every other step of its owner's clock, over both steps' time (M6 N2's
+    /// switch, should its measure find noise too dear at a tier's cap): its swirl then turns on twos, as an
+    /// anime drawing does. Off on every row.
+    pub noise_on_alternate_steps: bool,
 }
 
 impl VfxBudget {
@@ -46,6 +50,7 @@ impl VfxBudget {
         max_distortions: 8,
         decal_noise: true,
         decal_life: 1.0,
+        noise_on_alternate_steps: false,
     };
     pub const DESKTOP_LOW: Self = Self {
         max_particles: 2048,
@@ -58,6 +63,7 @@ impl VfxBudget {
         max_distortions: 8,
         decal_noise: true,
         decal_life: 1.0,
+        noise_on_alternate_steps: false,
     };
     pub const MOBILE_HIGH: Self = Self {
         max_particles: 1024,
@@ -70,6 +76,7 @@ impl VfxBudget {
         max_distortions: 4,
         decal_noise: true,
         decal_life: 1.0,
+        noise_on_alternate_steps: false,
     };
     pub const MOBILE_LOW: Self = Self {
         max_particles: 512,
@@ -82,6 +89,7 @@ impl VfxBudget {
         max_distortions: 0,
         decal_noise: false,
         decal_life: 0.6,
+        noise_on_alternate_steps: false,
     };
 }
 

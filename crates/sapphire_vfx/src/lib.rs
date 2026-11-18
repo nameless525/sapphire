@@ -30,7 +30,9 @@
 //!   ([`Curve`]), at most one trail, up to four mesh layers (M5 L5, [`MeshLayerDesc`]: generated
 //!   shapes with scrolling, erosion and flipbooks, any of which may bend the picture behind it instead of or as
 //!   well as drawing light, M5 L6's [`Distortion`]) and up to two ground decals (M5 L7, [`DecalLayerDesc`]:
-//!   signed distance shapes flat on the ground, a telegraph's fill timed to its actor's strike), checked
+//!   signed distance shapes flat on the ground, a telegraph's fill timed to its actor's strike), and forces and
+//!   a ground on an emitter's particles (M6 N2, [`Force`], [`Ground`]: wind, a curl of noise, a vortex, an
+//!   attractor, a speed limit, a plane at the owner's feet), checked
 //!   whole so an author's mistake names its field. Versions 1 to 4 read to the bit (`testdata/`). A game's
 //!   library (`<name>.effects.ron`) cooks as the `Effects` asset kind (M6 N1) and loads through the asset
 //!   server, read and checked here as a document is; [`EffectLibrary::default_effects`] compiles in a hit spark,
@@ -56,6 +58,8 @@
 //! - **What triggers effects:** gameplay's cues reach this crate through the app (E3). Effects read
 //!   cues and never affect them: this is presentation, outside the simulation's checksum, and nothing
 //!   here feeds back (R3).
+//! - **The wind:** a plain [`WindSample`] the caller sets before each step ([`VfxWorld::set_wind`]); the
+//!   wind field that fills it is weather's (M6 Y1).
 //! - **The sockets:** plain points a caller passes, from a pose once animation has them (N2).
 //! - **The clock:** rule R2. The caller reads owners' clocks; this crate reads none, so it can't time
 //!   itself either: [`sapphire_look::VfxStats::simulation`] is the app's measure.
@@ -70,9 +74,11 @@ mod budget;
 mod curve;
 mod decal;
 mod document;
+mod forces;
 mod mesh;
 mod rng;
 mod trail;
+mod wind;
 mod world;
 
 pub use budget::VfxBudget;
@@ -82,10 +88,12 @@ pub use document::{
     Effect, EffectId, EffectLibrary, EffectLibraryError, EmitterDesc, Facing, Light, MAX_EMITTERS,
     MAX_TRAIL_SAMPLES, Motion, Range, Shape, Source, Spawn, TrailCore, TrailDesc,
 };
+pub use forces::{Force, Ground, MAX_FORCES, MAX_NOISE_OCTAVES};
 pub use mesh::{
     Bend, Distortion, Erosion, Flipbook, FrameTiming, MAX_BEND, MAX_MESH_LAYERS, MeshLayerDesc, MeshShape,
     Pattern,
 };
+pub use wind::WindSample;
 pub use world::{EffectHandle, OwnerId, OwnerSteps, Placement, VfxWorld};
 
 #[cfg(test)]

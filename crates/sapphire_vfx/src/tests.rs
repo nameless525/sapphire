@@ -13,6 +13,8 @@ use crate::{
     Placement, Shape, Source, Spawn, TrailCore, TrailDesc, VfxBudget, VfxWorld,
 };
 
+mod forces;
+
 const TICK: f32 = 1.0 / 60.0;
 
 fn dots(name: &str, spawn: Spawn) -> EmitterDesc {
@@ -32,6 +34,8 @@ fn dots(name: &str, spawn: Spawn) -> EmitterDesc {
         size: Curve(vec![(0.0, 0.1)]),
         color: Curve(vec![(0.0, [1.0, 1.0, 1.0])]),
         alpha: Curve(vec![(0.0, 1.0), (1.0, 0.0)]),
+        forces: Vec::new(),
+        collide: None,
     }
 }
 

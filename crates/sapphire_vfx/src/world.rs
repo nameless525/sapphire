@@ -11,12 +11,19 @@ use crate::document::{
     Effect, EffectId, EffectLibrary, EmitterDesc, Facing, MAX_EMITTERS, MAX_TRAIL_SAMPLES, Source, Spawn,
     TrailDesc,
 };
+use crate::forces::{Force, Here, Resolved, noise_offset};
 use crate::mesh::MeshLayerDesc;
 use crate::rng::Rng;
 use crate::trail::{Segment, TrailSample};
+use crate::wind::WindSample;
 
 /// What sets the marks' random streams apart from every other effect's, from the same seed.
 const MARK_SEED: u64 = 0x6D61_726B_7321;
+
+/// The farthest an effect moves in one step and still fires a rate a meter along the way, in metres (M6 N2):
+/// 180 m/s at 60 steps a second, past any dash or launch. A longer move is a jump, a teleport, a respawn or a
+/// hop between zones, and it lays no line of particles across the gap.
+const MAX_STEP_MOVE: f32 = 3.0;
 
 /// Whose clock an effect runs on: a plain key, an actor's stable ID in a game. Gameplay never reads
 /// back through it (R3: effects read cues, never affect them).
@@ -75,10 +82,15 @@ pub struct EffectHandle {
 struct EmitterState {
     /// A burst has fired.
     fired: bool,
-    /// Fractions of a particle a rate has owed since its last one.
+    /// Fractions of a particle a rate, or a rate a meter, has owed since its last one.
     owed: f32,
+    /// Seconds to go before it starts, or before a repeat's next burst.
     delay_left: f32,
     time_left: f32,
+    /// The bursts a repeat has fired.
+    bursts: u32,
+    /// Where its noise starts in the noise's lattice (M6 N2), from a stream of its own.
+    noise_offset: Vec3,
 }
 
 /// An effect's place in the world.
@@ -104,6 +116,15 @@ struct Slot {
     /// Seconds on the owner's clock from its start to its actor's next strike, where its cue knew one
     /// ([`VfxWorld::set_strike`]): what a telegraph's decal lives until.
     strike: Option<f32>,
+    /// The height of its owner's ground, which its particles' [`Ground`](crate::Ground) lies at: where it was
+    /// placed, until [`VfxWorld::set_ground`] says.
+    ground: f32,
+    /// Where it emitted from on the last step that emitted, which a rate a meter measures from.
+    emitted_from: Vec3,
+    /// Whether this step is a noise's (one of every two, under `noise_on_alternate_steps`), and the time the
+    /// steps it skipped owe it.
+    noise_turn: bool,
+    noise_owed: f32,
 }
 
 impl Slot {
@@ -122,6 +143,10 @@ impl Slot {
             emitters: [EmitterState::default(); MAX_EMITTERS],
             trail: None,
             strike: None,
+            ground: 0.0,
+            emitted_from: Vec3::ZERO,
+            noise_turn: false,
+            noise_owed: 0.0,
         }
     }
 }
@@ -152,6 +177,8 @@ struct Particle {
     drag: f32,
     slot: u16,
     emitter: u8,
+    /// Whether its emitter has forces or a ground (M6 N2), which a step has resolved for it.
+    forced: bool,
 }
 
 /// The simulation (spec §5.16): effects spawned on owners, stepped by owners' clocks, resolved into
@@ -175,6 +202,11 @@ pub struct VfxWorld {
     /// effect took ([`write_capped`]).
     by_age: Vec<u16>,
     particles: Vec<Particle>,
+    /// Each playing emitter's forces as this step applies them (M6 N2), [`MAX_EMITTERS`] a slot: written for
+    /// the emitters that have them, read by their particles.
+    resolved: Vec<Resolved>,
+    /// The wind this step's `Wind` forces carry particles by.
+    wind: WindSample,
     rings: Vec<TrailRing>,
     samples: Vec<TrailSample>,
     effects: u32,
@@ -203,6 +235,8 @@ impl VfxWorld {
             free_slots: (0..effects).rev().collect(),
             by_age: Vec::with_capacity(usize::from(effects)),
             particles: Vec::with_capacity(budget.max_particles as usize),
+            resolved: vec![Resolved::NONE; usize::from(effects) * MAX_EMITTERS],
+            wind: WindSample::CALM,
             rings: vec![TrailRing::default(); trails],
             samples: vec![TrailSample::default(); trails * MAX_TRAIL_SAMPLES],
             effects: 0,
@@ -232,8 +266,8 @@ impl VfxWorld {
             return;
         }
         let fresh = Self::new(self.library.clone(), budget, self.seed);
-        let (spawned, marks) = (self.spawned, self.marks);
-        *self = Self { spawned, marks, ..fresh };
+        let (spawned, marks, wind) = (self.spawned, self.marks, self.wind);
+        *self = Self { spawned, marks, wind, ..fresh };
     }
 
     /// Replaces the effects (a reload), ending every effect playing: their places in the library
@@ -303,8 +337,19 @@ impl VfxWorld {
             self.spawned += 1;
             Rng::new(self.seed, self.spawned)
         };
+        // A noise's offset comes from its emitter's own stream, forked off this one, which it doesn't advance.
+        let mut offsets = [Vec3::ZERO; MAX_EMITTERS];
+        let emitters = self.library.effect(effect).map_or(&[][..], |desc| &desc.emitters[..]);
+        for (place, emitter) in emitters.iter().enumerate().take(MAX_EMITTERS) {
+            if emitter.forces.iter().any(Force::is_noise) {
+                offsets[place] = noise_offset(&stream, place);
+            }
+        }
         if let Some(slot) = self.slot_mut(handle) {
             slot.rng = stream;
+            for (state, offset) in slot.emitters.iter_mut().zip(offsets) {
+                state.noise_offset = offset;
+            }
         }
         Some(handle)
     }
@@ -351,6 +396,8 @@ impl VfxWorld {
             owner,
             placement,
             trail,
+            ground: placement.position.y,
+            emitted_from: placement.position,
             ..Slot::new()
         };
         for (state, emitter) in slot.emitters.iter_mut().zip(&desc.emitters) {
@@ -378,6 +425,24 @@ impl VfxWorld {
         if let Some(slot) = self.slot_mut(handle) {
             slot.strike = (seconds.is_finite() && seconds > 0.0).then_some(seconds);
         }
+    }
+
+    /// Says where `handle`'s owner stands: the height of the level ground its particles' [`Ground`](crate::Ground)
+    /// lies at (M6 N2), from the next step on. Until it's said, the ground is where the effect was placed, which
+    /// suits dust at the feet and not sparks at a chest. Ignored unless it's finite.
+    pub fn set_ground(&mut self, handle: EffectHandle, height: f32) {
+        if let Some(slot) = self.slot_mut(handle)
+            && height.is_finite()
+        {
+            slot.ground = height;
+        }
+    }
+
+    /// The wind for the steps from now on, until it's set again: what particles with a `Wind` force are carried
+    /// by (M6 N2). The caller fills it before each step, from the wind field once there's one (M6 Y1); calm until
+    /// then. A sample that isn't finite is calm.
+    pub fn set_wind(&mut self, wind: WindSample) {
+        self.wind = wind.finite();
     }
 
     /// Stops `handle`'s effect: no more emission or samples, and it ends when its particles and its
@@ -444,10 +509,54 @@ impl VfxWorld {
             slot.step = steps.of(slot.owner);
             slot.age = (slot.age + slot.step).min(f32::MAX);
         }
+        self.resolve_forces();
         self.update_particles();
         self.retire_samples();
         self.emit();
         self.retire_effects();
+    }
+
+    /// Each moving emitter's forces and ground, in the world, for this step (M6 N2): once an emitter, so a
+    /// particle only runs through them. Only emitters with forces or a ground are written, and only their
+    /// particles read them.
+    fn resolve_forces(&mut self) {
+        let Self { library, budget, slots, resolved, wind, .. } = self;
+        for (index, slot) in slots.iter_mut().enumerate() {
+            if !slot.live || slot.step <= 0.0 {
+                continue;
+            }
+            let Some(effect) = library.effect(EffectId(slot.effect)) else { continue };
+            if !effect.emitters.iter().any(EmitterDesc::is_moved) {
+                continue;
+            }
+            let noise_step = if budget.noise_on_alternate_steps {
+                slot.noise_turn = !slot.noise_turn;
+                if slot.noise_turn {
+                    slot.noise_owed += slot.step;
+                    0.0
+                } else {
+                    std::mem::take(&mut slot.noise_owed) + slot.step
+                }
+            } else {
+                slot.step
+            };
+            let here = Here {
+                position: slot.placement.position,
+                rotation: slot.placement.rotation,
+                ground: slot.ground,
+                age: slot.age,
+                step: slot.step,
+                noise_step,
+                wind: *wind,
+            };
+            for (place, emitter) in effect.emitters.iter().enumerate().take(MAX_EMITTERS) {
+                if emitter.is_moved() {
+                    let offset = slot.emitters[place].noise_offset;
+                    resolved[index * MAX_EMITTERS + place] =
+                        Resolved::new(&emitter.forces, emitter.collide.as_ref(), offset, &here);
+                }
+            }
+        }
     }
 
     fn update_particles(&mut self) {
@@ -467,8 +576,26 @@ impl VfxWorld {
                 continue;
             }
             particle.velocity.y -= particle.gravity * step;
-            particle.velocity *= (-particle.drag * step).exp();
-            particle.position += particle.velocity * step;
+            if particle.forced {
+                let resolved =
+                    &self.resolved[usize::from(particle.slot) * MAX_EMITTERS + usize::from(particle.emitter)];
+                let mut alive = resolved.pull(particle.position, &mut particle.velocity);
+                if alive {
+                    particle.velocity *= (-particle.drag * step).exp();
+                    particle.position += particle.velocity * step;
+                    alive = resolved
+                        .ground
+                        .is_none_or(|ground| ground.meet(&mut particle.position, &mut particle.velocity));
+                }
+                if !alive {
+                    slot.particles -= 1;
+                    self.particles.swap_remove(index);
+                    continue;
+                }
+            } else {
+                particle.velocity *= (-particle.drag * step).exp();
+                particle.position += particle.velocity * step;
+            }
             particle.rotation += particle.spin * step;
             index += 1;
         }
@@ -508,19 +635,33 @@ impl VfxWorld {
                 continue;
             }
             let Some(effect) = library.effect(EffectId(slot.effect)) else { continue };
+            // The way it was moved since it last emitted, which a rate a meter spreads its births along. A
+            // move too far for a step is a jump, a teleport or a respawn: it owes nothing across the gap.
+            let (mut from, to) = (slot.emitted_from, slot.placement.position);
+            let moved = from.distance(to);
+            let moved = if moved.is_finite() && moved <= MAX_STEP_MOVE {
+                moved
+            } else {
+                from = to;
+                0.0
+            };
             for (place, emitter) in effect.emitters.iter().enumerate() {
-                let count = owed_particles(emitter, &mut slot.emitters[place], slot.age, slot.step);
+                let count = owed_particles(emitter, &mut slot.emitters[place], slot.age, slot.step, moved);
                 // Only what fits is walked, so a step costs the budget at most, however much a long
                 // one's rate owes. A drop takes no random numbers, so what's kept doesn't move.
                 let room = (budget.max_particles as usize).saturating_sub(particles.len());
                 let born = room.min(count as usize);
-                for _ in 0..born {
-                    let particle = birth(emitter, slot, index as u16, place as u8);
+                let along = matches!(emitter.spawn, Spawn::PerMeter { .. });
+                for birth_index in 0..born {
+                    let origin =
+                        if along { from.lerp(to, (birth_index + 1) as f32 / born as f32) } else { to };
+                    let particle = birth(emitter, slot, origin, index as u16, place as u8);
                     particles.push(particle);
                     slot.particles += 1;
                 }
                 *dropped_particles = dropped_particles.saturating_add(u64::from(count) - born as u64);
             }
+            slot.emitted_from = to;
         }
     }
 
@@ -572,7 +713,8 @@ impl VfxWorld {
             let slot = &self.slots[usize::from(particle.slot)];
             let Some(effect) = self.library.effect(EffectId(slot.effect)) else { continue };
             let Some(emitter) = effect.emitters.get(usize::from(particle.emitter)) else { continue };
-            frame.sprites.push(sprite(particle, emitter, unplayed * slot.step));
+            let floor = emitter.collide.map(|_| slot.ground);
+            frame.sprites.push(sprite(particle, emitter, unplayed * slot.step, floor));
         }
         let mut ribbons = 0;
         for slot in self.slots.iter().filter(|slot| slot.live) {
@@ -697,9 +839,10 @@ impl VfxWorld {
     }
 }
 
-/// How many particles `emitter` owes in this step. Rates use remaining intervals rather than
-/// subtracting large absolute ages; bursts retain their existing absolute-clock admission boundary.
-fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, step: f32) -> u32 {
+/// How many particles `emitter` owes in this step, its effect having been `moved` meters since it last emitted.
+/// Rates use remaining intervals rather than subtracting large absolute ages; bursts retain their existing
+/// absolute-clock admission boundary.
+fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, step: f32, moved: f32) -> u32 {
     match emitter.spawn {
         Spawn::Burst { count } => {
             let since_start = age - emitter.delay;
@@ -730,6 +873,41 @@ fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, ste
             } else {
                 let owed = f64::from(state.owed) + f64::from(per_second) * f64::from(elapsed);
                 state.owed = (owed - owed.floor()) as f32;
+                u32::MAX
+            }
+        }
+        Spawn::Repeat { count, interval, times } => {
+            if times > 0 && state.bursts >= times {
+                return 0;
+            }
+            if state.delay_left > step {
+                state.delay_left -= step;
+                return 0;
+            }
+            // One burst is due as the wait runs out, and one more each interval of the step left after it.
+            let rest = f64::from(step - state.delay_left);
+            let due = 1.0 + (rest / f64::from(interval)).floor();
+            let left = if times > 0 { f64::from(times - state.bursts) } else { f64::from(u32::MAX) };
+            let bursts = due.min(left);
+            state.delay_left =
+                if due > left { interval } else { ((f64::from(interval) * bursts - rest) as f32).max(0.0) };
+            let bursts = bursts as u32;
+            state.bursts = state.bursts.saturating_add(bursts);
+            count.saturating_mul(bursts)
+        }
+        Spawn::PerMeter { per_meter } => {
+            state.delay_left = (state.delay_left - step).max(0.0);
+            if state.delay_left > 0.0 {
+                return 0;
+            }
+            let owed = state.owed + per_meter * moved;
+            // As a rate's: a finite remainder, even when a leap owes more than a count holds.
+            if owed.is_finite() && owed < u32::MAX as f32 {
+                let whole = owed.floor();
+                state.owed = owed - whole;
+                whole as u32
+            } else {
+                state.owed = 0.0;
                 u32::MAX
             }
         }
@@ -825,11 +1003,14 @@ fn emitters_done(effect: &Effect, slot: &Slot) -> bool {
     effect.emitters.iter().zip(&slot.emitters).all(|(emitter, state)| match emitter.spawn {
         Spawn::Burst { .. } => state.fired,
         Spawn::Rate { duration, .. } => duration > 0.0 && state.delay_left == 0.0 && state.time_left == 0.0,
+        Spawn::Repeat { times, .. } => times > 0 && state.bursts >= times,
+        Spawn::PerMeter { .. } => false,
     })
 }
 
-/// A new particle of `emitter`, in `slot`'s effect.
-fn birth(emitter: &EmitterDesc, slot: &mut Slot, slot_index: u16, place: u8) -> Particle {
+/// A new particle of `emitter`, in `slot`'s effect, from `origin`: where the effect is, or for a rate a meter
+/// somewhere along the way it moved.
+fn birth(emitter: &EmitterDesc, slot: &mut Slot, origin: Vec3, slot_index: u16, place: u8) -> Particle {
     let rng = &mut slot.rng;
     let placement = slot.placement;
     let source = match emitter.source {
@@ -848,7 +1029,7 @@ fn birth(emitter: &EmitterDesc, slot: &mut Slot, slot_index: u16, place: u8) -> 
         Facing::Velocity { .. } | Facing::Upright => (0.0, 0.0),
     };
     Particle {
-        position: placement.position + placement.rotation * source,
+        position: origin + placement.rotation * source,
         velocity,
         age: 0.0,
         lifetime: rng.between(emitter.lifetime),
@@ -859,6 +1040,7 @@ fn birth(emitter: &EmitterDesc, slot: &mut Slot, slot_index: u16, place: u8) -> 
         drag: motion.drag,
         slot: slot_index,
         emitter: place,
+        forced: emitter.is_moved(),
     }
 }
 
@@ -882,8 +1064,8 @@ fn cone(axis: Vec3, spread: f32, rng: &mut Rng) -> Vec3 {
 
 /// `particle` as its emitter's curves show it at its age, `behind` seconds of its owner's clock before
 /// its latest step. It moved in a straight line over that step, so this is where it was, and no further
-/// back than its birth.
-fn sprite(particle: &Particle, emitter: &EmitterDesc, behind: f32) -> VfxSprite {
+/// back than its birth; and never under the `floor` it bounced on, if it collides (M6 N2).
+fn sprite(particle: &Particle, emitter: &EmitterDesc, behind: f32, floor: Option<f32>) -> VfxSprite {
     let behind = behind.min(particle.age);
     let t = (particle.age - behind) / particle.lifetime;
     let half_width = emitter.size.sample(t) * particle.size;
@@ -893,8 +1075,12 @@ fn sprite(particle: &Particle, emitter: &EmitterDesc, behind: f32) -> VfxSprite 
             (particle.velocity, half_width + particle.velocity.length() * stretch)
         }
     };
+    let mut position = particle.position - particle.velocity * behind;
+    if let Some(floor) = floor {
+        position.y = position.y.max(floor);
+    }
     VfxSprite {
-        position: particle.position - particle.velocity * behind,
+        position,
         axis,
         rotation: particle.rotation - particle.spin * behind,
         half_width,

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::curve::Curve;
 use crate::decal::{DecalLayerDesc, MAX_DECAL_LAYERS};
+use crate::forces::{Force, Ground, MAX_FORCES};
 use crate::mesh::{MAX_MESH_LAYERS, MeshLayerDesc};
 
 /// The shipped effects (see [`EffectLibrary::default_effects`]).
@@ -30,6 +31,9 @@ pub const MAX_TRAIL_SAMPLES: usize = 64;
 
 /// The most particles a burst fires at once.
 const MAX_BURST: u32 = 4096;
+
+/// The most particles a [`Spawn::PerMeter`] fires a meter: a particle a millimeter. Past this it's a typo.
+const MAX_PER_METER: f32 = 1000.0;
 
 /// The most particles a rate fires a second: a burst's worth every tick at 60 Hz, which fills the
 /// largest budget in one. Past this it's a typo.
@@ -48,6 +52,13 @@ pub enum Spawn {
     /// `per_second`, at most 245,760, for `duration` seconds, or until the effect is
     /// [stopped](crate::VfxWorld::stop) where `duration` is 0.
     Rate { per_second: f32, duration: f32 },
+    /// `count` at once every `interval` seconds, `times` times, or until the effect is stopped where `times` is
+    /// 0 (M6 N2): an ember's pulse. The first fires as the emitter starts; at most 245,760 a second.
+    Repeat { count: u32, interval: f32, times: u32 },
+    /// `per_meter` along the way the effect is [moved](crate::VfxWorld::set_placement), spread evenly along
+    /// it, until the effect is stopped (M6 N2): dust behind a running character, none while it stands. At most
+    /// 1,000 a meter. A move of more than 3 m in one step is a jump, a teleport or a respawn, and fires none.
+    PerMeter { per_meter: f32 },
 }
 
 /// Where in the effect's space its particles are born. Fixed in the world from then on.
@@ -213,6 +224,14 @@ pub struct EmitterDesc {
     /// Its opacity over its life.
     #[serde(default = "one")]
     pub alpha: Curve<f32>,
+    /// What else moves its particles as they live, at most [`MAX_FORCES`], in order (M6 N2): after gravity,
+    /// before drag. Left out of a document that has none, as an effect's `meshes` are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forces: Vec<Force>,
+    /// The ground its particles meet, if they do (M6 N2): a level plane at the owner's ground, after they
+    /// move. Left out where they fall through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collide: Option<Ground>,
 }
 
 fn same_size() -> Range {
@@ -302,10 +321,12 @@ impl Effect {
     pub fn is_endless(&self) -> bool {
         // A mesh layer or a decal has a lifetime: it never makes an effect endless.
         self.trail.is_some()
-            || self
-                .emitters
-                .iter()
-                .any(|emitter| matches!(emitter.spawn, Spawn::Rate { duration, .. } if duration <= 0.0))
+            || self.emitters.iter().any(|emitter| match emitter.spawn {
+                Spawn::Burst { .. } => false,
+                Spawn::Rate { duration, .. } => duration <= 0.0,
+                Spawn::Repeat { times, .. } => times == 0,
+                Spawn::PerMeter { .. } => true,
+            })
     }
 }
 
@@ -467,7 +488,8 @@ impl EffectLibrary {
     /// `break_ring`, `heavy_spark` and `finish_burst`, and what a fight's blades leave: `blade_trail` and
     /// `warrior_trail`; and effect meshes (M5 L5): the skill's `skill_arc`, and `shock_ring`, `ember_dome` and
     /// `burst_card` for `--vfx`; and ground decals (M5 L7): a wind-up's `telegraph_ground` and a heavy landing's
-    /// `scorch_mark`. Their colors and curves are starting points for art direction.
+    /// `scorch_mark`; and forces and the ground (M6 N2), for `--vfx forces`: `ember_drift`, `spark_bounce` and
+    /// `charge_gather`. Their colors and curves are starting points for art direction.
     pub fn default_effects() -> Self {
         Self::from_ron(DEFAULT_EFFECTS).expect("the shipped effects are checked by this module's tests")
     }
@@ -545,6 +567,11 @@ pub(crate) fn curve_ok<T: crate::curve::CurveValue>(
 }
 
 impl EmitterDesc {
+    /// Whether it has forces or a ground (M6 N2): what a step resolves for it, and its particles run through.
+    pub(crate) fn is_moved(&self) -> bool {
+        !self.forces.is_empty() || self.collide.is_some()
+    }
+
     fn problem(&self) -> Result<(), Problem> {
         match self.spawn {
             Spawn::Burst { count } => {
@@ -555,6 +582,20 @@ impl EmitterDesc {
                 require(per_second.is_finite() && per_second > 0.0, "spawn", "a rate must be above 0")?;
                 require(per_second <= MAX_RATE, "spawn", "a rate fires at most 245760 a second")?;
                 require(duration.is_finite() && duration >= 0.0, "spawn", "a duration can't be negative")?;
+            }
+            Spawn::Repeat { count, interval, .. } => {
+                require(count >= 1, "spawn", "a repeat must fire at least one")?;
+                require(count <= MAX_BURST, "spawn", "a repeat fires at most 4096 at once")?;
+                require(interval.is_finite() && interval > 0.0, "spawn", "an interval must be above 0")?;
+                require(
+                    count as f32 / interval <= MAX_RATE,
+                    "spawn",
+                    "a repeat fires at most 245760 a second",
+                )?;
+            }
+            Spawn::PerMeter { per_meter } => {
+                require(per_meter.is_finite() && per_meter > 0.0, "spawn", "a rate a meter must be above 0")?;
+                require(per_meter <= MAX_PER_METER, "spawn", "a rate a meter is at most 1000")?;
             }
         }
         require(self.delay.is_finite() && self.delay >= 0.0, "delay", "can't be negative")?;
@@ -586,6 +627,13 @@ impl EmitterDesc {
         require(self.color.never_negative(), "color", "can't be negative")?;
         curve_ok(&self.alpha, "alpha")?;
         require(self.alpha.never_negative() && self.alpha.at_most_one(), "alpha", "must be 0 to 1")?;
+        require(self.forces.len() <= MAX_FORCES, "forces", "an emitter has at most 6")?;
+        for force in &self.forces {
+            force.problem()?;
+        }
+        if let Some(ground) = &self.collide {
+            ground.problem()?;
+        }
         Ok(())
     }
 }
@@ -660,6 +708,8 @@ mod tests {
             size: Curve(vec![(0.0, 0.05)]),
             color: Curve(vec![(0.0, [1.0, 1.0, 1.0])]),
             alpha: Curve(vec![(0.0, 1.0), (1.0, 0.0)]),
+            forces: Vec::new(),
+            collide: None,
         }
     }
 
@@ -771,7 +821,10 @@ mod tests {
                 "ember_dome",
                 "burst_card",
                 "telegraph_ground",
-                "scorch_mark"
+                "scorch_mark",
+                "ember_drift",
+                "spark_bounce",
+                "charge_gather"
             ]
         );
         let trail = library.find("sword_trail").and_then(|id| library.effect(id)).expect("its trail");
@@ -821,6 +874,64 @@ mod tests {
         assert_eq!(emitter_error(|e| e.color = Curve(vec![(2.0, [1.0; 3])])), "color");
         assert_eq!(emitter_error(|e| e.color = Curve(vec![(0.0, [-1.0; 3])])), "color");
         assert_eq!(emitter_error(|e| e.alpha = Curve(vec![(0.0, 2.0)])), "alpha");
+    }
+
+    /// M6 N2's spawns, forces and ground: each bad value names its field, and the edges hold.
+    #[test]
+    fn every_bad_force_spawn_and_ground_is_named() {
+        let repeat = |count, interval| Spawn::Repeat { count, interval, times: 3 };
+        assert_eq!(emitter_error(|e| e.spawn = repeat(0, 0.1)), "spawn");
+        assert_eq!(emitter_error(|e| e.spawn = repeat(5000, 0.1)), "spawn");
+        assert_eq!(emitter_error(|e| e.spawn = repeat(4, 0.0)), "spawn");
+        assert_eq!(emitter_error(|e| e.spawn = repeat(4096, 0.01)), "spawn");
+        assert!(library_of(EmitterDesc { spawn: repeat(4096, 1.0), ..emitter() }).is_ok());
+        assert_eq!(emitter_error(|e| e.spawn = Spawn::PerMeter { per_meter: 0.0 }), "spawn");
+        assert_eq!(emitter_error(|e| e.spawn = Spawn::PerMeter { per_meter: 1001.0 }), "spawn");
+        assert_eq!(emitter_error(|e| e.spawn = Spawn::PerMeter { per_meter: f32::NAN }), "spawn");
+        let bad = [
+            Force::Wind { response: -1.0 },
+            Force::Noise { strength: f32::NAN, frequency: 1.0, octaves: 1, drift: 0.0 },
+            Force::Noise { strength: 1.0, frequency: 0.0, octaves: 1, drift: 0.0 },
+            Force::Noise { strength: 1.0, frequency: 1.0, octaves: 0, drift: 0.0 },
+            Force::Noise { strength: 1.0, frequency: 1.0, octaves: 3, drift: 0.0 },
+            Force::Noise { strength: 1.0, frequency: 1.0, octaves: 1, drift: -1.0 },
+            Force::Vortex { axis: [0.0; 3], strength: 1.0, pull: 0.0 },
+            Force::Vortex { axis: [0.0, 1.0, 0.0], strength: f32::INFINITY, pull: 0.0 },
+            Force::Attract { point: [f32::NAN, 0.0, 0.0], strength: 1.0, kill_radius: 0.0 },
+            Force::Attract { point: [0.0; 3], strength: 1.0, kill_radius: -0.1 },
+            Force::LimitSpeed { max: 0.0 },
+        ];
+        for force in bad {
+            assert_eq!(emitter_error(|e| e.forces = vec![force]), "forces", "{force:?}");
+        }
+        let wind = Force::Wind { response: 1.0 };
+        assert_eq!(emitter_error(|e| e.forces = vec![wind; MAX_FORCES + 1]), "forces");
+        assert!(library_of(EmitterDesc { forces: vec![wind; MAX_FORCES], ..emitter() }).is_ok());
+        let ground = |bounce, friction| Some(Ground { bounce, friction, dies: false });
+        assert_eq!(emitter_error(|e| e.collide = ground(1.5, 0.0)), "collide.bounce");
+        assert_eq!(emitter_error(|e| e.collide = ground(0.5, -0.1)), "collide.friction");
+        assert!(library_of(EmitterDesc { collide: ground(1.0, 1.0), ..emitter() }).is_ok());
+    }
+
+    /// What N2 adds is written only where an emitter has it, and reads back as it was.
+    #[test]
+    fn forces_and_a_ground_write_only_where_an_emitter_has_them() {
+        let plain = library_of(emitter()).expect("valid").to_ron().expect("written");
+        assert!(!plain.contains("forces") && !plain.contains("collide"), "{plain}");
+        let moved = EmitterDesc {
+            spawn: Spawn::Repeat { count: 3, interval: 0.25, times: 0 },
+            forces: vec![
+                Force::Noise { strength: 2.0, frequency: 1.5, octaves: 2, drift: 0.5 },
+                Force::Vortex { axis: [0.0, 1.0, 0.0], strength: 3.0, pull: 1.0 },
+                Force::LimitSpeed { max: 4.0 },
+            ],
+            collide: Some(Ground { bounce: 0.4, friction: 0.2, dies: false }),
+            ..emitter()
+        };
+        let library = library_of(moved).expect("valid");
+        let text = library.to_ron().expect("written");
+        assert!(text.contains("forces") && text.contains("collide"), "{text}");
+        assert_eq!(EffectLibrary::from_ron(&text).expect("reads"), library);
     }
 
     #[test]

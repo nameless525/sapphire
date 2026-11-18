@@ -17,7 +17,7 @@
 //! [`EffectPlace::Crown`]: crate::EffectPlace::Crown
 
 use sapphire_core::Name;
-use sapphire_gameplay::{ActorId, Simulation};
+use sapphire_gameplay::{ActorId, GroundMode, Simulation};
 use sapphire_math::Vec3;
 use sapphire_moves::Shape;
 
@@ -49,6 +49,10 @@ pub struct Stand {
     /// lands, if one is still to come: what an effect spawned on its clock after that step lives until, since
     /// that step's time is the first the effect ages by (M5 L7, a telegraph's decal).
     pub strike: Option<f32>,
+    /// The height of the ground under its feet while its controller stands or slides on it, and `None` while
+    /// it's in the air: the floor a cue's colliding particles land on (M6 N2). The simulation keeps no height
+    /// for the ground under an airborne actor, so a jumping or launched one gives none.
+    pub floor: Option<f32>,
 }
 
 impl Stand {
@@ -73,7 +77,9 @@ impl Stand {
                 strikes.map(|hitbox| hitbox.span.start()).filter(|&start| start > current.elapsed).min()?;
             Some((next - current.elapsed).as_secs_f32() + view.clock_delta.as_secs_f32())
         });
-        let ground = view.controller.state.ground_normal;
+        let state = view.controller.state;
+        let floor = (state.mode != GroundMode::Airborne).then_some(view.position.y);
+        let ground = state.ground_normal;
         let ground =
             if ground.is_finite() && ground.length_squared() > 1e-6 { ground.normalize() } else { Vec3::Y };
         Some(Self {
@@ -82,6 +88,7 @@ impl Stand {
             yaw: view.yaw,
             ground,
             strike,
+            floor,
         })
     }
 
@@ -89,13 +96,15 @@ impl Stand {
     /// what a stage with no simulation behind it stands its effects on.
     #[must_use]
     pub fn standing(feet: Vec3, height: f32, yaw: f32) -> Self {
-        Self { feet, crown: feet + Vec3::Y * height, yaw, ground: Vec3::Y, strike: None }
+        Self { feet, crown: feet + Vec3::Y * height, yaw, ground: Vec3::Y, strike: None, floor: Some(feet.y) }
     }
 
-    /// The same stand moved to `feet`, its crown as high over them, facing as it did on the same ground.
+    /// The same stand moved to `feet`, its crown as high over them, facing as it did on the same ground, its
+    /// floor under them if it had one.
     #[must_use]
     pub fn moved_to(self, feet: Vec3) -> Self {
-        Self { feet, crown: feet + (self.crown - self.feet), ..self }
+        let floor = self.floor.map(|_| feet.y);
+        Self { feet, crown: feet + (self.crown - self.feet), floor, ..self }
     }
 }
 

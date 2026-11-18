@@ -432,7 +432,7 @@ impl CueDispatcher {
     }
 
     fn fire_effect(&mut self, effect: &RowEffect, site: Site, step: &mut CueStep<'_>) {
-        let (placement, owner, strike) = match site {
+        let (placement, owner, strike, ground) = match site {
             Site::Actor { actor, hit } => {
                 let subject = hit.map_or(actor, |hit| hit.target);
                 let stand = (step.stand_of)(subject);
@@ -459,14 +459,19 @@ impl CueDispatcher {
                 let strike = stand
                     .and_then(|stand| stand.strike)
                     .filter(|_| effect.at == EffectPlace::Ground && on_its_clock);
-                (placement, owner, strike)
+                (placement, owner, strike, stand.and_then(|stand| stand.floor))
             }
-            Site::Place(place) => (Some(Placement::at(place)), OwnerId::WORLD, None),
+            Site::Place(place) => (Some(Placement::at(place)), OwnerId::WORLD, None, None),
         };
         let spawned = placement.and_then(|placement| step.vfx.spawn(effect.effect, owner, placement));
         // A ground effect on its subject's own clock learns when the subject next strikes, on that clock.
         if let (Some(handle), Some(strike)) = (spawned, strike) {
             step.vfx.set_strike(handle, strike);
+        }
+        // Its particles' ground (M6 N2) is the floor its subject stands on, wherever on the subject it plays.
+        // A subject in the air has none to give, and the effect keeps its own: the height it was placed at.
+        if let (Some(handle), Some(ground)) = (spawned, ground) {
+            step.vfx.set_ground(handle, ground);
         }
         match spawned {
             Some(_) => self.stats.effects += 1,
@@ -1084,6 +1089,62 @@ mod tests {
         let on_the_worlds = fills(EffectOwner::World);
         let own_length = 0.75;
         assert!((on_the_worlds[1] - 0.5 / own_length).abs() < 1e-4, "{on_the_worlds:?}");
+    }
+
+    /// The lowest of the bouncing sparks a second after they're fired, at the hit on a target that stands as
+    /// `target` says, or at `place` if one is given.
+    fn lowest_spark(target: Stand, place: Option<Vec3>) -> f32 {
+        // The shipped sparks, once: a cue can't fire an effect that repeats until it's stopped.
+        let shipped = VfxLibrary::default_effects();
+        let mut sparks =
+            shipped.effect(shipped.find("spark_bounce").expect("shipped")).expect("found").clone();
+        sparks.emitters[0].spawn = Spawn::Repeat { count: 14, interval: 0.5, times: 1 };
+        let library = VfxLibrary::new(vec![sparks]).expect("valid");
+        let fire =
+            EffectFire { effect: "spark_bounce".to_owned(), at: EffectPlace::Hit, clock: EffectOwner::World };
+        let table = CueTable::new(vec![CueRow { effects: vec![fire], ..row("spark") }]).expect("valid");
+        let mut sinks = Sinks::new();
+        let mut dispatcher =
+            CueDispatcher::new(&table, &library, &sinks.presets, &CameraTuning::default_tuning())
+                .expect("resolves");
+        sinks.vfx = VfxWorld::new(library, VfxBudget::DESKTOP_LOW, 7);
+        let stand_of = |_| Some(target);
+        let mut step = CueStep {
+            vfx: &mut sinks.vfx,
+            screen: &mut sinks.screen,
+            presets: &sinks.presets,
+            shakes: &mut sinks.shakes,
+            view_projection: Mat4::IDENTITY,
+            stand_of: &stand_of,
+        };
+        match place {
+            Some(place) => dispatcher.fire_at(Name::new("spark"), place, &mut step),
+            None => dispatcher.read_step(1, [event("spark", Some(hit(Weight::Light)))], &mut step),
+        }
+        assert_eq!(dispatcher.stats().effects, 1);
+        for _ in 0..60 {
+            sinks.vfx.advance(&OwnerSteps { world: TICK, owners: &[] });
+        }
+        let mut frame = VfxFrame::default();
+        sinks.vfx.write_frame(&mut frame, 1.0);
+        assert!(frame.sprites.len() >= 14, "{}", frame.sprites.len());
+        frame.sprites.iter().map(|sprite| sprite.position.y).fold(f32::INFINITY, f32::min)
+    }
+
+    /// A colliding effect's particles land on the floor its subject stands on (M6 N2): sparks from a hit half a
+    /// metre up fall to the target's feet and rest there. A subject in the air has no floor to give, so its
+    /// sparks keep the effect's own ground, the hit's height; and an effect at a place keeps the place's.
+    #[test]
+    fn a_hits_sparks_land_on_the_floor_its_subject_stands_on() {
+        // `hit` strikes at (0.25, 0.5, 0); the target's feet are at y = 0 under it.
+        let standing = Stand::standing(Vec3::new(0.0, 0.0, 1.0), 1.0, 0.0);
+        let on_the_floor = lowest_spark(standing, None);
+        assert!((0.0..0.03).contains(&on_the_floor), "{on_the_floor}");
+        let airborne = Stand { feet: Vec3::new(0.0, 0.3, 1.0), floor: None, ..standing };
+        let in_the_air = lowest_spark(airborne, None);
+        assert!((0.5..0.53).contains(&in_the_air), "{in_the_air}");
+        let at_a_place = lowest_spark(standing, Some(Vec3::new(4.0, 2.0, -1.0)));
+        assert!((2.0..2.03).contains(&at_a_place), "{at_a_place}");
     }
 
     /// A cue the simulation didn't publish fires on its actor as one with no hit would (M4 A5).

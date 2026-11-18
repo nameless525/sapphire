@@ -20,7 +20,8 @@
 //!   `prepare` read, refuses a raise, and the copies and staging of raises made before the loss are dropped
 //!   unsubmitted: nothing draws again, as with the mesh pool's uploads.
 //! - **Counters** (rule R9, [`MipStreamingStats`]): raises, lowers and bytes since the last frame was
-//!   prepared, and what waits to be let go of.
+//!   prepared, and what waits to be let go of: the old textures, and the new levels' staging, which the GPU
+//!   reads by the same frame (M6 X2, the memory ledger's rows).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,6 +59,12 @@ pub struct MipStreamingStats {
     /// moment a raise holds the old texture beside the new one.
     pub retiring: u32,
     pub retiring_bytes: u64,
+    /// Bytes of the staging belt the raises took whose copies the GPU may not have made yet (M6 X2): each
+    /// level's rows spaced to a buffer copy's alignment (`GpuTexture::staged_bytes`), read by the frame the
+    /// old texture waits for. The belt keeps its buffers for the next raises, in 4 MiB chunks or a level's
+    /// own, so what it holds is at least the most this has read, rounded up to its chunks; wgpu 30 doesn't
+    /// say more.
+    pub staging_bytes: u64,
     /// The bytes a frame may write by raising.
     pub budget: u64,
 }
@@ -70,9 +77,11 @@ pub(crate) struct MipStreaming {
     encoder: Option<wgpu::CommandEncoder>,
     /// The raises' new levels, on their way to the copies `encoder` records (`GpuTexture::raised`).
     staging: wgpu::util::StagingBelt,
-    /// Textures replaced, until no frame can be reading them.
-    retired: Retiring<GpuTexture>,
+    /// Textures replaced, until no frame can be reading them, with the bytes the raise that replaced each
+    /// staged, which the same frame reads.
+    retired: Retiring<(GpuTexture, u64)>,
     retired_bytes: u64,
+    staged_bytes: u64,
     budget: u64,
     /// What the counters read since the last prepared frame.
     frame: MipStreamingStats,
@@ -87,6 +96,7 @@ impl MipStreaming {
             staging: wgpu::util::StagingBelt::new(device.clone(), STAGING_CHUNK),
             retired: Retiring::default(),
             retired_bytes: 0,
+            staged_bytes: 0,
             budget: DEFAULT_MIP_BUDGET,
             frame: MipStreamingStats::default(),
             lost,
@@ -129,34 +139,40 @@ impl MipStreaming {
         self.staging.recall();
     }
 
-    /// Counts a raise that wrote `written` bytes of levels and copied `copied`, or a lower that copied
-    /// `copied`, and rebound `rebinds` materials; and keeps `old`, which it replaced, until frame
-    /// `last_read` is finished.
+    /// Counts a raise, whose `written` are the bytes of the levels it wrote and of the belt it staged them
+    /// in, that copied `copied`, or a lower (`written` none) that copied `copied`, and rebound `rebinds`
+    /// materials; and keeps `old`, which it replaced, and the staging until frame `last_read` is finished.
     pub(crate) fn replaced(
         &mut self,
         old: GpuTexture,
         last_read: u64,
-        written: Option<u64>,
+        written: Option<(u64, u64)>,
         copied: u64,
         rebinds: u32,
     ) {
-        match written {
-            Some(written) => {
+        let staged = match written {
+            Some((written, staged)) => {
                 self.frame.raises += 1;
                 self.frame.bytes_written += written;
+                staged
             }
-            None => self.frame.lowers += 1,
-        }
+            None => {
+                self.frame.lowers += 1;
+                0
+            }
+        };
         self.frame.bytes_copied += copied;
         self.frame.rebinds += rebinds;
         self.retired_bytes += old.bytes();
-        self.retired.push(last_read, old);
+        self.staged_bytes += staged;
+        self.retired.push(last_read, (old, staged));
     }
 
     /// Lets go of the textures no frame up to `finished` was the last to read.
     pub(crate) fn release_finished(&mut self, finished: u64) {
-        while let Some(old) = self.retired.pop_finished(finished) {
+        while let Some((old, staged)) = self.retired.pop_finished(finished) {
             self.retired_bytes -= old.bytes();
+            self.staged_bytes -= staged;
             self.frame.retired += 1;
         }
     }
@@ -180,6 +196,7 @@ impl MipStreaming {
         let stats = MipStreamingStats {
             retiring: self.retired.len() as u32,
             retiring_bytes: self.retired_bytes,
+            staging_bytes: self.staged_bytes,
             budget: self.budget,
             ..self.frame
         };

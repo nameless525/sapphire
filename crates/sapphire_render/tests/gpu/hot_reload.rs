@@ -662,6 +662,9 @@ fn a_raised_texture_draws_its_new_level_and_lets_the_old_go() {
     let stats = frames.renderer.stats().mip_streaming;
     assert_eq!((stats.raises, stats.lowers, stats.rebinds), (1, 0, 1), "{stats:?}");
     assert_eq!((stats.bytes_written, stats.bytes_copied), (256, 84), "{stats:?}");
+    // The new level's staging waits with the old texture, for the same frame (M6 X2): its 8 rows of 32 bytes,
+    // each spaced to a buffer copy's 256.
+    assert_eq!(stats.staging_bytes, 8 * 256 * u64::from(stats.retiring), "{stats:?}");
     let mut retired = stats.retired;
     for _ in 0..3 {
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
@@ -669,7 +672,11 @@ fn a_raised_texture_draws_its_new_level_and_lets_the_old_go() {
         retired += frames.renderer.stats().mip_streaming.retired;
     }
     let stats = frames.renderer.stats().mip_streaming;
-    assert_eq!((retired, stats.retiring, stats.retiring_bytes), (1, 0, 0), "{stats:?}");
+    assert_eq!(
+        (retired, stats.retiring, stats.retiring_bytes, stats.staging_bytes),
+        (1, 0, 0, 0),
+        "{stats:?}"
+    );
     assert_eq!(textures_held(&gpu), held, "nothing holds the old texture");
 
     // A level written over in place draws from the next frame, rebinding nothing.

@@ -1621,7 +1621,8 @@ impl Renderer {
         let (staging, encoder) = self.mip_streaming.writes(&self.device);
         let raised = texture.raised(&self.device, staging, encoder, levels, label)?;
         let written = levels.iter().map(|level| level.data().len() as u64).sum();
-        self.replace_texture(id, texture, raised, Some(written));
+        let staged = levels.iter().map(|level| raised.staged_bytes(level.level())).sum();
+        self.replace_texture(id, texture, raised, Some((written, staged)));
         Ok(())
     }
 
@@ -1649,9 +1650,9 @@ impl Renderer {
         id: AssetId,
         texture: &mut GpuTexture,
         new: GpuTexture,
-        written: Option<u64>,
+        written: Option<(u64, u64)>,
     ) {
-        let copied = new.bytes() - written.unwrap_or(0);
+        let copied = new.bytes() - written.map_or(0, |(written, _)| written);
         let old = std::mem::replace(texture, new);
         // A caster reading it casts through other levels now (M5 D8): the cascades and spot tiles
         // it's in are drawn again.

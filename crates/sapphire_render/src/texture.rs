@@ -189,6 +189,23 @@ impl GpuTexture {
         Ok(raised)
     }
 
+    /// The bytes [`Self::raised`] takes of its staging for the whole texture's level `level` (M6 X2): its rows,
+    /// each spaced to a buffer copy's 256-byte alignment, so a level narrower than that takes more than its
+    /// own bytes.
+    pub fn staged_bytes(&self, level: u32) -> u64 {
+        let (_, spaced, rows) = self.staged_rows(level);
+        u64::from(spaced) * u64::from(rows)
+    }
+
+    /// Level `level`'s rows as a buffer copy wants them: a row's bytes, its spacing, and the rows.
+    fn staged_rows(&self, level: u32) -> (u32, u32, u32) {
+        let (block_width, block_height) = self.whole.format.block_dimensions();
+        let (width, height) = self.whole.level_extent(level);
+        let row = width.div_ceil(block_width) * self.whole.format.block_bytes();
+        let rows = height.div_ceil(block_height);
+        (row, row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT), rows)
+    }
+
     /// Writes `data`, the whole texture's level `level`, through `staging` by a copy `encoder` records, its
     /// rows spaced as a buffer copy wants them.
     fn stage(
@@ -198,11 +215,7 @@ impl GpuTexture {
         level: u32,
         data: &[u8],
     ) {
-        let (block_width, block_height) = self.whole.format.block_dimensions();
-        let (width, height) = self.whole.level_extent(level);
-        let row = width.div_ceil(block_width) * self.whole.format.block_bytes();
-        let rows = height.div_ceil(block_height);
-        let spaced = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let (row, spaced, rows) = self.staged_rows(level);
         let Some(size) = wgpu::BufferSize::new(u64::from(spaced) * u64::from(rows)) else { return };
         // A buffer copy starts at a multiple of the format's block, which divides the row alignment.
         let alignment = wgpu::BufferSize::new(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)).expect("not 0");

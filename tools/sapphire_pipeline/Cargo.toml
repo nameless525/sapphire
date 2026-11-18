@@ -72,6 +72,9 @@ getrandom.workspace = true
 glam.workspace = true
 # Probe grids store half floats (M1 W5).
 half.workspace = true
+# An FBX's curves evaluated in `f64` as ufbx does, with musl's transcendentals in pure Rust (M6 A2):
+# what `sapphire_math::det` wraps in `f32`, the same bits on every target.
+libm.workspace = true
 # `extras` exposes per-object custom properties, which is how Blender drives character shading parameters.
 # `extensions` exposes extensions gltf doesn't model, which is how VRM files carry theirs (M1 A6).
 # `utils` reads accessors; buffers load in `import::gltf` rather than through `import` (which

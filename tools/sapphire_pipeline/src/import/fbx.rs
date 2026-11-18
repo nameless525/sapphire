@@ -99,6 +99,8 @@ use crate::mesh::{
 };
 
 pub mod clips;
+#[cfg_attr(not(test), allow(dead_code, reason = "the spike alone: clips and rests sample through it next"))]
+pub mod curves;
 #[cfg(test)]
 pub(crate) mod tests;
 

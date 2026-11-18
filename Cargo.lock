@@ -4739,6 +4739,7 @@ dependencies = [
  "half",
  "icu_locale_core",
  "image",
+ "libm",
  "meshopt",
  "read-fonts 0.46.0",
  "rerecast",

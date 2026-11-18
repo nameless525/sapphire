@@ -499,14 +499,11 @@ pub static SCENARIOS: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
     CODE_SCENARIOS.iter().copied().chain(documents).collect()
 });
 
-/// [`SCENARIOS`] with the benchmark district's builder, as the replay runner holds them (M5 B5): what the tests
+/// [`SCENARIOS`] with the benchmark zones' builders, as the replay runner holds them (M5 B5): what the tests
 /// that set every scenario up walk.
 #[cfg(test)]
 pub(crate) static WITH_ZONES: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
-    SCENARIOS
-        .iter()
-        .map(|scenario| Scenario { zones: sapphire_synthetic_zone::district::ZONES, ..*scenario })
-        .collect()
+    SCENARIOS.iter().map(|scenario| Scenario { zones: sapphire_synthetic_zone::ZONES, ..*scenario }).collect()
 });
 
 /// The scenario named `name`, among `scenarios`.

@@ -39,8 +39,8 @@ use sapphire_navmesh::{NO_NEIGHBOUR, NavMesh};
 use sapphire_serialize::AssetId;
 use sapphire_zone::grid::Grid;
 use sapphire_zone::{
-    BuildZone, BuiltZone, Checkpoint, EncounterDocument, Spawner, Trigger, Volume, Wave, WaveStart,
-    ZoneDocument, ZoneSimulation,
+    BuiltZone, Checkpoint, EncounterDocument, Spawner, Trigger, Volume, Wave, WaveStart, ZoneDocument,
+    ZoneSimulation,
 };
 
 /// A cell's side, in metres: the district's grid.
@@ -79,9 +79,6 @@ const BODY_RADIUS: f32 = 0.5;
 const AVENUE_REACH: f32 = 63.0;
 /// The navmesh's cell, in metres: every corner above lies on it.
 const NAV_CELL: f32 = 0.5;
-/// The benchmark's root ID, `sapphire_pipeline::bench::BENCH_ROOT`, from which its documents' IDs come: the
-/// pipeline's district tests hold the two together.
-const BENCH_ROOT: AssetId = AssetId::from_text("4b0c8e31-5d27-4f6a-9a83-2e61c07db5f4");
 
 /// A street's width by its kind, in metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,13 +115,13 @@ pub fn half_side(cells: u32) -> f32 {
 /// The plaza's encounter, by the ID the generator gives it: `district/plaza.encounter.ron` under the benchmark.
 #[must_use]
 pub fn encounter_id() -> AssetId {
-    BENCH_ROOT.sub_asset("district/plaza.encounter.ron")
+    crate::BENCH_ROOT.sub_asset("district/plaza.encounter.ron")
 }
 
 /// The district's collider set, by the ID the generator gives it: `district/district.colliders.ron`.
 #[must_use]
 pub fn colliders_id() -> AssetId {
-    BENCH_ROOT.sub_asset("district/district.colliders.ron")
+    crate::BENCH_ROOT.sub_asset("district/district.colliders.ron")
 }
 
 /// The district's spawners: the player's start, where a fight starts the player at the plaza's edge, where a
@@ -385,10 +382,6 @@ fn document(cells: u32, kinds: &[&str]) -> ZoneDocument {
         weather_plan: None,
     }
 }
-
-/// The zones this crate builds for a scenario to stand on, by the name its `built` gives each: what the replay
-/// runner and a development build's fight hand over (`sapphire_gameplay::replay::Scenario::zones`).
-pub const ZONES: &[(&str, BuildZone)] = &[(ZONE_NAME, built)];
 
 /// The district a scenario fights on (M5 B5), a [`sapphire_zone::BuildZone`]: its simulation half at the
 /// smallest size, whose colliders and navmesh are every preset's, the plaza's twelve spawning `enemies` in turn.

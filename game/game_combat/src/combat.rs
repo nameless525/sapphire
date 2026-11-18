@@ -84,9 +84,9 @@ pub static SCENARIOS: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
     sapphire_script::scenarios::ALL.iter().map(|scenario| Scenario { zones: ZONES, ..*scenario }).collect()
 });
 
-/// The zones code builds that this build's scenarios can stand on: the benchmark district's, under `dev`.
+/// The zones code builds that this build's scenarios can stand on: the benchmark's, under `dev`.
 #[cfg(feature = "dev")]
-const ZONES: sapphire_gameplay::replay::ZoneBuilders = sapphire_synthetic_zone::district::ZONES;
+const ZONES: sapphire_gameplay::replay::ZoneBuilders = sapphire_synthetic_zone::ZONES;
 #[cfg(not(feature = "dev"))]
 const ZONES: sapphire_gameplay::replay::ZoneBuilders = &[];
 

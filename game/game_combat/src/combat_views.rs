@@ -1134,10 +1134,10 @@ mod tests {
 
     fn player(name: &str) -> Player {
         let bytes = fs::read(replays().join(format!("{name}.sreplay"))).expect("committed");
-        // With the district's builder, as the replay runner holds them (M5 B5).
+        // With the benchmark zones' builders, as the replay runner holds them (M5 B5, M6 W1).
         let scenarios: Vec<Scenario> = ALL
             .iter()
-            .map(|scenario| Scenario { zones: sapphire_synthetic_zone::district::ZONES, ..*scenario })
+            .map(|scenario| Scenario { zones: sapphire_synthetic_zone::ZONES, ..*scenario })
             .collect();
         Player::new(Replay::decode(&bytes).expect("reads"), &scenarios).expect("starts")
     }

@@ -87,7 +87,7 @@ use sapphire_reflect::Versioned;
 use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_timeline::TimelineDocument;
-use sapphire_zone::{BuiltZone, EncounterDocument, Zone, ZoneDocument, ZonePresentation, ZoneSimulation};
+use sapphire_zone::{BuiltZone, CookedWaterSurface, EncounterDocument, Zone, ZoneDocument, ZonePresentation};
 use serde::{Deserialize, Serialize};
 
 use super::play::RunStart;
@@ -717,7 +717,7 @@ impl ScenarioDocument {
             encounter.waves.iter().flat_map(|wave| wave.spawners.iter().cloned()).collect()
         };
         if let Some(built) = self.built_zone(zones)? {
-            let cooked = archived(built.document.simulation()?, built.document.grid.cell_size)?;
+            let cooked = archived(&built.document)?;
             let (mut encounters, mut fought) = (Vec::with_capacity(built.encounters.len()), Vec::new());
             for (id, encounter) in &built.encounters {
                 encounters.push((*id, encounter.cook()?.to_cooked()?));
@@ -1066,12 +1066,22 @@ fn arena_point(name: &str) -> Option<SpawnPoint> {
 /// A zone's document, and what the simulation reads of it archived as a cook archives it.
 fn zone_of(path: &str) -> Result<(ZoneDocument, AlignedVec), ScenarioError> {
     let document = ZoneDocument::from_ron(named(path)?)?;
-    let cooked = archived(document.simulation()?, document.grid.cell_size)?;
+    let cooked = archived(&document)?;
     Ok((document, cooked))
 }
 
-/// What the simulation reads of a zone, archived as a cook archives it, with no presentation.
-fn archived(mut simulation: ZoneSimulation, cell_size: f32) -> Result<AlignedVec, ScenarioError> {
+/// What the simulation reads of a zone `document`, archived as a cook archives it, with no presentation but a
+/// bare surface for each water body, which a cooked zone pairs with each body's volume (M6 W1: the nature zone's
+/// lake, river and pond): nothing the simulation reads.
+fn archived(document: &ZoneDocument) -> Result<AlignedVec, ScenarioError> {
+    let (mut simulation, cell_size) = (document.simulation()?, document.grid.cell_size);
+    // Each body's surface as a cook pairs it with its volume, its material and margin the document's; with no
+    // reflection probes in this archive, it reflects none.
+    let water = document
+        .cooked_water_surfaces(&simulation)
+        .into_iter()
+        .map(|surface| CookedWaterSurface { probe: None, ..surface })
+        .collect();
     // An exit's pack is the pack of the zone it leads to, which a cook finds by its ID (M3 W4).
     for exit in &mut simulation.exits {
         let pack = zone_pack(exit.to)?;
@@ -1095,7 +1105,7 @@ fn archived(mut simulation: ZoneSimulation, cell_size: f32) -> Result<AlignedVec
             wind: None,
             weather: None,
             fog: None,
-            water: Vec::new(),
+            water,
             rooms: Vec::new(),
             weather_plan: None,
         },
@@ -1109,8 +1119,8 @@ mod tests {
     use crate::{ActorActions, Buttons, Stick, TickActions};
     use sapphire_core::Name;
 
-    /// The zones code builds, as the replay runner hands them over: the benchmark district (M5 B5).
-    const ZONES: ZoneBuilders = sapphire_synthetic_zone::district::ZONES;
+    /// The zones code builds, as the replay runner hands them over: the benchmark district and nature zone.
+    const ZONES: ZoneBuilders = sapphire_synthetic_zone::ZONES;
 
     /// A field's name, and what spoils it.
     type Spoiled = (&'static str, fn(&mut ScenarioDocument));

@@ -35,7 +35,7 @@ pub const EXTENSION: &str = "sreplay";
 /// Every scenario the runner plays: the game's, those with a script among them, with the zones code builds
 /// handed to them (M5 B5), so a scenario on the benchmark district plays here with no cook of it.
 pub static SCENARIOS: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
-    let zones = sapphire_synthetic_zone::district::ZONES;
+    let zones = sapphire_synthetic_zone::ZONES;
     sapphire_script::scenarios::ALL.iter().map(|scenario| Scenario { zones, ..*scenario }).collect()
 });
 

@@ -979,8 +979,14 @@ impl ZoneDocument {
         Ok(Zone { simulation, presentation })
     }
 
-    /// What drawing reads of each body, in the simulation's order.
-    fn cooked_water_surfaces(&self, simulation: &ZoneSimulation) -> Vec<CookedWaterSurface> {
+    /// What drawing reads of each body, in the simulation's order: the pairing a cooked zone holds its surfaces
+    /// to (`Zone::validate`), which a simulation's archive with no presentation keeps too (M6 W1).
+    ///
+    /// # Panics
+    ///
+    /// If `simulation` isn't this document's, or names a probe [`Self::check`] wouldn't pass.
+    #[must_use]
+    pub fn cooked_water_surfaces(&self, simulation: &ZoneSimulation) -> Vec<CookedWaterSurface> {
         simulation
             .water
             .iter()

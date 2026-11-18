@@ -50,8 +50,8 @@ sapphire_reflect = { workspace = true, optional = true }
 # Live tuning, dev-only (rule R8): linked only by the `dev` feature, which an app's own `dev` turns on.
 sapphire_hot_reload = { workspace = true, optional = true }
 sapphire_livelink = { workspace = true, optional = true }
-# The benchmark district (M5 B5): the zone a development build's `district-encounter` stands on, which code
-# builds. Dev-only, so a game's build refuses that scenario.
+# The benchmark district (M5 B5) and nature zone (M6 W1): the zones a development build's `district-encounter`
+# and `nature-encounter` stand on, which code builds. Dev-only, so a game's build refuses those scenarios.
 sapphire_synthetic_zone = { workspace = true, optional = true }
 
 [dev-dependencies]

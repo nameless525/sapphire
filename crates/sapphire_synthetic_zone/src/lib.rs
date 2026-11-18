@@ -8,10 +8,42 @@
 //! It's written as a cooked pack, as a cook would, because a cooker can't be linked from here (R1). The
 //! proof that a real cook makes the same shape is `sapphire_pipeline`'s `large_zone` test and the town.
 //!
-//! [`district`] is the other zone built here: the benchmark district's simulation half (M5 B2), which a fight
-//! on the generated district builds in code, as simulation data stays compiled in.
+//! [`district`] and [`nature`] are the other zones built here: the benchmark district's simulation half (M5
+//! B2) and the benchmark nature zone's (M6 W1), which a fight on either generated zone builds in code, as
+//! simulation data stays compiled in. [`ZONES`] hands both over.
 
 pub mod district;
+pub mod nature;
+
+/// The root every benchmark asset's ID derives from (`sapphire_pipeline::bench::BENCH_ROOT` is this): the IDs
+/// the zones built here name are the generated files'.
+pub const BENCH_ROOT: AssetId = AssetId::from_text("4b0c8e31-5d27-4f6a-9a83-2e61c07db5f4");
+
+/// A circle's sixteen directions, `(cos, sin)` of each sixteenth of a turn, written out so no transcendental
+/// is reached: the nature zone's lake outlines and the generator's grass blades are the same on every machine.
+pub const DIRECTIONS: [[f32; 2]; 16] = [
+    [1.0, 0.0],
+    [0.923_879_5, 0.382_683_43],
+    [0.707_106_77, 0.707_106_77],
+    [0.382_683_43, 0.923_879_5],
+    [0.0, 1.0],
+    [-0.382_683_43, 0.923_879_5],
+    [-0.707_106_77, 0.707_106_77],
+    [-0.923_879_5, 0.382_683_43],
+    [-1.0, 0.0],
+    [-0.923_879_5, -0.382_683_43],
+    [-0.707_106_77, -0.707_106_77],
+    [-0.382_683_43, -0.923_879_5],
+    [0.0, -1.0],
+    [0.382_683_43, -0.923_879_5],
+    [0.707_106_77, -0.707_106_77],
+    [0.923_879_5, -0.382_683_43],
+];
+
+/// The zones this crate builds for a scenario to stand on, by the name its `built` gives each: what the replay
+/// runner and a development build's fight hand over (`sapphire_gameplay::replay::Scenario::zones`).
+pub const ZONES: &[(&str, sapphire_zone::BuildZone)] =
+    &[(district::ZONE_NAME, district::built), (nature::ZONE_NAME, nature::built)];
 
 use sapphire_assets::material::{AnimeCharacterMaterial, Material};
 use sapphire_assets::mesh::{

@@ -304,3 +304,124 @@ fn serial_passes_submit_one_command_buffer_each_and_draw_the_same() {
     let stats = executor.stats();
     assert_eq!((stats.passes, stats.command_buffers), (8, 8), "one command buffer a pass: {stats:?}");
 }
+
+/// The bench's overlap mode (M6 B7) waits after frame N's submit for frame N - 2's alone, by the submission index
+/// [`GraphExecutor::submitted`] gives: on each backend this runs on, that wait returns once frame N - 2 is done with its
+/// map callbacks run, so a buffer it wrote reads and its GPU timings are read when frame N + 1 begins. A wait runs
+/// every map callback that is done, so one begin can read two frames' timings: every frame's comes back, through
+/// [`GraphExecutor::gpu_timings_read`], none dropped for a newer one. Waiting again on an index already done returns
+/// at once, and waiting for the newest submission empties the queue.
+#[test]
+#[ignore = "needs a GPU"]
+fn waiting_on_a_submission_two_frames_back_reads_its_timings() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const FRAMES: u64 = 8;
+    let gpu = gpu();
+    let target_texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: USAGE,
+        view_formats: &[],
+    });
+    let target_view = target_texture.create_view(&Default::default());
+    let padded = (SIZE * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    // Written by the first frame alone.
+    let readback = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(padded * SIZE),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mapped = Arc::new(AtomicBool::new(false));
+
+    let mut executor = GraphExecutor::new();
+    let timing = executor.set_gpu_timing(&gpu, true);
+    let mut submitted = Vec::new();
+    // Each frame's timings as the begins read them, and the most one begin read.
+    let (mut read_back, mut most) = (Vec::new(), 0);
+    let mut read = |executor: &GraphExecutor| {
+        let read = executor.gpu_timings_read();
+        assert_eq!(read.last(), read.last().and(executor.gpu_timings()), "the newest read is the latest");
+        read_back.extend(read.iter().map(|timings| timings.frame));
+        most = most.max(read.len());
+    };
+    let blue_to = || {
+        let mut graph = FrameGraph::new();
+        let target = graph.import_texture("target", &target_view);
+        let source = graph.create_texture("source", desc());
+        clear(&mut graph, "clear source", source, wgpu::Color::BLUE);
+        copy(&mut graph, "to target", source, target);
+        (graph, target)
+    };
+    for frame in 1..=FRAMES {
+        let (mut graph, target) = blue_to();
+        let readback_buffer = &readback;
+        if frame == 1 {
+            graph.add_pass("readback").read(target).side_effect().record(move |ctx| {
+                let texture = ctx.texture(target);
+                ctx.encoder.copy_texture_to_buffer(
+                    texture.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: readback_buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(padded),
+                            rows_per_image: Some(SIZE),
+                        },
+                    },
+                    texture.size(),
+                );
+            });
+        }
+        executor.execute(&gpu, graph).expect("a valid graph");
+        assert_eq!(executor.frames(), frame);
+        read(&executor);
+        submitted.push(executor.submitted().cloned().expect("a frame submits"));
+        if frame == 1 {
+            let mapped = Arc::clone(&mapped);
+            readback.map_async(wgpu::MapMode::Read, .., move |result| {
+                result.expect("map");
+                mapped.store(true, Ordering::Release);
+            });
+        }
+        // This frame's begin read what the wait after the frame before it finished: frame - 3, two back from that.
+        if timing && frame > 3 {
+            let read = executor.gpu_timings().map_or(0, |timings| timings.frame);
+            assert!(
+                read >= frame - 3,
+                "frame {frame} began with frame {read}'s timings, not frame {}'s",
+                frame - 3
+            );
+        }
+        if let Some(two_back) = frame.checked_sub(3).map(|at| submitted[at as usize].clone()) {
+            let status = gpu
+                .device()
+                .poll(wgpu::PollType::Wait { submission_index: Some(two_back), timeout: None })
+                .expect("a wait by submission index");
+            assert!(status.wait_finished(), "frame {frame}: {status:?}");
+            assert!(mapped.load(Ordering::Acquire), "frame 1's map ran by the wait for it, or one after");
+        }
+    }
+    let pixels = readback.get_mapped_range(..).expect("mapped");
+    assert_eq!(pixels[..4], [0, 0, 255, 255], "frame 1 had finished when its wait returned");
+    drop(pixels);
+    let again = gpu
+        .device()
+        .poll(wgpu::PollType::Wait { submission_index: Some(submitted[0].clone()), timeout: None });
+    assert!(again.expect("an index already done").wait_finished());
+    let newest = gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("a wait for the newest");
+    assert!(newest.is_queue_empty(), "{newest:?}");
+    // One frame more begins with every frame before it done, and reads the ones still unread.
+    executor.execute(&gpu, blue_to().0).expect("a valid graph");
+    read(&executor);
+    if timing {
+        assert_eq!(read_back, (1..=FRAMES).collect::<Vec<_>>(), "every frame's timings, in order, once each");
+        eprintln!("the most frames one begin read: {most}");
+    }
+}

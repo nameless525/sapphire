@@ -32,7 +32,8 @@
 //!   the renderer's colour-vision debug view and the cue tests share, and Oklab's distance.
 //! - **The weather** ([`weather`], M5 L4): how wet the world is and how far its puddles have
 //!   filled ([`Weather`]), which a zone, its day's keys and a tool resolve and the environment's
-//!   wet surfaces draw.
+//!   wet surfaces draw; and the weather-only half of the frame's one weather state ([`WeatherFrame`],
+//!   M6 W8a), which the world's weather system resolves.
 //! - **The wind** ([`wind`], M1 W6, M6 Y1): one field every reader samples ([`WindField`]): the global
 //!   wind ([`Wind`]), turbulence and local volumes ([`WindVolume`]), and its one sampler, which the
 //!   renderer's `wind.wgsl` mirrors operation for operation.
@@ -83,5 +84,8 @@ pub use vfx::mesh::{
     VfxPattern,
 };
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};
-pub use weather::Weather;
+pub use weather::{
+    Accumulation, Precipitation, PrecipitationKind, ShareTarget, Temperature, Weather, WeatherAudio,
+    WeatherEnvironment, WeatherFrame, WeatherWind,
+};
 pub use wind::{ResolvedWind, Wind, WindField, WindState, WindVolume, WindVolumeState};

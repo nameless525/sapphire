@@ -6,7 +6,7 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use super::TodError;
-use super::key::{TodGroups, TodKey};
+use super::key::{TodGroup, TodGroups, TodKey};
 use super::look::{TodLook, celestial_sphere};
 
 /// Hours in a day: timeline keys sit in `0 ≤ time < DAY_HOURS`.
@@ -119,8 +119,13 @@ impl TodTimeline {
 
     /// Blends this timeline's groups at `hours` over `look` with `weight` (1 replaces them).
     pub fn apply(&self, look: &mut TodLook, hours: f32, weight: f32) {
+        self.apply_by(look, hours, |_| weight);
+    }
+
+    /// [`Self::apply`] with a weight for each group ([`TodLook::blend_keys_by`]).
+    pub fn apply_by(&self, look: &mut TodLook, hours: f32, weight: impl Fn(TodGroup) -> f32) {
         let Segment { from, to, weight: segment } = self.segment(hours);
-        look.blend_keys(&self.keys[from], &self.keys[to], segment, weight);
+        look.blend_keys_by(&self.keys[from], &self.keys[to], segment, weight);
     }
 }
 

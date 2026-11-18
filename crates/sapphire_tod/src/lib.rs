@@ -31,6 +31,9 @@
 //! - **[`TodLook`]**: the look at one moment, every group resolved, as plain values.
 //! - **Light rig presets** ([`light_rig`], M6 T4): the character light rig's presets and their
 //!   library as plain data, which `sapphire_world::light_rig` resolves against a camera.
+//! - **Weather states** ([`weather`], M6 W8a): the `WeatherDocument`, named states each a partial
+//!   day plus the weather's own groups, how they blend two at a time, and the schedule a zone picks
+//!   them by, which `sapphire_world::weather` runs.
 //!
 //! # Evaluation
 //!
@@ -72,6 +75,7 @@ mod key;
 pub mod light_rig;
 mod look;
 mod timeline;
+pub mod weather;
 
 pub use key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CharacterShadeKey, CloudsKey,

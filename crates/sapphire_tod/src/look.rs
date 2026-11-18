@@ -14,7 +14,7 @@ use sapphire_math::{Quat, Vec3};
 use super::key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CharacterShadeKey, CloudsKey,
     DiffusionKey, DiscKey, FogKey, FogLayerKey, GradeKey, GradientKey, HeightFogKey, LensFlareKey, NebulaKey,
-    ShaftsKey, SkyKey, TodKey, VignetteKey, WeatherKey,
+    ShaftsKey, SkyKey, TodGroup, TodKey, VignetteKey, WeatherKey,
 };
 use super::timeline::DAY_HOURS;
 
@@ -207,6 +207,18 @@ impl TodLook {
     /// `weight` of the way over what the look had. A weight of 1 replaces the groups outright,
     /// and a segment of 0 takes `from`'s values exactly.
     pub fn blend_keys(&mut self, from: &TodKey, to: &TodKey, segment: f32, weight: f32) {
+        self.blend_keys_by(from, to, segment, |_| weight);
+    }
+
+    /// [`Self::blend_keys`] with a weight for each group (M6 W8a): what a weather state's transition
+    /// needs, so the outgoing state's groups the incoming one also sets stay whole beneath it.
+    pub fn blend_keys_by(
+        &mut self,
+        from: &TodKey,
+        to: &TodKey,
+        segment: f32,
+        weight: impl Fn(TodGroup) -> f32,
+    ) {
         fn group<K: Resolve>(
             slot: &mut K::Value,
             from: Option<&K>,
@@ -220,34 +232,112 @@ impl TodLook {
                 *slot = mix(slot, &value, weight);
             }
         }
-        group(&mut self.sun, from.sun.as_ref(), to.sun.as_ref(), segment, weight);
-        group(&mut self.moon, from.moon.as_ref(), to.moon.as_ref(), segment, weight);
-        group(&mut self.sky, from.sky.as_ref(), to.sky.as_ref(), segment, weight);
-        group(&mut self.ambient, from.ambient.as_ref(), to.ambient.as_ref(), segment, weight);
-        group(&mut self.fog, from.fog.as_ref(), to.fog.as_ref(), segment, weight);
-        group(&mut self.shadow_tint, from.shadow_tint.as_ref(), to.shadow_tint.as_ref(), segment, weight);
-        group(&mut self.character_light, from.character.as_ref(), to.character.as_ref(), segment, weight);
-        group(&mut self.day_night, from.day_night.as_ref(), to.day_night.as_ref(), segment, weight);
-        group(&mut self.exposure, from.exposure.as_ref(), to.exposure.as_ref(), segment, weight);
-        group(&mut self.grades, from.grade.as_ref(), to.grade.as_ref(), segment, weight);
-        group(&mut self.bloom, from.bloom.as_ref(), to.bloom.as_ref(), segment, weight);
-        group(&mut self.vignette, from.vignette.as_ref(), to.vignette.as_ref(), segment, weight);
+        group(&mut self.sun, from.sun.as_ref(), to.sun.as_ref(), segment, weight(TodGroup::Sun));
+        group(&mut self.moon, from.moon.as_ref(), to.moon.as_ref(), segment, weight(TodGroup::Moon));
+        group(&mut self.sky, from.sky.as_ref(), to.sky.as_ref(), segment, weight(TodGroup::Sky));
+        group(
+            &mut self.ambient,
+            from.ambient.as_ref(),
+            to.ambient.as_ref(),
+            segment,
+            weight(TodGroup::Ambient),
+        );
+        group(&mut self.fog, from.fog.as_ref(), to.fog.as_ref(), segment, weight(TodGroup::Fog));
+        group(
+            &mut self.shadow_tint,
+            from.shadow_tint.as_ref(),
+            to.shadow_tint.as_ref(),
+            segment,
+            weight(TodGroup::ShadowTint),
+        );
+        group(
+            &mut self.character_light,
+            from.character.as_ref(),
+            to.character.as_ref(),
+            segment,
+            weight(TodGroup::Character),
+        );
+        group(
+            &mut self.day_night,
+            from.day_night.as_ref(),
+            to.day_night.as_ref(),
+            segment,
+            weight(TodGroup::DayNight),
+        );
+        group(
+            &mut self.exposure,
+            from.exposure.as_ref(),
+            to.exposure.as_ref(),
+            segment,
+            weight(TodGroup::Exposure),
+        );
+        group(&mut self.grades, from.grade.as_ref(), to.grade.as_ref(), segment, weight(TodGroup::Grade));
+        group(&mut self.bloom, from.bloom.as_ref(), to.bloom.as_ref(), segment, weight(TodGroup::Bloom));
+        group(
+            &mut self.vignette,
+            from.vignette.as_ref(),
+            to.vignette.as_ref(),
+            segment,
+            weight(TodGroup::Vignette),
+        );
         let (from_discs, to_discs) = (from.discs.as_ref(), to.discs.as_ref());
-        group(&mut self.sun_disc, from_discs.map(|d| &d.sun), to_discs.map(|d| &d.sun), segment, weight);
-        group(&mut self.moon_disc, from_discs.map(|d| &d.moon), to_discs.map(|d| &d.moon), segment, weight);
-        group(&mut self.stars, from.stars.as_ref(), to.stars.as_ref(), segment, weight);
-        group(&mut self.nebula, from.nebula.as_ref(), to.nebula.as_ref(), segment, weight);
-        group(&mut self.clouds, from.clouds.as_ref(), to.clouds.as_ref(), segment, weight);
-        group(&mut self.diffusion, from.diffusion.as_ref(), to.diffusion.as_ref(), segment, weight);
+        group(
+            &mut self.sun_disc,
+            from_discs.map(|d| &d.sun),
+            to_discs.map(|d| &d.sun),
+            segment,
+            weight(TodGroup::Discs),
+        );
+        group(
+            &mut self.moon_disc,
+            from_discs.map(|d| &d.moon),
+            to_discs.map(|d| &d.moon),
+            segment,
+            weight(TodGroup::Discs),
+        );
+        group(&mut self.stars, from.stars.as_ref(), to.stars.as_ref(), segment, weight(TodGroup::Stars));
+        group(&mut self.nebula, from.nebula.as_ref(), to.nebula.as_ref(), segment, weight(TodGroup::Nebula));
+        group(&mut self.clouds, from.clouds.as_ref(), to.clouds.as_ref(), segment, weight(TodGroup::Clouds));
+        group(
+            &mut self.diffusion,
+            from.diffusion.as_ref(),
+            to.diffusion.as_ref(),
+            segment,
+            weight(TodGroup::Diffusion),
+        );
         let (from_bloom, to_bloom) = (from.character_bloom.as_ref(), to.character_bloom.as_ref());
-        group(&mut self.character_bloom, from_bloom, to_bloom, segment, weight);
-        group(&mut self.gradients, from.gradients.as_ref(), to.gradients.as_ref(), segment, weight);
-        group(&mut self.lens_flare, from.lens_flare.as_ref(), to.lens_flare.as_ref(), segment, weight);
-        group(&mut self.emission, from.emission.as_ref(), to.emission.as_ref(), segment, weight);
+        group(&mut self.character_bloom, from_bloom, to_bloom, segment, weight(TodGroup::CharacterBloom));
+        group(
+            &mut self.gradients,
+            from.gradients.as_ref(),
+            to.gradients.as_ref(),
+            segment,
+            weight(TodGroup::Gradients),
+        );
+        group(
+            &mut self.lens_flare,
+            from.lens_flare.as_ref(),
+            to.lens_flare.as_ref(),
+            segment,
+            weight(TodGroup::LensFlare),
+        );
+        group(
+            &mut self.emission,
+            from.emission.as_ref(),
+            to.emission.as_ref(),
+            segment,
+            weight(TodGroup::Emission),
+        );
         let (from_shade, to_shade) = (from.character_shade.as_ref(), to.character_shade.as_ref());
-        group(&mut self.character_shade, from_shade, to_shade, segment, weight);
-        group(&mut self.weather, from.weather.as_ref(), to.weather.as_ref(), segment, weight);
-        group(&mut self.shafts, from.shafts.as_ref(), to.shafts.as_ref(), segment, weight);
+        group(&mut self.character_shade, from_shade, to_shade, segment, weight(TodGroup::CharacterShade));
+        group(
+            &mut self.weather,
+            from.weather.as_ref(),
+            to.weather.as_ref(),
+            segment,
+            weight(TodGroup::Weather),
+        );
+        group(&mut self.shafts, from.shafts.as_ref(), to.shafts.as_ref(), segment, weight(TodGroup::Shafts));
     }
 }
 

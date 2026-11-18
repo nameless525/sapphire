@@ -32,7 +32,9 @@
 //!   well as drawing light, M5 L6's [`Distortion`]) and up to two ground decals (M5 L7, [`DecalLayerDesc`]:
 //!   signed distance shapes flat on the ground, a telegraph's fill timed to its actor's strike), and forces and
 //!   a ground on an emitter's particles (M6 N2, [`Force`], [`Ground`]: wind, a curl of noise, a vortex, an
-//!   attractor, a speed limit, a plane at the owner's feet), checked
+//!   attractor, a speed limit, a plane at the owner's feet), and stateless emitters (M6 N8a, [`Sim::Stateless`]:
+//!   each particle a closed-form function of a seed and an age, resolved by [`EmitterDesc::stateless`] into
+//!   `sapphire_look`'s CPU reference, which the renderer's include mirrors; a world here never simulates one), checked
 //!   whole so an author's mistake names its field. Versions 1 to 4 read to the bit (`testdata/`). A game's
 //!   library (`<name>.effects.ron`) cooks as the `Effects` asset kind (M6 N1) and loads through the asset
 //!   server, read and checked here as a document is; [`EffectLibrary::default_effects`] compiles in a hit spark,
@@ -86,7 +88,7 @@ pub use curve::{Curve, CurveValue, MAX_KEYS};
 pub use decal::{DecalBlend, DecalLayerDesc, DecalShape, MAX_DECAL_LAYERS, MAX_DECAL_SIZE, on_ground};
 pub use document::{
     Effect, EffectId, EffectLibrary, EffectLibraryError, EmitterDesc, Facing, Light, MAX_EMITTERS,
-    MAX_TRAIL_SAMPLES, Motion, Range, Shape, Source, Spawn, TrailCore, TrailDesc,
+    MAX_TRAIL_SAMPLES, Motion, Range, Shape, Sim, Source, Spawn, TrailCore, TrailDesc,
 };
 pub use forces::{Force, Ground, MAX_FORCES, MAX_NOISE_OCTAVES};
 pub use mesh::{

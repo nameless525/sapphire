@@ -23,7 +23,7 @@ use sapphire_core::alloc::{CountingAllocator, count_in_scope};
 use sapphire_time::Stopwatch;
 use sapphire_vfx::{
     Curve, Effect, EffectId, EffectLibrary, EmitterDesc, Facing, Force, Ground, Light, Motion, OwnerId,
-    OwnerSteps, Placement, Shape, Source, Spawn, VfxBudget, VfxWorld, WindSample,
+    OwnerSteps, Placement, Shape, Sim, Source, Spawn, VfxBudget, VfxWorld, WindSample,
 };
 
 #[global_allocator]
@@ -97,6 +97,8 @@ impl Arm {
             alpha: Curve(vec![(0.0, 1.0)]),
             forces,
             collide,
+            sim: Sim::Cpu,
+            wrap: None,
         };
         let effect = Effect {
             name: "field".to_owned(),

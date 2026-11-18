@@ -10,7 +10,7 @@ use crate::curve::Curve;
 use crate::document::MAX_RATE;
 use crate::{
     Effect, EffectId, EffectLibrary, EmitterDesc, Facing, Light, MAX_EMITTERS, Motion, OwnerId, OwnerSteps,
-    Placement, Shape, Source, Spawn, TrailCore, TrailDesc, VfxBudget, VfxWorld,
+    Placement, Shape, Sim, Source, Spawn, TrailCore, TrailDesc, VfxBudget, VfxWorld,
 };
 
 mod forces;
@@ -36,6 +36,8 @@ fn dots(name: &str, spawn: Spawn) -> EmitterDesc {
         alpha: Curve(vec![(0.0, 1.0), (1.0, 0.0)]),
         forces: Vec::new(),
         collide: None,
+        sim: Sim::Cpu,
+        wrap: None,
     }
 }
 
@@ -1110,4 +1112,89 @@ fn spawning_a_trail_with_emitters_is_spawning_it() {
         frame.sprites
     };
     assert_eq!(burst_after(true), burst_after(false));
+}
+
+/// A stateless emitter is the GPU's (M6 N8a): a world simulates none of its particles and draws none of its
+/// numbers, so beside a CPU emitter, or as an effect of its own spawned first, it moves no spark.
+#[test]
+fn a_stateless_emitter_moves_no_cpu_spark() {
+    let sparks = || EmitterDesc {
+        motion: Motion { speed: (1.0, 4.0), spread: 60.0, ..Motion::default() },
+        source: Source::Ring { radius: 0.5, width: 0.2 },
+        ..dots("sparks", Spawn::Rate { per_second: 90.0, duration: 0.5 })
+    };
+    let motes = || EmitterDesc {
+        sim: Sim::Stateless,
+        source: Source::Box([2.0, 1.0, 2.0]),
+        ..dots("motes", Spawn::Rate { per_second: 200.0, duration: 3.0 })
+    };
+    let effect = |name: &str, emitters| Effect {
+        name: name.to_owned(),
+        emitters,
+        trail: None,
+        mark: false,
+        meshes: Vec::new(),
+        decals: Vec::new(),
+    };
+    let sprites = |effects: Vec<Effect>| {
+        let names: Vec<String> = effects.iter().map(|effect| effect.name.clone()).collect();
+        let mut world = world_of(effects, VfxBudget::DESKTOP_LOW);
+        for index in 0..names.len() {
+            world.spawn(EffectId(index as u16), OwnerId(1), Placement::default()).expect("spawned");
+        }
+        for _ in 0..20 {
+            world.advance(&ALL_RUN);
+        }
+        let frame = frame_of(&mut world);
+        (frame.sprites, world.stats())
+    };
+    let (alone, stats) = sprites(vec![effect("sparks", vec![sparks()])]);
+    assert!(alone.len() > 20 && stats.particles as usize == alone.len());
+    let (beside, stats) = sprites(vec![effect("mixed", vec![motes(), sparks()])]);
+    assert_eq!(beside, alone, "beside a stateless emitter");
+    assert_eq!(stats.particles as usize, alone.len());
+    let (after, stats) = sprites(vec![effect("motes", vec![motes()]), effect("sparks", vec![sparks()])]);
+    assert_eq!(after, alone, "after an effect of stateless emitters");
+    assert_eq!(stats.effects, 1, "the stateless effect has nothing for the CPU to play");
+}
+
+/// M6 N8a's sources on the CPU: each births its particles within its shape, turned by the placement.
+#[test]
+fn the_new_sources_birth_within_their_shapes() {
+    let turned = Quat::from_rotation_y(0.8);
+    let origin = Vec3::new(1.0, 2.0, 3.0);
+    let born = |source| {
+        let effect = Effect {
+            emitters: vec![EmitterDesc {
+                source,
+                motion: Motion::default(),
+                ..dots("dots", Spawn::Burst { count: 256 })
+            }],
+            ..burst(1)
+        };
+        let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
+        world
+            .spawn(EffectId(0), OwnerId(1), Placement { position: origin, rotation: turned })
+            .expect("spawned");
+        world.advance(&ALL_RUN);
+        let sprites = frame_of(&mut world).sprites;
+        assert_eq!(sprites.len(), 256);
+        sprites.into_iter().map(move |sprite| turned.inverse() * (sprite.position - origin))
+    };
+    for point in born(Source::Ring { radius: 2.0, width: 0.5 }) {
+        let reach = Vec3::new(point.x, 0.0, point.z).length();
+        assert!(point.y.abs() < 1e-5 && (1.75 - 1e-4..=2.25 + 1e-4).contains(&reach), "{point}");
+    }
+    for point in born(Source::Cone { angle: 20.0, length: 1.5 }) {
+        let across = Vec3::new(point.x, 0.0, point.z).length();
+        assert!((-1e-5..=1.5 + 1e-4).contains(&point.y), "{point}");
+        assert!(across <= point.y * 20f32.to_radians().tan() + 1e-4, "{point}");
+    }
+    let half = Vec3::new(0.5, 1.0, 2.0);
+    for point in born(Source::Box(half.to_array())) {
+        assert!(point.abs().cmple(half + 1e-4).all(), "{point}");
+    }
+    for point in born(Source::Line(3.0)) {
+        assert!(point.y.abs() < 1e-5 && point.z.abs() < 1e-4 && point.x.abs() <= 1.5 + 1e-4, "{point}");
+    }
 }

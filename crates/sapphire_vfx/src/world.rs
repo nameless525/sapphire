@@ -316,14 +316,14 @@ impl VfxWorld {
     /// or the budget's cap on effects is full, which is counted. An effect whose trail didn't fit
     /// spawns without it, also counted. A [mark](Effect::mark) takes its numbers from the marks'
     /// stream, so it moves no other effect's. An effect of ground decals alone (M5 L7), or of them and mesh layers
-    /// that only bend the picture (M5 L6), takes no stream at all, as it uses no random numbers: playing one
-    /// moves no spark of any effect spawned after it.
+    /// that only bend the picture (M5 L6), or of stateless emitters (M6 N8a), takes no stream at all, as it uses no
+    /// random numbers here: playing one moves no spark of any effect spawned after it.
     ///
     /// Allocates nothing.
     pub fn spawn(&mut self, effect: EffectId, owner: OwnerId, placement: Placement) -> Option<EffectHandle> {
         let desc = self.library.effect(effect)?;
         let mark = desc.mark;
-        if desc.emitters.is_empty()
+        if desc.emitters.iter().all(EmitterDesc::is_stateless)
             && desc.trail.is_none()
             && desc.meshes.iter().all(MeshLayerDesc::bends_only)
         {
@@ -341,7 +341,7 @@ impl VfxWorld {
         let mut offsets = [Vec3::ZERO; MAX_EMITTERS];
         let emitters = self.library.effect(effect).map_or(&[][..], |desc| &desc.emitters[..]);
         for (place, emitter) in emitters.iter().enumerate().take(MAX_EMITTERS) {
-            if emitter.forces.iter().any(Force::is_noise) {
+            if !emitter.is_stateless() && emitter.forces.iter().any(Force::is_noise) {
                 offsets[place] = noise_offset(&stream, place);
             }
         }
@@ -645,7 +645,10 @@ impl VfxWorld {
                 from = to;
                 0.0
             };
-            for (place, emitter) in effect.emitters.iter().enumerate() {
+            // A stateless emitter is the GPU's (M6 N8a): it takes no state, budget or random number here.
+            for (place, emitter) in
+                effect.emitters.iter().enumerate().filter(|(_, emitter)| !emitter.is_stateless())
+            {
                 let count = owed_particles(emitter, &mut slot.emitters[place], slot.age, slot.step, moved);
                 // Only what fits is walked, so a step costs the budget at most, however much a long
                 // one's rate owes. A drop takes no random numbers, so what's kept doesn't move.
@@ -1001,6 +1004,8 @@ fn meshes_done(effect: &Effect, slot: &Slot) -> bool {
 /// Whether every emitter of `effect` has nothing left to emit.
 fn emitters_done(effect: &Effect, slot: &Slot) -> bool {
     effect.emitters.iter().zip(&slot.emitters).all(|(emitter, state)| match emitter.spawn {
+        // The GPU's (M6 N8a): nothing here waits on it.
+        _ if emitter.is_stateless() => true,
         Spawn::Burst { .. } => state.fired,
         Spawn::Rate { duration, .. } => duration > 0.0 && state.delay_left == 0.0 && state.time_left == 0.0,
         Spawn::Repeat { times, .. } => times > 0 && state.bursts >= times,
@@ -1020,6 +1025,22 @@ fn birth(emitter: &EmitterDesc, slot: &mut Slot, origin: Vec3, slot_index: u16, 
             let (angle, reach) = (TAU * rng.unit(), radius * rng.unit().sqrt());
             Vec3::new(angle.cos() * reach, 0.0, angle.sin() * reach)
         }
+        // M6 N8a's shapes, as the stateless form's (`sapphire_look::vfx::stateless`) are.
+        Source::Ring { radius, width } => {
+            let (angle, reach) = (TAU * rng.unit(), radius + width * (rng.unit() - 0.5));
+            Vec3::new(angle.cos() * reach, 0.0, angle.sin() * reach)
+        }
+        Source::Cone { angle, length } => {
+            let height = length * rng.unit().cbrt();
+            let reach = height * angle.to_radians().tan() * rng.unit().sqrt();
+            let turn = TAU * rng.unit();
+            Vec3::new(turn.cos() * reach, height, turn.sin() * reach)
+        }
+        Source::Box(half) => {
+            Vec3::from(half)
+                * Vec3::new(2.0 * rng.unit() - 1.0, 2.0 * rng.unit() - 1.0, 2.0 * rng.unit() - 1.0)
+        }
+        Source::Line(length) => Vec3::new((rng.unit() - 0.5) * length, 0.0, 0.0),
     };
     let motion = &emitter.motion;
     let direction = cone(Vec3::from(motion.direction).normalize_or(Vec3::Y), motion.spread, rng);

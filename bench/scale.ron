@@ -632,6 +632,98 @@
                 read: [Counts, Pipelines],
                 timed: false,
             ),
+            // M6 W1: the nature zone (`bench/nature/`, `--zone nature`), the unit every world-look, foliage, water,
+            // weather and environment package is priced and judged on. Terrain as cell meshes, a lake and a river, grass
+            // and trees, a dusk whose weather plan rains from 19:00, a probe grid and reflection probes; its named areas
+            // (the forest block, the coast, the cave, the valley, the frozen pond) plain ground until their packages fill
+            // them, each re-pinning the zone, and the orchestrator re-baselines the units they move. Each unit runs what
+            // exists today and its `about` says what waits. All after M5's, B4's and B5's units, whose sittings and
+            // order stay as they were.
+            (
+                name: "nature-walk",
+                about: "the nature walk at dusk in the plan's rain, a lap at every tier: down the river, past the lake, toward the clearing (the water isn't drawn until W3; rain falls from W6 and W8b)",
+                args: [
+                    "--zone", "nature", "--zone-walk", "walk", "--time-of-day", "19.75", "--no-hot-reload", "--live-link",
+                    "off",
+                ],
+                frames: Lap,
+                read: [Cpu, Gpu, Counts, Memory],
+            ),
+            (
+                name: "nature-rain",
+                about: "the nature walk's first half with the storm's, the blizzard's and the sandstorm's look laid over the plan's rain (`--weather-state`, the tool's blend: the world's state and its shares stay the plan's rain, so no arm settles snow or sand; driving the world's state per arm waits on a bench override, and precipitation, lightning and cover on W6, W8b and V5; the water isn't drawn until W3)",
+                args: [
+                    "--zone", "nature", "--zone-walk", "walk", "--time-of-day", "19.75", "--no-hot-reload", "--live-link",
+                    "off",
+                ],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [
+                    (name: "storm", args: ["--weather-state", "storm"]),
+                    (name: "blizzard", args: ["--weather-state", "blizzard"]),
+                    (name: "sandstorm", args: ["--weather-state", "sandstorm"]),
+                ],
+                rows: ["cpu frame", "gpu frame", "gpu main", "gpu post", "gpu shadows", "draw calls"],
+            ),
+            (
+                name: "nature-fight",
+                about: "the clearing's encounter at dusk in the rain: the party of three against six (the water isn't drawn until W3; rain falls from W6 and W8b)",
+                args: [
+                    "--arena", "--replay", "{replays}/nature-encounter.sreplay", "--party", "--time-of-day", "19.75",
+                    "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(1600),
+                read: [Cpu, Gpu, Counts, Cast, Pipelines],
+                trace: true,
+            ),
+            (
+                name: "nature-forest",
+                about: "the forest block from its overlook at its east edge and walked into (today's trees on a grid until G2b's forest, G3's levels and W16's impostors)",
+                args: ["--zone", "nature", "--time-of-day", "19.75", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [
+                    (name: "overlook", args: ["--zone-walk", "overlook"]),
+                    (name: "walk", args: ["--zone-walk", "forest"]),
+                ],
+                rows: ["cpu frame", "gpu frame", "gpu main", "gpu shadows", "draw calls", "main triangles"],
+            ),
+            (
+                name: "nature-coast",
+                about: "the coast walked, and walked down the beach (plain sand until H1b's ocean; the dive arm stays in the air until W4's under water)",
+                args: ["--zone", "nature", "--time-of-day", "19.75", "--no-hot-reload", "--live-link", "off"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [
+                    (name: "walk", args: ["--zone-walk", "coast"]),
+                    (name: "dive", args: ["--zone-walk", "coast_dive"]),
+                ],
+                rows: ["cpu frame", "gpu frame", "gpu main", "gpu post", "draw calls"],
+            ),
+            (
+                name: "nature-storm-effects",
+                about: "the nature walk in the storm with its world effects (falling rain, lightning, motes and placed effects wait on W6, W8b, N8b and N10: the storm's look alone today)",
+                args: [
+                    "--zone", "nature", "--zone-walk", "walk", "--time-of-day", "19.75", "--weather-state", "storm",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts, Pipelines],
+            ),
+            // The nature walk by counts, a frame in seven drawn, failing on any pipeline built after the load, as
+            // `counted-day` does.
+            (
+                name: "counted-nature",
+                about: "the nature walk's counts at dusk in the plan's rain, a lap at every tier, a frame in seven drawn (the water isn't drawn until W3; rain falls from W6 and W8b)",
+                args: [
+                    "--draw-every", "7", "--zone", "nature", "--zone-walk", "walk", "--time-of-day", "19.75",
+                    "--no-hot-reload", "--live-link", "off",
+                ],
+                frames: Lap,
+                phases: 1,
+                read: [Counts, Pipelines],
+                timed: false,
+            ),
         ],
         // Where a run with `devices` walks (M5 Z2). Each device's bundle is the release `dev` sandbox with the
         // mobile cook and its preset's district beside it; its walks read counts only, never a time.

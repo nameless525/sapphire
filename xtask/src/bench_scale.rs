@@ -52,10 +52,16 @@ const CROWD_SCRIPT: &str = "chase-laps";
 
 /// Committed replays the runs play, copied beside the crowds' so every run names `{replays}/…` whatever
 /// folder the batch runs from: a stand-in's trip, the district's fight, the party of three kinds against
-/// twelve (M5 C12b), the heroine's conversation close-up (M6 B8) and the district's fight with her ultimate,
-/// the fight that ships (M6 B5).
-const COMMITTED: [&str; 5] =
-    ["zone-trip", "district-encounter", "party-three-kinds", "dialogue-closeup", "district-ultimate"];
+/// twelve (M5 C12b), the heroine's conversation close-up (M6 B8), the district's fight with her ultimate,
+/// the fight that ships (M6 B5), and the nature zone's fight in its clearing (M6 W1).
+const COMMITTED: [&str; 6] = [
+    "zone-trip",
+    "district-encounter",
+    "party-three-kinds",
+    "dialogue-closeup",
+    "district-ultimate",
+    "nature-encounter",
+];
 
 /// The file `prepare` names its preset in, so `run` mounts what was prepared.
 const PREPARED: &str = "preset";

@@ -1322,6 +1322,61 @@ fn district_content() -> PathBuf {
     dir
 }
 
+/// The no-hitch rule on the benchmark nature zone's fight (M6 W1), `bench/scale.ron`'s `nature-fight`: the party
+/// of three against the clearing's six (`sapphire_replay`'s `tests/nature.rs`), on the `ci` nature zone cooked
+/// beside the district, played by a fight's bench under `--draw-every` cold and then warm on Desktop-High and
+/// Mobile-Low, as the district's fight is below. The run reaches the replay's checksum, and its row reads no first
+/// use, no pipeline built on the frame's thread, none rebuilt and no frame that waited for one.
+#[cfg(feature = "dev")]
+#[test]
+#[ignore = "needs a GPU and the `ci` benchmark beside the cooked content (`cargo xtask bench-content --preset ci --with-content`)"]
+fn the_nature_encounter_plays_with_no_hitch_cold_and_warm() {
+    let content = district_content();
+    assert!(content.join("zone_nature.spack").is_file(), "no nature zone in {}", content.display());
+    let replay = workspace().join("tests").join("replays").join("nature-encounter.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    for (tier, cache) in
+        [("desktop-high", "cold"), ("desktop-high", "warm"), ("mobile-low", "cold"), ("mobile-low", "warm")]
+    {
+        let what = format!("{tier}, {cache}");
+        let output = sandbox(
+            &[
+                "--bench",
+                "1",
+                "--draw-every",
+                "25",
+                "--arena",
+                "--replay",
+                replay.to_str().expect("UTF-8"),
+                "--party",
+                "--time-of-day",
+                "19.75",
+                "--tier",
+                tier,
+                "--size",
+                "64x36",
+                "--hud",
+                "live",
+                "--no-hot-reload",
+                "--live-link",
+                "off",
+            ],
+            &content,
+        );
+        let log = log_of(&output);
+        assert!(output.status.success(), "{what}: {log}");
+        let end = format!("checksum={:016x}", played.trail.end());
+        assert!(log.lines().any(|line| line.contains(&end)), "{what}: no {end}: {log}");
+        let rows: Vec<&str> = log.lines().filter(|line| line.contains("fight pipelines")).collect();
+        assert!(!rows.is_empty(), "{what}: {log}");
+        for row in rows {
+            for part in ["first_use=0", "frame_thread=0", "frame_waits=0", "rebuilt=0"] {
+                assert!(row.contains(part), "{what}: {row}");
+            }
+        }
+    }
+}
+
 /// Exit test 1's no-hitch rule on the benchmark district's fight (M5 B5), as `zero_hitches` holds the ward's walk:
 /// the party's walk up the avenue into the plaza's twelve, with the hub's people about it, played on the `ci`
 /// district by a fight's bench under `--draw-every`, on Desktop-High and Mobile-Low. Each tier plays it twice,

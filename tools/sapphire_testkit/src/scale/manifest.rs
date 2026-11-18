@@ -1015,4 +1015,48 @@ mod tests {
             assert!(run.args.windows(2).any(|pair| pair == ["--ambient", "on"]), "{}", run.name);
         }
     }
+
+    /// M6 W1's nature units are named from the start, every one in the nature zone, all after every earlier
+    /// unit: each earlier sitting holds the units it held without them, in their order, at its head, so no M5,
+    /// B4 or B5 unit moves among its own; and the storm, blizzard and sandstorm arms name their states.
+    #[test]
+    fn the_nature_units_come_after_every_earlier_unit() {
+        const NATURE: [&str; 7] = [
+            "nature-walk",
+            "nature-rain",
+            "nature-fight",
+            "nature-forest",
+            "nature-coast",
+            "nature-storm-effects",
+            "counted-nature",
+        ];
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let first = manifest.runs.iter().position(|run| NATURE.contains(&run.name.as_str())).unwrap();
+        let names: Vec<&str> = manifest.runs[first..].iter().map(|run| run.name.as_str()).collect();
+        assert_eq!(names, NATURE, "together, last");
+        for run in &manifest.runs[first..] {
+            let zone = run.args.windows(2).any(|pair| pair == ["--zone", "nature"]);
+            let fight = run.args.iter().any(|arg| arg.ends_with("/nature-encounter.sreplay"));
+            assert!(zone || fight, "{} stands in the nature zone", run.name);
+            assert!(run.tiers.is_empty(), "{} runs on every tier", run.name);
+        }
+        let rain = manifest.run("nature-rain").unwrap();
+        let states: Vec<&[String]> = rain.variants.iter().map(|variant| variant.args.as_slice()).collect();
+        for (state, args) in ["storm", "blizzard", "sandstorm"].iter().zip(states) {
+            assert_eq!(args, ["--weather-state", state], "{state}");
+        }
+
+        let mut earlier = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        earlier.runs.truncate(first);
+        let (before, after) = (earlier.sittings(None), manifest.sittings(None));
+        let name = |unit: &Unit| unit.name.clone();
+        let mut after = after.iter();
+        for sitting in &before {
+            let held: Vec<String> = sitting.units.iter().map(name).collect();
+            let next = after.find(|next| next.units.first().map(name).as_ref() == held.first()).unwrap();
+            let now: Vec<String> = next.units.iter().map(name).collect();
+            assert_eq!(now[..held.len()], held[..], "a sitting of {} keeps its units", held[0]);
+            assert!(now[held.len()..].iter().all(|unit| NATURE.iter().any(|run| unit.starts_with(run))));
+        }
+    }
 }

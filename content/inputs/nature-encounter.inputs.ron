@@ -1,0 +1,23 @@
+// The `nature-encounter` scenario's run (M6 W1), whose input names the party's first member throughout: from the
+// clearing's south edge at z 350 it runs north, crossing into the clearing's volume at z 346, which brings the six,
+// and stops short of their front row at z 318. Then rounds of the string and a dodge, with a swap every 200 ticks, so
+// each kind takes the field in turn, to a fixed end.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the party into the nature zone's clearing, whose six Ember Lancers come at it, then rounds of strings, dodges and swaps to a fixed end (M6 W1)",
+        ticks: 1600,
+        tracks: [
+            (
+                presses: [
+                    (from: 200, every: 75, at: [(0, [Light]), (16, [Light]), (32, [Light]), (56, [Dodge])]),
+                    (from: 380, every: 200, at: [(0, [Swap])]),
+                ],
+                stick: Legs([
+                    (stick: (0, -127), ticks: 200),
+                ]),
+            ),
+        ],
+    ),
+)

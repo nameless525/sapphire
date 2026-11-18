@@ -1,0 +1,28 @@
+// The benchmark nature zone's fight (M6 W1): `bench/scale.ron`'s `nature-fight`, the party of three against six in
+// the clearing (m6-plan, W1). The nature zone is a zone code builds (`built`), so this names no colliders, zone or
+// encounters: the builder (`sapphire_synthetic_zone::nature`) brings them, and only the replay runner and a
+// development build's fight hand it over. Who fights is named here and nowhere else: the party's kinds in `cast`,
+// and the kind of enemy the clearing's six spawners bring in `enemies`.
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the benchmark nature zone: a party of three kinds, the heroine, Aster and Wren, walks into the clearing, whose six Ember Lancers come at it in one wave (M6 W1)",
+        // The party and the clearing's six.
+        max_actors: 9,
+        built: Some("nature"),
+        moves: [
+            "content/combat/player/player.moves.ron",
+            "content/combat/hero/hero.moves.ron",
+            "content/combat/wren/wren.moves.ron",
+            "content/combat/lancer/lancer.moves.ron",
+        ],
+        enemies: ["content/combat/ember_lancer/ember_lancer.enemy.ron"],
+        cast: [
+            (moves: "player", at: "player_start", faction: 1, soft_lock: true, playable: "heroine"),
+            (moves: "hero", at: "player_start", faction: 1, soft_lock: true, playable: "hero"),
+            (moves: "wren", at: "player_start", faction: 1, soft_lock: true, playable: "wren"),
+        ],
+        party: Some((members: [0, 1, 2], swap_cooldown: 60, rest: 150)),
+    ),
+)

@@ -320,6 +320,8 @@ fn is_named(text: &str, name: &str) -> bool {
 
 /// The name a value's text starts with, if it starts with one.
 fn leading_name(text: &str) -> Option<&str> {
+    // A raw name, `r#None`, is the name.
+    let text = text.strip_prefix("r#").unwrap_or(text);
     let end =
         text.bytes().position(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_')).unwrap_or(text.len());
     (end > 0 && !text.as_bytes()[0].is_ascii_digit()).then(|| &text[..end])

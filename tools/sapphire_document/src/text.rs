@@ -373,7 +373,7 @@ impl Scanner<'_> {
                 return Err(self.error("a struct's field without a name"));
             }
             self.ident();
-            let name = self.source[field_start..self.at].to_owned();
+            let name = self.source[field_start..self.at].trim_start_matches("r#").to_owned();
             self.skip_trivia();
             if self.peek() != Some(b':') {
                 return Err(self.error("a field's name without its colon"));
@@ -433,6 +433,10 @@ impl Scanner<'_> {
     }
 
     fn ident(&mut self) {
+        // A raw name, `r#None`: how RON writes a name it would otherwise read as something else.
+        if self.rest().starts_with(b"r#") && self.rest().get(2).copied().is_some_and(is_ident_byte) {
+            self.at += 2;
+        }
         while self.peek().is_some_and(is_ident_byte) {
             self.at += 1;
         }
@@ -551,6 +555,16 @@ mod tests {
         let root = scan(text).expect("a tuple");
         let items: Vec<&str> = root.items().iter().map(|item| item.text(text)).collect();
         assert_eq!(items, ["-1", "+2.5", "1e-3", "1E+3", "0x1f", "1_000"]);
+    }
+
+    /// RON writes a variant called `None` raw, so the writer's own text reads.
+    #[test]
+    fn a_raw_name_is_one_name() {
+        let text = "(rotation: r#None, r#type: r#Some(1), s: r#\"raw\"#)";
+        let root = scan(text).expect("a struct");
+        assert_eq!(root.field("rotation").expect("rotation").text(text), "r#None");
+        assert_eq!(root.field("type").expect("a raw field's name").text(text), "r#Some(1)");
+        assert_eq!(root.field("s").expect("s").text(text), "r#\"raw\"#");
     }
 }
 

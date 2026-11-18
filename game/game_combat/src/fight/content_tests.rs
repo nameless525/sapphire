@@ -973,7 +973,7 @@ fn the_stock_arena_starts_over_off_the_frame_on_the_bodies_it_kept() {
     let option = CombatOption::Fight { script: None, party: false };
     let mut fight = Fight::default();
     fight.prepare_stock_combat(&option, &mut content).expect("the first stock fight loads the bodies");
-    let mut next = fight.prepare_run_off_frame(&option);
+    let mut next = fight.prepare_run_off_frame(&option, true);
     let mut polls = 0_u32;
     let combat = loop {
         // Content that can't be read: a run the pool couldn't prepare would fail here, on the frame.

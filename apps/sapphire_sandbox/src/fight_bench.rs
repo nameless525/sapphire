@@ -633,6 +633,8 @@ struct Run<'a> {
     walk_hour: Option<f32>,
     /// A replay's next fight, on the warm-up pool from the frame its restart began until the frame it stands.
     next_run: Option<NextRun>,
+    /// Whether the fight stood on the arena (`--arena`), so its next run is checked for it as its first was.
+    on_the_arena: bool,
 }
 
 /// The render and compute pipelines the stage's device has: zero where its backend can't say.
@@ -686,6 +688,7 @@ pub(crate) fn run(
         walk_hour: None,
         waits: GpuWait::new(options.bench_overlap),
         next_run: None,
+        on_the_arena: options.arena.is_some(),
     };
     if option.is_none() && run.stage.scene.time_of_day().clock().day_length().is_some() {
         run.walk_hour = Some(run.stage.scene.time_of_day().clock().hours(1.0));
@@ -823,8 +826,10 @@ impl Run<'_> {
                 // while the frames go on, each holding only its share of asking for it, and stands on the first
                 // frame it's ready (M6 J2).
                 Some(option @ CombatOption::Replay { .. }) => {
-                    let next =
-                        self.next_run.get_or_insert_with(|| stage.show.fight.prepare_run_off_frame(option));
+                    let on_the_arena = self.on_the_arena;
+                    let next = self
+                        .next_run
+                        .get_or_insert_with(|| stage.show.fight.prepare_run_off_frame(option, on_the_arena));
                     let ready = next
                         .poll(&mut stage.show.fight, || Ok(&mut stage.content))
                         .map_err(AppInitError::msg)?;

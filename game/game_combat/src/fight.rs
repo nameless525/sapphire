@@ -232,6 +232,8 @@ enum PreparedRun {
 pub struct NextRun {
     prepared: mpsc::Receiver<PreparedRun>,
     option: CombatOption,
+    /// Whether the run is checked for the arena ([`crate::arena::check_scenario`]), as its first stand was.
+    on_the_arena: bool,
     /// Whether [`Self::poll`] has answered, after which it's spent.
     answered: bool,
 }
@@ -263,7 +265,9 @@ impl NextRun {
             Err(mpsc::TryRecvError::Empty) => return Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => return Err("the run's preparation panicked".to_owned()),
         };
-        crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+        if self.on_the_arena {
+            crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+        }
         Ok(Some(Box::new(combat)))
     }
 }
@@ -2868,13 +2872,14 @@ impl Fight {
         Ok(followed)
     }
 
-    /// Prepares `option`'s run on the warm-up pool, its scenario checked, for a restart under a fade (M4 H4, M6 J2):
+    /// Prepares `option`'s run on the warm-up pool, its scenario checked for the arena where `on_the_arena` (a game's
+    /// run always is; a bench's is where it stood its first with `--arena`), for a restart under a fade (M4 H4, M6 J2):
     /// the simulation's setup and the scenario's documents are a restart's whole cost, 8 to 9 ms of a frame on an
     /// M5 for the district's fight, and none of it is left on a frame. The stock arena's fight installs the bodies
     /// [`Self::prepare_stock_combat`] loaded, which it keeps; before they're loaded (this `Fight`'s first stock
     /// fight) it's prepared on the frame ([`NextRun::poll`]), since loading them reads content.
     #[must_use]
-    pub fn prepare_run_off_frame(&self, option: &CombatOption) -> NextRun {
+    pub fn prepare_run_off_frame(&self, option: &CombatOption, on_the_arena: bool) -> NextRun {
         let (asked, live, stock) = (option.clone(), self.documents.live(), self.stock_arena.clone());
         let (sender, prepared) = mpsc::channel();
         sapphire_jobs::spawn_warm_up(move || {
@@ -2890,7 +2895,9 @@ impl Fight {
                 stock.install(simulation, cast)
             });
             let checked = combat.and_then(|combat| {
-                crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+                if on_the_arena {
+                    crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())?;
+                }
                 Ok(combat)
             });
             let _ = sender.send(match checked {
@@ -2899,7 +2906,7 @@ impl Fight {
                 Err(error) => PreparedRun::Failed(error),
             });
         });
-        NextRun { prepared, option: option.clone(), answered: false }
+        NextRun { prepared, option: option.clone(), on_the_arena, answered: false }
     }
 
     /// An error if a replay has left its recorded checksums so far.
@@ -3104,7 +3111,7 @@ mod restart_tests {
         let mut fight = Fight::default();
         let (fresh, on_the_frame) = alloc::count_in_scope(|| Combat::new(&option));
         let fresh = fresh.expect("the party's fight stands");
-        let (mut next, asked) = alloc::count_in_scope(|| fight.prepare_run_off_frame(&option));
+        let (mut next, asked) = alloc::count_in_scope(|| fight.prepare_run_off_frame(&option, true));
         let mut polls = 0_u32;
         let combat = loop {
             let (polled, counts) = alloc::count_in_scope(|| {
@@ -3132,6 +3139,35 @@ mod restart_tests {
             next.poll(&mut fight, || Err(AppInitError::msg("a spent run reads no content"))).is_err(),
             "a run once taken is spent"
         );
+    }
+
+    /// The run `next` prepares, or why it's refused.
+    fn taken(next: &mut super::NextRun, fight: &mut Fight) -> Result<Box<Combat>, String> {
+        for _ in 0..10_000 {
+            if let Some(combat) = next.poll(fight, || Err(AppInitError::msg("the run reads no content")))? {
+                return Ok(combat);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("still preparing after ten seconds");
+    }
+
+    /// A run starting over is checked for the arena only where its first stand was: a bench of a scenario off the
+    /// arena's colliders (`melee`, played without `--arena`) starts over, and the same run on the arena is refused,
+    /// as its first stand there would be.
+    #[test]
+    fn a_run_is_checked_for_the_arena_only_where_it_stood_there() {
+        let option = CombatOption::Run {
+            scenario: "melee".to_owned(),
+            start: sapphire_gameplay::replay::RunStart { zone: None, flags: Vec::new() },
+            script: None,
+            keep: None,
+        };
+        let mut fight = Fight::default();
+        let off_the_arena = taken(&mut fight.prepare_run_off_frame(&option, false), &mut fight);
+        assert_eq!(off_the_arena.expect("it starts over").scenario(), "melee");
+        let refused = taken(&mut fight.prepare_run_off_frame(&option, true), &mut fight).err();
+        assert!(refused.expect("the arena refuses it").contains("`melee`"));
     }
 }
 

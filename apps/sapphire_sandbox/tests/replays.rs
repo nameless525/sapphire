@@ -806,7 +806,8 @@ fn an_agent_runs_a_fight_offscreen_by_its_script() {
 
 /// A bench of a fight plays it whole, three times, starting over between: first as it comes, then for
 /// CPU times, then with GPU timing on. Each reaches the headless checksums and none goes past the end.
-/// Its trace has a line a frame, each with the tick it fell on, and its fixed steps allocate nothing.
+/// Its trace has a line a frame, each with the tick it fell on, and its fixed steps allocate nothing. A restart's
+/// frames step nothing until the next fight stands (M6 J2).
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
@@ -838,10 +839,22 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
     let mut lines = trace.lines();
     let header: Vec<&str> = lines.next().expect("a header").split(',').collect();
     let column = |name: &str| header.iter().position(|field| *field == name).expect(name);
-    let (phase, tick, step_allocations) = (column("phase"), column("tick"), column("step_allocations"));
+    let (phase, tick, steps) = (column("phase"), column("tick"), column("steps"));
+    let step_allocations = column("step_allocations");
     let rows: Vec<Vec<&str>> = lines.map(|line| line.split(',').collect()).collect();
+    // A phase's rows, and how many its restart took before the next fight stood (M6 J2): those step nothing, the
+    // ended fight still at its last tick, and the frame the next one stands on steps its first.
+    let of_phase = |name: &str| -> (usize, Vec<&[&str]>) {
+        let of_phase: Vec<&[&str]> =
+            rows.iter().filter(|row| row[phase] == name).map(Vec::as_slice).collect();
+        (of_phase.iter().take_while(|row| row[steps] == "0").count(), of_phase)
+    };
     for name in ["first", "cpu", "gpu"] {
-        let ticks: Vec<&str> = rows.iter().filter(|row| row[phase] == name).map(|row| row[tick]).collect();
+        let (waiting, of_phase) = of_phase(name);
+        if name == "first" {
+            assert_eq!(waiting, 0, "the first phase plays the fight as it comes, starting nothing over");
+        }
+        let ticks: Vec<&str> = of_phase[waiting..].iter().map(|row| row[tick]).collect();
         assert_eq!(ticks.first().copied(), Some("1"), "{name} starts at the fight's first tick");
         assert_eq!(ticks.last().copied(), Some("120"), "{name} reaches its last");
         assert_eq!(ticks.len(), 120, "{name}: a frame a tick on this tier");
@@ -850,12 +863,12 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
         assert_eq!(row[step_allocations], "0", "rule R6, at tick {}", row[tick]);
     }
     // A timing flag can accompany partial pass timings without a complete frame span.
-    // This fixture plays one fight per phase. GPU frame 0 restarts it and is excluded from the summary.
-    let (frame, timed, span) = (column("frame"), column("gpu_timed"), column("gpu_span"));
-    let span_samples = rows
-        .iter()
-        .filter(|row| row[phase] == "gpu" && row[frame] != "0" && row[timed] == "1" && !row[span].is_empty())
-        .count();
+    // This fixture plays one fight per phase. The GPU phase's restart, through the frame its fight stands on, is
+    // left out of the summary.
+    let (timed, span) = (column("gpu_timed"), column("gpu_span"));
+    let (waiting, gpu_rows) = of_phase("gpu");
+    let span_samples =
+        gpu_rows[waiting + 1..].iter().filter(|row| row[timed] == "1" && !row[span].is_empty()).count();
     // The row's own line, not the one that says nothing gave it a span (M3 Z1).
     let lines = || log.lines().filter(|line| line.contains("row=\"gpu frame\""));
     let frame_row = lines().find(|line| !line.contains("not exercised"));

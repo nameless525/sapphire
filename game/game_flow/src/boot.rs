@@ -810,7 +810,7 @@ impl Boot {
                 .map(|content| Remade::Content(show, first, Box::new(content))),
             Remade::Content(show, first, content) => {
                 // Its setup and its scenario's documents, 65 ms of a frame on an M5, on the warm-up pool.
-                let prepared = show.shown.fight.prepare_run_off_frame(&first);
+                let prepared = show.shown.fight.prepare_run_off_frame(&first, true);
                 Ok(Remade::Preparing(show, content, prepared))
             }
             Remade::Preparing(mut show, mut content, mut prepared) => {

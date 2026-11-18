@@ -586,7 +586,8 @@ impl GameShow {
             self.follow_flow();
             return;
         };
-        self.run_standing = Some(RunStanding::Preparing(self.shown.fight.prepare_run_off_frame(&option)));
+        self.run_standing =
+            Some(RunStanding::Preparing(self.shown.fight.prepare_run_off_frame(&option, true)));
         self.follow_flow();
     }
 

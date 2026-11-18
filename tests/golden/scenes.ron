@@ -1938,6 +1938,15 @@
                        "--fog", "off", "--ao", "off"],
                 ci_seconds: (lavapipe: 0.4, warp: 1.7),
             ),
+            // The particles' forces and ground (M6 N2) at dusk, in a breeze from the left: embers drifting off
+            // the paving behind the character through a moving noise, sparks from beside it bouncing and
+            // skidding on the floor, and a charge's motes spiralling into a point in front of it.
+            (
+                name: "vfx-forces",
+                ticks: 100,
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "19", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "forces"],
+            ),
             // A fight's hits as the cue table fires them (M2 E3), from G3's recording, landing on the
             // look-dev character until fighters are drawn: a medium hit two ticks in, which a spark and a
             // little aberration carry; a guard breaking, in ink, with the ring opening round it; the last

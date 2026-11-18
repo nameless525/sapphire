@@ -27,6 +27,7 @@ mod merge;
 mod mip_copies;
 mod outline;
 mod panics;
+mod procedural_particles;
 mod reflections;
 mod render;
 mod render_scale;

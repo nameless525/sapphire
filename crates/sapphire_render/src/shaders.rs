@@ -114,10 +114,13 @@ pub enum ShaderFile {
     /// The wind field's one sampler (M6 Y1), which every reader of the air includes before its own
     /// file: foliage's today.
     Wind,
+    /// Stateless particles' closed form (M6 N8a), the one include the effects' stateless draw (N8b) and
+    /// falling weather (W6) read. No program includes it until one of them lands.
+    ProceduralParticles,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -152,6 +155,7 @@ impl ShaderFile {
         Self::Reflections,
         Self::Measure,
         Self::Wind,
+        Self::ProceduralParticles,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -191,6 +195,7 @@ impl ShaderFile {
             Self::Reflections => "reflections.wgsl",
             Self::Measure => "measure.wgsl",
             Self::Wind => "wind.wgsl",
+            Self::ProceduralParticles => "procedural_particles.wgsl",
         }
     }
 
@@ -236,6 +241,7 @@ impl ShaderFile {
             Self::Reflections => include_str!("../shaders/reflections.wgsl"),
             Self::Measure => include_str!("../shaders/measure.wgsl"),
             Self::Wind => include_str!("../shaders/wind.wgsl"),
+            Self::ProceduralParticles => include_str!("../shaders/procedural_particles.wgsl"),
         }
     }
 
@@ -1080,12 +1086,13 @@ mod tests {
             include_str!("../shaders/post_shafts.wgsl")
         );
         assert_eq!(sources.program(Program::Post), post);
-        // Every file is in a program, and found by its name.
+        // Every file is in a program, and found by its name: but for the stateless include, whose readers
+        // (N8b's draw, W6's weather) haven't landed, which `the_stateless_include_validates_alone` checks.
         for file in ShaderFile::ALL {
             let reads = [ProbeRead::Faces, ProbeRead::CubeArray];
             let used =
                 |program: &Program| reads.iter().any(|&read| program.files_reading(read).contains(&file));
-            assert!(Program::ALL.iter().any(used), "{file}");
+            assert_eq!(Program::ALL.iter().any(used), file != ShaderFile::ProceduralParticles, "{file}");
             assert_eq!(ShaderFile::from_file_name(file.file_name()), Some(file));
         }
         assert_eq!(ShaderFile::from_file_name("missing.wgsl"), None);
@@ -1215,6 +1222,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The stateless include (M6 N8a) stands alone until N8b's draw or W6's weather includes it: with a
+    /// compute entry point evaluating a particle, it validates with no optional capability, its structs are
+    /// the size of `sapphire_look`'s, and its constants are the CPU's.
+    #[test]
+    fn the_stateless_include_validates_alone() {
+        use sapphire_look::vfx::stateless::{
+            MAX_STATELESS_SLOTS, STATELESS_CYCLES, STATELESS_NEVER, StatelessEmitter, StatelessInstance,
+        };
+        let include = ShaderFile::ProceduralParticles.compiled_in();
+        let source = format!(
+            "{include}
+@group(0) @binding(0) var<storage, read> emitters: array<StatelessEmitter>;
+@group(0) @binding(1) var<storage, read> instances: array<StatelessInstance>;
+@group(0) @binding(2) var<storage, read_write> results: array<vec4<f32>>;
+@compute @workgroup_size(1)
+fn cs_particle(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let particle = stateless_particle(emitters[0], instances[0], id.x);
+    let wrapped = particles_wrap(particle.position, vec3<f32>(0.0), vec3<f32>(1.0));
+    results[id.x] = vec4<f32>(wrapped, f32(particle.alive));
+}}
+"
+        );
+        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|error| {
+            panic!("{}", error.emit_to_string_with_path(&source, "procedural_particles.wgsl"))
+        });
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+            .validate(&module)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+        let mut layouter = naga::proc::Layouter::default();
+        layouter.update(module.to_ctx()).expect("layout");
+        for (name, rust_size) in [
+            ("StatelessEmitter", size_of::<StatelessEmitter>()),
+            ("StatelessInstance", size_of::<StatelessInstance>()),
+        ] {
+            let (handle, _) = module
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("no WGSL struct {name}"));
+            assert_eq!(layouter[handle].size as usize, rust_size, "{name}: WGSL vs Rust size");
+        }
+        assert!(include.contains(&format!("const MAX_STATELESS_SLOTS: u32 = {MAX_STATELESS_SLOTS}u;")));
+        assert!(include.contains(&format!("const STATELESS_CYCLES: f32 = {STATELESS_CYCLES}.0;")));
+        assert_eq!(STATELESS_NEVER, 1e30);
+        assert!(include.contains("const STATELESS_NEVER: f32 = 1e30;"));
     }
 
     /// The shader type a vertex attribute of `format` arrives as.

@@ -202,7 +202,7 @@ use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
 use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
 use crate::clip::{
     self, ClipCookError, ClipOptions, ClipSettings, ClipTarget, EventSettings, ReductionError, SampledClip,
-    mirror,
+    foot_lock, mirror,
 };
 use crate::colliders::{self, ColliderCookError};
 use crate::dialogue::{self, DialogueCookError, MissingKey, Registry, RegistryError};
@@ -3339,10 +3339,11 @@ fn source_samples(
         assets.rig_source(id).filter(RigSource::has_map).ok_or(ClipCookError::UnknownTarget { id })?;
     let target_joints = target_rig.read_skeleton()?;
     let target_map = target_rig.map(&target_joints)?.ok_or(ClipCookError::UnknownTarget { id })?;
-    let retargeted = retarget::retarget(
+    let target = Rig { skeleton: &target_joints, map: &target_map };
+    let mut retargeted = retarget::retarget(
         &sampled,
         Rig { skeleton: &joints, map: &map },
-        Rig { skeleton: &target_joints, map: &target_map },
+        target,
         &RetargetOptions {
             scale: retarget.scale,
             ground: retarget.ground,
@@ -3351,6 +3352,7 @@ fn source_samples(
             follow: retarget.follow.clone(),
         },
     )?;
+    foot_lock::lock_feet(&mut retargeted, target, &input.clips.contacts);
     Ok(ClipSamples {
         sampled: retargeted,
         skeleton: Some(target_joints),

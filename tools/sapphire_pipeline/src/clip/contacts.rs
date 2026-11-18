@@ -131,6 +131,38 @@ pub fn planted_runs(
     feet(sampled, skeleton, map, positions, settings).into_iter().flat_map(|(_, runs)| runs).collect()
 }
 
+/// Where a clip's feet are planted, as its contacts and their slide are judged: what foot locking
+/// (M6 A4) holds still.
+pub(crate) struct Planting {
+    /// How fast the ground moves under a clip that runs in place, in meters a second; zero under one
+    /// whose root travels.
+    pub ground: Vec3,
+    /// Each foot the map names, left then right.
+    pub feet: Vec<PlantedFoot>,
+}
+
+/// One foot of a [`Planting`].
+pub(crate) struct PlantedFoot {
+    pub foot: HumanBone,
+    /// Its soles' joints: the foot, then its toes where the map names them.
+    pub soles: Vec<usize>,
+    /// Each sole's travel, tick by tick: where the clip carries it, root motion applied.
+    pub paths: Vec<Vec<Vec3>>,
+    /// Each sole's planted ticks, tick by tick: the ticks a sole is planted while its foot is, which
+    /// its runs are.
+    pub planted: Vec<Vec<bool>>,
+    /// The foot's own: planted while either sole is, after [`ContactSettings::ticks`] tidies it.
+    pub foot_planted: Vec<bool>,
+}
+
+impl Planting {
+    /// Where a sole on `path` is at `tick`, against the ground, which has moved by
+    /// [`ground`](Self::ground) since tick 0.
+    pub fn on_ground(&self, path: &[Vec3], tick: usize, rate: f32) -> Vec3 {
+        path[tick] - self.ground * (tick as f32 / rate)
+    }
+}
+
 /// Each foot's contact track and its runs.
 fn feet(
     sampled: &SampledClip,
@@ -139,6 +171,60 @@ fn feet(
     positions: &Positions,
     settings: &ContactSettings,
 ) -> Vec<(ContactTrack, Vec<PlantedRun>)> {
+    let planting = planting(sampled, skeleton, map, positions, settings);
+    let rate = f32::from(sampled.rate);
+    planting
+        .feet
+        .iter()
+        .map(|foot| {
+            let mut runs = Vec::new();
+            for (path, sole) in foot.paths.iter().zip(&foot.planted) {
+                // The run's first tick, where it began, and its slide so far.
+                let mut run: Option<(usize, Vec3, f32)> = None;
+                for tick in 0..=sole.len() {
+                    if tick == sole.len() || !sole[tick] {
+                        if let Some((first, _, slide)) = run.take() {
+                            let (first, last) = (first as u16, (tick - 1) as u16);
+                            runs.push(PlantedRun { foot: foot.foot, first, last, slide });
+                        }
+                        continue;
+                    }
+                    let here = planting.on_ground(path, tick, rate);
+                    let (_, from, slide) = run.get_or_insert((tick, here, 0.0));
+                    *slide = slide.max(Vec3::new(here.x - from.x, 0.0, here.z - from.z).length());
+                }
+            }
+            let slide = runs.iter().map(|run| run.slide).fold(0.0f32, f32::max);
+            let planted = &foot.foot_planted;
+            let markers = (1..planted.len())
+                .filter(|&tick| planted[tick] != planted[tick - 1])
+                .map(|tick| FootMarker {
+                    tick: tick as u16,
+                    marker: if planted[tick] { Marker::Down } else { Marker::Up },
+                })
+                .collect();
+            (
+                ContactTrack {
+                    foot: foot.foot,
+                    joint: foot.soles[0] as u16,
+                    planted: planted.first().copied().unwrap_or(false),
+                    markers,
+                    slide,
+                },
+                runs,
+            )
+        })
+        .collect()
+}
+
+/// Where `sampled`'s feet are planted: see the [module docs](self).
+pub(crate) fn planting(
+    sampled: &SampledClip,
+    skeleton: &Skeleton,
+    map: &HumanMap,
+    positions: &Positions,
+    settings: &ContactSettings,
+) -> Planting {
     let rest = super::rest_model(skeleton);
     let sole = |bone| {
         map.joint(bone).map(usize::from).map(|joint| Sole { joint, rest_height: rest[joint].translation.y })
@@ -197,12 +283,10 @@ fn feet(
         }
         Vec3::new(median(&mut across), 0.0, median(&mut along))
     };
-    // Where a sole is against the ground, which has moved by `ground` since tick 0.
-    let on_ground = |path: &[Vec3], tick: usize| path[tick] - ground * (tick as f32 / rate);
 
-    soles
+    let feet = soles
         .iter()
-        .zip(&paths)
+        .zip(paths)
         .map(|((foot, soles), paths)| {
             let planted_soles: Vec<Vec<bool>> = paths
                 .iter()
@@ -227,45 +311,20 @@ fn feet(
             let mut planted: Vec<bool> =
                 (0..count).map(|tick| planted_soles.iter().any(|sole| sole[tick])).collect();
             tidy(&mut planted, usize::from(settings.ticks));
-
-            let mut runs = Vec::new();
-            for ((path, _), sole) in paths.iter().zip(&planted_soles) {
-                // The run's first tick, where it began, and its slide so far.
-                let mut run: Option<(usize, Vec3, f32)> = None;
-                for tick in 0..=count {
-                    if tick == count || !(sole[tick] && planted[tick]) {
-                        if let Some((first, _, slide)) = run.take() {
-                            let (first, last) = (first as u16, (tick - 1) as u16);
-                            runs.push(PlantedRun { foot: *foot, first, last, slide });
-                        }
-                        continue;
-                    }
-                    let here = on_ground(path, tick);
-                    let (_, from, slide) = run.get_or_insert((tick, here, 0.0));
-                    *slide = slide.max(Vec3::new(here.x - from.x, 0.0, here.z - from.z).length());
-                }
-            }
-            let slide = runs.iter().map(|run| run.slide).fold(0.0f32, f32::max);
-
-            let markers = (1..count)
-                .filter(|&tick| planted[tick] != planted[tick - 1])
-                .map(|tick| FootMarker {
-                    tick: tick as u16,
-                    marker: if planted[tick] { Marker::Down } else { Marker::Up },
-                })
+            let sole_runs = planted_soles
+                .iter()
+                .map(|sole| sole.iter().zip(&planted).map(|(sole, foot)| *sole && *foot).collect())
                 .collect();
-            (
-                ContactTrack {
-                    foot: *foot,
-                    joint: soles[0].joint as u16,
-                    planted: planted[0],
-                    markers,
-                    slide,
-                },
-                runs,
-            )
+            PlantedFoot {
+                foot: *foot,
+                soles: soles.iter().map(|sole| sole.joint).collect(),
+                paths: paths.into_iter().map(|(path, _)| path).collect(),
+                planted: sole_runs,
+                foot_planted: planted,
+            }
         })
-        .collect()
+        .collect();
+    Planting { ground, feet }
 }
 
 /// The middle of `values`, the upper of the two middles for an even count; 0 for none. Sorted by

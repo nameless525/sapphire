@@ -17,7 +17,7 @@ use crate::clip::contacts::{ContactSettings, PlantedRun, planted_runs};
 use crate::clip::report::Positions;
 use crate::clip::source::ClipSource;
 use crate::clip::tests::{angle_between, root_of};
-use crate::clip::{self, ClipCookError, ClipOptions, ClipSettings, ClipTarget};
+use crate::clip::{self, ClipCookError, ClipOptions, ClipSettings, ClipTarget, foot_lock};
 use crate::import::gltf::clips;
 use crate::import::gltf::clips::ClipImportError;
 use crate::import::vrm;
@@ -1250,17 +1250,30 @@ pub(crate) fn sidecar_options(kaykit: &Kaykit, name: &str, target: AssetId) -> R
     options_of(entry.unwrap_or_else(|| panic!("{name} doesn't cook for {target}")))
 }
 
-/// A clip on the character as the sidecars cook it, with their adjustments and gains.
+/// A clip on the character as the sidecars cook it, with their adjustments and gains, its feet
+/// locked.
 pub(crate) fn as_cooked(kaykit: &Kaykit, name: &str) -> SampledClip {
     let (skeleton, map) = character();
     let the_character = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
     let options = sidecar_options(kaykit, name, the_character);
-    retarget(&kaykit.sampled(name), kaykit.rig(), Rig { skeleton, map }, &options).unwrap()
+    locked(
+        kaykit,
+        retarget(&kaykit.sampled(name), kaykit.rig(), Rig { skeleton, map }, &options).unwrap(),
+        Rig { skeleton, map },
+    )
+}
+
+/// `retargeted`, on `target`, with its feet locked as the cook locks them for `kaykit`'s file.
+pub(crate) fn locked(kaykit: &Kaykit, mut retargeted: SampledClip, target: Rig<'_>) -> SampledClip {
+    foot_lock::lock_feet(&mut retargeted, target, &kaykit.settings.contacts);
+    retargeted
 }
 
 /// What the sheets judged, held as numbers, by each clip's measured value and a little: M2 O2's
 /// sidecars bring the arms in from their 32 to 58° off straight down at the source's angles, without
 /// burying a hand in the body, and leave a foot on the floor, under it by no more than a millimeter.
+/// `Hit_A`'s held feet (M6 A4) are out of the leg's reach as the body sways back, so the lower lifts
+/// up to 1.5 cm where it slid 14 cm.
 #[test]
 fn as_cooked_the_arms_hang_close_and_a_foot_stays_down() {
     let (skeleton, map) = character();
@@ -1273,7 +1286,7 @@ fn as_cooked_the_arms_hang_close_and_a_foot_stays_down() {
         ("Walking_Backwards", "MovementAdvanced", 27.0, 0.2, 0.03),
         ("Running_Strafe_Left", "MovementAdvanced", 33.0, 0.25, 0.27),
         ("Running_Strafe_Right", "MovementAdvanced", 33.0, 0.25, 0.27),
-        ("Hit_A", "General", 29.0, 0.2, 0.001),
+        ("Hit_A", "General", 29.0, 0.2, 0.016),
         ("Hit_B", "General", 23.0, 0.2, 0.001),
     ];
     let mut failures = Vec::new();
@@ -1420,7 +1433,11 @@ fn sidecar_targets() -> Vec<(AssetId, String, Skeleton, HumanMap)> {
 }
 
 /// The planted run of `sampled` on `rig` that slides furthest, as A1's report measures it.
-pub(crate) fn worst_run(sampled: &SampledClip, rig: Rig<'_>, settings: &ContactSettings) -> Option<PlantedRun> {
+pub(crate) fn worst_run(
+    sampled: &SampledClip,
+    rig: Rig<'_>,
+    settings: &ContactSettings,
+) -> Option<PlantedRun> {
     let positions = Positions::of(sampled, rig.skeleton);
     planted_runs(sampled, rig.skeleton, rig.map, &positions, settings)
         .into_iter()
@@ -1432,23 +1449,93 @@ pub(crate) fn worst_slide(sampled: &SampledClip, rig: Rig<'_>, settings: &Contac
     worst_run(sampled, rig, settings).map_or(0.0, |run| run.slide)
 }
 
-/// One clip the sidecars retarget onto one rig, and what A1's report finds its worst planted run
-/// slides, in meters, on the source's rig and on the target.
+/// The run of `sampled` on `rig` whose held sole strays furthest ([`foot_lock::held_runs`]).
+fn worst_held(sampled: &SampledClip, rig: Rig<'_>, settings: &ContactSettings) -> Option<PlantedRun> {
+    foot_lock::held_runs(sampled, rig, settings)
+        .into_iter()
+        .reduce(|worst, run| if run.slide > worst.slide { run } else { worst })
+}
+
+/// How much `run`'s foot rolls through it: how far the distance across the ground between its soles
+/// (the ankle and the toes, a fixed span on the foot) ranges, in meters; 0 on a foot with one sole.
+/// With the foot's bearing held, that's all a second sole can stray past the held one.
+fn roll(sampled: &SampledClip, rig: Rig<'_>, settings: &ContactSettings, run: PlantedRun) -> f32 {
+    let positions = Positions::of(sampled, rig.skeleton);
+    let planting = clip::contacts::planting(sampled, rig.skeleton, rig.map, &positions, settings);
+    let Some(foot) = planting.feet.iter().find(|foot| foot.foot == run.foot) else { return 0.0 };
+    let [ankle, toes] = &foot.paths[..] else { return 0.0 };
+    let spans = (usize::from(run.first)..=usize::from(run.last)).map(|tick| {
+        let span = toes[tick] - ankle[tick];
+        Vec3::new(span.x, 0.0, span.z).length()
+    });
+    let (low, high) = spans.fold((f32::INFINITY, 0.0f32), |(low, high), at| (low.min(at), high.max(at)));
+    high - low
+}
+
+/// One clip the sidecars retarget onto one rig: what A1's report finds its worst planted run slides,
+/// in meters, on the source's rig, on the target and locked, and the worst a locked foot's held sole
+/// strays.
 struct ShippedSlide {
     name: String,
     target: String,
     source: f32,
+    retargeted: f32,
     worst: Option<PlantedRun>,
+    held: Option<PlantedRun>,
+    /// How much the foot of A1's worst run rolls through it ([`roll`]).
+    roll: f32,
 }
 
 impl ShippedSlide {
-    fn slide(&self) -> f32 {
+    /// A1's report, locked.
+    fn reported(&self) -> f32 {
         self.worst.map_or(0.0, |run| run.slide)
+    }
+
+    /// What a locked foot slides at the sole that holds it.
+    fn slide(&self) -> f32 {
+        self.held.map_or(0.0, |run| run.slide)
     }
 }
 
+/// Foot locking turns the legs and nothing else: root motion, the hips' travel and every other
+/// joint's turns keep their bits, so no table a move bakes from the arms, the hands or the root moves.
+fn assert_only_the_legs_moved(unlocked: &SampledClip, locked: &SampledClip, rig: Rig<'_>, name: &str) {
+    let legs: Vec<u16> = [LeftUpperLeg, LeftLowerLeg, LeftFoot, RightUpperLeg, RightLowerLeg, RightFoot]
+        .into_iter()
+        .filter_map(|bone| rig.map.joint(bone))
+        .collect();
+    let bits = |samples: &[Quat]| samples.iter().map(|q| q.to_array().map(f32::to_bits)).collect::<Vec<_>>();
+    let others = |clip: &SampledClip| {
+        clip.rotations
+            .iter()
+            .filter(|(joint, _)| !legs.contains(joint))
+            .map(|(joint, samples)| (*joint, bits(samples)))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(others(unlocked), others(locked), "{name}: a joint above or beside the legs turned");
+    let vectors = |tracks: &[(u16, Vec<Vec3>)]| {
+        tracks
+            .iter()
+            .map(|(joint, samples)| {
+                (*joint, samples.iter().map(|at| at.to_array().map(f32::to_bits)).collect::<Vec<_>>())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(vectors(&unlocked.translations), vectors(&locked.translations), "{name}: the hips moved");
+    assert!(locked.scales.is_empty() && locked.weights.is_empty(), "{name}");
+    let root = |clip: &SampledClip| {
+        clip.root.as_ref().map(|root| {
+            let translation: Vec<_> =
+                root.translation.iter().map(|at| at.to_array().map(f32::to_bits)).collect();
+            (root.joint, translation, bits(&root.rotation))
+        })
+    };
+    assert_eq!(root(unlocked), root(locked), "{name}: root motion moved");
+}
+
 /// Every clip the sidecars retarget, on every rig they send it to, as the cook makes it (a mirror
-/// mirrored first).
+/// mirrored first, the feet locked).
 fn shipped_slides() -> Vec<ShippedSlide> {
     let targets = sidecar_targets();
     let mut slides = Vec::new();
@@ -1464,12 +1551,19 @@ fn shipped_slides() -> Vec<ShippedSlide> {
                     Some(of) => clip::mirror::mirror(&kaykit.sampled(of), kaykit.rig()).unwrap(),
                     None => kaykit.sampled(name),
                 };
-                let out = retarget(&sampled, kaykit.rig(), target, &options_of(entry)).unwrap();
+                let unlocked = retarget(&sampled, kaykit.rig(), target, &options_of(entry)).unwrap();
+                let retargeted = worst_slide(&unlocked, target, &settings.contacts);
+                let out = locked(&kaykit, unlocked.clone(), target);
+                assert_only_the_legs_moved(&unlocked, &out, target, name);
+                let worst = worst_run(&out, target, &settings.contacts);
                 slides.push(ShippedSlide {
                     name: name.clone(),
                     target: who.clone(),
                     source: worst_slide(&sampled, kaykit.rig(), &settings.contacts),
-                    worst: worst_run(&out, target, &settings.contacts),
+                    retargeted,
+                    worst,
+                    held: worst_held(&out, target, &settings.contacts),
+                    roll: worst.map_or(0.0, |run| roll(&out, target, &settings.contacts, run)),
                 });
             }
         }
@@ -1477,18 +1571,54 @@ fn shipped_slides() -> Vec<ShippedSlide> {
     slides
 }
 
-/// A1's report over every shipped retarget, before A4's pass: each clip's worst planted run, in
-/// millimeters, beside the source's own on KayKit's rig. `--nocapture` prints them. Measured before
-/// the pass: 30 of the 35 slide over 5 mm, from 5.2 mm (a strafe on the lancer) to 488 mm
-/// (`Hit_B` on the warrior), and the source itself slides over 5 mm in 24 of them (112 mm in
-/// `Walking_B`, 303 mm in `Melee_1H_Attack_Slice_Diagonal`), which the legs' ratio scales up.
+/// How far a planted foot of a shipped retarget may slide once its feet are locked, in meters: M6
+/// A4's bound.
+const LOCKED: f32 = 0.005;
+
+/// How far A1's report may put a locked foot past its held sole's slide and its roll, in meters: the
+/// solve's and the bearing's rounding.
+const ROLL_SLACK: f32 = 0.0005;
+
+/// Every shipped retarget, as the cook makes it: each planted foot's held sole slides under
+/// [`LOCKED`] ([`foot_lock::held_runs`]), and A1's report finds no more than that and the foot's roll
+/// ([`roll`]). A1's counts a second sole's own travel, and on five walks and the stab the foot rolls
+/// about its held sole with the other in A1's 3 cm band: a walk backward lands on its toes and drops
+/// its heel, a walk forward lowers its toes after a heel strike, and the stab's back foot rises onto
+/// its toes; the heel-to-toe span across the ground changes with the foot's pitch, 4 cm on the
+/// warrior's long feet walking backward, which A1's report counts as slide. `--nocapture` prints them
+/// beside what they slid unlocked and what the source slides on KayKit's rig.
+///
+/// Measured before the pass: 30 of the 35 slid over 5 mm, from 5.2 mm (a strafe on the lancer) to
+/// 488 mm (`Hit_B` on the warrior), and the source itself slides over 5 mm in 24 of them (112 mm in
+/// `Walking_B`, 303 mm in `Melee_1H_Attack_Slice_Diagonal`), which the legs' ratio scales up. So
+/// the pass holds what the source let slide as well as what proportions added.
 #[test]
-fn every_shipped_retarget_slides_as_measured() {
+fn every_shipped_retarget_holds_its_planted_feet() {
     #![allow(clippy::print_stdout, reason = "the table, with --nocapture")]
     let slides = shipped_slides();
+    let mut failures = Vec::new();
     for row in &slides {
         let (name, target, source) = (&row.name, &row.target, row.source * 1000.0);
-        let at = row.worst.map(|run| format!("{:?} {}..={}", run.foot, run.first, run.last));
-        println!("{name} on {target}: {:.1} mm at {at:?} ({source:.1} on the source's rig)", row.slide() * 1000.0);
+        let at = row.held.map(|run| format!("{:?} {}..={}", run.foot, run.first, run.last));
+        let before = row.retargeted * 1000.0;
+        println!(
+            "{name} on {target}: held {:.1} mm at {at:?}, reported {:.1} with a roll of {:.1} \
+             ({before:.1} unlocked, {source:.1} on the source's rig)",
+            row.slide() * 1000.0,
+            row.reported() * 1000.0,
+            row.roll * 1000.0
+        );
+        if row.slide() >= LOCKED {
+            failures.push(format!("{name} on {target}: its held sole slides {} m", row.slide()));
+        }
+        if row.reported() > row.slide() + row.roll + ROLL_SLACK {
+            failures.push(format!(
+                "{name} on {target}: reported {} m, past its held sole's {} m and its roll's {} m",
+                row.reported(),
+                row.slide(),
+                row.roll
+            ));
+        }
     }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

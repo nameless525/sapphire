@@ -84,6 +84,9 @@
 //! skeleton carries its [`report`]. None of these changes a track, so a clip's poses, and every table
 //! a move bakes from its samples, stay as they were.
 //!
+//! A retarget's planted feet are then held still ([`foot_lock`], M6 A4), which turns its legs and
+//! nothing else, so root motion and every table read from the root, the arms or the hands stay too.
+//!
 //! # Root motion ([`lift_root`])
 //!
 //! See `sapphire_assets::clip` for what the track means. The named bone's motion in model space
@@ -927,6 +930,7 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, options: &ClipOption
 }
 
 pub mod contacts;
+pub mod foot_lock;
 pub mod mirror;
 pub mod report;
 pub mod retarget;

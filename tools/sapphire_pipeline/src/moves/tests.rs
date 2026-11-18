@@ -17,7 +17,7 @@ use sapphire_serialize::cooked::AlignedVec;
 
 use super::*;
 use crate::clip::retarget::tests::{
-    Kaykit, as_cooked, character, character_rig, sidecar_options, third_party, warrior,
+    Kaykit, as_cooked, character, character_rig, locked, sidecar_options, third_party, warrior,
 };
 use crate::clip::retarget::{Rig, retarget};
 use crate::clip::{ClipOptions, ClipTarget, SampledRoot};
@@ -504,7 +504,8 @@ fn mirrored_side_dodge() -> SampledClip {
     let the_character = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
     let mirrored = clip::mirror::mirror(&kaykit.sampled("Dodge_Left"), kaykit.rig()).unwrap();
     let options = sidecar_options(&kaykit, "Dodge_Right", the_character);
-    retarget(&mirrored, kaykit.rig(), Rig { skeleton, map }, &options).unwrap()
+    let rig = Rig { skeleton, map };
+    locked(&kaykit, retarget(&mirrored, kaykit.rig(), rig, &options).unwrap(), rig)
 }
 
 /// A chop on the enemy's warrior as the sidecars cook it, and that rig: their `follow`.
@@ -515,7 +516,7 @@ fn chop_as_cooked() -> (SampledClip, Skeleton, HumanMap) {
     let rig = Rig { skeleton: &skeleton, map: &map };
     let out =
         retarget(&kaykit.sampled(CHOP), kaykit.rig(), rig, &sidecar_options(&kaykit, CHOP, id)).unwrap();
-    (out, skeleton, map)
+    (locked(&kaykit, out, rig), skeleton, map)
 }
 
 /// The cooked blade's visible edge stays inside the keyed hit capsule throughout each active window.
@@ -725,12 +726,14 @@ const SIGNATURE_CLIP: &str = "3dc7a3197966015f6c3ea3cbd946754d12a17c3f1500fa3866
 const DODGE_CLIP: &str = "b7f89e184c1b5ed08bbc00f8cc5949ab8afec0e2860df4981c8719dece2037f7";
 const SPIN_TABLE: &str = "20194ffbf790bbd46345cb28ebf6c4e48994ef6fc769353240653eefc3499653";
 const SPIN_CLIP: &str = "a03aeea8d61965722a816ef0fa6d3c22a30d80dc0771e2fcc6df1e8470f830b6";
-const RUN_TABLE: &str = "890b9c7d65a08ea41af3c1cdcd0edefd98b78cc1f24e71ff5beaae4023776d57";
-const RUN_CLIP: &str = "870f4ee0bfca84bbdcf2b966c6c3fe66ca9fa3f0b69d13bec5c43ac300b1c5e5";
-const WALK_TABLE: &str = "cc25a6ce65e82bd7171f598338caa76a9ef61bd6118c3232af5b76bafd641e01";
-const WALK_CLIP: &str = "e5b3a50d6ed83417a30f08ddf78584ca4ef2894c9bd651e36750e8937ba75a59";
-const CHOP_TABLE: &str = "51dd4432e0d1ce128208107574ba1b67bfebff46cbe8bdd63daa8a354cf0040e";
-const CHOP_CLIP: &str = "73245c7e4d99db0626027ea8a43db1579bda963f924eaa96022a2b8b7b5918ff";
+// A4's foot lock moved the run, walk and chop pins: their clips' leg tracks, and the legs'
+// paths in these every-bone tables (root motion and the hands' paths hold).
+const RUN_TABLE: &str = "f7b49d71dd0d9876baf36ce87ce62a4e5dbebec8ae472ce9b2bdf07564de7e5f";
+const RUN_CLIP: &str = "d033816aa815e80e207a16c2bab861a5fc8f22e7482cc9778fc9e7ddbeca3f25";
+const WALK_TABLE: &str = "431bf3c09493cb5da352af45a362e757d9e0172ee681c1f1f1f46633af0bd8b2";
+const WALK_CLIP: &str = "46d16c056fcf286dce45310299a96a5b5fd6ab21b0a63b35587a2ab3f5a111bf";
+const CHOP_TABLE: &str = "565c140be385bfabe1aba6f0c7d780b50e72c81dd49a8c12549ccf6245491947";
+const CHOP_CLIP: &str = "f2bd8c8cb38c6c9bafe04a065f2b9829e3db072d69798559fc4fca0308df1e81";
 const MIRRORED_TABLE: &str = "55f852a02384ea16f83aae2c17ee2954eb8c3212d47067b4bef34ec1db028566";
 const MIRRORED_CLIP: &str = "4f815c2e0a5e6b9ec9a3826a57a4b3629bfad14ff2c0d0e4d1224c66bd9be3f6";
 const FBX_TABLE: &str = "6bc755c9e99648c1f2c8af5bf770f6fc5d58ac1edcbd28fc49b0e1de7d2d5375";

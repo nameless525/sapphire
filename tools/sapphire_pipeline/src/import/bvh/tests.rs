@@ -11,7 +11,9 @@ use crate::clip::contacts::{ContactSettings, PlantedRun, planted_runs};
 use crate::clip::report::Positions;
 use crate::clip::retarget::tests::{character, warrior};
 use crate::clip::retarget::{HumanMap, RetargetOptions, Rig, leg_length, retarget};
-use crate::clip::{self, ClipOptions, ClipTarget, RootMotionSettings, RootRotation, RootTranslation};
+use crate::clip::{
+    self, ClipOptions, ClipTarget, RootMotionSettings, RootRotation, RootTranslation, foot_lock,
+};
 
 /// Two joints and an end site, three frames: line numbers matter to the malformed cases below.
 const TINY: &str = "HIERARCHY
@@ -237,6 +239,8 @@ fn a_malformed_file_is_refused_naming_its_line() {
 const INJECTED: (u16, u16) = (34, 44);
 /// How far: `capture.SLIDE`, meters.
 const SLIDE: f32 = 0.05;
+/// How far a planted foot of a retarget may slide once its feet are locked, meters: M6 A4's bound.
+const LOCKED: f32 = 0.005;
 
 fn synthetic_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/bvh/synthetic_walk.bvh")
@@ -309,17 +313,19 @@ fn on_every_rig(mut each: impl FnMut(&str, &SampledClip, Rig<'_>, f32)) {
         ("the character", Rig { skeleton: character_skeleton, map: character_map }),
         ("the warrior", Rig { skeleton: &warrior_skeleton, map: &warrior_map }),
     ] {
-        let moved = retarget(&sampled, source, target, &RetargetOptions::default()).unwrap();
+        let mut moved = retarget(&sampled, source, target, &RetargetOptions::default()).unwrap();
+        foot_lock::lock_feet(&mut moved, target, &settings.clips.contacts);
         each(who, &moved, target, leg_length(target) / leg_length(source));
     }
 }
 
 /// A1's report finds the injected slide on the injected frames, and no planted foot sliding as far
-/// anywhere else: on the capture's own rig, and retargeted onto the look-dev character and the enemy's
-/// warrior, whose other proportions slide every planted foot a little of their own (about 7 mm and 2 cm
-/// a stance; A4's to fix). `--nocapture` prints every planted run.
+/// anywhere else, on the capture's own rig; retargeted onto the look-dev character and the enemy's
+/// warrior, whose other proportions slid every planted foot a little of their own (about 7 mm and
+/// 2 cm a stance) as well as the injection, foot locking (M6 A4) holds every planted foot under
+/// [`LOCKED`]. `--nocapture` prints every planted run.
 #[test]
-fn the_synthetic_walks_slide_is_reported_on_the_injected_frames_and_nowhere_else() {
+fn the_synthetic_walks_slide_is_reported_on_the_injected_frames_and_locked_on_a_retarget() {
     #![allow(clippy::print_stdout, reason = "the runs, with --nocapture")]
     // Ticks at 60 a second: the frames' 30 doubled.
     let injected = (INJECTED.0 * 2, INJECTED.1 * 2);
@@ -330,6 +336,22 @@ fn the_synthetic_walks_slide_is_reported_on_the_injected_frames_and_nowhere_else
         println!("{who}: the injected slide is {expected:.4} m");
         for run in &runs {
             println!("  {:?} ticks {}..={}: {:.4} m", run.foot, run.first, run.last, run.slide);
+        }
+        let cooked = clip::cook(
+            sampled,
+            &ClipTarget {
+                skeleton: Some((AssetId::from_bytes([1; 16]), rig.skeleton)),
+                morph_defaults: &[],
+                map: Some(rig.map),
+            },
+            &ClipOptions::default(),
+        );
+        let slide = |foot| cooked.contacts.iter().find(|track| track.foot == foot).unwrap().slide;
+        if who != "its own rig" {
+            let worst = runs.iter().map(|run| run.slide).fold(0.0f32, f32::max);
+            assert!(worst < LOCKED, "{who}: a planted foot slides {worst} m");
+            assert!(slide(LeftFoot).max(slide(RightFoot)) < LOCKED, "{who}");
+            return;
         }
         // The runs the injection falls in: the left foot's, planted before it starts and into it. A
         // retarget's own stride can lift the foot a few ticks before it ends (the character's run ends
@@ -348,16 +370,6 @@ fn the_synthetic_walks_slide_is_reported_on_the_injected_frames_and_nowhere_else
             above > expected * 0.5 && above < expected * 1.2,
             "{who}: the injection stands {above} m above"
         );
-        let cooked = clip::cook(
-            sampled,
-            &ClipTarget {
-                skeleton: Some((AssetId::from_bytes([1; 16]), rig.skeleton)),
-                morph_defaults: &[],
-                map: Some(rig.map),
-            },
-            &ClipOptions::default(),
-        );
-        let slide = |foot| cooked.contacts.iter().find(|track| track.foot == foot).unwrap().slide;
         assert_eq!(
             slide(LeftFoot),
             injected_slide,
@@ -407,5 +419,6 @@ fn the_synthetic_walk_and_its_clips_hash_the_same_on_every_architecture() {
 const CAPTURE: &str = "16dab6c3223fee036492d89ead65e5f2ced11665710fd8afb554deb3d15cb3f8";
 const SKELETON: &str = "045a22f8e16679fa82569d55f1f090d61e374ce92f374108220942a21aa9eb27";
 const OWN_CLIP: &str = "32c04e256df7bea260e453775a94df6b1291e70324aec48866229c036f2e7f97";
-const CHARACTER_CLIP: &str = "67642fd302bf7b787349f30151d6f9380fee255bd5f946783d613a2b145115d2";
-const WARRIOR_CLIP: &str = "c02bd7439502d7c968ad57f00d5ef73010629c39414402e34bd5b97c9d9d3312";
+// The retargets' pins moved with A4's foot lock (their leg tracks).
+const CHARACTER_CLIP: &str = "f5a25cc490cebc56988b55a7a3b2d28319787c361be9896c1dda7a85f10404ba";
+const WARRIOR_CLIP: &str = "cd168494677b2aa5697fab023cef6cb74ffe6b85e70966691811d2b837ecdf35";

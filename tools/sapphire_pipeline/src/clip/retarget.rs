@@ -92,7 +92,8 @@
 //! each tick to put the target's lowest foot as high above the floor as the source's lowest is,
 //! scaled, and never under it. A foot's height is measured from its height at rest, its toes'
 //! likewise where both rigs have them, and the lower of the two counts. A foot that isn't the lowest
-//! goes where the rotations take it.
+//! goes where the rotations take it. Grounding fixes heights only: the cook then holds each planted
+//! foot still across the ground ([`foot_lock`](super::foot_lock)).
 //!
 //! # Root motion
 //!
@@ -119,7 +120,8 @@ use crate::keypose::Turn;
 ///
 /// 2: in scalars, for one set of bytes on every architecture (M2 N1).
 /// 3: a bone named by a name two joints share is an error, where it took the first.
-pub const COOKER: Stage = Stage { name: "sclip retarget", version: (3 << 16) | super::COOKER.version };
+/// 4: planted feet hold still on the target ([`foot_lock`](super::foot_lock), M6 A4).
+pub const COOKER: Stage = Stage { name: "sclip retarget", version: (4 << 16) | super::COOKER.version };
 
 /// One entry of a sidecar's `retarget`: which clips of the source to carry onto which rig.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

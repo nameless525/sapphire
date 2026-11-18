@@ -14,10 +14,12 @@
 //! The shapes' coverage is a pure function ([`VfxShape::coverage`]); the renderer rasterizes it
 //! into a texture array at first use, so no third-party art is involved. Effect meshes ([`mesh`], M5
 //! L5) are generated the same way: their shapes and patterns are functions too, and so are ground decals'
-//! signed distance shapes ([`decal`], M5 L7).
+//! signed distance shapes ([`decal`], M5 L7). Stateless particles ([`stateless`], M6 N8a) are closed-form
+//! functions of a seed and an age, here as the CPU reference the renderer's include mirrors.
 
 pub mod decal;
 pub mod mesh;
+pub mod stateless;
 
 use std::time::Duration;
 

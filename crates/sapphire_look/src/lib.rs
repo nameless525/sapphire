@@ -27,7 +27,8 @@
 //! - **The frame's effects** ([`vfx`]): the sprites and ribbon points `sapphire_vfx` resolves and
 //!   the renderer draws ([`VfxFrame`]), the shapes of their generated map ([`VfxShape`]), and effect
 //!   meshes' generated shapes and patterns ([`VfxMesh`], [`VfxMeshShape`], [`VfxPattern`], M5 L5), and ground
-//!   decals' signed distance shapes ([`VfxDecal`], M5 L7).
+//!   decals' signed distance shapes ([`VfxDecal`], M5 L7), and stateless particles' closed form
+//!   ([`StatelessEmitter`], M6 N8a), which the renderer's `procedural_particles.wgsl` mirrors.
 //! - **Colour vision** ([`color_vision`], M4 A5): the three dichromacies by Machado et al. (2009), which
 //!   the renderer's colour-vision debug view and the cue tests share, and Oklab's distance.
 //! - **The weather** ([`weather`], M5 L4): how wet the world is and how far its puddles have
@@ -82,6 +83,11 @@ pub use vfx::decal::{VfxDecal, VfxDecalBlend, VfxDecalShape};
 pub use vfx::mesh::{
     VfxBend, VfxDistortion, VfxErosion, VfxFlipbook, VfxGeometry, VfxMesh, VfxMeshShape, VfxMeshVertex,
     VfxPattern,
+};
+pub use vfx::stateless::{
+    MAX_STATELESS_SLOTS, STATELESS_CYCLES, STATELESS_KEYS, STATELESS_NEVER, StatelessEmitter,
+    StatelessFacing, StatelessInstance, StatelessNoise, StatelessParams, StatelessParticle, StatelessSource,
+    StatelessSpawn,
 };
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};
 pub use weather::{

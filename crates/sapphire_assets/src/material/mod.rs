@@ -325,6 +325,11 @@ pub trait MaterialDocument: Versioned + Serialize + DeserializeOwned + TypePath 
     /// The texture each of the family's slots binds, in slot order.
     fn textures(&self) -> Vec<Option<AssetId>>;
 
+    /// Where each of [`Self::textures`]' slots is bound in the document, in the same order, as a property
+    /// path (`base_color_map`, `diffuse[0].map`, `matcap?.map`): what a cook's refusal of a slot's texture names
+    /// (M6 T5). A slot whose place depends on a variant names the one this document has.
+    fn texture_fields(&self) -> Vec<&'static str>;
+
     /// The permutation-relevant flags.
     fn flags(&self) -> MaterialFlags;
 
@@ -677,6 +682,11 @@ impl AnyMaterialDocument {
     /// The texture each of the family's slots binds, in slot order.
     pub fn textures(&self) -> Vec<Option<AssetId>> {
         with_document!(self, document => document.textures())
+    }
+
+    /// Where each slot is bound in the document: see [`MaterialDocument::texture_fields`].
+    pub fn texture_fields(&self) -> Vec<&'static str> {
+        with_document!(self, document => document.texture_fields())
     }
 
     /// [`Material::from_document`] for whichever family this is.

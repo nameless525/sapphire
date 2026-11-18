@@ -148,6 +148,10 @@ impl MaterialDocument for FogCardMaterial {
         vec![self.map]
     }
 
+    fn texture_fields(&self) -> Vec<&'static str> {
+        vec!["map"]
+    }
+
     fn flags(&self) -> MaterialFlags {
         MaterialFlags::TRANSPARENT
     }

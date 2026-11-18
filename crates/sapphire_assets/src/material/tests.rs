@@ -103,6 +103,46 @@ fn swizzles(document: &AnyMaterialDocument) -> Vec<Swizzle> {
         .collect()
 }
 
+/// Each slot's field is named one for one (M6 T5): a slot added without its field fails here, not as an index in
+/// a cook. Every family, each character surface, and every material in the content.
+#[test]
+fn every_texture_slot_has_its_field() {
+    let mut all = documents();
+    for surface in [
+        CharacterSurface::Body,
+        CharacterSurface::Face(FaceShading::new(id(TEXTURE))),
+        CharacterSurface::Hair(HairShading::default()),
+        CharacterSurface::Eye(EyeShading::default()),
+    ] {
+        all.push(AnyMaterialDocument::AnimeCharacter(AnimeCharacterMaterial {
+            surface,
+            ..Default::default()
+        }));
+    }
+    let content = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let mut folders = vec![content];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.to_string_lossy().ends_with(".material.ron") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                all.push(
+                    AnyMaterialDocument::from_ron(&text).unwrap_or_else(|error| panic!("{path:?}: {error}")),
+                );
+            }
+        }
+    }
+    assert!(all.len() > 100, "{}", all.len());
+    for document in all {
+        let (family, fields) = (document.family(), document.texture_fields());
+        assert_eq!(fields.len(), family.texture_slots().len(), "{family}: {fields:?}");
+        assert_eq!(fields.len(), document.textures().len(), "{family}");
+        assert!(fields.iter().all(|field| !field.is_empty() && !field.contains(' ')), "{family}: {fields:?}");
+    }
+}
+
 #[test]
 fn every_family_round_trips_as_a_document() {
     let mut registry = TypeRegistry::new();

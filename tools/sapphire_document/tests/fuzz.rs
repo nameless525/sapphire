@@ -492,6 +492,42 @@ fn every_document_in_the_content_opens_for_editing() {
     assert!(count >= 220, "{count}");
 }
 
+/// Every field a cook's refusal can name of a material (its texture slots' fields, M6 T5) is a path the walker
+/// parses, and finds in a shipped document that has it: what Properties marks, and a click will select (T6).
+#[test]
+fn every_field_a_cook_refusal_names_is_a_path_the_walker_finds() {
+    use sapphire_assets::material::MaterialDocument;
+    fn look<T>(
+        document: &Document<T>,
+        named: &mut std::collections::BTreeSet<&'static str>,
+        found: &mut std::collections::BTreeSet<&'static str>,
+    ) where
+        T: MaterialDocument + Reflect + FromReflect + Typed + GetTypeRegistration + Clone + PartialEq,
+    {
+        let value = document.value().expect("a document that reads");
+        for field in value.texture_fields() {
+            let path: PropertyPath = field.parse().unwrap_or_else(|error| panic!("{field}: {error}"));
+            named.insert(field);
+            if walk::get(value.as_partial_reflect(), &path).is_ok() {
+                found.insert(field);
+            }
+        }
+    }
+    let (mut named, mut found) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+    for (relative, kind) in documents_in_the_content() {
+        match kind {
+            Kind::Material => look(&open(&relative, kinds::material()), &mut named, &mut found),
+            Kind::EnvironmentMaterial => {
+                look(&open(&relative, kinds::environment_material()), &mut named, &mut found);
+            }
+            _ => {}
+        }
+    }
+    let missing: Vec<_> = named.difference(&found).collect();
+    assert!(missing.is_empty(), "named but found in no document: {missing:?}");
+    assert!(found.len() >= 12, "{found:?}");
+}
+
 /// A material's kind is its envelope's family, and a family with no kind here is no kind.
 #[test]
 fn a_materials_kind_is_the_family_its_envelope_names() {

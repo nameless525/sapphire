@@ -285,6 +285,10 @@ impl MaterialDocument for EnvironmentMaterial {
         ]
     }
 
+    fn texture_fields(&self) -> Vec<&'static str> {
+        vec!["base_color_map", "normal_map", "mask_map", "terminator.band?.map", "emission_map"]
+    }
+
     fn flags(&self) -> MaterialFlags {
         match self.alpha {
             AlphaMode::Opaque => MaterialFlags::empty(),

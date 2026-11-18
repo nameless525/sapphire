@@ -16,7 +16,7 @@ use sapphire_pipeline::character_maps::{self, FaceSdfSettings, MapKind, MapSetti
 use sapphire_pipeline::check;
 use sapphire_pipeline::code_names;
 use sapphire_pipeline::combat;
-use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
+use sapphire_pipeline::cook::{self, Cook, CookError, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::documents;
 use sapphire_pipeline::extract::{self, ExtractOptions};
 use sapphire_pipeline::figure;
@@ -28,6 +28,7 @@ use sapphire_pipeline::lookdev;
 use sapphire_pipeline::meta::{self, IdSource, ImportSettings, MeshSettings};
 use sapphire_pipeline::pack::{self, PackReport, PackStatus};
 use sapphire_pipeline::procedural::{self, ProceduralTexture, SurfaceMap};
+use sapphire_pipeline::refusal::Refusal;
 use sapphire_pipeline::release::{self, ReleaseOptions};
 use sapphire_pipeline::samples::{self, Existing, Generated};
 use sapphire_pipeline::scaffold::{self, NewCharacter};
@@ -107,7 +108,7 @@ Usage:
       light angle (0 to 180) and channel, the face lit from the head's right, from its left, and
       the document's mask at that angle, if any, red where the map doesn't reproduce it.
   sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--packs <DIR>]
-                         [--cache <DIR>] [--locked] [--editor] [--report]
+                         [--cache <DIR>] [--locked] [--editor] [--report] [--refusal <FILE>]
       Cook every source asset under --source (skipping hidden entries, and sources whose
       sidecars say `cook: false`) into mirrored paths under --out, creating missing .meta
       sidecars next to the sources, then pack the cooked
@@ -117,7 +118,9 @@ Usage:
       documents/, and an unsigned release.smanifest names everything there. Beside the cooked files under
       --out go the cook audit (cook_audit.ron) and the asset index (index.json), which never ship.
       With --report, it then prints how long each phase took and the slowest stages and assets, which no
-      file it writes holds.
+      file it writes holds. With --refusal, a cook that fails also writes why to FILE as RON (the source,
+      the field of its document where the refusal knows one, and the message), and one that succeeds
+      takes an old FILE away: what the editor reads of a cook it ran.
   sapphire_pipeline graph <ASSET> --index <FILE> [--reverse]
       Print what ASSET uses, all the way down, or with --reverse what uses it, from the asset index a cook
       wrote (FILE: index.json beside its cooked files, target/content/loose/<cook>/index.json for cargo
@@ -186,6 +189,7 @@ Options:
   --editor                   Also cook what only an editor reads (each zone's shapes): never for packs
                              that ship.
   --report                   cook: print each phase's time and the slowest stages and assets.
+  --refusal <FILE>           cook: write why a cook failed to FILE, and take it away when one succeeds.
   --weld-tolerance <METERS>  Vertices closer than this share one outline normal.
   --release-version <N>      release: the release's version.
   --expires <YYYY-MM-DD>     release: the day, at midnight UTC, it stops being offered as current.
@@ -266,6 +270,8 @@ enum Command {
         editor: bool,
         /// Print the cook's times.
         report: bool,
+        /// Where to write why the cook failed, if it does.
+        refusal: Option<PathBuf>,
     },
     /// `release-key new` (`new: true`) or `release-key public`, on a key file.
     ReleaseKey {
@@ -458,47 +464,26 @@ fn run(command: Command) -> anyhow::Result<()> {
                 extraction.written.len()
             );
         }
-        Command::Cook { source, out, packs, code, cook, cache, locked, editor, report: show } => {
+        Command::Cook { source, out, packs, code, cook, cache, locked, editor, report: show, refusal } => {
             let options = CookOptions { cook, cache: cache.as_deref(), locked, editor };
-            let mut report = cook::cook_dir(&source, &out, &options)?;
-            print_report(&report, cook, &source, &out);
-            let mut watch = Stopwatch::start();
-            let audited = audit::write(&source, &out, cook, cache.as_deref(), &report)?;
-            if audited.written == audit::Written::Written {
-                eprintln!("{cook}: wrote the cook audit {}", audited.path.display());
-            }
-            report.timings.ended(Phase::Audit, &mut watch);
-            let (path, written) =
-                index::write(&source, &out, cook, cache.as_deref(), &report, &audited.audit)?;
-            if written == audit::Written::Written {
-                eprintln!("{cook}: wrote the asset index {}", path.display());
-            }
-            report.timings.ended(Phase::Index, &mut watch);
-            if let Some(packs) = packs {
-                if let Some(code) = code {
-                    let names = code_names::scan(&code)
-                        .with_context(|| format!("reading the code in {}", code.display()))?;
-                    pack::check_code_names(&report, cache.as_deref(), &names)?;
+            let cooked = cook_all(&source, &out, packs.as_deref(), code.as_deref(), &options, show);
+            if let Some(file) = refusal {
+                let written = match &cooked {
+                    Ok(()) => Refusal::clear(&file),
+                    Err(error) => match error.downcast_ref::<CookError>() {
+                        Some(error) => Refusal::of_cook(error).write(&file),
+                        None => Refusal::of_other(error.as_ref()).write(&file),
+                    },
+                };
+                let written = written.with_context(|| format!("writing {}", file.display()));
+                // A refusal that can't be written never hides the cook's own error: that's what's reported, with
+                // the refusal's failure after it.
+                if let (Err(cook), Err(write)) = (&cooked, &written) {
+                    anyhow::bail!("{cook:#}\n(and the refusal wasn't written: {write:#})");
                 }
-                let packed = pack::pack_cooked(&report, &packs, cache.as_deref())?;
-                report.timings.ended(Phase::Pack, &mut watch);
-                print_packs(&packed, cook);
-                let shipped = documents::ship_documents(&source, &packs)?;
-                for path in &shipped.written {
-                    println!("  shipped {}", path.display());
-                }
-                for path in &shipped.removed {
-                    println!("  removed {}", path.display());
-                }
-                if let Some(path) = release::write_manifest(&packs, cook)? {
-                    println!("  wrote {}", path.display());
-                }
-                report.timings.ended(Phase::Ship, &mut watch);
+                written?;
             }
-            if show {
-                let count = timing::SLOWEST;
-                eprint!("{}", Slowest { report: &report, cook, source: &source, out: &out, count });
-            }
+            cooked?;
         }
         Command::Check { source, json } => {
             let report = check::check(&source)?;
@@ -701,6 +686,63 @@ fn bake_sheet(input: &Path, output: &Path, angles: &[f32]) -> anyhow::Result<()>
     write_png(output, &png.into_inner())
 }
 
+/// Cooks `source` into `out` as `options` says, then writes its audit and index beside it and, with `packs`, packs
+/// it there, checking the names the code under `code` holds; with `show`, prints the cook's times.
+#[expect(
+    clippy::print_stdout,
+    reason = "what was shipped beside the packs goes to stdout, as the cook's lines always have"
+)]
+fn cook_all(
+    source: &Path,
+    out: &Path,
+    packs: Option<&Path>,
+    code: Option<&Path>,
+    options: &CookOptions<'_>,
+    show: bool,
+) -> anyhow::Result<()> {
+    let cook = options.cook;
+    let cache = options.cache;
+    let mut report = cook::cook_dir(source, out, options)?;
+    print_report(&report, cook, source, out);
+    let mut watch = Stopwatch::start();
+    let audited = audit::write(source, out, cook, cache, &report)?;
+    if audited.written == audit::Written::Written {
+        eprintln!("{cook}: wrote the cook audit {}", audited.path.display());
+    }
+    report.timings.ended(Phase::Audit, &mut watch);
+    let (path, written) = index::write(source, out, cook, cache, &report, &audited.audit)?;
+    if written == audit::Written::Written {
+        eprintln!("{cook}: wrote the asset index {}", path.display());
+    }
+    report.timings.ended(Phase::Index, &mut watch);
+    if let Some(packs) = packs {
+        if let Some(code) = code {
+            let names =
+                code_names::scan(code).with_context(|| format!("reading the code in {}", code.display()))?;
+            pack::check_code_names(&report, cache, &names)?;
+        }
+        let packed = pack::pack_cooked(&report, packs, cache)?;
+        report.timings.ended(Phase::Pack, &mut watch);
+        print_packs(&packed, cook);
+        let shipped = documents::ship_documents(source, packs)?;
+        for path in &shipped.written {
+            println!("  shipped {}", path.display());
+        }
+        for path in &shipped.removed {
+            println!("  removed {}", path.display());
+        }
+        if let Some(path) = release::write_manifest(packs, cook)? {
+            println!("  wrote {}", path.display());
+        }
+        report.timings.ended(Phase::Ship, &mut watch);
+    }
+    if show {
+        let count = timing::SLOWEST;
+        eprint!("{}", Slowest { report: &report, cook, source, out, count });
+    }
+    Ok(())
+}
+
 fn write_png(output: &Path, png: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
@@ -882,6 +924,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             locked: options.flag("--locked"),
             editor: options.flag("--editor"),
             report: options.flag("--report"),
+            refusal: options.value("--refusal")?,
         },
         "release" => Command::Release {
             packs: options.required("--packs")?,
@@ -1109,9 +1152,10 @@ mod tests {
                 locked: true,
                 editor: false,
                 report: false,
+                refusal: None,
             }
         );
-        let Command::Cook { cache, locked, packs, report, .. } = parse(&[
+        let Command::Cook { cache, locked, packs, report, refusal, .. } = parse(&[
             "cook",
             "--source=a",
             "--out=b",
@@ -1121,12 +1165,15 @@ mod tests {
             "--packs",
             "p",
             "--report",
+            "--refusal",
+            "why.ron",
         ])
         .unwrap() else {
             panic!("expected cook");
         };
         assert_eq!((cache, locked, packs), (Some("target/cache".into()), false, Some("p".into())));
         assert!(report, "the cook's times printed");
+        assert_eq!(refusal, Some("why.ron".into()), "where a failed cook says why");
         assert_eq!(parse(&["cook", "--help"]).unwrap(), Command::Help);
         assert_eq!(parse(&["-V"]).unwrap(), Command::Version);
     }

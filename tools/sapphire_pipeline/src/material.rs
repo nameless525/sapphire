@@ -193,13 +193,19 @@ pub enum MaterialCookError {
     #[error(transparent)]
     Invalid(#[from] MaterialError),
     #[error("texture slot `{slot}` references {id}, which no source in the content tree has")]
-    MissingTexture { slot: &'static str, id: AssetId },
+    MissingTexture { slot: &'static str, field: &'static str, id: AssetId },
     #[error("texture slot `{slot}` references {}, which is not a texture", path.display())]
-    NotATexture { slot: &'static str, path: PathBuf },
+    NotATexture { slot: &'static str, field: &'static str, path: PathBuf },
     #[error("texture slot `{slot}` needs {usage}, but {} is a {class} texture", path.display())]
-    WrongClass { slot: &'static str, usage: &'static str, path: PathBuf, class: &'static str },
+    WrongClass {
+        slot: &'static str,
+        field: &'static str,
+        usage: &'static str,
+        path: PathBuf,
+        class: &'static str,
+    },
     #[error("texture slot `{slot}` references {}, which hasn't cooked", path.display())]
-    NotCooked { slot: &'static str, path: PathBuf },
+    NotCooked { slot: &'static str, field: &'static str, path: PathBuf },
     #[error(
         "a ramp has {rows} rows of equal height (a day and a night row per material ID), but this \
          one is {height} texels tall",
@@ -218,6 +224,23 @@ pub enum MaterialCookError {
         #[source]
         source: TextureFormatError,
     },
+}
+
+impl MaterialCookError {
+    /// The field of the material's document this refuses, as a property path the editor's walker reads, where it
+    /// names one: a texture slot's binding (`MaterialDocument::texture_fields`). A value out of its range names its
+    /// field in the validator's own words (`surface.softness` for `surface[0].softness`, some with spaces), which
+    /// aren't paths, so it names none here; its message still says which (M6 T6 maps them).
+    #[must_use]
+    pub fn field(&self) -> Option<&str> {
+        match self {
+            Self::MissingTexture { field, .. }
+            | Self::NotATexture { field, .. }
+            | Self::WrongClass { field, .. }
+            | Self::NotCooked { field, .. } => Some(field),
+            _ => None,
+        }
+    }
 }
 
 /// Reads and validates a material source.
@@ -289,22 +312,27 @@ fn texture<'a>(
     lookup: &impl Fn(AssetId) -> Option<Referenced<'a>>,
 ) -> Result<(&'a Path, CacheKey), MaterialCookError> {
     let desc = document.family().texture_slots()[slot];
-    let referenced = lookup(id).ok_or(MaterialCookError::MissingTexture { slot: desc.name, id })?;
+    let field = document.texture_fields()[slot];
+    let referenced = lookup(id).ok_or(MaterialCookError::MissingTexture { slot: desc.name, field, id })?;
     let Some(class) = referenced.class else {
-        return Err(MaterialCookError::NotATexture { slot: desc.name, path: referenced.source.to_owned() });
+        let path = referenced.source.to_owned();
+        return Err(MaterialCookError::NotATexture { slot: desc.name, field, path });
     };
     if !accepts(desc.usage, class) {
         return Err(MaterialCookError::WrongClass {
             slot: desc.name,
+            field,
             usage: desc.usage.name(),
             path: referenced.source.to_owned(),
             class: class.name(),
         });
     }
     // Textures cook first; one that didn't (its cook failed) leaves its materials uncooked.
-    referenced
-        .cooked
-        .ok_or_else(|| MaterialCookError::NotCooked { slot: desc.name, path: referenced.source.to_owned() })
+    referenced.cooked.ok_or_else(|| MaterialCookError::NotCooked {
+        slot: desc.name,
+        field,
+        path: referenced.source.to_owned(),
+    })
 }
 
 #[cfg(test)]

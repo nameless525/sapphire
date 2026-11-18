@@ -233,6 +233,10 @@ impl MaterialDocument for FoliageMaterial {
         vec![self.base_color_map, self.mask_map]
     }
 
+    fn texture_fields(&self) -> Vec<&'static str> {
+        vec!["base_color_map", "mask_map"]
+    }
+
     fn flags(&self) -> MaterialFlags {
         if self.alpha_cutoff > 0.0 { MaterialFlags::ALPHA_TEST } else { MaterialFlags::empty() }
     }

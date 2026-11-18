@@ -1933,6 +1933,28 @@ impl MaterialDocument for AnimeCharacterMaterial {
         ]
     }
 
+    fn texture_fields(&self) -> Vec<&'static str> {
+        let (face_shadow, surface_mask, expression) = match &self.surface {
+            CharacterSurface::Body => ("surface", "layer_mask", "surface"),
+            CharacterSurface::Face(_) => {
+                ("surface[0].shadow_map", "surface[0].mask_map", "surface[0].expression_map")
+            }
+            CharacterSurface::Hair(_) | CharacterSurface::Eye(_) => {
+                ("surface", "surface[0].mask_map", "surface")
+            }
+        };
+        vec![
+            "base_color_map",
+            "control_map",
+            "normal_map",
+            "diffuse[0].map",
+            face_shadow,
+            surface_mask,
+            "matcap?.map",
+            expression,
+        ]
+    }
+
     fn flags(&self) -> MaterialFlags {
         let mut flags = MaterialFlags::empty();
         match self.alpha {

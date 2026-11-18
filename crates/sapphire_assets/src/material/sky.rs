@@ -273,6 +273,10 @@ impl MaterialDocument for SkyMaterial {
         ]
     }
 
+    fn texture_fields(&self) -> Vec<&'static str> {
+        vec!["moon.map", "stars.map", "stars.milky_way", "clouds.map", "cirrus.map", "stars.nebula"]
+    }
+
     fn flags(&self) -> MaterialFlags {
         MaterialFlags::empty()
     }

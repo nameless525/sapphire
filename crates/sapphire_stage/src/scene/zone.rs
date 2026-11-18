@@ -26,9 +26,13 @@
 //! arriving prefetches stays mounted, the zone left behind included, so a hub's next zone isn't mounted again
 //! on every visit.
 //!
-//! The frame's weather (M5 L4) comes from three places, each over the last: the zone's (dry with none), then its
-//! day's keyed weather by the keys' share (`TodLook::weather_over`: a day that keys none leaves the zone's), then a
-//! tool's (`Scene::set_weather`, the sandbox's `--weather`). The simulation never reads it.
+//! The frame's weather (M5 L4) comes from four places, each over the last. With no weather plan, or a zone that
+//! names none: the shares its weather states accumulated (M6 Y2, `WeatherSystem::shares`: dry with no plan and
+//! no override), then the zone's fixed wetness and puddles if it gives them, then its day's keyed wetness and
+//! puddles by the keys' share (`TodLook::weather_over`: a day that keys none leaves what is beneath), then a
+//! tool's (`Scene::set_weather`, the sandbox's `--weather`). With the zone's own plan (or the stage's, no zone's
+//! look on; m6-plan §3): the shares over the day's keyed weather and the zone's fixed weather, which they shadow,
+//! then the volumes' and a cutscene's keyed weather, then a tool's. The simulation never reads it.
 
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -56,7 +60,7 @@ use sapphire_world::tod::weather::WeatherDocument;
 use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline};
 #[cfg(any(test, feature = "dev"))]
 use sapphire_world::tod::{TodError, TodGroups};
-use sapphire_world::weather::{WeatherPlan, WeatherSetup};
+use sapphire_world::weather::{WeatherPlan, WeatherSetup, WeatherSystem};
 use sapphire_zone::{
     ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, CookedVolume, CookedWeatherPlan, Zone,
     ZoneFog,
@@ -210,8 +214,10 @@ impl ComingLook {
 }
 
 impl NextZone {
-    /// A frame of it. With `tool_weather`, its own weather never draws ([`Scene::set_weather`]).
-    fn advance(&mut self, content: &mut Content, tool_weather: bool) {
+    /// A frame of it. With `tool_weather`, its own weather never draws ([`Scene::set_weather`]). `carried` says
+    /// whether the weather a trip brings beside the zone's own may wet it (M6 Y2), given whether the zone names
+    /// a plan: an override the trip keeps, and the stage's own plan, which a zone naming none gives back.
+    fn advance(&mut self, content: &mut Content, tool_weather: bool, carried: &dyn Fn(bool) -> bool) {
         let pack = self.target.pack.as_str();
         match &self.coming {
             Coming::Mounting => {
@@ -277,7 +283,9 @@ impl NextZone {
                 // Its wet surfaces, off the frame, if it may go wet (M5 L4): the pack's prewarm
                 // couldn't say, with the zone unread.
                 let day_wet = matches!(&parsed, Ok((Some(day), ..)) if day.may_be_wet());
-                let wet = !tool_weather && (weather_is_wet(presentation) || day_wet);
+                let plan_wet = || matches!(&parsed, Ok((.., Some(setup))) if setup.may_be_wet());
+                let carried = || carried(presentation.weather_plan.is_some());
+                let wet = !tool_weather && (own_weather_wets(presentation, plan_wet) || day_wet || carried());
                 // Its day and rigs read before it's ready, so a look that doesn't read fails the trip
                 // before the arrival switches anything (Z3 review F4).
                 let read = parsed
@@ -431,7 +439,7 @@ impl ZoneLook {
         });
         let weather = presentation.weather.as_ref().map(|weather| {
             let weather = weather.to_native();
-            Weather { wetness: weather.wetness, puddles: weather.puddles }
+            Weather { wetness: weather.wetness, puddles: weather.puddles, ..Weather::DRY }
         });
         let fog = presentation.fog.as_ref().map(|fog| fog.to_native());
         Self { day, rigs, wind, weather, fog, rooms: rooms_of(presentation), weather_plan }
@@ -489,11 +497,17 @@ impl ZoneLook {
     }
 }
 
-/// Whether a zone's frames may draw wet (M5 L4): its own weather is, or its day keys any. What a load or a trip
-/// declares for it (`PipelineInventory::wet_surfaces`), so its first wet frame builds nothing.
+/// Whether a zone's frames may draw wet (M5 L4): its own weather is, or a state its weather plan may show wets
+/// (M6 Y2), or its day keys any. What a load or a trip declares for it (`PipelineInventory::wet_surfaces`), so
+/// its first wet frame builds nothing.
 pub(crate) fn may_be_wet(presentation: &ArchivedZonePresentation) -> bool {
-    let own = weather_is_wet(presentation);
-    // A load's or a boot's: a zone coming parses its day on a job.
+    // A load's or a boot's: a zone coming parses its day and plan on a job.
+    let plan = || {
+        presentation.weather_plan.as_ref().is_some_and(|plan| {
+            sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
+            WeatherSetup::read(&plan.to_native()).is_ok_and(|setup| setup.may_be_wet())
+        })
+    };
     let day = || {
         let day = presentation.day.as_ref().map(|text| {
             sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
@@ -501,14 +515,18 @@ pub(crate) fn may_be_wet(presentation: &ArchivedZonePresentation) -> bool {
         });
         day.is_some_and(|day| day.is_ok_and(|day| day.may_be_wet()))
     };
-    own || day()
+    own_weather_wets(presentation, plan) || day()
 }
 
-/// Whether a zone's own weather is wet.
-fn weather_is_wet(presentation: &ArchivedZonePresentation) -> bool {
+/// Whether a zone's own weather may wet it: whether its weather `plan` may, if it has one, whose shares lie over
+/// its fixed weather (m6-plan §3), or else its fixed wetness and puddles.
+fn own_weather_wets(presentation: &ArchivedZonePresentation, plan: impl FnOnce() -> bool) -> bool {
+    if presentation.weather_plan.is_some() {
+        return plan();
+    }
     presentation.weather.as_ref().is_some_and(|weather| {
         let weather = weather.to_native();
-        Weather { wetness: weather.wetness, puddles: weather.puddles }.is_wet()
+        Weather { wetness: weather.wetness, puddles: weather.puddles, ..Weather::DRY }.is_wet()
     })
 }
 
@@ -526,8 +544,12 @@ pub(super) struct ZoneAir {
     /// ([`Scene::follow_zone_look`]).
     #[cfg(feature = "dev")]
     look_version: Option<(AssetId, u32)>,
-    /// The zone's weather: dry without one.
-    pub(super) weather: Weather,
+    /// The zone's fixed weather (M5 L4), its wetness and puddles over the weather's accumulated shares
+    /// (M6 Y2) unless its own weather plan's shares lie over it ([`Self::shares_lead`]), or none.
+    pub(super) weather: Option<Weather>,
+    /// Whether the zone on stage named no weather plan, so the stage's own came back (M6 W8a): its weather
+    /// then resolves as a zone's without a plan did before Y2, its fixed weather and day over the shares.
+    plan_given_back: bool,
     /// Its fog over the day's.
     fog: Option<ZoneFog>,
     /// Its sky material on the renderer, once it's there (`Content::zone_sky_material`).
@@ -546,6 +568,13 @@ struct StageLook {
 }
 
 impl ZoneAir {
+    /// Whether the weather's accumulated shares lie over the day's keyed weather and the zone's fixed weather
+    /// (M6 Y2, m6-plan §3): while a weather plan is live, the zone's own or, with no zone's look on, the
+    /// stage's. A zone that names none resolves as before: its fixed weather and day over the shares.
+    pub(super) fn shares_lead(&self, system: &WeatherSystem) -> bool {
+        system.plan().is_some() && !self.plan_given_back
+    }
+
     /// Keeps `document` and `plan` as the stage's own weather, which a zone with no plan gives back: once a
     /// zone's look is on, [`Scene::set_weather_plan`] is the stage's from then on, as its day is.
     pub(super) fn keep_weather(&mut self, document: &Arc<WeatherDocument>, plan: Option<&WeatherPlan>) {
@@ -554,17 +583,27 @@ impl ZoneAir {
         }
     }
 
-    /// Writes the zone's weather under the day's `keyed` weather (M5 L4) and its fog over the day's into `packet`,
-    /// after time of day has written it, the zone's origin lying at `origin` in the world's height; and its sky in
-    /// place of the app's `sky`.
+    /// Writes the frame's weather and the zone's fog over the day's into `packet`, after time of day has written
+    /// it, the zone's origin lying at `origin` in the world's height; and its sky in place of the app's `sky`.
+    ///
+    /// The weather is the look's `keyed` weather over the weather's accumulated `shares` (M6 Y2). While a weather
+    /// plan is live (`planned`, m6-plan §3), the shares lie over the day's keyed weather and the zone's fixed
+    /// weather, which time of day has cleared and this leaves out, and `keyed` is the volumes' and a cutscene's
+    /// alone. With none, as before Y2: the zone's fixed wetness and puddles, if it has them, over the shares,
+    /// under the day's `keyed` weather (M5 L4).
     pub(super) fn write(
         &self,
         packet: &mut FramePacket,
         sky: Option<MaterialHandle>,
         origin: f32,
         keyed: KeyedWeather,
+        (shares, planned): (Weather, bool),
     ) {
-        packet.weather = keyed.over(self.weather);
+        let zone = match self.weather {
+            Some(fixed) if !planned => Weather { wetness: fixed.wetness, puddles: fixed.puddles, ..shares },
+            _ => shares,
+        };
+        packet.weather = keyed.over(zone);
         packet.sky_material = self.sky.or(sky);
         if let Some(zone) = self.fog {
             thicken(&mut packet.fog, zone, origin);
@@ -931,6 +970,7 @@ impl Scene {
     /// Its probe grid and sky are the content's.
     pub fn take_zone_look(&mut self, look: ZoneLook) -> Result<(), String> {
         let ZoneLook { day, rigs, wind, weather, fog, rooms, weather_plan } = look;
+        self.zone_air.plan_given_back = weather_plan.is_none();
         let (zone_day, zone_rigs) = (day.is_some(), rigs.is_some());
         let world = self.ecs.world();
         let own = self.zone_air.own.get_or_insert_with(|| StageLook {
@@ -952,7 +992,7 @@ impl Scene {
         self.ecs.world_mut().insert_resource(LightRigs(rigs));
         (self.zone_air.zone_day, self.zone_air.zone_rigs) = (zone_day, zone_rigs);
         self.wind = wind;
-        self.zone_air.weather = weather.unwrap_or_default();
+        self.zone_air.weather = weather;
         self.zone_air.fog = fog;
         self.zone_air.rooms = rooms;
         self.weather_system.set_plan(document, plan);
@@ -1184,8 +1224,17 @@ impl Scene {
         let stopwatch = sapphire_time::Stopwatch::start();
         // A tool's weather is the frame's whatever a zone says (M5 L4), declared with the scene's if wet.
         let tool_weather = self.weather.is_some();
+        // What a trip keeps of the weather (M6 Y2): an override, and the stage's own plan for a zone naming none.
+        let (own, system) = (&self.zone_air.own, &self.weather_system);
+        let carried = |names_a_plan: bool| {
+            let own_plan = || match own {
+                Some(own) => own.weather.1.as_ref().is_some_and(|plan| plan.may_be_wet(&own.weather.0)),
+                None => system.plan().is_some_and(|plan| plan.may_be_wet(system.document())),
+            };
+            system.override_wets() || (!names_a_plan && own_plan())
+        };
         for next in &mut self.next_zones {
-            next.advance(content, tool_weather);
+            next.advance(content, tool_weather, &carried);
         }
         self.prefetch_time = stopwatch.elapsed();
     }

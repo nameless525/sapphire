@@ -2685,12 +2685,21 @@ impl Scene {
         inventory
     }
 
-    /// Whether this scene's frames may draw wet (M5 L4): a tool's weather if it set one, or else the zone's or any
-    /// its day keys. A trip into a zone that may go wet declares it as the zone comes.
+    /// Whether this scene's frames may draw wet (M5 L4): a tool's weather if it set one, or else the weather's
+    /// shares and states while a plan is live (M6 Y2), the zone's fixed weather then shadowed, or the zone's fixed
+    /// weather and the shares with none; or any its day keys. A trip into a zone that may go wet declares it as
+    /// the zone comes.
     pub fn may_be_wet(&self) -> bool {
         match self.weather {
             Some(weather) => weather.is_wet(),
-            None => self.zone_air.weather.is_wet() || self.time_of_day().timeline().may_be_wet(),
+            None => {
+                let system = &self.weather_system;
+                let own = match self.zone_air.weather {
+                    Some(zone) if !self.zone_air.shares_lead(system) => zone.is_wet(),
+                    _ => system.may_be_wet(),
+                };
+                own || self.time_of_day().timeline().may_be_wet()
+            }
         }
     }
 
@@ -2755,6 +2764,9 @@ impl Scene {
             let shot_weather = time_of_day.cutscene_weather(alpha);
             let weather_frame = *weather_system.resolve(weather_clock, probe + zone_stand, shot_weather);
             weather_system.write(&mut time_of_day);
+            // The shares stand for the day's keyed weather while the zone's plan (or the stage's) is live.
+            let shares_lead = zone_air.shares_lead(weather_system);
+            time_of_day.set_weather_shares(shares_lead);
             let today = time_of_day.resolve(probe, alpha);
             today.write(packet);
             let keyed_weather = today.look.weather;
@@ -2764,9 +2776,12 @@ impl Scene {
             packet.reflection_keys = time_of_day.probe_keys(reflection_hours);
             packet.post.filter_strength = crate::cvars::filter_strength();
             packet.post.sharpening = sharpening.unwrap_or_else(crate::cvars::sharpening);
-            // A zone's weather, fog and sky (M5 M6): what names none of them leaves the stage's. Its day's
-            // keyed weather lies over the zone's (M5 L4), and a tool's over both.
-            zone_air.write(packet, sky_material, zone_origin, keyed_weather);
+            // A zone's weather, fog and sky (M5 M6): what names none of them leaves the stage's. With a weather
+            // plan live, the weather's accumulated shares lie over the day's keyed weather and the zone's fixed
+            // weather, the volumes' and a cutscene's over them (M6 Y2); with none, the zone's fixed weather over
+            // the shares and the day's keyed weather over both (M5 L4). A tool's lies over all.
+            let shares = (weather_system.shares(), shares_lead);
+            zone_air.write(packet, sky_material, zone_origin, keyed_weather, shares);
             if let Some(weather) = weather {
                 packet.weather = weather;
             }
@@ -4922,10 +4937,11 @@ mod tests {
         assert!(scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).instances.is_empty());
     }
 
-    /// The frame's weather (M5 L4) is the zone's, under its day's keyed weather by the keys' share, under a
-    /// tool's; and a day that keys none leaves the zone's.
+    /// The frame's weather (M5 L4, M6 Y2) with no weather plan is the zone's fixed wetness and puddles over the
+    /// shares, under its day's keyed weather by the keys' share, under a tool's; a day that keys none leaves what
+    /// is beneath, and nothing over the shares hides their snow and sand. A plan's shares lie over the zone's.
     #[test]
-    fn the_weather_is_the_zones_under_its_days_under_a_tools() {
+    fn the_weather_is_the_shares_under_the_zones_under_its_days_under_a_tools() {
         let weather = |scene: &mut Scene| {
             let weather = scene.frame_packet(1.0, None, &mut ()).weather;
             scene.end_frame();
@@ -4934,11 +4950,32 @@ mod tests {
         let mut scene = scene();
         assert_eq!(weather(&mut scene), Weather::DRY, "dry by default");
         assert!(!scene.declared_pipelines(&()).wet_surfaces, "a dry scene declares no wet surfaces");
-        let zone = Weather { wetness: 0.7, puddles: 0.3 };
-        scene.zone_air.weather = zone;
+        // A snowy plan with time standing still: arrived under six hours of snow.
+        let document = sapphire_world::weather::default_weather();
+        let snow = document.state("snow").expect("shipped");
+        scene.set_weather_plan(Arc::clone(&document), Some(WeatherPlan::always(snow)));
+        assert!(scene.declared_pipelines(&()).wet_surfaces, "snow's damp declares them");
+        let shares = weather(&mut scene);
+        assert_eq!(shares, scene.weather_system().shares());
+        assert!(shares.snow > 0.79 && shares.wetness > 0.19 && shares.puddles == 0.0, "{shares:?}");
+        let zone = Weather { wetness: 0.7, puddles: 0.3, ..Weather::DRY };
+        scene.zone_air.weather = Some(zone);
+        assert_eq!(weather(&mut scene), shares, "a plan's shares over the zone's fixed weather");
+        scene.set_weather_plan(Arc::clone(&document), None);
         assert_eq!(weather(&mut scene), zone, "a day that keys none leaves the zone's");
         assert!(scene.declared_pipelines(&()).wet_surfaces, "a wet zone's are declared");
-        scene.zone_air.weather = Weather::DRY;
+        scene.zone_air.weather = None;
+        let blizzard = document.state("blizzard").expect("shipped");
+        scene.set_weather_plan(Arc::clone(&document), Some(WeatherPlan::always(blizzard)));
+        assert!(!scene.declared_pipelines(&()).wet_surfaces, "a blizzard leaves ice, never water");
+        scene.set_weather_plan(Arc::clone(&document), Some(WeatherPlan::always(snow)));
+        scene.zone_air.weather = Some(Weather::DRY);
+        assert!(
+            scene.declared_pipelines(&()).wet_surfaces,
+            "a plan's shares over a dry zone's fixed weather"
+        );
+        scene.set_weather_plan(Arc::clone(&document), None);
+        assert!(!scene.declared_pipelines(&()).wet_surfaces, "and with no plan, the dry zone's");
         assert!(!scene.time_of_day().timeline().may_be_wet());
 
         let mut keys = scene.time_of_day().timeline().keys().to_vec();
@@ -4948,11 +4985,11 @@ mod tests {
         let day = tod::TodTimeline::new(keys).expect("a day keyed wet");
         scene.time_of_day_mut().set_timeline(day).expect("it takes");
         assert!(scene.declared_pipelines(&()).wet_surfaces, "a day keyed wet declares them");
-        scene.zone_air.weather = zone;
-        let keyed = Weather { wetness: 1.0, puddles: 0.5 };
+        scene.zone_air.weather = Some(zone);
+        let keyed = Weather { wetness: 1.0, puddles: 0.5, ..Weather::DRY };
         assert_eq!(weather(&mut scene), keyed, "the day's over the zone's");
 
-        let flag = Weather { wetness: 0.2, puddles: 0.0 };
+        let flag = Weather { wetness: 0.2, puddles: 0.0, ..Weather::DRY };
         scene.set_weather(Some(flag));
         assert_eq!(weather(&mut scene), flag, "a tool's over both");
         scene.set_weather(Some(Weather::DRY));
@@ -4960,6 +4997,54 @@ mod tests {
         assert!(!scene.declared_pipelines(&()).wet_surfaces, "a tool's dry weather declares none");
         scene.set_weather(None);
         assert_eq!(weather(&mut scene), keyed);
+    }
+
+    /// With a weather plan live (M6 Y2, m6-plan §3), the plan's shares lie over the day's keyed weather and the
+    /// zone's fixed weather, a volume's keyed weather over the shares, and a tool's over all.
+    #[test]
+    fn with_a_plan_the_shares_lie_over_the_day_and_the_zone_under_volumes() {
+        use sapphire_world::tod::{TodKey, TodVolume, VolumeShape};
+        let weather = |scene: &mut Scene| {
+            let weather = scene.frame_packet(1.0, None, &mut ()).weather;
+            scene.end_frame();
+            weather
+        };
+        let mut scene = scene();
+        let wet = Some(tod::WeatherKey { wetness: 1.0, puddles: 0.5 });
+        let mut keys = scene.time_of_day().timeline().keys().to_vec();
+        for key in &mut keys {
+            key.weather = wet;
+        }
+        scene
+            .time_of_day_mut()
+            .set_timeline(tod::TodTimeline::new(keys).expect("keyed wet"))
+            .expect("it takes");
+        scene.zone_air.weather = Some(Weather { wetness: 0.7, puddles: 0.3, ..Weather::DRY });
+        let keyed = Weather { wetness: 1.0, puddles: 0.5, ..Weather::DRY };
+        assert_eq!(weather(&mut scene), keyed, "with no plan, the day's over the zone's");
+
+        let document = sapphire_world::weather::default_weather();
+        let clear = document.state("clear").expect("shipped");
+        scene.set_weather_plan(Arc::clone(&document), Some(WeatherPlan::always(clear)));
+        assert_eq!(
+            weather(&mut scene),
+            Weather::DRY,
+            "a clear plan's dry shares over the day's and the zone's"
+        );
+        let snow = document.state("snow").expect("shipped");
+        scene.set_weather_plan(Arc::clone(&document), Some(WeatherPlan::always(snow)));
+        let shares = weather(&mut scene);
+        assert_eq!(shares, scene.weather_system().shares());
+        assert!(shares.snow > 0.79 && shares.wetness > 0.19 && shares.wetness < 1.0, "{shares:?}");
+
+        let everywhere = VolumeShape::Sphere { center: Vec3::ZERO, radius: 1.0e4 };
+        let shower = tod::TodTimeline::new(vec![TodKey { time: 0.0, weather: wet, ..TodKey::default() }]);
+        scene.time_of_day_mut().add_volume(TodVolume::new(everywhere, Arc::new(shower.expect("valid"))));
+        let showered = Weather { wetness: 1.0, puddles: 0.5, ..shares };
+        assert_eq!(weather(&mut scene), showered, "a volume's keyed weather over the shares");
+        let flag = Weather { wetness: 0.2, ..Weather::DRY };
+        scene.set_weather(Some(flag));
+        assert_eq!(weather(&mut scene), flag, "a tool's over all");
     }
 
     /// The look's order (M6 W8a): the zone's day, then the weather's state, then atmosphere volumes, then a

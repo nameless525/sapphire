@@ -8,9 +8,10 @@
 // - The rest is the weather frame's: precipitation (density, size and speed against the kind's
 //   own), wind over the zone's (strength as a multiple), lightning a minute, the five wet shares'
 //   targets and the seconds each takes to rise to its target, temperature, the sea's share, the
-//   audio parameters and the environment's groups (frost, rings, aurora, fog density). Until the
-//   packages reading them land (Y2's shares, N's precipitation, U's audio, V's environment), they
-//   are data only.
+//   audio parameters and the environment's groups (frost, rings, aurora, fog density). The shares'
+//   targets, rises and temperature drive the accumulated shares (M6 Y2); a share above its target
+//   dries at its own rate, so a target of 0's rise is never read. The rest are data only until the
+//   packages reading them land (N's precipitation, U's audio, V's environment).
 // - Transitions take 30 seconds of world time, the storms' longer: weather never cuts.
 // - Every number is a starting point for art direction, not a measurement.
 (

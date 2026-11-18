@@ -353,6 +353,23 @@ mod tests {
         ))
     }
 
+    /// A plan's shares lie over the zone's fixed weather (M6 Y2): the cook warns of a zone that sets both.
+    #[test]
+    fn a_fixed_weather_beside_a_plan_is_warned_of() {
+        let planned = document(&plan("")).expect("a good document");
+        assert!(planned.warnings().is_empty(), "a plan alone");
+        let both = ZoneDocument::from_ron(&format!(
+            r#"(type: "sapphire::zone::ZoneDocument", version: 1, data: (grid: (cell_size: 32.0), weather: Some((wetness: 0.5, puddles: 0.2)), weather_plan: Some(({}))))"#,
+            plan("")
+        ))
+        .expect("a good document");
+        let warnings = both.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("weather:") && warnings[0].contains("shadowed"), "{warnings:?}");
+        let fixed = ZoneDocument { weather_plan: None, ..both };
+        assert!(fixed.warnings().is_empty(), "fixed weather alone");
+    }
+
     #[test]
     fn a_plan_takes_its_defaults_and_names_its_states_once() {
         let document = document(&summit("")).expect("a good document");

@@ -492,6 +492,21 @@ impl ZoneDocument {
         if backdrop { Place::Backdrop } else { Place::Cell(self.grid.cell_of(at)) }
     }
 
+    /// What the cook warns of without refusing it: a fixed `weather` beside a `weather_plan`, whose
+    /// accumulated shares lie over it (M6 Y2, m6-plan §3), so its wetness and puddles never draw.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.weather.is_some() && self.weather_plan.is_some() {
+            warnings.push(
+                "weather: its wetness and puddles are shadowed by the weather_plan's accumulated shares, \
+                 which lie over them; drop one"
+                    .to_owned(),
+            );
+        }
+        warnings
+    }
+
     /// Checks everything that needs nothing outside the document, naming the field.
     pub fn check(&self) -> Result<(), ZoneError> {
         self.grid.check().map_err(|problem| ZoneError::invalid("grid.cell_size", problem))?;

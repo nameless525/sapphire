@@ -53,7 +53,9 @@ pub(crate) struct FrameUniforms {
     /// rgb: the share of the key light kept in shadow (`FramePacket::shadow_tint`).
     pub shadow_tint: [f32; 4],
     /// x: wetness; y: how far puddles have filled (`FramePacket::weather`, held to 0 to 1, NaN
-    /// dry), which the environment's wet surfaces read (M5 L4); both 0 is a dry frame.
+    /// dry), which the environment's wet surfaces read (M5 L4); both 0 is a dry frame. z: snow; w:
+    /// sand (M6 Y2), the covers the environment's cover will read (V); no shader reads them yet. Ice
+    /// waits for the cover's own lanes.
     pub weather: [f32; 4],
     /// The fog over the world and the sky (`FramePacket::fog`, M1 W3).
     pub fog: GpuFog,
@@ -92,7 +94,7 @@ impl FrameUniforms {
             shadow_tint: frame.shadow_tint.extend(0.0).to_array(),
             weather: {
                 let weather = frame.weather.clamped();
-                [weather.wetness, weather.puddles, 0.0, 0.0]
+                [weather.wetness, weather.puddles, weather.snow, weather.sand]
             },
             fog,
         }
@@ -301,6 +303,7 @@ pub(crate) struct Dequantize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Weather;
 
     #[test]
     fn the_emission_scale_reaches_shaders_finite_and_never_negative() {
@@ -312,6 +315,20 @@ mod tests {
         assert_eq!((uniforms(0.15), uniforms(2.5), uniforms(0.0)), (0.15, 2.5, 0.0));
         assert_eq!(uniforms(-0.5), 0.0, "none, never a negative light");
         assert_eq!((uniforms(f32::NAN), uniforms(f32::INFINITY)), (1.0, 1.0), "as authored");
+    }
+
+    /// The weather's four lanes (M6 Y2): wetness, puddles, snow and sand, each held to 0 to 1; ice
+    /// isn't among them.
+    #[test]
+    fn the_weather_fills_its_four_lanes() {
+        let lanes = |weather: Weather| {
+            let frame = FramePacket { weather, ..FramePacket::default() };
+            FrameUniforms::new(&frame, LightUniforms::default(), 1.0, GpuFog::default()).weather
+        };
+        assert_eq!(lanes(Weather::DRY), [0.0; 4]);
+        let cover = Weather { wetness: 0.25, puddles: 0.5, snow: 0.75, sand: 0.125, ice: 1.0 };
+        assert_eq!(lanes(cover), [0.25, 0.5, 0.75, 0.125]);
+        assert_eq!(lanes(Weather { snow: 2.0, sand: f32::NAN, ..Weather::DRY }), [0.0, 0.0, 1.0, 0.0]);
     }
 
     /// Outlines keep whole below render scale 1 by the view's `lines` (M4 T6): at scale 1 the

@@ -17,7 +17,12 @@ fn index(document: &WeatherDocument, name: &str) -> usize {
 fn clock(seconds: f64, day_seconds: f64) -> WeatherClock {
     let days = seconds / day_seconds;
     let hours = ((days - days.floor()) * 24.0) as f32;
-    WeatherClock { seconds, day: days.floor() as i64, hours: if hours >= 24.0 { 0.0 } else { hours } }
+    WeatherClock {
+        seconds,
+        day: days.floor() as i64,
+        hours: if hours >= 24.0 { 0.0 } else { hours },
+        day_length: Some(day_seconds as f32),
+    }
 }
 
 #[test]
@@ -403,4 +408,360 @@ fn a_cooked_plan_reads_and_a_name_its_states_lack_is_refused() {
     assert_eq!(error.field, "weather_plan.regions[0].state");
     let broken = CookedWeatherPlan { states: "(".into(), ..plan("snow") };
     assert_eq!(WeatherSetup::read(&broken).expect_err("doesn't read").field, "weather_plan.states");
+}
+
+// Accumulation (M6 Y2).
+
+/// The scripted day: dry until six, then each coupling in turn (rain and a storm; snow over the puddles;
+/// a freezing blizzard; a mild half hour melting it; a sandstorm and the drizzle that washes it; hail),
+/// clear from half past eleven. Each slot one state.
+fn scripted_day(document: &WeatherDocument) -> WeatherPlan {
+    let slots = SCRIPT.iter().map(|&(from, name)| (from as f32, vec![(index(document, name), 1)])).collect();
+    WeatherPlan::new(WeatherSchedule::new(5, slots, document.states().len()).expect("valid"), Vec::new())
+}
+
+/// The scripted day's slots: the game hour each starts and its one state.
+const SCRIPT: [(f64, &str); 10] = [
+    (0.0, "clear"),
+    (6.0, "rain"),
+    (7.0, "storm"),
+    (7.5, "snow"),
+    (8.5, "blizzard"),
+    (9.5, "clear"),
+    (10.0, "sandstorm"),
+    (10.5, "drizzle"),
+    (11.0, "hail"),
+    (11.5, "clear"),
+];
+
+/// The scripted day's dominant state at `seconds` of world time, derived from its slots alone (not the
+/// system's blend): each slot's state takes over halfway through the change into it, which starts at
+/// the slot and lasts the document's seconds for the pair.
+fn scripted_state(document: &WeatherDocument, seconds: f64) -> usize {
+    let mut state = index(document, SCRIPT[0].1);
+    for &(hours, name) in &SCRIPT[1..] {
+        let next = index(document, name);
+        if seconds >= hours * 900.0 + f64::from(document.seconds(state, next)) / 2.0 {
+            state = next;
+        }
+    }
+    state
+}
+
+/// A game hour of the scripted day takes 900 s of world time.
+const DAY_SECONDS: f64 = 24.0 * 900.0;
+/// Frames of 50 ms.
+const FRAME: f64 = 0.05;
+
+fn shares_of(weather: Weather) -> [f64; 5] {
+    [weather.wetness, weather.puddles, weather.snow, weather.sand, weather.ice].map(f64::from)
+}
+
+/// The CPU reference: the shares' differential equations written out again from the module docs, each
+/// share's rate `(target - share) / τ`, integrated by fourth-order Runge-Kutta in steps of 5 ms. It shares
+/// no code with the integrator: not its couplings, its drying or its closed form.
+struct Reference {
+    shares: [f64; 5],
+}
+
+impl Reference {
+    fn rates(state: Option<&sapphire_tod::weather::WeatherState>, shares: [f64; 5]) -> [f64; 5] {
+        use sapphire_tod::weather::{ShareKey, TemperatureKey};
+        let key = state.and_then(|state| state.accumulation).unwrap_or_default();
+        let pair = |share: Option<ShareKey>| {
+            share.map_or((0.0, 0.0), |share| (f64::from(share.target), f64::from(share.rise)))
+        };
+        let (mut wet, mut puddles, mut snow, sand, mut ice) =
+            (pair(key.wetness), pair(key.puddles), pair(key.snow), pair(key.sand), pair(key.ice));
+        let temperature = state.and_then(|state| state.temperature).unwrap_or(TemperatureKey::Mild);
+        let freezing = temperature == TemperatureKey::Freezing;
+        if matches!(temperature, TemperatureKey::Warm | TemperatureKey::Mild) {
+            if snow.0 > wet.0 {
+                wet = snow;
+            }
+            snow = (0.0, 0.0);
+        }
+        if freezing {
+            for water in [wet, puddles] {
+                if water.0 > ice.0 {
+                    ice = water;
+                }
+            }
+            (wet, puddles) = ((0.0, 0.0), (0.0, 0.0));
+        }
+        if shares[2] > 0.5 {
+            puddles = (0.0, 0.0);
+        }
+        let sand_drying = if wet.0 > 0.0 { wet.1.min(1_800.0) } else { 1_800.0 };
+        let targets = [wet, puddles, snow, sand, ice];
+        let drying = [180.0, 900.0, 1_200.0, sand_drying, 900.0];
+        std::array::from_fn(|share| {
+            let ((target, rise), now) = (targets[share], shares[share]);
+            if target > now {
+                (target - now) / rise
+            } else if target < now && !(freezing && (share == 2 || share == 4)) {
+                (target - now) / drying[share]
+            } else {
+                0.0
+            }
+        })
+    }
+
+    fn advance(&mut self, state: Option<&sapphire_tod::weather::WeatherState>, seconds: f64) {
+        let steps = (seconds / 0.005).round().max(1.0) as u32;
+        let h = seconds / f64::from(steps);
+        let add = |a: [f64; 5], b: [f64; 5], scale: f64| -> [f64; 5] {
+            std::array::from_fn(|i| a[i] + b[i] * scale)
+        };
+        for _ in 0..steps {
+            let s = self.shares;
+            let k1 = Self::rates(state, s);
+            let k2 = Self::rates(state, add(s, k1, h / 2.0));
+            let k3 = Self::rates(state, add(s, k2, h / 2.0));
+            let k4 = Self::rates(state, add(s, k3, h));
+            self.shares =
+                std::array::from_fn(|i| s[i] + h / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]));
+        }
+    }
+}
+
+/// The scripted day played frame by frame from midnight to noon: the shares stay within 1e-4 of the CPU
+/// reference at every frame, through every coupling; and at each check a zone arriving (`set_plan`) and a
+/// load (a system made new) re-warm to the shares the played day reached, within 1e-4.
+#[test]
+fn the_shares_follow_the_reference_through_a_scripted_day_and_a_rewarm_lands_on_it() {
+    let document = default_weather();
+    let plan = scripted_day(&document);
+    let mut played = WeatherSystem::new(Arc::clone(&document), Some(plan.clone()));
+    let mut reference = Reference { shares: [0.0; 5] };
+    let checks =
+        [7.25, 8.0, 9.0, 9.75, 10.25, 10.75, 11.25, 12.0].map(|hours: f64| (hours * 900.0 / FRAME) as u64);
+    let mut worst = 0.0f64;
+    let (mut crossed, mut froze, mut melted, mut washed) = (false, false, false, false);
+    let mut last = Weather::DRY;
+    let mut before = 0;
+    let (mut flips, mut last_state) = (0, None);
+    for frame in 0..=(12 * 900 * 20u64) {
+        let seconds = frame as f64 * FRAME;
+        played.resolve(clock(seconds, DAY_SECONDS), Vec3::ZERO, None);
+        if frame > 0 {
+            reference.advance(document.states().get(before), FRAME);
+        }
+        // The state the shares follow from this frame on is the script's, and the system agrees.
+        before = scripted_state(&document, seconds);
+        let dominant = played.blend().and_then(|blend| blend.dominant());
+        assert_eq!(dominant, Some(before), "the dominant state at {seconds} s");
+        flips += usize::from(frame > 0 && Some(before) != last_state);
+        last_state = Some(before);
+        let shares = played.shares();
+        for (got, want) in shares_of(shares).into_iter().zip(reference.shares) {
+            worst = worst.max((got - want).abs());
+        }
+        crossed |= last.snow <= 0.5 && shares.snow > 0.5;
+        froze |= shares.ice > 0.3;
+        melted |= last.snow > 0.5 && shares.snow <= 0.5;
+        washed |= shares.sand < last.sand && before == index(&document, "drizzle");
+        last = shares;
+        if checks.contains(&frame) {
+            let at = clock(seconds, DAY_SECONDS);
+            let mut arrived = WeatherSystem::new(Arc::clone(&document), None);
+            arrived.resolve(clock(seconds - 1.0, DAY_SECONDS), Vec3::ZERO, None);
+            arrived.set_plan(Arc::clone(&document), Some(plan.clone()));
+            arrived.resolve(at, Vec3::ZERO, None);
+            let mut loaded = WeatherSystem::new(Arc::clone(&document), Some(plan.clone()));
+            loaded.resolve(at, Vec3::ZERO, None);
+            for (what, warm) in [("a zone's arrival", arrived.shares()), ("a load", loaded.shares())] {
+                for (got, want) in shares_of(warm).into_iter().zip(shares_of(shares)) {
+                    assert!((got - want).abs() < 1e-4, "{what} at {}: {warm:?} against {shares:?}", at.hours);
+                }
+            }
+            assert_eq!((arrived.stats().rewarms, loaded.stats().rewarms), (2, 1));
+        }
+    }
+    assert!(worst < 1e-4, "the shares strayed {worst} from the reference");
+    assert_eq!(flips, SCRIPT.len() - 1, "every slot's state took over");
+    assert!(crossed && froze && melted && washed, "{crossed} {froze} {melted} {washed}: every coupling ran");
+    assert_eq!(played.stats().rewarms, 1, "the played day re-warmed once, at its start");
+    assert_eq!(played.stats().shares, played.shares());
+}
+
+/// Every rate is in world seconds: a world clock running twice as fast reaches the same shares in half
+/// the frames, a paused one holds them, and time of day running faster shortens the six hours of
+/// weather a re-warm reaches back through.
+#[test]
+fn an_accelerated_clock_accelerates_the_shares() {
+    let document = default_weather();
+    let (clear, rain) = (index(&document, "clear"), index(&document, "rain"));
+    let run = |frames: u32, step: f64| {
+        // Arriving dry from a clear day's last hours, under a story flag's rain.
+        let mut system = WeatherSystem::new(Arc::clone(&document), Some(WeatherPlan::always(clear)));
+        system.set_override(Some(WeatherOverride { state: rain, seconds: None })).expect("a state");
+        system.resolve(clock(0.0, DAY_SECONDS), Vec3::ZERO, None);
+        assert_eq!(system.shares(), Weather::DRY, "an override isn't replayed");
+        for frame in 1..=frames {
+            system.resolve(clock(f64::from(frame) * step, DAY_SECONDS), Vec3::ZERO, None);
+        }
+        system.shares()
+    };
+    let real = run(1_200, 0.05);
+    let double = run(600, 0.1);
+    assert!(real.wetness > 0.7 && (real.wetness - double.wetness).abs() < 1e-6, "{real:?} {double:?}");
+    assert!((real.puddles - double.puddles).abs() < 1e-6);
+    // Paused: the world's seconds stand, and so do the shares.
+    let mut paused = WeatherSystem::new(Arc::clone(&document), Some(WeatherPlan::always(clear)));
+    paused.resolve(clock(10.0, DAY_SECONDS), Vec3::ZERO, None);
+    paused.set_override(Some(WeatherOverride { state: rain, seconds: Some(0.0) })).expect("a state");
+    paused.resolve(clock(20.0, DAY_SECONDS), Vec3::ZERO, None);
+    let held = paused.shares();
+    for _ in 0..100 {
+        paused.resolve(clock(20.0, DAY_SECONDS), Vec3::ZERO, None);
+    }
+    assert_eq!(paused.shares(), held);
+    // Two game hours of rain before arriving at noon: under a day of real time the street is soaked and
+    // the puddles nearly full; under a day of four minutes, ten world seconds a game hour, the rain began
+    // 20 s before and weighed most 15 s into its 30 s transition, so it has wetted for 5 s.
+    let plan = WeatherPlan::new(
+        WeatherSchedule::new(1, vec![(0.0, vec![(clear, 1)]), (10.0, vec![(rain, 1)])], 10).expect("valid"),
+        Vec::new(),
+    );
+    let arrive = |day: f64| {
+        let mut system = WeatherSystem::new(Arc::clone(&document), Some(plan.clone()));
+        system.resolve(WeatherClock { hours: 12.0, day: 3, ..clock(0.0, day) }, Vec3::ZERO, None);
+        system.shares()
+    };
+    let slow = arrive(86_400.0);
+    assert!(slow.wetness > 0.99 && slow.puddles > 0.59, "{slow:?}");
+    let fast = arrive(240.0);
+    let wet = 1.0 - (-5.0f64 / 45.0).exp();
+    assert!((f64::from(fast.wetness) - wet).abs() < 1e-5, "{fast:?} against {wet}");
+}
+
+/// Time of day standing still, the weather has stood as it is: a re-warm settles the state the plan
+/// shows for six hours of world time, across its 120 steps; and with no plan the world arrives dry.
+#[test]
+fn a_rewarm_with_time_standing_still_settles_the_state_as_it_is() {
+    let document = default_weather();
+    let snow = index(&document, "snow");
+    let still = WeatherClock { seconds: 5.0, day: 0, hours: 9.0, day_length: None };
+    let warm = rewarm(&document, &WeatherPlan::always(snow), still, Vec3::ZERO);
+    let (toward, temperature) = accumulation(&document, Some(snow));
+    let once = Weather::DRY.settle(toward, temperature, f64::from(REWARM_HOURS) * 3_600.0);
+    for (got, want) in shares_of(warm).into_iter().zip(shares_of(once)) {
+        assert!((got - want).abs() < 1e-6, "{warm:?} against {once:?}");
+    }
+    assert!(warm.snow > 0.79 && warm.puddles == 0.0, "settled snow over the puddles: {warm:?}");
+    let mut system = WeatherSystem::default();
+    system.resolve(still, Vec3::ZERO, None);
+    assert_eq!((system.shares(), system.stats().rewarms), (Weather::DRY, 1));
+}
+
+/// The shares are the world's: the schedule's and an override's states move them, while a cutscene's
+/// state and the tool's blend lay a look over the world and leave the street as the world made it.
+#[test]
+fn only_the_worlds_state_moves_the_shares() {
+    let document = default_weather();
+    let (clear, storm) = (index(&document, "clear"), index(&document, "storm"));
+    let wet_after = |set: &dyn Fn(&mut WeatherSystem), cutscene: Option<(&str, f32)>| {
+        let mut system = WeatherSystem::new(Arc::clone(&document), Some(WeatherPlan::always(clear)));
+        let at = |seconds: f64| WeatherClock { hours: 10.0, ..clock(seconds, DAY_SECONDS) };
+        system.resolve(at(0.0), Vec3::ZERO, None);
+        set(&mut system);
+        for frame in 1..=600 {
+            system.resolve(at(f64::from(frame) * 0.5), Vec3::ZERO, cutscene);
+        }
+        system.shares().wetness
+    };
+    assert_eq!(wet_after(&|_| {}, None), 0.0, "a clear day stays dry");
+    let flag = |system: &mut WeatherSystem| {
+        system.set_override(Some(WeatherOverride { state: storm, seconds: None })).expect("a state");
+    };
+    assert!(wet_after(&flag, None) > 0.99, "a story flag's storm soaks the street");
+    let tool = |system: &mut WeatherSystem| {
+        system.set_tool(Some(WeatherBlend::settled(storm))).expect("a state");
+    };
+    assert_eq!(wet_after(&tool, None), 0.0, "the tool's storm is a look");
+    assert_eq!(wet_after(&|_| {}, Some(("storm", 1.0))), 0.0, "and so is a cutscene's");
+}
+
+/// A clock set back (a tool's, never the world's own) holds the shares where they were and moves them
+/// on from there: drying never runs backward into wetter streets, and a storm's soaking never undoes.
+#[test]
+fn a_clock_set_back_holds_the_shares() {
+    let document = default_weather();
+    let (clear, storm) = (index(&document, "clear"), index(&document, "storm"));
+    let at = |seconds: f64| WeatherClock { hours: 10.0, ..clock(seconds, DAY_SECONDS) };
+    let mut system = WeatherSystem::new(Arc::clone(&document), Some(WeatherPlan::always(clear)));
+    system.resolve(at(1_000.0), Vec3::ZERO, None);
+    system.set_override(Some(WeatherOverride { state: storm, seconds: None })).expect("a state");
+    system.resolve(at(1_000.0), Vec3::ZERO, None);
+    system.resolve(at(1_600.0), Vec3::ZERO, None);
+    system.set_override(None).expect("cleared");
+    // Clear again: drying from about 1,600 s, frame by frame.
+    for second in 1_600..=1_800 {
+        system.resolve(at(f64::from(second)), Vec3::ZERO, None);
+    }
+    let drying = system.shares();
+    assert!(drying.wetness > 0.1 && drying.wetness < 0.9, "{drying:?}");
+    // Back to 1,750 s: the shares hold, and dry on from there, 100 s on from 1,750 s as from 1,800 s.
+    system.resolve(at(1_750.0), Vec3::ZERO, None);
+    assert_eq!(system.shares(), drying);
+    system.resolve(at(1_850.0), Vec3::ZERO, None);
+    let on = drying.settle(Accumulation::default(), Temperature::Mild, 100.0);
+    assert!((system.shares().wetness - on.wetness).abs() < 1e-6 && on.wetness < drying.wetness);
+    // Back to 1,000 s, before the soaking began: they hold again, never running back to dry.
+    let held = system.shares();
+    system.resolve(at(1_000.0), Vec3::ZERO, None);
+    assert_eq!(system.shares(), held);
+}
+
+/// What may go wet, so what declares the wet surfaces' pipelines: a plan with a state that wets, sleet
+/// included, or a region's; never one of dry or freezing states alone; an override that wets.
+#[test]
+fn a_plan_may_go_wet_by_its_states() {
+    let document = default_weather();
+    let plan_of = |names: &[&str]| {
+        let slots =
+            names.iter().enumerate().map(|(slot, name)| (slot as f32, vec![(index(&document, name), 1)]));
+        WeatherPlan::new(WeatherSchedule::new(0, slots.collect(), 10).expect("valid"), Vec::new())
+    };
+    let wets = |names: &[&str]| plan_of(names).may_be_wet(&document);
+    assert!(!wets(&["clear", "overcast", "sandstorm"]), "dry states");
+    assert!(!wets(&["blizzard"]), "at freezing, water is ice");
+    assert!(wets(&["clear", "rain"]) && wets(&["snow"]) && wets(&["mist"]));
+    let region = WeatherRegion {
+        shape: VolumeShape::Sphere { center: Vec3::ZERO, radius: 5.0 },
+        priority: 0,
+        state: index(&document, "storm"),
+    };
+    let regioned = WeatherPlan::new(WeatherSchedule::always(index(&document, "clear")), vec![region]);
+    assert!(regioned.may_be_wet(&document), "a region's state counts");
+    let mut system = WeatherSystem::new(Arc::clone(&document), Some(plan_of(&["clear"])));
+    assert!(!system.may_be_wet());
+    let rain = index(&document, "rain");
+    system.set_override(Some(WeatherOverride { state: rain, seconds: None })).expect("a state");
+    assert!(system.may_be_wet(), "a story flag's rain");
+}
+
+/// The rainbow's condition reads the world's shares and the frame's rain: none while it pours, a bow
+/// a minute after it stops under a low sun, none under a closed sky.
+#[test]
+fn a_rainbow_comes_as_the_rain_ends() {
+    let document = default_weather();
+    let (clear, rain) = (index(&document, "clear"), index(&document, "rain"));
+    let slots = vec![(0.0, vec![(rain, 1)]), (12.0, vec![(clear, 1)])];
+    let plan = WeatherPlan::new(WeatherSchedule::new(1, slots, 10).expect("valid"), Vec::new());
+    let mut system = WeatherSystem::new(Arc::clone(&document), Some(plan));
+    let low_sun = Vec3::new(0.3, 0.3, -1.0);
+    let at = |seconds: f64| clock(seconds, DAY_SECONDS);
+    let mut seconds = 11.0 * 900.0;
+    system.resolve(at(seconds), Vec3::ZERO, None);
+    assert_eq!(system.rainbow(low_sun, 0.3).strength, 0.0, "pouring");
+    while seconds < 12.0 * 900.0 + 60.0 {
+        seconds += 0.5;
+        system.resolve(at(seconds), Vec3::ZERO, None);
+    }
+    let bow = system.rainbow(low_sun, 0.3);
+    assert!(bow.strength > 0.9, "{bow:?}");
+    assert!((bow.antisolar + low_sun.normalize()).length() < 1e-6);
+    assert_eq!(system.rainbow(low_sun, 0.95).strength, 0.0, "overcast hides the sun");
 }

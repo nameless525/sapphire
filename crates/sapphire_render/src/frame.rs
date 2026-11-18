@@ -940,7 +940,7 @@ mod tests {
         packet.sky_material = Some(MaterialHandle::from_raw(3));
         packet.fog.far.density = 0.01;
         packet.shadow_tint = Vec3::splat(0.4);
-        packet.weather = Weather { wetness: 0.5, puddles: 0.25 };
+        packet.weather = Weather { wetness: 0.5, puddles: 0.25, snow: 0.125, sand: 0.0625, ice: 0.5 };
         packet.wind = WindField::new(Wind { direction: Vec3::Z, strength: 1.5, gustiness: 0.5 });
         packet.day_night = 1.0;
         packet.emission_scale = 0.25;

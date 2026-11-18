@@ -60,9 +60,10 @@ struct FrameUniforms {
     // `FramePacket::shadow_tint`), so the world's shadows are colored, never black. The
     // environment shader reads it; characters take their authored shade colors instead.
     shadow_tint: vec4<f32>,
-    // The weather's wetness inputs (`FramePacket::weather`): x how wet surfaces are, y how far
-    // puddles have filled, both 0 to 1, both 0 on a dry frame. The environment's wet surfaces read
-    // them (M5 L4, environment.wgsl's header).
+    // The weather's shares (`FramePacket::weather`), each 0 to 1 and 0 on a dry frame: x how wet
+    // surfaces are, y how far puddles have filled, z how much snow lies, w how much sand (M6 Y2).
+    // The environment's wet surfaces read x and y (M5 L4, environment.wgsl's header); z and w wait
+    // for the passes that draw snow and sand.
     weather: vec4<f32>,
     // The fog over the world and the sky (M1 W3, `FramePacket::fog`; see "Fog" below).
     fog: FogUniforms,

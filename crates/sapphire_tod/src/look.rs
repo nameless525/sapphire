@@ -379,28 +379,31 @@ fn above_horizon(light: &DirectionalLight) -> DirectionalLight {
 /// by its share, and the share of the zone's weather it replaces. Premultiplied, so a zone's
 /// override or a cutscene's track at part weight blends it as linearly as any value: the timeline's
 /// keys replace the zone's weather whole (share 1), and a look with no weather keyed leaves it
-/// whole (share 0, the default).
+/// whole (share 0, the default). Days key wetness and puddles alone, so the snow, sand and ice
+/// beneath (M6 Y2's accumulated cover) show through whatever the share.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct KeyedWeather {
-    /// The keyed weather, each share times [`Self::share`].
+    /// The keyed weather, each share times [`Self::share`]: wetness and puddles.
     pub weather: Weather,
-    /// How much of the zone's weather it replaces, 0 to 1.
+    /// How much of the zone's wetness and puddles it replaces, 0 to 1.
     pub share: f32,
 }
 
 impl KeyedWeather {
-    /// `zone`'s weather with this over it: exactly `zone` at share 0, exactly the keyed weather at 1.
+    /// `zone`'s weather with this over it: exactly `zone` at share 0, exactly the keyed wetness and
+    /// puddles at 1, and `zone`'s snow, sand and ice at every share.
     pub fn over(&self, zone: Weather) -> Weather {
         if self.share <= 0.0 {
             return zone;
         }
         if self.share >= 1.0 {
-            return self.weather;
+            return Weather { wetness: self.weather.wetness, puddles: self.weather.puddles, ..zone };
         }
         let keep = 1.0 - self.share;
         Weather {
             wetness: zone.wetness * keep + self.weather.wetness,
             puddles: zone.puddles * keep + self.weather.puddles,
+            ..zone
         }
     }
 }
@@ -411,6 +414,7 @@ impl Mix for KeyedWeather {
             weather: Weather {
                 wetness: lerp(self.weather.wetness, other.weather.wetness, t),
                 puddles: lerp(self.weather.puddles, other.weather.puddles, t),
+                ..Weather::DRY
             },
             share: lerp(self.share, other.share, t),
         }
@@ -1018,12 +1022,15 @@ impl Resolve for Vec<GradientKey> {
     }
 }
 
-/// A keyed weather replaces the zone's whole.
+/// A keyed weather replaces the zone's wetness and puddles whole.
 impl Resolve for WeatherKey {
     type Value = KeyedWeather;
 
     fn resolve(&self) -> KeyedWeather {
-        KeyedWeather { weather: Weather { wetness: self.wetness, puddles: self.puddles }, share: 1.0 }
+        KeyedWeather {
+            weather: Weather { wetness: self.wetness, puddles: self.puddles, ..Weather::DRY },
+            share: 1.0,
+        }
     }
 }
 
@@ -1053,15 +1060,20 @@ mod tests {
 
     #[test]
     fn keyed_weather_lies_over_the_zones_by_its_share() {
-        let zone = Weather { wetness: 0.7, puddles: 0.3 };
+        let zone = Weather { wetness: 0.7, puddles: 0.3, snow: 0.6, sand: 0.2, ice: 0.1 };
         assert_eq!(TodLook::default().weather_over(zone), zone, "nothing keyed: the zone's, exactly");
         let shower = WeatherKey { wetness: 1.0, puddles: 0.5 }.resolve();
         let keyed = TodLook { weather: shower, ..TodLook::default() };
-        assert_eq!(keyed.weather_over(zone), Weather { wetness: 1.0, puddles: 0.5 }, "the keys', exactly");
+        assert_eq!(
+            keyed.weather_over(zone),
+            Weather { wetness: 1.0, puddles: 0.5, ..zone },
+            "the keys' wetness and puddles exactly, over the cover beneath"
+        );
         // A cutscene's track at half weight over a look with none keyed.
         let half = mix(&TodLook::default().weather, &shower, 0.5);
         let over = half.over(zone);
         assert!((over.wetness - 0.85).abs() < 1e-6 && (over.puddles - 0.4).abs() < 1e-6, "{over:?}");
+        assert_eq!((over.snow, over.sand, over.ice), (0.6, 0.2, 0.1));
     }
 
     #[test]

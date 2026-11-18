@@ -1175,6 +1175,9 @@ pub fn cook(
     exit_packs: Vec<String>,
 ) -> Result<Vec<u8>, ZoneCookError> {
     let document = plan.document();
+    for warning in document.warnings() {
+        eprintln!("warning: {}: {warning}", zone.display());
+    }
     let instances = document
         .instances
         .iter()

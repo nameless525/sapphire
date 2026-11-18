@@ -220,7 +220,9 @@ pub struct LightningKey {
 pub struct ShareKey {
     /// 0 to 1.
     pub target: f32,
-    /// Seconds of world time to rise about 63% of the way to the target.
+    /// Seconds of world time to rise about 63% of the way to the target. Read only below the target: a
+    /// share above it falls at its drying rate (`DRYING` in `sapphire_look`), so a target of 0's rise is
+    /// never used, though the format asks for one.
     pub rise: f32,
 }
 
@@ -845,6 +847,24 @@ impl WeatherSchedule {
     pub fn state_at(&self, day: i64, hours: f32) -> usize {
         let (day, slot) = self.slot_at(day, hours);
         self.pick(day, slot)
+    }
+
+    /// When the slot after the one `hours` of day `day` falls in begins, as a day and an hour: where
+    /// the state may next change (M6 Y2, the shares' re-warm walks the schedule by it). Allocates
+    /// nothing.
+    pub fn next_slot(&self, day: i64, hours: f32) -> (i64, f32) {
+        let (start, slot) = self.slot_at(day, hours);
+        let hour = |slot: &ScheduleSlot| slot.from as f32 / 100.0;
+        match self.slots.get(slot + 1) {
+            Some(next) => (start, hour(next)),
+            None => (start + 1, hour(&self.slots[0])),
+        }
+    }
+
+    /// Every state any slot may pick, once each or more, in the slots' order (M6 Y2: what a zone may
+    /// show, so what its frames may need).
+    pub fn choices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.slots.iter().flat_map(|slot| slot.choices.iter().map(|&(state, _)| state))
     }
 }
 

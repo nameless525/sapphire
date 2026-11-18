@@ -9,7 +9,9 @@ use sapphire_math::Vec3;
 use sapphire_render::{CameraData, CharacterLighting, FramePacket, MAX_PROBE_KEYS, ProbeKeys};
 use sapphire_time::{LocalClock, ScaledClock, Stopwatch};
 use sapphire_tod::weather::{WeatherBlend, WeatherDocument};
-use sapphire_tod::{DAY_HOURS, Segment, TodError, TodGroups, TodLook, TodTimeline, celestial_sphere, mix};
+use sapphire_tod::{
+    DAY_HOURS, KeyedWeather, Segment, TodError, TodGroups, TodLook, TodTimeline, celestial_sphere, mix,
+};
 
 use super::clock::TodClock;
 use super::cutscene::TodCutscene;
@@ -37,6 +39,9 @@ pub struct TimeOfDay {
     weather_blend: Option<WeatherBlend>,
     /// A cutscene's weather state and weight, laid over the world's blend.
     weather_shot: Option<(usize, f32)>,
+    /// Whether the weather system's accumulated shares stand for the day's keyed weather (M6 Y2): a weather
+    /// plan is live, so the base timeline's and the states' keyed weather give way to them.
+    weather_shares: bool,
     frame: TodFrame,
     /// The hours whose looks the last resolve blended, with their weights: the clock's, and a
     /// playing cutscene's own hour by the track's weight (see [`Self::probe_keys`]).
@@ -149,6 +154,7 @@ impl TimeOfDay {
             weather: None,
             weather_blend: None,
             weather_shot: None,
+            weather_shares: false,
             frame,
             probe_hours: [(hours, 1.0), (0.0, 0.0)],
             stats: TodStats::default(),
@@ -254,6 +260,15 @@ impl TimeOfDay {
         self.weather_shot = shot;
     }
 
+    /// Whether the weather's accumulated shares stand for the day's keyed weather (M6 Y2, m6-plan §3): with
+    /// `true`, a look keys no weather out of the base timeline or the weather's states, so the shares lie over
+    /// them, and only the volumes' and a cutscene track's keyed weather lie over the shares. The weather
+    /// system's ([`crate::weather::WeatherSystem::write`]): `true` while a weather plan is live; a stage whose
+    /// zone named no plan, the stage's own given back, sets it `false` after.
+    pub fn set_weather_shares(&mut self, shares: bool) {
+        self.weather_shares = shares;
+    }
+
     /// The weather document [`Self::set_weather`] set, if any.
     pub fn weather(&self) -> Option<&Arc<WeatherDocument>> {
         self.weather.as_ref()
@@ -278,7 +293,8 @@ impl TimeOfDay {
     ///
     /// 1. the base timeline at the clock's hour;
     /// 2. the weather's states as [`Self::set_weather_blend`] blends them (M6 W8a), at the same hour,
-    ///    over it ([`WeatherDocument::apply_looks`]);
+    ///    over it ([`WeatherDocument::apply_looks`]); with [`Self::set_weather_shares`], the keyed weather
+    ///    of these two steps cleared, the accumulated shares standing for it (M6 Y2);
     /// 3. each zone volume's timeline at the same hour, over them, by the volume's weight at the
     ///    probe, in priority order;
     /// 4. the playing cutscene track, by its weight: a crossfade to steps 1 to 3 at the shot's
@@ -415,6 +431,10 @@ impl TimeOfDay {
             if let Some((to, weight)) = self.weather_shot {
                 weather.apply_looks(WeatherBlend { from: None, to, weight }, &mut look, hours);
             }
+        }
+        if self.weather_shares {
+            // The shares lie over the day's keyed weather; volumes and a cutscene's keys over them.
+            look.weather = KeyedWeather::default();
         }
         let mut active = 0;
         for (_, volume) in &self.volumes {

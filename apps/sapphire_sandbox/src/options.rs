@@ -2492,7 +2492,7 @@ fn parse_weather(raw: &str) -> Result<Weather, String> {
         let value: f32 = text.trim().parse().map_err(|_| invalid())?;
         if (0.0..=1.0).contains(&value) { Ok(value) } else { Err(invalid()) }
     };
-    Ok(Weather { wetness: share(wetness)?, puddles: share(puddles)? })
+    Ok(Weather { wetness: share(wetness)?, puddles: share(puddles)?, ..Weather::DRY })
 }
 
 /// `--weather-state`'s states, by name (M6 W8a): `state` alone, or a transition `weight` of the way from `state`
@@ -3165,7 +3165,7 @@ mod tests {
         assert_eq!(parse(&["--view", " -40.5 , 10 "]).unwrap().0.view, Some((-40.5, 10.0)));
         assert_eq!(parse(&[]).unwrap().0.cloud_cover, None);
         let wet = parse(&["--weather", "0.8,0.25"]).unwrap().0;
-        assert_eq!(wet.weather, Some(Weather { wetness: 0.8, puddles: 0.25 }));
+        assert_eq!(wet.weather, Some(Weather { wetness: 0.8, puddles: 0.25, ..Weather::DRY }));
         assert_eq!(parse(&["--weather=dry"]).unwrap().0.weather, Some(Weather::DRY));
         assert_eq!(parse(&[]).unwrap().0.weather, None, "the zone's and its day's");
         for wrong in ["0.5", "1.5,0", "0,-0.1", "NaN,0", "wet"] {

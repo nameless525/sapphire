@@ -90,6 +90,31 @@ fn the_schedule_is_a_pure_function_of_the_clock() {
     assert_eq!(WeatherSchedule::always(2).state_at(-40, 13.0), 2);
 }
 
+/// Where the state may next change (M6 Y2): the next slot's start, across midnight and from the night
+/// before's last slot; and every state the slots may pick.
+#[test]
+fn the_next_slot_is_where_the_state_may_change() {
+    let schedule = schedule();
+    assert_eq!(schedule.next_slot(3, 0.0), (3, 6.0));
+    assert_eq!(schedule.next_slot(3, 6.0), (3, 12.0), "a slot's own start is in it");
+    assert_eq!(schedule.next_slot(3, 23.5), (4, 0.0), "the last slot ends at the next day's first");
+    let late = WeatherSchedule::new(1, vec![(6.25, vec![(0, 1)]), (20.0, vec![(1, 1)])], 2).expect("valid");
+    assert_eq!(late.next_slot(3, 2.0), (3, 6.25), "the night before's slot ends this morning");
+    assert_eq!(late.next_slot(3, 21.0), (4, 6.25));
+    assert_eq!(WeatherSchedule::always(1).next_slot(-2, 13.0), (-1, 0.0));
+    // The state holds from a slot's start to the next.
+    for day in 0..20 {
+        let (next_day, next) = schedule.next_slot(day, 7.0);
+        assert_eq!(schedule.state_at(day, 6.0), schedule.state_at(day, 11.99));
+        assert_eq!((next_day, next), (day, 12.0));
+    }
+    let mut choices: Vec<usize> = schedule.choices().collect();
+    choices.sort_unstable();
+    choices.dedup();
+    assert_eq!(choices, [0, 1, 2, 3]);
+    assert_eq!(late.choices().collect::<Vec<_>>(), [0, 1]);
+}
+
 /// A schedule's slots as [`WeatherSchedule::new`] takes them.
 type Slots = Vec<(f32, Vec<(usize, u32)>)>;
 

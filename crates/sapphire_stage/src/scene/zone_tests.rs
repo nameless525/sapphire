@@ -27,6 +27,7 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 use sapphire_synthetic_zone::SyntheticZone;
 use sapphire_time::Stopwatch;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
+use sapphire_world::weather::WeatherOverride;
 use sapphire_zone::{
     CookedExit, CookedWeatherPlan, WeatherChoice, WeatherSlot, ZoneFog, ZonePresentation, ZoneWeather,
     ZoneWind,
@@ -1155,7 +1156,8 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(in_first.sky_material, walk.content.zone_sky_material());
     // Its wind, which its weather plan's storm blows harder but never turns.
     assert_eq!((walk.scene.wind.strength, in_first.wind.global.direction), (2.5, Vec3::Z), "its wind");
-    assert_eq!((in_first.weather.wetness, in_first.weather.puddles), (0.7, 0.3), "its weather");
+    // Its plan's storm, whose shares lie over its fixed weather (M6 Y2, m6-plan §3), arrived in soaked.
+    assert_eq!((in_first.weather.wetness, in_first.weather.puddles), (1.0, 1.0), "its plan's weather");
     let storm = walk.scene.weather_system().document().state("storm");
     assert_eq!(walk.scene.weather_system().stats().state, storm, "its weather plan, arrived in at once");
     assert_eq!(walk.scene.weather_system().stats().transition, 1.0);
@@ -1183,7 +1185,8 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(walk.scene.time_of_day().timeline(), &stage_day, "the stage's own day again");
     assert_eq!(in_second.sky_material, None, "and the app's sky, which this stage has none of");
     assert_eq!(walk.scene.wind, stage_wind);
-    assert_eq!(in_second.weather.wetness, 0.0, "dry");
+    // The stage's mist, back, damp from its last six hours (M6 Y2).
+    assert!((in_second.weather.wetness - 0.3).abs() < 1e-4, "{:?}", in_second.weather);
     let mist = walk.scene.weather_system().document().state("mist");
     assert_eq!(
         walk.scene.weather_system().plan(),
@@ -1214,6 +1217,48 @@ fn a_trip_brings_the_look_of_the_zone_it_arrives_in() {
     assert_eq!(walk.content.probe_hours(), [6.0], "and back");
     assert_eq!(again.fog.near.density, in_first.fog.near.density);
     assert!(again.sky_material.is_some());
+}
+
+/// A trip into a zone with no weather of its own declares the wet surfaces (M6 Y2) when the weather it keeps may
+/// wet it: the stage's own plan, which a zone naming none gives back, and a story flag's override, which a trip
+/// keeps. Either way no wet pipeline is a first use on its frames.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_trip_declares_the_wet_surfaces_of_the_weather_it_keeps() {
+    let settings = small_settings();
+    let looks = [RoomLook::default(), RoomLook::default()];
+    let packet = |walk: &mut Walk| {
+        walk.frame();
+        let mut seen = None;
+        walk.frame_seeing(|packet| seen = Some(packet.clone()));
+        seen.expect("a packet")
+    };
+    let shipped = sapphire_world::weather::default_weather();
+
+    // The stage's own mist, which the zone, naming no plan, gives back.
+    let mut walk = Walk::dressed_rooms(SMALL, &looks, no_limits());
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    let mist = WeatherPlan::always(shipped.state("mist").expect("shipped"));
+    walk.scene.set_weather_plan(Arc::clone(&shipped), Some(mist));
+    let first_uses = walk.renderer.stats().pipelines.first_use_builds;
+    walk.trip(0, settings);
+    let arrived = packet(&mut walk);
+    assert!(arrived.weather.wetness > 0.29, "the mist's damp: {:?}", arrived.weather);
+    let built = walk.renderer.stats().pipelines.first_use_builds - first_uses;
+    assert_eq!(built, 0, "the stage's plan's wet surfaces built as the zone came");
+
+    // A storm a story flag holds, with no plan at all.
+    let mut walk = Walk::dressed_rooms(SMALL, &looks, no_limits());
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    let storm = shipped.state("storm").expect("shipped");
+    let held = WeatherOverride { state: storm, seconds: None };
+    walk.scene.weather_system_mut().set_override(Some(held)).expect("a state");
+    let first_uses = walk.renderer.stats().pipelines.first_use_builds;
+    walk.trip(0, settings);
+    let arrived = packet(&mut walk);
+    assert!(arrived.weather.wetness > 0.0, "the storm wets it: {:?}", arrived.weather);
+    let built = walk.renderer.stats().pipelines.first_use_builds - first_uses;
+    assert_eq!(built, 0, "the override's wet surfaces built as the zone came");
 }
 
 /// A stage that asks for no probe grids (`--no-probe-grid`, M6 B4) brings none on a trip: the zone's grid is

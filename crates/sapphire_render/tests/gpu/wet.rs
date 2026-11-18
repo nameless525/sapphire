@@ -40,8 +40,8 @@ const FOV: f32 = 0.9;
 /// Where the floor's checked, seen from [`Harness::new`]'s camera.
 const POINTS: [Vec3; 3] = [Vec3::ZERO, Vec3::new(0.6, 0.0, -0.6), Vec3::new(-0.8, 0.0, 0.4)];
 
-const WET: Weather = Weather { wetness: 1.0, puddles: 0.0 };
-const FLOODED: Weather = Weather { wetness: 1.0, puddles: 1.0 };
+const WET: Weather = Weather { wetness: 1.0, puddles: 0.0, ..Weather::DRY };
+const FLOODED: Weather = Weather { wetness: 1.0, puddles: 1.0, ..Weather::DRY };
 
 fn passthrough() -> PostParams {
     PostParams {
@@ -387,7 +387,7 @@ fn a_porous_surface_darkens_and_a_non_porous_one_does_not() {
     for ratio in ratios(&wet, &dry, 0.2) {
         assert!((ratio - Vec3::splat(SOAKED)).abs().max_element() < 0.04, "porous, soaked: {ratio}");
     }
-    let half = harness.settle(Weather { wetness: 0.5, puddles: 0.0 }, 2);
+    let half = harness.settle(Weather { wetness: 0.5, puddles: 0.0, ..Weather::DRY }, 2);
     for ratio in ratios(&half, &dry, 0.2) {
         assert!(ratio.x > SOAKED + 0.1 && ratio.x < 0.95, "porous, half wet, darkens less: {ratio}");
     }
@@ -425,7 +425,7 @@ fn gloss_rises_with_wetness() {
     harness.show(&red_room());
     let mut previous = [0.0; POINTS.len()];
     for wetness in [0.0, 0.5, 1.0] {
-        let frame = harness.settle(Weather { wetness, puddles: 0.0 }, 2);
+        let frame = harness.settle(Weather { wetness, ..Weather::DRY }, 2);
         for (index, &point) in POINTS.iter().enumerate() {
             let red = frame.at(point).x;
             assert!(red > previous[index] + 0.003, "wetness {wetness}: {red} after {}", previous[index]);
@@ -503,7 +503,7 @@ fn lit_red_room(specular: EnvironmentSpecular) -> Harness {
     harness
 }
 
-const SHOWER: Weather = Weather { wetness: 0.8, puddles: 0.6 };
+const SHOWER: Weather = Weather { wetness: 0.8, puddles: 0.6, ..Weather::DRY };
 
 #[test]
 #[ignore = "needs a GPU"]
@@ -572,7 +572,7 @@ fn wetness_just_above_zero_draws_as_dry() {
     for specular in [EnvironmentSpecular::Full, EnvironmentSpecular::Approximate, EnvironmentSpecular::Off] {
         let mut harness = lit_red_room(specular);
         let dry = harness.settle(Weather::DRY, 3);
-        let least = harness.settle(Weather { wetness: 1e-4, puddles: 1e-4 }, 2);
+        let least = harness.settle(Weather { wetness: 1e-4, puddles: 1e-4, ..Weather::DRY }, 2);
         let worst = least.differs_from(&dry);
         assert!(worst <= 2, "{specular:?}: {worst} code values at the threshold");
     }
@@ -597,7 +597,7 @@ fn the_puddle_mask_holds_still_as_the_camera_moves() {
         CameraData::look_at(eye, eye - Vec3::Y, Vec3::NEG_Z, FOV, 1.0, 0.05)
     };
     harness.camera = look(0.0);
-    let puddles = Weather { wetness: 0.0, puddles: 0.5 };
+    let puddles = Weather { wetness: 0.0, puddles: 0.5, ..Weather::DRY };
     let first = harness.settle(puddles, 2);
     harness.camera = look(shift as f32 * pixel);
     let moved = harness.settle(puddles, 2);

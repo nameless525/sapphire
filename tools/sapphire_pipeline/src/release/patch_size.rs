@@ -24,7 +24,7 @@ use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::path::Path;
 
 use sapphire_assets::manifest::Manifest;
-use sapphire_assets::pack::{HEADER_LEN, PackHeader, Toc};
+use sapphire_assets::pack::{HEADER_LEN, PACK_VERSION, PackHeader, Toc};
 
 use super::{ReleaseError, hex};
 
@@ -101,6 +101,7 @@ impl PatchSize {
                 missing.push(pack.name.clone());
                 continue;
             }
+            check_format(from.version, &path)?;
             let toc = read_toc(&path)?;
             held_blocks
                 .extend(toc.entries().iter().flat_map(|entry| toc.blocks(entry)).map(|block| block.hash));
@@ -272,6 +273,19 @@ pub(super) fn read_architecture(path: &Path) -> Result<Option<String>, ReleaseEr
 }
 
 /// A pack's checked table of contents, read without its data.
+/// Refuses a patch over a release whose pack at `path` is another pack format than this build's (M6 K2): an
+/// install of it reads only its own format, so what changed format ships as an app build.
+fn check_format(from: u64, path: &Path) -> Result<(), ReleaseError> {
+    let io_error = |source| ReleaseError::Io { path: path.to_owned(), source };
+    let mut start = [0; 8];
+    fs::File::open(path).and_then(|mut file| file.read_exact(&mut start)).map_err(io_error)?;
+    let found = u32::from_le_bytes(*start[4..].first_chunk().expect("4 bytes"));
+    if found == PACK_VERSION {
+        return Ok(());
+    }
+    Err(ReleaseError::PatchOtherFormat { from, path: path.to_owned(), found })
+}
+
 fn read_toc(path: &Path) -> Result<Toc, ReleaseError> {
     let io_error = |source| ReleaseError::Io { path: path.to_owned(), source };
     let pack_error = |source| ReleaseError::Pack { path: path.to_owned(), source };

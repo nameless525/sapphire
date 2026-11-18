@@ -132,6 +132,13 @@ pub enum ReleaseError {
     #[error("this is the {cook} cook, and release {from}, which it patches, is the {patched} cook")]
     PatchOtherCook { from: u64, cook: String, patched: String },
     #[error(
+        "release {from}'s pack {} is pack format {found}, and this cook's are {}: an install of release {from} \
+         can't read them, so ship this as an app build, not a patch",
+        path.display(),
+        sapphire_assets::pack::PACK_VERSION
+    )]
+    PatchOtherFormat { from: u64, path: PathBuf, found: u32 },
+    #[error(
         "no key signing this release is one release {from} names for its successor, so no install of it would \
          take the patch"
     )]

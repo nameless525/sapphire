@@ -202,6 +202,28 @@ fn a_release_can_hand_its_successor_to_a_new_key() {
     assert!(matches!(publish(&cooked.packs(), &cooked.out(), &options(3), &[]), Err(ReleaseError::NoKey)));
 }
 
+/// `--patch-from` over a release of another pack format (M6 K2): refused, saying to ship an app build, with
+/// nothing published.
+#[test]
+fn a_patch_across_pack_formats_is_refused() {
+    let cooked = Cooked::new("release_patch_format");
+    let out = cooked.out();
+    publish(&cooked.packs(), &out, &options(1), &[key(7)]).unwrap();
+    for entry in fs::read_dir(out.join("packs")).unwrap() {
+        let path = entry.unwrap().path();
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[4..8].copy_from_slice(&4u32.to_le_bytes());
+        // A new file: the host's may share the cook's.
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, bytes).unwrap();
+    }
+    let patch = ReleaseOptions { patch_from: Some(out.join("manifests/1.smanifest")), ..options(2) };
+    let refused = publish(&cooked.packs(), &out, &patch, &[key(7)]).unwrap_err();
+    assert!(matches!(&refused, ReleaseError::PatchOtherFormat { from: 1, found: 4, .. }), "{refused}");
+    assert!(refused.to_string().contains("ship this as an app build"), "{refused}");
+    assert!(!out.join("manifests/2.smanifest").exists(), "a refused patch publishes nothing");
+}
+
 /// `--patch-from`: a patch carries presentation only, and must be what an install of the release it patches
 /// takes. Each refusal names what's wrong and writes nothing.
 #[test]

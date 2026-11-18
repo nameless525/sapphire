@@ -111,7 +111,16 @@ fn easu_weight(offset: vec2<f32>, direction: vec2<f32>, scale: vec2<f32>, lobe: 
 // kernel then turns to the voted direction, stretches along it as far as the votes agree that it is one edge, and
 // sharpens across it, and its result is held within the four nearest texels' range, so it never rings. Written
 // from the method: the taps, votes, kernel and clamp are FSR 1's; the input read texel by texel, held inside the
-// frame, and the guards against dividing by nothing are ours.
+// frame, the guards against dividing by nothing and the flat path are ours.
+//
+// The flat path (M6 F1): where the four nearest texels are equal, their range is that one value, so the clamp
+// would return it whatever the kernel made; it is returned at once, the votes and the kernel skipped, and the
+// result is the same to the bit. The branch is per pixel but a GPU runs a fragment shader in groups (32 pixels on
+// Apple's GPUs and most phones'), and a group pays for the whole path if any one of its pixels does: the time is
+// saved only by a group that is wholly flat, which B6's `flat upscale groups` counter counts (8 × 4 tiles
+// standing in for the groups). The twelve taps are read in this order before the branch, as they were before it:
+// reading the four nearest first changed how Metal's compiler rounds the kernel's sum, and moved a pixel by a
+// code value in two `upscale-*` scenes. The compiler may still move the other taps past the branch.
 @fragment
 fn fs_upscale_edge(in: FullscreenVaryings) -> @location(0) vec4<f32> {
     let place = in.position.xy * upscale.easu.xy + upscale.easu.zw;
@@ -135,6 +144,9 @@ fn fs_upscale_edge(in: FullscreenVaryings) -> @location(0) vec4<f32> {
     let l = easu_texel(origin, vec2<f32>(2.0, 1.0));
     let n = easu_texel(origin, vec2<f32>(0.0, 2.0));
     let o = easu_texel(origin, vec2<f32>(1.0, 2.0));
+    if all(ff == g) && all(ff == j) && all(ff == k) {
+        return vec4<f32>(ff, 1.0);
+    }
     let lb = easu_luma(b);
     let lc = easu_luma(c);
     let le = easu_luma(e);

@@ -21,6 +21,10 @@
 //!   frame is below scale 1 from its first frame at any phone's height (the tiers' height caps put it there), so
 //!   no frame and no step of the thermal ladder builds them; a tier change in place brings them with the new
 //!   renderer.
+//! - **The flat path (M6 F1):** where a pixel's four nearest texels are equal, the upscale returns that texel at
+//!   once, which is what its clamp to their range would have made of any kernel: the same to the bit, skipping
+//!   the votes and the kernel where a 32-pixel group of the GPU's is wholly flat (the shader says how it's taken,
+//!   and why it still reads all twelve taps first).
 //! - **What draws after:** the interface, debug draw, the debug views and the colour-vision view draw over the
 //!   target at the output's size, after the sharpen, untouched. The screen effects (the CRT's scanlines and
 //!   grille, the glitch's whole-pixel shifts, the halftone) are the fused pass's, so on these tiers they're drawn

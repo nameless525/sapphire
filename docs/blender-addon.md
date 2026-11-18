@@ -48,6 +48,27 @@ Choose the **File** (a `.glb` inside your content tree, beside its `.meta` sidec
 
 It also works around what Blender 5.2's exporter gets wrong for this data: it writes custom vectors without turning them to Y-up, and it writes a mesh's vertex colors into its first material only, every other material's white.
 
+The file is written under a hidden name beside it and renamed into place, so whatever watches the folder sees it whole.
+
+## Send: from Blender to the running game
+
+**Send to Sapphire** is the export into your content tree: set **Content** to the tree (the repository's `content/`), choose a **File** inside it, and press Send. It refuses a file outside the tree, since nothing would cook it there. With the loop running, the saved character is on screen in the running game a few seconds later, with no restart:
+
+```bash
+cargo xtask content --watch                  # cooks content/, then again on every save
+cargo xtask run --platform desktop --features dev -- --look-dev enemy --model <the mesh's ID>
+                                             # or any dev app reading the cook
+```
+
+The watch cooks only what the save changed (the mesh, and anything that reads it) and rewrites only the packs it lands in; the running app's hot reload remounts those and swaps the new mesh in. For a phone or a simulator, watch the mobile cook and let live link carry the packs:
+
+```bash
+cargo xtask content --watch --cook mobile
+cargo xtask link watch                       # pushes each rewritten pack to the device's app
+```
+
+A cook that fails (a file the importer refuses, say) prints why, and the watch waits for the next save. A new file gets its `.meta` sidecar from the first cook, to commit with it. An app loads a character by its mesh's ID, which is in that sidecar, so start the app on a new character after its first cook: from then on, each Send shows in it.
+
 ## Masks
 
 **Bake Face Masks** bakes the active face mesh's threshold masks and its face SDF document; **Bake Body Masks** bakes each selected mesh's AO and material IDs and its ILM document; **Face Sheet** draws a face SDF document's map lit at the angles you give beside its masks, through the pipeline, and opens it as an image. [blender-mask-bake.md](blender-mask-bake.md) is the whole recipe: preparing the face, every option, painting the masks.
@@ -72,4 +93,4 @@ blender -b --factory-startup --python tools/blender/test_character.py -- \
     --check --pipeline target/tools/sapphire_pipeline
 ```
 
-`--hull` also confirms the hull preview, and `--bake <folder>` bakes the face's masks there and draws their sheet. It uses the add-on installed in Blender if there is one (`--installed` requires it), else the checkout's. Each run writes the same bytes on Blender 5.2.0 LTS.
+`--hull` also confirms the hull preview, and `--bake <folder>` bakes the face's masks there and draws their sheet. `--send <content tree>` exports with Send into a tree that holds `--out`, and `--skin-shade r,g,b` changes the skin's shade color first, so a re-export into a running loop has something to show. It uses the add-on installed in Blender if there is one (`--installed` requires it), else the checkout's. Each run writes the same bytes on Blender 5.2.0 LTS.

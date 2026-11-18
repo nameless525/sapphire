@@ -113,7 +113,7 @@ cargo xtask run --platform desktop -- --capture levels.png --zone lantern_ward -
 
 - a saved document shows within a few tenths of a second;
 - a saved shader builds its pipelines off the frame thread and swaps them in;
-- after `cargo xtask content`, the assets that changed swap in behind their handles.
+- after `cargo xtask content`, the assets that changed swap in behind their handles; `cargo xtask content --watch` cooks on every save, so a saved source shows with no command in between (with `link watch` below, on a device too).
 
 **Live link (any platform)** takes the same edits from the desktop over TCP, on 127.0.0.1:7811 by default. Use `iproxy` for an iPhone, and `adb reverse` or `adb forward` for Android. Build the app and the tool from the same commit: the protocol is at version 6, and different versions refuse each other.
 

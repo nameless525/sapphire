@@ -152,6 +152,8 @@ Everything the window does is a named command (`sapphire_editor::commands`, spec
 
 What isn't saved is kept after each command in a journal, `target/editor_journal/` (spec §5.28 "As built (M6 T3)"), so a crash or a kill loses none of it: the next editor's top bar offers each document an editor that stopped without saving had, to take back (`Recover`), unsaved and with its steps to undo, or let go (`DropRecovered`). One whose file someone saved meanwhile comes back in conflict with it, and the top bar's three answers settle it as any other; nothing writes a source until you save. Quitting with nothing unsaved, or choosing to lose it, leaves nothing behind. `--journal <folder>` keeps it somewhere else, and a script keeps one only when told, so `--run` can take and let go of offers too.
 
+A save cooks (spec §5.28 "As built (M6 T5)"): 300 ms after the last save of a document under `content/`, the editor runs the pipeline `cargo xtask content` built into the cook it reads, one cook at a time, and the viewport takes the new packs with no other step. The top bar says how the last went, and a refused cook names the document and the field there and in Properties; `<cook>.cook.log` beside the cook's folder has the pipeline's output. `--pipeline <binary>` names another pipeline, and a `--run` script waits for its cooks before it ends.
+
 No test can show:
 
 - that the window opens at all, on any OS: `window.rs` is the one part nothing runs, with its surface, device loss, resizing, HiDPI scale and text input;

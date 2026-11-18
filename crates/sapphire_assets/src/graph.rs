@@ -63,6 +63,11 @@
 //! [`AnimGraph::check`] names everything wrong with a document at once, by section and name, as a
 //! move set's check does. What depends on a character (a clip for another skeleton, a bone it
 //! lacks) is `sapphire_anim`'s to say when it binds.
+//!
+//! # Version 2
+//!
+//! [`v2`] is the node graph that replaces this one (M6 A5): its document, which reads this version's
+//! too, and its compiler to a flat program. Until its runtime lands, this is still what cooks and plays.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -75,6 +80,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
 use crate::rig::HumanBone;
+
+pub mod v2;
 
 /// Conventional file extension for cooked graphs.
 pub const GRAPH_EXTENSION: &str = "sgraph";

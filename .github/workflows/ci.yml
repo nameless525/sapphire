@@ -433,7 +433,9 @@ jobs:
   # sample (Mesa 26.1.3 has no ASTC), so their app can't start here; they are walked on Metal in the local
   # gate (`cargo xtask counts`) and on the Simulator and the emulator (`cargo xtask bench-scale device`).
   # The nature zone's walks (M6 W1) join it: its 7,980-frame walk at the desktop tiers at dusk, in its rain, under
-  # its probe grid and reflection probes.
+  # its probe grid and reflection probes. They take about 2.5 times the district's here (at 58b959449, 7.6 minutes
+  # on Desktop-Low and past the district's 12-minute limit on Desktop-High), so each has a limit of its own, and
+  # a district walk that hangs still fails in 12 minutes.
   scale-lane:
     name: Scale lane (vulkan-lavapipe, ${{ matrix.walk }})
     needs: golden-build-linux
@@ -442,8 +444,15 @@ jobs:
       matrix:
         walk: [desktop-high-dusk, desktop-high-night, desktop-low-dusk, desktop-low-night, nature-desktop-high-dusk,
                nature-desktop-low-dusk]
+        include:
+          - walk: nature-desktop-high-dusk
+            walk-seconds: 1500
+            job-minutes: 35
+          - walk: nature-desktop-low-dusk
+            walk-seconds: 1500
+            job-minutes: 35
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.job-minutes || 15 }}
     env:
       SAPPHIRE_GPU_BACKEND: vulkan
       SAPPHIRE_GPU_DEBUG: none
@@ -466,11 +475,12 @@ jobs:
       - name: Walk the benchmark
         env:
           WALK: ${{ matrix.walk }}
+          WALK_SECONDS: ${{ matrix.walk-seconds || 720 }}
         run: |
           target/golden-input/bin/sapphire_testkit counts --sandbox target/golden-input/bin/sapphire_sandbox \
             --content target/golden-input/content --table tests/counts/district-ci.txt \
             --differences tests/counts/district-ci-vulkan-lavapipe.txt --out target/counts \
-            --walk "$WALK" --walk-timeout 720
+            --walk "$WALK" --walk-timeout "$WALK_SECONDS"
       - name: Upload the count rows
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -63,6 +63,7 @@ const KNOWN_SHORT: &[(&str, &str, f32)] = &[
     ("sound", "effects-value", 3.80),
     ("sound", "voice-value", 3.80),
     ("sound", "mono-value", 3.83),
+    ("sound", "range-value", 3.75),
     ("sound", "rumble-value", 3.84),
     ("subtitles", "shown-value", 3.84),
     ("subtitles", "size-value", 3.78),

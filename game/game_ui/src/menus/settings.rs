@@ -5,7 +5,8 @@
 //! saved, migrated and stepped here; what each changes is A2's (the screen, the sound, the subtitles), A4's
 //! (hold or toggle) and the run's (auto-target, and A6's timing assist, which a step reads, so the run records
 //! them). Every other setting is presentation and never reaches a checksum. A6's assist joined version 4
-//! with no bump: a file without it, of any version, reads it as off, as serde's defaults do.
+//! with no bump: a file without it, of any version, reads it as off, as serde's defaults do. M6 U10's dynamic range
+//! joined it the same way: a file without it reads `Standard`.
 //!
 //! Version 3 (M4 T3) adds the graphics page's: the quality tier (automatic, or one the player holds), the frame
 //! cap, dynamic resolution and the battery saver, which the app gives its stage's quality and its platform's
@@ -143,6 +144,25 @@ impl SubtitleBackground {
             Self::Light => (0.5, false),
             Self::Normal => (1.0, false),
             Self::Solid => (1.0, true),
+        }
+    }
+}
+
+choices! {
+    /// How much of the mix's loudness range plays (M6 U10): all of it, a little less, or a narrow range for a quiet
+    /// room at night ([`sapphire_stage::audio::DynamicRange`]).
+    #[derive(Default)]
+    DynamicRange { Wide = "wide", #[default] Standard = "standard", Night = "night" }
+}
+
+impl DynamicRange {
+    /// What the mixer plays it as.
+    #[must_use]
+    pub const fn heard(self) -> sapphire_stage::audio::DynamicRange {
+        match self {
+            Self::Wide => sapphire_stage::audio::DynamicRange::Wide,
+            Self::Standard => sapphire_stage::audio::DynamicRange::Standard,
+            Self::Night => sapphire_stage::audio::DynamicRange::Night,
         }
     }
 }
@@ -343,6 +363,8 @@ pub struct PlayerSettings {
     pub voice: u8,
     /// Whether every sound plays in one channel.
     pub mono: bool,
+    /// How much of the mix's loudness range plays (M6 U10).
+    pub dynamic_range: DynamicRange,
     /// Whether a pad shakes.
     pub rumble: bool,
     pub subtitles: Subtitles,
@@ -384,6 +406,7 @@ impl Versioned for PlayerSettings {
             effects: old.effects,
             voice: old.voice,
             mono: old.mono,
+            dynamic_range: DynamicRange::default(),
             rumble: old.rumble,
             subtitles: old.subtitles,
             auto_target: old.auto_target,
@@ -570,6 +593,7 @@ impl Default for PlayerSettings {
             effects: 100,
             voice: 100,
             mono: false,
+            dynamic_range: DynamicRange::default(),
             rumble: true,
             subtitles: Subtitles::default(),
             auto_target: AutoTarget::default(),
@@ -599,6 +623,7 @@ pub enum Setting {
     Effects,
     Voice,
     Mono,
+    DynamicRange,
     Rumble,
     Subtitles,
     SubtitleSize,
@@ -688,6 +713,7 @@ impl PlayerSettings {
             Setting::Effects => self.effects = step_percent(self.effects, VOLUME_STEP),
             Setting::Voice => self.voice = step_percent(self.voice, VOLUME_STEP),
             Setting::Mono => self.mono = !self.mono,
+            Setting::DynamicRange => self.dynamic_range = self.dynamic_range.next(),
             Setting::Rumble => self.rumble = !self.rumble,
             Setting::Subtitles => self.subtitles.shown = !self.subtitles.shown,
             Setting::SubtitleSize => self.subtitles.size = self.subtitles.size.next(),
@@ -775,6 +801,7 @@ mod tests {
             Setting::Effects,
             Setting::Voice,
             Setting::Mono,
+            Setting::DynamicRange,
             Setting::Rumble,
             Setting::Subtitles,
             Setting::SubtitleSize,
@@ -816,6 +843,7 @@ mod tests {
                 again.effects != start.effects,
                 again.voice != start.voice,
                 again.mono != start.mono,
+                again.dynamic_range != start.dynamic_range,
                 again.rumble != start.rumble,
                 again.subtitles != start.subtitles,
                 again.auto_target != start.auto_target,

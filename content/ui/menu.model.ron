@@ -13,6 +13,7 @@
             (path: "can_continue", kind: Bool),
             (path: "can_leave", kind: Bool),
             (path: "can_mark", kind: Bool),
+            (path: "dynamic_range", kind: Text),
             (path: "dynamic_resolution", kind: Text),
             (path: "effects", kind: Number),
             (path: "flashes", kind: Text),

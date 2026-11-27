@@ -90,6 +90,7 @@
                     (node: "effects", does: Step(Effects)),
                     (node: "voice", does: Step(Voice)),
                     (node: "mono", does: Step(Mono)),
+                    (node: "range", does: Step(DynamicRange)),
                     (node: "rumble", does: Step(Rumble)),
                     (node: "back", does: Nothing),
                 ],

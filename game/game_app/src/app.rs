@@ -471,6 +471,7 @@ impl GameApp {
         if let Some(audio) = &mut self.audio {
             audio.set_volumes(volumes_of(chosen));
             audio.set_mono(chosen.mono);
+            audio.set_dynamic_range(chosen.dynamic_range.heard());
             speak_in(audio, &chosen.locale().voice);
         }
         if self.rumble && !chosen.rumble {
@@ -932,6 +933,7 @@ fn volumes_of(chosen: &PlayerSettings) -> Volumes {
 fn heard_as(mut audio: DeviceAudio, chosen: &PlayerSettings) -> DeviceAudio {
     audio.set_volumes(volumes_of(chosen));
     audio.set_mono(chosen.mono);
+    audio.set_dynamic_range(chosen.dynamic_range.heard());
     speak_in(&mut audio, &chosen.locale().voice);
     audio
 }

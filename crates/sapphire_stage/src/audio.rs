@@ -29,6 +29,9 @@
 //! Everything plays through the game's mix (M6 U2, [`ShowSounds::mix`]; `--cue` the shipped one): its slow
 //! motion follows the world's clock, its ducking rules follow the voice lines' mouth curves, and a paused game
 //! asks for its `pause` snapshot ([`CueSounds::paused`]).
+//!
+//! The device plays through the output profile of where it's heard (M6 U10, [`output_profile`]): `Home` at a
+//! desktop, `Portable` on a phone, each at its loudness, and through the player's [`DynamicRange`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, mpsc};
@@ -36,18 +39,19 @@ use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
-use sapphire_assets::mix::Mix;
+use sapphire_assets::mix::{Mix, OutputProfile};
 use sapphire_assets::mouth::{MouthCurve, MouthSample};
 use sapphire_assets::score::Score;
 use sapphire_assets::sound::{DecodedSound, Sound};
 use sapphire_assets::voice::VoiceLines;
-pub use sapphire_audio::Volumes;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
     EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT, Room, Rooms,
     SpeechRequest, VoiceCaps,
 };
+pub use sapphire_audio::{DynamicRange, Volumes};
 use sapphire_core::Name;
+use sapphire_core::target::FormFactor;
 use sapphire_loc::LocaleSettings;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
@@ -224,6 +228,18 @@ pub fn voice_caps(tier: TierId) -> VoiceCaps {
     VoiceCaps { real, virtual_voices }
 }
 
+/// The output profile a device of `form` plays through (M6 U10, m6-plan §3's "Loudness"): `Home` at a desktop,
+/// whatever it's plugged into, and `Portable` on a phone or a tablet, its speaker or earbuds. Nothing reads the
+/// OS's route yet, so a phone casting to a television plays `Portable` too: U15 reads the route, and a phone on
+/// one that isn't its own speaker or headphones then plays `Home`.
+#[must_use]
+pub const fn output_profile(form: FormFactor) -> OutputProfile {
+    match form {
+        FormFactor::Desktop => OutputProfile::Home,
+        FormFactor::Mobile => OutputProfile::Portable,
+    }
+}
+
 /// `--cue`'s one cue, and when it's due.
 struct Repeating {
     cue: AssetId,
@@ -301,6 +317,8 @@ impl DeviceAudio {
         let ReadySounds { loaded, score } = ready;
         let Ok(backend) = KiraBackend::<CpalOutput>::new(());
         let mut system = AudioSystem::new(backend);
+        system.set_output_profile(output_profile(FormFactor::CURRENT));
+        system.set_dynamic_range(DynamicRange::default());
         add_loaded(&mut system, loaded)?;
         Ok(Self {
             system,
@@ -378,6 +396,18 @@ impl DeviceAudio {
         self.system.set_mono(mono);
     }
 
+    /// How much of the mix's loudness range the player hears (M6 U10): [`DynamicRange::default`] until they choose.
+    pub fn set_dynamic_range(&mut self, range: DynamicRange) {
+        self.system.set_dynamic_range(range);
+    }
+
+    /// How late the mix reaches the device past when it was asked (M6 U10): the master limiter's look-ahead, which
+    /// the device's own latency adds to.
+    #[must_use]
+    pub fn mix_latency(&self) -> Duration {
+        self.system.mix_latency()
+    }
+
     /// Chooses the language voice lines are spoken in, a BCP 47 tag, apart from the text's: whether the
     /// fight's lines are in it.
     pub fn set_voice_language(&mut self, locale: &str) -> bool {
@@ -431,6 +461,8 @@ impl DeviceAudio {
             update_peak_us = peak.as_micros() as u64,
             mix_load = format_args!("{:.4}", device.mix_load()),
             mix_max_us = device.mix_nanos_max / 1_000,
+            mix_latency_us = self.system.mix_latency().as_micros() as u64,
+            profile = ?self.system.output_profile(),
             "audio stats"
         );
     }
@@ -775,6 +807,11 @@ impl OfflineAudio {
         self.system.set_mono(mono);
     }
 
+    /// As [`DeviceAudio::set_dynamic_range`]: an offline mix starts `Wide`, at home.
+    pub fn set_dynamic_range(&mut self, range: DynamicRange) {
+        self.system.set_dynamic_range(range);
+    }
+
     /// Mixes `dt` seconds of sound, and says how long that took.
     pub fn mix(&mut self, dt: f32) -> Duration {
         let samples = ((dt * OFFLINE_RATE as f32) as usize * 2).min(self.block.len());
@@ -799,6 +836,14 @@ pub fn stayed_shut(opens: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M6 U10: a desktop plays at home's loudness and a phone at a portable's, louder.
+    #[test]
+    fn a_phone_plays_portable_and_a_desktop_home() {
+        assert_eq!(output_profile(FormFactor::Desktop), OutputProfile::Home);
+        assert_eq!(output_profile(FormFactor::Mobile), OutputProfile::Portable);
+        assert!(OutputProfile::Portable.loudness_lufs() > OutputProfile::Home.loudness_lufs());
+    }
 
     /// M6 U3: spec §5.15's caps, fewer down the tiers, and within what the mixer has room for.
     #[test]

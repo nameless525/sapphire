@@ -109,6 +109,10 @@ sound-music = Music
 sound-effects = Effects
 sound-voice = Voices
 sound-mono = Mono audio
+sound-range = Dynamic range
+sound-range-wide = Wide
+sound-range-standard = Standard
+sound-range-night = Night
 sound-rumble = Vibration
 sound-back = Back
 

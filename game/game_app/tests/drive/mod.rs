@@ -387,6 +387,7 @@ pub fn value_of(settings: &PlayerSettings, setting: Setting) -> String {
         Setting::Effects => format!("{}%", settings.effects),
         Setting::Voice => format!("{}%", settings.voice),
         Setting::Mono => settings.mono.to_string(),
+        Setting::DynamicRange => settings.dynamic_range.name().to_owned(),
         Setting::Rumble => settings.rumble.to_string(),
         Setting::Subtitles => settings.subtitles.shown.to_string(),
         Setting::SubtitleSize => settings.subtitles.size.name().to_owned(),

@@ -90,6 +90,10 @@ sound-music = 音楽
 sound-effects = 効果音
 sound-voice = ボイス
 sound-mono = モノラル音声
+sound-range = ダイナミックレンジ
+sound-range-wide = ワイド
+sound-range-standard = 標準
+sound-range-night = ナイト
 sound-rumble = 振動
 sound-back = 戻る
 

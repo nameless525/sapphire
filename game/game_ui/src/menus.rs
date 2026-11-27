@@ -46,8 +46,8 @@ pub use self::document::{
     MenuDocument, MenuScreen, REMAP_SCREENS, RowAction, ScreenEntry, ScreenModel, ScreenRow,
 };
 pub use self::settings::{
-    Flashes, FrameCap, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, QualityChoice, SIZES, Setting,
-    SubtitleBackground, SubtitleSize, Subtitles, TextSize,
+    DynamicRange, Flashes, FrameCap, HeldAction, HoldMode, Holds, LANGUAGES, PlayerSettings, QualityChoice,
+    SIZES, Setting, SubtitleBackground, SubtitleSize, Subtitles, TextSize,
 };
 use crate::screen::{ScreenStack, StackSetup};
 use crate::version::PINNED_LABEL;
@@ -258,6 +258,8 @@ pub struct MenuModel {
     /// In percent.
     pub voice: i32,
     pub mono: String,
+    /// The key of the dynamic range's name (M6 U10).
+    pub dynamic_range: String,
     pub rumble: String,
     /// Whether subtitles show.
     pub subtitles: String,
@@ -322,6 +324,7 @@ impl MenuModel {
         self.effects = i32::from(settings.effects);
         self.voice = i32::from(settings.voice);
         self.mono = switch(settings.mono);
+        self.dynamic_range = format!("sound-range-{}", settings.dynamic_range.name());
         self.rumble = switch(settings.rumble);
         self.subtitles = switch(settings.subtitles.shown);
         self.subtitle_size = format!("subtitles-size-{}", settings.subtitles.size.name());

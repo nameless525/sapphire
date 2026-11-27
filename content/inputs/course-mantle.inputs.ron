@@ -1,0 +1,53 @@
+// The traversal course's ledges mantled and its low wall vaulted (M6 A15): from the start at z 40 the player runs
+// north and east to the 2 m ledge, into its face, and presses jump standing there, which mantles; then off its
+// south edge and west to the 1.5, 1 and 0.5 m ledges in turn, mantling each the same way, and on to the ledge with
+// no room over it, where the press only jumps. Then back south and east the length of the course to the low wall,
+// run at from far enough back to be running, with the press timed a stride before its face: a vault, onto the
+// ground on its far side. Legs fitted by running them: the replay's checksums say where it went.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the traversal course's four ledges mantled, the one with no room refused and the low wall vaulted at a run (M6 A15)",
+        ticks: 1580,
+        tracks: [
+            (
+                stick: Legs([
+                    // North, toward the ledges, then east in front of the 2 m one.
+                    (stick: (0, -127), ticks: 60),
+                    (stick: (127, 0), ticks: 30),
+                    // Into its face, and a press there: the high mantle.
+                    (stick: (0, -127), ticks: 120),
+                    (stick: (0, 0), ticks: 60, jump: 5),
+                    // Off its south edge, west in front of the 1.5 m ledge, into its face and the high mantle.
+                    (stick: (0, 127), ticks: 40),
+                    (stick: (-127, 0), ticks: 40),
+                    (stick: (0, -127), ticks: 60),
+                    (stick: (0, 0), ticks: 60, jump: 5),
+                    // The 1 m ledge: the low mantle.
+                    (stick: (0, 127), ticks: 40),
+                    (stick: (-127, 0), ticks: 40),
+                    (stick: (0, -127), ticks: 60),
+                    (stick: (0, 0), ticks: 50, jump: 5),
+                    // The 0.5 m ledge: the low mantle.
+                    (stick: (0, 127), ticks: 40),
+                    (stick: (-127, 0), ticks: 40),
+                    (stick: (0, -127), ticks: 60),
+                    (stick: (0, 0), ticks: 50, jump: 5),
+                    // The ledge with no room: the press jumps, and she comes down where she stood.
+                    (stick: (0, 127), ticks: 40),
+                    (stick: (-127, 0), ticks: 60),
+                    (stick: (0, -127), ticks: 60),
+                    (stick: (0, 0), ticks: 60, jump: 5),
+                    // South, then east the length of the course to stand well back from the low wall.
+                    (stick: (0, 127), ticks: 50),
+                    (stick: (127, 0), ticks: 280),
+                    (stick: (0, 0), ticks: 20),
+                    // North at a run, the press a stride before its face: the vault, and on.
+                    (stick: (0, -127), ticks: 60, jump: 58),
+                    (stick: (0, 0), ticks: 100),
+                ]),
+            ),
+        ],
+    ),
+)

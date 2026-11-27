@@ -99,6 +99,7 @@ impl Arm {
             collide,
             sim: Sim::Cpu,
             wrap: None,
+            sheet: None,
         };
         let effect = Effect {
             name: "field".to_owned(),

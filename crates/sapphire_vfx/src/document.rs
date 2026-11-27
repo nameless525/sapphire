@@ -2,7 +2,8 @@
 //! and curves, at most one trail, mesh layers and ground decals, checked whole however they were made, so
 //! what plays is valid and an author's mistake names its field. A library is written as a `.effects.ron`
 //! document and cooks as its own asset kind (M6 N1, `sapphire_assets::effects`), or is compiled in
-//! ([`EffectLibrary::default_effects`]).
+//! ([`EffectLibrary::default_effects`]). An emitter may name a painted sheet by its source's ID (M6 N4a,
+//! `sapphire_assets::effect_sheet`): the cook holds that it is one, and the library depends on it.
 
 use std::collections::BTreeSet;
 
@@ -14,7 +15,7 @@ use sapphire_look::vfx::stateless::{
 };
 use sapphire_look::{VfxLight, VfxShape};
 use sapphire_reflect::{Decoder, VersionError, Versioned};
-use sapphire_serialize::DocumentError;
+use sapphire_serialize::{AssetId, DocumentError};
 use serde::{Deserialize, Serialize};
 
 use crate::curve::{Curve, MAX_KEYS};
@@ -272,6 +273,11 @@ pub struct EmitterDesc {
     /// stay where they are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap: Option<[f32; 3]>,
+    /// The painted sheet its quads show (M6 N4a), by the ID of its source (a `.sheet.ron`): a flipbook whose
+    /// frames turn as the sheet says, in place of `shape` once the effects atlas draws it (N4b). Nothing draws
+    /// one yet. Left out where its quads show `shape`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet: Option<AssetId>,
 }
 
 fn same_size() -> Range {
@@ -579,6 +585,25 @@ impl EffectLibrary {
     /// Its effects' names, in order.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.effects.iter().map(|effect| effect.name.as_str())
+    }
+
+    /// Its effects, in order: what an [`EffectId`] counts.
+    #[must_use]
+    pub fn effects(&self) -> &[Effect] {
+        &self.effects
+    }
+
+    /// The painted sheets its emitters name (M6 N4a), sorted, each once: what its cook depends on, and its
+    /// effects atlas holds.
+    #[must_use]
+    pub fn sheets(&self) -> Vec<AssetId> {
+        let sheets: BTreeSet<AssetId> = self
+            .effects
+            .iter()
+            .flat_map(|effect| &effect.emitters)
+            .filter_map(|emitter| emitter.sheet)
+            .collect();
+        sheets.into_iter().collect()
     }
 }
 
@@ -905,6 +930,7 @@ mod tests {
             collide: None,
             sim: Sim::Cpu,
             wrap: None,
+            sheet: None,
         }
     }
 
@@ -1218,6 +1244,36 @@ mod tests {
             let library = library_of(EmitterDesc { source, ..emitter() }).expect("valid");
             assert_eq!(EffectLibrary::from_ron(&library.to_ron().expect("written")).expect("reads"), library);
         }
+    }
+
+    /// What N4a adds is written only where an emitter names a sheet, reads back as it was, and the library lists
+    /// its sheets sorted, each once, whichever emitters name them.
+    #[test]
+    fn a_sheet_writes_only_where_an_emitter_names_one() {
+        let plain = library_of(emitter()).expect("valid");
+        assert!(!plain.to_ron().expect("written").contains("sheet"));
+        assert!(plain.sheets().is_empty());
+        let [smoke, spark] = ["7c4b0a9e-3f1d-4c2a-9b8e-5d6f7a8b9c0d", "1d2e3f40-5a6b-4c7d-8e9f-a0b1c2d3e4f5"]
+            .map(|text| text.parse::<AssetId>().expect("an ID"));
+        let named =
+            |name: &str, sheet| EmitterDesc { name: name.to_owned(), sheet: Some(sheet), ..emitter() };
+        let effect = |name: &str, emitters| Effect {
+            name: name.to_owned(),
+            emitters,
+            trail: None,
+            mark: false,
+            meshes: Vec::new(),
+            decals: Vec::new(),
+        };
+        let library = EffectLibrary::new(vec![
+            effect("puff", vec![named("a", smoke), emitter(), named("b", spark)]),
+            effect("again", vec![named("c", smoke)]),
+        ])
+        .expect("valid");
+        let text = library.to_ron().expect("written");
+        assert!(text.contains(r#"sheet: Some("7c4b0a9e-3f1d-4c2a-9b8e-5d6f7a8b9c0d")"#), "{text}");
+        assert_eq!(EffectLibrary::from_ron(&text).expect("reads"), library);
+        assert_eq!(library.sheets(), [spark, smoke], "sorted, each once");
     }
 
     /// A stateless emitter's form holds the document's curves: at any particle's life its size, opacity and

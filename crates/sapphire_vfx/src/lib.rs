@@ -34,7 +34,8 @@
 //!   a ground on an emitter's particles (M6 N2, [`Force`], [`Ground`]: wind, a curl of noise, a vortex, an
 //!   attractor, a speed limit, a plane at the owner's feet), and stateless emitters (M6 N8a, [`Sim::Stateless`]:
 //!   each particle a closed-form function of a seed and an age, resolved by [`EmitterDesc::stateless`] into
-//!   `sapphire_look`'s CPU reference, which the renderer's include mirrors; a world here never simulates one), checked
+//!   `sapphire_look`'s CPU reference, which the renderer's include mirrors; a world here never simulates one), and
+//!   a painted sheet an emitter names by its asset ID (M6 N4a, [`EmitterDesc::sheet`], drawn from N4b), checked
 //!   whole so an author's mistake names its field. Versions 1 to 4 read to the bit (`testdata/`). A game's
 //!   library (`<name>.effects.ron`) cooks as the `Effects` asset kind (M6 N1) and loads through the asset
 //!   server, read and checked here as a document is; [`EffectLibrary::default_effects`] compiles in a hit spark,

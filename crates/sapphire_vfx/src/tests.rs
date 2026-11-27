@@ -38,6 +38,7 @@ fn dots(name: &str, spawn: Spawn) -> EmitterDesc {
         collide: None,
         sim: Sim::Cpu,
         wrap: None,
+        sheet: None,
     }
 }
 

@@ -5,6 +5,17 @@
 //! where the document has names and masks. [`GraphPlayer`] plays a
 //! binding: each frame the app hands it a plain [`GraphInput`] and it writes a [`CharacterPose`].
 //!
+//! **Graph v2 (M6 A5b).** [`GraphBinding::from_program`] binds a compiled
+//! [`GraphProgram`](sapphire_assets::graph::v2::GraphProgram) to the same binding, which the same player
+//! plays: one evaluator, acting on each transition's `rules` (a version 1 binding gets them from the
+//! converter's table) and on the program's layer ops, so a converted graph plays its version 1 poses bit
+//! for bit (`v2_tests`). A program adds nested machines, 1D blends and 2D blends over any value
+//! registers, machine layers by mask (an additive one against each clip's first tick), sync groups by
+//! foot marker, game slots ([`GraphPlayer::set_game_slot`]) and events ([`GraphPlayer::events`]). One
+//! compiled with `compile_for(Target::Simulation)` runs in the fixed step;
+//! [`FixedGraphHistory::try_new`] refuses one compiled for presentation. Nothing the game runs binds a
+//! program until A5c.
+//!
 //! # The layers, bottom to top
 //!
 //! 1. **Locomotion:** a state machine, each state one clip or a blend space, moved by
@@ -72,6 +83,7 @@ pub(crate) mod canonical;
 mod fixed;
 mod fixed_body;
 pub(crate) mod ground_footwork;
+mod program;
 
 pub use fixed_body::{
     BodyMotionBound, BodyMotionError, BodyReadSpan, BodyRoot, BodySample, BodyStep, BodyStepError, FixedBody,
@@ -84,6 +96,10 @@ use std::sync::Arc;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{ArchivedClip, ClipError, DEFAULT_RATE};
+use sapphire_assets::graph::v2::program::{ConditionOp, Span, Target};
+use sapphire_assets::graph::v2::{
+    self, MAX_GAME_SLOTS, MAX_LAYERS, MAX_MACHINE_DEPTH, MAX_PARAMETERS, TransitionRules,
+};
 use sapphire_assets::graph::{
     AnimGraph, Condition, GraphMask, MAX_ADDITIVE_LAYERS, MAX_BLEND_SAMPLES, StateMotion,
 };
@@ -267,22 +283,103 @@ pub enum GraphBindError {
     NoSuchExpression(String),
     #[error("{0} refers to a name its document doesn't hold: it didn't pass its check")]
     Unchecked(&'static str),
+    #[error("two blends name different footwork: a graph's starts and stops are one set")]
+    Footworks,
+    #[error(
+        "a program compiled for presentation can't run in the fixed step: compile it with \
+         `compile_for(Target::Simulation)`"
+    )]
+    PresentationProgram,
+    #[error("the program is malformed: {0}")]
+    InvalidProgram(&'static str),
 }
 
 /// A state, resolved.
 #[derive(Clone, Debug)]
 struct State {
     name: Name,
+    /// Its machine, in [`GraphBinding::machines`].
+    machine: u16,
     motion: Motion,
 }
 
 #[derive(Clone, Debug)]
 enum Motion {
-    Clip { clip: u16, looping: bool },
+    /// From its state's start, or at a sync group's phase.
+    Clip {
+        clip: u16,
+        looping: bool,
+        sync: Option<u8>,
+    },
     Blend(Space),
     Takeoff(OneShot),
     Touchdown(OneShot),
+    /// A nested machine, by index: never a leaf, since entering it enters its start.
+    Machine(u16),
 }
+
+/// A state machine, resolved. A version 1 graph has one, its locomotion.
+#[derive(Clone, Debug)]
+struct BoundMachine {
+    name: Name,
+    /// Its start, in [`GraphBinding::states`].
+    start: u16,
+    /// The state of another machine that plays it, for a nested one.
+    played_by: Option<u16>,
+}
+
+/// One step of a frame's layers, bottom first: what [`GraphProgram`](v2::GraphProgram)'s layer ops
+/// resolve to. A version 1 graph's are its locomotion, combat, additive layers and reactions.
+#[derive(Clone, Copy, Debug)]
+enum LayerOp {
+    /// The first layer's machine, over the whole body, with the footwork and a landing's catch.
+    Base,
+    /// Another layer's machine, onto what's below.
+    Machine(MachineLayer),
+    Combat,
+    /// An additive layer, by its slot in [`GraphBinding::additive`].
+    Additive(u16),
+    Reactions,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MachineLayer {
+    machine: u16,
+    /// Its place in [`Layers::layer_states`].
+    slot: u8,
+    mask: Option<u16>,
+    additive: bool,
+    weight: f32,
+}
+
+/// Where a parameter's value comes from, resolved.
+#[derive(Clone, Copy, Debug)]
+enum Value {
+    Locomotion(v2::LocomotionValue),
+    /// The traversal mode: 0, `None`, until the controller's traversal reaches the graph's input.
+    Mode,
+    /// A game slot, in [`GraphPlayer::set_game_slot`]'s order.
+    Slot(u8),
+}
+
+/// An event the graph sends to presentation, resolved.
+#[derive(Clone, Debug)]
+struct BoundEvent {
+    name: Name,
+    from: EventFrom,
+    min_weight: f32,
+}
+
+#[derive(Clone, Debug)]
+enum EventFrom {
+    /// A contact marker of a foot's track.
+    Foot { foot: HumanBone, marker: sapphire_assets::clip::Marker },
+    /// A clip's own event of this name.
+    Clip(String),
+}
+
+/// The most events a frame keeps for presentation to read; past it they're counted.
+pub const MAX_FIRED_EVENTS: usize = 16;
 
 #[derive(Clone, Copy, Debug)]
 struct OneShot {
@@ -346,11 +443,29 @@ struct Space {
     points: Vec<BlendPoint>,
     samples: Vec<Sample>,
     rate: [f32; 2],
+    axes: Axes,
+    /// The sync group its synced samples' phase is counted in, by foot marker.
+    group: Option<u8>,
+    /// Whether the graph's footwork plays over it.
+    footwork: bool,
+}
+
+/// What places a blend.
+#[derive(Clone, Copy, Debug)]
+enum Axes {
+    /// The smoothed velocity: v1's blend space, and a 2D blend over `velocity_x` and `velocity_z`.
+    Velocity,
+    /// Two value registers, by gradient bands.
+    Two(u8, u8),
+    /// One value register, linear between neighbours.
+    One(u8),
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Sample {
     clip: u16,
+    /// Where it's authored: a 1D sample's place is `x`.
+    at: BlendPoint,
     speed: f32,
     phase: f32,
     sync: bool,
@@ -358,10 +473,26 @@ struct Sample {
 
 #[derive(Clone, Copy, Debug)]
 struct StateChange {
-    from: u16,
+    /// Its machine, in [`GraphBinding::machines`].
+    machine: u16,
+    /// `None` for any of its machine's states.
+    from: Option<u16>,
     to: u16,
-    when: Condition,
+    guard: Guard,
     decay: f32,
+    /// What it does beyond its condition: v1 keyed these on the condition's variant, v2 says them.
+    rules: TransitionRules,
+    /// Where the next gait starts (`finished_at`).
+    phase: Option<f32>,
+}
+
+/// What a transition tests.
+#[derive(Clone, Copy, Debug)]
+enum Guard {
+    /// v1's condition, by its variant.
+    Condition(Condition),
+    /// A program's postfix condition over the value registers, in [`GraphBinding::conditions`].
+    Program { condition: Span, finished: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -399,11 +530,27 @@ struct BoundBlink {
 pub struct GraphBinding {
     clips: Vec<AssetId>,
     masks: Vec<JointMask>,
+    machines: Vec<BoundMachine>,
+    /// Every machine's states, each machine's together.
     states: Vec<State>,
+    /// Every machine's transitions, in the order they're tried.
     changes: Vec<StateChange>,
+    /// A program's condition ops.
+    conditions: Vec<ConditionOp>,
+    /// A program's value registers.
+    parameters: Vec<Value>,
+    /// A program's game slots, by name, in their registers' order.
+    slots: Vec<Name>,
+    /// A program's sync groups: a foot and the marker its phase counts from.
+    sync: Vec<(HumanBone, sapphire_assets::clip::Marker)>,
+    events: Vec<BoundEvent>,
+    ops: Vec<LayerOp>,
+    /// The base machine's start, entered to its leaf.
     start: u16,
     smoothing: f32,
     landing_aware: bool,
+    /// Where its program was compiled to run: `None` for a version 1 graph.
+    target: Option<Target>,
     takeoff: Option<u16>,
     resume_joints: [Option<usize>; 4],
     resume_hips: Option<usize>,
@@ -473,7 +620,7 @@ impl GraphBinding {
         for state in &graph.locomotion.states {
             let motion = match &state.plays {
                 StateMotion::Clip { clip, looping } => {
-                    Motion::Clip { clip: clip_index(clip)?, looping: *looping }
+                    Motion::Clip { clip: clip_index(clip)?, looping: *looping, sync: None }
                 }
                 StateMotion::Blend(space) => {
                     let points: Vec<BlendPoint> = space
@@ -485,12 +632,21 @@ impl GraphBinding {
                     for (sample, point) in space.samples.iter().zip(&points) {
                         samples.push(Sample {
                             clip: clip_index(&sample.clip)?,
+                            at: *point,
                             speed: point.speed(),
                             phase: sample.phase,
                             sync: sample.sync,
                         });
                     }
-                    Motion::Blend(Space { points, samples, rate: space.rate })
+                    // v1 played its footwork over every blend, once it bound.
+                    Motion::Blend(Space {
+                        points,
+                        samples,
+                        rate: space.rate,
+                        axes: Axes::Velocity,
+                        group: None,
+                        footwork: true,
+                    })
                 }
                 StateMotion::TakeoffBlend(entry)
                 | StateMotion::LandingBlend(entry)
@@ -522,15 +678,30 @@ impl GraphBinding {
                     }
                 }
             };
-            states.push(State { name: Name::intern(&state.name), motion });
+            states.push(State { name: Name::intern(&state.name), machine: 0, motion });
         }
+        let landing_aware = graph
+            .locomotion
+            .transitions
+            .iter()
+            .any(|change| matches!(change.when, Condition::LandedMoving(_)))
+            || states.iter().any(|state| matches!(state.motion, Motion::Touchdown(_)));
         let mut changes = Vec::with_capacity(graph.locomotion.transitions.len());
         for change in &graph.locomotion.transitions {
+            let from = state_index(&change.from)?;
+            let touchdown = matches!(states[usize::from(from)].motion, Motion::Touchdown(_));
             changes.push(StateChange {
-                from: state_index(&change.from)?,
+                machine: 0,
+                from: Some(from),
                 to: state_index(&change.to)?,
-                when: change.when,
+                guard: Guard::Condition(change.when),
                 decay: change.decay as f32,
+                // The rules version 2 says, from the same table its converter reads.
+                rules: v2::convert::rules(change.when, touchdown, landing_aware),
+                phase: match change.when {
+                    Condition::FinishedAtPhase(phase) => Some(phase),
+                    _ => None,
+                },
             });
         }
         let mut moves = Vec::with_capacity(graph.combat.moves.len());
@@ -576,8 +747,6 @@ impl GraphBinding {
         let resume_joints =
             [HumanBone::LeftFoot, HumanBone::LeftToes, HumanBone::RightFoot, HumanBone::RightToes]
                 .map(find_joint);
-        let landing_aware = changes.iter().any(|change| matches!(change.when, Condition::LandedMoving(_)))
-            || states.iter().any(|state| matches!(state.motion, Motion::Touchdown(_)));
         let takeoff =
             states.iter().position(|state| matches!(state.motion, Motion::Takeoff(_))).map(|i| i as u16);
         let takeoff_carry = takeoff.and_then(|state| {
@@ -600,14 +769,30 @@ impl GraphBinding {
             find_joint(HumanBone::Hips).zip(find_joint(HumanBone::Spine)).and_then(|(hips, spine)| {
                 FootworkClips::bind(|name| clip_index(name).ok(), skeleton, hips, spine)
             });
+        let start = state_index(&graph.locomotion.start)?;
+        let mut ops = vec![LayerOp::Base, LayerOp::Combat];
+        ops.extend((0..additive.len()).map(|slot| LayerOp::Additive(slot as u16)));
+        ops.push(LayerOp::Reactions);
         Ok(Self {
             clips: graph.clips.iter().map(|clip| clip.id).collect(),
             masks,
+            machines: vec![BoundMachine {
+                name: Name::intern(v2::convert::LOCOMOTION),
+                start,
+                played_by: None,
+            }],
             states,
             changes,
-            start: state_index(&graph.locomotion.start)?,
+            conditions: Vec::new(),
+            parameters: Vec::new(),
+            slots: Vec::new(),
+            sync: Vec::new(),
+            events: Vec::new(),
+            ops,
+            start,
             smoothing: graph.locomotion.smoothing,
             landing_aware,
+            target: None,
             takeoff,
             resume_joints,
             resume_hips: find_joint(HumanBone::Hips),
@@ -629,8 +814,107 @@ impl GraphBinding {
         self.reactions.iter().position(|entry| entry.name == name).map(|index| index as u16)
     }
 
-    fn state(&self, name: Name) -> Option<u16> {
-        self.states.iter().position(|state| state.name == name).map(|index| index as u16)
+    /// The state of `old` (another binding, or this one) by its machine's name and its own, entered
+    /// to its leaf.
+    fn state_like(&self, old: &Self, state: u16) -> Option<u16> {
+        let state = &old.states[usize::from(state)];
+        let machine = old.machines[usize::from(state.machine)].name;
+        self.states
+            .iter()
+            .position(|found| {
+                found.name == state.name && self.machines[usize::from(found.machine)].name == machine
+            })
+            .map(|index| self.leaf(index as u16))
+    }
+
+    /// `state`, or if it plays a machine that machine's start, until a state that plays motion.
+    fn leaf(&self, mut state: u16) -> u16 {
+        for _ in 0..MAX_MACHINE_DEPTH {
+            let Motion::Machine(machine) = self.states[usize::from(state)].motion else { break };
+            state = self.machines[usize::from(machine)].start;
+        }
+        state
+    }
+
+    /// The active state of each machine from the outermost to `leaf`'s own, and how many.
+    fn chain(&self, leaf: u16) -> ([u16; MAX_MACHINE_DEPTH], usize) {
+        let mut chain = [leaf; MAX_MACHINE_DEPTH];
+        let mut depth = 1;
+        let mut machine = self.states[usize::from(leaf)].machine;
+        while depth < MAX_MACHINE_DEPTH
+            && let Some(outer) = self.machines[usize::from(machine)].played_by
+        {
+            chain[depth] = outer;
+            depth += 1;
+            machine = self.states[usize::from(outer)].machine;
+        }
+        chain[..depth].reverse();
+        (chain, depth)
+    }
+
+    /// The clips' motion the footwork reads, if the graph has footwork and `state` plays it.
+    fn footwork_over(&self, state: u16) -> bool {
+        self.footwork.is_some()
+            && matches!(&self.states[usize::from(state)].motion, Motion::Blend(space) if space.footwork)
+    }
+
+    /// Where its program was compiled to run, or `None` for a version 1 graph.
+    #[must_use]
+    pub fn target(&self) -> Option<Target> {
+        self.target
+    }
+
+    /// Each layer machine's start, entered to its leaf, by its slot, with its clock starting at `now`.
+    fn layer_starts(&self, now: f64) -> [LayerState; MAX_LAYERS] {
+        let mut starts = [LayerState::default(); MAX_LAYERS];
+        for op in &self.ops {
+            if let LayerOp::Machine(layer) = *op {
+                let start = self.machines[usize::from(layer.machine)].start;
+                starts[usize::from(layer.slot)] = LayerState { state: self.leaf(start), started: now };
+            }
+        }
+        starts
+    }
+
+    /// The first layer op the pose shows: a whole-body move replaces the layers below it, which aren't
+    /// sampled.
+    fn first_shown(&self, entry: Option<MoveEntry>) -> usize {
+        match entry {
+            Some(MoveEntry { mask: None, .. }) => {
+                self.ops.iter().position(|op| matches!(op, LayerOp::Combat)).unwrap_or(0)
+            }
+            _ => 0,
+        }
+    }
+
+    /// Whether a layer above the base plays a machine in `slot`.
+    fn has_layer(&self, slot: usize) -> bool {
+        self.ops.iter().any(|op| matches!(op, LayerOp::Machine(layer) if usize::from(layer.slot) == slot))
+    }
+
+    /// Whether it has machine layers above the base, whose states the fixed step's history keeps.
+    fn has_machine_layers(&self) -> bool {
+        self.ops.iter().any(|op| matches!(op, LayerOp::Machine(_)))
+    }
+
+    /// A synced clip's position at `phase` of a cycle: counted from the first tick its sync group's
+    /// foot makes the group's marker, or from its start with no group or no such marker.
+    fn synced_position(&self, clip: &ArchivedClip, group: Option<u8>, phase: f32) -> f32 {
+        let ticks = f32::from(clip.ticks.to_native());
+        let position = phase * ticks;
+        let Some(&(foot, marker)) = group.and_then(|group| self.sync.get(usize::from(group))) else {
+            return position;
+        };
+        let first = clip
+            .contacts
+            .iter()
+            .find(|track| track.foot == foot)
+            .and_then(|track| track.markers.iter().find(|found| is_marker(&found.marker, marker)))
+            .map(|found| f32::from(found.tick.to_native()));
+        match first {
+            Some(offset) if ticks > 0.0 => (position + offset).rem_euclid(ticks),
+            _ => position,
+        }
     }
 
     fn clip<'a, C: ClipSource + ?Sized>(&self, clips: &'a C, index: u16) -> Option<&'a ArchivedClip> {
@@ -789,6 +1073,17 @@ struct Layers {
     reaction_count: u32,
     /// [`GraphInput::defeated`], as of the last frame: no breathing and no blink.
     defeated: bool,
+    /// Each machine layer's active state, entered to its leaf, and when it started.
+    layer_states: [LayerState; MAX_LAYERS],
+    /// The value registers, as of the last time anything read them this frame.
+    values: [f32; MAX_PARAMETERS],
+}
+
+/// A machine layer's active state.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct LayerState {
+    state: u16,
+    started: f64,
 }
 
 /// Where in time a target is wanted.
@@ -798,6 +1093,14 @@ struct Moment {
     phase: f32,
     /// How far into the playing move.
     combat: f64,
+    /// Every clip at its own first tick: an additive machine layer's reference.
+    reference: bool,
+}
+
+impl Moment {
+    fn at(ticks: f64, phase: f32, combat: f64) -> Self {
+        Self { ticks, phase, combat, reference: false }
+    }
 }
 
 /// A pose and its morph weights.
@@ -832,6 +1135,8 @@ struct Key {
     clips: u64,
     /// How many replacements it's adopted.
     revision: u32,
+    /// The game slots' values.
+    slots: [f32; MAX_GAME_SLOTS],
 }
 
 /// What a player has done, all told (rule R9).
@@ -867,6 +1172,14 @@ pub struct GraphPlayer {
     /// Scratch for a layer's clip and its delta.
     sampled: Vec<Transform>,
     delta: Vec<Transform>,
+    /// A machine layer's pose and its reference: the pose registers above the output.
+    registers: [Frame; 2],
+    /// The game slots' values, by [`GraphBinding`]'s slot order.
+    slots: [f32; MAX_GAME_SLOTS],
+    /// The events this frame sent, and how many didn't fit.
+    fired: [Name; MAX_FIRED_EVENTS],
+    fired_count: usize,
+    dropped_events: u32,
     /// When the pose was last drawn, on the clock. `None` before the first frame.
     drawn: Option<f64>,
     key: Option<Key>,
@@ -877,6 +1190,26 @@ pub struct GraphPlayer {
     teleports: u32,
     seed: u32,
     stats: GraphStats,
+    /// What a test's script reached ([`Reached`]).
+    #[cfg(test)]
+    reached: u64,
+}
+
+/// What a test's script reached, a bit each: each transition by its index in [`GraphBinding::changes`],
+/// and each of the smoothed velocity's resets.
+struct Reached;
+
+impl Reached {
+    const GATHER: u64 = 1 << 48;
+    const FROZEN: u64 = 1 << 49;
+    const HANDOFF: u64 = 1 << 50;
+    const TURN: u64 = 1 << 51;
+    const START_OVER: u64 = 1 << 52;
+    const LAUNCH: u64 = 1 << 53;
+
+    fn change(index: usize) -> u64 {
+        if index < 48 { 1 << index } else { 0 }
+    }
 }
 
 impl GraphPlayer {
@@ -905,6 +1238,8 @@ impl GraphPlayer {
             reaction: None,
             reaction_count: 0,
             defeated: false,
+            layer_states: graph.layer_starts(0.0),
+            values: [0.0; MAX_PARAMETERS],
         };
         Self {
             inertia: Inertia::new(joints, frame.weights.len()),
@@ -914,7 +1249,12 @@ impl GraphPlayer {
             earlier_step: 0.0,
             target: frame.clone(),
             then: frame.clone(),
-            later: frame,
+            later: frame.clone(),
+            registers: [frame.clone(), frame],
+            slots: [0.0; MAX_GAME_SLOTS],
+            fired: [Name::new(""); MAX_FIRED_EVENTS],
+            fired_count: 0,
+            dropped_events: 0,
             sampled: pose.rest().to_vec(),
             delta: pose.rest().to_vec(),
             graph,
@@ -931,6 +1271,17 @@ impl GraphPlayer {
             teleports: 0,
             seed,
             stats: GraphStats::default(),
+            #[cfg(test)]
+            reached: 0,
+        }
+    }
+
+    /// Notes what a test's script reached; nothing outside tests.
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut, reason = "a test's bookkeeping")]
+    fn note(&mut self, _reached: u64) {
+        #[cfg(test)]
+        {
+            self.reached |= _reached;
         }
     }
 
@@ -968,7 +1319,9 @@ impl GraphPlayer {
         ground_support: Option<usize>,
     ) -> bool {
         let input = input.sanitized(self.drawn.unwrap_or(0.0));
-        let key = Key { input, clips: clips_version, revision: self.revision };
+        let key = Key { input, clips: clips_version, revision: self.revision, slots: self.slots };
+        // What a frame sent is that frame's: a frame with nothing to do sends nothing.
+        self.fired_count = 0;
         if self.key == Some(key) {
             return false;
         }
@@ -995,10 +1348,14 @@ impl GraphPlayer {
         let began_footwork = self.update_ground_footwork(&input, drawn, ground_support);
         let began_gather = self.footwork.is_none() && self.update_grounded_gather(&input, drawn);
         if self.gather_started.is_some() {
+            self.note(Reached::GATHER);
             self.landing_step = None;
             self.layers.velocity = Vec2::ZERO;
             self.layers.velocity_rate = Vec2::ZERO;
         } else {
+            if dt <= 0.0 {
+                self.note(Reached::FROZEN);
+            }
             self.layers.follow(&input.locomotion, self.graph.smoothing, dt);
         }
         self.layers.prepare_descent(&input, drawn, &self.graph);
@@ -1018,13 +1375,14 @@ impl GraphPlayer {
         });
         let decay = decay.or(began_gather.then_some(GATHER_TICKS)).or(began_footwork.then_some(4.0));
         if landing_handoff || turn_support.is_some() {
+            self.note(if landing_handoff { Reached::HANDOFF } else { Reached::TURN });
             // The receiving gait has to travel at the speed the planted foot is experiencing.
             // Inertia bridges the pose while the blend begins following from that velocity.
             self.layers.velocity = velocity_of(&input.locomotion, self.layers.math);
             self.layers.velocity_rate = Vec2::ZERO;
         }
         let launch_catch = self.launch_phase(&input, drawn);
-        self.layers.update_blend(&self.graph);
+        self.layers.update_blend(&self.graph, &input, &self.slots);
         let speed = self.layers.velocity.length();
         let rate = if self.gather_started.is_some()
             || self.footwork.is_some_and(|step| step.waiting_for_heel(now))
@@ -1047,7 +1405,7 @@ impl GraphPlayer {
         let phase_dt = launch_catch.map_or(dt, |catch| (now - catch) as f32);
         self.layers.phase = (phase_then + rate * phase_dt).rem_euclid(1.0);
         let combat = self.layers.combat.map_or(0.0, |playing| playing.position);
-        let now_moment = Moment { ticks: now, phase: self.layers.phase, combat };
+        let now_moment = Moment::at(now, self.layers.phase, combat);
         let missing = self.layers.write_target(
             &self.graph,
             clips,
@@ -1058,13 +1416,14 @@ impl GraphPlayer {
                 sampled: &mut self.sampled,
                 delta: &mut self.delta,
                 references: &mut self.references,
+                registers: &mut self.registers,
                 out: &mut self.target,
             },
         );
         self.stats.missing_clips += u32::from(missing);
         if let Some(decay) = decay {
             // The new pose where the pose was drawn, and a tick on from there, for its velocity.
-            let at_drawn = Moment { ticks: drawn, phase: phase_then, combat: combat - f64::from(dt) };
+            let at_drawn = Moment::at(drawn, phase_then, combat - f64::from(dt));
             self.layers.write_target(
                 &self.graph,
                 clips,
@@ -1075,16 +1434,17 @@ impl GraphPlayer {
                     sampled: &mut self.sampled,
                     delta: &mut self.delta,
                     references: &mut self.references,
+                    registers: &mut self.registers,
                     out: &mut self.then,
                 },
             );
-            let later = Moment {
-                ticks: drawn + f64::from(VELOCITY_STEP),
-                phase: (phase_then + rate * VELOCITY_STEP).rem_euclid(1.0),
+            let later = Moment::at(
+                drawn + f64::from(VELOCITY_STEP),
+                (phase_then + rate * VELOCITY_STEP).rem_euclid(1.0),
                 // Keep pre-start time in the lookahead. The sampler holds the first key until
                 // time reaches zero, so its velocity cannot contribute early.
-                combat: at_drawn.combat + f64::from(VELOCITY_STEP),
-            };
+                at_drawn.combat + f64::from(VELOCITY_STEP),
+            );
             self.layers.write_target(
                 &self.graph,
                 clips,
@@ -1095,6 +1455,7 @@ impl GraphPlayer {
                     sampled: &mut self.sampled,
                     delta: &mut self.delta,
                     references: &mut self.references,
+                    registers: &mut self.registers,
                     out: &mut self.later,
                 },
             );
@@ -1129,6 +1490,9 @@ impl GraphPlayer {
         self.inertia.apply(now, &mut self.output.joints, &mut self.output.weights);
         self.steer_takeoff_arm(now);
         self.hand_over(now);
+        if dt > 0.0 {
+            self.fire_events(Moment::at(drawn, phase_then, combat - f64::from(dt)), now_moment, clips);
+        }
         self.key = Some(Key { revision: self.revision, ..key });
         true
     }
@@ -1200,9 +1564,18 @@ impl GraphPlayer {
         self.footwork = None;
         self.landing_step = None;
         let now = input.ticks;
+        self.note(Reached::START_OVER);
         self.layers.velocity = velocity_of(&input.locomotion, self.layers.math);
         self.layers.velocity_rate = Vec2::ZERO;
         self.layers.started = now;
+        // Each layer keeps its state and its clock starts again with the base's. The base keeps its
+        // own too, except in a graph with a takeoff, below, where it starts at its start or, in the
+        // air, its takeoff: a seek back there leaves a layer in a later state than the base.
+        for (slot, active) in self.layers.layer_states.iter_mut().enumerate() {
+            if self.graph.has_layer(slot) {
+                active.started = now;
+            }
+        }
         self.layers.landing = None;
         self.layers.departure = None;
         self.layers.touchdown = 0.0;
@@ -1242,9 +1615,9 @@ impl GraphPlayer {
             })
             .or(lying);
         self.layers.defeated = input.defeated;
-        self.layers.update_blend(&self.graph);
+        self.layers.update_blend(&self.graph, input, &self.slots);
         let combat = self.layers.combat.map_or(0.0, |playing| playing.position);
-        let moment = Moment { ticks: now, phase: self.layers.phase, combat };
+        let moment = Moment::at(now, self.layers.phase, combat);
         self.layers.write_target(
             &self.graph,
             clips,
@@ -1255,6 +1628,7 @@ impl GraphPlayer {
                 sampled: &mut self.sampled,
                 delta: &mut self.delta,
                 references: &mut self.references,
+                registers: &mut self.registers,
                 out: &mut self.target,
             },
         );
@@ -1365,49 +1739,22 @@ impl GraphPlayer {
         }
         // Locomotion, whether it shows or not, so it's where it should be when a move ends.
         let speed = self.layers.velocity.length();
-        let change = self
-            .graph
-            .changes
-            .iter()
-            .filter(|change| change.from == self.layers.state)
-            .find(|change| {
-                if self.graph.landing_aware
-                    && matches!(change.when, Condition::Landed)
-                    && !input.locomotion.grounded
-                {
-                    return false;
-                }
-                if matches!(
-                    change.when,
-                    Condition::Moving(_) | Condition::Stopped(_) | Condition::ForwardBelow(_)
-                ) && self.layers.landing.is_some_and(|landing| drawn < landing.ready)
-                    && !self.layers.accelerating_brake(&input.locomotion, drawn, &self.graph)
-                {
-                    return false;
-                }
-                let check_drawn = matches!(change.when, Condition::FinishedAtPhase(_))
-                    || matches!(change.when, Condition::Finished)
-                        && matches!(
-                            self.graph.states[usize::from(self.layers.state)].motion,
-                            Motion::Touchdown(_)
-                        );
-                let at = if check_drawn { drawn } else { input.ticks };
-                self.layers.holds(change.when, &input.locomotion, speed, at, &self.graph, clips)
-            })
-            .copied();
-        if let Some(change) = change {
-            let rebound =
-                matches!(self.graph.states[usize::from(self.layers.state)].motion, Motion::Touchdown(_))
-                    && matches!(change.when, Condition::JumpPreparation(true))
-                    && drawn - self.layers.started <= 6.0;
+        self.layers.refresh_values(&self.graph, input, &self.slots);
+        let change =
+            self.next_change(self.layers.state, self.layers.started, true, input, drawn, speed, clips);
+        if let Some((index, change)) = change {
+            self.note(Reached::change(index));
+            let rebound = change.rules.rebound
+                && matches!(self.graph.states[usize::from(self.layers.state)].motion, Motion::Touchdown(_))
+                && drawn - self.layers.started <= 6.0;
             let was_landing = self.layers.landing.is_some();
             self.landing_step = None;
-            let to = self.graph.states[usize::from(change.to)].name;
+            let before = Arc::clone(&self.graph);
             // A move that's playing keeps its clip to its end: no new graph under it.
             if self.layers.combat.is_none() {
                 self.adopt_replacement();
             }
-            self.layers.state = self.graph.state(to).unwrap_or(self.graph.start);
+            self.layers.state = self.graph.state_like(&before, change.to).unwrap_or(self.graph.start);
             // The catch already supplies the load. Pick up the preparation as the heels roll
             // so a repeated jump rises from the drawn pose instead of going back through guard.
             self.layers.started = if rebound { drawn - 2.0 } else { drawn };
@@ -1456,15 +1803,13 @@ impl GraphPlayer {
             } else {
                 f64::from(change.decay)
             };
-            self.layers.landing = (self.graph.landing_aware
-                && matches!(change.when, Condition::Landed | Condition::LandedMoving(_)))
-            .then_some(Landing {
+            self.layers.landing = change.rules.lands.then_some(Landing {
                 ready: drawn + ready,
                 // Keep the landing's authored contact distinct from gameplay's move serials.
                 serial: self.stats.transitions | (1 << 31),
                 support: if matches!(incoming, Motion::Touchdown(_)) { self.catch_joint() } else { None },
             });
-            if let Condition::FinishedAtPhase(phase) = change.when {
+            if let Some(phase) = change.phase {
                 self.layers.phase = phase;
             }
             let hidden = self
@@ -1472,14 +1817,27 @@ impl GraphPlayer {
                 .combat
                 .is_some_and(|playing| self.graph.moves[usize::from(playing.entry)].mask.is_none());
             if !hidden {
-                takeoff_handoff = (flight || matches!(change.when, Condition::AirborneMoving(_)))
+                takeoff_handoff = (flight || change.rules.hands_off)
                     && self.key.is_some_and(|key| key.input.combat.is_none())
                     && self.layers.combat.is_none();
                 landing_handoff = was_landing
-                    && !matches!(change.when, Condition::FinishedAtPhase(_))
+                    && change.phase.is_none()
                     && matches!(&self.graph.states[usize::from(self.layers.state)].motion, Motion::Blend(_))
                     && self.key.is_some_and(|key| key.input.combat.is_none())
                     && self.layers.combat.is_none();
+                shortest(&mut decay, change.decay);
+            }
+        }
+        // The other layers' machines: each tries its own transitions, by their conditions alone.
+        for op in 0..self.graph.ops.len() {
+            let LayerOp::Machine(layer) = self.graph.ops[op] else { continue };
+            let active = self.layers.layer_states[usize::from(layer.slot)];
+            if let Some((index, change)) =
+                self.next_change(active.state, active.started, false, input, drawn, speed, clips)
+            {
+                self.note(Reached::change(index));
+                let state = self.graph.leaf(change.to);
+                self.layers.layer_states[usize::from(layer.slot)] = LayerState { state, started: drawn };
                 shortest(&mut decay, change.decay);
             }
         }
@@ -1503,6 +1861,80 @@ impl GraphPlayer {
             }
         }
         (decay, landing_handoff, takeoff_handoff)
+    }
+
+    /// The first transition that holds out of the machines active down to `leaf`, outermost first and
+    /// each machine's in order: one change a frame. A transition from any state doesn't enter the
+    /// state already active. `base` for the first layer's machine, whose rules apply.
+    #[allow(clippy::too_many_arguments, reason = "one frame's clocks and inputs")]
+    fn next_change(
+        &self,
+        leaf: u16,
+        started: f64,
+        base: bool,
+        input: &GraphInput,
+        drawn: f64,
+        speed: f32,
+        clips: &(impl ClipSource + ?Sized),
+    ) -> Option<(usize, StateChange)> {
+        let graph = &self.graph;
+        let (chain, depth) = graph.chain(leaf);
+        for &active in &chain[..depth] {
+            let machine = graph.states[usize::from(active)].machine;
+            let found = graph
+                .changes
+                .iter()
+                .enumerate()
+                .filter(|(_, change)| {
+                    change.machine == machine
+                        && change.from.map_or(change.to != active, |from| from == active)
+                })
+                .find(|(_, change)| {
+                    if base
+                        && change.rules.waits_for_landing
+                        && self.layers.landing.is_some_and(|landing| drawn < landing.ready)
+                        && !self.layers.accelerating_brake(&input.locomotion, drawn, graph)
+                    {
+                        return false;
+                    }
+                    let at = if change.rules.at_drawn { drawn } else { input.ticks };
+                    match change.guard {
+                        Guard::Condition(when) => {
+                            if graph.landing_aware
+                                && matches!(when, Condition::Landed)
+                                && !input.locomotion.grounded
+                            {
+                                return false;
+                            }
+                            self.layers.holds(when, &input.locomotion, speed, at, graph, clips)
+                        }
+                        Guard::Program { condition, finished } => {
+                            // Only a leaf can finish: a state playing a machine never does.
+                            let finished = finished
+                                && active == leaf
+                                && self.layers.finished(
+                                    leaf,
+                                    started,
+                                    base && change.rules.catch,
+                                    &input.locomotion,
+                                    at,
+                                    graph,
+                                    clips,
+                                );
+                            v2::program::evaluate(
+                                &graph.conditions[condition.range()],
+                                &self.layers.values,
+                                finished,
+                            )
+                        }
+                    }
+                })
+                .map(|(index, change)| (index, *change));
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
     }
 
     fn catch_joint(&self) -> Option<usize> {
@@ -1554,7 +1986,7 @@ impl GraphPlayer {
             if phase_from_load.abs() > 0.095 {
                 return f32::INFINITY;
             }
-            let moment = Moment { ticks: drawn, phase, combat: 0.0 };
+            let moment = Moment::at(drawn, phase, 0.0);
             self.layers.write_locomotion(
                 &self.graph,
                 clips,
@@ -1641,8 +2073,18 @@ impl GraphPlayer {
     fn adopt_replacement(&mut self) -> bool {
         let Some(new) = self.replacement.take() else { return false };
         let old = std::mem::replace(&mut self.graph, new);
-        let state = old.states[usize::from(self.layers.state)].name;
-        self.layers.state = self.graph.state(state).unwrap_or(self.graph.start);
+        self.layers.state = self.graph.state_like(&old, self.layers.state).unwrap_or(self.graph.start);
+        // A layer the new graph starts begins when the old graph's last frame was drawn.
+        let starts = self.graph.layer_starts(self.drawn.unwrap_or(0.0));
+        for (slot, start) in starts.into_iter().enumerate() {
+            let active = self.layers.layer_states[slot];
+            self.layers.layer_states[slot] = old
+                .has_layer(slot)
+                .then(|| self.graph.has_layer(slot).then(|| self.graph.state_like(&old, active.state)))
+                .flatten()
+                .flatten()
+                .map_or(start, |state| LayerState { state, started: active.started });
+        }
         self.layers.combat = self.layers.combat.and_then(|playing| {
             let name = old.moves[usize::from(playing.entry)].name;
             Some(Playing { entry: self.graph.move_entry(name)?, ..playing })
@@ -1713,6 +2155,144 @@ impl GraphPlayer {
     #[must_use]
     pub fn stats(&self) -> GraphStats {
         self.stats
+    }
+
+    /// Sets a program's game slot by name, 0 until set. Returns whether the graph has the slot. A
+    /// value that isn't a number reads 0. Allocates nothing.
+    pub fn set_game_slot(&mut self, name: Name, value: f32) -> bool {
+        let Some(slot) = self.graph.slots.iter().position(|&found| found == name) else { return false };
+        self.slots[slot] = if value.is_finite() { value } else { 0.0 };
+        true
+    }
+
+    /// The events the last evaluation sent, in the order the graph names them, each once: none from a
+    /// frame with nothing to do.
+    #[must_use]
+    pub fn events(&self) -> &[Name] {
+        &self.fired[..self.fired_count]
+    }
+
+    /// Events that fired past [`MAX_FIRED_EVENTS`] in one frame, all told.
+    #[must_use]
+    pub fn dropped_events(&self) -> u32 {
+        self.dropped_events
+    }
+
+    /// The graph's events whose foot markers or clip ticks the clips playing passed from `then` to
+    /// `now`, each at most once, from a clip weighing at least the event's `min_weight`.
+    fn fire_events(&mut self, then: Moment, now: Moment, clips: &(impl ClipSource + ?Sized)) {
+        let graph = &*self.graph;
+        if graph.events.is_empty() {
+            return;
+        }
+        let mut sent = 0_u64;
+        let layers = &self.layers;
+        let entry = layers.combat.map(|playing| graph.moves[usize::from(playing.entry)]);
+        // The op whose clips are visited: the override ops above it hide its feet.
+        let visiting = std::cell::Cell::new(0_usize);
+        // How much of `joint` the override ops above `op` leave showing, as `write_target` lays them
+        // on: a machine layer over it by its weight times its mask, a masked move by its mask.
+        let showing = |op: usize, joint: usize| {
+            let hidden = |weight: f32, mask: Option<u16>| {
+                1.0 - weight * mask.map_or(1.0, |mask| graph.masks[usize::from(mask)].weight(joint))
+            };
+            graph.ops[op + 1..].iter().fold(1.0, |left, above| match *above {
+                LayerOp::Machine(layer) if !layer.additive => left * hidden(layer.weight, layer.mask),
+                LayerOp::Combat => entry.map_or(left, |entry| left * hidden(1.0, entry.mask)),
+                _ => left,
+            })
+        };
+        // A clip at `weight` in its layer, under the layer's mask: a foot's marker weighs what the mask
+        // and the override ops above leave of it at the foot, a clip's own event the clip's whole weight.
+        let mut visit = |clip: &ArchivedClip,
+                         weight: f32,
+                         mask: Option<&JointMask>,
+                         from: f32,
+                         to: f32,
+                         looping: bool| {
+            for (index, event) in graph.events.iter().enumerate() {
+                if sent & (1 << index) != 0 || weight < event.min_weight {
+                    continue;
+                }
+                let passed = match &event.from {
+                    EventFrom::Foot { foot, marker } => clip
+                        .contacts
+                        .iter()
+                        .filter(|track| {
+                            let joint = usize::from(track.joint.to_native());
+                            let at_foot =
+                                mask.map_or(1.0, |mask| mask.weight(joint)) * showing(visiting.get(), joint);
+                            track.foot == *foot && weight * at_foot >= event.min_weight
+                        })
+                        .flat_map(|track| track.markers.iter())
+                        .any(|found| {
+                            is_marker(&found.marker, *marker)
+                                && crossed(f32::from(found.tick.to_native()), from, to, looping)
+                        }),
+                    EventFrom::Clip(name) => clip.events.iter().any(|found| {
+                        found.name.as_str() == name
+                            && crossed(f32::from(found.tick.to_native()), from, to, looping)
+                    }),
+                };
+                if passed {
+                    sent |= 1 << index;
+                }
+            }
+        };
+        // What the pose shows, as `write_target` walks it: a whole-body move hides the layers below it,
+        // and an override layer or a masked move what it lays over, by `showing`.
+        let first = graph.first_shown(entry);
+        for (index, op) in graph.ops.iter().enumerate().skip(first) {
+            visiting.set(index);
+            match *op {
+                LayerOp::Base => {
+                    let base = (layers.state, layers.started, &layers.blend);
+                    layers.passes(graph, clips, base, (1.0, None), then, now, &mut visit);
+                }
+                LayerOp::Machine(layer) => {
+                    let active = layers.layer_states[usize::from(layer.slot)];
+                    let mut weights = [0.0; MAX_BLEND_SAMPLES];
+                    layers.blend_weights(graph, active.state, &mut weights);
+                    let mask = layer.mask.map(|mask| &graph.masks[usize::from(mask)]);
+                    let state = (active.state, active.started, &weights);
+                    layers.passes(graph, clips, state, (layer.weight, mask), then, now, &mut visit);
+                }
+                LayerOp::Combat => {
+                    let Some(entry) = entry else { continue };
+                    let Some(clip) = graph.clip(clips, entry.clip) else { continue };
+                    let at = |moment: Moment| clip_position(clip, moment.combat) as f32;
+                    let mask = entry.mask.map(|mask| &graph.masks[usize::from(mask)]);
+                    visit(clip, 1.0, mask, at(then), at(now), false);
+                }
+                LayerOp::Additive(slot) => {
+                    if layers.defeated {
+                        continue;
+                    }
+                    let layer = &graph.additive[usize::from(slot)];
+                    let Some(clip) = graph.clip(clips, layer.clip) else { continue };
+                    let at = |moment: Moment| looped_position(clip, moment.ticks);
+                    let mask = layer.mask.map(|mask| &graph.masks[usize::from(mask)]);
+                    visit(clip, layer.weight, mask, at(then), at(now), true);
+                }
+                LayerOp::Reactions => {
+                    let Some(playing) = layers.reaction else { continue };
+                    let layer = &graph.reactions[usize::from(playing.entry)];
+                    let Some(clip) = graph.clip(clips, layer.clip) else { continue };
+                    let at = |moment: Moment| clip_position(clip, moment.ticks - playing.started) as f32;
+                    let weight = reaction_weight(layer, clip, now.ticks - playing.started);
+                    let mask = layer.mask.map(|mask| &graph.masks[usize::from(mask)]);
+                    visit(clip, weight, mask, at(then), at(now), false);
+                }
+            }
+        }
+        for (_, event) in graph.events.iter().enumerate().filter(|&(index, _)| sent & (1 << index) != 0) {
+            if self.fired_count < MAX_FIRED_EVENTS {
+                self.fired[self.fired_count] = event.name;
+                self.fired_count += 1;
+            } else {
+                self.dropped_events = self.dropped_events.saturating_add(1);
+            }
+        }
     }
 
     /// The locomotion state playing, by name.
@@ -1826,8 +2406,8 @@ impl GraphPlayer {
         // Its indices are its graph's, so they find their places in this one's by name, at once: the
         // joints may be others.
         self.replacement = Some(std::mem::replace(&mut self.graph, other.graph.clone()));
-        self.adopt_replacement();
         self.drawn = other.drawn;
+        self.adopt_replacement();
         self.teleports = other.teleports;
         self.stats = other.stats;
         self.key = None;
@@ -1945,6 +2525,8 @@ struct Scratch<'a> {
     references: &'a mut LayerReferences,
     sampled: &'a mut [Transform],
     delta: &'a mut [Transform],
+    /// A machine layer's pose and its reference.
+    registers: &'a mut [Frame; 2],
     out: &'a mut Frame,
 }
 
@@ -2057,16 +2639,67 @@ impl Layers {
     }
 
     /// Each blend sample's weight at the position, if the state's a blend.
-    fn update_blend(&mut self, graph: &GraphBinding) {
-        if let Motion::Blend(space) = &graph.states[usize::from(self.state)].motion {
-            let at = BlendPoint::new(self.velocity.x, self.velocity.y);
-            blend_weights_with_math(&space.points, at, &mut self.blend, self.math);
+    fn update_blend(&mut self, graph: &GraphBinding, input: &GraphInput, slots: &[f32; MAX_GAME_SLOTS]) {
+        self.refresh_values(graph, input, slots);
+        let mut blend = self.blend;
+        self.blend_weights(graph, self.state, &mut blend);
+        self.blend = blend;
+    }
+
+    /// `state`'s blend weights where its axes stand, if it's a blend; `weights` as they were if not.
+    fn blend_weights(&self, graph: &GraphBinding, state: u16, weights: &mut [f32; MAX_BLEND_SAMPLES]) {
+        let Motion::Blend(space) = &graph.states[usize::from(state)].motion else { return };
+        let value = |register: u8| self.values[usize::from(register)];
+        match space.axes {
+            Axes::Velocity => {
+                let at = BlendPoint::new(self.velocity.x, self.velocity.y);
+                blend_weights_with_math(&space.points, at, weights, self.math);
+            }
+            Axes::Two(x, y) => {
+                blend_weights_with_math(
+                    &space.points,
+                    BlendPoint::new(value(x), value(y)),
+                    weights,
+                    self.math,
+                );
+            }
+            Axes::One(axis) => line_weights(&space.samples, value(axis), weights),
         }
     }
 
-    /// How fast the shared phase moves at this speed, in cycles a tick.
+    /// The value registers from this frame's input, the smoothed velocity and the game's slots.
+    fn refresh_values(&mut self, graph: &GraphBinding, input: &GraphInput, slots: &[f32; MAX_GAME_SLOTS]) {
+        use v2::LocomotionValue as L;
+        let locomotion = &input.locomotion;
+        let truth = |value: bool| if value { 1.0 } else { 0.0 };
+        for (register, value) in self.values.iter_mut().zip(&graph.parameters) {
+            *register = match *value {
+                Value::Locomotion(L::Speed) => locomotion.speed,
+                Value::Locomotion(L::Direction) => locomotion.direction,
+                Value::Locomotion(L::Forward) => locomotion.speed * self.math.cos(locomotion.direction),
+                Value::Locomotion(L::SmoothedSpeed) => self.velocity.length(),
+                Value::Locomotion(L::SmoothedX) => self.velocity.x,
+                Value::Locomotion(L::SmoothedZ) => self.velocity.y,
+                Value::Locomotion(L::Grounded) => truth(locomotion.grounded),
+                Value::Locomotion(L::Landed) => truth(locomotion.landed),
+                Value::Locomotion(L::PreparingJump) => truth(locomotion.preparing_jump),
+                Value::Mode => 0.0,
+                Value::Slot(slot) => slots[usize::from(slot)],
+            };
+        }
+    }
+
+    /// How fast the shared phase moves at this speed, in cycles a tick: a blend's synced clips' at the
+    /// speed it matches its feet to, or a synced clip's own.
     fn phase_rate(&self, graph: &GraphBinding, speed: f32, clips: &(impl ClipSource + ?Sized)) -> f32 {
-        let Motion::Blend(space) = &graph.states[usize::from(self.state)].motion else { return 0.0 };
+        let space = match &graph.states[usize::from(self.state)].motion {
+            Motion::Blend(space) => space,
+            Motion::Clip { clip, sync: Some(_), .. } => {
+                let length = graph.clip(clips, *clip).map_or(0.0, clip_ticks) as f32;
+                return if length > 0.0 { 1.0 / length } else { 0.0 };
+            }
+            _ => return 0.0,
+        };
         let (mut total, mut cycles, mut authored) = (0.0, 0.0, 0.0);
         for (sample, &weight) in space.samples.iter().zip(&self.blend) {
             if weight <= 0.0 || !sample.sync {
@@ -2110,42 +2743,60 @@ impl Layers {
             Condition::Moving(limit) => speed >= limit,
             Condition::Stopped(limit) => speed < limit,
             Condition::ForwardBelow(limit) => self.velocity.y < limit,
-            Condition::Finished | Condition::FinishedAtPhase(_) => {
-                match graph.states[usize::from(self.state)].motion {
-                    Motion::Clip { clip, looping: false } => {
-                        graph.clip(clips, clip).is_some_and(|clip| now - self.started >= clip_ticks(clip))
-                    }
-                    Motion::Touchdown(shots) | Motion::Takeoff(shots) => {
-                        let mut duration = 0.0;
-                        let mut sum = 0.0;
-                        let elapsed = now - self.started;
-                        if matches!(when, Condition::FinishedAtPhase(_))
-                            && let Some(catch) = shots.accelerating
-                        {
-                            let forward = input.speed * self.math.cos(input.direction);
-                            return self.acceleration(shots) == 1.0
-                                && forward >= catch.touchdown[1]
-                                && elapsed
-                                    >= graph_clip_ticks(graph, clips, shots.clips[3])
-                                        + OneShot::CONTACT_TICK;
-                        }
-                        for (clip, weight, sample_time) in self.shots(shots, graph, clips, elapsed) {
-                            if let Some(clip) = clip {
-                                duration += f64::from(weight) * (clip_ticks(clip) + (elapsed - sample_time));
-                                sum += f64::from(weight);
-                            }
-                        }
-                        sum > 0.0 && elapsed >= duration / sum
-                    }
-                    _ => false,
-                }
-            }
+            Condition::Finished | Condition::FinishedAtPhase(_) => self.finished(
+                self.state,
+                self.started,
+                matches!(when, Condition::FinishedAtPhase(_)),
+                input,
+                now,
+                graph,
+                clips,
+            ),
         }
     }
 
-    /// The layers' pose at `moment`, into `scratch.out`. Returns whether a clip it wanted wasn't there.
-    /// Reads nothing but its arguments and writes nothing but the scratch, so a transition can ask for
-    /// the same layers at other times. Allocates nothing.
+    /// Whether `state`, started at `started`, has played to its end at `now`: a clip that holds, or an
+    /// entry's weighted clips. `catch` holds an accelerating catch by its own rule.
+    #[allow(clippy::too_many_arguments, reason = "a state, its clock and the frame's input")]
+    fn finished(
+        &self,
+        state: u16,
+        started: f64,
+        catch: bool,
+        input: &LocomotionInput,
+        now: f64,
+        graph: &GraphBinding,
+        clips: &(impl ClipSource + ?Sized),
+    ) -> bool {
+        match graph.states[usize::from(state)].motion {
+            Motion::Clip { clip, looping: false, .. } => {
+                graph.clip(clips, clip).is_some_and(|clip| now - started >= clip_ticks(clip))
+            }
+            Motion::Touchdown(shots) | Motion::Takeoff(shots) => {
+                let mut duration = 0.0;
+                let mut sum = 0.0;
+                let elapsed = now - started;
+                if catch && let Some(catch) = shots.accelerating {
+                    let forward = input.speed * self.math.cos(input.direction);
+                    return self.acceleration(shots) == 1.0
+                        && forward >= catch.touchdown[1]
+                        && elapsed >= graph_clip_ticks(graph, clips, shots.clips[3]) + OneShot::CONTACT_TICK;
+                }
+                for (clip, weight, sample_time) in self.shots(shots, graph, clips, elapsed) {
+                    if let Some(clip) = clip {
+                        duration += f64::from(weight) * (clip_ticks(clip) + (elapsed - sample_time));
+                        sum += f64::from(weight);
+                    }
+                }
+                sum > 0.0 && elapsed >= duration / sum
+            }
+            _ => false,
+        }
+    }
+
+    /// The layers' pose at `moment`, into `scratch.out`: the binding's layer ops, bottom first. Returns
+    /// whether a clip it wanted wasn't there. Reads nothing but its arguments and writes nothing but the
+    /// scratch, so a transition can ask for the same layers at other times. Allocates nothing.
     fn write_target(
         &self,
         graph: &GraphBinding,
@@ -2155,22 +2806,158 @@ impl Layers {
         footwork: Option<GroundFootwork>,
         scratch: Scratch<'_>,
     ) -> bool {
-        let Scratch { sampled, delta, out, references } = scratch;
+        let Scratch { sampled, delta, registers, out, references } = scratch;
         let rest = pose.rest();
         let mut missing = false;
         out.landing_shift = Vec3::ZERO;
         out.weights.copy_from_slice(pose.rest_weights());
         let entry = self.combat.map(|playing| graph.moves[usize::from(playing.entry)]);
-        // A whole-body move replaces locomotion, which isn't sampled.
-        match entry {
-            Some(MoveEntry { mask: None, .. }) => {}
-            _ => {
-                missing |= self.write_locomotion(graph, clips, pose, moment, sampled, out);
-                ground_footwork::write_body(graph, clips, pose, footwork, moment, self.math, sampled, out);
+        for op in &graph.ops[graph.first_shown(entry)..] {
+            match *op {
+                LayerOp::Base => {
+                    missing |= self.write_locomotion(graph, clips, pose, moment, sampled, out);
+                    ground_footwork::write_body(
+                        graph, clips, pose, footwork, moment, self.math, sampled, out,
+                    );
+                    self.write_landing_shift(
+                        graph,
+                        clips,
+                        pose,
+                        moment,
+                        entry.is_none(),
+                        sampled,
+                        delta,
+                        out,
+                    );
+                }
+                LayerOp::Machine(layer) => {
+                    let active = self.layer_states[usize::from(layer.slot)];
+                    let mut weights = [0.0; MAX_BLEND_SAMPLES];
+                    self.blend_weights(graph, active.state, &mut weights);
+                    let [own, reference] = &mut *registers;
+                    missing |= self.write_state(
+                        graph,
+                        clips,
+                        pose,
+                        (active.state, active.started, &weights),
+                        moment,
+                        sampled,
+                        own,
+                    );
+                    let mask = layer.mask.map(|mask| &graph.masks[usize::from(mask)]);
+                    if layer.additive {
+                        // Each clip less its own first tick, blended as the pose is.
+                        let at_start = Moment { reference: true, ..moment };
+                        let state = (active.state, active.started, &weights);
+                        self.write_state(graph, clips, pose, state, at_start, sampled, reference);
+                        make_delta_with_math(&own.joints, &reference.joints, delta, self.math);
+                        add_with_math(&mut out.joints, delta, layer.weight, mask, self.math);
+                    } else {
+                        blend_with_math(&mut out.joints, &own.joints, layer.weight, mask, self.math);
+                    }
+                }
+                LayerOp::Combat => {
+                    let Some(entry) = entry else { continue };
+                    match graph.clip(clips, entry.clip) {
+                        Some(clip) => {
+                            let position = clip_position(clip, moment.combat) as f32;
+                            match entry.mask {
+                                None => sample::sample(clip, position, rest, &mut out.joints),
+                                Some(mask) => {
+                                    sample::sample(clip, position, rest, sampled);
+                                    blend_with_math(
+                                        &mut out.joints,
+                                        sampled,
+                                        1.0,
+                                        Some(&graph.masks[usize::from(mask)]),
+                                        self.math,
+                                    );
+                                }
+                            }
+                            overlay_weights(clip, position, &mut out.weights);
+                        }
+                        None => {
+                            missing = true;
+                            if entry.mask.is_none() {
+                                out.joints.copy_from_slice(rest);
+                            }
+                        }
+                    }
+                }
+                LayerOp::Additive(slot) => {
+                    if self.defeated {
+                        continue;
+                    }
+                    let layer = &graph.additive[usize::from(slot)];
+                    match graph.clip(clips, layer.clip) {
+                        Some(clip) => {
+                            let position = looped_position(clip, moment.ticks);
+                            add_layer(
+                                graph,
+                                clip,
+                                position,
+                                layer,
+                                references,
+                                usize::from(slot),
+                                layer.weight,
+                                rest,
+                                sampled,
+                                delta,
+                                &mut out.joints,
+                                self.math,
+                            );
+                        }
+                        None => missing = true,
+                    }
+                }
+                LayerOp::Reactions => {
+                    let Some(playing) = self.reaction else { continue };
+                    let layer = &graph.reactions[usize::from(playing.entry)];
+                    match graph.clip(clips, layer.clip) {
+                        Some(clip) => {
+                            let elapsed = moment.ticks - playing.started;
+                            let weight = reaction_weight(layer, clip, elapsed);
+                            let position = clip_position(clip, elapsed) as f32;
+                            add_layer(
+                                graph,
+                                clip,
+                                position,
+                                layer,
+                                references,
+                                MAX_ADDITIVE_LAYERS,
+                                weight,
+                                rest,
+                                sampled,
+                                delta,
+                                &mut out.joints,
+                                self.math,
+                            );
+                        }
+                        None => missing = true,
+                    }
+                }
             }
         }
+        missing
+    }
+
+    /// A landing's catch held in its first support's frame: how far the changing weights would move the
+    /// supporting foot, which the stage takes off the root.
+    #[allow(clippy::too_many_arguments, reason = "the buffers of one step of one frame")]
+    fn write_landing_shift(
+        &self,
+        graph: &GraphBinding,
+        clips: &(impl ClipSource + ?Sized),
+        pose: &CharacterPose,
+        moment: Moment,
+        no_move: bool,
+        sampled: &mut [Transform],
+        delta: &mut [Transform],
+        out: &mut Frame,
+    ) {
+        let rest = pose.rest();
         if let Motion::Touchdown(shots) = graph.states[usize::from(self.state)].motion
-            && entry.is_none()
+            && no_move
             && let Some(joint) = self.landing.and_then(|landing| landing.support)
         {
             let elapsed = moment.ticks - self.started;
@@ -2205,90 +2992,9 @@ impl Layers {
                 out.landing_shift = (reference - changing).with_y(0.0);
             }
         }
-        if let Some(entry) = entry {
-            match graph.clip(clips, entry.clip) {
-                Some(clip) => {
-                    let position = clip_position(clip, moment.combat) as f32;
-                    match entry.mask {
-                        None => sample::sample(clip, position, rest, &mut out.joints),
-                        Some(mask) => {
-                            sample::sample(clip, position, rest, sampled);
-                            blend_with_math(
-                                &mut out.joints,
-                                sampled,
-                                1.0,
-                                Some(&graph.masks[usize::from(mask)]),
-                                self.math,
-                            );
-                        }
-                    }
-                    overlay_weights(clip, position, &mut out.weights);
-                }
-                None => {
-                    missing = true;
-                    if entry.mask.is_none() {
-                        out.joints.copy_from_slice(rest);
-                    }
-                }
-            }
-        }
-        for (slot, layer) in graph.additive.iter().enumerate().filter(|_| !self.defeated) {
-            match graph.clip(clips, layer.clip) {
-                Some(clip) => {
-                    let position = looped_position(clip, moment.ticks);
-                    add_layer(
-                        graph,
-                        clip,
-                        position,
-                        layer,
-                        references,
-                        slot,
-                        layer.weight,
-                        rest,
-                        sampled,
-                        delta,
-                        &mut out.joints,
-                        self.math,
-                    );
-                }
-                None => missing = true,
-            }
-        }
-        if let Some(playing) = self.reaction {
-            let layer = &graph.reactions[usize::from(playing.entry)];
-            match graph.clip(clips, layer.clip) {
-                Some(clip) => {
-                    let elapsed = moment.ticks - playing.started;
-                    let left = clip_ticks(clip) - elapsed;
-                    let fade = if layer.fade_out > 0.0 {
-                        (left as f32 / layer.fade_out).clamp(0.0, 1.0)
-                    } else {
-                        1.0
-                    };
-                    let weight = layer.weight * fade * fade * (3.0 - 2.0 * fade);
-                    let position = clip_position(clip, elapsed) as f32;
-                    add_layer(
-                        graph,
-                        clip,
-                        position,
-                        layer,
-                        references,
-                        MAX_ADDITIVE_LAYERS,
-                        weight,
-                        rest,
-                        sampled,
-                        delta,
-                        &mut out.joints,
-                        self.math,
-                    );
-                }
-                None => missing = true,
-            }
-        }
-        missing
     }
 
-    /// The locomotion state's pose at `moment`, into `out`.
+    /// The first layer's state's pose at `moment`, into `out`.
     fn write_locomotion(
         &self,
         graph: &GraphBinding,
@@ -2298,19 +3004,99 @@ impl Layers {
         sampled: &mut [Transform],
         out: &mut Frame,
     ) -> bool {
+        self.write_state(graph, clips, pose, (self.state, self.started, &self.blend), moment, sampled, out)
+    }
+
+    /// Each clip a leaf state plays, with its weight, where it was at `then` and is at `now`, and
+    /// whether it loops: what the graph's events watch. `layer` is the layer's weight and mask.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a state, its clock, its layer, the frame's span and the visitor"
+    )]
+    fn passes(
+        &self,
+        graph: &GraphBinding,
+        clips: &(impl ClipSource + ?Sized),
+        (state, started, blend): (u16, f64, &[f32; MAX_BLEND_SAMPLES]),
+        (layer, mask): (f32, Option<&JointMask>),
+        then: Moment,
+        now: Moment,
+        visit: &mut impl FnMut(&ArchivedClip, f32, Option<&JointMask>, f32, f32, bool),
+    ) {
+        match &graph.states[usize::from(state)].motion {
+            Motion::Clip { clip, looping, sync } => {
+                let Some(clip) = graph.clip(clips, *clip) else { return };
+                let at = |moment: Moment| {
+                    if sync.is_some() {
+                        graph.synced_position(clip, *sync, moment.phase.rem_euclid(1.0))
+                    } else if *looping {
+                        looped_position(clip, moment.ticks - started)
+                    } else {
+                        clip_position(clip, moment.ticks - started) as f32
+                    }
+                };
+                visit(clip, layer, mask, at(then), at(now), *looping || sync.is_some());
+            }
+            Motion::Takeoff(shots) | Motion::Touchdown(shots) => {
+                let step = now.ticks - then.ticks;
+                for (clip, weight, time) in self.shots(*shots, graph, clips, now.ticks - started) {
+                    let Some(clip) = clip else { continue };
+                    let from = clip_position(clip, time - step) as f32;
+                    visit(clip, layer * weight, mask, from, clip_position(clip, time) as f32, false);
+                }
+            }
+            Motion::Blend(space) => {
+                for (sample, &weight) in space.samples.iter().zip(blend).filter(|&(_, &weight)| weight > 0.0)
+                {
+                    let Some(clip) = graph.clip(clips, sample.clip) else { continue };
+                    let at = |moment: Moment| {
+                        if sample.sync {
+                            graph.synced_position(
+                                clip,
+                                space.group,
+                                (moment.phase + sample.phase).rem_euclid(1.0),
+                            )
+                        } else {
+                            looped_position(clip, moment.ticks)
+                        }
+                    };
+                    visit(clip, layer * weight, mask, at(then), at(now), true);
+                }
+            }
+            Motion::Machine(_) => {}
+        }
+    }
+
+    /// A leaf state's pose at `moment`, into `out`: the state, when it started and its blend's weights.
+    /// At a reference moment each clip plays its first tick.
+    #[allow(clippy::too_many_arguments, reason = "a state, its clock, its weights and the frame's buffers")]
+    fn write_state(
+        &self,
+        graph: &GraphBinding,
+        clips: &(impl ClipSource + ?Sized),
+        pose: &CharacterPose,
+        (state, started, blend): (u16, f64, &[f32; MAX_BLEND_SAMPLES]),
+        moment: Moment,
+        sampled: &mut [Transform],
+        out: &mut Frame,
+    ) -> bool {
         let rest = pose.rest();
-        match &graph.states[usize::from(self.state)].motion {
-            Motion::Clip { clip, looping } => {
+        let at = |position: f32| if moment.reference { 0.0 } else { position };
+        match &graph.states[usize::from(state)].motion {
+            Motion::Clip { clip, looping, sync } => {
                 let Some(clip) = graph.clip(clips, *clip) else {
                     out.joints.copy_from_slice(rest);
                     return true;
                 };
-                let elapsed = moment.ticks - self.started;
-                let position = if *looping {
+                let elapsed = moment.ticks - started;
+                let position = if sync.is_some() {
+                    graph.synced_position(clip, *sync, moment.phase.rem_euclid(1.0))
+                } else if *looping {
                     looped_position(clip, elapsed)
                 } else {
                     clip_position(clip, elapsed) as f32
                 };
+                let position = at(position);
                 sample::sample(clip, position, rest, &mut out.joints);
                 overlay_weights(clip, position, &mut out.weights);
                 false
@@ -2318,7 +3104,7 @@ impl Layers {
             Motion::Takeoff(shots) | Motion::Touchdown(shots) => {
                 let mut missing = false;
                 let mut sum = 0.0;
-                let elapsed = moment.ticks - self.started;
+                let elapsed = moment.ticks - started;
                 let rest_weights = pose.rest_weights();
                 out.weights.copy_from_slice(rest_weights);
                 for (clip, weight, sample_time) in self.shots(*shots, graph, clips, elapsed) {
@@ -2326,7 +3112,7 @@ impl Layers {
                         missing = true;
                         continue;
                     };
-                    let position = clip_position(clip, sample_time) as f32;
+                    let position = at(clip_position(clip, sample_time) as f32);
                     if sum == 0.0 {
                         sample::sample(clip, position, rest, &mut out.joints);
                     } else {
@@ -2354,7 +3140,7 @@ impl Layers {
                 let mut missing = false;
                 let mut sum = 0.0;
                 let mut heaviest = (0.0, None);
-                for (sample, &weight) in space.samples.iter().zip(&self.blend) {
+                for (sample, &weight) in space.samples.iter().zip(blend) {
                     if weight <= 0.0 {
                         continue;
                     }
@@ -2363,10 +3149,15 @@ impl Layers {
                         continue;
                     };
                     let position = if sample.sync {
-                        (moment.phase + sample.phase).rem_euclid(1.0) * f32::from(clip.ticks.to_native())
+                        graph.synced_position(
+                            clip,
+                            space.group,
+                            (moment.phase + sample.phase).rem_euclid(1.0),
+                        )
                     } else {
                         looped_position(clip, moment.ticks)
                     };
+                    let position = at(position);
                     if sum == 0.0 {
                         sample::sample(clip, position, rest, &mut out.joints);
                     } else {
@@ -2386,8 +3177,49 @@ impl Layers {
                 }
                 missing
             }
+            // Entering a machine enters its start, so no leaf plays one.
+            Motion::Machine(_) => {
+                out.joints.copy_from_slice(rest);
+                false
+            }
         }
     }
+}
+
+/// A 1D blend's weights at `value`: its two neighbours, linear between them, or the end sample past
+/// either end. `samples` go by increasing place.
+fn line_weights(samples: &[Sample], value: f32, weights: &mut [f32; MAX_BLEND_SAMPLES]) {
+    weights.fill(0.0);
+    let Some(last) = samples.len().checked_sub(1) else { return };
+    let above = samples.partition_point(|sample| sample.at.x() <= value);
+    match above {
+        0 => weights[0] = 1.0,
+        above if above > last => weights[last] = 1.0,
+        above => {
+            let (low, high) = (samples[above - 1].at.x(), samples[above].at.x());
+            let t = ((value - low) / (high - low)).clamp(0.0, 1.0);
+            weights[above - 1] = 1.0 - t;
+            weights[above] = t;
+        }
+    }
+}
+
+/// Whether a cooked marker is `wanted`.
+fn is_marker(marker: &sapphire_assets::clip::ArchivedMarker, wanted: sapphire_assets::clip::Marker) -> bool {
+    use sapphire_assets::clip::{ArchivedMarker, Marker};
+    matches!((marker, wanted), (ArchivedMarker::Down, Marker::Down) | (ArchivedMarker::Up, Marker::Up))
+}
+
+/// Whether a tick lies in `[from, to)` of a clip's ticks, wrapping past `end` for a looping one.
+fn crossed(tick: f32, from: f32, to: f32, looping: bool) -> bool {
+    if to >= from { tick >= from && tick < to } else { looping && (tick >= from || tick < to) }
+}
+
+/// A reaction's weight `elapsed` ticks in: its own, faded out smoothly over its last `fade_out` ticks.
+fn reaction_weight(layer: &Added, clip: &ArchivedClip, elapsed: f64) -> f32 {
+    let left = clip_ticks(clip) - elapsed;
+    let fade = if layer.fade_out > 0.0 { (left as f32 / layer.fade_out).clamp(0.0, 1.0) } else { 1.0 };
+    layer.weight * fade * fade * (3.0 - 2.0 * fade)
 }
 
 /// `clip` at `position`, less its first tick, over `pose`.
@@ -2419,3 +3251,5 @@ fn add_layer(
 #[cfg(test)]
 #[allow(clippy::disallowed_methods, reason = "reference fixtures also exercise the legacy math policy")]
 mod tests;
+#[cfg(test)]
+mod v2_tests;

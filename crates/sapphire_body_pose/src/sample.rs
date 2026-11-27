@@ -36,6 +36,12 @@ fn guarded(position: f32) -> f32 {
     if position >= 0.0 { position } else { 0.0 }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many clips this thread has sampled: what the graph's cost tests count.
+    pub(crate) static SAMPLED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// `clip` at `position` over `rest` ([`rest_pose`]): every joint and channel the clip has no track
 /// for stays at rest. `position` is a tick and a fraction ([`ArchivedClip::position`] makes one from
 /// seconds); past the clip's end it holds the last keys. Allocates nothing.
@@ -44,6 +50,8 @@ fn guarded(position: f32) -> f32 {
 ///
 /// If `pose` and `rest` differ in length.
 pub fn sample(clip: &ArchivedClip, position: f32, rest: &[Transform], pose: &mut [Transform]) {
+    #[cfg(test)]
+    SAMPLED.with(|count| count.set(count.get() + 1));
     pose.copy_from_slice(rest);
     overlay(clip, position, pose);
 }

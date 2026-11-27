@@ -17,7 +17,8 @@ pub(crate) const BRAKE_SETTLED: f32 = 20.0;
 #[derive(Clone, Debug)]
 pub(super) struct FootworkClips {
     clips: [[u16; 2]; 2],
-    forward_gaits: [(u16, f32); 3],
+    /// Each forward gait's clip and the share of its cycle a ball is down.
+    forward_gaits: Vec<(u16, f32)>,
     mask: JointMask,
 }
 
@@ -33,11 +34,22 @@ impl FootworkClips {
         // The ball stays down through these authored ticks in locomotion.py. Each cycle
         // uses its own contact duration, including walk's overlap and run's flight.
         let forward_gaits =
-            [(clip("walk")?, 24.0 / 42.0), (clip("jog")?, 12.0 / 34.0), (clip("run")?, 7.0 / 26.0)];
+            vec![(clip("walk")?, 24.0 / 42.0), (clip("jog")?, 12.0 / 34.0), (clip("run")?, 7.0 / 26.0)];
+        Some(Self::of(clips, forward_gaits, skeleton, hips, spine))
+    }
+
+    /// A program's footwork: its brakes and launches, left before right, and its gaits.
+    pub(super) fn of(
+        clips: [[u16; 2]; 2],
+        forward_gaits: Vec<(u16, f32)>,
+        skeleton: &ArchivedSkeleton,
+        hips: usize,
+        spine: usize,
+    ) -> Self {
         let mut mask = JointMask::nothing(skeleton.len());
         mask.set(hips, 1.0);
         mask.set_subtree(skeleton, spine, 1.0);
-        Some(Self { clips, forward_gaits, mask })
+        Self { clips, forward_gaits, mask }
     }
 }
 
@@ -82,8 +94,7 @@ impl GraphPlayer {
         support: Option<usize>,
     ) -> bool {
         let motion = input.locomotion;
-        let can_play = self.graph.footwork.is_some()
-            && matches!(self.graph.states[usize::from(self.layers.state)].motion, Motion::Blend(_))
+        let can_play = self.graph.footwork_over(self.layers.state)
             && motion.grounded
             && !motion.preparing_jump
             && !motion.landed
@@ -145,6 +156,7 @@ impl GraphPlayer {
         if !matches!(phrase.action, Action::Launch { .. }) || !(drawn < catch && input.ticks >= catch) {
             return None;
         }
+        self.note(super::Reached::LAUNCH);
         self.layers.velocity = velocity_of(&input.locomotion, self.layers.math);
         self.layers.velocity_rate = sapphire_math::Vec2::ZERO;
         // All three forward cycles begin at a left heel strike. The phase held through
@@ -173,7 +185,11 @@ impl GraphPlayer {
                         toe_off += weight * phase;
                     }
                 }
-                let toe_off = if total > 0.0 { toe_off / total } else { binding.forward_gaits[0].1 };
+                let toe_off = if total > 0.0 {
+                    toe_off / total
+                } else {
+                    binding.forward_gaits.first().map_or(0.0, |gait| gait.1)
+                };
                 let gait = (self.layers.phase - (1 - support) as f32 * 0.5).rem_euclid(1.0);
                 FootContact::Launch { elapsed, support, speed, gait, toe_off }
             }

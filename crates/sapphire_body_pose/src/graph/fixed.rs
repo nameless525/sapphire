@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sapphire_time::{SUBTICKS_PER_TICK, SimTime};
 
 use super::canonical::Canonical;
-use super::{ClipSource, GraphBinding, GraphInput, GraphPlayer};
+use super::{ClipSource, GraphBindError, GraphBinding, GraphInput, GraphPlayer, Target};
 use crate::CharacterPose;
 use crate::pose_math::PoseMath;
 
@@ -57,12 +57,33 @@ pub(super) struct PreparedStep {
 
 impl<C: ClipSource> FixedGraphHistory<C> {
     /// Creates a fresh owner. The actor's first step may be later than the world's first step.
+    ///
+    /// # Panics
+    ///
+    /// If `graph` is a program compiled for presentation, which [`Self::try_new`] refuses instead.
     #[must_use]
     pub fn new(graph: Arc<GraphBinding>, pose: CharacterPose, seed: u32, clips: C) -> Self {
+        match Self::try_new(graph, pose, seed, clips) {
+            Ok(history) => history,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// [`Self::new`] for a version 1 graph or a program compiled for the fixed step (`Target::Simulation`): a
+    /// program compiled for presentation may hold what only presentation runs, so it's refused.
+    pub fn try_new(
+        graph: Arc<GraphBinding>,
+        pose: CharacterPose,
+        seed: u32,
+        clips: C,
+    ) -> Result<Self, GraphBindError> {
+        if graph.target() == Some(Target::Presentation) {
+            return Err(GraphBindError::PresentationProgram);
+        }
         let mut player = GraphPlayer::new(graph, pose.into_fixed(), seed);
         player.layers.math = PoseMath::Pinned;
         player.inertia.set_math(PoseMath::Pinned);
-        Self { player, clips, stamp: None }
+        Ok(Self { player, clips, stamp: None })
     }
 
     /// The fixed rest pose and immutable joint layout, available for binding the same rig to IK.
@@ -121,6 +142,7 @@ impl<C: ClipSource> FixedGraphHistory<C> {
             // Legacy camera cuts can keep gait phase and the defeated pose. A body-generation
             // cut must start like a newly bound actor, even when its owner time is unchanged.
             self.player.layers.state = self.player.graph.start;
+            self.player.layers.layer_states = self.player.graph.layer_starts(input.ticks);
             self.player.layers.phase = 0.0;
             self.player.layers.blend.fill(0.0);
             self.player.layers.combat = None;

@@ -48,6 +48,11 @@ impl BlendPoint {
     pub fn speed(&self) -> f32 {
         self.speed
     }
+
+    /// Its place along a 1D blend: its `x`.
+    pub(crate) fn x(&self) -> f32 {
+        self.position.x
+    }
 }
 
 /// The turn from `from` to `to`, in radians, positive in the direction `axis` turns. For a pair exactly

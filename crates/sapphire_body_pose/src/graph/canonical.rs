@@ -130,6 +130,13 @@ impl<F: FnMut(&[u8])> Canonical<'_, F> {
 
     pub(crate) fn player(&mut self, player: &GraphPlayer) {
         self.layers(&player.layers);
+        // A version 1 graph, and any program with no machine layer above the base, keeps none.
+        if player.graph.has_machine_layers() {
+            for active in &player.layers.layer_states {
+                self.u16(active.state);
+                self.f64(active.started);
+            }
+        }
         self.frame(&player.output);
         self.frame(&player.earlier);
         self.f32(player.earlier_step);

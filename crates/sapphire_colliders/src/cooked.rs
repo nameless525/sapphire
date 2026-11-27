@@ -218,13 +218,14 @@ mod tests {
     #[test]
     fn cooked_data_the_document_would_refuse_is_refused() {
         type Tamper = fn(&mut ColliderSet);
-        let cases: [(&str, &str, Tamper); 8] = [
+        let cases: [(&str, &str, Tamper); 9] = [
             ("empty", "no colliders", |set| set.colliders.clear()),
             ("order", "out of order", |set| set.colliders.swap(0, 1)),
             ("duplicate", "two colliders", |set| set.colliders[1].name = "a".to_owned()),
             ("position", "`a`", |set| set.colliders[0].position[1] = f32::NAN),
             ("rotation", "unit", |set| set.colliders[0].rotation = [0.0, 0.0, 0.0, 2.0]),
             ("groups", "no group", |set| set.colliders[0].memberships = 0),
+            ("climbable", "not in World", |set| set.colliders[0].memberships = 32),
             ("mesh index", "names mesh", |set| set.colliders[2].shape = CookedShape::Mesh { mesh: 7 }),
             ("triangle", "names vertex", |set| set.meshes[0].indices[0] = [0, 1, 3]),
         ];

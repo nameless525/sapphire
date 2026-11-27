@@ -29,6 +29,10 @@ pub enum Group {
     CharacterBlocker = 3,
     /// Scenery only the camera meets (M2 G5).
     CameraBlocker = 4,
+    /// Scenery a character may climb (M6 A14): a tag on [`Self::World`] scenery, which a collider holds beside
+    /// it, so content says what climbs rather than every steep face. Nothing filters on it but a climb's
+    /// probes (A16), so no other query or capsule meets anything differently for it.
+    Climbable = 5,
 }
 
 impl Group {
@@ -52,7 +56,7 @@ impl GroupMask {
     pub const MARKS: u32 = 24;
 
     /// A bit no [`Group`] ever takes, from 0 to [`Self::MARKS`] less one, for a game to tell apart some
-    /// of a group's bodies, as a fight's factions do their hurtboxes. Bits 5 to 7 stay for groups.
+    /// of a group's bodies, as a fight's factions do their hurtboxes. Bits 6 and 7 stay for groups.
     #[must_use]
     pub const fn mark(number: u32) -> Self {
         assert!(number < Self::MARKS);
@@ -148,6 +152,8 @@ mod tests {
         assert_eq!(Group::Hurtbox.mask().bits(), 4);
         assert_eq!(Group::CharacterBlocker.mask().bits(), 8);
         assert_eq!(Group::CameraBlocker.mask().bits(), 16);
+        assert_eq!(Group::Climbable.mask().bits(), 32);
+        assert!(!Group::Climbable.mask().intersects(GroupMask::mark(0)), "clear of the marks");
     }
 
     #[test]

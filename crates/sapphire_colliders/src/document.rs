@@ -266,7 +266,16 @@ pub(crate) fn check_quaternion(q: [f32; 4]) -> Result<(), String> {
 }
 
 pub(crate) fn check_memberships(bits: u32) -> Result<(), String> {
-    if bits == 0 { Err("belongs to no group, so nothing could ever hit it".to_owned()) } else { Ok(()) }
+    if bits == 0 {
+        return Err("belongs to no group, so nothing could ever hit it".to_owned());
+    }
+    let memberships = GroupMask::from_bits(bits);
+    if memberships.intersects(Group::Climbable.mask()) && !memberships.intersects(Group::World.mask()) {
+        return Err(
+            "is climbable but not in World: a face nothing stands against can't be climbed".to_owned()
+        );
+    }
+    Ok(())
 }
 
 fn check_extent(what: &str, value: f32) -> Result<(), String> {
@@ -493,6 +502,23 @@ mod tests {
         assert_names(&refusal(vec![turned(Rotation::Quaternion([0.0, 0.0, 0.0, 2.0]))]), "`bad`", "unit");
         let lonely = ColliderEntry { groups: vec![], ..cube("bad") };
         assert_names(&refusal(vec![lonely]), "`bad`", "no group");
+        let floating = ColliderEntry { groups: vec![Group::Climbable], ..cube("bad") };
+        assert_names(&refusal(vec![floating]), "`bad`", "not in World");
+    }
+
+    /// A climbable face is scenery with a tag: it reads from a document, cooks to its two bits, and reads back.
+    #[test]
+    fn a_climbable_wall_cooks_with_its_tag() {
+        let wall = ColliderDocument::from_ron(
+            r#"(type: "sapphire::colliders::ColliderDocument", version: 1, data: (colliders: [
+                (name: "wall", shape: Box(half_extents: (2.0, 3.0, 0.25)), position: (0.0, 3.0, 0.0), groups: [World, Climbable]),
+            ]))"#,
+        )
+        .expect("reads");
+        let set = wall.cook().expect("cooks");
+        assert_eq!(set.colliders[0].memberships, (Group::World | Group::Climbable).bits());
+        let bytes = set.to_cooked().expect("writes");
+        assert_eq!(ColliderSet::read(&bytes).expect("reads back").colliders.len(), 1);
     }
 
     #[test]

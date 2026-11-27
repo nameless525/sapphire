@@ -1962,6 +1962,17 @@
                        "--capture-frames", "16", "--capture-step", "1", "--vfx", "forces"],
                 ci_seconds: (lavapipe: 25.7, warp: 54.8),
             ),
+            // The particles' events and sub-emitters (M6 N3) at dusk: sparks thrown up behind the character to its
+            // left bursting into embers as they die, each ember leaving a glint, and chips off the floor to its
+            // right that flash as they leave and puff dust where they first land: all three kinds of event, at the
+            // tick four after a volley of chips, while its flashes last.
+            (
+                name: "vfx-events",
+                ticks: 88,
+                args: ["--shadow-cache", "turns", "--lods", "off", "--look-dev", "hero", "--time-of-day", "19", "--tier", "desktop-high", "--ao", "off",
+                       "--capture-frames", "16", "--capture-step", "1", "--vfx", "events"],
+                ci_seconds: (lavapipe: 23.5, warp: 67.0),
+            ),
             // A fight's hits as the cue table fires them (M2 E3), from G3's recording, landing on the
             // look-dev character until fighters are drawn: a medium hit two ticks in, which a spark and a
             // little aberration carry; a guard breaking, in ink, with the ring opening round it; the last

@@ -664,7 +664,7 @@ fn facing_camera(at: Vec3) -> Placement {
 
 #[cfg(test)]
 mod tests {
-    use sapphire_render::VfxBend;
+    use sapphire_render::{VfxBend, VfxShape};
 
     use super::*;
 
@@ -906,14 +906,15 @@ mod tests {
         }
     }
 
-    /// The events' show fires its events with nothing dropped on every tier (M6 N3): embers burst high behind the
-    /// character to its left, dust lies on the floor to its right, and nothing is under the floor.
+    /// The events' show fires its events with nothing dropped on every tier (M6 N3), at the tick the `vfx-events`
+    /// golden captures, just after a volley of chips: embers burst high behind the character to its left, dust lies
+    /// on the floor to its right, the chips' births still flash where they left it, and nothing is under the floor.
     #[test]
     fn the_events_show_fires_its_events() {
         for budget in
             [VfxBudget::DESKTOP_HIGH, VfxBudget::DESKTOP_LOW, VfxBudget::MOBILE_HIGH, VfxBudget::MOBILE_LOW]
         {
-            let (player, frame) = frame_after(VfxShow::Events, budget, 100);
+            let (player, frame) = frame_after(VfxShow::Events, budget, 88);
             assert_eq!(frame.stats.effects, 2, "{budget:?}");
             let stats = frame.stats;
             assert_eq!((stats.dropped_particles, stats.dropped_events), (0, 0), "{budget:?}");
@@ -928,6 +929,14 @@ mod tests {
                 .filter(|sprite| sprite.position.y < 0.15 && sprite.position.distance(DEBRIS_SPOT) < 1.5)
                 .count();
             assert!(on_the_floor > 4, "{budget:?}: dust on the floor, {on_the_floor}");
+            let flashes = frame
+                .sprites
+                .iter()
+                .filter(|sprite| {
+                    sprite.shape == VfxShape::Star && sprite.position.distance(DEBRIS_SPOT) < 0.6
+                })
+                .count();
+            assert!(flashes >= 3, "{budget:?}: births' flashes, {flashes}");
             assert!(frame.sprites.iter().all(|sprite| sprite.position.y >= 0.0), "{budget:?}");
         }
     }

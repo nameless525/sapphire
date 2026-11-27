@@ -11,7 +11,10 @@ use crate::document::{
     Effect, EffectId, EffectLibrary, EmitterDesc, Facing, MAX_EMITTERS, MAX_TRAIL_SAMPLES, Source, Spawn,
     TrailDesc,
 };
-use crate::forces::{Force, Here, Resolved, noise_offset};
+use crate::events::{
+    EventTrigger, Fires, Links, ParticleEvent, Pending, Queue, child_key, event_base, event_stream, root_key,
+};
+use crate::forces::{Force, Here, Meeting, Resolved, noise_offset};
 use crate::mesh::MeshLayerDesc;
 use crate::rng::Rng;
 use crate::trail::{Segment, TrailSample};
@@ -91,6 +94,8 @@ struct EmitterState {
     bursts: u32,
     /// Where its noise starts in the noise's lattice (M6 N2), from a stream of its own.
     noise_offset: Vec3,
+    /// The particles it has fired on its own: each one's key (M6 N3), counted, not drawn.
+    born: u32,
 }
 
 /// An effect's place in the world.
@@ -102,6 +107,8 @@ struct Slot {
     owner: OwnerId,
     placement: Placement,
     rng: Rng,
+    /// Where its events' streams start (M6 N3): forked off `rng` as it spawned, never advanced.
+    events: Rng,
     /// Seconds on the owner's clock since it spawned.
     age: f32,
     /// This step's time on the owner's clock, which a frame reads back along ([`VfxWorld::write_frame`]).
@@ -136,6 +143,7 @@ impl Slot {
             owner: OwnerId::WORLD,
             placement: Placement::default(),
             rng: Rng::new(0, 0),
+            events: Rng::new(0, 0),
             age: 0.0,
             step: 0.0,
             stopped: false,
@@ -179,6 +187,12 @@ struct Particle {
     emitter: u8,
     /// Whether its emitter has forces or a ground (M6 N2), which a step has resolved for it.
     forced: bool,
+    /// Whether it has met its ground yet, which a collision event fires on the first time (M6 N3).
+    landed: bool,
+    /// What its emitter's events fire on (M6 N3), and its key: what its events' streams are drawn from, made
+    /// from its emitter's place and count or its parent's, so it's the same whichever order a step meets it in.
+    fires: Fires,
+    key: u64,
 }
 
 /// The simulation (spec §5.16): effects spawned on owners, stepped by owners' clocks, resolved into
@@ -207,6 +221,10 @@ pub struct VfxWorld {
     resolved: Vec<Resolved>,
     /// The wind this step's `Wind` forces carry particles by.
     wind: WindSample,
+    /// Each effect's events resolved (M6 N3), by its place in the library.
+    links: Vec<Links>,
+    /// This step's events, at most the budget's, and the counts of those fired and dropped.
+    queue: Queue,
     rings: Vec<TrailRing>,
     samples: Vec<TrailSample>,
     effects: u32,
@@ -226,6 +244,8 @@ impl VfxWorld {
         let effects = budget.max_effects.min(u32::from(u16::MAX)) as u16;
         let trails = budget.max_trails.min(u32::from(u16::MAX)) as usize;
         Self {
+            links: links_of(&library),
+            queue: Queue::new(budget.max_events),
             library,
             budget,
             seed,
@@ -274,12 +294,14 @@ impl VfxWorld {
     /// may have moved.
     pub fn set_library(&mut self, library: EffectLibrary) {
         self.clear();
+        self.links = links_of(&library);
         self.library = library;
     }
 
     /// Ends every effect playing at once.
     pub fn clear(&mut self) {
         self.particles.clear();
+        self.queue.clear();
         for ring in &mut self.rings {
             ring.live = false;
         }
@@ -310,6 +332,8 @@ impl VfxWorld {
         self.dropped_meshes = 0;
         self.dropped_decals = 0;
         self.dropped_distortions = 0;
+        self.queue.fired = 0;
+        self.queue.dropped = 0;
     }
 
     /// Starts `effect` at `placement` on `owner`'s clock. `None` if the library has no such effect
@@ -317,7 +341,9 @@ impl VfxWorld {
     /// spawns without it, also counted. A [mark](Effect::mark) takes its numbers from the marks'
     /// stream, so it moves no other effect's. An effect of ground decals alone (M5 L7), or of them and mesh layers
     /// that only bend the picture (M5 L6), or of stateless emitters (M6 N8a), takes no stream at all, as it uses no
-    /// random numbers here: playing one moves no spark of any effect spawned after it.
+    /// random numbers here: playing one moves no spark of any effect spawned after it. Its particles' events (M6 N3)
+    /// draw from streams forked off its own, which it doesn't advance, one an event and a particle, so an event
+    /// moves none of its other particles either.
     ///
     /// Allocates nothing.
     pub fn spawn(&mut self, effect: EffectId, owner: OwnerId, placement: Placement) -> Option<EffectHandle> {
@@ -347,6 +373,7 @@ impl VfxWorld {
         }
         if let Some(slot) = self.slot_mut(handle) {
             slot.rng = stream;
+            slot.events = event_base(&stream);
             for (state, offset) in slot.emitters.iter_mut().zip(offsets) {
                 state.noise_offset = offset;
             }
@@ -502,7 +529,9 @@ impl VfxWorld {
 
     /// One step: `steps` says how far each owner's clock moved. Particles age and move, emitters
     /// fire and effects that have finished end, each by its owner's time alone, so an owner in
-    /// hitstop holds its effects exactly where they are while others go on. Allocates nothing.
+    /// hitstop holds its effects exactly where they are while others go on. The particles' events this step met
+    /// (M6 N3) fire last, up to [`VfxBudget::max_events`], their sub-emitters' bursts born where they were.
+    /// Allocates nothing.
     pub fn advance(&mut self, steps: &OwnerSteps<'_>) {
         profiling::scope!("VfxWorld::advance");
         for slot in self.slots.iter_mut().filter(|slot| slot.live) {
@@ -513,6 +542,7 @@ impl VfxWorld {
         self.update_particles();
         self.retire_samples();
         self.emit();
+        self.fire_events();
         self.retire_effects();
     }
 
@@ -559,42 +589,57 @@ impl VfxWorld {
         }
     }
 
+    /// Ages and moves every particle whose owner's clock moved, ending those whose life is over, which an
+    /// attractor takes in or the ground ends, and queues the events their deaths and first landings fire.
     fn update_particles(&mut self) {
+        let Self { library, slots, particles, resolved, queue, .. } = self;
         let mut index = 0;
-        while index < self.particles.len() {
-            let particle = &mut self.particles[index];
-            let slot = &mut self.slots[usize::from(particle.slot)];
+        while index < particles.len() {
+            let particle = &mut particles[index];
+            let slot = &mut slots[usize::from(particle.slot)];
             let step = slot.step;
             if step <= 0.0 {
                 index += 1;
                 continue;
             }
             particle.age += step;
-            if particle.age >= particle.lifetime {
-                slot.particles -= 1;
-                self.particles.swap_remove(index);
-                continue;
-            }
-            particle.velocity.y -= particle.gravity * step;
-            if particle.forced {
-                let resolved =
-                    &self.resolved[usize::from(particle.slot) * MAX_EMITTERS + usize::from(particle.emitter)];
-                let mut alive = resolved.pull(particle.position, &mut particle.velocity);
-                if alive {
+            let mut alive = particle.age < particle.lifetime;
+            if alive {
+                particle.velocity.y -= particle.gravity * step;
+                if particle.forced {
+                    let resolved =
+                        &resolved[usize::from(particle.slot) * MAX_EMITTERS + usize::from(particle.emitter)];
+                    alive = resolved.pull(particle.position, &mut particle.velocity);
+                    if alive {
+                        particle.velocity *= (-particle.drag * step).exp();
+                        particle.position += particle.velocity * step;
+                        if let Some(ground) = resolved.ground {
+                            let meeting = ground.meet(&mut particle.position, &mut particle.velocity);
+                            if meeting != Meeting::Clear && !particle.landed {
+                                particle.landed = true;
+                                if particle.fires.on(EventTrigger::Collide) {
+                                    let events = events_of(library, slot.effect, particle.emitter);
+                                    let mut on_ground = pending(particle);
+                                    on_ground.position.y = ground.height;
+                                    queue.meet(events, EventTrigger::Collide, on_ground);
+                                }
+                            }
+                            alive = meeting != Meeting::Ended;
+                        }
+                    }
+                } else {
                     particle.velocity *= (-particle.drag * step).exp();
                     particle.position += particle.velocity * step;
-                    alive = resolved
-                        .ground
-                        .is_none_or(|ground| ground.meet(&mut particle.position, &mut particle.velocity));
                 }
-                if !alive {
-                    slot.particles -= 1;
-                    self.particles.swap_remove(index);
-                    continue;
+            }
+            if !alive {
+                if particle.fires.on(EventTrigger::Death) {
+                    let events = events_of(library, slot.effect, particle.emitter);
+                    queue.meet(events, EventTrigger::Death, pending(particle));
                 }
-            } else {
-                particle.velocity *= (-particle.drag * step).exp();
-                particle.position += particle.velocity * step;
+                slot.particles -= 1;
+                particles.swap_remove(index);
+                continue;
             }
             particle.rotation += particle.spin * step;
             index += 1;
@@ -629,7 +674,7 @@ impl VfxWorld {
     }
 
     fn emit(&mut self) {
-        let Self { library, budget, slots, particles, dropped_particles, .. } = self;
+        let Self { library, budget, slots, particles, dropped_particles, links, queue, .. } = self;
         for (index, slot) in slots.iter_mut().enumerate() {
             if !slot.live || slot.stopped || slot.step <= 0.0 {
                 continue;
@@ -645,9 +690,14 @@ impl VfxWorld {
                 from = to;
                 0.0
             };
-            // A stateless emitter is the GPU's (M6 N8a): it takes no state, budget or random number here.
-            for (place, emitter) in
-                effect.emitters.iter().enumerate().filter(|(_, emitter)| !emitter.is_stateless())
+            // A stateless emitter is the GPU's (M6 N8a): it takes no state, budget or random number here. A
+            // sub-emitter (M6 N3) fires only at its events, from their streams.
+            let links = links[usize::from(slot.effect)];
+            for (place, emitter) in effect
+                .emitters
+                .iter()
+                .enumerate()
+                .filter(|&(place, emitter)| !emitter.is_stateless() && !links.is_sub(place))
             {
                 let count = owed_particles(emitter, &mut slot.emitters[place], slot.age, slot.step, moved);
                 // Only what fits is walked, so a step costs the budget at most, however much a long
@@ -658,7 +708,14 @@ impl VfxWorld {
                 for birth_index in 0..born {
                     let origin =
                         if along { from.lerp(to, (birth_index + 1) as f32 / born as f32) } else { to };
-                    let particle = birth(emitter, slot, origin, index as u16, place as u8);
+                    let state = &mut slot.emitters[place];
+                    let key = root_key(place, state.born);
+                    state.born = state.born.wrapping_add(1);
+                    let at = Born { origin, slot: index as u16, emitter: place as u8, key };
+                    let particle = birth(emitter, &mut slot.rng, &slot.placement, at);
+                    if particle.fires.on(EventTrigger::Birth) {
+                        queue.meet(&emitter.events, EventTrigger::Birth, pending(&particle));
+                    }
                     particles.push(particle);
                     slot.particles += 1;
                 }
@@ -668,8 +725,46 @@ impl VfxWorld {
         }
     }
 
+    /// Fires the step's events, oldest first (M6 N3): each starts its sub-emitter's burst where its particle was,
+    /// drawn from its own stream, its particles carrying the event's share of that one's velocity. A burst's births
+    /// queue the events they fire behind the rest, while the step has room for them; what doesn't fit was
+    /// counted as it was met. A burst's particles past the budget's cap are dropped and counted, as any are.
+    fn fire_events(&mut self) {
+        let Self { library, budget, slots, particles, dropped_particles, links, queue, .. } = self;
+        let mut index = 0;
+        while let Some(event) = queue.get(index) {
+            index += 1;
+            let slot = &mut slots[usize::from(event.slot)];
+            let Some(effect) = library.effect(EffectId(slot.effect)) else { continue };
+            let (place, number) = (usize::from(event.emitter), usize::from(event.event));
+            let Some(desc) = effect.emitters.get(place).and_then(|emitter| emitter.events.get(number)) else {
+                continue;
+            };
+            let target = links[usize::from(slot.effect)].target(place, number);
+            let Some(sub) = effect.emitters.get(target) else { continue };
+            // A check holds that a sub-emitter's spawn is a burst.
+            let Spawn::Burst { count } = sub.spawn else { continue };
+            let mut rng = event_stream(&slot.events, event.key, number);
+            let room = (budget.max_particles as usize).saturating_sub(particles.len());
+            let born = room.min(count as usize);
+            for child in 0..born {
+                let key = child_key(event.key, number, child as u32);
+                let at = Born { origin: event.position, slot: event.slot, emitter: target as u8, key };
+                let mut particle = birth(sub, &mut rng, &slot.placement, at);
+                particle.velocity += event.velocity * desc.inherit;
+                if particle.fires.on(EventTrigger::Birth) {
+                    queue.meet(&sub.events, EventTrigger::Birth, pending(&particle));
+                }
+                particles.push(particle);
+                slot.particles += 1;
+            }
+            *dropped_particles = dropped_particles.saturating_add(u64::from(count) - born as u64);
+        }
+        queue.finish();
+    }
+
     fn retire_effects(&mut self) {
-        let Self { library, budget, slots, free_slots, by_age, rings, effects, .. } = self;
+        let Self { library, budget, slots, free_slots, by_age, rings, effects, links, .. } = self;
         let mut retired = false;
         for (index, slot) in slots.iter_mut().enumerate() {
             if !slot.live || slot.particles > 0 {
@@ -680,7 +775,7 @@ impl VfxWorld {
                 // A trail records until it's stopped, then until its samples have gone.
                 Some(trail) => slot.stopped && rings[usize::from(trail)].len == 0,
                 // Without one: an effect whose trail didn't fit plays out as if it had none.
-                None => slot.stopped || emitters_done(effect, slot),
+                None => slot.stopped || emitters_done(effect, slot, &links[usize::from(slot.effect)]),
             } && meshes_done(effect, slot)
                 && decals_done(effect, slot, budget);
             if !done {
@@ -825,8 +920,50 @@ impl VfxWorld {
             dropped_meshes: self.dropped_meshes,
             dropped_decals: self.dropped_decals,
             dropped_distortions: self.dropped_distortions,
+            events: self.queue.fired,
+            dropped_events: self.queue.dropped,
             ..VfxStats::default()
         }
+    }
+
+    /// Every live particle's whole state, as bits, beside its effect's slot, its emitter's place and its key: what
+    /// a test compares to the bit, in an order that doesn't hang on the order a step met them in.
+    #[cfg(test)]
+    pub(crate) fn particle_states(&self) -> Vec<ParticleState> {
+        let mut states: Vec<ParticleState> = self
+            .particles
+            .iter()
+            .map(|particle| ParticleState {
+                slot: particle.slot,
+                emitter: particle.emitter,
+                key: particle.key,
+                position: particle.position,
+                velocity: particle.velocity,
+                bits: [
+                    particle.position.x,
+                    particle.position.y,
+                    particle.position.z,
+                    particle.velocity.x,
+                    particle.velocity.y,
+                    particle.velocity.z,
+                    particle.age,
+                    particle.lifetime,
+                    particle.rotation,
+                    particle.spin,
+                    particle.size,
+                ]
+                .map(f32::to_bits),
+                landed: particle.landed,
+            })
+            .collect();
+        states.sort_by_key(|state| (state.slot, state.emitter, state.key));
+        states
+    }
+
+    /// The keys of the live particles of the effect in `slot`, in the order a step meets them.
+    #[cfg(test)]
+    pub(crate) fn met_order(&self, slot: u16) -> Vec<u64> {
+        self.particles.iter().filter(|particle| particle.slot == slot).map(|particle| particle.key).collect()
     }
 
     fn slot(&self, handle: EffectHandle) -> Option<&Slot> {
@@ -840,6 +977,20 @@ impl VfxWorld {
             .get_mut(usize::from(handle.slot))
             .filter(|slot| slot.live && slot.generation == handle.generation)
     }
+}
+
+/// A particle's state as [`VfxWorld::particle_states`] gives it: every value it holds, as bits.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ParticleState {
+    pub(crate) slot: u16,
+    pub(crate) emitter: u8,
+    pub(crate) key: u64,
+    pub(crate) bits: [u32; 11],
+    pub(crate) landed: bool,
+    /// Its position and velocity, for a test to read: in `bits` too.
+    pub(crate) position: Vec3,
+    pub(crate) velocity: Vec3,
 }
 
 /// How many particles `emitter` owes in this step, its effect having been `moved` meters since it last emitted.
@@ -1002,22 +1153,62 @@ fn meshes_done(effect: &Effect, slot: &Slot) -> bool {
 }
 
 /// Whether every emitter of `effect` has nothing left to emit.
-fn emitters_done(effect: &Effect, slot: &Slot) -> bool {
-    effect.emitters.iter().zip(&slot.emitters).all(|(emitter, state)| match emitter.spawn {
-        // The GPU's (M6 N8a): nothing here waits on it.
-        _ if emitter.is_stateless() => true,
-        Spawn::Burst { .. } => state.fired,
-        Spawn::Rate { duration, .. } => duration > 0.0 && state.delay_left == 0.0 && state.time_left == 0.0,
-        Spawn::Repeat { times, .. } => times > 0 && state.bursts >= times,
-        Spawn::PerMeter { .. } => false,
+fn emitters_done(effect: &Effect, slot: &Slot, links: &Links) -> bool {
+    effect.emitters.iter().zip(&slot.emitters).enumerate().all(|(place, (emitter, state))| {
+        match emitter.spawn {
+            // The GPU's (M6 N8a): nothing here waits on it.
+            _ if emitter.is_stateless() => true,
+            // A sub-emitter fires only at its events (M6 N3), which particles still alive keep the effect for.
+            _ if links.is_sub(place) => true,
+            Spawn::Burst { .. } => state.fired,
+            Spawn::Rate { duration, .. } => {
+                duration > 0.0 && state.delay_left == 0.0 && state.time_left == 0.0
+            }
+            Spawn::Repeat { times, .. } => times > 0 && state.bursts >= times,
+            Spawn::PerMeter { .. } => false,
+        }
     })
 }
 
-/// A new particle of `emitter`, in `slot`'s effect, from `origin`: where the effect is, or for a rate a meter
-/// somewhere along the way it moved.
-fn birth(emitter: &EmitterDesc, slot: &mut Slot, origin: Vec3, slot_index: u16, place: u8) -> Particle {
-    let rng = &mut slot.rng;
-    let placement = slot.placement;
+/// Each effect's events resolved, by its place in `library` (M6 N3).
+fn links_of(library: &EffectLibrary) -> Vec<Links> {
+    library.effects().iter().map(Links::of).collect()
+}
+
+/// The events of the emitter at `emitter` in the effect at `effect`.
+fn events_of(library: &EffectLibrary, effect: u16, emitter: u8) -> &[ParticleEvent] {
+    library
+        .effect(EffectId(effect))
+        .and_then(|effect| effect.emitters.get(usize::from(emitter)))
+        .map_or(&[][..], |emitter| &emitter.events[..])
+}
+
+/// An event of `particle`'s, where it is now: which of its emitter's events the queue says.
+fn pending(particle: &Particle) -> Pending {
+    Pending {
+        slot: particle.slot,
+        emitter: particle.emitter,
+        event: 0,
+        position: particle.position,
+        velocity: particle.velocity,
+        key: particle.key,
+    }
+}
+
+/// Where a particle is born and whose it is: its effect's slot, its emitter's place and its key (M6 N3).
+#[derive(Clone, Copy)]
+struct Born {
+    /// Where the effect is, for a rate a meter somewhere along the way it moved, or for a sub-emitter where its
+    /// event fired.
+    origin: Vec3,
+    slot: u16,
+    emitter: u8,
+    key: u64,
+}
+
+/// A new particle of `emitter`, from `rng` (its effect's stream, or an event's), in its effect's `placement`.
+fn birth(emitter: &EmitterDesc, rng: &mut Rng, placement: &Placement, born: Born) -> Particle {
+    let Born { origin, slot: slot_index, emitter: place, key } = born;
     let source = match emitter.source {
         Source::Point => Vec3::ZERO,
         Source::Sphere(radius) => radius * rng.unit().cbrt() * unit_vector(rng),
@@ -1062,6 +1253,9 @@ fn birth(emitter: &EmitterDesc, slot: &mut Slot, origin: Vec3, slot_index: u16, 
         slot: slot_index,
         emitter: place,
         forced: emitter.is_moved(),
+        landed: false,
+        fires: Fires::of(&emitter.events),
+        key,
     }
 }
 

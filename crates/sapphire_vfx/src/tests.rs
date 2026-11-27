@@ -13,6 +13,7 @@ use crate::{
     Placement, Shape, Sim, Source, Spawn, TrailCore, TrailDesc, VfxBudget, VfxWorld,
 };
 
+mod events;
 mod forces;
 
 const TICK: f32 = 1.0 / 60.0;
@@ -39,6 +40,7 @@ fn dots(name: &str, spawn: Spawn) -> EmitterDesc {
         sim: Sim::Cpu,
         wrap: None,
         sheet: None,
+        events: Vec::new(),
     }
 }
 

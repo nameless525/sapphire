@@ -34,6 +34,10 @@ pub struct VfxBudget {
     /// switch, should its measure find noise too dear at a tier's cap): its swirl then turns on twos, as an
     /// anime drawing does. Off on every row.
     pub noise_on_alternate_steps: bool,
+    /// Events a step fires (M6 N3, [`ParticleEvent`](crate::ParticleEvent)): births, deaths and first meetings
+    /// with the ground that start a sub-emitter's burst. Past it they're dropped and counted, never kept for a
+    /// later step, so a step's cost has a bound however many particles die in it.
+    pub max_events: u32,
 }
 
 impl VfxBudget {
@@ -51,6 +55,7 @@ impl VfxBudget {
         decal_noise: true,
         decal_life: 1.0,
         noise_on_alternate_steps: false,
+        max_events: 64,
     };
     pub const DESKTOP_LOW: Self = Self {
         max_particles: 2048,
@@ -64,6 +69,7 @@ impl VfxBudget {
         decal_noise: true,
         decal_life: 1.0,
         noise_on_alternate_steps: false,
+        max_events: 48,
     };
     pub const MOBILE_HIGH: Self = Self {
         max_particles: 1024,
@@ -77,6 +83,7 @@ impl VfxBudget {
         decal_noise: true,
         decal_life: 1.0,
         noise_on_alternate_steps: false,
+        max_events: 32,
     };
     pub const MOBILE_LOW: Self = Self {
         max_particles: 512,
@@ -90,6 +97,7 @@ impl VfxBudget {
         decal_noise: false,
         decal_life: 0.6,
         noise_on_alternate_steps: false,
+        max_events: 16,
     };
 }
 

@@ -123,7 +123,7 @@ mod tests {
     /// as well as macOS). If it fails everywhere, the shipped library, the effects schema's writer or the
     /// envelope changed on purpose: update it, and bump [`COOKER`] or [`IMPORTER`] if the same document now
     /// cooks otherwise.
-    const SHIPPED_HASH: &str = "c41c668f60f9f986fac86353dac9c5e3326143e35815c3e9efa0c2c570950272";
+    const SHIPPED_HASH: &str = "3363f299a91e8d98d7c47f860062f7372d0df91668137d1bc1713a9fe5231b46";
 
     /// A cooked library's bytes, aligned as a pack's reader hands them over.
     fn aligned(bytes: &[u8]) -> AlignedVec {
@@ -218,5 +218,28 @@ mod tests {
             String::from_utf8_lossy(SHIPPED).replacen("lifetime: (0.08, 0.1),", "lifetime: (0.1, 0.08),", 1);
         let error = cook(text.as_bytes()).expect_err("a backward lifetime").to_string();
         assert!(error.contains("`lifetime`") && error.contains("hit_spark"), "{error}");
+    }
+
+    /// An event outside its closed set (M6 N3) fails the cook naming its emitter and field: one naming no emitter of
+    /// its effect, and a sub-emitter that isn't a burst.
+    #[test]
+    fn a_bad_event_fails_the_cook_naming_it() {
+        let shipped = String::from_utf8_lossy(SHIPPED);
+        let unknown =
+            shipped.replacen(r#"emitter: "embers", inherit: 0.25"#, r#"emitter: "ashes", inherit: 0.25"#, 1);
+        let error = cook(unknown.as_bytes()).expect_err("an unknown sub-emitter").to_string();
+        assert!(
+            error.contains("`events`") && error.contains("spark_burst") && error.contains("shells"),
+            "{error}"
+        );
+        let glints = "spawn: Burst(count: 1),\n                        lifetime: (0.25, 0.35),";
+        assert!(shipped.contains(glints), "the glints' spawn, as the shipped library writes it");
+        let rate = shipped.replacen(
+            glints,
+            "spawn: Rate(per_second: 18.0, duration: 1.0),\n                        lifetime: (0.25, 0.35),",
+            1,
+        );
+        let error = cook(rate.as_bytes()).expect_err("a sub-emitter's rate").to_string();
+        assert!(error.contains("`spawn`") && error.contains("glints"), "{error}");
     }
 }

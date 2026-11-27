@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::curve::{Curve, MAX_KEYS};
 use crate::decal::{DecalLayerDesc, MAX_DECAL_LAYERS};
+use crate::events::{MAX_EVENTS, ParticleEvent, effect_problem};
 use crate::forces::{Force, Ground, MAX_FORCES};
 use crate::mesh::{MAX_MESH_LAYERS, MeshLayerDesc};
 
@@ -278,6 +279,11 @@ pub struct EmitterDesc {
     /// one yet. Left out where its quads show `shape`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheet: Option<AssetId>,
+    /// What its particles start as they're born, die or first meet its ground (M6 N3, [`ParticleEvent`]): another
+    /// emitter of its effect, a sub-emitter, fires its burst where each one is, at most [`MAX_EVENTS`]. Left out
+    /// where it has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<ParticleEvent>,
 }
 
 fn same_size() -> Range {
@@ -505,18 +511,25 @@ impl EffectLibrary {
                     problem,
                 })?;
             }
-            for (emitter_index, emitter) in effect.emitters.iter().enumerate() {
-                emitter.problem().map_err(|(field, problem)| EffectLibraryError::Invalid {
+            let emitter_error = |emitter_index: usize, (field, problem): Problem| {
+                let name = &effect.emitters[emitter_index].name;
+                EffectLibraryError::Invalid {
                     effect: effect.name.clone(),
-                    part: if emitter.name.is_empty() {
+                    part: if name.is_empty() {
                         format!("emitter {emitter_index}")
                     } else {
-                        format!("emitter `{}`", emitter.name)
+                        format!("emitter `{name}`")
                     },
                     field,
                     problem,
-                })?;
+                }
+            };
+            for (emitter_index, emitter) in effect.emitters.iter().enumerate() {
+                emitter.problem().map_err(|problem| emitter_error(emitter_index, problem))?;
             }
+            // The events among them (M6 N3), once each is valid on its own.
+            effect_problem(effect)
+                .map_err(|(emitter_index, problem)| emitter_error(emitter_index, problem))?;
             if let Some(trail) = &effect.trail {
                 trail.problem().map_err(|(field, problem)| EffectLibraryError::Invalid {
                     effect: effect.name.clone(),
@@ -535,7 +548,8 @@ impl EffectLibrary {
     /// `warrior_trail`; and effect meshes (M5 L5): the skill's `skill_arc`, and `shock_ring`, `ember_dome` and
     /// `burst_card` for `--vfx`; and ground decals (M5 L7): a wind-up's `telegraph_ground` and a heavy landing's
     /// `scorch_mark`; and forces and the ground (M6 N2), for `--vfx forces`: `ember_drift`, `spark_bounce` and
-    /// `charge_gather`. Their colors and curves are starting points for art direction.
+    /// `charge_gather`; and events and sub-emitters (M6 N3), for `--vfx events`: `spark_burst` and `debris_splash`.
+    /// Their colors and curves are starting points for art direction.
     pub fn default_effects() -> Self {
         Self::from_ron(DEFAULT_EFFECTS).expect("the shipped effects are checked by this module's tests")
     }
@@ -827,6 +841,15 @@ impl EmitterDesc {
         } else {
             require(self.wrap.is_none(), "wrap", "only a stateless emitter wraps")?;
         }
+        require(self.events.len() <= MAX_EVENTS, "events", "an emitter has at most 3")?;
+        require(
+            self.events.is_empty() || !self.is_stateless(),
+            "events",
+            "a stateless emitter's particles fire no events",
+        )?;
+        for event in &self.events {
+            event.problem(self.collide.is_some())?;
+        }
         Ok(())
     }
 }
@@ -908,6 +931,7 @@ impl TrailDesc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::{EventTrigger, MAX_EVENT_DEPTH};
 
     fn emitter() -> EmitterDesc {
         EmitterDesc {
@@ -931,6 +955,7 @@ mod tests {
             sim: Sim::Cpu,
             wrap: None,
             sheet: None,
+            events: Vec::new(),
         }
     }
 
@@ -1045,7 +1070,9 @@ mod tests {
                 "scorch_mark",
                 "ember_drift",
                 "spark_bounce",
-                "charge_gather"
+                "charge_gather",
+                "spark_burst",
+                "debris_splash"
             ]
         );
         let trail = library.find("sword_trail").and_then(|id| library.effect(id)).expect("its trail");
@@ -1274,6 +1301,126 @@ mod tests {
         assert!(text.contains(r#"sheet: Some("7c4b0a9e-3f1d-4c2a-9b8e-5d6f7a8b9c0d")"#), "{text}");
         assert_eq!(EffectLibrary::from_ron(&text).expect("reads"), library);
         assert_eq!(library.sheets(), [spark, smoke], "sorted, each once");
+    }
+
+    /// An emitter called `name` whose particles fire `events`, each `(trigger, sub-emitter)`.
+    fn firing(name: &str, events: &[(EventTrigger, &str)]) -> EmitterDesc {
+        let events = events.iter().map(|&(on, emitter)| ParticleEvent {
+            on,
+            emitter: emitter.to_owned(),
+            inherit: 0.5,
+        });
+        EmitterDesc { name: name.to_owned(), events: events.collect(), ..emitter() }
+    }
+
+    /// The emitter and the field an effect of `emitters` makes the library name.
+    fn events_error(emitters: Vec<EmitterDesc>) -> (String, &'static str) {
+        let effect = Effect {
+            name: "hit".to_owned(),
+            emitters,
+            trail: None,
+            mark: false,
+            meshes: Vec::new(),
+            decals: Vec::new(),
+        };
+        match EffectLibrary::new(vec![effect]) {
+            Err(EffectLibraryError::Invalid { part, field, .. }) => (part, field),
+            other => panic!("expected an invalid emitter, got {other:?}"),
+        }
+    }
+
+    /// M6 N3's closed set: an event fires only from a CPU emitter, a collision's only where it has a ground, at most
+    /// three an emitter with a share of velocity from 0 to 1, naming a burst of its own effect with no delay on the
+    /// CPU; events never lead back where they started nor chain past two. Each refusal names its emitter and field.
+    #[test]
+    fn events_take_only_their_closed_set_and_each_refusal_is_named() {
+        use EventTrigger::{Birth, Collide, Death};
+        let part = |name: &str| format!("emitter `{name}`");
+        let sub = |name: &str| firing(name, &[]);
+        let ok = |emitters: Vec<EmitterDesc>| {
+            EffectLibrary::new(vec![Effect {
+                name: "hit".to_owned(),
+                emitters,
+                trail: None,
+                mark: false,
+                meshes: Vec::new(),
+                decals: Vec::new(),
+            }])
+            .is_ok()
+        };
+        assert!(ok(vec![firing("sparks", &[(Death, "embers"), (Birth, "embers")]), sub("embers")]));
+        assert_eq!(events_error(vec![firing("sparks", &[(Death, "ashes")])]), (part("sparks"), "events"));
+        let stateless = EmitterDesc { sim: Sim::Stateless, ..firing("sparks", &[(Death, "embers")]) };
+        assert_eq!(events_error(vec![stateless, sub("embers")]), (part("sparks"), "events"));
+        assert_eq!(
+            events_error(vec![firing("sparks", &[(Collide, "embers")]), sub("embers")]),
+            (part("sparks"), "events"),
+            "a collision needs a ground"
+        );
+        let grounded = EmitterDesc {
+            collide: Some(Ground { bounce: 0.5, friction: 0.0, dies: false }),
+            ..firing("sparks", &[(Collide, "embers")])
+        };
+        assert!(ok(vec![grounded, sub("embers")]));
+        for inherit in [-0.1, 1.5, f32::NAN] {
+            let mut bad = firing("sparks", &[(Death, "embers")]);
+            bad.events[0].inherit = inherit;
+            assert_eq!(events_error(vec![bad, sub("embers")]), (part("sparks"), "events"), "{inherit}");
+        }
+        let four = firing("sparks", &[(Death, "embers"); MAX_EVENTS + 1]);
+        assert_eq!(events_error(vec![four, sub("embers")]), (part("sparks"), "events"));
+        assert!(ok(vec![firing("sparks", &[(Death, "embers"); MAX_EVENTS]), sub("embers")]));
+        // The sub-emitter's own fields.
+        let rate = EmitterDesc { spawn: Spawn::Rate { per_second: 10.0, duration: 1.0 }, ..sub("embers") };
+        assert_eq!(
+            events_error(vec![firing("sparks", &[(Death, "embers")]), rate]),
+            (part("embers"), "spawn")
+        );
+        let late = EmitterDesc { delay: 0.1, ..sub("embers") };
+        assert_eq!(
+            events_error(vec![firing("sparks", &[(Death, "embers")]), late]),
+            (part("embers"), "delay")
+        );
+        let gpu = EmitterDesc { sim: Sim::Stateless, ..sub("embers") };
+        assert_eq!(events_error(vec![firing("sparks", &[(Death, "embers")]), gpu]), (part("embers"), "sim"));
+        // Cycles, one emitter's and two's, and a chain past the cap.
+        assert_eq!(events_error(vec![firing("sparks", &[(Death, "sparks")])]), (part("sparks"), "events"));
+        let (a, b) = (firing("a", &[(Death, "b")]), firing("b", &[(Birth, "a")]));
+        assert_eq!(events_error(vec![sub("root"), a.clone(), b.clone()]), (part("a"), "events"));
+        let into_the_loop = firing("root", &[(Death, "a")]);
+        assert_eq!(events_error(vec![into_the_loop, a, b]), (part("a"), "events"), "named where it loops");
+        let twins = vec![firing("sparks", &[(Death, "embers")]), sub("embers"), sub("embers")];
+        assert_eq!(events_error(twins), (part("embers"), "name"));
+        let chain = |length: usize| {
+            let names: Vec<String> = (0..=length).map(|link| format!("e{link}")).collect();
+            (0..=length)
+                .map(|link| match names.get(link + 1) {
+                    Some(next) => firing(&names[link], &[(Death, next.as_str())]),
+                    None => sub(&names[link]),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(ok(chain(MAX_EVENT_DEPTH)));
+        assert_eq!(events_error(chain(MAX_EVENT_DEPTH + 1)), (part("e0"), "events"));
+    }
+
+    /// What N3 adds is written only where an emitter has events, and reads back as it was.
+    #[test]
+    fn events_write_only_where_an_emitter_has_them() {
+        let plain = library_of(emitter()).expect("valid").to_ron().expect("written");
+        assert!(!plain.contains("events"), "{plain}");
+        let effect = Effect {
+            name: "hit".to_owned(),
+            emitters: vec![firing("sparks", &[(EventTrigger::Death, "embers")]), firing("embers", &[])],
+            trail: None,
+            mark: false,
+            meshes: Vec::new(),
+            decals: Vec::new(),
+        };
+        let library = EffectLibrary::new(vec![effect]).expect("valid");
+        let text = library.to_ron().expect("written");
+        assert!(text.contains("on: Death") && text.contains(r#"emitter: "embers""#), "{text}");
+        assert_eq!(EffectLibrary::from_ron(&text).expect("reads"), library);
     }
 
     /// A stateless emitter's form holds the document's curves: at any particle's life its size, opacity and

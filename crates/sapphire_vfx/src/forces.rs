@@ -302,15 +302,28 @@ impl Resolved {
     }
 }
 
+/// What became of a particle at the ground.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Meeting {
+    /// It's above it.
+    Clear,
+    /// It met it and came back out.
+    Met,
+    /// It ends there, put on it and its speed into it gone: where a collision event starts (M6 N3).
+    Ended,
+}
+
 impl Landing {
-    /// Meets a particle that moved to `position` at `velocity` with the ground. False where it ends there.
-    pub(crate) fn meet(&self, position: &mut Vec3, velocity: &mut Vec3) -> bool {
+    /// Meets a particle that moved to `position` at `velocity` with the ground.
+    pub(crate) fn meet(&self, position: &mut Vec3, velocity: &mut Vec3) -> Meeting {
         let depth = self.height - position.y;
         if depth <= 0.0 {
-            return true;
+            return Meeting::Clear;
         }
         if self.dies {
-            return false;
+            position.y = self.height;
+            velocity.y = velocity.y.max(0.0);
+            return Meeting::Ended;
         }
         if velocity.y < 0.0 {
             velocity.y = -velocity.y * self.bounce;
@@ -319,7 +332,7 @@ impl Landing {
         velocity.z *= self.keep;
         // Out of the ground by the share of the way in that it bounces.
         position.y = self.height + depth * self.bounce;
-        true
+        Meeting::Met
     }
 }
 
@@ -440,18 +453,19 @@ mod tests {
     fn a_ground_bounces_by_its_share_and_slides_by_its_friction() {
         let ground = Landing { height: 1.0, bounce: 0.5, keep: 0.75, dies: false };
         let (mut position, mut velocity) = (Vec3::new(0.0, 0.8, 0.0), Vec3::new(2.0, -4.0, 0.0));
-        assert!(ground.meet(&mut position, &mut velocity));
+        assert_eq!(ground.meet(&mut position, &mut velocity), Meeting::Met);
         assert!((position.y - 1.1).abs() < 1e-6, "{position}");
         assert_eq!(velocity, Vec3::new(1.5, 2.0, 0.0));
         let (mut above, mut moving) = (Vec3::new(0.0, 1.5, 0.0), Vec3::new(2.0, -4.0, 0.0));
-        assert!(ground.meet(&mut above, &mut moving));
+        assert_eq!(ground.meet(&mut above, &mut moving), Meeting::Clear);
         assert_eq!(
             (above, moving),
             (Vec3::new(0.0, 1.5, 0.0), Vec3::new(2.0, -4.0, 0.0)),
             "above it, untouched"
         );
         let deadly = Landing { dies: true, ..ground };
-        let (mut under, mut falling) = (Vec3::new(0.0, 0.9, 0.0), Vec3::NEG_Y);
-        assert!(!deadly.meet(&mut under, &mut falling));
+        let (mut under, mut falling) = (Vec3::new(0.0, 0.9, 0.0), Vec3::new(0.5, -1.0, 0.0));
+        assert_eq!(deadly.meet(&mut under, &mut falling), Meeting::Ended);
+        assert_eq!((under, falling), (Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.5, 0.0, 0.0)), "on it, sliding");
     }
 }

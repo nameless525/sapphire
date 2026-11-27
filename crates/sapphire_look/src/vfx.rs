@@ -231,6 +231,10 @@ pub struct VfxStats {
     /// Bending meshes not drawn because the budget's cap was full, the lowest priority first, since the
     /// simulation began.
     pub dropped_distortions: u64,
+    /// Particles' events fired, each starting a sub-emitter's burst (M6 N3), since the simulation began.
+    pub events: u64,
+    /// Events not fired because a step's cap was full, since the simulation began: never kept for a later step.
+    pub dropped_events: u64,
     /// The app's measure of the last simulation step and frame write, against spec §3.2's budget
     /// (0.3 ms on Desktop-Low, 0.6 on Mobile-Low). Zero until an app measures it: the simulation
     /// can't read the clock itself (rule R2).

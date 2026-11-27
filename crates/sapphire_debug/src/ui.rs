@@ -1011,7 +1011,8 @@ fn vfx_text(vfx: &sapphire_render::VfxRenderStats) -> String {
     let dropped = simulation.dropped_particles
         + simulation.dropped_ribbon_points
         + simulation.dropped_effects
-        + simulation.dropped_trails;
+        + simulation.dropped_trails
+        + simulation.dropped_events;
     format!(
         "{} effects: {} sprites, {} ribbons of {} points, {} a frame, {:.0} µs to simulate, {dropped} dropped",
         simulation.effects,

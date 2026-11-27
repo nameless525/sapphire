@@ -177,6 +177,86 @@ const DUST_TRAIL: &str = r#"(
     ),
 )"#;
 
+/// Events and sub-emitters (M6 N3) fire with nothing from the heap: the shipped bursting sparks and splashing
+/// debris, two deep, beside a world whose deaths overflow Mobile-Low's cap of a step's events every second, so
+/// the queue's drops are walked too, one owner frozen now and then.
+#[test]
+fn events_and_their_drops_allocate_nothing_once_warmed() {
+    let shipped = EffectLibrary::default_effects();
+    let effects = ["spark_burst", "debris_splash"].map(|name| shipped.find(name).expect("shipped"));
+    let mut world = VfxWorld::new(shipped, VfxBudget::DESKTOP_LOW, 7);
+    let flood = EffectLibrary::from_ron(DEATH_FLOOD).expect("valid");
+    let mut floods = VfxWorld::new(flood, VfxBudget::MOBILE_LOW, 7);
+    let mut frame = VfxFrame::default();
+    let runner = OwnerId(1);
+    let mut tick = 0_u32;
+    let mut play = |world: &mut VfxWorld, floods: &mut VfxWorld, frame: &mut VfxFrame, ticks: u32| {
+        for _ in 0..ticks {
+            let frozen = (tick % 90) < 6;
+            let held = [(runner, 0.0)];
+            let owners: &[(OwnerId, f32)] = if frozen { &held } else { &[] };
+            world.advance(&OwnerSteps { world: TICK, owners });
+            floods.advance(&OwnerSteps { world: TICK, owners: &[] });
+            if tick.is_multiple_of(120) {
+                for (index, &effect) in effects.iter().enumerate() {
+                    let at = Placement::at(Vec3::new(index as f32, 1.0, 0.0));
+                    if let Some(handle) = world.spawn(effect, runner, at) {
+                        world.set_ground(handle, 0.0);
+                    }
+                }
+            }
+            if tick % 120 == 100 {
+                world.clear();
+            }
+            if tick.is_multiple_of(60) {
+                floods.spawn(sapphire_vfx::EffectId(0), OwnerId::WORLD, Placement::default());
+            }
+            world.write_frame(frame, 0.5);
+            floods.write_frame(frame, 0.5);
+            tick += 1;
+        }
+    };
+    play(&mut world, &mut floods, &mut frame, 330);
+    let peak = (world.stats(), floods.stats());
+    let ((), counts) = count_in_scope(|| play(&mut world, &mut floods, &mut frame, 720));
+    assert_eq!(counts.allocations, 0, "after warming, {peak:?}");
+    let (shown, flooded) = (world.stats(), floods.stats());
+    assert!(shown.events > 500 && shown.dropped_events == 0, "{shown:?}");
+    assert!(flooded.events > 100 && flooded.dropped_events > 1000, "{flooded:?}");
+}
+
+/// A burst of 120 that all die in one step, each firing an event: far past any tier's cap.
+const DEATH_FLOOD: &str = r#"(
+    type: "sapphire::vfx::EffectLibrary",
+    version: 5,
+    data: (
+        effects: [
+            (
+                name: "death_flood",
+                emitters: [
+                    (
+                        name: "many",
+                        spawn: Burst(count: 120),
+                        source: Sphere(0.5),
+                        lifetime: (0.5, 0.5),
+                        size: [(0.0, 0.02)],
+                        color: [(0.0, (1.0, 1.0, 1.0))],
+                        events: [(on: Death, emitter: "ash")],
+                    ),
+                    (
+                        name: "ash",
+                        spawn: Burst(count: 2),
+                        lifetime: (0.3, 0.3),
+                        motion: (speed: (0.2, 0.4), spread: 180.0),
+                        size: [(0.0, 0.01)],
+                        color: [(0.0, (0.5, 0.5, 0.5))],
+                    ),
+                ],
+            ),
+        ],
+    ),
+)"#;
+
 /// The frame's capacity is all that warms: a frame holding a duel's capacity needs nothing else,
 /// from the very first frame, in a world that's only just been made.
 #[test]

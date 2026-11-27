@@ -100,6 +100,7 @@ impl Arm {
             sim: Sim::Cpu,
             wrap: None,
             sheet: None,
+            events: Vec::new(),
         };
         let effect = Effect {
             name: "field".to_owned(),

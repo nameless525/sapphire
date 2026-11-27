@@ -35,13 +35,15 @@
 //!   attractor, a speed limit, a plane at the owner's feet), and stateless emitters (M6 N8a, [`Sim::Stateless`]:
 //!   each particle a closed-form function of a seed and an age, resolved by [`EmitterDesc::stateless`] into
 //!   `sapphire_look`'s CPU reference, which the renderer's include mirrors; a world here never simulates one), and
-//!   a painted sheet an emitter names by its asset ID (M6 N4a, [`EmitterDesc::sheet`], drawn from N4b), checked
-//!   whole so an author's mistake names its field. Versions 1 to 4 read to the bit (`testdata/`). A game's
+//!   a painted sheet an emitter names by its asset ID (M6 N4a, [`EmitterDesc::sheet`], drawn from N4b), and
+//!   events (M6 N3, [`ParticleEvent`]: a particle born, dying or first meeting its ground starts a sub-emitter's
+//!   burst where it is, from a stream of its own), checked whole so an author's mistake names its field. Versions 1 to 4 read to the bit (`testdata/`). A game's
 //!   library (`<name>.effects.ron`) cooks as the `Effects` asset kind (M6 N1) and loads through the asset
 //!   server, read and checked here as a document is; [`EffectLibrary::default_effects`] compiles in a hit spark,
 //!   a sword trail, a dust puff and what a fight's cues play.
 //! - **The simulation** ([`VfxWorld`]): CPU particles and trail samples, in pools sized from a
-//!   [`VfxBudget`] when it starts. Past a cap it counts what it dropped and keeps drawing, and it
+//!   [`VfxBudget`] when it starts, and a step's events, at most [`VfxBudget::max_events`]. Past a cap it counts
+//!   what it dropped and keeps drawing, and it
 //!   allocates nothing per frame once warmed (`tests/allocations.rs`). Its random numbers are
 //!   seeded, so a golden image's particles land the same way in every run.
 //! - **Clocks** (spec §4.5): every effect runs on one [`OwnerId`]'s clock, through a plain time step
@@ -77,6 +79,7 @@ mod budget;
 mod curve;
 mod decal;
 mod document;
+mod events;
 mod forces;
 mod mesh;
 mod rng;
@@ -91,6 +94,7 @@ pub use document::{
     Effect, EffectId, EffectLibrary, EffectLibraryError, EmitterDesc, Facing, Light, MAX_EMITTERS,
     MAX_TRAIL_SAMPLES, Motion, Range, Shape, Sim, Source, Spawn, TrailCore, TrailDesc,
 };
+pub use events::{EventTrigger, MAX_EVENT_DEPTH, MAX_EVENTS, ParticleEvent};
 pub use forces::{Force, Ground, MAX_FORCES, MAX_NOISE_OCTAVES};
 pub use mesh::{
     Bend, Distortion, Erosion, Flipbook, FrameTiming, MAX_BEND, MAX_MESH_LAYERS, MeshLayerDesc, MeshShape,

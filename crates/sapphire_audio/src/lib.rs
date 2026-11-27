@@ -75,6 +75,8 @@
 mod backend;
 mod events;
 mod kira_backend;
+pub mod loudness;
+mod master;
 mod mix;
 mod mock;
 mod music;
@@ -92,6 +94,7 @@ pub use backend::{
 };
 pub use events::{CueParameters, MAX_CUE_PARAMETERS, ParameterValue, SURFACE};
 pub use kira_backend::KiraBackend;
+pub use master::{DynamicRange, LIMITER_CEILING_DB, LIMITER_LOOK_AHEAD, LIMITER_RELEASE, MAX_RATE, Master};
 pub use mock::{MockBackend, MockCall};
 pub use music::{LEAD_SECONDS, MusicRequest};
 pub use output::{CpalOutput, OfflineOutput, Output, device_opens};

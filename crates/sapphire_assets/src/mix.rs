@@ -560,6 +560,25 @@ pub enum OutputProfile {
     Portable,
 }
 
+/// How far a render through the shipped mix may read from its profile's loudness, in LU (M6 U10).
+pub const LOUDNESS_TOLERANCE_LU: f32 = 2.0;
+
+impl OutputProfile {
+    /// Both, `Home` first.
+    pub const ALL: [Self; 2] = [Self::Home, Self::Portable];
+
+    /// The integrated loudness a game plays at through this profile, in LUFS (M6 U10, m6-plan §3's "Loudness"):
+    /// what a mix's [`Profile::volume_db`] is set to reach, and what CI meters its renders against, within
+    /// [`LOUDNESS_TOLERANCE_LU`].
+    #[must_use]
+    pub const fn loudness_lufs(self) -> f32 {
+        match self {
+            Self::Home => -24.0,
+            Self::Portable => -18.0,
+        }
+    }
+}
+
 /// The master's volume and effects for one [`OutputProfile`].
 #[derive(
     Reflect,
@@ -577,6 +596,8 @@ pub enum OutputProfile {
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub profile: OutputProfile,
+    /// The master's gain: what brings the game to [`OutputProfile::loudness_lufs`] (M6 U10), a fixed gain rather
+    /// than a loop that listens.
     #[serde(default)]
     pub volume_db: f32,
     #[serde(default)]

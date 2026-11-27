@@ -470,12 +470,13 @@ mod tests {
         update(&mut system, Some("running"), &[]);
         assert_eq!(update(&mut system, Some("running"), &[]), [MockCall::PlayMusic]);
 
-        system.set_volume(0.5);
+        // The music's own volume: every sound's is the master's (M6 U10).
+        system.set_bus_volume(Bus::Music, 0.5);
         let half = 20.0 * 0.5_f32.log10();
         assert_eq!(
             update(&mut system, Some("running"), &[]),
             [MockCall::SetBusGain { bus: music_bus(), gain_db: half, fade: BUS_FADE }],
-            "the music turns down with every voice"
+            "the music turns down with its volume"
         );
         let dodge = [LineRequest { line: LineKey::of("perfect-dodge"), target: CueTarget::Flat }];
         let calls = update(&mut system, Some("running"), &dodge);
@@ -487,11 +488,11 @@ mod tests {
         assert!(calls.contains(&ducked), "{calls:?}");
 
         // Off is silent, under a line or not, and never past silence.
-        system.set_volume(0.0);
+        system.set_bus_volume(Bus::Music, 0.0);
         let calls = update(&mut system, Some("running"), &[]);
         let silent = MockCall::SetBusGain { bus: music_bus(), gain_db: SILENCE_DB, fade: BUS_FADE };
         assert!(calls.contains(&silent), "{calls:?}");
-        system.set_volume(1.0);
+        system.set_bus_volume(Bus::Music, 1.0);
         system.backend_mut().finish(slot.expect("the line starts"));
         assert_eq!(
             update(&mut system, Some("running"), &[]),

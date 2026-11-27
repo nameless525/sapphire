@@ -919,7 +919,8 @@ mod tests {
         let held = stream.renderer.lock().expect("not poisoned");
         assert_eq!(stream.callback::<u8>(64), [128; 128]);
         drop(held);
-        assert_ne!(stream.callback::<u8>(64), [128; 128]);
+        // Longer than the master's look-ahead (M6 U10), which the mix's first sound waits out.
+        assert_ne!(stream.callback::<u8>(256), [128; 512]);
     }
 
     #[test]

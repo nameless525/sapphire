@@ -20,6 +20,7 @@ use crate::backend::{
     VoiceParams, VoiceSlot, VoiceStart,
 };
 use crate::events::{CueParameters, CuePlan, ParameterValue};
+use crate::master::DynamicRange;
 use crate::mix::MixState;
 use crate::music::{Music, MusicRequest};
 use crate::rng::CueRandom;
@@ -493,6 +494,8 @@ pub struct AudioSystem<B: AudioBackend> {
     listener_space: Space,
     /// How many reverbs the room's plays on.
     reverb_slots: u8,
+    /// The output profile asked for (M6 U10), kept through a change of mix.
+    profile: OutputProfile,
     stats: AudioStats,
     /// A dropped cue's reason has been logged once.
     warned_unknown: bool,
@@ -533,6 +536,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             listener_room: None,
             listener_space: Space::Outdoors,
             reverb_slots: 2,
+            profile: OutputProfile::Home,
             stats: AudioStats::default(),
             warned_unknown: false,
             warned_no_output: false,
@@ -548,12 +552,15 @@ impl<B: AudioBackend> AudioSystem<B> {
     }
 
     /// Plays everything through `mix` from now on (M6 U2): its buses, snapshots, ducking rules and profiles,
-    /// under the `Home` profile. Load-time work, before the music and voices it's for: what plays ends, and
-    /// music starts again at its next request. A mix that doesn't check changes nothing.
+    /// under the output profile asked for last. Load-time work, before the music and voices it's for: what plays
+    /// ends, and music starts again at its next request. A mix that doesn't check changes nothing.
     pub fn set_mix(&mut self, mix: &Mix) -> Result<(), MixError> {
         mix.check()?;
         self.stop_voices();
         self.backend.set_mix(mix);
+        if self.profile != OutputProfile::Home {
+            self.backend.set_output_profile(self.profile);
+        }
         self.music.forget_playing();
         self.mix = MixState::new(mix);
         self.sent = sent_of(mix);
@@ -586,9 +593,32 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.caps
     }
 
-    /// Plays the mix through `profile`'s volume and effects (M6 U2), or `Home`'s if the mix has none for it.
+    /// Plays the mix through `profile`'s volume and effects (M6 U2), or `Home`'s if the mix has none for it, and
+    /// its dynamic range relative to `profile`'s loudness (M6 U10). The profile stays through [`Self::set_mix`].
     pub fn set_output_profile(&mut self, profile: OutputProfile) {
-        self.backend.set_output_profile(profile);
+        if profile != self.profile {
+            self.profile = profile;
+            self.backend.set_output_profile(profile);
+        }
+    }
+
+    /// The output profile asked for last: `Home` until another is.
+    #[must_use]
+    pub const fn output_profile(&self) -> OutputProfile {
+        self.profile
+    }
+
+    /// Plays the whole mix through `range` (M6 U10), the player's choice, relative to the output profile's
+    /// loudness. A new system plays [`DynamicRange::Wide`], the mix as it is.
+    pub fn set_dynamic_range(&mut self, range: DynamicRange) {
+        self.backend.set_dynamic_range(range);
+    }
+
+    /// How late the mix leaves for the device past when it was asked (M6 U10): the master limiter's look-ahead,
+    /// which a device's own latency adds to. What a face's mouth waits for, beside that (U15).
+    #[must_use]
+    pub fn mix_latency(&self) -> Duration {
+        self.backend.mix_latency()
     }
 
     /// Gives a sound's mouth curve, for the ducking rules that follow a voice line's envelope (M6 U2). Load-time
@@ -645,9 +675,16 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.set_suspension(background, self.interrupted);
     }
 
-    /// The player's volume, a share of full: every voice and the music follow at the next update.
+    /// The player's volume, a share of full: the mix's last gain (M6 U10), after the dynamic range and the
+    /// limiter, so the slider moves what's heard by exactly its decibels whatever the range. The kinds' volumes
+    /// ([`Self::set_bus_volume`]) stay on their buses, before the range, which evens out a rebalanced mix as a
+    /// night mode should.
     pub fn set_volume(&mut self, volume: f32) {
-        self.volume_db = decibels_of(volume);
+        let volume_db = decibels_of(volume);
+        if volume_db != self.volume_db {
+            self.volume_db = volume_db;
+            self.backend.set_output_volume(volume_db);
+        }
     }
 
     /// The player's volumes (M4 A2): [`Self::set_volume`]'s, and each bus's.
@@ -663,8 +700,8 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
     }
 
-    /// The player's volume for one bus (M4 A2), a share of full on top of [`Self::set_volume`]'s: its
-    /// voices, and for the music its stems, follow at the next update.
+    /// The player's volume for one bus (M4 A2), a share of full under [`Self::set_volume`]'s: its voices, and for
+    /// the music its stems, follow at the next update.
     pub fn set_bus_volume(&mut self, bus: Bus, volume: f32) {
         self.bus_volume_db[bus.index()] = decibels_of(volume);
     }
@@ -1389,8 +1426,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.mix.step_ducks(&self.levels, dt);
         let music = BusId::category(Bus::Music).index();
         for (bus, sent) in self.sent.iter_mut().enumerate() {
-            let player_db =
-                if bus == music { self.volume_db + self.bus_volume_db[Bus::Music.index()] } else { 0.0 };
+            let player_db = if bus == music { self.bus_volume_db[Bus::Music.index()] } else { 0.0 };
             let rest_db = (self.mix.volume_db(bus) + player_db).max(SILENCE_DB);
             let gain_db = (rest_db + self.mix.now(bus).gain_db).max(SILENCE_DB);
             let moved = (gain_db - sent.gain_db).abs() > GAIN_STEP_DB
@@ -1410,11 +1446,12 @@ impl<B: AudioBackend> AudioSystem<B> {
     /// What `voice` should sound like now.
     fn params_of(&self, voice: &Voice, listener: &Listener) -> VoiceParams {
         let position = self.position_of(voice);
-        // The music bus carries the player's volume itself, for the score's stems ([`Self::follow_bus_gains`]),
-        // so a cue on it takes it there and not again here (M4 A8).
+        // The music bus carries the player's music volume itself, for the score's stems
+        // ([`Self::follow_bus_gains`]), so a cue on it takes it there and not again here (M4 A8). The overall
+        // volume is the master's (M6 U10).
         let volume_db = match voice.bus {
             Bus::Music => 0.0,
-            bus => self.volume_db + self.bus_volume_db[bus.index()],
+            bus => self.bus_volume_db[bus.index()],
         };
         let mut gain_db = voice.gain_db + volume_db;
         let mut pan = 0.0;
@@ -1656,17 +1693,16 @@ mod tests {
         let mut rng = CueRng::new(1);
         system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
         assert_eq!(started(&mut system).gain_db, 0.0);
+        // The master's last gain (M6 U10), once: no voice and no bus moves for it.
         system.set_volume(0.5);
-        system.update(&frame(&[], &[]), &mut rng);
+        system.set_volume(0.5);
         let calls = system.backend_mut().take_calls();
-        let [MockCall::SetVoice { params, .. }, MockCall::SetBusGain { bus, gain_db, .. }] = calls[..] else {
-            panic!("{calls:?}")
-        };
-        assert_eq!(bus, music_bus());
-        assert!((params.gain_db + 6.02).abs() < 0.01, "{params:?}");
-        assert_eq!(gain_db, params.gain_db, "the music with it");
+        let [MockCall::SetOutputVolume(volume_db)] = calls[..] else { panic!("{calls:?}") };
+        assert!((volume_db + 6.02).abs() < 0.01, "{volume_db}");
+        system.update(&frame(&[], &[]), &mut rng);
+        assert_eq!(system.backend_mut().take_calls(), []);
         system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
-        assert!((started(&mut system).gain_db + 6.02).abs() < 0.01);
+        assert_eq!(started(&mut system).gain_db, 0.0);
         // Off is silent, and nothing a setting says can reach the mixer as a bad number.
         for volume in [0.0, -1.0, f32::NAN] {
             system.set_volume(volume);
@@ -1674,6 +1710,8 @@ mod tests {
         }
         system.set_volume(3.0);
         assert_eq!(system.volume_db, 0.0);
+        let calls = system.backend_mut().take_calls();
+        assert_eq!(calls, [MockCall::SetOutputVolume(SILENCE_DB), MockCall::SetOutputVolume(0.0)]);
     }
 
     #[test]
@@ -1689,16 +1727,22 @@ mod tests {
         let [MockCall::SetBusGain { bus, gain_db, .. }] = calls[..] else { panic!("{calls:?}") };
         assert_eq!(bus, music_bus());
         assert!((gain_db + 20.0).abs() < 0.01, "{gain_db}");
-        // The effects' and every sound's add up.
+        // The effects' is on the voice, every sound's on the master after it (M6 U10).
         system.set_volumes(Volumes { all: 0.5, effects: 0.5, ..Volumes::FULL });
         system.update(&frame(&[], &[]), &mut rng);
         let calls = system.backend_mut().take_calls();
-        let [MockCall::SetVoice { params, .. }, MockCall::SetBusGain { bus, gain_db, .. }] = calls[..] else {
+        let [
+            MockCall::SetOutputVolume(all_db),
+            MockCall::SetVoice { params, .. },
+            MockCall::SetBusGain { bus, gain_db, .. },
+        ] = calls[..]
+        else {
             panic!("{calls:?}")
         };
+        assert!((all_db + 6.02).abs() < 0.01, "{all_db}");
         assert_eq!(bus, music_bus());
-        assert!((params.gain_db + 12.04).abs() < 0.01, "{params:?}");
-        assert!((gain_db + 6.02).abs() < 0.01, "the music under every sound's alone: {gain_db}");
+        assert!((params.gain_db + 6.02).abs() < 0.01, "{params:?}");
+        assert_eq!(gain_db, 0.0, "the music back at full, under every sound's on the master");
         assert_eq!(Volumes::default(), Volumes::FULL);
     }
 

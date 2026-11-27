@@ -141,6 +141,45 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     voice_limits_place_with_no_allocation();
     rooms_cross_with_no_allocation(2);
     rooms_cross_with_no_allocation(1);
+    the_master_limits_with_no_allocation();
+}
+
+/// The master (M6 U10) working its hardest: every voice at full scale on one bus, far over the limiter's ceiling,
+/// through Night's dynamic range, switching profile and range as it plays. Its stages were made with the mixer, so
+/// limiting, compressing and the switches allocate nothing.
+fn the_master_limits_with_no_allocation() {
+    use sapphire_assets::mix::OutputProfile;
+    use sapphire_audio::DynamicRange;
+
+    let mix = Mix::from_document(include_str!("../../../content/audio/game.mix.ron")).unwrap();
+    let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
+    system.set_mix(&mix).unwrap();
+    let loud = DecodedSound { sample_rate: RATE, channels: 1, samples: vec![1.0; RATE as usize * 4] };
+    system.add_sound(SOUND, &loud);
+    system.add_cue(CUE, Cue { volume_db: [0.0, 0.0], pitch: [1.0, 1.0], attenuation: None, ..cue() });
+    let requests = [CueRequest::new(CUE, CueTarget::Flat)];
+    let mut rng = CueRng::new(1);
+    for _ in 0..16 {
+        system.update(&frame(&[], &requests), &mut rng);
+    }
+    system.set_dynamic_range(DynamicRange::Night);
+    let mut buffer = vec![0.0; GAME_FRAME * 2];
+    system.backend_mut().output_mut().render_into(&mut buffer);
+    let ((), limiting) = count_in_scope(|| {
+        for n in 0..60 {
+            if n % 20 == 10 {
+                let profile = if n == 10 { OutputProfile::Portable } else { OutputProfile::Home };
+                system.set_output_profile(profile);
+                system.set_dynamic_range(DynamicRange::ALL[n / 20]);
+            }
+            system.update(&frame(&[], &[]), &mut rng);
+            system.backend_mut().output_mut().render_into(&mut buffer);
+        }
+    });
+    let ceiling = 10_f32.powf(sapphire_audio::LIMITER_CEILING_DB / 20.0);
+    let peak = buffer.iter().fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+    assert!(peak > 0.0 && peak <= ceiling, "16 voices at full scale, limited to {peak}");
+    assert_eq!(limiting.allocations, 0, "the master limited, compressed or switched with an allocation");
 }
 
 /// A version 3 cue's start (M6 U4a), walking a switch on the surface to a random node keeping clear of its last

@@ -3,7 +3,7 @@
 
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Bus, Cue, CueNode, HitstopResponse};
-use sapphire_assets::mix::Mix;
+use sapphire_assets::mix::{Mix, OutputProfile};
 use sapphire_assets::mouth::MouthCurve;
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
@@ -121,7 +121,8 @@ fn level_at(samples: &[f32], hz: f32) -> f32 {
 }
 
 /// A 2 kHz tone on the effects bus through a perfect dodge, `mix` given or not: 0.25 s at normal speed, 1 s
-/// at 0.2×, 1 s back at normal speed. Each window of four game frames: its level and its frequency.
+/// at 0.2×, 1 s back at normal speed. Each window of four game frames: its level and its frequency, as asked, with
+/// the master's look-ahead (M6 U10) taken off the front and its `Home` gain off the level, which v0.2.0 hadn't.
 fn slow_motion(mix: Option<&Mix>) -> Vec<(f32, f32)> {
     let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
     if let Some(mix) = mix {
@@ -131,13 +132,18 @@ fn slow_motion(mix: Option<&Mix>) -> Vec<(f32, f32)> {
     system.add_cue(CUE, cue_on(Bus::Sfx, SOUND, 0.0));
     let mut rng = CueRng::new(1);
     let mut left = Vec::new();
-    for index in 0..135 {
+    // One frame more, to make up what the look-ahead holds back.
+    for index in 0..136 {
         let scale = if (15..75).contains(&index) { 0.2 } else { 1.0 };
         let play = [CueRequest::new(CUE, CueTarget::Flat)];
         let cues: &[CueRequest] = if index == 0 { &play } else { &[] };
         left.extend(step(&mut system, &frame(scale, &[], cues), &mut rng));
     }
-    left.chunks(4 * GAME_FRAME).map(|window| (rms_db(window), frequency_of(window))).collect()
+    let late = (system.mix_latency().as_secs_f64() * f64::from(RATE)).round() as usize;
+    left.drain(..late);
+    left.truncate(135 * GAME_FRAME);
+    let master_db = mix.map_or(0.0, |mix| mix.profiles[mix.profile(OutputProfile::Home)].volume_db);
+    left.chunks(4 * GAME_FRAME).map(|window| (rms_db(window) - master_db, frequency_of(window))).collect()
 }
 
 /// The shipped mix's `slow_motion` is v0.2.0's perfect dodge, sample for sample as far as a listener goes:

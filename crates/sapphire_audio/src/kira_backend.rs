@@ -16,7 +16,9 @@
 //! lands on the bar in the mixer's own time, to within one internal buffer, however late the frame
 //! that asked.
 //!
-//! The main track ends in a fold to mono (M4 A2), out of the signal until the player asks for it.
+//! The main track ends in a fold to mono (M4 A2), out of the signal until the player asks for it, and then the
+//! master (M6 U10, `master`): the player's dynamic range and the look-ahead limiter, after everything, the room's
+//! reverb included, which ends in the main track beside the mix's master.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,6 +44,7 @@ use crate::backend::{
     AudioBackend, BusId, BusParams, DeviceStatus, STOP_FADE, StartError, StemStart, VoiceParams, VoiceSlot,
     VoiceStart,
 };
+use crate::master::{DynamicRange, MasterBuilder, MasterControl};
 use crate::output::Output;
 use crate::room_reverb::{RoomHandle, RoomReverbBuilder, RoomTap};
 use crate::system::MAX_SLOTS;
@@ -118,14 +121,18 @@ pub struct KiraBackend<O: Output> {
     music: Music,
     /// Whether the main track folds to mono, which its effect reads in the mixer's own time.
     mono: Arc<AtomicBool>,
+    /// The dynamic range and the profile's loudness the main track's master reads (M6 U10).
+    master: Arc<MasterControl>,
 }
 
 impl<O: Output> KiraBackend<O> {
     /// Starts the mixer on an output made with `settings`.
     pub fn new(settings: O::Settings) -> Result<Self, O::Error> {
         let mono = Arc::new(AtomicBool::new(false));
+        let master = Arc::new(MasterControl::new(DynamicRange::Wide, OutputProfile::Home.loudness_lufs()));
         let mut main_track_builder = MainTrackBuilder::default();
         main_track_builder.add_effect(MonoFoldBuilder(Arc::clone(&mono)));
+        main_track_builder.add_effect(MasterBuilder(Arc::clone(&master)));
         let mut manager = AudioManager::<O>::new(AudioManagerSettings {
             capacities: Capacities::default(),
             main_track_builder,
@@ -149,6 +156,7 @@ impl<O: Output> KiraBackend<O> {
             reverb_slots: 2,
             music: Music { clock, stems: Vec::with_capacity(MAX_STEMS) },
             mono,
+            master,
         })
     }
 
@@ -395,7 +403,10 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
             voice.stop(Duration::ZERO);
         }
         match build_mix(&mut self.manager, mix, &self.room, self.reverb_slots) {
-            Some(tracks) => self.mix = tracks,
+            Some(tracks) => {
+                self.mix = tracks;
+                self.master.set_target(OutputProfile::Home.loudness_lufs());
+            }
             None => {
                 tracing::error!(target: LOG_TARGET, "the mixer has no room for the mix, and keeps the last")
             }
@@ -513,7 +524,8 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
             return;
         }
         mix.profile = place;
-        let volume_db = mix.profiles[place].1;
+        let (heard, volume_db) = mix.profiles[place];
+        self.master.set_target(heard.loudness_lufs());
         let moving = tween(Duration::from_secs_f32(PROFILE_EASE_SECONDS));
         mix.master.set_volume(Decibels(volume_db), moving);
         mix.room_track.set_volume(Decibels(volume_db), moving);
@@ -603,6 +615,18 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
 
     fn set_mono(&mut self, mono: bool) {
         self.mono.store(mono, Ordering::Relaxed);
+    }
+
+    fn set_dynamic_range(&mut self, range: DynamicRange) {
+        self.master.set_range(range);
+    }
+
+    fn set_output_volume(&mut self, volume_db: f32) {
+        self.master.set_volume_db(volume_db);
+    }
+
+    fn mix_latency(&self) -> Duration {
+        self.master.latency()
     }
 
     fn decoded_bytes(&self) -> u64 {

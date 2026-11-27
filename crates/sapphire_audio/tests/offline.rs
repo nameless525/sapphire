@@ -6,7 +6,7 @@ use std::path::Path;
 use cpal::Sample;
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, CueNode, HitstopResponse};
-use sapphire_assets::mix::Mix;
+use sapphire_assets::mix::{Mix, OutputProfile};
 use sapphire_assets::sound::{DecodedSound, Sound, decode_vorbis};
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioSystem, BusId, BusParams, CueRequest, CueRng, CueTarget, DeviceState,
@@ -69,9 +69,14 @@ fn frequency_of(samples: &[f32]) -> f32 {
     rising as f32 * RATE as f32 / samples.len() as f32
 }
 
-/// The game's mix, as shipped: its `slow_motion` filters the world's buses.
+/// The game's mix, as shipped: its `slow_motion` filters the world's buses. `Home`'s normalization (M6 U10), a
+/// gain on the whole mix that `tests/loudness.rs` in sapphire_cues measures, is taken off, so a sound plays here
+/// as authored.
 fn shipped() -> Mix {
-    Mix::from_document(include_str!("../../../content/audio/game.mix.ron")).unwrap()
+    let mut mix = Mix::from_document(include_str!("../../../content/audio/game.mix.ron")).unwrap();
+    let home = mix.profile(OutputProfile::Home);
+    mix.profiles[home].volume_db = 0.0;
+    mix
 }
 
 fn mixer(sound: &DecodedSound) -> KiraBackend<OfflineOutput> {

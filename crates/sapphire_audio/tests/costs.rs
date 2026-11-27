@@ -2,6 +2,7 @@
 //! on none of them, since a loaded machine would fail it. `#[ignore]`d, and only meaningful optimized:
 //! `cargo test -p sapphire_audio --release --test costs -- --ignored --nocapture --test-threads=1`.
 //! The room's reverbs alone (M6 U5's kill line): the same with `what_two_reverbs_cost`.
+//! The master's limiter and dynamic range alone (M6 U10): the same with `what_the_master_costs`.
 //! Update/mix lines give the observed minimum and median pooled across all rounds; decoding gives
 //! the observed minimum. These describe this instrumented workload, not stable tail estimates.
 //! One immutable tone is synthesized per process; mixer construction and PCM conversion still
@@ -444,4 +445,47 @@ fn what_two_reverbs_cost() {
         share(two.saturating_sub(none)),
         share(one.saturating_sub(none)),
     );
+}
+
+/// M6 U10: the master's stages alone, a device block at a time, on a block of loud and quiet music-like sound that
+/// the limiter has to work on: under each dynamic range, so `Wide` is the limiter's cost and the others add the
+/// compressor's. Each round starts a fresh master over the same sound; the limiter's buffers are made with it, as
+/// the mixer makes them, outside the timing.
+#[test]
+#[ignore = "prints what the master costs: run it optimized, by hand"]
+fn what_the_master_costs() {
+    use sapphire_audio::{DynamicRange, Master};
+
+    // Two seconds of a beat over a chord, each beat's hit over full scale.
+    let frames = RATE as usize * 2;
+    let source: Vec<f32> = (0..frames)
+        .flat_map(|n| {
+            let t = n as f32 / RATE as f32;
+            let chord =
+                0.2 * ((t * 220.0 * std::f32::consts::TAU).sin() + (t * 277.2 * std::f32::consts::TAU).sin());
+            let hit = 1.6 * (-(t % 0.5) * 30.0).exp() * (t * 90.0 * std::f32::consts::TAU).sin();
+            [chord + hit, chord - 0.5 * hit]
+        })
+        .collect();
+    let length = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
+    for range in DynamicRange::ALL {
+        let mut times = Vec::new();
+        for _ in 0..ROUNDS {
+            let mut master = Master::new(RATE);
+            let mut samples = source.clone();
+            for block in samples.chunks_mut(BLOCK * 2) {
+                let timer = Stopwatch::start();
+                master.process(block, range, -24.0);
+                times.push(timer.elapsed());
+            }
+            std::hint::black_box(&samples);
+        }
+        let (fastest, median) = min_and_median(&mut times);
+        println!(
+            "master of {BLOCK} frames, {range:?}: {:.2} us, median {:.2} us, {:.3}% of real time at the median",
+            micros(fastest),
+            micros(median),
+            median.as_secs_f64() / length.as_secs_f64() * 100.0
+        );
+    }
 }

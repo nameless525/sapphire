@@ -11,6 +11,7 @@ use crate::backend::{
     AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
     VoiceStart,
 };
+use crate::master::DynamicRange;
 
 /// One thing asked of a [`MockBackend`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,6 +60,8 @@ pub enum MockCall {
         fade: Duration,
     },
     SetOutputProfile(OutputProfile),
+    SetDynamicRange(DynamicRange),
+    SetOutputVolume(f32),
     /// The room's reverb (M6 U5), by its feedback, or none.
     SetRoom {
         feedback: Option<f32>,
@@ -262,6 +265,19 @@ impl AudioBackend for MockBackend {
 
     fn set_mono(&mut self, mono: bool) {
         self.calls.push(MockCall::SetMono(mono));
+    }
+
+    fn set_dynamic_range(&mut self, range: DynamicRange) {
+        self.calls.push(MockCall::SetDynamicRange(range));
+    }
+
+    fn set_output_volume(&mut self, volume_db: f32) {
+        self.calls.push(MockCall::SetOutputVolume(volume_db));
+    }
+
+    /// The mock mixes nothing, so it delays nothing.
+    fn mix_latency(&self) -> Duration {
+        Duration::ZERO
     }
 
     fn decoded_bytes(&self) -> u64 {

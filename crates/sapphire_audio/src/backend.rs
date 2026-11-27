@@ -14,6 +14,8 @@ use sapphire_assets::cue::{Bus, SILENCE_DB};
 use sapphire_assets::mix::{Mix, OutputProfile, Reverb};
 use sapphire_assets::sound::DecodedSound;
 
+use crate::master::DynamicRange;
+
 /// A voice's place in the backend: an index below twice [`MAX_VOICES`](crate::MAX_VOICES), so the voices a frame
 /// lets go can fade while as many start, reused once [`AudioBackend::voice_finished`] has said so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -291,6 +293,18 @@ pub trait AudioBackend {
 
     /// Folds the whole mix to mono, or back to stereo (M4 A2), smoothly enough not to click.
     fn set_mono(&mut self, mono: bool);
+
+    /// Plays the whole mix through `range` (M6 U10), relative to the output profile's loudness, smoothly enough
+    /// not to click. A new backend plays [`DynamicRange::Wide`].
+    fn set_dynamic_range(&mut self, range: DynamicRange);
+
+    /// The player's overall volume in dB (M4 A2), as the very last gain on the mix (M6 U10): after the dynamic
+    /// range and the limiter, so neither undoes it. At or under `SILENCE_DB` the mix is silent.
+    fn set_output_volume(&mut self, volume_db: f32);
+
+    /// How late the mix leaves for the output, past what it was asked (M6 U10): the master limiter's look-ahead.
+    /// A device's own latency comes after it. None before the mixer has run.
+    fn mix_latency(&self) -> Duration;
 
     /// The bytes of decoded sound the backend holds for [`Self::add_sound`]'s sounds (M6 U1): what playing
     /// them costs in memory, beside their cooked bytes in the asset server's ledger.

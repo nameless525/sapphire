@@ -266,6 +266,9 @@
 //! - `--spring-floor on|off` (with `--clip`, `--graph` or `--arena`): lays springs and cloth on the ground
 //!   the feet's IK probes find, on by default (M5 C2). Scenes from before it whose springs touch the
 //!   ground pin it off; `lookdev-death-back-springs` shows it.
+//! - `--spring-interval <ticks>` (with `--arena`): solves a fight's characters' clothes' clearance every `ticks`
+//!   ticks near the camera, in place of the tier's (M6 B9, `ClearanceQuality::interval`: 1 on Desktop-High, 4
+//!   elsewhere), for J1's probe of a coarser interval. Presentation only, as the springs are.
 //! - `--anim-levels on|off` and `--anim-jobs on|off` (with `--arena`): whether a fight's crowd is posed less
 //!   often far off and not at all out of sight, and whether it's posed in jobs, both on by default (M5 C1).
 //!   Neither moves anything the simulation reads; the fight bench's animation rows compare them.
@@ -504,6 +507,9 @@
 //!     Its cut-ins (M5 L10, the ultimate's close-up) play too; `--cutins off` plays none, as the goldens
 //!     from before them pin, and `--cutins full` draws each across the whole frame, whatever its panel's
 //!     shape. `--cutin-library <ron>` takes them from a `CutInLibrary` document instead of the shipped one.
+//!     `--inset-supersample 1|2` draws the insets' and cut-ins' scenes at that multiple of their pictures in
+//!     place of the tier's (M6 B9, `InsetSettings::supersample`: 2 on the desktops, 1 on the phones), for E2's
+//!     probe of the cut-in's cost; 1 on a desktop leaves an inset with no antialiasing at all.
 //!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
 //!     log, even on drivers that report nothing. Slow; for debugging, and for timing each pass

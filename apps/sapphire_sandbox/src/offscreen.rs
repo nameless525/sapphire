@@ -29,7 +29,6 @@ use game_combat::party_looks::PartyLooks;
 use game_ui::hud::ShownFight;
 use game_ui::menus::MenuDocument;
 use sapphire_stage::scene::LookDev;
-#[cfg(feature = "dev")]
 use sapphire_stage::scene::Scene;
 use sapphire_stage::{CaptureTextures, StageDesc, headless_gpu};
 #[cfg(feature = "dev")]
@@ -359,7 +358,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 player = player.with_ik(solver);
             }
             scene.play_clip(player);
-            scene.set_motion_tier(quality.active().id);
+            set_motion_tier(scene, quality.active().id, options);
         }
         if let Some(script) = options.graph {
             content.load_graph(playable.kind, renderer, gpu)?;
@@ -375,7 +374,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 driver.with_springs_on(options.springs != Some(false)),
                 sapphire_stage::anim_graph::GraphShow::new(script),
             );
-            scene.set_motion_tier(quality.active().id);
+            set_motion_tier(scene, quality.active().id, options);
         }
         if let Some(model) = options.model {
             let held = sapphire_stage::lookdev::model::hold(content, renderer, gpu, model)?;
@@ -444,7 +443,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 player = player.with_ik(solver);
             }
             scene.play_clip(player);
-            scene.set_motion_tier(quality.active().id);
+            set_motion_tier(scene, quality.active().id, options);
         }
         if options.combat.is_some() {
             content.load_graph(playable.kind, renderer, gpu)?;
@@ -459,7 +458,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 player.with_springs_on(options.springs != Some(false)).with_ik(solver),
                 enemy,
             );
-            scene.set_motion_tier(quality.active().id);
+            set_motion_tier(scene, quality.active().id, options);
         }
     }
     if let Some((stem, at)) = &options.zone {
@@ -621,6 +620,18 @@ impl FrameHooks<ShownFight> for StageTools {
 
     fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
         self.dev.record(graph, target);
+    }
+}
+
+/// Runs the scene's secondary motion and animation levels as `tier` does, with the clothes' clearance solved
+/// every `--spring-interval` ticks near the camera where the options say (M6 B9), not the tier's: in a window,
+/// offscreen and on a tier change alike.
+pub(crate) fn set_motion_tier(scene: &mut Scene, tier: sapphire_render::quality::TierId, options: &Options) {
+    scene.set_motion_tier(tier);
+    if let Some(interval) = options.spring_interval {
+        let mut quality = sapphire_stage::animate::spring_quality(tier);
+        quality.clearance.interval = interval;
+        scene.set_spring_quality(quality);
     }
 }
 

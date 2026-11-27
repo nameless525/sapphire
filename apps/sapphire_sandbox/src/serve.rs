@@ -42,7 +42,7 @@ use sapphire_time::{Stopwatch, TICK_HZ};
 use crate::LOG_TARGET;
 use crate::app::create_renderer;
 use crate::fight_bench::{frame_length, steps_a_frame};
-use crate::offscreen::{FORMAT, Stage};
+use crate::offscreen::{FORMAT, Stage, set_motion_tier};
 use crate::options::Options;
 use sapphire_stage::audio::OfflineAudio;
 
@@ -220,7 +220,7 @@ impl Serving {
                 stage.quality.restore(previous);
             }
         }
-        stage.scene.set_motion_tier(stage.quality.active().id);
+        set_motion_tier(&mut stage.scene, stage.quality.active().id, &self.options);
         stage.content.set_tier(stage.quality.tier());
     }
 

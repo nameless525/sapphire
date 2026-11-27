@@ -26,6 +26,7 @@ use crate::LOG_TARGET;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
 use crate::input::{PLAYER, SandboxInput};
+use crate::offscreen::set_motion_tier;
 use crate::options::Options;
 use crate::stats::{FrameStats, Stages};
 use game_combat::combat::Combat;
@@ -314,7 +315,7 @@ impl App for SandboxApp {
                     player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
-                scene.set_motion_tier(quality.active().id);
+                set_motion_tier(&mut scene, quality.active().id, &options);
             }
             if let Some(script) = options.graph {
                 content.load_graph(playable.kind, &mut renderer.renderer, &device.gpu)?;
@@ -329,7 +330,7 @@ impl App for SandboxApp {
                     driver.with_springs_on(options.springs != Some(false)),
                     sapphire_stage::anim_graph::GraphShow::new(script),
                 );
-                scene.set_motion_tier(quality.active().id);
+                set_motion_tier(&mut scene, quality.active().id, &options);
             }
             if let Some(meshes) = renderer.enemy {
                 let held = show.fight.show.held_enemy(&content)?;
@@ -381,7 +382,7 @@ impl App for SandboxApp {
                     player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
-                scene.set_motion_tier(quality.active().id);
+                set_motion_tier(&mut scene, quality.active().id, &options);
             }
             if options.combat.is_some() {
                 content.load_graph(playable.kind, &mut renderer.renderer, &device.gpu)?;
@@ -396,7 +397,7 @@ impl App for SandboxApp {
                     player.with_springs_on(options.springs != Some(false)).with_ik(solver),
                     enemy,
                 );
-                scene.set_motion_tier(quality.active().id);
+                set_motion_tier(&mut scene, quality.active().id, &options);
             }
         }
         if let Some(sword) = renderer.sword {
@@ -1223,7 +1224,7 @@ impl SandboxApp {
                 self.quality.restore(previous);
             }
         }
-        self.scene.set_motion_tier(self.quality.active().id);
+        set_motion_tier(&mut self.scene, self.quality.active().id, &self.options);
         self.content.set_tier(self.quality.tier());
         platform.set_frame_rate(self.quality.frame_rate());
         Ok(())

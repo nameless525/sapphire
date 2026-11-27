@@ -11,9 +11,9 @@ use sapphire_render::quality::{
 };
 use sapphire_render::{
     CascadeCache, CharacterSwitches, ColorVision, CullPose, CullingMode, CullingThresholds, DebugView,
-    DrawRuns, EffectScale, FoliageSettings, LevelSettings, LevelsMode, LightPath, LocalAir, MIN_RENDER_SCALE,
-    MainDepth, MaterialDrive, MaterialRead, Msaa, PostVariants, RenderSettings, ShadowSettings, Upscaler,
-    Weather, Wind,
+    DrawRuns, EffectScale, FoliageSettings, InsetSettings, LevelSettings, LevelsMode, LightPath, LocalAir,
+    MIN_RENDER_SCALE, MainDepth, MaterialDrive, MaterialRead, Msaa, PostVariants, RenderSettings,
+    ShadowSettings, Upscaler, Weather, Wind,
 };
 use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
@@ -57,6 +57,8 @@ Common options:
   --render-scale <0.25..1>   Render scale override
   --upscaler bilinear|edge  Phone tiers' upscaler override
   --shafts on|off           Light shafts override
+  --inset-supersample 1|2   Insets' and cut-ins' supersample override
+  --spring-interval <ticks> Ticks between the clothes' clearance solves, not the tier's
   --look-dev <scene>        Select a look-development scene
   --replay <file>           Play a recorded simulation
   --record <file>           Record a simulation
@@ -379,6 +381,10 @@ pub(crate) struct Options {
     /// (M5 C2). On unless it says off; a golden from before it pins it off. Needs `--clip`, `--graph` or
     /// `--arena`.
     pub spring_floor: Option<bool>,
+    /// `--spring-interval <ticks>`: the ticks between solves of a character's clothes' clearance near the
+    /// camera, in place of the tier's (`ClearanceQuality::interval`, M6 B9: J1's probe prices Desktop-High's at 2
+    /// against its 1). Presentation only, as the springs are. The tier's unless it says. Needs `--arena`.
+    pub spring_interval: Option<u32>,
     /// `--anim-levels on|off`: whether a fight's crowd is posed less often far off and not at all out of
     /// sight (M5 C1). On unless it says off. Needs `--arena`.
     pub anim_levels: Option<bool>,
@@ -567,6 +573,9 @@ pub(crate) struct Options {
     /// says off, which the goldens from before bends pin. Needs `--cues` or `--vfx`. A tier without bends draws
     /// none either way.
     pub distortion: Option<bool>,
+    /// `--inset-supersample 1|2`: the insets' and cut-ins' supersample in place of the tier's
+    /// (`InsetSettings::supersample`, M6 B9: E2's probe prices the desktops' 2 against 1).
+    pub inset_supersample: Option<u32>,
     /// `--cutins off`: the cues play no cut-in (M5 L10), as goldens from before them pin.
     pub cutins_off: bool,
     /// `--cutins full`: the cues' cut-ins drawn across the whole frame, whatever their panels' shapes.
@@ -965,6 +974,10 @@ impl Options {
             measure_pixels: self.measure_pixels,
             measure_unfolded_overlays: self.measure_unfolded_overlays,
             shafts: tier.shafts && self.shafts != Some(Switch::Off),
+            inset: InsetSettings {
+                supersample: self.inset_supersample.unwrap_or(tier.inset.supersample),
+                ..tier.inset
+            },
             foliage: FoliageSettings {
                 local_air: self.local_air.unwrap_or(tier.foliage.local_air),
                 ..tier.foliage
@@ -1397,6 +1410,13 @@ impl Options {
                         other => return Err(format!("--springs expects on or off, got {other:?}")),
                     });
                 }
+                "--spring-interval" => {
+                    let ticks: u32 = number(&value("--spring-interval")?, "--spring-interval")?;
+                    if ticks == 0 {
+                        return Err("--spring-interval expects at least 1 tick between solves".to_owned());
+                    }
+                    options.spring_interval = Some(ticks);
+                }
                 "--spring-floor" => {
                     options.spring_floor = Some(match value("--spring-floor")?.as_str() {
                         "on" => true,
@@ -1793,6 +1813,13 @@ impl Options {
                         other => return Err(format!("--cutins expects on, off or full, got {other:?}")),
                     };
                 }
+                "--inset-supersample" => {
+                    options.inset_supersample = Some(match value("--inset-supersample")?.as_str() {
+                        "1" => 1,
+                        "2" => 2,
+                        other => return Err(format!("--inset-supersample expects 1 or 2, got {other:?}")),
+                    });
+                }
                 "--cutin-library" => options.cutin_library = Some(PathBuf::from(value("--cutin-library")?)),
                 "--vfx" => {
                     let raw = value("--vfx")?;
@@ -2073,6 +2100,9 @@ impl Options {
             return Err(
                 "--springs runs under a clip or a graph: it needs --clip, --graph or --arena".to_owned()
             );
+        }
+        if options.spring_interval.is_some() && options.arena.is_none() {
+            return Err("--spring-interval paces a fight's clothes: it needs --arena".to_owned());
         }
         if options.spring_floor.is_some()
             && options.clip.is_none()
@@ -3533,6 +3563,29 @@ mod tests {
         assert_eq!(runs(&["--draw-runs", "every-opaque"]), DrawRuns::EveryViewOpaque);
         assert!(parse(&["--draw-runs", "prepasses"]).is_err());
         assert!(parse(&["--draw-runs", "on"]).is_err());
+    }
+
+    /// M6 B9's two probes' switches: each the tier's unless it says, so no run that leaves it out moves.
+    #[test]
+    fn the_probes_supersample_and_clearance_interval_are_the_tiers_unless_asked() {
+        let tiers = sapphire_render::quality::TierTable::shipped();
+        let desktop = tiers.get(TierId::DesktopHigh).render_settings();
+        let phone = tiers.get(TierId::MobileHigh).render_settings();
+        let inset = |args: &[&str], tier| parse(args).unwrap().0.render_settings(tier).inset;
+        assert_eq!(inset(&[], desktop), desktop.inset, "the tier's");
+        assert_eq!(inset(&[], phone), phone.inset, "the tier's");
+        assert_eq!(inset(&["--inset-supersample", "1"], desktop).supersample, 1);
+        assert_eq!(inset(&["--inset-supersample=2"], phone).supersample, 2);
+        let one = inset(&["--inset-supersample", "1"], desktop);
+        assert_eq!((one.max_side, one.cutin_side), (desktop.inset.max_side, desktop.inset.cutin_side));
+        assert!(parse(&["--inset-supersample", "1.5"]).is_err(), "a whole multiple until E2");
+
+        let fight = ["--bench", "1", "--arena", "--replay", "a"];
+        let interval = |args: &[&str]| parse(&[&fight[..], args].concat()).unwrap().0.spring_interval;
+        assert_eq!(interval(&[]), None, "the tier's");
+        assert_eq!(interval(&["--spring-interval", "2"]), Some(2));
+        assert!(parse(&[&fight[..], &["--spring-interval", "0"]].concat()).is_err());
+        assert!(parse(&["--spring-interval", "2"]).unwrap_err().contains("--arena"));
     }
 
     #[test]

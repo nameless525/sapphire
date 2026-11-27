@@ -203,7 +203,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::TextureLevel
         | AssetKind::ProbeGrid
         | AssetKind::ReflectionProbes
-        | AssetKind::Font => Codec::Zstd,
+        | AssetKind::Font
+        | AssetKind::EffectSheet => Codec::Zstd,
         AssetKind::Material
         | AssetKind::Rig
         | AssetKind::Skeleton

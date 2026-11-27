@@ -3784,7 +3784,7 @@ mod new_renderer_tests {
     fn an_effects_library_loads_as_the_document_said() {
         let shipped = EffectLibrary::default_effects();
         let pack = |id: AssetId, library: String| {
-            let bytes = Effects { library }.to_cooked().expect("cooked");
+            let bytes = Effects { library, sheets: Vec::new() }.to_cooked().expect("cooked");
             PackAsset::encode(id, AssetKind::Effects, Codec::Lz4, &bytes, Vec::new(), 3).expect("encoded")
         };
         let (good, bad) = (AssetId::from_bytes([0x51; 16]), AssetId::from_bytes([0x52; 16]));

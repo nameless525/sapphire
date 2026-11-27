@@ -66,7 +66,7 @@ pub fn read(bytes: &[u8]) -> Result<EffectLibrary, EffectsCookError> {
 /// Cooks a document's bytes: the library as the effects crate writes it back, read again through the
 /// runtime's check.
 pub fn cook(bytes: &[u8]) -> Result<Vec<u8>, EffectsCookError> {
-    let cooked = Effects { library: read(bytes)?.to_ron()? }.to_cooked()?;
+    let cooked = Effects { library: read(bytes)?.to_ron()?, sheets: Vec::new() }.to_cooked()?;
     Effects::read(&cooked)?;
     Ok(cooked.into_vec())
 }
@@ -101,7 +101,7 @@ mod tests {
     /// as well as macOS). If it fails everywhere, the shipped library, the effects schema's writer or the
     /// envelope changed on purpose: update it, and bump [`COOKER`] or [`IMPORTER`] if the same document now
     /// cooks otherwise.
-    const SHIPPED_HASH: &str = "db4f6313a9e1b68f7d3aff0a954527cb26930addaeacf719e145e34791e2219f";
+    const SHIPPED_HASH: &str = "c41c668f60f9f986fac86353dac9c5e3326143e35815c3e9efa0c2c570950272";
 
     /// A cooked library's bytes, aligned as a pack's reader hands them over.
     fn aligned(bytes: &[u8]) -> AlignedVec {

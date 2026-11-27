@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::AssetId;
 use crate::clip::{CLIP_EXTENSION, Clip, ClipError};
 use crate::cue::{CUE_EXTENSION, Cue, CueError};
+use crate::effect_sheet::{EffectSheet, EffectSheetError, SHEET_EXTENSION};
 use crate::effects::{EFFECTS_EXTENSION, Effects, EffectsError};
 use crate::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains, FontError};
 use crate::graph::{AnimGraph, GRAPH_EXTENSION, GraphError};
@@ -128,14 +129,18 @@ pub enum AssetKind {
     /// names buses by path and sounds not at all, so it depends on nothing. CPU data, never uploaded.
     Mix = 31,
     /// An effects library (`.seffects`, M6 N1): [`Effects`], `sapphire_vfx`'s library as its document, what a
-    /// game's cues and sword trails play. It names effects by name and assets not at all, so it depends on
-    /// nothing. CPU data, never uploaded.
+    /// game's cues and sword trails play. It depends on the painted sheets its emitters name (M6 N4a). CPU
+    /// data, never uploaded.
     Effects = 32,
+    /// A painted effect sheet (`.ssheet`, M6 N4a): [`EffectSheet`], a flipbook's frames as layers of the
+    /// effects atlas. It depends on nothing. Its library's atlas is built from its bytes, so it is never
+    /// uploaded by itself and keeps them.
+    EffectSheet = 33,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -168,6 +173,7 @@ impl AssetKind {
         Self::Ambient,
         Self::Mix,
         Self::Effects,
+        Self::EffectSheet,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -211,6 +217,7 @@ impl AssetKind {
             Self::Ambient => AMBIENT_EXTENSION,
             Self::Mix => MIX_EXTENSION,
             Self::Effects => EFFECTS_EXTENSION,
+            Self::EffectSheet => SHEET_EXTENSION,
         }
     }
 
@@ -249,19 +256,21 @@ impl AssetKind {
             Self::Ambient => "ambient characters",
             Self::Mix => "mix",
             Self::Effects => "effects library",
+            Self::EffectSheet => "effect sheet",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
     /// string table, a font, font chains, a navmesh, a timeline, a UI document, an encounter, a script, a
-    /// dialogue, an enemy, a score, voice lines, a playable kind, a character motion, a mix or an effects library
-    /// is ready once it and its dependencies are decoded.
+    /// dialogue, an enemy, a score, voice lines, a playable kind, a character motion, a mix, an effects library or an
+    /// effect sheet is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
             Self::Mix
                 | Self::Effects
+                | Self::EffectSheet
                 | Self::Rig
                 | Self::Skeleton
                 | Self::Clip
@@ -298,12 +307,14 @@ impl AssetKind {
     /// skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
     /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores, voice lines, playable
-    /// kinds, character motions, mixes and effects libraries are read on the CPU only, so they stay.
+    /// kinds, character motions, mixes and effects libraries are read on the CPU only, so they stay, and so does an
+    /// effect sheet, whose library's atlas is built from its bytes (M6 N4b).
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
             Self::Mix
                 | Self::Effects
+                | Self::EffectSheet
                 | Self::Material
                 | Self::ProbeGrid
                 | Self::Rig
@@ -344,9 +355,9 @@ impl AssetKind {
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and skeletons,
     /// materials on textures, texture levels on their textures, clips on skeletons, cues and scores on sounds, voice lines on cues, animation
     /// graphs on clips, zones on collider sets, navmeshes and encounters, font chains on fonts, enemies on
-    /// move sets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
+    /// move sets, effects libraries on sheets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
     /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts, dialogues, reflection
-    /// probes, playable kinds, character motions and ambient characters on nothing. A zone's meshes and probes and an enemy's or a playable kind's
+    /// probes, playable kinds, character motions, ambient characters and sheets on nothing. A zone's meshes and probes and an enemy's or a playable kind's
     /// look aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and
     /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -362,6 +373,7 @@ impl AssetKind {
                 | (Self::Zone, Self::Colliders | Self::NavMesh | Self::Encounter)
                 | (Self::FontChains, Self::Font)
                 | (Self::Enemy, Self::MoveSet)
+                | (Self::Effects, Self::EffectSheet)
         )
     }
 
@@ -400,6 +412,7 @@ impl AssetKind {
             30 => Some(Self::Ambient),
             31 => Some(Self::Mix),
             32 => Some(Self::Effects),
+            33 => Some(Self::EffectSheet),
             _ => None,
         }
     }
@@ -423,11 +436,11 @@ impl AssetKind {
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
     /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
     /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`,
-    /// `Ambient::read`, `Mix::read`, `Effects::read`), and
+    /// `Ambient::read`, `Mix::read`, `Effects::read`, `EffectSheet::read`), and
     /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
-    /// set. The packer records these as the asset's dependencies, and decode jobs check that a decoded asset
+    /// set, an effects library's sheets. The packer records these as the asset's dependencies, and decode jobs check that a decoded asset
     /// references exactly what its pack says it does. Bytes of a version a kind still reads but no
     /// longer writes go through [`Self::upgrade`] first.
     ///
@@ -554,9 +567,12 @@ impl AssetKind {
                 Mix::read(bytes)?;
                 Vec::new()
             }
-            // Its effects are named by name, and its shapes and patterns are generated.
-            Self::Effects => {
-                Effects::read(bytes)?;
+            // Its effects are named by name, and its shapes and patterns are generated; its painted sheets are
+            // assets, which its atlas is built from.
+            Self::Effects => Effects::read(bytes)?.sheets().to_vec(),
+            // A sheet holds its layers itself.
+            Self::EffectSheet => {
+                EffectSheet::read(bytes)?;
                 Vec::new()
             }
         };
@@ -680,4 +696,6 @@ pub enum AssetError {
     Mix(#[from] MixError),
     #[error("invalid effects library")]
     Effects(#[from] EffectsError),
+    #[error("invalid effect sheet")]
+    EffectSheet(#[from] EffectSheetError),
 }

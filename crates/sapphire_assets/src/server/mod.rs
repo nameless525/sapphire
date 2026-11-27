@@ -64,7 +64,8 @@ impl AssetBudgets {
     /// ([`Self::with_resident`]; `texture_pool_mib` in the renderer's `tiers.ron`, M5 M2). Reflection probes'
     /// is a zone's most, 42 probes of ten keys at 128 (315 MiB), with room for a second zone's few (M5 L2).
     /// Playable kinds 1 MiB (M5 C8), character motions 1 MiB (M5 C4), a zone's ambient characters 1 MiB (M5 C10),
-    /// mixes 1 MiB (M6 U2), effects libraries 1 MiB (M6 N1).
+    /// mixes 1 MiB (M6 U2), effects libraries 1 MiB (M6 N1), effect sheets 64 MiB (M6 N4a: two libraries' atlases
+    /// at the desktops' 32 MiB).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
         admission: 256 * MIB,
@@ -110,6 +111,8 @@ impl AssetBudgets {
             MIB,
             // Effects libraries.
             MIB,
+            // Effect sheets.
+            64 * MIB,
         ]),
     };
     /// Mobile: 4 MiB of uploads a frame and 64 MiB admitted, sixteen frames of them; meshes 192 MiB,
@@ -119,7 +122,8 @@ impl AssetBudgets {
     /// 1 MiB, navmeshes 4 MiB, timelines 2 MiB, UI documents 4 MiB, encounters 1 MiB, scripts 2 MiB,
     /// dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB; texture levels count in the textures'
     /// pool; reflection probes 96 MiB (42 probes of ten keys at 64 are 79 MiB, M5 L2); playable kinds 1 MiB;
-    /// character motions 1 MiB; ambient characters 1 MiB; mixes 1 MiB; effects libraries 1 MiB.
+    /// character motions 1 MiB; ambient characters 1 MiB; mixes 1 MiB; effects libraries 1 MiB; effect sheets
+    /// 16 MiB (two libraries' atlases at the phones' 8).
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
         admission: 64 * MIB,
@@ -163,6 +167,8 @@ impl AssetBudgets {
             MIB,
             // Effects libraries.
             MIB,
+            // Effect sheets.
+            16 * MIB,
         ]),
     };
 
@@ -434,7 +440,7 @@ pub struct UploadReport {
 }
 
 /// The server's counters (rule R9), from [`AssetServer::stats`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AssetStats {
     /// Assets with a slot: loading, loaded or failed.
     pub assets: u32,
@@ -498,6 +504,45 @@ pub struct AssetStats {
     /// started (hot reload).
     pub reloads: u64,
     pub reload_failures: u64,
+}
+
+impl Default for AssetStats {
+    /// Nothing counted. Written out, since `Default` derives only for arrays of up to 32 and there are more
+    /// kinds than that (M6 N4a).
+    fn default() -> Self {
+        let none = [0; AssetKind::ALL.len()];
+        Self {
+            assets: 0,
+            loading: 0,
+            waiting: 0,
+            ready: 0,
+            failed: 0,
+            unused: 0,
+            pinned: 0,
+            resident: none,
+            resident_peak: none,
+            budgets: AssetBudgets::default(),
+            admitted: 0,
+            admitted_peak: 0,
+            admitted_total: 0,
+            held_back: 0,
+            reads_held: 0,
+            decoded_waiting: 0,
+            over_budget: none,
+            evicted_bytes: 0,
+            given_back: 0,
+            reads_in_flight: 0,
+            mounts: 0,
+            mounting: 0,
+            last_upload: UploadReport::default(),
+            loads: 0,
+            unloads: 0,
+            failures: 0,
+            reloading: 0,
+            reloads: 0,
+            reload_failures: 0,
+        }
+    }
 }
 
 /// An asset a mounted pack holds with a name ([`AssetServer::named`]).

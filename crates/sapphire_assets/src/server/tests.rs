@@ -214,7 +214,11 @@ fn uploads_are_plain_cooked_data() {
                 AssetKind::Playable => unreachable!("playable kinds never go to the uploader"),
                 AssetKind::Motion => unreachable!("character motions never go to the uploader"),
                 AssetKind::Ambient => unreachable!("ambient characters never go to the uploader"),
-                AssetKind::Score | AssetKind::VoiceLines | AssetKind::Mix | AssetKind::Effects => {
+                AssetKind::Score
+                | AssetKind::VoiceLines
+                | AssetKind::Mix
+                | AssetKind::Effects
+                | AssetKind::EffectSheet => {
                     unreachable!("music and voice never go to the uploader")
                 }
                 AssetKind::TextureLevel => unreachable!("these assets include no texture level"),

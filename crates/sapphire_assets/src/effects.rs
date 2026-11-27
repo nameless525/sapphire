@@ -10,9 +10,14 @@
 //! when a fight starts. What this checks by itself is the envelope, the archive and that the document is an
 //! effects library ([`Effects::read`]); the rest is checked as `sapphire_vfx` reads it, which the cook has
 //! already done once.
+//!
+//! Beside the document, the cook lists the painted sheets its emitters name (M6 N4a,
+//! [`crate::effect_sheet`]), sorted and once each, which a library depends on: they load before it does, and
+//! its effects atlas is theirs.
 
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
+use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
 use sapphire_serialize::{DocumentError, document};
 
@@ -31,11 +36,13 @@ pub const LIBRARY_TYPE: &str = "sapphire::vfx::EffectLibrary";
 pub struct Effects {
     /// The library's document as `sapphire_vfx` writes it, at the version the cook read it with.
     pub library: String,
+    /// The sheets its emitters name, sorted, each once (M6 N4a): its dependencies.
+    pub sheets: Vec<AssetId>,
 }
 
 impl Versioned for Effects {
-    /// 1: M6 N1.
-    const VERSION: u32 = 1;
+    /// 1: M6 N1. 2: M6 N4a, the sheets its emitters name.
+    const VERSION: u32 = 2;
 }
 
 /// An effects library that can't be read.
@@ -47,6 +54,9 @@ pub enum EffectsError {
     /// is large and every asset's error carries this one.
     #[error("its library: {0}")]
     Library(Box<DocumentError>),
+    /// Its sheets aren't sorted and each once, as the cook lists them.
+    #[error("its sheets aren't sorted, each once")]
+    Sheets,
 }
 
 impl From<DocumentError> for EffectsError {
@@ -69,6 +79,9 @@ impl Effects {
         if found != LIBRARY_TYPE {
             return Err(DocumentError::WrongType { expected: LIBRARY_TYPE, found }.into());
         }
+        if !effects.sheets.is_sorted_by(|a, b| a < b) {
+            return Err(EffectsError::Sheets);
+        }
         Ok(effects)
     }
 }
@@ -79,6 +92,12 @@ impl ArchivedEffects {
     pub fn library(&self) -> &str {
         self.library.as_str()
     }
+
+    /// The sheets its emitters name, sorted, each once.
+    #[must_use]
+    pub fn sheets(&self) -> &[AssetId] {
+        self.sheets.as_slice()
+    }
 }
 
 #[cfg(test)]
@@ -86,7 +105,10 @@ mod tests {
     use super::*;
 
     fn library(type_name: &str) -> Effects {
-        Effects { library: format!("(type: \"{type_name}\", version: 5, data: (effects: []))") }
+        Effects {
+            library: format!("(type: \"{type_name}\", version: 5, data: (effects: []))"),
+            sheets: Vec::new(),
+        }
     }
 
     #[test]
@@ -104,7 +126,19 @@ mod tests {
         let other = library("sapphire::cues::CueTable").to_cooked().expect("cooked");
         let error = Effects::read(&other).expect_err("another type").to_string();
         assert!(error.contains("sapphire::cues::CueTable"), "{error}");
-        let garbled = Effects { library: "(type: ".to_owned() }.to_cooked().expect("cooked");
+        let garbled =
+            Effects { library: "(type: ".to_owned(), sheets: Vec::new() }.to_cooked().expect("cooked");
         assert!(Effects::read(&garbled).is_err());
+    }
+
+    /// Its sheets read back as the cook listed them, and a list out of order or with a repeat is refused.
+    #[test]
+    fn its_sheets_are_sorted_and_each_once() {
+        let [a, b] = [AssetId::from_bytes([1; 16]), AssetId::from_bytes([2; 16])];
+        let with =
+            |sheets: Vec<AssetId>| Effects { sheets, ..library(LIBRARY_TYPE) }.to_cooked().expect("cooked");
+        assert_eq!(Effects::read(&with(vec![a, b])).expect("reads").sheets(), [a, b]);
+        assert!(matches!(Effects::read(&with(vec![b, a])), Err(EffectsError::Sheets)));
+        assert!(matches!(Effects::read(&with(vec![a, a])), Err(EffectsError::Sheets)));
     }
 }

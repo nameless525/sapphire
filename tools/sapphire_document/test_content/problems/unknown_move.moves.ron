@@ -1,0 +1,24 @@
+// A malformed move set for the problems tests (M6 T6): neutral starts a move the set doesn't have.
+(
+    type: "sapphire::moves::MoveSetDocument",
+    version: 1,
+    data: (
+        intents: [
+            (name: "poke", buffer: 6, priority: 1),
+        ],
+        neutral: [
+            (intent: "poke", move: "jab"),
+        ],
+        fighter: (
+            health: 100,
+            poise: 10,
+            poise_refill: 240,
+            hurtboxes: [
+                (name: "body", offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.3, length: 1.0)),
+            ],
+        ),
+        moves: [
+            (name: "poke", startup: 2, active: 2, recovery: 2),
+        ],
+    ),
+)

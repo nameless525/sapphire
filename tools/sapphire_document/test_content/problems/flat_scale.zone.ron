@@ -1,0 +1,12 @@
+// A malformed zone for the problems tests (M6 T6): its second placement's scale has a zero in it.
+(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        grid: (cell_size: 32.0),
+        placements: [
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (0.0, 0.0, 0.0)),
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (4.0, 0.0, 0.0), scale: (1.0, 0.0, 1.0)),
+        ],
+    ),
+)

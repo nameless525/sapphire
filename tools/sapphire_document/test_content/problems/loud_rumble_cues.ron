@@ -1,0 +1,245 @@
+// A malformed cue table for the problems tests (M6 T6): its first row's rumble is over full.
+// Sapphire's cue table (M2 E3), compiled into `sapphire_cues`: what each of the simulation's cues
+// fires, `sapphire_cues::default_table`. A row is a cue's name, as a move or resolve publishes it, and
+// optionally a hit's weight; a row with the weight wins over one without. A cue with no row fires
+// nothing and is counted, so a row that fires nothing says so on purpose.
+//
+// - `effects`: effects of the table's library by name: `sapphire_vfx`'s compiled-in `default_effects.ron`
+//   here, since this table names no library of its own (a game's names its cooked `.effects.ron` by its
+//   sidecar's ID in `effect_library` beside `mix`, M6 N1). `at: Hit` (the default) is the hit's
+//   point with the effect's +Y out of the surface, `Feet` where its subject stands, `Crown` over its
+//   head, where a cue mark goes, `Facing` at its feet turned the way it faces (M5 L5). `clock: World`
+//   (the default) burns through hitstop; `Subject` and `Actor` freeze with one of the fighters.
+// - `sounds`: `Cue` documents by their sidecars' IDs, in `content/audio/`.
+// - `shake`: a preset of `default_camera.ron`, and a `strength` on top of it.
+// - `screen`: a preset of `default_screen_effects.ron`. `center: Hit` (the default) centers it on the
+//   hit's point on screen.
+// - `rumble`: `low` and `high` motors from 0 to 1 and a length in real seconds. A flat pulse, so nobody
+//   here can feel it: every number is a guess for someone with a pad.
+// - `line`: a voice line by its key, said in the player's voice language from one of `voices` (M3 A1).
+//
+// `music` is the fight's `Score`, whose phase the fight's encounters choose, in `content/audio/generated/`,
+// and `voices` its `VoiceLines`, one a language, which `sapphire_pipeline vo` writes in `content/vo/` (M6
+// U11): a row's `line` is a key of `content/vo/script.ron`. Both by their sidecars' IDs. `mix` is the `Mix`
+// everything plays through (M6 U2), `content/audio/game.mix.ron`.
+//
+// Every number is a starting point for T2's tuning, and nobody here can hear or feel the last two.
+(
+    type: "sapphire::cues::CueTable",
+    version: 1,
+    data: (
+        music: Some("16bcae3e-67db-4450-93d3-5fce402743e4"), // lantern
+        voices: [
+            "2d8dee05-24de-455d-87e8-b9aec0658ed6", // en
+            "f654779f-b76d-405b-92c8-588b3064b11d", // ja
+        ],
+        mix: Some("9786340a-c6ae-4ffb-b3cb-8ec5220b9fb3"), // game
+        rows: [
+            // A hit, by its weight: the cue a move's attack publishes unless it names its own.
+            (
+                cue: "hit_landed",
+                weight: Some(Light),
+                effects: [(effect: "cut_spark")],
+                sounds: ["98d07b04-6a90-4fe5-a5c1-81415c71242d"], // hit_light
+                shake: Some((preset: "hit_light")),
+                screen: Some((preset: "light_hit")),
+                rumble: Some((low: 1.5, high: 0.4, seconds: 0.07)),
+            ),
+            (
+                cue: "hit_landed",
+                weight: Some(Medium),
+                effects: [(effect: "cut_spark")],
+                sounds: ["f330373e-0979-47c3-bef2-3d150fd62eff"], // hit_medium
+                shake: Some((preset: "hit_light", strength: 1.8)),
+                screen: Some((preset: "medium_hit")),
+                rumble: Some((low: 0.35, high: 0.5, seconds: 0.11)),
+            ),
+            (
+                cue: "hit_landed",
+                weight: Some(Heavy),
+                effects: [(effect: "heavy_spark")],
+                sounds: [
+                    "9aff2070-6b20-4a57-acc4-0bdeaad19cf3", // hit_heavy
+                    "16e787b3-260f-4873-a443-40c8c52ef5c2", // hit
+                ],
+                shake: Some((preset: "hit_heavy")),
+                screen: Some((preset: "heavy_hit")),
+                rumble: Some((low: 0.75, high: 0.5, seconds: 0.16)),
+            ),
+            // The moves that name their own cue.
+            (
+                cue: "hit_heavy",
+                effects: [(effect: "heavy_spark")],
+                sounds: [
+                    "9aff2070-6b20-4a57-acc4-0bdeaad19cf3", // hit_heavy
+                    "16e787b3-260f-4873-a443-40c8c52ef5c2", // hit
+                ],
+                shake: Some((preset: "hit_heavy")),
+                screen: Some((preset: "heavy_hit")),
+                rumble: Some((low: 0.75, high: 0.5, seconds: 0.16)),
+            ),
+            (
+                cue: "hit_spin",
+                effects: [(effect: "cut_spark")],
+                sounds: ["98d07b04-6a90-4fe5-a5c1-81415c71242d"], // hit_light
+                shake: Some((preset: "hit_light", strength: 0.7)),
+                rumble: Some((low: 0.1, high: 0.3, seconds: 0.05)),
+            ),
+            // What a hit broke or ended, on top of the hit's own row: both fire, in that order. Their
+            // screen effects stack, and the later one shows over the earlier.
+            (
+                cue: "poise_broken",
+                effects: [(effect: "break_ring"), (effect: "dust_puff", at: Feet)],
+                sounds: ["88ffc1b9-2961-4f2a-91c3-dd22c453310d"], // poise_break
+                shake: Some((preset: "hit_heavy", strength: 1.3)),
+                screen: Some((preset: "poise_break")),
+                rumble: Some((low: 0.85, high: 0.65, seconds: 0.22)),
+            ),
+            (
+                cue: "defeated",
+                effects: [(effect: "finish_burst"), (effect: "dust_puff", at: Feet)],
+                sounds: ["b6bef59d-261b-4a26-aaf8-72a05ee24133"], // finish
+                shake: Some((preset: "finish")),
+                screen: Some((preset: "finish")),
+                rumble: Some((low: 1.0, high: 0.8, seconds: 0.45)),
+            ),
+            // M2 G4 publishes this one, with slow motion of its own on the simulation's side.
+            (
+                cue: "perfect_dodge",
+                sounds: ["7c4b1877-4c0e-4c33-8464-e902aa20c871"], // perfect_dodge
+                screen: Some((preset: "perfect_dodge", center: Preset)),
+                rumble: Some((low: 0.0, high: 0.35, seconds: 0.06)),
+                line: Some("perfect-dodge"),
+            ),
+            // M2 G4's counter: a flash as it starts, then a blow with a cue of its own.
+            (
+                cue: "counter_flash",
+                screen: Some((preset: "skill_flash", center: Preset)),
+                rumble: Some((low: 0.0, high: 0.25, seconds: 0.05)),
+            ),
+            (
+                cue: "hit_counter",
+                effects: [(effect: "cut_spark")],
+                sounds: ["f330373e-0979-47c3-bef2-3d150fd62eff"], // hit_medium
+                shake: Some((preset: "hit_light", strength: 1.8)),
+                screen: Some((preset: "medium_hit")),
+                rumble: Some((low: 0.35, high: 0.5, seconds: 0.11)),
+            ),
+            // A blade through the air: follows the swinger, and freezes with it in hitstop.
+            (cue: "swing", sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"]), // swing
+            // Bodies and heavy swings meeting the ground, on the test moves and the enemy's.
+            (
+                cue: "finisher_land",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+                shake: Some((preset: "hit_light")),
+            ),
+            (
+                cue: "knocked_down",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+                shake: Some((preset: "hit_light")),
+                rumble: Some((low: 0.3, high: 0.0, seconds: 0.1)),
+            ),
+            (
+                cue: "body_land",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+            ),
+            (
+                cue: "heavy_land",
+                // The dust, then the scorch where the blade lands (M5 L7), which takes no random numbers: its
+                // shockwave and haze bend the frame round it (M5 L6) where the tier has bends.
+                effects: [(effect: "dust_puff", at: Feet), (effect: "scorch_mark", at: Ground)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+                shake: Some((preset: "hit_light")),
+            ),
+            (
+                cue: "lunge_land",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+            ),
+            // A foot taking the weight, and braking at the end of a dash.
+            (cue: "step", sounds: ["c1d7a6f4-3b52-4e0e-9a61-7f2b8d90a1c3"]), // step
+            (
+                cue: "skid",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["5e8f2a10-94c7-4d3b-8e26-1b6c0f7d3a95"], // skid
+            ),
+            // A skill starting, and its blade coming through: an arc of light round the fighter at each of its
+            // two cuts (M5 L5), frozen with it in hitstop. What that blade lands on fires a hit's own row, so
+            // these say nothing of a hit, and a miss doesn't shake anything.
+            (
+                cue: "skill_flash",
+                screen: Some((preset: "skill_flash", center: Preset)),
+                rumble: Some((low: 0.0, high: 0.25, seconds: 0.05)),
+            ),
+            (
+                cue: "skill_hit",
+                effects: [(effect: "skill_arc", at: Facing, clock: Actor)],
+                sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"], // swing
+            ),
+            // On purpose, nothing yet: their moves' animation will say enough, or T2 will add to them.
+            (cue: "swing_windup"),
+            (cue: "reaction"),
+            (cue: "falls"),
+            (cue: "dodge_start"),
+            (cue: "stagger"),
+            (cue: "stagger_heavy"),
+            (cue: "knockdown"),
+            (cue: "recover"),
+            (cue: "death"),
+            (cue: "death_fade"),
+            // A party (M2 G7): someone taking the field, at its feet, with the skid's sound for now. Its assist's
+            // blow says the rest. The party going down is the app's to show.
+            (
+                cue: "party_swap",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["5e8f2a10-94c7-4d3b-8e26-1b6c0f7d3a95"], // skid
+            ),
+            (cue: "swap_in", line: Some("swap-in")),
+            (cue: "party_defeated"),
+            // The Lantern Ward's gate cutscene (M3 Q3), at the places its timeline names: the warden's blade
+            // striking the paving, and the character's blade turning into guard.
+            (
+                cue: "court_stomp",
+                effects: [(effect: "dust_puff"), (effect: "break_ring")],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+                shake: Some((preset: "hit_heavy")),
+            ),
+            (
+                cue: "court_draw",
+                effects: [(effect: "cut_spark")],
+                sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"], // swing
+            ),
+            // Cue marks (M4 A5): what a fight warns of, each a shape over the fighter it's about, so none is
+            // told by colour alone (m4-plan §3, "Colour"). A heavy's wind-up; and two cues `CueMarks` fires
+            // that no document names: a dodge pressed now being perfect, read from the moves, and an enemy
+            // crossing any named phase, so a new boss's phases are marked with no row of their own.
+            // The wind-up's reach on the ground too (M5 L7), filling on its actor's clock until the blow lands.
+            (
+                cue: "telegraph",
+                effects: [
+                    (effect: "telegraph_mark", at: Crown),
+                    (effect: "telegraph_ground", at: Ground, clock: Actor),
+                ],
+            ),
+            (cue: "dodge_window", effects: [(effect: "dodge_glint", at: Crown)]),
+            // A named phase tears the picture as well (M5 L9): a glitch, a full-screen flash, with a CRT's
+            // lines fading after it.
+            (
+                cue: "named_phase",
+                effects: [(effect: "phase_mark", at: Crown)],
+                screen: Some((preset: "phase_shift", center: Preset)),
+            ),
+            // The ultimate's cinematic (M5 L9), at the places its timeline names: the sword rising, the world
+            // printed in a halftone behind the character, and the chop, a white flash over the world. The
+            // blow's own hit fires its row as well.
+            (cue: "ultimate_raise", screen: Some((preset: "ultimate_raise", center: Preset))),
+            (cue: "ultimate_chop", screen: Some((preset: "ultimate_chop", center: Preset))),
+            // The ultimate's close-up (M5 L10) as its cinematic opens: the character's cut-in, `ultimate` in
+            // `sapphire_world`'s `default_cutins.ron`, for whoever plays it.
+            (cue: "ultimate_cutin", cutin: Some("ultimate")),
+        ],
+    ),
+)

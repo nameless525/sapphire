@@ -1,0 +1,13 @@
+// A malformed foliage document for the problems tests (M6 T6): a rule places a kind it doesn't have.
+(
+    type: "sapphire::zone::FoliageDocument",
+    version: 1,
+    data: (
+        kinds: [(name: "oak", model: Tree("2b0f0d43-6d4e-4b59-9b1f-5f3c6f0b8e21"))],
+        layers: [(name: "wood", outlines: [[(-40.0, -40.0), (40.0, -40.0), (40.0, 40.0), (-40.0, 40.0)]])],
+        rules: [
+            (name: "oaks", kind: "oak", on: ["wood"], per_100m2: 1.5, spacing: 4.0, scale: (0.8, 1.3)),
+            (name: "maples", kind: "maple", on: ["wood"], per_100m2: 1.5, spacing: 4.0, scale: (0.8, 1.3)),
+        ],
+    ),
+)

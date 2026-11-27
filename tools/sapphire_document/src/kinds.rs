@@ -73,8 +73,29 @@ pub fn registry_of<T: GetTypeRegistration>() -> TypeRegistry {
 pub fn moves() -> Schema<MoveSetDocument> {
     Schema {
         parse: |text| MoveSetDocument::parse(text).map_err(|error| error.to_string()),
-        check: |document| document.check().iter().map(ToString::to_string).collect(),
+        check: |document| document.check().iter().map(|issue| move_issue(document, issue)).collect(),
         importer: Some("MoveSet(())"),
+    }
+}
+
+/// A move set's issue as the documents' convention names a field (M6 T6): the track it's on, a field of its move
+/// (`moves[2].hitboxes`) or of the set (`intents`), where that's a field of the document; a track that names no
+/// field (`phases`, three of them) leaves the issue on the document.
+fn move_issue(document: &MoveSetDocument, issue: &sapphire_moves::Issue) -> String {
+    // A set's own section (`neutral`, `intents`) already leads its message in the convention; a move's track
+    // leads with the move's place in `moves`, where the document has that field.
+    let Some(name) = &issue.in_move else { return issue.to_string() };
+    let field = document
+        .moves
+        .iter()
+        .position(|mv| mv.name == *name)
+        .map(|at| format!("moves[{at}].{}", issue.track));
+    let field = field.filter(|field| {
+        field.parse::<crate::PropertyPath>().is_ok_and(|path| crate::walk::named(document, &path).is_ok())
+    });
+    match field {
+        Some(field) => format!("`{field}`: {issue}"),
+        None => issue.to_string(),
     }
 }
 
@@ -444,6 +465,65 @@ impl Kind {
             Self::Colliders => set.open(path, colliders(), Arc::new(registry_of::<ColliderDocument>())),
             Self::Foliage => set.open(path, foliage(), Arc::new(registry_of::<FoliageDocument>())),
             Self::CueTable => set.open(path, cue_table(), Arc::new(registry_of::<CueTable>())),
+        }
+    }
+
+    /// Reads `text` as this kind with no editor behind it (M6 T6): the issues its rules find, or why it doesn't
+    /// read. What `content-check` asks of every document of a tree.
+    pub fn read(self, text: &str) -> Result<Vec<String>, String> {
+        fn read<T>(schema: Schema<T>, text: &str) -> Result<Vec<String>, String> {
+            Ok((schema.check)(&(schema.parse)(text)?))
+        }
+        match self {
+            Self::Moves => read(moves(), text),
+            Self::Graph => read(graph(), text),
+            Self::Cue => read(cue(), text),
+            Self::Effects => read(effects(), text),
+            Self::Timeline => read(timeline(), text),
+            Self::Ui => read(ui(), text),
+            Self::Zone => read(zone(), text),
+            Self::Material => read(material(), text),
+            Self::EnvironmentMaterial => read(environment_material(), text),
+            Self::Ramp => read(ramp(), text),
+            Self::Assembly => read(assembly(), text),
+            Self::Encounter => read(encounter(), text),
+            Self::Dialogue => read(dialogue(), text),
+            Self::Day => read(day(), text),
+            Self::LightRigs => read(light_rigs(), text),
+            Self::Colliders => read(colliders(), text),
+            Self::Foliage => read(foliage(), text),
+            Self::CueTable => read(cue_table(), text),
+        }
+    }
+
+    /// The value `text` reads as, as this kind, if it reads (M6 T6): what a problem's field is a path of.
+    #[must_use]
+    pub fn value(self, text: &str) -> Option<Box<dyn bevy_reflect::PartialReflect>> {
+        fn value<T: bevy_reflect::PartialReflect>(
+            schema: Schema<T>,
+            text: &str,
+        ) -> Option<Box<dyn bevy_reflect::PartialReflect>> {
+            Some(Box::new((schema.parse)(text).ok()?))
+        }
+        match self {
+            Self::Moves => value(moves(), text),
+            Self::Graph => value(graph(), text),
+            Self::Cue => value(cue(), text),
+            Self::Effects => value(effects(), text),
+            Self::Timeline => value(timeline(), text),
+            Self::Ui => value(ui(), text),
+            Self::Zone => value(zone(), text),
+            Self::Material => value(material(), text),
+            Self::EnvironmentMaterial => value(environment_material(), text),
+            Self::Ramp => value(ramp(), text),
+            Self::Assembly => value(assembly(), text),
+            Self::Encounter => value(encounter(), text),
+            Self::Dialogue => value(dialogue(), text),
+            Self::Day => value(day(), text),
+            Self::LightRigs => value(light_rigs(), text),
+            Self::Colliders => value(colliders(), text),
+            Self::Foliage => value(foliage(), text),
+            Self::CueTable => value(cue_table(), text),
         }
     }
 

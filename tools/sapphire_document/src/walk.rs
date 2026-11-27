@@ -292,6 +292,65 @@ pub fn keyed(root: &dyn PartialReflect, path: &PropertyPath) -> Result<PropertyP
     Ok(steps)
 }
 
+/// The path of `root`'s value that `written` names as its RON spells it (M6 T6): a field by the name the text
+/// gives it, a list's entry by its place, an `Option`'s content with or without its `?`, and a field of what a
+/// one-field tuple variant holds with or without its `[0]` (`surface.softness` for `surface[0].softness`, as a
+/// validator names a field of a `Face((..))` surface without its variant). What comes back is
+/// this crate's own spelling, each entry with a name called by it and each field by its Rust name, so a
+/// problem's field finds the row the Properties pane shows for it.
+pub fn named(root: &dyn PartialReflect, written: &PropertyPath) -> Result<PropertyPath, NoSuchPath> {
+    let mut at = through(root);
+    let mut steps = written.prefix(0);
+    for (taken, step) in written.steps().iter().enumerate() {
+        loop {
+            let inside = if is_option(at) && *step != Step::Some {
+                Step::Some
+            } else if matches!(step, Step::Field(_)) && child(at, step).is_none() && is_newtype_variant(at) {
+                Step::Index(0)
+            } else {
+                break;
+            };
+            at = child(at, &inside).ok_or_else(|| no_such_path(written, taken))?;
+            steps = steps.join(inside);
+        }
+        let step = match (step, at.reflect_ref()) {
+            (Step::Index(index), ReflectRef::List(items)) if *index < items.len() => {
+                step_to_entry(items, *index)
+            }
+            (Step::Field(name), _) if child(at, step).is_none() => {
+                Step::Field(rust_name(at, name).to_owned())
+            }
+            _ => step.clone(),
+        };
+        at = child(at, &step).ok_or_else(|| no_such_path(written, taken))?;
+        steps = steps.join(step);
+    }
+    Ok(steps)
+}
+
+/// Whether `value` is an enum other than `Option` whose variant is a tuple of one: `Face((..))`.
+fn is_newtype_variant(value: &dyn PartialReflect) -> bool {
+    let value = through(value);
+    match value.reflect_ref() {
+        ReflectRef::Enum(variant) => {
+            !is_option(value) && variant.variant_type() == VariantType::Tuple && variant.field_len() == 1
+        }
+        _ => false,
+    }
+}
+
+/// The Rust name of the field of `value` its text calls `written`, or `written` if none is renamed so.
+fn rust_name<'v>(value: &'v dyn PartialReflect, written: &'v str) -> &'v str {
+    if let Some(TypeInfo::Struct(info)) = value.get_represented_type_info() {
+        for field in info.iter() {
+            if field.get_attribute::<SerdeName>().is_some_and(|renamed| renamed.0 == written) {
+                return field.name();
+            }
+        }
+    }
+    written
+}
+
 /// Puts `value` in `target`'s place, whole. Not `try_apply`: applying a shorter list leaves the old list's
 /// tail where it was, at any depth, and the value then isn't the one asked for.
 pub fn assign(

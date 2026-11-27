@@ -1,0 +1,15 @@
+// A malformed encounter for the problems tests (M6 T6): its second wave starts with the fight, as only the first may.
+(
+    type: "sapphire::zone::EncounterDocument",
+    version: 1,
+    data: (
+        starts_on: "terrace_reached",
+        faction: 2,
+        tokens: 1,
+        token_rest: 30,
+        waves: [
+            (when: Start, spawners: ["boss"]),
+            (when: Start, spawners: ["boss"]),
+        ],
+    ),
+)

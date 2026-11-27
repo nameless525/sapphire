@@ -1,0 +1,11 @@
+// A malformed zone for the problems tests (M6 T6): its text stops being RON, so no field can be known.
+(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        grid: (cell_size: 32.0),
+        placements: [
+            (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (0.0, 0.0, 0.0),
+        ],
+    ),
+)

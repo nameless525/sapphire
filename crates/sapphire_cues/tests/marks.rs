@@ -56,7 +56,7 @@ fn mark_of(table: &CueTable, effects: &EffectLibrary, cue: &str) -> Mark {
 /// Every warning a fight gives has its mark: a heavy's wind-up, a perfect dodge's window, and an enemy
 /// crossing a named phase.
 fn marks() -> Vec<Mark> {
-    let (table, effects) = (CueTable::default_table(), EffectLibrary::default_effects());
+    let (table, effects) = (sapphire_cues::default_table(), EffectLibrary::default_effects());
     ["telegraph", DODGE_WINDOW, NAMED_PHASE].into_iter().map(|cue| mark_of(&table, &effects, cue)).collect()
 }
 
@@ -133,7 +133,10 @@ fn a_named_phase_is_marked_on_the_enemy_that_crossed_it() {
     assert_eq!(enraged.len(), 1, "the recording crosses it once");
     assert_eq!(phases.len(), 1, "{phases:?}");
     assert_eq!(phases[0].0, enraged[0], "on the step it crossed");
-    assert!(!CueTable::default_table().rows().iter().any(|row| row.cue == "enraged"), "no row of its own");
+    assert!(
+        !sapphire_cues::default_table().rows().iter().any(|row| row.cue == "enraged"),
+        "no row of its own"
+    );
 }
 
 /// Every perfect dodge in the recording that dodges and counters had its window marked first, at most a

@@ -5,7 +5,7 @@ mod support;
 
 use std::collections::HashMap;
 
-use sapphire_cues::{CueTable, EffectPlace};
+use sapphire_cues::EffectPlace;
 use sapphire_gameplay::{ActorId, Simulation};
 use sapphire_look::{VfxDecalBlend, VfxDecalShape, VfxFrame};
 use sapphire_math::Vec3;
@@ -86,7 +86,7 @@ fn a_telegraph_fills_on_the_step_its_strike_starts() {
 /// mark's at its start.
 #[test]
 fn the_telegraphs_decal_is_its_marks_colour() {
-    let (table, effects) = (CueTable::default_table(), EffectLibrary::default_effects());
+    let (table, effects) = (sapphire_cues::default_table(), EffectLibrary::default_effects());
     let row = table.rows().iter().find(|row| row.cue == "telegraph" && row.weight.is_none()).expect("a row");
     let effect = |at: EffectPlace| {
         let fire = row.effects.iter().find(|fire| fire.at == at).unwrap_or_else(|| panic!("fires at {at:?}"));

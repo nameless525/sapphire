@@ -301,7 +301,7 @@ fn the_titles_version_shows_clear_of_its_menu_at_every_size() {
 #[test]
 fn every_subtitle_stays_on_the_screen_at_the_largest_sizes_at_every_aspect() {
     let mut lines = support::subtitles();
-    let cues = sapphire_cues::CueTable::default_table();
+    let cues = sapphire_cues::default_table();
     let spoken = cues.rows().iter().filter_map(|row| row.line.as_deref());
     lines.extend(spoken.map(|line| {
         let key = format!("{}{line}", game_combat::cues::CAPTION_PREFIX);

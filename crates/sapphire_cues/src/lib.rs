@@ -11,7 +11,8 @@
 //!
 //! - **The table** ([`CueTable`], a `CueTable` document, schema 1): a cue's name, optionally a hit's
 //!   weight, and what fires: `sapphire_vfx` effects, `sapphire_audio` cues, a camera shake, a screen
-//!   effect preset, a [`Rumble`] and a voice line by its key (M3 A1). [`CueTable::default_table`] is
+//!   effect preset, a [`Rumble`] and a voice line by its key (M3 A1), as `sapphire_assets::cue_table` reads
+//!   it, below the renderer so the editor opens it (M6 T19). [`default_table`] is
 //!   `default_cues.ron`, compiled in like the presets it names, so a capture needs no pack mounted to
 //!   fire one, and an app's load checks every name at once. The table also names the fight's score and
 //!   its voice lines' tables, for the app to load.
@@ -56,7 +57,7 @@
 //! // At load: every name the table holds is resolved here, or this fails naming it.
 //! let (effects, presets) = (VfxLibrary::default_effects(), ScreenLibrary::default_effects());
 //! let tuning = CameraTuning::default_tuning();
-//! let table = CueTable::default_table();
+//! let table = sapphire_cues::default_table();
 //! let mut cues = CueDispatcher::new(&table, &effects, &presets, &tuning).unwrap();
 //! # let scenario = find_scenario(&SCENARIOS, "duel").unwrap();
 //! # let (mut sim, _) = scenario.start(scenario.config).unwrap();
@@ -134,8 +135,9 @@ pub use dispatch::{
     SaidLine, ShakeSink, actor_emitter, emitter_of, owner_of,
 };
 pub use marks::{CROWN_CLEARANCE, CueMarks, DODGE_WINDOW, NAMED_PHASE, Stand, named_phases};
-pub use rumble::{MAX_RUMBLES, Rumble, RumbleMixer, RumbleSink};
-pub use table::{
+pub use rumble::{MAX_RUMBLES, RumbleMixer, RumbleSink};
+pub use sapphire_assets::cue_table::{
     CueRow, CueTable, CueTableError, EffectFire, EffectOwner, EffectPlace, MAX_ROW_EFFECTS, MAX_ROW_SOUNDS,
-    ScreenCenter, ScreenFire, ShakeFire,
+    Rumble, ScreenCenter, ScreenFire, ShakeFire,
 };
+pub use table::default_table;

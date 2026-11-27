@@ -17,10 +17,10 @@ use sapphire_world::screen_effects::{
 };
 
 use crate::marks::{CROWN_CLEARANCE, Stand};
-use crate::rumble::{Rumble, RumbleMixer, RumbleSink};
-use crate::table::{
+use crate::rumble::{RumbleMixer, RumbleSink};
+use crate::{
     CueRow, CueTable, CueTableError, EffectFire, EffectOwner, EffectPlace, MAX_ROW_EFFECTS, MAX_ROW_SOUNDS,
-    ScreenCenter,
+    Rumble, ScreenCenter,
 };
 
 /// The most sounds a frame can start: a frame of two steps fills it only if every cue fires at once. Past it
@@ -698,7 +698,7 @@ mod tests {
     use sapphire_vfx::{EmitterDesc, Spawn, VfxBudget};
 
     use super::*;
-    use crate::table::{ScreenFire, ShakeFire};
+    use crate::{ScreenFire, ShakeFire};
 
     const ATTACKER: ActorId = ActorId::from_raw(1).expect("not zero");
     const TARGET: ActorId = ActorId::from_raw(2).expect("not zero");
@@ -1448,7 +1448,7 @@ mod tests {
     /// shows.
     #[test]
     fn the_shipped_table_resolves_against_the_shipped_libraries() {
-        let table = CueTable::default_table();
+        let table = crate::default_table();
         let (effects, presets) = (VfxLibrary::default_effects(), ScreenLibrary::default_effects());
         let dispatcher = CueDispatcher::new(&table, &effects, &presets, &CameraTuning::default_tuning())
             .expect("every name it holds is there");

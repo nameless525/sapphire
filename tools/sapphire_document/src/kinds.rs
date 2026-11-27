@@ -19,6 +19,7 @@ use std::sync::Arc;
 use bevy_reflect::{GetTypeRegistration, TypeRegistry};
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
+use sapphire_assets::cue_table::CueTable;
 use sapphire_assets::graph::AnimGraph;
 use sapphire_assets::material::{AnimeCharacterMaterial, EnvironmentMaterial, MaterialDocument};
 use sapphire_assets::ramp::RampMap;
@@ -269,6 +270,17 @@ pub fn light_rigs() -> Schema<LightRigLibrary> {
     }
 }
 
+/// The cue table a fight's cues fire through (`default_cues.ron`, M6 T19). It's checked as it reads; whether the
+/// effects, presets and shakes it names are there is the game's to say when it takes one, and no cook reads it.
+#[must_use]
+pub fn cue_table() -> Schema<CueTable> {
+    Schema {
+        parse: |text| CueTable::from_ron(text).map_err(|error| error.to_string()),
+        check: no_rules,
+        importer: None,
+    }
+}
+
 /// A zone's `.colliders.ron`. Its rules are its cook's, which a check runs whole: what it refuses is shown, by
 /// the collider it names. What a placement draws is held to the colliders it names by the zone's cook (M4 X1).
 #[must_use]
@@ -300,13 +312,14 @@ pub enum Kind {
     LightRigs,
     Colliders,
     Foliage,
+    CueTable,
 }
 
 /// What every material family's file name ends with.
 const MATERIAL_SUFFIX: &str = ".material.ron";
 
 impl Kind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Moves,
         Self::Graph,
         Self::Cue,
@@ -324,12 +337,14 @@ impl Kind {
         Self::LightRigs,
         Self::Colliders,
         Self::Foliage,
+        Self::CueTable,
     ];
 
     /// What a file is, if it's a document this crate knows: by its name, and for a material by the family its
     /// envelope names, which this reads from the file ([`Self::of_material`]); a material that can't be read
-    /// is no kind. A library of effects, a day and a library of light rigs have no suffix of their own beyond
-    /// their names, as `default_effects.ron`, `lookdev_day.ron` and `lookdev_light_rigs.ron` show.
+    /// is no kind. A library of effects, a day, a library of light rigs and a cue table have no suffix of their own
+    /// beyond their names, as `default_effects.ron`, `lookdev_day.ron`, `lookdev_light_rigs.ron` and
+    /// `default_cues.ron` show.
     #[must_use]
     pub fn of(path: &Path) -> Option<Self> {
         Self::of_text(path, || std::fs::read_to_string(path).ok())
@@ -377,6 +392,7 @@ impl Kind {
             Self::LightRigs => "_rigs.ron",
             Self::Colliders => ".colliders.ron",
             Self::Foliage => ".foliage.ron",
+            Self::CueTable => "_cues.ron",
         })
     }
 
@@ -401,6 +417,7 @@ impl Kind {
             Self::LightRigs => "Light rigs",
             Self::Colliders => "Colliders",
             Self::Foliage => "Foliage",
+            Self::CueTable => "Cue tables",
         }
     }
 
@@ -426,6 +443,7 @@ impl Kind {
             Self::LightRigs => set.open(path, light_rigs(), Arc::new(registry_of::<LightRigLibrary>())),
             Self::Colliders => set.open(path, colliders(), Arc::new(registry_of::<ColliderDocument>())),
             Self::Foliage => set.open(path, foliage(), Arc::new(registry_of::<FoliageDocument>())),
+            Self::CueTable => set.open(path, cue_table(), Arc::new(registry_of::<CueTable>())),
         }
     }
 
@@ -453,6 +471,7 @@ impl Kind {
             Self::LightRigs => set.recover(entry, light_rigs(), Arc::new(registry_of::<LightRigLibrary>())),
             Self::Colliders => set.recover(entry, colliders(), Arc::new(registry_of::<ColliderDocument>())),
             Self::Foliage => set.recover(entry, foliage(), Arc::new(registry_of::<FoliageDocument>())),
+            Self::CueTable => set.recover(entry, cue_table(), Arc::new(registry_of::<CueTable>())),
         }
     }
 }

@@ -428,6 +428,12 @@ fn every_property_of_every_light_rig_library_undoes_or_is_refused() {
     );
 }
 
+/// The cue table checks everything as it reads (M6 T19), likewise.
+#[test]
+fn every_property_of_every_cue_table_undoes_or_is_refused() {
+    every_shipped(Kind::CueTable, &["crates/sapphire_cues/default_cues.ron"], kinds::cue_table(), true);
+}
+
 /// A zone's colliders, which T2 made a kind so a placement moves with what it names.
 #[test]
 fn every_property_of_every_colliders_document_undoes_to_the_same_bytes() {
@@ -490,6 +496,7 @@ fn every_document_in_the_content_opens_for_editing() {
             Kind::LightRigs => open(&relative, kinds::light_rigs()).failure().cloned(),
             Kind::Colliders => open(&relative, kinds::colliders()).failure().cloned(),
             Kind::Foliage => open(&relative, kinds::foliage()).failure().cloned(),
+            Kind::CueTable => open(&relative, kinds::cue_table()).failure().cloned(),
         };
         assert_eq!(failure, None, "{relative}");
         seen.insert(kind);
@@ -498,8 +505,9 @@ fn every_document_in_the_content_opens_for_editing() {
     let missing: Vec<_> = Kind::ALL.into_iter().filter(|kind| !seen.contains(kind)).collect();
     assert_eq!(
         missing,
-        [Kind::Effects, Kind::Foliage],
-        "every kind but effects and foliage, which the content has none of (no shipped zone grows plants yet, M6 G1a)"
+        [Kind::Effects, Kind::Foliage, Kind::CueTable],
+        "every kind but effects, foliage and cue tables, which the content has none of (no shipped zone grows plants \
+         yet, M6 G1a; the cue table is compiled in, M6 T19)"
     );
     assert!(count >= 220, "{count}");
 }

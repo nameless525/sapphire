@@ -252,13 +252,13 @@ impl CueShow {
     /// The shipped table, within `budget`. An error names a row it can't resolve, and a test holds the
     /// shipped libraries to it.
     pub(crate) fn new(budget: VfxBudget, presets: &ScreenLibrary) -> Result<Self, CueTableError> {
-        Self::with_table(CueTable::default_table(), VfxLibrary::default_effects(), budget, presets)
+        Self::with_table(sapphire_cues::default_table(), VfxLibrary::default_effects(), budget, presets)
     }
 
     /// The cooked effects library the shipped table names (M6 N1), which a fight loads before its cues play:
     /// none, and they play `sapphire_vfx`'s compiled-in library.
     pub(crate) fn effect_library() -> Option<sapphire_assets::AssetId> {
-        CueTable::default_table().effect_library()
+        sapphire_cues::default_table().effect_library()
     }
 
     /// The shipped table, firing `effects` within `budget`. An error names a row they don't have.
@@ -267,7 +267,7 @@ impl CueShow {
         budget: VfxBudget,
         presets: &ScreenLibrary,
     ) -> Result<Self, CueTableError> {
-        Self::with_table(CueTable::default_table(), effects, budget, presets)
+        Self::with_table(sapphire_cues::default_table(), effects, budget, presets)
     }
 
     /// `table`, firing `effects` within `budget`. An error names a row it can't resolve.
@@ -832,7 +832,7 @@ mod tests {
         let presets = ScreenLibrary::default_effects();
         let shipped = VfxLibrary::default_effects;
         let mut show =
-            CueShow::with_table(CueTable::default_table(), shipped(), VfxBudget::DESKTOP_LOW, &presets)
+            CueShow::with_table(sapphire_cues::default_table(), shipped(), VfxBudget::DESKTOP_LOW, &presets)
                 .expect("the shipped table finds them");
         show.take_effects(shipped(), &presets).expect("the same names");
         let without = VfxLibrary::from_ron(
@@ -1013,7 +1013,7 @@ mod tests {
         let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
         // A step that publishes two of the shipped table's cues.
         let shipped: Vec<String> =
-            CueTable::default_table().rows().iter().map(|row| row.cue.clone()).collect();
+            sapphire_cues::default_table().rows().iter().map(|row| row.cue.clone()).collect();
         let published = |sim: &Simulation| {
             let mut names: Vec<&String> =
                 shipped.iter().filter(|name| sim.cues().any(|cue| cue.cue == Name::new(name))).collect();
@@ -1137,7 +1137,7 @@ mod tests {
         let error = show.take_table(naming, &presets).expect_err("no such preset");
         assert!(matches!(error, CueTableError::UnknownPreset { .. }), "{error}");
         assert_eq!(show.table().rows().len(), rows);
-        show.take_table(CueTable::default_table(), &presets).expect("the shipped one again");
+        show.take_table(sapphire_cues::default_table(), &presets).expect("the shipped one again");
     }
 
     /// Sounds load once, as the app starts, so a new table playing another would be silent while its
@@ -1317,7 +1317,7 @@ mod tests {
         let music = root.join("content/audio/generated/music");
         let score = sapphire_assets::score::Score::from_document(&read(&music.join("lantern.score.ron")))
             .expect("reads");
-        let shipped = CueTable::default_table().music().expect("the table names a score");
+        let shipped = sapphire_cues::default_table().music().expect("the table names a score");
         let sidecar = read(&music.join("lantern.score.ron.meta"));
         assert!(sidecar.contains(&shipped.to_string()), "that's the score the table plays");
 

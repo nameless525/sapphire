@@ -236,7 +236,7 @@ fn micros(duration: Duration) -> f64 {
 
 fn fresh_sinks() -> Sinks {
     Sinks {
-        table: CueTable::default_table(),
+        table: sapphire_cues::default_table(),
         effects: VfxLibrary::default_effects(),
         presets: ScreenLibrary::default_effects(),
         tuning: CameraTuning::default_tuning(),

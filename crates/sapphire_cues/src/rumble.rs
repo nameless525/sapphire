@@ -15,22 +15,10 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use crate::Rumble;
 
 /// The most rumbles playing at once. A rumble past this replaces the one nearest its end.
 pub const MAX_RUMBLES: usize = 8;
-
-/// One rumble, as a table authors it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Rumble {
-    /// The low-frequency motor, the heavy one: 0 to 1.
-    pub low: f32,
-    /// The high-frequency motor, the sharp one: 0 to 1.
-    pub high: f32,
-    /// How long, in real seconds.
-    pub seconds: f32,
-}
 
 /// What rumbles: the player's pad, in an app, by SDL. A touch device has none, and an app there hands
 /// the dispatcher `()`, which ignores it.

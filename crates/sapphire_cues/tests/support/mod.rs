@@ -12,7 +12,7 @@ use sapphire_assets::cue::Cue;
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{AudioFrame, AudioSystem, CueRng, Emitter, Listener, MockBackend, MockCall};
 use sapphire_camera::{CameraDirector, CameraFrame, CameraTuning, Subject};
-use sapphire_cues::{CueDispatcher, CueMarks, CueStep, CueTable, RumbleSink, Stand, actor_emitter};
+use sapphire_cues::{CueDispatcher, CueMarks, CueStep, RumbleSink, Stand, actor_emitter};
 use sapphire_gameplay::replay::{Player, Replay, SCENARIOS};
 use sapphire_look::VfxFrame;
 use sapphire_math::{Mat4, Vec2, Vec3};
@@ -91,7 +91,7 @@ fn player(name: &str) -> Player {
 impl Fight {
     /// `tests/replays/<name>.sreplay`, under the shipped table with the cue documents it names.
     pub fn new(name: &str) -> Self {
-        let table = CueTable::default_table();
+        let table = sapphire_cues::default_table();
         let (effects, presets) = (VfxLibrary::default_effects(), ScreenLibrary::default_effects());
         let tuning = CameraTuning::default_tuning();
         let cues = CueDispatcher::new(&table, &effects, &presets, &tuning).expect("resolves");

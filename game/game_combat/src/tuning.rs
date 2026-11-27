@@ -1455,7 +1455,7 @@ mod tests {
         assert_eq!(CameraTuning::from_ron(&camera).expect("reads"), CameraTuning::default_tuning());
         assert!(sources::repository_file(CAMERA_PATH).ends_with("default_camera.ron"));
         let cues = std::fs::read_to_string(sources::default_cues()).expect("the cue table's document");
-        assert_eq!(CueTable::from_ron(&cues).expect("reads"), CueTable::default_table());
+        assert_eq!(CueTable::from_ron(&cues).expect("reads"), sapphire_cues::default_table());
         assert!(sources::repository_file(CUES_PATH).ends_with("default_cues.ron"));
         let effects = std::fs::read_to_string(sources::repository_file(EFFECTS_PATH)).expect("the effects");
         let shipped = sapphire_vfx::EffectLibrary::default_effects();

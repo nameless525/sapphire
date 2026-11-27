@@ -1,5 +1,5 @@
 // Sapphire's cue table (M2 E3), compiled into `sapphire_cues`: what each of the simulation's cues
-// fires, `CueTable::default_table`. A row is a cue's name, as a move or resolve publishes it, and
+// fires, `sapphire_cues::default_table`. A row is a cue's name, as a move or resolve publishes it, and
 // optionally a hit's weight; a row with the weight wins over one without. A cue with no row fires
 // nothing and is counted, so a row that fires nothing says so on purpose.
 //

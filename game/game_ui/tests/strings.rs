@@ -254,7 +254,7 @@ fn every_subtitle_is_one_the_hud_can_show() {
 /// shows, plain text in every language.
 #[test]
 fn every_voice_line_in_a_fight_has_a_caption() {
-    let table = sapphire_cues::CueTable::default_table();
+    let table = sapphire_cues::default_table();
     let lines: BTreeSet<_> = table.rows().iter().filter_map(|row| row.line.as_deref()).collect();
     assert!(!lines.is_empty(), "the fight says something");
     for locale in LOCALES {

@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use sapphire_core::Name;
-use sapphire_cues::{CueStats, CueTable};
+use sapphire_cues::CueStats;
 use sapphire_moves::{HIT_LANDED, MoveSetDocument};
 use sapphire_render::PostEffects;
 use support::Fight;
@@ -124,7 +124,7 @@ fn move_sets_in(folder: &Path, found: &mut Vec<PathBuf>) {
 fn every_cue_a_shipped_move_set_can_publish_has_a_row() {
     const LANDED: &str = "hit_landed";
     assert_eq!(HIT_LANDED, Name::new(LANDED));
-    let table = CueTable::default_table();
+    let table = sapphire_cues::default_table();
     let has_row = |name: &str| table.rows().iter().any(|row| row.cue == name);
     let mut files = Vec::new();
     move_sets_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat"), &mut files);

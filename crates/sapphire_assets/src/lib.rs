@@ -55,6 +55,9 @@
 //!   linking a mixer (`sapphire_audio`, which plays them). Music and voice (M3 A1) likewise: [`score`],
 //!   stems by a fight's phase (`.sscore`), and [`voice`], one language's lines by key (`.svoice`). A voice
 //!   sound's [`mouth`] curve (M5 C6) is cooked into its `.ssound`, for a face to say it with.
+//! - The cue table ([`cue_table`], M2 E3, moved here in M6 T19): what each of the simulation's cues fires, by
+//!   name, as the document `sapphire_cues` resolves and fires and the editor opens. No cook reads it; it's here
+//!   so the editor reflects it without linking the renderer.
 //! - Effects libraries ([`effects`], `.seffects`, M6 N1): `sapphire_vfx`'s library, kept as the document that
 //!   crate reads, so its schema has one home; here only its envelope and type are checked. Painted sheets
 //!   ([`effect_sheet`], `.ssheet`, M6 N4a): a flipbook's frames as layers of 256², laid out as a library's
@@ -125,6 +128,7 @@
 pub mod character_maps;
 pub mod clip;
 pub mod cue;
+pub mod cue_table;
 pub mod documents;
 pub mod effect_sheet;
 pub mod effects;

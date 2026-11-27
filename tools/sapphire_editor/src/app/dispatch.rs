@@ -49,6 +49,9 @@ impl Editor {
         self.depth += 1;
         self.perform(&command);
         self.depth -= 1;
+        if self.depth == 0 && lists_anew(&command) {
+            self.refresh_problems();
+        }
         if self.depth == 0 {
             self.standings.clear();
         }
@@ -263,6 +266,7 @@ impl Editor {
             Command::SelectPlacement(id) => self.select_placement(id.as_deref()),
             Command::MigrateZone => self.migrate_zone(),
             Command::SelectObjects(picked) => self.select_objects(picked),
+            Command::SelectField(picked) => self.select_field(picked),
             Command::SetShared { path, value } => match path.parse::<PropertyPath>() {
                 Ok(path) => {
                     if self.take_typed() {
@@ -437,4 +441,25 @@ pub(super) fn last_step(path: &PropertyPath) -> String {
         Some(Step::Index(at)) => at.to_string(),
         Some(Step::Some) | None => path.to_string(),
     }
+}
+
+/// Whether the problems pane lists again after `command` (M6 T6): it opened, closed, saved or took back a document.
+/// A cook's end lists again by itself.
+fn lists_anew(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Open(_)
+            | Command::Save
+            | Command::SaveAndPush
+            | Command::SaveAll
+            | Command::Close
+            | Command::SaveAndClose
+            | Command::CloseWithoutSaving
+            | Command::SaveAndQuit
+            | Command::TakeFile
+            | Command::MineOnTop
+            | Command::KeepMine
+            | Command::Recover(_)
+            | Command::SelectField(_)
+    )
 }

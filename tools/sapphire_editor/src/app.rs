@@ -23,6 +23,7 @@ mod dispatch;
 mod in_game;
 mod inspector;
 mod palette;
+mod problems;
 mod properties;
 mod screen;
 mod selection;
@@ -266,6 +267,10 @@ pub struct Editor {
     selected_entry: Option<EntryRef>,
     /// Objects by document and path, across documents, in the order they were picked.
     selection: Vec<ObjectId>,
+    /// What's wrong with the open documents and the last cook, as the problems pane lists it (M6 T6).
+    problems: Vec<sapphire_document::Problem>,
+    /// The field a problem's row last went to, which Properties marks.
+    field: Option<ObjectId>,
     tick: u32,
     /// "Play from frame N": where playing starts, and what it comes back to.
     play_from: u32,
@@ -414,6 +419,8 @@ impl Editor {
             selected_move: 0,
             selected_entry: None,
             selection: Vec::new(),
+            problems: Vec::new(),
+            field: None,
             tick: 0,
             play_from: 0,
             playing: None,
@@ -585,6 +592,7 @@ impl Editor {
             Kind::Ui => self.shell.open(Pane::Screen),
             _ => {}
         }
+        self.refresh_problems();
     }
 
     /// Keeps a journal under `root` from now on (`target/editor_journal/` in a repository, [`journal_path`]), and
@@ -1469,6 +1477,7 @@ impl Editor {
 
     fn check_selection(&mut self) {
         self.prune_selection();
+        self.prune_field();
         let Some(entry) = self.selected_entry else { return };
         let exists = self
             .document()
@@ -1812,6 +1821,7 @@ impl PaneUi for Editor {
                 );
             }
             Pane::Properties => self.properties_panel(ui),
+            Pane::Problems => self.problems_panel(ui),
             Pane::Cvars => self.cvars_panel(ui),
             Pane::Device => {
                 egui::ScrollArea::vertical().id_salt("device").auto_shrink([false, false]).show(ui, |ui| {

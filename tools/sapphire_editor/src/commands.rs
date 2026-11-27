@@ -170,6 +170,9 @@ pub enum Command {
     MigrateZone,
     /// Selects these objects, in any documents open, in place of what was selected: none selects nothing.
     SelectObjects(Vec<Picked>),
+    /// Goes to a field of a document, as the document's RON spells its path, opening the document if it isn't
+    /// open: Properties marks the field's row. What a problem's row runs (M6 T6).
+    SelectField(Picked),
     /// Sets the property at `path` under each selected object, as RON spelled as typed: one step of undo
     /// however many documents that touches.
     SetShared { path: String, value: String },
@@ -224,6 +227,7 @@ impl Command {
         match self {
             Self::Open(path) | Self::Recover(path) | Self::DropRecovered(path) => vec![path],
             Self::SelectObjects(picked) => picked.iter_mut().map(|picked| &mut picked.document).collect(),
+            Self::SelectField(picked) => vec![&mut picked.document],
             _ => Vec::new(),
         }
     }
@@ -288,6 +292,7 @@ impl Command {
             Self::SelectPlacement(_) => "SelectPlacement",
             Self::MigrateZone => "MigrateZone",
             Self::SelectObjects(_) => "SelectObjects",
+            Self::SelectField(_) => "SelectField",
             Self::SetShared { .. } => "SetShared",
             Self::Scrub(_) => "Scrub",
             Self::PlayTimeline => "PlayTimeline",
@@ -397,6 +402,8 @@ const COMMANDS: &[Registered] = registry! {
     "MigrateZone", "MigrateZone", None, "Writes the zone at its newest version, with its IDs, and saves it";
     "SelectObjects", r#"SelectObjects([(document: "content/", path: "")])"#, None,
         "Selects objects by document and path, in any documents open";
+    "SelectField", r#"SelectField((document: "content/", path: ""))"#, None,
+        "Goes to a field of a document, opening it if it isn't, as a problem's row does";
     "SetShared", r#"SetShared(path: "", value: "")"#, None,
         "Sets a property under every object selected, as one step of undo";
     "Scrub", "Scrub(0)", None, "Puts the timeline's playhead at a frame";

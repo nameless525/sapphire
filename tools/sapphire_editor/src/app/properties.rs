@@ -21,6 +21,9 @@ use crate::commands::Command;
 /// What the cook refused is in this colour.
 const REFUSED: Color32 = Color32::from_rgb(255, 120, 110);
 
+/// The field a problem's row went to is in this colour (M6 T6).
+const SELECTED: Color32 = Color32::from_rgb(255, 210, 120);
+
 /// A place in the tree. One can be several things at once: an `Option` of an enum with fields, say.
 #[derive(Debug)]
 struct Node {
@@ -51,6 +54,9 @@ struct Leaf {
 pub(super) struct PropertiesPanel {
     of: Option<(AssetId, String)>,
     nodes: Vec<Node>,
+    /// A field was just selected (M6 T6): the rows above it open as they're drawn, and its own scrolls into view,
+    /// once.
+    pub reveal: bool,
 }
 
 /// What a click asked for, done once the tree isn't being read.
@@ -97,7 +103,13 @@ impl Editor {
         }
         let Some(document) = self.documents.any(id) else { return };
         if let Some(why) = document.failure_message() {
-            ui.colored_label(Color32::from_rgb(255, 120, 110), format!("This can't be edited: {why}"));
+            let at = self
+                .field
+                .as_ref()
+                .filter(|field| field.document == id)
+                .map(|field| format!(" The problem is at {}.", field.path))
+                .unwrap_or_default();
+            ui.colored_label(Color32::from_rgb(255, 120, 110), format!("This can't be edited: {why}{at}"));
             return;
         }
         for issue in document.issues().iter().take(8) {
@@ -148,13 +160,21 @@ impl Editor {
             return;
         }
         let key = ui.make_persistent_id(("property", id, node.path.to_string()));
-        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), key, false)
-            .show_header(ui, |ui| self.node_header(ui, id, node, in_list, asked))
-            .body(|ui| {
-                for child in &node.children {
-                    self.property_node(ui, id, child, node.list, asked);
-                }
-            });
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), key, false);
+        let above_field = self.field.as_ref().is_some_and(|field| {
+            field.document == id
+                && field.path.steps().len() > node.path.steps().len()
+                && field.path.steps().starts_with(node.path.steps())
+        });
+        if self.properties.reveal && above_field {
+            state.set_open(true);
+        }
+        state.show_header(ui, |ui| self.node_header(ui, id, node, in_list, asked)).body(|ui| {
+            for child in &node.children {
+                self.property_node(ui, id, child, node.list, asked);
+            }
+        });
     }
 
     fn node_header(&mut self, ui: &mut Ui, id: AssetId, node: &Node, in_list: bool, asked: &mut Vec<Asked>) {
@@ -164,14 +184,24 @@ impl Editor {
                 && (node.path.to_string() == field
                     || node.option.as_ref().is_some_and(|(path, _)| path.to_string() == field))
         });
+        let selected = self.field.as_ref().is_some_and(|field| {
+            field.document == id
+                && (field.path == node.path
+                    || node.option.as_ref().is_some_and(|(path, _)| *path == field.path))
+        });
         let label = if refused {
             RichText::new(format!("{} (refused)", node.label)).color(REFUSED)
+        } else if selected {
+            RichText::new(&node.label).color(SELECTED).strong()
         } else if written {
             RichText::new(&node.label)
         } else {
             RichText::new(&node.label).color(Color32::from_gray(130))
         };
-        ui.label(label).on_hover_text(node.path.to_string());
+        let shown = ui.label(label).on_hover_text(node.path.to_string());
+        if selected && std::mem::take(&mut self.properties.reveal) {
+            shown.scroll_to_me(Some(egui::Align::Center));
+        }
         if let Some((path, on)) = &node.option {
             let mut now = *on;
             if ui.checkbox(&mut now, "").on_hover_text("Whether it's there").changed() {

@@ -64,6 +64,7 @@ impl Editor {
                 documents.path(*id).and_then(|path| path.canonicalize().ok()) == Some(source.clone())
             })
         });
+        self.refresh_problems();
     }
 
     /// What the editor's cooks have done (R9), once a save has asked for one.

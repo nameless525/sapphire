@@ -151,7 +151,7 @@ impl Editor {
     }
 
     /// The document open at `path`, by its name or the file it is.
-    fn open_at(&self, path: &std::path::Path) -> Option<AssetId> {
+    pub(super) fn open_at(&self, path: &std::path::Path) -> Option<AssetId> {
         let same = |open: &std::path::Path| {
             open == path
                 || matches!((std::fs::canonicalize(open), std::fs::canonicalize(path)), (Ok(a), Ok(b)) if a == b)

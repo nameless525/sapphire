@@ -38,10 +38,12 @@ pub enum Pane {
     Cvars,
     /// What a device says.
     Device,
+    /// What's wrong with the open documents and the last cook, by document and field (M6 T6).
+    Problems,
 }
 
 impl Pane {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Browser,
         Self::Moves,
         Self::Zone,
@@ -54,6 +56,7 @@ impl Pane {
         Self::Properties,
         Self::Cvars,
         Self::Device,
+        Self::Problems,
     ];
 
     /// Its tab's title.
@@ -72,6 +75,7 @@ impl Pane {
             Self::Properties => "Properties",
             Self::Cvars => "Cvars",
             Self::Device => "Device",
+            Self::Problems => "Problems",
         }
     }
 }
@@ -132,6 +136,7 @@ impl Shell {
             tiles.insert_pane(Pane::Inspector),
             tiles.insert_pane(Pane::Properties),
             tiles.insert_pane(Pane::Cvars),
+            tiles.insert_pane(Pane::Problems),
         ];
         let side = tiles.insert_tab_tile(side);
         let device = tiles.insert_pane(Pane::Device);

@@ -437,7 +437,7 @@ pub(crate) fn place(world: &mut World, actor: ActorId, position: Vec3, yaw: f32,
     let mut set = None;
     if let Some(mut runner) = entry.get_mut::<MoveRunner>() {
         runner.running = None;
-        runner.forced = None;
+        runner.drop_forced();
         runner.counter = None;
         if let Some(now) = now {
             runner.cursor = now;

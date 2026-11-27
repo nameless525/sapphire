@@ -22,8 +22,9 @@ use crate::set::{
     Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue, DodgeVolume,
     EnergyDef, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef,
     Knockback, MAX_BUFFER_TICKS, MAX_ENERGY, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_REACH,
-    MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, MoveParts, MoveSet, MoveSetError,
-    PerfectDodgeWindow, Reactions, Shape, Span, WarpWindow, Weight, WorldSlowMotion,
+    MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, Mantle, MoveDrive, MoveParts, MoveSet,
+    MoveSetError, PerfectDodgeWindow, Reactions, Shape, Span, TraversalMoves, WarpWindow, Weight,
+    WorldSlowMotion,
 };
 use crate::{BakedPath, BakedTables, PathSample, RootSample};
 
@@ -62,6 +63,34 @@ pub struct MoveSetDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fighter: Option<FighterDocument>,
     pub moves: Vec<MoveDocument>,
+    /// What a ledge in front of this set's fighters starts (M6 A15). Left out, nothing: they jump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traversal: Option<TraversalDocument>,
+}
+
+/// The moves a ledge starts. See [`TraversalMoves`].
+#[derive(Reflect, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraversalDocument {
+    /// The mantles, lowest first, each by the highest ledge it takes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mantles: Vec<MantleDocument>,
+    /// The move that carries a running fighter over an obstacle no taller than its `vault_max_height`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<String>,
+}
+
+/// One mantle. See [`Mantle`].
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MantleDocument {
+    #[serde(rename = "move")]
+    #[reflect(@SerdeName("move"))]
+    pub target: String,
+    /// The highest ledge it takes, in metres over the feet.
+    pub up_to: f32,
 }
 
 impl Versioned for MoveSetDocument {
@@ -272,6 +301,15 @@ pub struct MoveDocument {
     /// or zero, it costs nothing. A cost needs the set's fighter to have an energy meter that holds it.
     #[serde(default, skip_serializing_if = "costs_nothing")]
     pub cost: u32,
+    /// How its root motion meets the ground (M6 A15). Left out, `Ground`: a strike, whose height the floor
+    /// decides. `Flight` is a leap, a mantle or a vault, whose table owns the height.
+    #[serde(default, skip_serializing_if = "is_ground")]
+    pub drive: MoveDrive,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's `skip_serializing_if` passes a reference")]
+fn is_ground(drive: &MoveDrive) -> bool {
+    *drive == MoveDrive::Ground
 }
 
 /// A window with nothing else to say: open on ticks `from` to `to − 1`.
@@ -433,6 +471,15 @@ pub struct WarpDocument {
     pub max_turn: f32,
     #[serde(default)]
     pub keep: f32,
+    /// Most metres it may raise or lower the table's motion, in all (M6 A15). Left out, none: the warp keeps to
+    /// the ground's plane. Only `0.0` is left out, by its bits, so a `-0.0` set in the editor is written.
+    #[serde(default, skip_serializing_if = "rises_nowhere")]
+    pub max_rise: f32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's `skip_serializing_if` passes a reference")]
+fn rises_nowhere(rise: &f32) -> bool {
+    rise.to_bits() == 0
 }
 
 /// A cue. See [`Cue`].
@@ -1396,8 +1443,36 @@ impl MoveSetDocument {
             }
         }
 
+        check.in_move = None;
+        let traversal = self.traversal.as_ref().and_then(|traversal| {
+            let mut index = |name: &str| {
+                let found = self.moves.iter().position(|mv| mv.name == name);
+                if found.is_none() {
+                    check.add("traversal", format!("`{name}` isn't a move of this set"));
+                }
+                found.map(|at| at as u32)
+            };
+            let mantles: Vec<Mantle> = traversal
+                .mantles
+                .iter()
+                .filter_map(|mantle| Some(Mantle { at: index(&mantle.target)?, up_to: mantle.up_to }))
+                .collect();
+            let vault = traversal.vault.as_deref().map(index);
+            if mantles.len() < traversal.mantles.len() || vault.is_some_and(|at| at.is_none()) {
+                return None;
+            }
+            let built = TraversalMoves { mantles, vault: vault.flatten() };
+            // Only a set whose every move compiled can be asked about its moves.
+            if moves.len() == self.moves.len()
+                && let Err(why) = built.check(&moves)
+            {
+                check.add("traversal", why);
+            }
+            Some(built)
+        });
+
         if check.issues.is_empty() {
-            Ok(MoveSet::from_parts(intents, neutral, fighter, moves))
+            Ok(MoveSet::from_parts(intents, neutral, fighter, moves, traversal))
         } else {
             Err(MoveSetError::Invalid(check.issues))
         }
@@ -1546,12 +1621,12 @@ fn compile_move(
     let mut warps = Vec::with_capacity(mv.warps.len());
     for warp in &mv.warps {
         let span = check.span("warps", warp.from, warp.to, ticks);
-        let limits = [warp.max_distance, warp.max_turn, warp.keep];
+        let limits = [warp.max_distance, warp.max_turn, warp.keep, warp.max_rise];
         if !limits.iter().all(|limit| limit.is_finite() && *limit >= 0.0) {
             let (from, to) = (warp.from, warp.to);
             check.add("warps", format!("window {from}..{to} has a limit that's negative or not finite"));
         }
-        if warp.max_distance == 0.0 && warp.max_turn == 0.0 {
+        if warp.max_distance == 0.0 && warp.max_turn == 0.0 && warp.max_rise == 0.0 {
             let (from, to) = (warp.from, warp.to);
             check.add("warps", format!("window {from}..{to} can't move or turn anything"));
         }
@@ -1560,6 +1635,8 @@ fn compile_move(
             max_distance: warp.max_distance,
             max_turn: warp.max_turn,
             keep: warp.keep,
+            // `-0.0` rises nowhere, as an omitted rise does, and cooks the same bytes.
+            max_rise: warp.max_rise + 0.0,
         });
     }
     let mut sorted: Vec<Span> = warps.iter().map(|warp| warp.span).collect();
@@ -1623,6 +1700,7 @@ fn compile_move(
             cues,
             cinematic,
             cost: mv.cost,
+            drive: mv.drive,
         }
         .build(),
     )
@@ -1797,6 +1875,20 @@ mod tests {
         assert_eq!(*slice().compile().unwrap().to_cooked().unwrap(), *cooked);
     }
 
+    /// A rise of `-0.0` is written back as it was, and cooks the bytes an omitted one does (M6 A15).
+    #[test]
+    fn a_negative_zero_rise_cooks_as_none() {
+        let plain = slice().compile().unwrap().to_cooked().unwrap();
+        let mut document = slice();
+        let warp = document.moves.iter_mut().find_map(|mv| mv.warps.first_mut()).expect("a warp");
+        warp.max_rise = -0.0;
+        assert!(
+            document.to_text().unwrap().contains("max_rise: -0.0"),
+            "the document keeps what it was given"
+        );
+        assert_eq!(*document.compile().unwrap().to_cooked().unwrap(), *plain);
+    }
+
     #[test]
     fn stale_and_damaged_bytes_are_refused() {
         let cooked = slice().compile().unwrap().to_cooked().unwrap();
@@ -1805,8 +1897,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 11,
-                current: 10
+                found: 12,
+                current: 11
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];
@@ -1820,6 +1912,7 @@ mod tests {
             vec![Allow::new(Name::new("light"), target, Name::new("x"), CancelMode::Buffered)],
             set.fighter().cloned(),
             set.moves().to_vec(),
+            None,
         );
         let bad = set.to_cooked().unwrap();
         assert!(matches!(MoveSet::from_cooked(&bad), Err(MoveSetError::Damaged(_))));
@@ -1915,7 +2008,14 @@ mod tests {
             (
                 "warps that overlap",
                 |d| {
-                    let warp = WarpDocument { from: 1, to: 5, max_distance: 1.0, max_turn: 0.0, keep: 0.0 };
+                    let warp = WarpDocument {
+                        from: 1,
+                        to: 5,
+                        max_distance: 1.0,
+                        max_turn: 0.0,
+                        keep: 0.0,
+                        max_rise: 0.0,
+                    };
                     light(d).warps = vec![warp, WarpDocument { from: 4, ..warp }];
                 },
                 &["light_1", "warps", "overlap"],
@@ -1923,7 +2023,14 @@ mod tests {
             (
                 "a warp with negative limits",
                 |d| {
-                    let warp = WarpDocument { from: 1, to: 5, max_distance: -1.0, max_turn: 0.0, keep: 0.0 };
+                    let warp = WarpDocument {
+                        from: 1,
+                        to: 5,
+                        max_distance: -1.0,
+                        max_turn: 0.0,
+                        keep: 0.0,
+                        max_rise: 0.0,
+                    };
                     light(d).warps = vec![warp];
                 },
                 &["light_1", "warps", "negative"],
@@ -1931,10 +2038,33 @@ mod tests {
             (
                 "a warp that can't do anything",
                 |d| {
-                    let warp = WarpDocument { from: 1, to: 5, max_distance: 0.0, max_turn: 0.0, keep: 1.0 };
+                    let warp = WarpDocument {
+                        from: 1,
+                        to: 5,
+                        max_distance: 0.0,
+                        max_turn: 0.0,
+                        keep: 1.0,
+                        max_rise: 0.0,
+                    };
                     light(d).warps = vec![warp];
                 },
                 &["light_1", "warps", "can't move or turn"],
+            ),
+            (
+                "a mantle that isn't a move",
+                |d| {
+                    let mantle = MantleDocument { target: "ghost".to_owned(), up_to: 1.0 };
+                    d.traversal = Some(TraversalDocument { mantles: vec![mantle], vault: None });
+                },
+                &["traversal", "ghost", "isn't a move"],
+            ),
+            (
+                "a vault on the ground",
+                |d| {
+                    d.traversal =
+                        Some(TraversalDocument { mantles: Vec::new(), vault: Some("light_1".to_owned()) })
+                },
+                &["traversal", "light_1", "doesn't fly"],
             ),
             (
                 "phases that add up to nothing",
@@ -2599,7 +2729,13 @@ mod tests {
 
     #[test]
     fn an_empty_set_is_refused() {
-        let document = MoveSetDocument { intents: vec![], neutral: vec![], fighter: None, moves: vec![] };
+        let document = MoveSetDocument {
+            intents: vec![],
+            neutral: vec![],
+            fighter: None,
+            moves: vec![],
+            traversal: None,
+        };
         assert!(document.check().iter().any(|issue| issue.message.contains("at least one move")));
     }
 
@@ -2690,7 +2826,8 @@ mod tests {
             let mut moves = good.moves().to_vec();
             let mut fighter = good.fighter().cloned();
             edit(&mut moves, &mut fighter);
-            let set = MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), fighter, moves);
+            let set =
+                MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), fighter, moves, None);
             MoveSet::from_cooked(&set.to_cooked().unwrap())
         };
         assert!(rebuilt(|_, _| {}).is_ok());
@@ -2728,6 +2865,7 @@ mod tests {
                     good.neutral().to_vec(),
                     good.fighter().cloned(),
                     moves,
+                    None,
                 )
             };
             let slow = MoveSet::from_cooked(&set.to_cooked().unwrap());

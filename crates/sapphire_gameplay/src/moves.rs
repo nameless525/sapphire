@@ -48,8 +48,8 @@ use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{
-    Allow, BakedTables, BrainDef, CancelMode, EnemyError, EnemyMind, Hitbox, HurtboxChange, Move, MoveSet,
-    PathSample, PerfectDodgeWindow, Phase, QUARTERS, RootSample, Shape, Span, Stretch, WarpWindow,
+    Allow, BakedTables, BrainDef, CancelMode, EnemyError, EnemyMind, Hitbox, HurtboxChange, Move, MoveDrive,
+    MoveSet, PathSample, PerfectDodgeWindow, Phase, QUARTERS, RootSample, Shape, Span, Stretch, WarpWindow,
 };
 use sapphire_time::{SimDuration, SimTime};
 use xxhash_rust::xxh3::xxh3_64;
@@ -440,10 +440,15 @@ pub(crate) struct Running {
     pub(crate) frame_yaw: f32,
     /// The table's last reading.
     pub(crate) reading: RootSample,
-    /// The warp window the two counts below belong to.
+    /// The warp window the counts below belong to.
     pub(crate) warp_window: Option<u32>,
     pub(crate) warp_distance: f32,
     pub(crate) warp_turn: f32,
+    /// How far the window has raised or lowered the root, in all (M6 A15).
+    pub(crate) warp_rise: f32,
+    /// Where this playing's warp aims, its own rather than the actor's [`WarpTarget`]: a ledge's point for
+    /// a traversal move (M6 A15), which ends with the move.
+    pub(crate) toward: Option<Vec3>,
     /// A perfect dodge has fired in this playing, so it won't again.
     pub(crate) dodged: bool,
 }
@@ -458,6 +463,8 @@ pub struct MoveRunner {
     /// Moves it has started, all told.
     pub(crate) started: u32,
     pub(crate) forced: Option<Name>,
+    /// Where a forced move's warp aims, if it has an aim of its own (M6 A15): see [`Self::force_toward`].
+    pub(crate) forced_toward: Option<Vec3>,
     /// What a perfect dodge left open.
     pub(crate) counter: Option<OpenCounter>,
 }
@@ -496,6 +503,20 @@ impl MoveRunner {
     /// nothing. Call it between steps or from inside one.
     pub fn force(&mut self, name: Name) {
         self.forced = Some(name);
+        self.forced_toward = None;
+    }
+
+    /// As [`Self::force`], with the move's warp aimed at `point` for as long as it plays, whatever the
+    /// actor's [`WarpTarget`] says (M6 A15): a ledge a mantle climbs, which no later move inherits.
+    pub fn force_toward(&mut self, name: Name, point: Vec3) {
+        self.forced = Some(name);
+        self.forced_toward = Some(point);
+    }
+
+    /// Drops a forced start before it begins.
+    pub(crate) fn drop_forced(&mut self) {
+        self.forced = None;
+        self.forced_toward = None;
     }
 }
 
@@ -623,6 +644,9 @@ pub struct MoveOutput {
     /// can't give a volume a tick without i-frames, so a hit and a perfect dodge never land on an actor in
     /// one step.
     pub perfect_window: Option<u32>,
+    /// A move read this step flies ([`sapphire_moves::MoveDrive::Flight`], M6 A15): its table owns the height,
+    /// so the controller runs [`ControllerDrive::flight`](crate::ControllerDrive::flight) rather than a strike.
+    pub flight: bool,
 }
 
 /// The move an actor is playing, as plain data: what N3's combat layer and T1's view read.
@@ -666,6 +690,8 @@ pub struct MoveRead {
     pub hurtboxes: Published<ActiveHurtbox, MAX_ACTIVE_HURTBOXES>,
     /// What moves want of the root this step, warp included.
     pub root_delta: RootDelta,
+    /// This step's motion flew, the move's table owning the height (M6 A15): see [`MoveOutput::flight`].
+    pub flight: bool,
     /// Where the root was before this step's motion. With [`ActorView`](crate::ActorView)'s position
     /// and yaw, what a hit sweep runs between.
     pub previous: ActorTransform,
@@ -699,6 +725,7 @@ impl MoveRead {
             volumes: output.volumes,
             hurtboxes: output.hurtboxes,
             root_delta: output.root_delta,
+            flight: output.flight,
             previous: output.previous,
             counter_closes_at: runner.counter.map(|counter| counter.closes),
         }
@@ -777,7 +804,7 @@ pub(crate) fn settle_cancels(
         *output = MoveOutput::default();
         // Off the field nothing starts: a force, or a press something made for it, is dropped here.
         if party.is_off_field(id) {
-            runner.forced = None;
+            runner.drop_forced();
             if !ring.is_empty() {
                 ring.reset();
             }
@@ -829,12 +856,16 @@ fn settle(
     };
     let reference = |index: u32| MoveRef { set, revision: current_revision, index };
 
+    let toward = runner.forced_toward.take();
     if let Some(name) = runner.forced.take()
         && let Some((index, _)) = current.find(name)
     {
         let at = runner.cursor;
         end_running(&mut stage, runner, at);
         start_move(&mut stage, runner, reference(index), at);
+        if let Some(running) = runner.running.as_mut() {
+            running.toward = toward;
+        }
     }
     if frozen {
         return;
@@ -1086,6 +1117,8 @@ fn start_move(stage: &mut Stage<'_>, runner: &mut MoveRunner, target: MoveRef, a
         warp_window: None,
         warp_distance: 0.0,
         warp_turn: 0.0,
+        warp_rise: 0.0,
+        toward: None,
         dodged: false,
     });
     stage.stats.moves_started += 1;
@@ -1174,6 +1207,7 @@ fn read_stretch(stage: &mut Stage<'_>, mv: &Move, running: &mut Running, stretch
     windows.parry |= live(&mv.parry);
     windows.cancel |= mv.cancels.iter().any(|window| window.span.live(stretch));
     windows.warp |= mv.warps.iter().any(|window| window.span.live(stretch));
+    stage.output.flight |= mv.drive == MoveDrive::Flight;
     for window in &mv.armour {
         if window.span.live(stretch) {
             windows.armour = windows.armour.max(window.threshold);
@@ -1270,11 +1304,13 @@ fn bend_toward_target(
     from: SimDuration,
     to: SimDuration,
 ) {
-    let Some(goal) = stage.target else { return };
+    // A move with an aim of its own (a traversal move's, M6 A15) takes it over the actor's, at every reading.
+    let Some(goal) = running.toward.or(stage.target) else { return };
     if running.warp_window != Some(index) {
         running.warp_window = Some(index);
         running.warp_distance = 0.0;
         running.warp_turn = 0.0;
+        running.warp_rise = 0.0;
     }
     let window_end = warp.span.end();
     let share = motion_share(tables, stage.library.root_path(running.at), from, to, window_end);
@@ -1307,6 +1343,16 @@ fn bend_toward_target(
         let shift = correction * share;
         running.warp_distance += shift.length();
         output.root_delta.translation += shift;
+    }
+
+    // The height, by itself and within its own limit (M6 A15): where the table leaves the root at the window's
+    // end against the target's height, which a mantle's target puts on the ledge.
+    if warp.max_rise > 0.0 {
+        let arrives = here.y + (at_end.translation[1] - running.reading.translation[1]);
+        let left = (warp.max_rise - running.warp_rise).max(0.0);
+        let rise = (goal.y - arrives).clamp(-left, left) * share;
+        running.warp_rise += rise.abs();
+        output.root_delta.translation.y += rise;
     }
 }
 

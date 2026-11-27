@@ -161,6 +161,7 @@ mod simulation;
 mod stats;
 pub mod targeting;
 mod timeline;
+pub mod traversal;
 pub mod zone;
 
 pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActions, TickActionsFull};

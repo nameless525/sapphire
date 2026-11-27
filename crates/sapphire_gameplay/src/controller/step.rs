@@ -493,9 +493,10 @@ impl Tick<'_> {
                     self.rest(state, drop)?;
                 }
                 Footing::Steep { .. } | Footing::Nothing
-                    if drive.mode == MovementMode::Combat && travelled > 0.0 =>
+                    if drive.mode == MovementMode::Combat && drive.gravity && travelled > 0.0 =>
                 {
-                    // A strike stays on the ledge it started on, rather than leaving it mid-swing.
+                    // A strike stays on the ledge it started on, rather than leaving it mid-swing. A flight's
+                    // table owns the height, so a vault leaves the obstacle it crossed the top of (M6 A15).
                     self.place(start)?;
                     state.velocity = Vec3::ZERO;
                     state.events.ledge_held = true;

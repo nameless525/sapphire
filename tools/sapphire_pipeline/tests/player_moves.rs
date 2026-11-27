@@ -28,6 +28,16 @@ use sapphire_pipeline::{meta, moves};
 
 /// What a hit forces, with no clip of their own: the character's graph draws them.
 const REACTIONS: [&str; 5] = ["flinch", "stagger", "knockdown", "dazed", "defeat"];
+
+/// The moves a document's `traversal` names (M6 A15): keyed by hand, a root table and no clip, until A16b
+/// gives them clips and graph rows. Neither the clip-of-its-name rule nor the clip route holds them till then.
+fn traversal_moves(document: &MoveSetDocument) -> Vec<String> {
+    document.traversal.as_ref().map_or_else(Vec::new, |traversal| {
+        let mantles = traversal.mantles.iter().map(|mantle| mantle.target.clone());
+        mantles.chain(traversal.vault.clone()).collect()
+    })
+}
+
 /// How far along its +Y the blade path's middle is from either end of the blade.
 const HALF_BLADE: f32 = 0.45;
 /// The ball of the foot's height over the sole, at rest.
@@ -253,7 +263,14 @@ fn every_moves_timing_can_be_saved_with_no_cook() {
     assert_eq!(bytes(&same.set), bytes(&player.set));
 
     let mut document = player.document.clone();
-    for mv in document.moves.iter_mut().filter(|mv| !REACTIONS.contains(&mv.name.as_str())) {
+    // A traversal move's root is keyed by hand, the route a cook bakes rather than a clip's, which is what
+    // this tests: its timing moves with the clip A16b gives it.
+    let keyed = traversal_moves(&player.document);
+    for mv in document
+        .moves
+        .iter_mut()
+        .filter(|mv| !REACTIONS.contains(&mv.name.as_str()) && !keyed.contains(&mv.name))
+    {
         assert!(mv.motion.clip.is_some(), "{}: the route this tests", mv.name);
         assert!(mv.recovery > 1, "{}: there's a tick to move", mv.name);
         mv.startup += 1;
@@ -313,7 +330,13 @@ fn what_a_saved_document_cant_change_waits_for_a_cook() {
 fn each_move_plays_the_clip_of_its_name() {
     let player = player();
     assert!(!player.attacks.is_empty(), "the document's moves: {:?}", player.moves);
+    let keyed = traversal_moves(&player.document);
     for mv in &player.document.moves {
+        if keyed.contains(&mv.name) {
+            // Keyed by hand until A16b gives it a clip of its name.
+            assert!(mv.motion.clip.is_none(), "{}: a keyed root, no clip", mv.name);
+            continue;
+        }
         if REACTIONS.contains(&mv.name.as_str()) {
             assert!(mv.motion.clip.is_none(), "{}: a graph draws it, so nothing bakes from a clip", mv.name);
             continue;

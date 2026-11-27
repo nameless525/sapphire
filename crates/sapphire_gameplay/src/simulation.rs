@@ -52,6 +52,7 @@ use crate::timeline::{
     self, CinematicError, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
     TimelineRun,
 };
+use crate::traversal::{self, TraversalStats};
 use crate::zone::{self, ZoneEntry, ZoneEntryError, ZoneGround, ZoneId, ZoneShelf};
 use sapphire_zone::ArchivedZone;
 
@@ -181,6 +182,7 @@ impl Simulation {
         world.insert_resource(CurrentActions::default());
         world.insert_resource(MoveLibrary::default());
         world.insert_resource(MoveStats::default());
+        world.insert_resource(TraversalStats::default());
         world.insert_resource(CueQueue::default());
         world.insert_resource(HitQuery::new());
         world.insert_resource(AppliedHits::default());
@@ -228,7 +230,13 @@ impl Simulation {
             .add_systems(FixedCombat, timeline::advance_timeline.in_set(CombatSet::Timeline))
             .add_systems(
                 FixedCombat,
-                (intents::press_intents, encounter::direct, targeting::choose_soft_locks, brain::think)
+                (
+                    intents::press_intents,
+                    encounter::direct,
+                    targeting::choose_soft_locks,
+                    brain::think,
+                    traversal::find_ledges,
+                )
                     .chain()
                     .in_set(CombatSet::Intents),
             )
@@ -293,6 +301,7 @@ impl Simulation {
         *world.resource_mut::<SimRng>() = SimRng(Pcg32::new(config.seed, COMBAT_STREAM));
         *world.resource_mut::<CurrentActions>() = CurrentActions::default();
         *world.resource_mut::<MoveStats>() = MoveStats::default();
+        *world.resource_mut::<TraversalStats>() = TraversalStats::default();
         *world.resource_mut::<CueQueue>() = CueQueue::default();
         world.resource_mut::<HitQuery>().reset();
         world.resource_mut::<AppliedHits>().0.clear();
@@ -1050,6 +1059,11 @@ impl Simulation {
         stats.counters_fired = moves.counters_fired;
         stats.volumes_dropped = moves.volumes_dropped;
         stats.transition_limit_steps = moves.transition_limit;
+        let traversal = world.resource::<TraversalStats>();
+        stats.ledge_casts = traversal.ledge_casts;
+        stats.mantles_started = traversal.mantles_started;
+        stats.vaults_started = traversal.vaults_started;
+        stats.ledges_refused = traversal.ledges_refused;
         let cues = world.resource::<CueQueue>();
         stats.cues_published = cues.published();
         stats.cues_dropped = cues.dropped();

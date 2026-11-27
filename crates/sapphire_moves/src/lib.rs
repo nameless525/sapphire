@@ -252,9 +252,9 @@ pub use document::{
     AllowDocument, ArmourDocument, AttackDocument, BrainAttackDocument, BrainDocument, BrainRiseDocument,
     CancelDocument, ClipMotionDocument, ClipPathDocument, CounterDocument, CueDocument, DodgeVolumeDocument,
     EnergyDocument, FighterDocument, FighterHurtboxDocument, Follows, HitboxDocument, HurtboxDocument,
-    IntentDocument, Issue, MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey,
-    PerfectDodgeDocument, ReactionsDocument, RootKey, RootSource, SlowMotionDocument, SpanDocument,
-    WarpDocument,
+    IntentDocument, Issue, MantleDocument, MotionDocument, MoveDocument, MoveSetDocument, PathDocument,
+    PathKey, PerfectDodgeDocument, ReactionsDocument, RootKey, RootSource, SlowMotionDocument, SpanDocument,
+    TraversalDocument, WarpDocument,
 };
 pub use enemy::{
     ArchivedEnemy, ENEMY_EXTENSION, Enemy, EnemyDocument, EnemyError, EnemyLook, EnemyLookDocument,
@@ -273,9 +273,9 @@ pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,
     DodgeVolume, EnergyDef, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState,
     IntentDef, Knockback, MAX_BUFFER_TICKS, MAX_ENERGY, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS,
-    MAX_MOVE_REACH, MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, MOVE_SET_EXTENSION, Move,
-    MoveSet, MoveSetError, PerfectDodgeWindow, Phase, Reactions, Shape, Span, Stretch, WarpWindow, Weight,
-    WorldSlowMotion,
+    MAX_MOVE_REACH, MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, MOVE_SET_EXTENSION, Mantle,
+    Move, MoveDrive, MoveSet, MoveSetError, PerfectDodgeWindow, Phase, Reactions, Shape, Span, Stretch,
+    TraversalMoves, WarpWindow, Weight, WorldSlowMotion,
 };
 
 use bevy_reflect::TypePath;

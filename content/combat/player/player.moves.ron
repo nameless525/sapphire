@@ -23,10 +23,14 @@
 // After those comes a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press
 // that brings it. Only a party reads either: with no party, the button does nothing.
 //
-// The last is the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony, beneath the cinematic
+// Then the ultimate (M3 Q3b), on `Ultimate`: the finisher's chop made a ceremony, beneath the cinematic
 // it names. Every fight that loads these moves loads `ultimate.timeline.ron`, beside this file, under that
 // name, or refuses to start. It costs a full energy meter (M3 Q3c), which the hits the character lands and
 // takes fill: a built-in fight starts with it full.
+//
+// The last three are traversal (M6 A15): two mantles and a vault, keyed by hand with no clip, which a press of
+// jump in front of a ledge starts in place of the jump (`traversal`, at the end). They fly: their tables own
+// the height. That tool writes them as it does the rest.
 //
 // `movement` is how the character moves. That tool never replaces it: it's tuned here, forced or not.
 (
@@ -506,6 +510,76 @@
                 cinematic: "ultimate",
                 cost: 100,
             ),
+            (
+                // 400 ms: up onto a ledge of 0.5 to 1.25 m (M6 A15). Its table, keyed for a 1 m ledge, rises
+                // first and goes in after, and its warp windows bring it to what the probe found: the first
+                // turns it to the ledge and raises or lowers the rise to clear the top by 5 cm, the second
+                // takes it in to stand just past the edge.
+                name: "mantle_low",
+                startup: 4,
+                active: 14,
+                recovery: 6,
+                drive: Flight,
+                motion: (
+                    root: [
+                        (at: 6, offset: (0.0, 0.6, 0.0)),
+                        (at: 14, offset: (0.0, 1.05, 0.05)),
+                        (at: 20, offset: (0.0, 1.05, 0.5)),
+                        (at: 24, offset: (0.0, 1.05, 0.6)),
+                    ],
+                ),
+                warps: [
+                    (from: 0, to: 14, max_turn: 0.8, max_rise: 0.6),
+                    (from: 14, to: 24, max_distance: 1.0),
+                ],
+                cues: [(name: "mantle", at: 0), (name: "step", at: 20)],
+            ),
+            (
+                // 567 ms: up onto a ledge of 1.25 to 2 m, as `mantle_low` is, keyed for 1.75 m.
+                name: "mantle_high",
+                startup: 6,
+                active: 20,
+                recovery: 8,
+                drive: Flight,
+                motion: (
+                    root: [
+                        (at: 10, offset: (0.0, 1.0, 0.0)),
+                        (at: 22, offset: (0.0, 1.8, 0.05)),
+                        (at: 30, offset: (0.0, 1.8, 0.5)),
+                        (at: 34, offset: (0.0, 1.8, 0.6)),
+                    ],
+                ),
+                warps: [
+                    (from: 0, to: 22, max_turn: 0.8, max_rise: 0.6),
+                    (from: 22, to: 34, max_distance: 1.0),
+                ],
+                cues: [(name: "mantle", at: 0), (name: "step", at: 30)],
+            ),
+            (
+                // 500 ms: over an obstacle of up to 1 m at a run, onto the ground beyond. It clears 1.3 m at the
+                // top whatever the obstacle, and its warp fits its length to where the probe found the ground.
+                name: "vault",
+                startup: 4,
+                active: 18,
+                recovery: 8,
+                drive: Flight,
+                motion: (
+                    root: [
+                        (at: 6, offset: (0.0, 0.9, 0.3)),
+                        (at: 14, offset: (0.0, 1.3, 1.2)),
+                        (at: 22, offset: (0.0, 0.9, 2.0)),
+                        (at: 30, offset: (0.0, 0.0, 2.6)),
+                    ],
+                ),
+                warps: [(from: 0, to: 30, max_distance: 1.0, max_turn: 0.6)],
+                cues: [(name: "vault", at: 0), (name: "step", at: 29)],
+            ),
         ],
+        // What a press of jump in front of a ledge starts (M6 A15), in place of the jump: a mantle by the
+        // ledge's height, or at a run the vault over an obstacle with ground beyond.
+        traversal: (
+            mantles: [(move: "mantle_low", up_to: 1.25), (move: "mantle_high", up_to: 2.0)],
+            vault: "vault",
+        ),
     ),
 )

@@ -13,6 +13,8 @@
 //!
 //! - **The ledges** ([`LEDGES`]): four blocks in a row across the course, 0.5, 1.0, 1.5 and 2.0 m tall, the
 //!   heights A15 mantles. East of them, **the vault** ([`VAULT`]): a wall 1 m tall and 0.4 m deep.
+//!   West of them, **the ledge with no room** ([`NO_ROOM`]): a 1 m ledge under a slab 1.2 m over its top, too
+//!   low to stand under, where a mantle is refused and the press jumps.
 //! - **The climbing wall** ([`CLIMB`]): a block [`TOWER_HEIGHT`] tall in `Climbable` scenery, whose south face
 //!   is the wall and whose top is a platform to top out on. East of it, **the plain wall** ([`PLAIN`]), as tall
 //!   and only `World`: a face climbing must refuse, since only tagged scenery climbs.
@@ -47,6 +49,11 @@ pub const LEDGES: [([f32; 2], f32); 4] =
     [([-9.0, 24.0], 0.5), ([-5.0, 24.0], 1.0), ([-1.0, 24.0], 1.5), ([3.0, 24.0], 2.0)];
 /// A ledge's half extents across and along the course, in metres: 1.5 m wide and 2 m deep.
 pub const LEDGE_HALF: [f32; 2] = [1.5, 1.0];
+/// The ledge with no room (M6 A15): its middle `(x, z)` and its height, west of [`LEDGES`] and as big as one, under
+/// a slab [`NO_ROOM_GAP`] over its top, lower than the default 1.6 m capsule stands, so a mantle there is refused.
+pub const NO_ROOM: ([f32; 2], f32) = ([-15.0, 24.0], 1.0);
+/// How far over the no-room ledge's top its slab's underside is, and how thick the slab is, in metres.
+pub const NO_ROOM_GAP: (f32, f32) = (1.2, 0.3);
 /// The vault's middle `(x, z)`, its half extents across and along, and its height, in metres.
 pub const VAULT: ([f32; 2], [f32; 2], f32) = ([12.0, 24.0], [2.0, 0.2], 1.0);
 /// The climbing wall's block: its south face's span along X, and its extent along Z, in metres.
@@ -111,6 +118,22 @@ pub fn colliders() -> ColliderDocument {
             &[],
         ));
     }
+    let ([x, z], height) = NO_ROOM;
+    let [across, along] = LEDGE_HALF;
+    let (gap, slab) = NO_ROOM_GAP;
+    colliders.push(block(
+        "ledge_no_room",
+        [x - across, 0.0, z - along],
+        [x + across, height, z + along],
+        &[],
+    ));
+    let under = height + gap;
+    colliders.push(block(
+        "no_room_slab",
+        [x - across, under, z - along],
+        [x + across, under + slab, z + along],
+        &[],
+    ));
     let ([x, z], [across, along], height) = VAULT;
     colliders.push(block("vault", [x - across, 0.0, z - along], [x + across, height, z + along], &[]));
     for (name, ([x0, x1], [z0, z1]), extra) in
@@ -260,7 +283,7 @@ mod tests {
         let line =
             format!("sapphire_synthetic_zone course digest {first:#018x} on {}\n", std::env::consts::ARCH);
         std::io::stderr().write_all(line.as_bytes()).expect("stderr takes it");
-        assert_eq!(first, 0x2857_41d2_247f_2145, "the course's digest moved; {line}");
+        assert_eq!(first, 0x6434_99d5_72ab_976e, "the course's digest moved; {line}");
     }
 
     /// Only the climbing wall's block is climbable, and every block is scenery.
@@ -296,6 +319,10 @@ mod tests {
         assert!(x0 > -HALF_EXTENT[0] && x1 < HALF_EXTENT[0] && z0 > -HALF_EXTENT[1] && z1 < HALF_EXTENT[1]);
         // The walls' north edge is the pool's south edge: the glide drops off the platform over the water.
         assert_eq!(-CLIMB.1[1], z1);
+        // The ledge with no room is a ledge a mantle takes but for the slab, which the default capsule can't stand
+        // under, west of the others.
+        let ([x, _], height) = NO_ROOM;
+        assert!(height == 1.0 && NO_ROOM_GAP.0 < 1.6 && x + LEDGE_HALF[0] < LEDGES[0].0[0] - LEDGE_HALF[0]);
     }
 
     #[test]

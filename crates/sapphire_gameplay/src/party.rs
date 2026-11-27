@@ -376,7 +376,7 @@ fn leave_field(
 ) {
     *controls = Controls::default();
     runner.running = None;
-    runner.forced = None;
+    runner.drop_forced();
     runner.counter = None;
     ring.reset();
     *target = WarpTarget::None;

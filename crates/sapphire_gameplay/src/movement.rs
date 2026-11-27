@@ -58,6 +58,9 @@ pub(crate) fn apply_root_motion(
         let delta = output.root_delta.translation;
         if !controller.is_active() {
             transform.position += delta;
+        } else if output.flight {
+            // A flying move's table owns the height, on its last stretch too (M6 A15).
+            controller.drive = ControllerDrive::flight(delta);
         } else if runner.is_running() || delta != Vec3::ZERO || fighter.is_defeated() {
             controller.drive = ControllerDrive::strike(delta);
         }

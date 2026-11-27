@@ -27,6 +27,12 @@ fn the_walk_jumps_a_ledge_meets_the_wall_and_falls_into_the_pool() {
     }
     let at = player.simulation().actors().next().expect("the player").position;
     assert!(on_the_ledge, "it stood on the 1 m ledge");
+    let stats = player.simulation().stats();
+    assert_eq!(
+        (stats.mantles_started, stats.vaults_started),
+        (0, 0),
+        "its press is a jump, out of a mantle's reach"
+    );
     assert!(at_the_wall, "it reached the climbing wall's face");
     assert!((lowest - course::POOL_FLOOR).abs() < 0.05, "it reached the pool's floor: {lowest}");
     let ([x0, x1], [z0, z1]) = course::POOL;

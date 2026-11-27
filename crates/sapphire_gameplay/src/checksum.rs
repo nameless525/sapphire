@@ -184,6 +184,14 @@ fn write_running(hasher: &mut StateHasher, running: &Running) {
     hasher.f32(running.warp_distance);
     hasher.f32(running.warp_turn);
     hasher.u8(u8::from(running.dodged));
+    // Only a window with a `max_rise` (M6 A15) moves it, so a run without one keeps its checksums.
+    if running.warp_rise != 0.0 {
+        hasher.f32(running.warp_rise);
+    }
+    // Only a traversal move has an aim of its own (M6 A15).
+    if let Some(toward) = running.toward {
+        hasher.vec3(toward);
+    }
 }
 
 fn write_runner(hasher: &mut StateHasher, runner: &MoveRunner) {
@@ -197,6 +205,10 @@ fn write_runner(hasher: &mut StateHasher, runner: &MoveRunner) {
             write_name(hasher, *name);
         }
         None => hasher.u8(0),
+    }
+    // Only a traversal move's force has an aim (M6 A15), and a step takes it before it ends.
+    if let Some(toward) = runner.forced_toward {
+        hasher.vec3(toward);
     }
     match &runner.running {
         Some(running) => {
@@ -255,6 +267,10 @@ fn write_output(hasher: &mut StateHasher, output: &MoveOutput) {
                 write_shape(hasher, shape);
             }
         }
+    }
+    // Only a flying move (M6 A15) sets it, so a run without one keeps its checksums.
+    if output.flight {
+        hasher.u8(1);
     }
 }
 
@@ -649,6 +665,7 @@ mod sensitivity_tests {
             ("the cursor", |r| r.cursor = SimTime::from_subticks(r.cursor.as_subticks() + 1)),
             ("started", |r| r.started += 1),
             ("forced", |r| r.forced = Some(Name::new("x"))),
+            ("forced_toward", |r| r.forced_toward = Some(Vec3::new(1.0, 2.0, 3.0))),
             ("running", |r| r.running = None),
             ("the move's index", |r| running(r).at.index += 1),
             ("the move's revision", |r| running(r).at.revision += 1),
@@ -665,6 +682,8 @@ mod sensitivity_tests {
             ("the warp window", |r| running(r).warp_window = Some(9)),
             ("warp_distance", |r| running(r).warp_distance += 0.125),
             ("warp_turn", |r| running(r).warp_turn += 0.125),
+            ("warp_rise", |r| running(r).warp_rise += 0.125),
+            ("toward", |r| running(r).toward = Some(Vec3::new(1.0, 2.0, 3.0))),
             ("dodged", |r| running(r).dodged = !running(r).dodged),
             ("a counter window", |r| r.counter = Some(counter())),
         ];
@@ -733,6 +752,7 @@ mod sensitivity_tests {
             ("warp", |o| o.windows.warp = !o.windows.warp),
             ("armour", |o| o.windows.armour += 1),
             ("the perfect window", |o| o.perfect_window = Some(0)),
+            ("flight", |o| o.flight = !o.flight),
         ];
         for (what, edit) in edits {
             flips::<MoveOutput>(&mut sim, swinging, what, edit);

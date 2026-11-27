@@ -1751,8 +1751,16 @@ mod tests {
             (&character, sapphire_gameplay::replay::player_moves().expect("it reads")),
             (&character, sapphire_gameplay::replay::test_moves().expect("it compiles")),
         ] {
-            for mv in set.moves() {
+            // A set's traversal moves (M6 A15) have no clip yet and so no row: A16b adds both. Until then the
+            // graph player counts one running in `unmapped_moves` and plays locomotion under it.
+            let traversal: Vec<u32> = set.traversal().map_or_else(Vec::new, |moves| {
+                moves.mantles.iter().map(|mantle| mantle.at).chain(moves.vault).collect()
+            });
+            for (index, mv) in (0_u32..).zip(set.moves()) {
                 let label = mv.label();
+                if traversal.contains(&index) {
+                    continue;
+                }
                 assert!(graph.combat.moves.iter().any(|row| row.name == label), "no clip plays {label}");
             }
         }

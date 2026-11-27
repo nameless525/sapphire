@@ -65,6 +65,15 @@ pub struct SimStats {
     pub volumes_dropped: u64,
     /// Steps on which an actor hit the limit on moves started in one step.
     pub transition_limit_steps: u64,
+    /// Casts the ledge probes made so far (M6 A15): at most five on a tick a traversing fighter presses jump,
+    /// and none on any other ([`crate::traversal`]).
+    pub ledge_casts: u64,
+    /// Mantles a ledge started so far.
+    pub mantles_started: u64,
+    /// Vaults an obstacle started so far.
+    pub vaults_started: u64,
+    /// Presses of jump in front of nothing a traversal move takes, so far: they jumped.
+    pub ledges_refused: u64,
     /// Wall time of the latest step's character controllers, physics included, to hold against
     /// [`PHYSICS_BUDGET_DESKTOP_LOW`] or [`PHYSICS_BUDGET_MOBILE_LOW`].
     pub controllers_last: Duration,

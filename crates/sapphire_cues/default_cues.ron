@@ -183,6 +183,9 @@
             (cue: "reaction"),
             (cue: "falls"),
             (cue: "dodge_start"),
+            // A mantle or a vault starting (M6 A15): its landing's `step` says the rest until A16b gives them a look.
+            (cue: "mantle"),
+            (cue: "vault"),
             (cue: "stagger"),
             (cue: "stagger_heavy"),
             (cue: "knockdown"),

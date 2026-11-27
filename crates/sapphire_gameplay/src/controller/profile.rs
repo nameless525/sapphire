@@ -196,7 +196,7 @@ impl ResolvedProfile {
     }
 
     /// Whether a surface facing `normal` can be stood on.
-    pub(super) fn walkable(&self, normal: Vec3) -> bool {
+    pub(crate) fn walkable(&self, normal: Vec3) -> bool {
         normal.y >= self.walkable_cos - Self::WALKABLE_SLACK
     }
 

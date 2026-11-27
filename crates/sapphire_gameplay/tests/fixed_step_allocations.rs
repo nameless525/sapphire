@@ -324,6 +324,64 @@ fn traversal_modes_in_the_step_do_not_allocate_from_the_first_tick() {
     assert!(held.iter().all(|&count| count > 1000), "every mode was held: {held:?}");
 }
 
+/// A staircase of ledges, two half a metre up each, a 1.5 m one and a wall too tall at its top: the heroine walks
+/// up it pressing jump every 40 ticks, which mantles the first and the third, jumps the second and refuses the wall.
+fn staircase() -> Vec<StaticCollider> {
+    let block = |id: u32, z: f32, height: f32| StaticCollider {
+        id: ColliderId(id),
+        shape: StaticShape::Convex(Shape::Box { half_extents: Vec3::new(3.0, height * 0.5, 1.0) }),
+        pose: Pose::at(Vec3::new(0.0, height * 0.5, z + 1.0)),
+        memberships: Group::World.mask(),
+    };
+    let floor = StaticCollider {
+        id: ColliderId(0),
+        shape: StaticShape::Convex(Shape::Box { half_extents: Vec3::new(50.0, 0.5, 50.0) }),
+        pose: Pose::at(Vec3::new(0.0, -0.5, 0.0)),
+        memberships: Group::World.mask(),
+    };
+    vec![floor, block(1, 2.0, 0.5), block(2, 4.0, 1.0), block(3, 6.0, 2.5), block(4, 8.0, 6.0)]
+}
+
+/// The heroine mantling up a staircase of ledges (M6 A15), each press probing in front of her and the
+/// refused ones jumping: the probes' casts, the forced moves and their flight allocate nothing, from the
+/// first step.
+#[test]
+fn mantles_and_their_probes_in_the_step_do_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let mut sim = Simulation::new(SimConfig::default());
+    sim.set_physics_world(PhysicsWorld::new(staircase(), sim.body_capacity()).expect("builds"))
+        .expect("room");
+    let set = sapphire_gameplay::replay::player_moves().expect("the heroine's moves");
+    let profile = set.movement().copied().unwrap_or_default();
+    let controller = Some(sim.add_controller_profile(&profile).expect("a good one"));
+    let moves = Some(sim.add_move_set(set));
+    let heroine = sim.spawn(ActorSpawn { moves, controller, ..ActorSpawn::default() }).expect("room");
+    let ticks: Vec<TickActions> = (0..800)
+        .map(|tick| {
+            let buttons = if tick % 40 == 39 { Buttons::JUMP } else { Buttons::NONE };
+            let mut actions = TickActions::NEUTRAL;
+            let stick = sapphire_gameplay::Stick::new(0, 64);
+            actions.set(heroine, ActorActions { buttons, stick }).expect("room");
+            actions
+        })
+        .collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &ticks {
+            sim.step(actions);
+            let _ = sim.checksum();
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "800 steps allocated {} times", counts.allocations);
+    assert_eq!(sim.stats().allocations, 0, "and the stat agrees");
+    let stats = sim.stats();
+    assert_eq!(stats.mantles_started, 2, "a low mantle and a high one: {stats:?}");
+    assert!(stats.ledges_refused > 0 && stats.ledge_casts > 0, "and the wall refused: {stats:?}");
+}
+
 /// `count` different characters on the mesh arena.
 fn characters(count: usize) -> (Simulation, Vec<ActorId>) {
     let mut sim = Simulation::new(SimConfig { max_actors: 16, ..SimConfig::default() });

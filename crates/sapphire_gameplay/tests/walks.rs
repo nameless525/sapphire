@@ -22,7 +22,8 @@ static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 /// fixed step leaves of the arc's top.
 const JUMP_REACH: f32 = 1.114;
 
-/// The most anyone has risen in the air over where they last stood.
+/// The most anyone has risen in the air over where they last stood. A flying move's climb (a mantle, M6 A15)
+/// is where it stands: the press in front of a ledge climbs it, which nothing met in the air did.
 #[derive(Default)]
 struct Rises {
     stood: f32,
@@ -32,7 +33,7 @@ struct Rises {
 impl Rises {
     fn see(&mut self, sim: &Simulation, actor: ActorId) {
         let view = sim.actor(actor).expect("there");
-        if view.controller.state.mode == GroundMode::Airborne {
+        if view.controller.state.mode == GroundMode::Airborne && !view.moves.flight {
             self.most = self.most.max(view.position.y - self.stood);
         } else {
             self.stood = view.position.y;
@@ -236,6 +237,7 @@ fn nothing_met_in_the_air_throws_anyone() {
                 && mode == GroundMode::Airborne
                 && state.mode == GroundMode::Airborne
                 && !state.events.jumped
+                && !view.moves.flight
             {
                 let most = rising.max(0.0) + 0.01;
                 assert!(state.velocity.y <= most, "{label}: lifted from {rising} to {:?}", state.velocity);

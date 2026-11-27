@@ -34,7 +34,8 @@
 //!   over (under about 12 cm with the default profile) is still rolled over, smoothly.
 //! - **No leaving a ledge.** A move that would carry the character off stops where its tick began, so
 //!   a strike's active frames can't turn into a fall. Over ground that only drops a little, the feet
-//!   still follow.
+//!   still follow. A [`ControllerDrive::flight`] leaves one, since its table owns the height: a vault comes
+//!   down off the far side of what it crossed (M6 A15).
 //!
 //! # Nothing in the air lifts anyone
 //!
@@ -222,7 +223,8 @@ impl ControllerDrive {
         }
     }
 
-    /// A move that owns the character's height, such as a leap or an air attack.
+    /// A move that owns the character's height, such as a leap, an air attack, a mantle or a vault (a move whose
+    /// `drive` is `Flight`, M6 A15): gravity off, no step-ups, and no ledge held.
     #[must_use]
     pub const fn flight(root_motion: Vec3) -> Self {
         Self {

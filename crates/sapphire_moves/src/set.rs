@@ -634,12 +634,99 @@ pub struct PerfectDodgeWindow {
 #[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct WarpWindow {
     pub span: Span,
-    /// Most metres the warp may add to or take from the table's motion over this window, in all.
+    /// Most metres the warp may add to or take from the table's motion over this window, in all, across the
+    /// ground.
     pub max_distance: f32,
     /// Most radians the warp may turn the root over this window, in all.
     pub max_turn: f32,
-    /// Metres short of the target's position to stop.
+    /// Metres short of the target's position to stop, across the ground.
     pub keep: f32,
+    /// Most metres the warp may raise or lower the table's motion over this window, in all (M6 A15): what
+    /// brings a mantle's root to the top of the ledge it found. Zero, and the warp keeps to the ground's plane.
+    pub max_rise: f32,
+}
+
+/// How a move's root motion meets the ground (M6 A15): which of the controller's drives runs it.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize)]
+#[repr(u8)]
+pub enum MoveDrive {
+    /// A strike: gravity pulls, the floor decides the height while grounded, and the move holds its ledge.
+    #[default]
+    Ground,
+    /// The table owns the height: gravity is off while it plays, and its rise lifts the character and its
+    /// fall lowers it, off a ledge if need be, as a leap, a mantle or a vault wants.
+    Flight,
+}
+
+/// The moves a ledge in front of a set's fighter starts (M6 A15), which the simulation's ledge probes choose
+/// between by the ledge's height and how fast the fighter is running. Each is a [`MoveDrive::Flight`] move with
+/// a warp window, which brings it onto the ledge or over it.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct TraversalMoves {
+    /// The mantles, by the highest ledge each takes, lowest first: a ledge takes the first that reaches it.
+    pub mantles: Vec<Mantle>,
+    /// What carries a running fighter over an obstacle no taller than its profile's `vault_max_height` with
+    /// ground beyond, by its index in the set.
+    pub vault: Option<u32>,
+}
+
+/// One mantle of [`TraversalMoves`].
+#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct Mantle {
+    /// The move, by its index in the set.
+    pub at: u32,
+    /// The highest ledge it takes, in metres over the feet.
+    pub up_to: f32,
+}
+
+impl TraversalMoves {
+    /// The mantle a ledge this many metres over the feet takes, if any reaches it.
+    #[must_use]
+    pub fn mantle_for(&self, height: f32) -> Option<u32> {
+        self.mantles.iter().find(|mantle| height <= mantle.up_to).map(|mantle| mantle.at)
+    }
+
+    /// What a document's compile and a cooked set's check both ask of these, against the set's moves: one move
+    /// at least, each a flight with a warp window, and mantles by heights that climb.
+    pub(crate) fn check(&self, moves: &[Move]) -> Result<(), String> {
+        if self.mantles.is_empty() && self.vault.is_none() {
+            return Err("there's no mantle and no vault".to_owned());
+        }
+        if !self.mantles.iter().all(|mantle| mantle.up_to.is_finite() && mantle.up_to > 0.0) {
+            return Err("a mantle's `up_to` isn't a positive height".to_owned());
+        }
+        if !self.mantles.windows(2).all(|pair| pair[0].up_to < pair[1].up_to) {
+            return Err("the mantles' `up_to` heights don't climb".to_owned());
+        }
+        let named = self.mantles.iter().map(|mantle| mantle.at).chain(self.vault);
+        for at in named {
+            let Some(mv) = moves.get(at as usize) else {
+                return Err(format!("move {at} isn't in the set"));
+            };
+            if mv.drive != MoveDrive::Flight {
+                return Err(format!("`{}` doesn't fly: a ledge's height is the table's", mv.label()));
+            }
+            if mv.warps.is_empty() {
+                return Err(format!("`{}` has no warp window to bring it to the ledge", mv.label()));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A presentation event at one instant of a move.
@@ -697,6 +784,8 @@ pub struct Move {
     cinematic: Option<u64>,
     /// The energy it spends as it starts (M3 Q3c); zero is none.
     cost: u32,
+    /// How its root motion meets the ground (M6 A15).
+    pub drive: MoveDrive,
 }
 
 impl Move {
@@ -797,6 +886,7 @@ pub(crate) struct MoveParts {
     pub(crate) cues: Vec<Cue>,
     pub(crate) cinematic: Option<Name>,
     pub(crate) cost: u32,
+    pub(crate) drive: MoveDrive,
 }
 
 impl MoveParts {
@@ -818,6 +908,7 @@ impl MoveParts {
             mut cues,
             cinematic,
             cost,
+            drive,
         } = self;
         // Stable sorts: authored order stands among equals, so it's part of what a set means.
         hitboxes.sort_by_key(|hitbox| hitbox.span.from);
@@ -847,6 +938,7 @@ impl MoveParts {
             cues,
             cinematic: cinematic.map(Name::as_u64),
             cost,
+            drive,
         }
     }
 }
@@ -988,14 +1080,16 @@ pub struct MoveSet {
     neutral: Vec<Allow>,
     fighter: Option<FighterDef>,
     moves: Vec<Move>,
+    traversal: Option<TraversalMoves>,
 }
 
 impl Versioned for MoveSet {
     /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
     /// 4: M2 G6's brain. 5: M2 T2's movement. 6: M3 Q3b's cinematics. 7: M3 Q3c's energy and costs. 8: M3
     /// P3's `apart` and `watch` on a brain. 9: M3 B3 moved the brain to an enemy's document. 10: M6 A14's
-    /// traversal numbers in a fighter's movement.
-    const VERSION: u32 = 10;
+    /// traversal numbers in a fighter's movement. 11: M6 A15's move drive, a warp's `max_rise` and the set's
+    /// traversal moves.
+    const VERSION: u32 = 11;
 }
 
 /// A move set that can't be built, read or written.
@@ -1046,8 +1140,9 @@ impl MoveSet {
         neutral: Vec<Allow>,
         fighter: Option<FighterDef>,
         moves: Vec<Move>,
+        traversal: Option<TraversalMoves>,
     ) -> Self {
-        Self { intents, neutral, fighter, moves }
+        Self { intents, neutral, fighter, moves, traversal }
     }
 
     /// Its fighter, for a test to damage: what no document can make.
@@ -1088,6 +1183,11 @@ impl MoveSet {
                 return damaged(format!("two moves have the name `{}`", mv.label()));
             }
             self.check_move(mv)?;
+        }
+        if let Some(traversal) = &self.traversal
+            && let Err(why) = traversal.check(&self.moves)
+        {
+            return damaged(format!("the traversal moves: {why}"));
         }
         Ok(())
     }
@@ -1305,13 +1405,13 @@ impl MoveSet {
             self.check_allows(&what, &window.allow)?;
         }
         for warp in &mv.warps {
-            let limits = [warp.max_distance, warp.max_turn, warp.keep];
+            let limits = [warp.max_distance, warp.max_turn, warp.keep, warp.max_rise];
             if !limits.iter().all(|limit| limit.is_finite() && *limit >= 0.0) {
                 return damaged(format!(
                     "a warp of move `{label}` has a limit that's negative or not finite"
                 ));
             }
-            if warp.max_distance == 0.0 && warp.max_turn == 0.0 {
+            if warp.max_distance == 0.0 && warp.max_turn == 0.0 && warp.max_rise == 0.0 {
                 return damaged(format!("a warp of move `{label}` can't move or turn anything"));
             }
         }
@@ -1432,6 +1532,12 @@ impl MoveSet {
     #[must_use]
     pub fn moves(&self) -> &[Move] {
         &self.moves
+    }
+
+    /// What a ledge in front of its fighters starts, if the set says (M6 A15).
+    #[must_use]
+    pub const fn traversal(&self) -> Option<&TraversalMoves> {
+        self.traversal.as_ref()
     }
 
     /// The move at this index.
@@ -1815,17 +1921,42 @@ mod tests {
                 light(s).cues.push(cue);
             }, "cue"),
             ("a warp of no limit", |s| {
-                let warp = WarpWindow { span: Span { from: 1, to: 2 }, max_distance: 0.0, max_turn: 0.0, keep: 0.0 };
+                let warp = WarpWindow { span: Span { from: 1, to: 2 }, max_distance: 0.0, max_turn: 0.0, keep: 0.0, max_rise: 0.0 };
                 light(s).warps.push(warp);
             }, "warp"),
             ("a warp not finite", |s| {
-                let warp = WarpWindow { span: Span { from: 1, to: 2 }, max_distance: f32::NAN, max_turn: 0.0, keep: 0.0 };
+                let warp = WarpWindow { span: Span { from: 1, to: 2 }, max_distance: f32::NAN, max_turn: 0.0, keep: 0.0, max_rise: 0.0 };
                 light(s).warps.push(warp);
             }, "warp"),
             ("a warp backwards", |s| {
-                let warp = WarpWindow { span: Span { from: 1, to: 2 }, max_distance: 1.0, max_turn: 0.0, keep: -1.0 };
+                let warp = WarpWindow { span: Span { from: 1, to: 2 }, max_distance: 1.0, max_turn: 0.0, keep: -1.0, max_rise: 0.0 };
                 light(s).warps.push(warp);
             }, "warp"),
+            ("a warp rising by no number", |s| {
+                let warp = WarpWindow { span: Span { from: 1, to: 2 }, max_distance: 0.0, max_turn: 0.0, keep: 0.0, max_rise: f32::INFINITY };
+                light(s).warps.push(warp);
+            }, "warp"),
+
+            // Traversal (M6 A15).
+            ("a traversal move that isn't in the set", |s| {
+                s.traversal = Some(TraversalMoves { mantles: vec![Mantle { at: 99, up_to: 1.0 }], vault: None });
+            }, "traversal"),
+            ("a traversal move on the ground", |s| {
+                s.traversal = Some(TraversalMoves { mantles: Vec::new(), vault: Some(0) });
+            }, "doesn't fly"),
+            ("traversal with no moves", |s| s.traversal = Some(TraversalMoves { mantles: Vec::new(), vault: None }), "traversal"),
+            ("a flying traversal move with no warp", |s| {
+                let (at, _) = s.find(Name::new("light_1")).expect("in the test content");
+                light(s).drive = MoveDrive::Flight;
+                light(s).warps.clear();
+                s.traversal = Some(TraversalMoves { mantles: vec![Mantle { at, up_to: 1.0 }], vault: None });
+            }, "warp"),
+            ("mantles out of order", |s| {
+                let (at, _) = s.find(Name::new("light_1")).expect("in the test content");
+                light(s).drive = MoveDrive::Flight;
+                let mantles = vec![Mantle { at, up_to: 2.0 }, Mantle { at, up_to: 1.0 }];
+                s.traversal = Some(TraversalMoves { mantles, vault: None });
+            }, "climb"),
 
             // A perfect dodge.
             ("a volume without i-frames", |s| dodge(s).invulnerable.clear(), "invulnerable"),

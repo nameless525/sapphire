@@ -112,6 +112,9 @@ pub enum Command {
     PickVariant { path: String, variant: String },
     /// Adds an entry, made from its type, to a list of the current document.
     AddEntry(String),
+    /// Adds an entry to a zone's list with IDs, called `id` (M6 T8a): what a session records for an
+    /// `AddEntry` there, with the ID it drew, so a replay makes the same entry. Refused if the zone has it.
+    AddEntryAs { path: String, id: String },
     /// Removes an entry from a list of the current document.
     RemoveEntry(String),
 
@@ -160,8 +163,11 @@ pub enum Command {
     /// Draws the preview's hurtboxes.
     Hurtboxes(bool),
 
-    /// Selects a placement of the current zone, or nothing.
-    SelectPlacement(Option<usize>),
+    /// Selects a placement of the current zone by its ID, or nothing.
+    SelectPlacement(Option<String>),
+    /// Writes the current zone at its document's newest version, with the IDs it reads with (M6 T8a), and saves
+    /// it. A zone already there is left as it is.
+    MigrateZone,
     /// Selects these objects, in any documents open, in place of what was selected: none selects nothing.
     SelectObjects(Vec<Picked>),
     /// Sets the property at `path` under each selected object, as RON spelled as typed: one step of undo
@@ -255,6 +261,7 @@ impl Command {
             Self::SetOption { .. } => "SetOption",
             Self::PickVariant { .. } => "PickVariant",
             Self::AddEntry(_) => "AddEntry",
+            Self::AddEntryAs { .. } => "AddEntryAs",
             Self::RemoveEntry(_) => "RemoveEntry",
             Self::SelectMove(_) => "SelectMove",
             Self::Select(_) => "Select",
@@ -279,6 +286,7 @@ impl Command {
             Self::Bones(_) => "Bones",
             Self::Hurtboxes(_) => "Hurtboxes",
             Self::SelectPlacement(_) => "SelectPlacement",
+            Self::MigrateZone => "MigrateZone",
             Self::SelectObjects(_) => "SelectObjects",
             Self::SetShared { .. } => "SetShared",
             Self::Scrub(_) => "Scrub",
@@ -358,6 +366,8 @@ const COMMANDS: &[Registered] = registry! {
     "SetOption", r#"SetOption(path: "", on: true)"#, None, "Turns an option on or off";
     "PickVariant", r#"PickVariant(path: "", variant: "")"#, None, "Picks an enum's variant";
     "AddEntry", r#"AddEntry("")"#, None, "Adds an entry to a list";
+    "AddEntryAs", r#"AddEntryAs(path: "placements", id: "3fa91c07")"#, None,
+        "Adds an entry to a zone's list with the ID given";
     "RemoveEntry", r#"RemoveEntry("")"#, None, "Removes an entry from a list";
     "SelectMove", r#"SelectMove("")"#, None, "Selects a move of the timeline";
     "Select", "Select(Some((mv: 0, track: Hitboxes, index: 0)))", None, "Selects an entry on the timeline";
@@ -383,7 +393,8 @@ const COMMANDS: &[Registered] = registry! {
     "View", "View(Side)", None, "Looks at the preview from a side, the front or the top";
     "Bones", "Bones(true)", None, "Draws the preview's bones";
     "Hurtboxes", "Hurtboxes(true)", None, "Draws the preview's hurtboxes";
-    "SelectPlacement", "SelectPlacement(Some(0))", None, "Selects a placement of the zone";
+    "SelectPlacement", r#"SelectPlacement(Some("placement-0"))"#, None, "Selects a placement of the zone by its ID";
+    "MigrateZone", "MigrateZone", None, "Writes the zone at its newest version, with its IDs, and saves it";
     "SelectObjects", r#"SelectObjects([(document: "content/", path: "")])"#, None,
         "Selects objects by document and path, in any documents open";
     "SetShared", r#"SetShared(path: "", value: "")"#, None,

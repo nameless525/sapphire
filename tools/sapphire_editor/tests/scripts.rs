@@ -1339,7 +1339,7 @@ mod panes {
         let path = dir.write("z/proving_ground.zone.ron", PROVING_GROUND);
         let mut editor = editor(&dir, Some(&path));
         assert_eq!(editor.selected_placement(), None);
-        run(&mut editor, &dir, "SelectPlacement(Some(2))");
+        run(&mut editor, &dir, r#"SelectPlacement(Some("placement-2"))"#);
         assert_eq!(editor.selected_placement(), Some(2));
         assert_same(&text_of(&editor), PROVING_GROUND, "selecting edits nothing");
         run(&mut editor, &dir, "SelectPlacement(None)");
@@ -1827,5 +1827,223 @@ mod recorded {
         harness.run_steps(2);
         assert!(!harness.state().palette_is_open());
         assert_same(harness.state().current().expect("a file").text(), WARRIOR, "nothing ran");
+    }
+}
+
+/// A zone's placements by their IDs (M6 T8a): a selection stays on what it named however its list shifts, and
+/// `MigrateZone` writes a version 1 zone's IDs.
+mod zone_ids {
+    use sapphire_zone::ZoneDocument;
+
+    use super::*;
+
+    const POSTS: &str = r#"(
+    type: "sapphire::zone::ZoneDocument",
+    version: 2,
+    data: (
+        grid: (cell_size: 16.0),
+        placements: [
+            (id: "3fa91c07", prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (-6.0, 0.0, -6.0)),
+            (id: "8b2e5d40", prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (6.0, 0.0, -6.0)),
+            (id: "c41d0a9f", prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (0.0, 0.0, 3.0)),
+        ],
+        spawners: [(name: "guard", position: (0.0, 0.0, 8.0), spawns: "warrior")],
+    ),
+)
+"#;
+
+    /// [`POSTS`] as someone else saved it: a placement put in first, so every other one is a place further on.
+    fn with_one_first(text: &str) -> String {
+        let first = r#"(id: "3fa91c07""#;
+        let new = r#"(id: "0d17e6b2", prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (0.0, 0.0, -9.0)),
+            "#;
+        text.replacen(first, &format!("{new}{first}"), 1)
+    }
+
+    fn value(editor: &Editor) -> ZoneDocument {
+        ZoneDocument::from_ron(&text_of(editor)).expect("a zone")
+    }
+
+    fn placed(value: &ZoneDocument, id: &str) -> [f32; 3] {
+        value.placements.iter().find(|placement| placement.id == id).expect(id).at
+    }
+
+    /// An edit of the placement selected, unsaved, when someone saves the zone with one put in before it: the
+    /// edit goes back on top on the same placement, and the selection is still that placement, a place further.
+    #[test]
+    fn a_selection_survives_a_merge_that_shifts_its_place() {
+        let dir = TestDir::new("zone_ids_merge");
+        let path = dir.write("y/posts.zone.ron", POSTS);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            r#"SelectPlacement(Some("8b2e5d40")), SetShared(path: "at[1]", value: "2.0")"#,
+        );
+        assert_eq!(editor.selected_placements(), [1]);
+        fs::write(&path, with_one_first(POSTS)).expect("someone's save");
+        poll_until(&mut editor, "the conflict", |editor| {
+            editor.current().is_some_and(|file| file.conflict().is_some())
+        });
+        run(&mut editor, &dir, "MineOnTop");
+        let merged = value(&editor);
+        assert_eq!(merged.placements[0].id, "0d17e6b2", "theirs is in");
+        assert_eq!(placed(&merged, "8b2e5d40"), [6.0, 2.0, -6.0], "mine is on the same placement");
+        assert_eq!(editor.selected_placements(), [2], "the selection follows it to its new place");
+
+        // The next edit lands on it too, and so does one after an entry before it is taken out.
+        run(&mut editor, &dir, r#"SetShared(path: "at[1]", value: "3.0"), RemoveEntry("placements[0]")"#);
+        assert_eq!(editor.selected_placements(), [1]);
+        run(&mut editor, &dir, r#"SetShared(path: "at[0]", value: "5.0"), Save"#);
+        let saved = ZoneDocument::from_ron(&file(&path)).expect("a zone");
+        assert_eq!(placed(&saved, "8b2e5d40"), [5.0, 3.0, -6.0]);
+        assert_eq!(placed(&saved, "3fa91c07"), [-6.0, 0.0, -6.0], "the others are as they were");
+        assert_eq!(placed(&saved, "c41d0a9f"), [0.0, 0.0, 3.0]);
+        assert!(refused(&mut editor, r#"SelectPlacement(Some("0d17e6b2"))"#).contains("no placement"));
+    }
+
+    /// A placement added takes an ID of its own, and a selection made before it stays where it was.
+    #[test]
+    fn an_added_placement_takes_a_fresh_id() {
+        let dir = TestDir::new("zone_ids_add");
+        let path = dir.write("y/posts.zone.ron", POSTS);
+        let mut editor = editor(&dir, Some(&path));
+        run(&mut editor, &dir, r#"SelectPlacement(Some("c41d0a9f")), AddEntry("placements")"#);
+        let added = value(&editor);
+        assert_eq!(added.placements.len(), 4);
+        let id = &added.placements[3].id;
+        assert!(id.len() == 8 && id.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
+        assert!(added.placements[..3].iter().all(|placement| &placement.id != id));
+        assert_eq!(editor.selected_placements(), [2]);
+    }
+
+    /// A version 1 zone refuses an edit that would shift its places' IDs until `MigrateZone` writes them, which
+    /// saves the file as the migration writes it.
+    #[test]
+    fn migrate_zone_writes_a_version_one_zones_ids_and_saves() {
+        let dir = TestDir::new("zone_ids_migrate");
+        let old = POSTS
+            .replace("version: 2", "version: 1")
+            .replace(r#"id: "3fa91c07", "#, "")
+            .replace(r#"id: "8b2e5d40", "#, "")
+            .replace(r#"id: "c41d0a9f", "#, "");
+        let path = dir.write("y/posts.zone.ron", &old);
+        let mut editor = editor(&dir, Some(&path));
+        let shifts = refused(&mut editor, r#"RemoveEntry("placements[0]")"#);
+        assert!(shifts.contains("MigrateZone"), "{shifts}");
+        run(&mut editor, &dir, "MigrateZone");
+        let migrated = sapphire_document::zone::migrate(&old).expect("migrates").expect("at version 1");
+        assert_same(&file(&path), &migrated, "saved as the migration writes it");
+        assert!(migrated.contains(r#"(id: "placement-1", prefab"#), "{migrated}");
+        assert!(editor.notice().is_some_and(|notice| notice.text.contains("version 2")));
+        run(&mut editor, &dir, "MigrateZone");
+        assert!(editor.notice().is_some_and(|notice| notice.text.contains("newest version already")));
+        run(&mut editor, &dir, r#"RemoveEntry("placements[0]"), Save"#);
+        let saved = ZoneDocument::from_ron(&file(&path)).expect("a zone");
+        let ids: Vec<&str> = saved.placements.iter().map(|placement| placement.id.as_str()).collect();
+        assert_eq!(ids, ["placement-1", "placement-2"], "the IDs stay with their placements");
+    }
+
+    /// An ID another entry has, or a `rotation` beside a `turn`, is refused by its field, the text as it was.
+    #[test]
+    fn a_shared_id_or_a_turn_beside_a_rotation_is_refused_by_its_field() {
+        let dir = TestDir::new("zone_ids_refused");
+        let path = dir.write("y/posts.zone.ron", POSTS);
+        let mut editor = editor(&dir, Some(&path));
+        let shared = refused(&mut editor, r#"SetProperty(path: "placements[1].id", value: "\"3fa91c07\"")"#);
+        assert!(shared.contains("placements[1].id") && shared.contains("placements[0]"), "{shared}");
+        run(&mut editor, &dir, r#"SetProperty(path: "placements[1].turn", value: "30.0")"#);
+        let both = refused(
+            &mut editor,
+            r#"SetProperty(path: "placements[1].rotation", value: "Some((0.0, 30.0, 0.0))")"#,
+        );
+        assert!(both.contains("placements[1].rotation") && both.contains("turn"), "{both}");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), POSTS, "only the turn went in, and it came out");
+    }
+
+    /// A session that adds a placement records the ID it drew (`AddEntryAs`), so its replay makes the same entry,
+    /// selects it by that ID and moves it, to the same bytes; one asked for by a taken ID is refused.
+    #[test]
+    fn a_recorded_add_replays_to_the_same_bytes() {
+        let dir = TestDir::new("zone_ids_recorded");
+        let path = dir.write("y/posts.zone.ron", POSTS);
+        let script = dir.0.join(format!("session{SCRIPT_SUFFIX}"));
+        let mut first = editor(&dir, Some(&path));
+        first.record_to(script.clone());
+        run(&mut first, &dir, r#"AddEntry("placements")"#);
+        let id = value(&first).placements[3].id.clone();
+        let commands =
+            format!(r#"SelectPlacement(Some("{id}")), SetShared(path: "at[0]", value: "4.0"), Save"#);
+        run(&mut first, &dir, &commands);
+        let saved = file(&path);
+        let recorded = format!("{:?}", first.recorded().expect("recording").commands);
+        assert!(
+            recorded.contains(&format!("AddEntryAs {{ path: \"placements\", id: \"{id}\" }}")),
+            "{recorded}"
+        );
+        drop(first);
+
+        fs::write(&path, POSTS).expect("the zone as it was");
+        let mut replay = editor(&dir, Some(&path));
+        let kept = Script::read(&script).expect("the recording reads");
+        replay.run_script(&kept).unwrap_or_else(|error| panic!("{error}"));
+        assert_same(&file(&path), &saved, "the replay's save");
+        assert_eq!(replay.selected_placements(), [3]);
+        let taken = refused(&mut replay, &format!(r#"AddEntryAs(path: "placements", id: "{id}")"#));
+        assert!(taken.contains(&id) && taken.contains("already"), "{taken}");
+    }
+
+    /// A selected placement given a new ID, and a selected spawner a new name, stay selected by it, and an undo
+    /// keeps them selected by the old one.
+    #[test]
+    fn a_renamed_entry_stays_selected() {
+        let dir = TestDir::new("zone_ids_rename");
+        let path = dir.write("y/posts.zone.ron", POSTS);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            r#"SelectPlacement(Some("8b2e5d40")), SetShared(path: "id", value: "\"gate_post\"")"#,
+        );
+        assert_eq!(editor.selected_placements(), [1]);
+        assert_eq!(value(&editor).placements[1].id, "gate_post");
+        run(&mut editor, &dir, r#"SetShared(path: "at[1]", value: "1.0"), Undo, Undo"#);
+        assert_eq!(editor.selected_placements(), [1], "back to its old ID");
+        assert_same(&text_of(&editor), POSTS, "both undone");
+
+        let spawner = |name: &str| {
+            format!(r#"SelectObjects([(document: "y/posts.zone.ron", path: "spawners[\"{name}\"]")])"#)
+        };
+        run(&mut editor, &dir, &spawner("guard"));
+        run(
+            &mut editor,
+            &dir,
+            r#"SetShared(path: "name", value: "\"sentry\""), SetShared(path: "position[0]", value: "2.0")"#,
+        );
+        let zone = value(&editor);
+        assert_eq!((zone.spawners[0].name.as_str(), zone.spawners[0].position[0]), ("sentry", 2.0));
+        refused(&mut editor, &spawner("guard"));
+    }
+
+    /// A merge that brings in an ID the zone's unsaved entry has: the entry doesn't go back on top, naming the ID
+    /// and its list, and nothing is renumbered.
+    #[test]
+    fn a_merge_bringing_in_a_taken_id_is_refused_by_its_field() {
+        let dir = TestDir::new("zone_ids_taken");
+        let path = dir.write("y/posts.zone.ron", POSTS);
+        let mut editor = editor(&dir, Some(&path));
+        run(&mut editor, &dir, r#"AddEntryAs(path: "placements", id: "0d17e6b2")"#);
+        fs::write(&path, with_one_first(POSTS)).expect("someone's save, with the same ID");
+        poll_until(&mut editor, "the conflict", |editor| {
+            editor.current().is_some_and(|file| file.conflict().is_some())
+        });
+        let said = match editor.run(Command::MineOnTop) {
+            Err(text) => text,
+            Ok(()) => editor.notice().map(|notice| notice.text.clone()).unwrap_or_default(),
+        };
+        let text = text_of(&editor);
+        assert!(said.contains("`0d17e6b2` in `placements`") && said.contains("didn't"), "{said}");
+        assert_eq!(text.matches("0d17e6b2").count(), 1, "never renumbered, and not put in twice: {text}");
     }
 }

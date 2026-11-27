@@ -10,6 +10,8 @@
 //!
 //! - **The document** ([`document`]): `.zone.ron`, [`ZoneDocument`], and its checks, which name the
 //!   field.
+//! - **IDs** ([`ids`], M6 T8a): what its placements, instances, lights and atmosphere volumes are called, which
+//!   an editor selects them by and the cook never reads.
 //! - **The grid** ([`grid`]): which [`Place`] a position is in, and how far past it a place's content
 //!   may reach.
 //! - **The cooked format** ([`cooked`]): [`Zone`], an rkyv archive (`.szone`), read in place, split
@@ -75,6 +77,7 @@ pub mod document;
 pub mod encounter;
 pub mod foliage;
 pub mod grid;
+pub mod ids;
 pub mod look;
 pub mod prefab;
 pub mod reflections;
@@ -114,6 +117,7 @@ pub use foliage::{
     ScatterInstance, ScatterSet,
 };
 pub use grid::{Bounds, CellCoord, Grid, Place};
+pub use ids::IdList;
 pub use look::{ArchivedZoneFog, ArchivedZoneWeather, ArchivedZoneWind, ZoneFog, ZoneWeather, ZoneWind};
 pub use prefab::Assembly;
 pub use reflections::{ParallaxBox, ReflectionProbe};

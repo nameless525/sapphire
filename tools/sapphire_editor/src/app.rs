@@ -307,6 +307,12 @@ pub struct Editor {
     troubles: u64,
     /// How deep in commands this is: only those at the top are recorded.
     depth: u32,
+    /// The ID an `AddEntryAs` running asks its entry to have.
+    entry_id: Option<String>,
+    /// The ID an `AddEntry` running drew for a zone's entry, which the recording keeps it by.
+    drawn_id: Option<String>,
+    /// Where each selected entry stood when the command running began, so a rename keeps it selected.
+    standings: Vec<selection::Standing>,
     /// Where a session's commands go, if it's being recorded.
     recording: Option<dispatch::Recording>,
     /// What the timeline's drag last asked, so a frame that asks it again runs nothing.
@@ -438,6 +444,9 @@ impl Editor {
             palette: None,
             troubles: 0,
             depth: 0,
+            entry_id: None,
+            drawn_id: None,
+            standings: Vec::new(),
             recording: None,
             drag_asked: None,
             asked: Vec::new(),

@@ -54,11 +54,11 @@ pub fn check(plan: &ZonePlan, colliders: &[u8]) -> Result<(), ZoneCookError> {
     let set = ColliderSet::from_cooked(colliders)
         .map_err(|error| ZoneCookError::invalid("colliders", format!("it doesn't read: {error}")))?;
     let placements = document.placements.iter().enumerate().map(|(index, placement)| {
-        let transform = placement_transform(placement.at, placement.turn, placement.scale);
+        let transform = placement_transform(placement.at, placement.orientation(), placement.scale);
         (format!("placements[{index}]"), placement.prefab, transform, &placement.colliders)
     });
     let instances = document.instances.iter().enumerate().map(|(index, instance)| {
-        let transform = placement_transform(instance.at, instance.turn, instance.scale);
+        let transform = placement_transform(instance.at, instance.orientation(), instance.scale);
         (format!("instances[{index}]"), instance.mesh, transform, &instance.colliders)
     });
     // By collider, in name order, so the first refused is the same every cook.

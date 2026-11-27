@@ -81,10 +81,10 @@ pub fn placed_meshes(plan: &ZonePlan) -> Vec<PlacedMesh> {
         translation: Vec3::ZERO,
         scale: Vec3::ONE,
     });
-    // As the world places an instance: `at · turn · scale`, the turn through `det`.
+    // As the world places an instance: `at · turn · scale` or `at · rotation · scale`, through `det`.
     let instances = plan.document().instances.iter().map(|instance| PlacedMesh {
         mesh: instance.mesh,
-        rotation: det::quat_from_axis_angle(Vec3::Y, instance.turn.to_radians()),
+        rotation: instance.orientation(),
         translation: Vec3::from(instance.at),
         scale: Vec3::from(instance.scale),
     });

@@ -4,7 +4,7 @@
 // so it fires on a fight's first step. The checkpoint is on the clear paving south of the fight (M3 B4).
 (
     type: "sapphire::zone::ZoneDocument",
-    version: 1,
+    version: 2,
     data: (
         grid: (cell_size: 16.0),
         spawners: [

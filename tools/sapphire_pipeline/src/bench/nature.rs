@@ -315,9 +315,11 @@ pub fn generate(dir: &Path, preset: Preset, _cook: Cook) -> Result<Vec<Source>, 
                 ImportSettings::Gltf(settings),
             ));
             let instance = Instance {
+                id: String::new(),
                 mesh: asset_id(PART, &path),
                 at: [middle[0], 0.0, middle[1]],
                 turn: 0.0,
+                rotation: None,
                 scale: [1.0; 3],
                 backdrop: false,
                 colliders: Vec::new(),
@@ -385,9 +387,11 @@ pub fn generate(dir: &Path, preset: Preset, _cook: Cook) -> Result<Vec<Source>, 
         )));
     }
     let stand = |mesh: AssetId, (at, roll): ([f32; 2], u32)| Instance {
+        id: String::new(),
         mesh,
         at: [at[0], land.height(at), at[1]],
         turn: (roll % 24) as f32 * 15.0,
+        rotation: None,
         scale: [1.0; 3],
         backdrop: false,
         colliders: Vec::new(),
@@ -421,9 +425,11 @@ pub fn generate(dir: &Path, preset: Preset, _cook: Cook) -> Result<Vec<Source>, 
         .map(|area| {
             let middle = area.middle();
             Placement {
+                id: String::new(),
                 prefab: asset_id(PART, MARKER_PREFAB),
                 at: [middle[0], land.height(middle), middle[1]],
                 turn: 0.0,
+                rotation: None,
                 scale: [1.0; 3],
                 materials: BTreeMap::new(),
                 backdrop: false,
@@ -477,7 +483,8 @@ pub fn generate(dir: &Path, preset: Preset, _cook: Cook) -> Result<Vec<Source>, 
         weather_plan: Some(ZoneWeatherPlan { states: WEATHER.to_owned(), ..nature.weather_plan.clone() }),
         foliage: None,
         volumes: Vec::new(),
-    };
+    }
+    .with_place_ids();
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
     sources.push(Source::asset(
         PROBES,

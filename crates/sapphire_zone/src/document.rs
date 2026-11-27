@@ -3,26 +3,28 @@
 //! ```ron
 //! (
 //!     type: "sapphire::zone::ZoneDocument",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         grid: (cell_size: 32.0),
 //!         placements: [
 //!             // A prefab: an assembly, by its sidecar's ID. Its geometry joins its cell's mesh, and the
 //!             // zone's collider `crate_0` stands for it.
-//!             (prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (4.0, 0.0, -9.0), turn: 30.0, colliders: ["crate_0"]),
-//!             // With a transform and a material swapped for this placement.
+//!             (id: "3fa91c07", prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f", at: (4.0, 0.0, -9.0), turn: 30.0, colliders: ["crate_0"]),
+//!             // With a transform and a material swapped for this placement, and a name for its ID.
 //!             (
+//!                 id: "gate_crate",
 //!                 prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f",
 //!                 at: (40.0, 0.0, -9.0),
+//!                 rotation: Some((0.0, 45.0, 10.0)),
 //!                 scale: (1.2, 1.2, 1.2),
 //!                 materials: {"timber": "35094271-5e44-4a97-aab3-817227b49287"},
 //!             ),
 //!             // Open land stays for as long as the zone does.
-//!             (prefab: "9df1c80b-9d2d-4100-a6cc-a16331f57cb5", backdrop: true),
+//!             (id: "b27e0d54", prefab: "9df1c80b-9d2d-4100-a6cc-a16331f57cb5", backdrop: true),
 //!         ],
 //!         // Meshes drawn on their own: what sways about its own origin, what's far away.
-//!         instances: [(mesh: "e94f690f-38e2-4630-aeb3-4d34d06fc233", at: (-15.6, 0.0, -15.4), turn: 20.0)],
-//!         lights: [(position: (0.3, 2.4, -35.4), color: (1.0, 0.7, 0.4), intensity: 6.0, range: 9.0, at_night: true)],
+//!         instances: [(id: "8c5d4e21", mesh: "e94f690f-38e2-4630-aeb3-4d34d06fc233", at: (-15.6, 0.0, -15.4), turn: 20.0)],
+//!         lights: [(id: "e0a4f6b9", position: (0.3, 2.4, -35.4), color: (1.0, 0.7, 0.4), intensity: 6.0, range: 9.0, at_night: true)],
 //!         probes: Some("44f04da1-31ba-4d3f-9e65-3e38a30fff43"),
 //!         // Where its reflections are baked from (the `reflections` module), each with the box they're
 //!         // corrected against.
@@ -61,7 +63,7 @@
 //!         // What grows on it (the `foliage` module): placed by its rules into a scatter set per cell.
 //!         foliage: Some("6c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5"),
 //!         // Places with a look of their own (the `atmosphere` module): a partial day over the zone's, by the camera.
-//!         volumes: [(name: "gate_hall", position: (3.2, 2.0, -20.0), shape: Box(half_extents: (3.0, 2.0, 2.0)), look: "../../looks/biomes/interior_warm_day.ron", blend: 1.5)],
+//!         volumes: [(id: "71d2c8af", name: "gate_hall", position: (3.2, 2.0, -20.0), shape: Box(half_extents: (3.0, 2.0, 2.0)), look: "../../looks/biomes/interior_warm_day.ron", blend: 1.5)],
 //!     ),
 //! )
 //! ```
@@ -72,8 +74,13 @@
 //!
 //! **Stable IDs:** a spawner's, trigger's, checkpoint's, spline's or exit's name is its identity. Its ID
 //! is the name's hash ([`Name`]), which no other entry's addition or order can change, so a replay and
-//! a save can name it. A placement or an instance has no ID: nothing about them that the simulation
-//! can see survives cook.
+//! a save can name it. A placement, an instance, a light or an atmosphere volume has an `id` instead (M6
+//! T8a, version 2): unique across the four lists, made on insert, what an editor selects it by however the
+//! lists shift. The cook never reads it, since nothing about them that the simulation can see survives cook:
+//! the [`ids`] module.
+//!
+//! **Rotation:** a placement or an instance turns by `turn`, degrees about +Y, or by `rotation`, degrees about
+//! each of the zone's axes ([`orientation`]), never both.
 //!
 //! **Patrols:** a spawner's `patrol` names one of the zone's splines, and what spawns there walks its points
 //! in order, turning back at the end of an open one. A new patrol is a spline and a line on a spawner. Its
@@ -88,10 +95,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_reflect::Reflect;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use sapphire_core::Name;
 use sapphire_math::det;
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned};
 use sapphire_serialize::{AssetId, CookedError, DocumentError};
 use serde::{Deserialize, Serialize};
 
@@ -103,6 +110,7 @@ use crate::cooked::{
     ZonePresentation, ZoneSimulation,
 };
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
+use crate::ids;
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 use crate::reflections::{self, ReflectionProbe};
 use crate::rooms::{self, ZoneRoom};
@@ -206,15 +214,26 @@ pub struct ZoneDocument {
 }
 
 impl Versioned for ZoneDocument {
-    /// 1: M3 W1.
-    const VERSION: u32 = 1;
+    /// 1: M3 W1. 2: M6 T8a's IDs, which a version 1 document reads with from its entries' places
+    /// ([`ZoneDocument::with_place_ids`]); every other field it adds is optional, so a version 1 document decodes as it is.
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode::<Self>().map(Self::with_place_ids).map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
 }
 
-/// One placed prefab, transformed by `at · turn · scale`.
+/// One placed prefab, transformed by `at · turn · scale`, or `at · rotation · scale`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::zone"]
 #[serde(deny_unknown_fields)]
 pub struct Placement {
+    /// Unique among the zone's IDs: its identity (see the [module docs](self)).
+    #[serde(default)]
+    pub id: String,
     /// An assembly, by its sidecar's ID.
     pub prefab: AssetId,
     #[serde(default)]
@@ -222,6 +241,9 @@ pub struct Placement {
     /// Degrees about +Y, counter-clockwise seen from above.
     #[serde(default)]
     pub turn: f32,
+    /// Degrees about the zone's X, Y and Z, in place of `turn`: see [`orientation`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<[f32; 3]>,
     #[serde(default = "unit_scale")]
     pub scale: [f32; 3],
     /// Material assets in place of those the prefab's sidecar binds, by the prefab's slot names.
@@ -252,17 +274,23 @@ pub struct Split {
     pub backdrop: Vec<String>,
 }
 
-/// One mesh asset drawn on its own, transformed by `at · turn · scale`.
+/// One mesh asset drawn on its own, transformed by `at · turn · scale`, or `at · rotation · scale`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::zone"]
 #[serde(deny_unknown_fields)]
 pub struct Instance {
+    /// Unique among the zone's IDs: its identity (see the [module docs](self)).
+    #[serde(default)]
+    pub id: String,
     pub mesh: AssetId,
     #[serde(default)]
     pub at: [f32; 3],
     /// Degrees about +Y, counter-clockwise seen from above.
     #[serde(default)]
     pub turn: f32,
+    /// Degrees about the zone's X, Y and Z, in place of `turn`: see [`orientation`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<[f32; 3]>,
     #[serde(default = "unit_scale")]
     pub scale: [f32; 3],
     /// Stays for as long as the zone does, in no cell.
@@ -280,6 +308,9 @@ pub struct Instance {
 #[type_path = "sapphire::zone"]
 #[serde(deny_unknown_fields)]
 pub struct Light {
+    /// Unique among the zone's IDs: its identity (see the [module docs](self)).
+    #[serde(default)]
+    pub id: String,
     pub position: [f32; 3],
     /// Linear RGB.
     pub color: [f32; 3],
@@ -439,6 +470,56 @@ fn unit_scale() -> [f32; 3] {
     [1.0; 3]
 }
 
+/// What an editor's "add" starts a placement as (M6 T8a): no prefab yet, at the origin, unscaled.
+impl Default for Placement {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            prefab: AssetId::from_bytes([0; 16]),
+            at: [0.0; 3],
+            turn: 0.0,
+            rotation: None,
+            scale: unit_scale(),
+            materials: BTreeMap::new(),
+            backdrop: false,
+            split: None,
+            colliders: Vec::new(),
+        }
+    }
+}
+
+/// What an editor's "add" starts an instance as: no mesh yet, at the origin, unscaled.
+impl Default for Instance {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            mesh: AssetId::from_bytes([0; 16]),
+            at: [0.0; 3],
+            turn: 0.0,
+            rotation: None,
+            scale: unit_scale(),
+            backdrop: false,
+            colliders: Vec::new(),
+        }
+    }
+}
+
+/// What an editor's "add" starts a light as: a white point at the origin that reaches a few metres.
+impl Default for Light {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            position: [0.0; 3],
+            color: [1.0; 3],
+            intensity: 1.0,
+            range: 4.0,
+            shape: LightShape::Point,
+            at_night: false,
+            backdrop: false,
+        }
+    }
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's `skip_serializing_if` passes a reference")]
 pub(crate) fn is_false(value: &bool) -> bool {
     !*value
@@ -558,11 +639,13 @@ impl ZoneDocument {
                 ));
             }
         }
+        ids::check(self)?;
         let invalid = |field: String| move |problem: String| ZoneError::invalid(field, problem);
         for (index, placement) in self.placements.iter().enumerate() {
             let field = |name: &str| format!("placements[{index}].{name}");
             check_position(placement.at).map_err(invalid(field("at")))?;
             check_finite(placement.turn).map_err(invalid(field("turn")))?;
+            check_rotation(placement.turn, placement.rotation).map_err(invalid(field("rotation")))?;
             check_scale(placement.scale).map_err(invalid(field("scale")))?;
             if placement.backdrop && placement.split.is_some() {
                 return Err(ZoneError::invalid(
@@ -576,6 +659,7 @@ impl ZoneDocument {
             let field = |name: &str| format!("instances[{index}].{name}");
             check_position(instance.at).map_err(invalid(field("at")))?;
             check_finite(instance.turn).map_err(invalid(field("turn")))?;
+            check_rotation(instance.turn, instance.rotation).map_err(invalid(field("rotation")))?;
             check_scale(instance.scale).map_err(invalid(field("scale")))?;
             self.check_claims(&instance.colliders, &field("colliders"))?;
         }
@@ -1110,16 +1194,46 @@ impl Placement {
     pub fn shape_transform(&self) -> Mat4 {
         Mat4::from_scale_rotation_translation(
             Vec3::from(self.scale.map(f32::abs)),
-            det::quat_from_axis_angle(Vec3::Y, self.turn.to_radians()),
+            self.orientation(),
             Vec3::from(self.at),
         )
+    }
+
+    /// Its `turn`, or its `rotation`, as the cook writes it: see [`orientation`].
+    #[must_use]
+    pub fn orientation(&self) -> Quat {
+        orientation(self.turn, self.rotation)
     }
 }
 
 impl Instance {
+    /// Its `turn`, or its `rotation`, as the cook writes it: see [`orientation`].
+    #[must_use]
+    pub fn orientation(&self) -> Quat {
+        orientation(self.turn, self.rotation)
+    }
+
     fn cooked(&self) -> CookedInstance {
-        let turn = det::quat_from_axis_angle(Vec3::Y, self.turn.to_radians());
-        CookedInstance { mesh: self.mesh, position: self.at, rotation: turn.to_array(), scale: self.scale }
+        let rotation = self.orientation().to_array();
+        CookedInstance { mesh: self.mesh, position: self.at, rotation, scale: self.scale }
+    }
+}
+
+/// How a placement or an instance is turned: by `turn` degrees about +Y, or by `rotation`'s degrees about the
+/// zone's axes, applied about Z, then X, then Y (`yaw · pitch · roll`), so `(0, t, 0)` is `turn: t`. A turn
+/// goes through [`det`] as it always has, so a zone that says `turn` cooks to the bytes it did before `rotation`
+/// was; a rotation through [`det`] too, so a cell's content doesn't hang on a platform's C math library. A
+/// document has one or the other, never both ([`ZoneDocument::check`]).
+#[must_use]
+pub fn orientation(turn: f32, rotation: Option<[f32; 3]>) -> Quat {
+    let about = |axis: Vec3, degrees: f32| det::quat_from_axis_angle(axis, degrees.to_radians());
+    match rotation {
+        None => about(Vec3::Y, turn),
+        // The same call as `turn`'s, so a yaw alone is its bits, signed zeros and all, at any angle.
+        Some([pitch, yaw, roll]) if pitch == 0.0 && roll == 0.0 => about(Vec3::Y, yaw),
+        Some([pitch, yaw, roll]) => {
+            det::quat_mul(det::quat_mul(about(Vec3::Y, yaw), about(Vec3::X, pitch)), about(Vec3::Z, roll))
+        }
     }
 }
 
@@ -1156,6 +1270,21 @@ pub(crate) fn check_finite(value: f32) -> Result<(), String> {
 /// Whether a value is finite and above zero, or what's wrong with it.
 pub(crate) fn check_positive(value: f32) -> Result<(), String> {
     if value.is_finite() && value > 0.0 { Ok(()) } else { Err(format!("{value} isn't positive")) }
+}
+
+/// Whether a `rotation` beside a `turn` is one a placement may have, or what's wrong with it: finite, and never
+/// with a turn, since the two would say one thing twice. A turn of 0 is a turn left out.
+pub(crate) fn check_rotation(turn: f32, rotation: Option<[f32; 3]>) -> Result<(), String> {
+    let Some(rotation) = rotation else { return Ok(()) };
+    if !rotation.iter().all(|degrees| degrees.is_finite()) {
+        return Err(format!("{rotation:?} isn't finite"));
+    }
+    if turn != 0.0 {
+        return Err(format!(
+            "it has a `turn` of {turn} too: give one or the other (a rotation of (0, {turn}, 0) is that turn)"
+        ));
+    }
+    Ok(())
 }
 
 /// Whether a position lies within [`MAX_COORDINATE`], or what's wrong with it.
@@ -1368,8 +1497,16 @@ mod tests {
     #[test]
     fn every_check_names_the_field() {
         type Tamper = fn(&mut ZoneDocument);
-        let cases: [(&str, Tamper); 31] = [
+        let cases: [(&str, Tamper); 37] = [
             ("grid.cell_size", |d| d.grid.cell_size = 1.0),
+            ("placements[1].id", |d| d.placements[1].id = d.placements[0].id.clone()),
+            ("lights[1].id", |d| d.lights[1].id = d.placements[2].id.clone()),
+            ("instances[0].id", |d| d.instances[0].id.clear()),
+            ("placements[2].id", |d| d.placements[2].id = "x".repeat(MAX_NAME + 1)),
+            ("placements[0].rotation", |d| d.placements[0].rotation = Some([0.0, 30.0, 0.0])),
+            ("instances[0].rotation", |d| {
+                (d.instances[0].turn, d.instances[0].rotation) = (0.0, Some([f32::NAN; 3]))
+            }),
             ("grid.cell_size", |d| d.grid.cell_size = f32::NAN),
             ("placements[1].at", |d| d.placements[1].at[2] = f32::INFINITY),
             ("placements[0].at", |d| d.placements[0].at[0] = 20_000.0),

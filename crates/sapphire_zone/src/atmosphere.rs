@@ -13,8 +13,8 @@
 //!
 //! ```ron
 //! volumes: [
-//!     (name: "grotto", position: (12.0, 2.0, -30.0), shape: Ellipsoid(radii: (14.0, 6.0, 10.0), yaw: 20.0), look: "../../looks/biomes/cave_day.ron", blend: 6.0),
-//!     (name: "inn", position: (-8.0, 2.5, 4.0), shape: Box(half_extents: (5.0, 2.5, 4.0)), look: "inn_day.ron", blend: 1.5, strength: 0.9, priority: 1),
+//!     (id: "5e0b9d13", name: "grotto", position: (12.0, 2.0, -30.0), shape: Ellipsoid(radii: (14.0, 6.0, 10.0), yaw: 20.0), look: "../../looks/biomes/cave_day.ron", blend: 6.0),
+//!     (id: "a47c2f60", name: "inn", position: (-8.0, 2.5, 4.0), shape: Box(half_extents: (5.0, 2.5, 4.0)), look: "inn_day.ron", blend: 1.5, strength: 0.9, priority: 1),
 //! ],
 //! ```
 //!
@@ -41,7 +41,11 @@ pub const MAX_BLEND: f32 = 256.0;
 #[type_path = "sapphire::zone"]
 #[serde(deny_unknown_fields)]
 pub struct AtmosphereVolume {
-    /// Unique among the zone's volumes: its identity.
+    /// Unique among the zone's IDs: what an editor selects it by (the [`ids`](crate::ids) module), whatever
+    /// its name says.
+    #[serde(default)]
+    pub id: String,
+    /// Unique among the zone's volumes: what the cooked volume is (its [`Name`] hash).
     pub name: String,
     /// The shape's centre, in metres.
     pub position: [f32; 3],

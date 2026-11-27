@@ -2389,3 +2389,52 @@ fn a_moved_placement_that_moves_no_tree_leaves_the_navmesh_alone() {
         "so the navmesh isn't baked again"
     );
 }
+
+/// [`placements`] at version 2 (M6 T8a), each with an ID of its own.
+fn placements_with_ids() -> String {
+    let mut text = placements();
+    for index in 0..5 {
+        text = text.replacen("(prefab:", &format!("(id: \"post-{index}\", prefab:"), 1);
+    }
+    text
+}
+
+/// Writes the zone at version 2.
+fn write_zone_v2(tree: &Tree, data: &str) {
+    let text = zone_text(data).replacen("version: 1", "version: 2", 1);
+    tree.write("town.zone.ron", text.as_bytes());
+}
+
+/// What each asset a cook made holds, by its file's name.
+fn cooked_bytes(report: &CookReport) -> BTreeMap<String, Vec<u8>> {
+    (report.assets.iter())
+        .map(|asset| (asset.output.display().to_string(), fs::read(&asset.output).expect("cooked")))
+        .collect()
+}
+
+/// A zone's IDs reach no cooked byte, a `rotation` that's a yaw alone cooks as the same `turn` does, and an ID two
+/// placements share or a `turn` beside a `rotation` fails the cook naming the field.
+#[test]
+fn a_zones_ids_cook_to_nothing_and_a_yaw_rotation_to_its_turn() {
+    let tree = tree("zone-ids");
+    let first = "at: (2.0, 0.0, 2.0)";
+    write_zone(&tree, &placements().replacen(first, &format!("{first}, turn: -150.0"), 1));
+    let turned = cooked_bytes(&tree.cook());
+    assert!(turned.len() > 3, "{turned:?}");
+
+    write_zone_v2(&tree, &placements_with_ids().replacen(first, &format!("{first}, turn: -150.0"), 1));
+    assert_eq!(cooked_bytes(&tree.cook()), turned, "the IDs and the version change no byte");
+    let rotated =
+        placements_with_ids().replacen(first, &format!("{first}, rotation: Some((0.0, -150.0, 0.0))"), 1);
+    write_zone_v2(&tree, &rotated);
+    assert_eq!(cooked_bytes(&tree.cook()), turned, "a yaw is the turn");
+
+    for (data, expected) in [
+        (placements_with_ids().replacen("post-1", "post-0", 1), "placements[1].id"),
+        (rotated.replacen("rotation:", "turn: 30.0, rotation:", 1), "placements[0].rotation"),
+    ] {
+        write_zone_v2(&tree, &data);
+        let text = chain(&tree.try_cook(false).expect_err(expected));
+        assert!(text.contains("town.zone.ron") && text.contains(expected), "`{text}` must say `{expected}`");
+    }
+}

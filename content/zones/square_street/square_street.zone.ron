@@ -5,7 +5,7 @@
 // square's middle, on its clear paving, and the warriors stand where the arena's do.
 (
     type: "sapphire::zone::ZoneDocument",
-    version: 1,
+    version: 2,
     data: (
         grid: (cell_size: 16.0),
         spawners: [

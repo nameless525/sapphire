@@ -219,13 +219,13 @@ fn zone_and_colliders(dir: &TestDir) -> (DocumentSet, AssetId, PathBuf) {
         &format!(
             r#"(
     type: "sapphire::zone::ZoneDocument",
-    version: 1,
+    version: 2,
     data: (
         grid: (cell_size: 16.0),
         placements: [
-            (prefab: "{PREFAB}", at: (-6.0, 0.0, -6.0), colliders: ["post_a"]),
-            (prefab: "{PREFAB}", at: (6.35, 0.0, -6.0), colliders: ["post_b"]),
-            (prefab: "{PREFAB}", at: (0.0, 0.0, 3.0)),
+            (id: "3fa91c07", prefab: "{PREFAB}", at: (-6.0, 0.0, -6.0), colliders: ["post_a"]),
+            (id: "8b2e5d40", prefab: "{PREFAB}", at: (6.35, 0.0, -6.0), colliders: ["post_b"]),
+            (id: "c41d0a9f", prefab: "{PREFAB}", at: (0.0, 0.0, 3.0)),
         ],
         colliders: Some("{COLLIDERS}"),
     ),

@@ -9,39 +9,40 @@
 // sees the sky only through its open front, beside an open one. Each box is the space its probe stands in.
 (
     type: "sapphire::zone::ZoneDocument",
-    version: 1,
+    version: 2,
     data: (
         grid: (cell_size: 16.0),
         placements: [
             // Cell (0, 0): two pillars and a cart, turned.
-            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (2.0, 0.0, 2.0)),
-            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (6.0, 0.0, 2.0)),
-            (prefab: "940102ca-a2d8-419f-b3ab-cd504a73068f", at: (9.0, 0.0, 10.0), turn: 30.0),
+            (id: "placement-0", prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (2.0, 0.0, 2.0)),
+            (id: "placement-1", prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (6.0, 0.0, 2.0)),
+            (id: "placement-2", prefab: "940102ca-a2d8-419f-b3ab-cd504a73068f", at: (9.0, 0.0, 10.0), turn: 30.0),
             // Cell (-1, 0): fences, joined end to end along X.
-            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (-4.0, 0.0, 3.0)),
-            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (-8.0, 0.0, 3.0)),
+            (id: "placement-3", prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (-4.0, 0.0, 3.0)),
+            (id: "placement-4", prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (-8.0, 0.0, 3.0)),
             // Cell (1, 0): a larger cart.
-            (prefab: "940102ca-a2d8-419f-b3ab-cd504a73068f", at: (20.0, 0.0, 4.0), scale: (1.5, 1.5, 1.5)),
-            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (24.0, 0.0, 12.0)),
+            (id: "placement-5", prefab: "940102ca-a2d8-419f-b3ab-cd504a73068f", at: (20.0, 0.0, 4.0), scale: (1.5, 1.5, 1.5)),
+            (id: "placement-6", prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (24.0, 0.0, 12.0)),
             // Cell (0, -1): a fence in another material.
-            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (3.0, 0.0, -5.0)),
-            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (7.0, 0.0, -5.0), materials: {"wood": "4877c2cb-8151-4e8f-a18e-393b1e80259c"}),
-            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (12.0, 0.0, -12.0)),
+            (id: "placement-7", prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (3.0, 0.0, -5.0)),
+            (id: "placement-8", prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (7.0, 0.0, -5.0), materials: {"wood": "4877c2cb-8151-4e8f-a18e-393b1e80259c"}),
+            (id: "placement-9", prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (12.0, 0.0, -12.0)),
             // Cell (1, -1): a mirrored fence.
-            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (20.0, 0.0, -4.0)),
-            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (28.0, 0.0, -8.0), scale: (-1.0, 1.0, 1.0)),
+            (id: "placement-10", prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (20.0, 0.0, -4.0)),
+            (id: "placement-11", prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (28.0, 0.0, -8.0), scale: (-1.0, 1.0, 1.0)),
             // The ground.
-            (prefab: "d1d24907-c6b9-4587-8633-50df8b55a95b", at: (8.0, 0.0, 0.0), backdrop: true),
+            (id: "placement-12", prefab: "d1d24907-c6b9-4587-8633-50df8b55a95b", at: (8.0, 0.0, 0.0), backdrop: true),
             // Cell (-2, 1): a shelter open toward the yard, for a probe to stand under.
-            (prefab: "49477adb-9e84-4e61-9873-6d012ffe4088", at: (-24.0, 0.0, 30.0)),
+            (id: "placement-13", prefab: "49477adb-9e84-4e61-9873-6d012ffe4088", at: (-24.0, 0.0, 30.0)),
         ],
         instances: [
-            (mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: (4.0, 0.0, 6.0), turn: 20.0),
-            (mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: (20.0, 0.0, -10.0)),
+            (id: "instance-0", mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: (4.0, 0.0, 6.0), turn: 20.0),
+            (id: "instance-1", mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: (20.0, 0.0, -10.0)),
         ],
         lights: [
-            (position: (4.0, 2.5, 6.0), color: (1.0, 0.72, 0.42), intensity: 6.0, range: 8.0, at_night: true),
+            (id: "light-0", position: (4.0, 2.5, 6.0), color: (1.0, 0.72, 0.42), intensity: 6.0, range: 8.0, at_night: true),
             (
+                id: "light-1",
                 position: (20.0, 4.0, -10.0),
                 color: (1.0, 0.9, 0.8),
                 intensity: 4.0,

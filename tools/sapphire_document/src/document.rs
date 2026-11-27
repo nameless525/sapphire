@@ -227,6 +227,14 @@ where
         &self.text
     }
 
+    /// The schema version the text says it's written at, from the parse it holds: `None` if it doesn't read or
+    /// says none (a document with no envelope).
+    #[must_use]
+    pub fn written_version(&self) -> Option<u32> {
+        let tree = &self.parsed.as_ref().ok()?.tree;
+        tree.field("version").filter(|_| tree.field("type").is_some())?.text(&self.text).parse().ok()
+    }
+
     /// What the text says now, if it reads.
     #[must_use]
     pub fn value(&self) -> Option<&T> {
@@ -1003,6 +1011,27 @@ where
         }
         self.disk = disk.into_bytes();
         self.saved_at = Some(self.undo.len());
+    }
+
+    /// Replaces the whole text with `text`, as one step undo can take back: an edit a value can't say, such as a
+    /// migration that writes what a document already reads as, at a newer version (a zone's IDs, M6 T8a).
+    /// Refused, with the text as it was, unless `text` reads as this document's very value.
+    pub fn rewrite(&mut self, label: &str, text: String) -> Result<Outcome, Refused> {
+        let parsed = self.ready()?;
+        if text == self.text {
+            return Ok(Outcome::Unchanged);
+        }
+        let read =
+            read(&text, self.schema).map_err(|failure| Refused::Document(failure.message().to_owned()))?;
+        if read.value != parsed.value {
+            return Err(Refused::Document(
+                "the text it was given doesn't read as what this one does".to_owned(),
+            ));
+        }
+        self.end_gesture();
+        self.push_step(external_step(label, &self.text, &text));
+        self.set_raw_text(text);
+        Ok(Outcome::Changed)
     }
 
     /// The file changed on disk to `disk`. Takes it, as a step undo can take back, and puts unsaved records

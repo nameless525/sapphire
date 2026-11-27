@@ -11,16 +11,16 @@
 // One reflection probe (M5 L2) stands in the open square among the posts, its box the paving's whole square.
 (
     type: "sapphire::zone::ZoneDocument",
-    version: 1,
+    version: 2,
     data: (
         grid: (cell_size: 16.0),
         placements: [
-            (prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (-6.0, 0.0, -6.0)),
-            (prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (6.0, 0.0, -6.0)),
-            (prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (-6.0, 0.0, 6.0)),
-            (prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (6.0, 0.0, 6.0)),
+            (id: "placement-0", prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (-6.0, 0.0, -6.0)),
+            (id: "placement-1", prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (6.0, 0.0, -6.0)),
+            (id: "placement-2", prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (-6.0, 0.0, 6.0)),
+            (id: "placement-3", prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (6.0, 0.0, 6.0)),
             // The ground.
-            (prefab: "3c9d1f62-8e47-4ab3-a1d6-60f2b57e9c18", at: (0.0, 0.0, 0.0), backdrop: true),
+            (id: "placement-4", prefab: "3c9d1f62-8e47-4ab3-a1d6-60f2b57e9c18", at: (0.0, 0.0, 0.0), backdrop: true),
         ],
         colliders: Some("b27e4d19-63a8-4c55-8e0f-12d9f7a6c340"),
         probes: Some("3d0efdb0-bb5d-4245-92a2-367504ef1ac8"),

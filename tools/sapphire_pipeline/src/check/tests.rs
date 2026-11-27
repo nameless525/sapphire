@@ -521,3 +521,41 @@ fn a_zone_s_bad_atmosphere_volume_is_refused_by_its_field() {
     }
     assert!(report.failures().all(|finding| finding.rule == Rule::ZoneDocument), "{report}");
 }
+
+/// A version 2 zone (M6 T8a) with an ID two entries share, or an entry with both a `turn` and a `rotation`, is
+/// refused by its field as the cook refuses it; one with its IDs its own and a rotation alone passes.
+#[test]
+fn a_zone_s_shared_id_or_double_orientation_is_refused_by_its_field() {
+    let tree = Tree::new("zone_ids");
+    let text = |light: &str, turn: &str| {
+        format!(
+            r#"(type: "sapphire::zone::ZoneDocument", version: 2, data: (grid: (cell_size: 16.0),
+                instances: [(id: "3fa91c07", mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: (0.0, 0.0, 0.0),
+                    {turn}rotation: Some((0.0, 45.0, 10.0)))],
+                lights: [(id: "{light}", position: (0.0, 2.0, 0.0), color: (1.0, 1.0, 1.0), intensity: 1.0,
+                    range: 4.0)],
+            ))"#
+        )
+    };
+    let importer = || ImportSettings::Zone(zone::ZoneSettings::default());
+    for (name, light, turn) in
+        [("fine", "8b2e5d40", ""), ("shared", "3fa91c07", ""), ("twice", "8b2e5d40", "turn: 30.0, ")]
+    {
+        tree.source(&format!("zones/{name}.zone.ron"), text(light, turn).as_bytes(), importer(), None);
+    }
+
+    let report = tree.check();
+    let zones: Vec<(&str, &str)> = (report.findings.iter())
+        .filter(|finding| finding.rule == Rule::ZoneDocument)
+        .map(|finding| (finding.source.as_str(), finding.message.as_str()))
+        .collect();
+    let expected = [
+        ("zones/shared.zone.ron", "lights[0].id", "instances[0]"),
+        ("zones/twice.zone.ron", "instances[0].rotation", "turn"),
+    ];
+    assert_eq!(zones.len(), expected.len(), "{report}");
+    for (&(source, message), (want, field, says)) in zones.iter().zip(expected) {
+        assert_eq!(source, want);
+        assert!(message.contains(field) && message.contains(says), "{source}: {message}");
+    }
+}

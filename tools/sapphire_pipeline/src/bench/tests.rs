@@ -66,12 +66,12 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
         ("cover/rock", "3da5a292e0136f85e79c22f407cc24b2c6fdd44c4d246de27b986ac2df78e433"),
         ("cover/starflower", "9d0c231dda61c429bd71db8b25e9ffa30982b555058712b5a1acf30ba3bab6f5"),
         ("cover/tall_grass", "6470e832d17de4c50119599ee0fa8918f70967e9a17e09f1d5977e80049c7365"),
-        ("district", "578307ba34ed170956227f9333d90fe9e2bce8bb59471074e3c47d4189c2d650"),
+        ("district", "dbe244ac9a18cf2f671cb6407f11e98637cfbe4e39720ee271f52d796b1dd1d1"),
         ("district/buildings", "4ba81538425fc6d90cb7a002164f7b9b40b0a76b3323f104ace974afb131d6e4"),
         ("district/materials", "57aaa0fc00432b725fe541e79abfa9e0b89db350aad58b9d6045af8e407685b0"),
         ("district/prefabs", "fd7f488cd15839048f1ecd7c2dc0f05d588fed511ddaedc1270d2e4b4923476c"),
         ("district/textures", "3e8613b7430eec9bb2d03163a999abe8ff34be45744a6c7908f0b94d853005c0"),
-        ("nature", "85251cf6e7fd82264f3cb28e0395551b54465a6bbd808ae262a984de2a5784f7"),
+        ("nature", "78bcfb19bdf33ec510263747e46f65b62a9ea514defcf0e75a6546a3de6614bd"),
         ("nature/grass", "682d33944411dc8bbc6a3a9a51066bdeb666845447e5bc9cb8a9cc0c471e915e"),
         ("nature/materials", "b7f4a5ffa29354ce656185c46925c330f55c656edd6d8080d226527aa11ce777"),
         ("nature/prefabs", "b77048e1c3441bb87338c631c08778f75bbf03445d5efcee98c32168832262f0"),
@@ -111,13 +111,13 @@ fn the_nature_zone_generates_the_same_bytes_on_every_machine() {
     const PINNED: &[(Preset, &str)] = &[
         (
             Preset::Ci,
-            "752fdc0de53a38ed904102990f6bb30afde6272bf89e78da8ddfc7e702da0aaa \
-             6d255aeb8c61ad93f0052980408137784f4f179f8c7e60266fbaa768e74175ff",
+            "4b1993a151747cd5c7c8afff78797c4d34e0fd1890fef2dd26d9c7c1aefb8562 \
+             2e419341d369561d578a6067d1ad5916abf920b2959cbc2c67812128f8e485cc",
         ),
         (
             Preset::Budget,
-            "ae33cdd93e2682f5ff423b1c7933b62d8b8c878bb6ae748b8c6a5ebe9a9c7380 \
-             9199d9952c4dfd4ce0d6bd32823929b407be74f12ffbe257079ac424a2d7b08e",
+            "aee7dd39332483f14b5953fbcd61c45a201220efef66b99b3bde6190cf49074b \
+             8f11902310205ee8b00fa4128a688abf275a91b358e56d38fc36c83e8b045ddc",
         ),
     ];
     let dir = TempDir::new("bench_nature");

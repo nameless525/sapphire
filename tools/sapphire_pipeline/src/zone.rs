@@ -168,7 +168,7 @@ use std::path::{Path, PathBuf};
 use std::str::Utf8Error;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use glam::{Mat3, Mat4, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::{Lod, PositionFormat, Submesh, Vertex};
 use sapphire_math::det;
@@ -394,8 +394,19 @@ pub const AMBIENT_COOKER: Stage = Stage { name: "sambient", version: 1 };
 #[derive(Serialize)]
 struct ReflectionsRecipe<'a> {
     probes: &'a [sapphire_zone::ReflectionProbe],
-    /// Each instance's mesh, place, turn and scale.
-    instances: Vec<(AssetId, [f32; 3], f32, [f32; 3])>,
+    instances: Vec<InstanceRecipe>,
+}
+
+/// What an instance adds to the reflection probes' key: its mesh, place, turn, rotation and scale, written as
+/// the tuple it was before `rotation` was when it has none, so a zone's probes key as they did.
+#[derive(Serialize)]
+struct InstanceRecipe {
+    mesh: AssetId,
+    at: [f32; 3],
+    turn: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rotation: Option<[f32; 3]>,
+    scale: [f32; 3],
 }
 
 /// A prefab a zone places.
@@ -472,6 +483,9 @@ struct PieceRecipe<'a> {
     part: Option<u32>,
     at: [f32; 3],
     turn: f32,
+    /// Left out with none, so a zone that turns its placements keys its cells as it did before `rotation` was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rotation: Option<[f32; 3]>,
     scale: [f32; 3],
     materials: &'a BTreeMap<String, AssetId>,
 }
@@ -577,14 +591,11 @@ pub fn prefab_sources<'a>(sources: impl Iterator<Item = &'a SourceAsset>) -> Has
         .collect()
 }
 
-/// A placement's transform: `at · turn · scale`. The turn goes through [`det`], as a zone's instances'
-/// do, so a cell's content doesn't hang on a platform's C math library.
-fn placement_transform(at: [f32; 3], turn: f32, scale: [f32; 3]) -> Mat4 {
-    Mat4::from_scale_rotation_translation(
-        Vec3::from(scale),
-        det::quat_from_axis_angle(Vec3::Y, turn.to_radians()),
-        Vec3::from(at),
-    )
+/// A placement's transform: `at · turn · scale`, or `at · rotation · scale`. Its orientation goes through
+/// [`det`] ([`sapphire_zone::document::orientation`]), as a zone's instances' does, so a cell's content doesn't
+/// hang on a platform's C math library.
+fn placement_transform(at: [f32; 3], orientation: Quat, scale: [f32; 3]) -> Mat4 {
+    Mat4::from_scale_rotation_translation(Vec3::from(scale), orientation, Vec3::from(at))
 }
 
 impl ZonePlan {
@@ -650,7 +661,7 @@ impl ZonePlan {
             };
             let field = format!("placements[{index}].split.backdrop");
             let assembly = &read[&placement.prefab].assembly;
-            let transform = placement_transform(placement.at, placement.turn, placement.scale);
+            let transform = placement_transform(placement.at, placement.orientation(), placement.scale);
             let mut matched = vec![false; split.backdrop.len()];
             for (part, entry) in assembly.place.iter().enumerate() {
                 let mut backdrop = false;
@@ -683,6 +694,7 @@ impl ZonePlan {
                             part: piece.part.map(|part| part as u32),
                             at: placement.at,
                             turn: placement.turn,
+                            rotation: placement.rotation,
                             scale: placement.scale,
                             materials: &materials[piece.placement],
                         }
@@ -747,7 +759,13 @@ impl ZonePlan {
         let recipe = ReflectionsRecipe {
             probes: &self.document.reflections,
             instances: (self.document.instances.iter())
-                .map(|instance| (instance.mesh, instance.at, instance.turn, instance.scale))
+                .map(|instance| InstanceRecipe {
+                    mesh: instance.mesh,
+                    at: instance.at,
+                    turn: instance.turn,
+                    rotation: instance.rotation,
+                    scale: instance.scale,
+                })
                 .collect(),
         };
         blake3::hash(&postcard::to_allocvec(&recipe).expect("a reflections recipe always encodes"))
@@ -1078,7 +1096,7 @@ impl ZonePlan {
                 Some(part) => format!("placements[{}].place[{part}]", piece.placement),
                 None => format!("placements[{}]", piece.placement),
             };
-            let transform = placement_transform(placement.at, placement.turn, placement.scale);
+            let transform = placement_transform(placement.at, placement.orientation(), placement.scale);
             let bounds = self.place_piece(piece, transform, &field, detail, &mut by_material)?;
             if let (Place::Cell(cell), Some(bounds)) = (place, bounds)
                 && let Some(reach) = grid.overreach(cell, bounds)
@@ -1480,9 +1498,9 @@ pub fn check_sky_material(bytes: &[u8]) -> Result<(), ZoneCookError> {
     Ok(())
 }
 
-/// `bounds` under `at · turn · scale`: the box around its corners, as an instance stands.
-pub fn placed_bounds(bounds: Bounds, at: [f32; 3], turn: f32, scale: [f32; 3]) -> Bounds {
-    let transform = placement_transform(at, turn, scale);
+/// `bounds` under `at · orientation · scale`: the box around its corners, as an instance stands.
+pub fn placed_bounds(bounds: Bounds, at: [f32; 3], orientation: Quat, scale: [f32; 3]) -> Bounds {
+    let transform = placement_transform(at, orientation, scale);
     let corner = |index: usize| {
         let pick = |axis: usize| if index & (1 << axis) == 0 { bounds.min[axis] } else { bounds.max[axis] };
         transform.transform_point3(Vec3::new(pick(0), pick(1), pick(2)))
@@ -1582,7 +1600,7 @@ pub fn cook(
         .instances
         .iter()
         .zip(instance_bounds)
-        .map(|(instance, bounds)| placed_bounds(bounds, instance.at, instance.turn, instance.scale))
+        .map(|(instance, bounds)| placed_bounds(bounds, instance.at, instance.orientation(), instance.scale))
         .collect();
     let day = document
         .day

@@ -492,7 +492,7 @@ fn a_zone_refuses_a_bad_atmosphere_volume_by_its_field() {
     let mut zone = open("content/zones/proving_ground/proving_ground.zone.ron", kinds::zone());
     assert_eq!(zone.failure(), None);
     let text = zone.text().to_owned();
-    let volume = r#"[(name: "grotto", position: (0.0, 1.0, 0.0), shape: Sphere(radius: 2.0), look: "../../looks/biomes/cave_day.ron", blend: 2.0, strength: 1.0, priority: 0)]"#;
+    let volume = r#"[(id: "5e0b9d13", name: "grotto", position: (0.0, 1.0, 0.0), shape: Sphere(radius: 2.0), look: "../../looks/biomes/cave_day.ron", blend: 2.0, strength: 1.0, priority: 0)]"#;
     assert_eq!(zone.set_text("add a cave", &path("volumes"), volume), Ok(Outcome::Changed));
     let placed = zone.text().to_owned();
     assert!(placed.contains("cave_day.ron"), "{placed}");

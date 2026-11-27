@@ -1,6 +1,8 @@
 //! The zone pane (M3 E5): the current zone document's placements, those selected, and the gizmo that moves the
 //! last one selected in the viewport. A Cmd or Shift click adds a row to the selection or takes it out (M6 T2),
-//! and the Properties pane edits what the placements selected share.
+//! and the Properties pane edits what the placements selected share. A placement is selected by its ID (M6 T8a),
+//! which each row shows, so a selection and a drag stay on it however the list shifts; a version 1 zone has its
+//! places' IDs until `MigrateZone` writes them.
 //!
 //! The viewport draws a zone as an editor needs it, each placement on its own ([`crate::viewport`]), and the
 //! gizmo on the one selected. A drag of an arrow is one gesture on the document: each frame of it sets the one
@@ -12,11 +14,11 @@
 
 use egui::{RichText, Ui};
 use sapphire_assets::AssetId;
-use sapphire_document::{Document, DocumentSet, ObjectId, PropertyPath, write};
+use sapphire_document::{Document, DocumentSet, ObjectId, PropertyPath, Step, write};
 use sapphire_math::Vec3;
-use sapphire_zone::ZoneDocument;
+use sapphire_zone::{IdList, ZoneDocument};
 
-use super::{Editor, selection};
+use super::{Editor, Notice, selection};
 use crate::commands::Command;
 use crate::gizmo::{Axis, Gizmo, ViewCamera, along};
 use crate::viewport::ZoneShown;
@@ -36,10 +38,11 @@ pub(super) struct ZonePanel {
 }
 
 /// A drag of an arrow.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct GizmoDrag {
     zone: AssetId,
-    placement: usize,
+    /// The placement's path, by its ID.
+    placement: PropertyPath,
     axis: Axis,
     /// Where the placement was when it started.
     from: Vec3,
@@ -85,13 +88,14 @@ impl ZonePanel {
         if pointer.primary_pressed()
             && let Some(at) = pointer.press_origin().filter(|at| rect.contains(*at))
             && let Some(axis) = gizmo.pick(camera, rect, at)
-            && let Some(placement) = selected
+            && let Some(index) = selected
+            && let Ok(placement) = document.entry_path(&placements(), index)
             && let Some(pressed) = along(gizmo.origin, axis, camera.ray(at, rect))
         {
             asked.push(Command::Begin(MOVE_LABEL.to_owned()));
             self.drag = Some(GizmoDrag { zone, placement, axis, from: gizmo.origin, pressed, set: None });
         }
-        let Some(mut drag) = self.drag.filter(|drag| drag.zone == zone) else {
+        let Some(mut drag) = self.drag.clone().filter(|drag| drag.zone == zone) else {
             self.hot = pointer.hover_pos().and_then(|at| gizmo.pick(camera, rect, at));
             if self.hot.is_none() {
                 self.click_to_select(document, response, camera, rect, asked);
@@ -113,7 +117,7 @@ impl ZonePanel {
             // it sets the number again, as each frame of a held drag did before.
             if drag.set != Some(snapped) || !document.in_gesture() {
                 drag.set = Some(snapped);
-                self.drag = Some(drag);
+                self.drag = Some(drag.clone());
                 // An undo or a save while it's held ends its gesture, and the rest of it is one of its own.
                 if !document.in_gesture() && !asked.iter().any(|command| matches!(command, Command::Begin(_)))
                 {
@@ -121,7 +125,7 @@ impl ZonePanel {
                 }
                 // Refused or not, the drag goes on: the document's checks are the word on what it holds.
                 if let Ok(value) = write::canonical(&snapped, document.registry()) {
-                    let path = placement_at(drag.placement, drag.axis).to_string();
+                    let path = placement_at(&drag.placement, drag.axis).to_string();
                     asked.push(Command::SetProperty { path, value });
                 }
             }
@@ -147,14 +151,13 @@ impl ZonePanel {
         let nearest = value
             .placements
             .iter()
-            .enumerate()
-            .filter_map(|(index, placement)| {
+            .filter_map(|placement| {
                 let shown = camera.to_screen(Vec3::from(placement.at), rect)?;
-                Some((shown.distance(at), index))
+                Some((shown.distance(at), &placement.id))
             })
             .filter(|(distance, _)| *distance <= CLICK_REACH)
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        asked.push(Command::SelectPlacement(nearest.map(|(_, index)| index)));
+        asked.push(Command::SelectPlacement(nearest.map(|(_, id)| id.clone())));
     }
 
     /// The gizmo on placement `selected` of `document`, as `camera` sees it.
@@ -165,14 +168,19 @@ impl ZonePanel {
         camera: &ViewCamera,
     ) -> Option<Gizmo> {
         let placement = document.value()?.placements.get(selected?)?;
-        let hot = self.drag.map(|drag| drag.axis).or(self.hot);
+        let hot = self.drag.as_ref().map(|drag| drag.axis).or(self.hot);
         Some(Gizmo { hot, ..Gizmo::at(Vec3::from(placement.at), camera) })
     }
 }
 
+/// The path of a zone's placements.
+fn placements() -> PropertyPath {
+    PropertyPath::root().join(Step::Field("placements".to_owned()))
+}
+
 /// The path of one number of a placement's position.
-fn placement_at(placement: usize, axis: Axis) -> PropertyPath {
-    format!("placements[{placement}].at[{}]", axis.index()).parse().expect("a path that parses")
+fn placement_at(placement: &PropertyPath, axis: Axis) -> PropertyPath {
+    placement.join(Step::Field("at".to_owned())).join(Step::Index(axis.index()))
 }
 
 /// What the viewport shows of `current`, if it's a zone that's read, with the gizmo on placement `selected`.
@@ -209,14 +217,66 @@ impl Editor {
         }
     }
 
-    /// Selects placement `index` of the current zone alone, or nothing.
-    pub fn select_placement(&mut self, index: Option<usize>) {
-        self.selection = self
-            .current_zone()
-            .zip(index)
-            .map(|(document, index)| ObjectId { document, path: selection::placement_path(index) })
-            .into_iter()
-            .collect();
+    /// Selects the placement of the current zone called `id` alone, or nothing: refused if it has none.
+    pub fn select_placement(&mut self, id: Option<&str>) {
+        let Some(id) = id else {
+            self.selection.clear();
+            return;
+        };
+        let zone = self.current_zone();
+        let value = zone.and_then(|zone| self.documents.get::<ZoneDocument>(zone)).and_then(Document::value);
+        match (zone, value.and_then(|value| value.find_id(id))) {
+            (Some(document), Some((IdList::Placements, _))) => {
+                self.selection = vec![ObjectId { document, path: selection::placement_path(id) }];
+            }
+            _ => self.refuse(format!("the zone has no placement `{id}`")),
+        }
+    }
+
+    /// Writes the current zone at its document's newest version with the IDs it reads with, as one step, and saves
+    /// it: what [`Command::MigrateZone`] does ([`sapphire_document::zone::migrate`]). The selection stays, since
+    /// its IDs are the ones it had.
+    pub(super) fn migrate_zone(&mut self) {
+        let Some(id) = self.current_zone() else {
+            self.refuse("the current document isn't a zone");
+            return;
+        };
+        if !self.take_typed() {
+            return;
+        }
+        let text =
+            self.documents.get::<ZoneDocument>(id).map(|zone| zone.text().to_owned()).unwrap_or_default();
+        let migrated = match sapphire_document::zone::migrate(&text) {
+            Ok(Some(migrated)) => migrated,
+            Ok(None) => {
+                self.say(Notice {
+                    text: "the zone is at its newest version already".to_owned(),
+                    trouble: false,
+                });
+                return;
+            }
+            Err(error) => {
+                self.refuse(error.to_string());
+                return;
+            }
+        };
+        let document = self
+            .documents
+            .edit(id)
+            .and_then(|open| open.as_any_mut().downcast_mut::<Document<ZoneDocument>>());
+        let Some(document) = document else { return };
+        if let Err(refused) = document.rewrite("migrate the zone", migrated) {
+            self.refuse(refused.to_string());
+            return;
+        }
+        self.after_property_edit(Some(id), Ok(()));
+        match self.save() {
+            Ok(()) => self.say(Notice {
+                text: "migrated the zone to version 2 and saved it".to_owned(),
+                trouble: false,
+            }),
+            Err(text) => self.refuse(text),
+        }
     }
 
     /// The placement of the current zone selected last, which the gizmo is on.
@@ -225,11 +285,14 @@ impl Editor {
         self.selected_placements().pop()
     }
 
-    /// The placements of the current zone selected, in the order they were.
+    /// The placements of the current zone selected, by where they are in its list now, in the order they were.
     #[must_use]
     pub fn selected_placements(&self) -> Vec<usize> {
         let Some(zone) = self.current_zone() else { return Vec::new() };
-        self.selection.iter().filter_map(|object| selection::placement_of(object, zone)).collect()
+        let Some(value) = self.documents.get::<ZoneDocument>(zone).and_then(Document::value) else {
+            return Vec::new();
+        };
+        self.selection.iter().filter_map(|object| selection::placement_of(object, zone, value)).collect()
     }
 
     pub(super) fn zone_panel(&mut self, ui: &mut Ui) {
@@ -246,7 +309,7 @@ impl Editor {
             let name = source.as_deref().and_then(|path| path.file_name()).and_then(|name| name.to_str());
             name.map_or_else(|| prefab.to_string(), |name| name.trim_end_matches(".assembly.ron").to_owned())
         };
-        let rows: Vec<(String, [f32; 3])> = document
+        let rows: Vec<(String, String, [f32; 3])> = document
             .placements
             .iter()
             .map(|placement| {
@@ -254,7 +317,7 @@ impl Editor {
                 if placement.backdrop {
                     name.push_str(" (backdrop)");
                 }
-                (name, placement.at)
+                (placement.id.clone(), name, placement.at)
             })
             .collect();
         let split = document.has_split();
@@ -267,8 +330,8 @@ impl Editor {
         }
         let mut choose = None;
         egui::ScrollArea::vertical().id_salt("zone").auto_shrink([false, false]).show(ui, |ui| {
-            for (index, (name, at)) in rows.into_iter().enumerate() {
-                let text = format!("{index}  {name}  ({:.2}, {:.2}, {:.2})", at[0], at[1], at[2]);
+            for (index, (id, name, at)) in rows.into_iter().enumerate() {
+                let text = format!("{index}  {id}  {name}  ({:.2}, {:.2}, {:.2})", at[0], at[1], at[2]);
                 if ui.selectable_label(selected.contains(&index), text).clicked() {
                     // By the release's own modifiers, which a click has whatever the keys' state says by then.
                     let adding = ui.input(|input| {
@@ -277,13 +340,13 @@ impl Editor {
                                 if modifiers.command || modifiers.shift)
                         })
                     });
-                    choose = Some((index, adding));
+                    choose = Some((id, adding));
                 }
             }
         });
         match choose {
-            Some((index, true)) => self.toggle_placement(id, index),
-            Some((index, false)) => self.act(Command::SelectPlacement(Some(index))),
+            Some((placement, true)) => self.toggle_placement(id, &placement),
+            Some((placement, false)) => self.act(Command::SelectPlacement(Some(placement))),
             None => {}
         }
     }

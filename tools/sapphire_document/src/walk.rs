@@ -162,11 +162,13 @@ pub fn written_name<'n>(value: &dyn PartialReflect, name: &'n str) -> &'n str {
     name
 }
 
-/// An entry's name, if it has one: a struct with a `name` that's a string.
+/// What a path calls an entry, if it can: a struct's `id` that's a string, or else its `name` (a zone's
+/// placements have IDs, M6 T8a, and an atmosphere volume has both, its ID being what stays put when it's renamed).
 #[must_use]
 pub fn name_of(entry: &dyn PartialReflect) -> Option<&str> {
     let ReflectRef::Struct(fields) = through(entry).reflect_ref() else { return None };
-    fields.field("name")?.try_downcast_ref::<String>().map(String::as_str)
+    let text = |field: &str| fields.field(field)?.try_downcast_ref::<String>().map(String::as_str);
+    text("id").or_else(|| text("name"))
 }
 
 /// The place of the one entry called `key`. `None` if none is, or more than one.
@@ -267,6 +269,24 @@ pub fn positional(root: &dyn PartialReflect, path: &PropertyPath) -> Result<Prop
             _ => step.clone(),
         };
         steps = steps.join(plain);
+        at = next;
+    }
+    Ok(steps)
+}
+
+/// `path` with each entry of a list called by its own key where it has one no other entry shares
+/// ([`step_to_entry`]), as it is in `root` now: the other way from [`positional`]. What a selection holds, since
+/// it goes on meaning the same entry when one goes in or out before it.
+pub fn keyed(root: &dyn PartialReflect, path: &PropertyPath) -> Result<PropertyPath, NoSuchPath> {
+    let mut at = through(root);
+    let mut steps = path.prefix(0);
+    for (taken, step) in path.steps().iter().enumerate() {
+        let next = child(at, step).ok_or_else(|| no_such_path(path, taken))?;
+        let keyed = match (step, at.reflect_ref()) {
+            (Step::Index(place), ReflectRef::List(items)) => step_to_entry(items, *place),
+            _ => step.clone(),
+        };
+        steps = steps.join(keyed);
         at = next;
     }
     Ok(steps)

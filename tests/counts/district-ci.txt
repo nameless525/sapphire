@@ -4,8 +4,8 @@
 # Rewrite it with `cargo xtask counts --update` when a count moves on purpose, and say why in the change.
 #
 # preset: ci
-# sources: 0ca52523ae09431c (the generated benchmark, FNV-1a 64 over paths, lengths and bytes)
-# sources-mobile: 0431dd7135ce287c (the phones' benchmark, which the phone tiers' walks read, the same digest)
+# sources: a8ce866419a8a394 (the generated benchmark, FNV-1a 64 over paths, lengths and bytes)
+# sources-mobile: d329e35dee8a0ea4 (the phones' benchmark, which the phone tiers' walks read, the same digest)
 # walks: --bench 3720 --draw-every 7 --size 320x180 --zone district --zone-walk tour --compute-threads 3 --mount zone_proving_hub --ambient on --no-probe-grid --no-reflection-probes, at each tier's settings and cook
 # nature-walks: --bench 7980 --draw-every 7 --size 320x180 --zone nature --zone-walk walk --compute-threads 3, at each tier's settings and cook
 # reported in counts.txt, not held (the order cells arrive in is timing):

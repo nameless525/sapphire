@@ -39,9 +39,19 @@ impl Editor {
     pub fn run(&mut self, command: Command) -> Result<(), String> {
         debug_assert!(CommandRegistry.get(command.name()).is_some(), "{} is registered", command.name());
         let troubles = self.troubles;
+        if self.depth == 0 {
+            self.drawn_id = None;
+            // A merge from disk can put another entry where a selected one was: only an edit here re-keys.
+            if !matches!(command, Command::MineOnTop | Command::TakeFile) {
+                self.stand_selection();
+            }
+        }
         self.depth += 1;
         self.perform(&command);
         self.depth -= 1;
+        if self.depth == 0 {
+            self.standings.clear();
+        }
         if self.depth == 0 {
             // After each step, refused or not: a refusal can leave a gesture's middle behind it.
             self.journal_step();
@@ -53,6 +63,11 @@ impl Editor {
                 .map_or_else(|| "refused".to_owned(), |notice| notice.text.clone()));
         }
         if self.depth == 0 {
+            // An entry added with an ID drawn at random is kept with that ID, so a replay makes the same one.
+            let command = match (command, self.drawn_id.take()) {
+                (Command::AddEntry(path), Some(id)) => Command::AddEntryAs { path, id },
+                (command, _) => command,
+            };
             self.record(command);
         }
         Ok(())
@@ -190,6 +205,11 @@ impl Editor {
                 self.ask_property(path, |path| Asked::Pick(path, variant.clone()));
             }
             Command::AddEntry(path) => self.ask_property(path, Asked::Add),
+            Command::AddEntryAs { path, id } => {
+                self.entry_id = Some(id.clone());
+                self.ask_property(path, Asked::Add);
+                self.entry_id = None;
+            }
             Command::RemoveEntry(path) => self.ask_property(path, Asked::Remove),
             Command::SelectMove(name) => {
                 if !self.select_move(name) {
@@ -240,7 +260,8 @@ impl Editor {
             }
             Command::Bones(on) => self.overlays.bones = *on,
             Command::Hurtboxes(on) => self.overlays.hurtboxes = *on,
-            Command::SelectPlacement(index) => self.select_placement(*index),
+            Command::SelectPlacement(id) => self.select_placement(id.as_deref()),
+            Command::MigrateZone => self.migrate_zone(),
             Command::SelectObjects(picked) => self.select_objects(picked),
             Command::SetShared { path, value } => match path.parse::<PropertyPath>() {
                 Ok(path) => {

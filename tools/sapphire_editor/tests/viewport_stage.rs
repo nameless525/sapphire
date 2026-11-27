@@ -1255,6 +1255,7 @@ fn zone_harness(
 
 /// The cart the tests move, turned 30 degrees, and where the file has it.
 const CART: usize = 2;
+const CART_ID: &str = "placement-2";
 const CART_AT: &str = "at: (9.0, 0.0, 10.0)";
 
 /// Where on the screen the gizmo's arrow along `axis` is, `along` metres past where the selection stands: a point
@@ -1343,7 +1344,7 @@ fn a_drag_of_the_gizmo_moves_one_number() {
     let outside = view.stage().expect("stood").show.outside;
     assert!(outside.is_some(), "a zone's view is from outside");
 
-    harness.state_mut().select_placement(Some(CART));
+    harness.state_mut().select_placement(Some(CART_ID));
     settle(&mut harness, &mut view, &gpu, &painter);
     let selected = zone_as_shown(&mut harness);
     assert!(selected.1.is_some(), "the gizmo's on the cart");
@@ -1622,7 +1623,7 @@ fn a_drag_of_the_gizmo_held_through_a_save_goes_on_as_one_step() {
     let (mut harness, path) = zone_harness(&painter, "gizmo_save", (1200.0, 700.0), 1.0);
     let mut view = StageView::default();
     settle(&mut harness, &mut view, &gpu, &painter);
-    harness.state_mut().select_placement(Some(CART));
+    harness.state_mut().select_placement(Some(CART_ID));
     settle(&mut harness, &mut view, &gpu, &painter);
     let original = std::fs::read_to_string(&path).expect("the file");
 
@@ -1662,7 +1663,7 @@ fn what_the_zone_panel_costs() {
     let (mut harness, _) = zone_harness(&painter, "zone_costs", (1500.0, 960.0), 2.0);
     let mut view = StageView::default();
     settle(&mut harness, &mut view, &gpu, &painter);
-    harness.state_mut().select_placement(Some(CART));
+    harness.state_mut().select_placement(Some(CART_ID));
     settle(&mut harness, &mut view, &gpu, &painter);
     let frames = 300;
     let cart = sapphire_math::Vec3::new(9.0, 0.0, 10.0);

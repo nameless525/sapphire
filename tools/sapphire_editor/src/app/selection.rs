@@ -1,8 +1,10 @@
 //! The selection (M6 T2): objects by document and path, in as many documents as are open, and the fields they
 //! share, which the Properties pane edits all at once.
 //!
-//! An object is an [`ObjectId`]: a document, by the ID its sidecar gives it, and a path into it (`placements[2]`,
-//! or the root for the whole document). One edit of a shared field ([`Command::SetShared`]) sets it under each
+//! An object is an [`ObjectId`]: a document, by the ID its sidecar gives it, and a path into it, or the root for
+//! the whole document. A path names each entry of a list by its key where it has one (M6 T8a): a zone's placement
+//! by its ID (`placements["3fa91c07"]`), a spawner by its name, so what's selected stays selected when an edit, an
+//! undo or a merge from disk moves it in its list. A path picked by its place (`placements[2]`) is held by its key. One edit of a shared field ([`Command::SetShared`]) sets it under each
 //! object, as one step of undo however many documents it touches: a set step over each one's own
 //! ([`sapphire_document::SetStep`]). A zone's edits go through [`edit_with_colliders`], so a placement moved by
 //! one takes the colliders it names with it.
@@ -13,9 +15,9 @@
 use egui::{Color32, RichText, Ui};
 use sapphire_assets::AssetId;
 use sapphire_document::{
-    DocumentSet, ObjectId, PropertyKind, PropertyPath, edit_with_colliders, walk, write,
+    DocumentSet, ObjectId, PropertyKind, PropertyPath, Step, edit_with_colliders, walk, write,
 };
-use sapphire_zone::ZoneDocument;
+use sapphire_zone::{IdList, ZoneDocument};
 
 use super::{Editor, TypedAt};
 use crate::commands::{Command, Picked};
@@ -84,6 +86,24 @@ pub(super) fn shared_fields(documents: &DocumentSet, selection: &[ObjectId]) -> 
 }
 
 /// Whether `object` still reads in `documents`.
+/// Where a selected entry, named by its key, stood in its list when a command began: so one that renames it
+/// (sets its `id`, or its `name` where it has no `id`) or undoes a rename keeps it selected by its new key.
+#[derive(Clone, Debug)]
+pub(super) struct Standing {
+    object: ObjectId,
+    list: PropertyPath,
+    index: usize,
+    len: usize,
+}
+
+/// How many entries the list at `path` has.
+fn list_len(value: &dyn bevy_reflect::PartialReflect, path: &PropertyPath) -> Option<usize> {
+    match walk::get(value, path).ok()?.reflect_ref() {
+        bevy_reflect::ReflectRef::List(list) => Some(list.len()),
+        _ => None,
+    }
+}
+
 fn reads(documents: &DocumentSet, object: &ObjectId) -> bool {
     documents
         .any(object.document)
@@ -113,11 +133,16 @@ impl Editor {
                     return;
                 }
             };
-            let object = ObjectId { document, path };
-            if !reads(&self.documents, &object) {
+            let keyed = self
+                .documents
+                .any(document)
+                .and_then(|open| open.value_reflect())
+                .and_then(|value| walk::keyed(value, &path).ok());
+            let Some(path) = keyed else {
                 self.refuse(format!("{} has nothing at `{}`", picked.document.display(), picked.path));
                 return;
-            }
+            };
+            let object = ObjectId { document, path };
             if !selection.contains(&object) {
                 selection.push(object);
             }
@@ -148,7 +173,43 @@ impl Editor {
     /// Lets go of what's selected that no longer reads.
     pub(super) fn prune_selection(&mut self) {
         let documents = &self.documents;
+        for object in &mut self.selection {
+            if reads(documents, object) {
+                continue;
+            }
+            // Renamed in its place: the list as long as it was, and its entry there called something else.
+            let Some(standing) = self.standings.iter().find(|standing| standing.object == *object) else {
+                continue;
+            };
+            let Some(value) = documents.any(object.document).and_then(|document| document.value_reflect())
+            else {
+                continue;
+            };
+            if list_len(value, &standing.list) == Some(standing.len)
+                && let Ok(path) = walk::keyed(value, &standing.list.join(Step::Index(standing.index)))
+            {
+                object.path = path;
+            }
+        }
         self.selection.retain(|object| reads(documents, object));
+    }
+
+    /// Where each selected entry named by its key stands, before a command that may rename one.
+    pub(super) fn stand_selection(&mut self) {
+        let documents = &self.documents;
+        self.standings = (self.selection.iter())
+            .filter_map(|object| {
+                let (list, Step::Key(_)) = object.path.split_last()? else { return None };
+                let value = documents.any(object.document)?.value_reflect()?;
+                let Some(Step::Index(index)) =
+                    walk::positional(value, &object.path).ok()?.steps().last().cloned()
+                else {
+                    return None;
+                };
+                let len = list_len(value, &list)?;
+                Some(Standing { object: object.clone(), list, index, len })
+            })
+            .collect();
     }
 
     /// Sets `path` under every object selected to `literal`, as one step: what [`Command::SetShared`] does.
@@ -213,9 +274,10 @@ impl Editor {
         });
     }
 
-    /// Selects or lets go of placement `index` of the current zone beside what's selected: a Cmd or Shift click.
-    pub(super) fn toggle_placement(&mut self, zone: AssetId, index: usize) {
-        let object = ObjectId { document: zone, path: placement_path(index) };
+    /// Selects or lets go of the placement called `id` of the current zone beside what's selected: a Cmd or Shift
+    /// click.
+    pub(super) fn toggle_placement(&mut self, zone: AssetId, id: &str) {
+        let object = ObjectId { document: zone, path: placement_path(id) };
         let mut selection = self.selection.clone();
         match selection.iter().position(|selected| *selected == object) {
             Some(at) => {
@@ -228,16 +290,23 @@ impl Editor {
     }
 }
 
-/// The path of a zone's placement.
-pub(super) fn placement_path(index: usize) -> PropertyPath {
-    format!("placements[{index}]").parse().expect("a path that parses")
+/// The path of a zone's placement, by its ID.
+pub(super) fn placement_path(id: &str) -> PropertyPath {
+    PropertyPath::root().join(Step::Field("placements".to_owned())).join(Step::Key(id.to_owned()))
 }
 
-/// The placement a selected object is, in `zone`.
-pub(super) fn placement_of(object: &ObjectId, zone: AssetId) -> Option<usize> {
-    use sapphire_document::Step;
-    match (object.document == zone, object.path.steps()) {
-        (true, [Step::Field(list), Step::Index(index)]) if list == "placements" => Some(*index),
+/// Where in `value`, the zone `zone`, the placement a selected object is: by its ID, or by its place if it has
+/// none that's its own.
+pub(super) fn placement_of(object: &ObjectId, zone: AssetId, value: &ZoneDocument) -> Option<usize> {
+    if object.document != zone {
+        return None;
+    }
+    match object.path.steps() {
+        [Step::Field(list), Step::Key(id)] if list == "placements" => match value.find_id(id)? {
+            (IdList::Placements, index) => Some(index),
+            _ => None,
+        },
+        [Step::Field(list), Step::Index(index)] if list == "placements" => Some(*index),
         _ => None,
     }
 }

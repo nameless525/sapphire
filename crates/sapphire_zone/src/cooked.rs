@@ -2102,6 +2102,7 @@ mod tests {
     fn atmosphere_zone() -> Zone {
         let mut document = document();
         let volume = |name: &str, shape, look: &str, priority| AtmosphereVolume {
+            id: name.to_owned(),
             name: name.to_owned(),
             position: [4.0, 2.0, -12.0],
             shape,

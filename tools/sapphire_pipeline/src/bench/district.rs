@@ -446,9 +446,11 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
             .map(|(slot, name)| (name.clone(), set(palette[(rank + slot) % palette.len()])))
             .collect();
         Placement {
+            id: String::new(),
             prefab: asset_id(PART, &prefab_path(&prop.prefab)),
             at: [prop.at[0], 0.0, prop.at[1]],
             turn: prop.turn,
+            rotation: None,
             scale: [1.0; 3],
             materials: bound,
             backdrop: false,
@@ -469,9 +471,11 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
         .iter()
         .enumerate()
         .map(|(lot, at)| Instance {
+            id: String::new(),
             mesh: asset_id(PART, &building_path(assignment.variants[lot])),
             at: [at.middle[0], 0.0, at.middle[1]],
             turn: at.turn,
+            rotation: None,
             scale: [1.0; 3],
             backdrop: false,
             colliders: Vec::new(),
@@ -482,6 +486,7 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
         .lights
         .iter()
         .map(|at| Light {
+            id: String::new(),
             position: [at[0], light.height, at[1]],
             color: light.color,
             intensity: light.intensity,
@@ -536,7 +541,8 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
         weather_plan: None,
         foliage: None,
         volumes: Vec::new(),
-    };
+    }
+    .with_place_ids();
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
     sources.push(Source::asset(
         PROBES,

@@ -1,7 +1,8 @@
 //! Where a property is in a document: the second half of a change record's name for it.
 //!
 //! A path speaks of the value, not of the text: a field goes by its Rust name, whatever the file calls it,
-//! and an entry of a list with names goes by its name, so it stays itself when the list is reordered.
+//! and an entry of a list with names or IDs goes by its ID, or else its name, so it stays itself when the list is
+//! reordered or an entry goes in or out before it.
 //! [`crate::walk`] follows one through a value, and through the text beside it.
 
 use std::fmt;
@@ -16,7 +17,7 @@ pub enum Step {
     Field(String),
     /// A place in a list, an array or a tuple, or the field of a tuple variant.
     Index(usize),
-    /// The entry of a list whose `name` is this.
+    /// The entry of a list whose `id`, or else `name`, is this ([`crate::walk::name_of`]).
     Key(String),
     /// What an `Option` holds.
     Some,

@@ -9,8 +9,11 @@
 
 use egui::{Color32, RichText, Ui};
 use sapphire_assets::AssetId;
-use sapphire_document::write;
-use sapphire_document::{AnyDocument, PropertyKind, PropertyPath, Step, walk};
+use sapphire_document::{
+    AnyDocument, Document, DocumentSet, Outcome, PropertyKind, PropertyPath, Refused, Step, ZoneEditError,
+    edit_with_colliders, walk, write, zone,
+};
+use sapphire_zone::{IdList, ZoneDocument};
 
 use super::{Editor, Notice, Typed, TypedAt};
 use crate::commands::Command;
@@ -56,6 +59,30 @@ pub(super) enum Asked {
     Pick(PropertyPath, String),
     Add(PropertyPath),
     Remove(PropertyPath),
+}
+
+impl Asked {
+    /// What its step is called in the history.
+    const fn label(&self) -> &'static str {
+        match self {
+            Self::Toggle(_, true) => "turn on",
+            Self::Toggle(_, false) => "turn off",
+            Self::Pick(..) => "pick a variant",
+            Self::Add(_) => "add an entry",
+            Self::Remove(_) => "remove an entry",
+        }
+    }
+
+    /// Does it to `document`.
+    fn on(&self, document: &mut dyn AnyDocument) -> Result<Outcome, Refused> {
+        let label = self.label();
+        match self {
+            Self::Toggle(path, on) => document.pick_variant(label, path, if *on { "Some" } else { "None" }),
+            Self::Pick(path, name) => document.pick_variant(label, path, name),
+            Self::Add(path) => document.insert_blank(label, path),
+            Self::Remove(path) => document.remove_entry(label, path),
+        }
+    }
 }
 
 impl Editor {
@@ -209,16 +236,24 @@ impl Editor {
         if !self.take_typed() {
             return;
         }
+        if self.documents.get::<ZoneDocument>(id).is_some() {
+            let wanted = self.entry_id.clone();
+            let result = zone_asked(&mut self.documents, id, &asked, wanted.as_deref());
+            let result = result.map(|drawn| {
+                self.drawn_id = drawn.filter(|_| wanted.is_none());
+            });
+            self.after_property_edit(Some(id), result);
+            return;
+        }
+        if self.entry_id.is_some() {
+            self.after_property_edit(
+                Some(id),
+                Err("only a zone's list with IDs adds an entry by its ID".to_owned()),
+            );
+            return;
+        }
         let Some(document) = self.documents.edit(id) else { return };
-        let result = match &asked {
-            Asked::Toggle(path, on) => {
-                let (label, variant) = if *on { ("turn on", "Some") } else { ("turn off", "None") };
-                document.pick_variant(label, path, variant)
-            }
-            Asked::Pick(path, name) => document.pick_variant("pick a variant", path, name),
-            Asked::Add(path) => document.insert_blank("add an entry", path),
-            Asked::Remove(path) => document.remove_entry("remove an entry", path),
-        };
+        let result = asked.on(document);
         self.after_property_edit(Some(id), result.map(|_| ()).map_err(|error| error.to_string()));
     }
 
@@ -271,6 +306,44 @@ pub(super) fn number_kind(value: &dyn bevy_reflect::PartialReflect) -> Option<Nu
         // Wider integers and opaque numeric wrappers retain their exact text, including small values.
         _ => None,
     }
+}
+
+/// What a click asked of a zone, through [`edit_with_colliders`] as every zone edit goes: an entry added to a list
+/// with IDs takes one of its own ([`zone::add_entry`]), and a version 1 zone refuses what would shift its IDs.
+/// An edit `asked` of the zone `id`, through [`edit_with_colliders`]: an entry added to a list with IDs takes
+/// `wanted` as its ID, or draws one, which is returned.
+fn zone_asked(
+    documents: &mut DocumentSet,
+    id: AssetId,
+    asked: &Asked,
+    wanted: Option<&str>,
+) -> Result<Option<String>, String> {
+    let id_list = |path: &PropertyPath| match path.steps() {
+        [Step::Field(field)] => IdList::of_field(field),
+        _ => None,
+    };
+    let added = match asked {
+        Asked::Add(path) => id_list(path),
+        _ => None,
+    };
+    if wanted.is_some() && added.is_none() {
+        return Err("only a zone's list with IDs adds an entry by its ID".to_owned());
+    }
+    let mut given = None;
+    edit_with_colliders(documents, id, asked.label(), |document| {
+        let Some(list) = added else { return asked.on(document) };
+        let zone = document.as_any_mut().downcast_mut::<Document<ZoneDocument>>();
+        let zone = zone.ok_or_else(|| Refused::ReadOnly("it isn't a zone".to_owned()))?;
+        let (outcome, id) =
+            zone::add_entry(zone, asked.label(), list, wanted).map_err(|error| match error {
+                ZoneEditError::Refused(refused) => refused,
+                other => Refused::Document(other.to_string()),
+            })?;
+        given = Some(id);
+        Ok(outcome)
+    })
+    .map(|_| given)
+    .map_err(|error| error.to_string())
 }
 
 fn number_literal(value: f64, kind: NumberKind, decimals: usize, exponent: bool) -> String {

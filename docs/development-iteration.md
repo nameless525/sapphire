@@ -249,7 +249,7 @@ frame.
 ASTC textures can't load there; they are walked here and by `bench-scale device`). Every walk runs with three
 compute threads, so its animation jobs are the scene's, not the machine's. lavapipe on x86-64 can count a row
 differently from this table, which an M5's Metal takes (results identical across architectures are a non-goal:
-until M6 X4 the crowd's own cell on the tour's edge made most of them; one capsule bit at dusk is left), so CI
+until M6 X4 the crowd's own cell on the tour's edge made most of them, and since X4 none is left), so CI
 holds each walk to the table plus
 [`tests/counts/district-ci-vulkan-lavapipe.txt`](../tests/counts/district-ci-vulkan-lavapipe.txt): each
 difference with its reason. A change that moves a row the same on both needs only the table. When the CI job

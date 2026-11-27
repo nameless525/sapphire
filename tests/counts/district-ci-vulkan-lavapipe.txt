@@ -8,22 +8,11 @@
 # eye's x was a residue of -1.6e-6 on an M5 and not negative on x86-64, and the crowd took the focus's own cell by
 # `floor`, so the two machines stood different people. Since X4 the crowd reads a place to 1/256 m before taking
 # its cell and keeps its own cell until the focus is 2 m past an edge (sapphire_stage/src/scene/ambient.rs,
-# `CELL_READING` and `CELL_MARGIN`), so both stand the same people. With the reading alone, an M5's four desktop
-# walks counted the old table plus this file's old differences on every row of every walk but the one below.
+# `CELL_READING` and `CELL_MARGIN`), so both stand the same people, and CI's lane on lavapipe counts the table on
+# every row of all four walks: this file holds no difference.
 #
 # A change that moves a row the same on both machines is written in the table alone. Refresh this file from CI's
 # artifacts (each `scale-lane-<walk>` folder holds the run's counts.txt), walking nothing:
 #   sapphire_testkit counts --table tests/counts/district-ci.txt \
 #     --differences tests/counts/district-ci-vulkan-lavapipe.txt --refresh <folder>...
 # It keeps each line's reason, and writes a new difference under a placeholder that fails until it has one.
-
-# One capsule bit at dusk, with the same people standing: with the crowd's choice the same on both machines (the
-# M5 walked with the reading alone, and every other row matched lavapipe's), lavapipe set one capsule bit more
-# over each dusk walk than the M5. The shadow and occlusion capsules are binned from the posed crowd
-# (`capsule_bins`), and a posed joint is a last-bit function of the machine (A4's foot lock turns the legs), so a
-# capsule on a cluster's edge can fall either side of it; the night walks bin the same bits on both. Not traced
-# frame by frame. Predicted from the M5's walk with the reading alone, before the 2 m margin, which stands other
-# people on the tour's last leg, so the bit may move, go or spread: not yet counted on lavapipe with X4's held cell.
-# CI's lane decides, and this file is refreshed from its artifacts as above.
-desktop-high-dusk | capsule bits set | total +1
-desktop-low-dusk | capsule bits set | total +1

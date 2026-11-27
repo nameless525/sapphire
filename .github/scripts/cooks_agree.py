@@ -27,7 +27,7 @@ KINDS = {
     15: "font", 16: "font chains", 17: "navmesh", 18: "timeline", 19: "ui", 20: "encounter",
     21: "script", 22: "dialogue", 23: "enemy", 24: "score", 25: "voice lines", 26: "texture level",
     27: "reflection probes", 28: "playable", 29: "motion", 30: "ambient", 31: "mix", 32: "effects",
-    33: "effect sheet",
+    33: "effect sheet", 34: "foliage", 35: "scatter set",
 }
 TEXTURE, TEXTURE_LEVEL, EFFECT_SHEET = 2, 26, 33
 

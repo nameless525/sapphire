@@ -218,7 +218,9 @@ fn uploads_are_plain_cooked_data() {
                 | AssetKind::VoiceLines
                 | AssetKind::Mix
                 | AssetKind::Effects
-                | AssetKind::EffectSheet => {
+                | AssetKind::EffectSheet
+                | AssetKind::Foliage
+                | AssetKind::Scatter => {
                     unreachable!("music and voice never go to the uploader")
                 }
                 AssetKind::TextureLevel => unreachable!("these assets include no texture level"),

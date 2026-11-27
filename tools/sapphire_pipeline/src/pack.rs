@@ -229,7 +229,9 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Score
         | AssetKind::VoiceLines
         | AssetKind::Mix
-        | AssetKind::Effects => Codec::Lz4,
+        | AssetKind::Effects
+        | AssetKind::Foliage
+        | AssetKind::Scatter => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }

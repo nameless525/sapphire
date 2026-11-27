@@ -80,6 +80,8 @@ mod sealed {
     impl Sealed for sapphire_moves::Playable {}
     impl Sealed for crate::motion::Motion {}
     impl Sealed for sapphire_zone::Ambient {}
+    impl Sealed for sapphire_zone::Foliage {}
+    impl Sealed for sapphire_zone::ScatterSet {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for crate::score::Score {}
@@ -238,6 +240,28 @@ impl Asset for sapphire_zone::Ambient {
         // SAFETY: as for meshes: `Ambient::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<sapphire_zone::Ambient>(bytes) }
             .expect("the envelope was checked when the ambient characters were decoded")
+    }
+}
+
+impl Asset for sapphire_zone::Foliage {
+    const KIND: AssetKind = AssetKind::Foliage;
+    type View<'a> = &'a sapphire_zone::ArchivedFoliage;
+
+    unsafe fn view(bytes: &[u8]) -> &sapphire_zone::ArchivedFoliage {
+        // SAFETY: as for meshes: `Foliage::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<sapphire_zone::Foliage>(bytes) }
+            .expect("the envelope was checked when the foliage was decoded")
+    }
+}
+
+impl Asset for sapphire_zone::ScatterSet {
+    const KIND: AssetKind = AssetKind::Scatter;
+    type View<'a> = &'a sapphire_zone::ArchivedScatterSet;
+
+    unsafe fn view(bytes: &[u8]) -> &sapphire_zone::ArchivedScatterSet {
+        // SAFETY: as for meshes: `ScatterSet::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<sapphire_zone::ScatterSet>(bytes) }
+            .expect("the envelope was checked when the scatter set was decoded")
     }
 }
 

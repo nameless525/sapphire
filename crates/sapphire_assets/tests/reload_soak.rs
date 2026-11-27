@@ -141,7 +141,9 @@ impl Gpu {
             | AssetKind::VoiceLines
             | AssetKind::Mix
             | AssetKind::Effects
-            | AssetKind::EffectSheet => {
+            | AssetKind::EffectSheet
+            | AssetKind::Foliage
+            | AssetKind::Scatter => {
                 unreachable!("music and voice never go to the uploader")
             }
             AssetKind::TextureLevel => unreachable!("these textures stay whole"),
@@ -249,7 +251,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
         resident: [
             400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
             1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source.clone(), budgets);

@@ -15,7 +15,8 @@ use sapphire_serialize::cooked::AlignedVec;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable, StringsError};
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline, TimelineError};
 use sapphire_zone::{
-    AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, ZONE_EXTENSION, Zone, ZoneError,
+    AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, FOLIAGE_EXTENSION, Foliage,
+    SCATTER_EXTENSION, ScatterSet, ZONE_EXTENSION, Zone, ZoneError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -136,11 +137,20 @@ pub enum AssetKind {
     /// effects atlas. It depends on nothing. Its library's atlas is built from its bytes, so it is never
     /// uploaded by itself and keeps them.
     EffectSheet = 33,
+    /// A foliage document's kinds (`.sfoliage`, M6 G1a): [`Foliage`], what each kind of a zone's scatter sets
+    /// draws. Its meshes ship with it ([`Self::reach`]) and are the renderer's to load, so it depends on nothing.
+    /// CPU data, never uploaded.
+    Foliage = 34,
+    /// A cell's plants (`.sscatter`, M6 G1a): [`ScatterSet`], 16-byte instances by kind and chunk with their
+    /// stable IDs, a zone's sub-asset its presentation names. It names its kinds by their index in the zone's
+    /// foliage, so it depends on nothing. CPU data, never uploaded by the server: the renderer takes its
+    /// instances (G2a).
+    Scatter = 35,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 35] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -174,6 +184,8 @@ impl AssetKind {
         Self::Mix,
         Self::Effects,
         Self::EffectSheet,
+        Self::Foliage,
+        Self::Scatter,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -218,6 +230,8 @@ impl AssetKind {
             Self::Mix => MIX_EXTENSION,
             Self::Effects => EFFECTS_EXTENSION,
             Self::EffectSheet => SHEET_EXTENSION,
+            Self::Foliage => FOLIAGE_EXTENSION,
+            Self::Scatter => SCATTER_EXTENSION,
         }
     }
 
@@ -257,20 +271,24 @@ impl AssetKind {
             Self::Mix => "mix",
             Self::Effects => "effects library",
             Self::EffectSheet => "effect sheet",
+            Self::Foliage => "foliage",
+            Self::Scatter => "scatter set",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
     /// string table, a font, font chains, a navmesh, a timeline, a UI document, an encounter, a script, a
-    /// dialogue, an enemy, a score, voice lines, a playable kind, a character motion, a mix, an effects library or an
-    /// effect sheet is ready once it and its dependencies are decoded.
+    /// dialogue, an enemy, a score, voice lines, a playable kind, a character motion, a mix, an effects library, an
+    /// effect sheet, a foliage's kinds or a scatter set is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
             Self::Mix
                 | Self::Effects
                 | Self::EffectSheet
+                | Self::Foliage
+                | Self::Scatter
                 | Self::Rig
                 | Self::Skeleton
                 | Self::Clip
@@ -307,14 +325,16 @@ impl AssetKind {
     /// skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
     /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores, voice lines, playable
-    /// kinds, character motions, mixes and effects libraries are read on the CPU only, so they stay, and so does an
-    /// effect sheet, whose library's atlas is built from its bytes (M6 N4b).
+    /// kinds, character motions, mixes, effects libraries, foliages' kinds and scatter sets are read on the CPU
+    /// only, so they stay, and so does an effect sheet, whose library's atlas is built from its bytes (M6 N4b).
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
             Self::Mix
                 | Self::Effects
                 | Self::EffectSheet
+                | Self::Foliage
+                | Self::Scatter
                 | Self::Material
                 | Self::ProbeGrid
                 | Self::Rig
@@ -357,7 +377,7 @@ impl AssetKind {
     /// graphs on clips, zones on collider sets, navmeshes and encounters, font chains on fonts, enemies on
     /// move sets, effects libraries on sheets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
     /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts, dialogues, reflection
-    /// probes, playable kinds, character motions, ambient characters and sheets on nothing. A zone's meshes and probes and an enemy's or a playable kind's
+    /// probes, playable kinds, character motions, ambient characters, sheets, foliages and scatter sets on nothing. A zone's meshes and probes and an enemy's or a playable kind's
     /// look aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and
     /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -413,6 +433,8 @@ impl AssetKind {
             31 => Some(Self::Mix),
             32 => Some(Self::Effects),
             33 => Some(Self::EffectSheet),
+            34 => Some(Self::Foliage),
+            35 => Some(Self::Scatter),
             _ => None,
         }
     }
@@ -436,7 +458,7 @@ impl AssetKind {
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
     /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
     /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`,
-    /// `Ambient::read`, `Mix::read`, `Effects::read`, `EffectSheet::read`), and
+    /// `Ambient::read`, `Mix::read`, `Effects::read`, `EffectSheet::read`, `Foliage::read`, `ScatterSet::read`), and
     /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
@@ -575,6 +597,17 @@ impl AssetKind {
                 EffectSheet::read(bytes)?;
                 Vec::new()
             }
+            // Its kinds' meshes are the renderer's to load with the zone's scatter, so they are reach, not
+            // dependencies.
+            Self::Foliage => {
+                Foliage::read(bytes)?;
+                Vec::new()
+            }
+            // It names its kinds by their index in the zone's foliage.
+            Self::Scatter => {
+                ScatterSet::read(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -582,8 +615,8 @@ impl AssetKind {
     }
 
     /// [`Self::references`], and what an asset names without holding: a zone's cell and instance meshes
-    /// and its probe grid, an enemy's meshes and graph, a playable kind's meshes, rig, graph and motion, and a
-    /// zone's ambient characters' cast meshes and graph, which
+    /// and its probe grid, an enemy's meshes and graph, a playable kind's meshes, rig, graph and motion, a
+    /// zone's ambient characters' cast meshes and graph, and a foliage's kinds' meshes, which
     /// loading it doesn't load, so they aren't
     /// dependencies, but which must ship with it. This is what decides which pack an asset goes in.
     pub fn reach(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -596,6 +629,7 @@ impl AssetKind {
             }
             Self::Playable => reach.extend(Playable::from_cooked(bytes)?.named()),
             Self::Ambient => reach.extend(Ambient::read(bytes)?.named()),
+            Self::Foliage => reach.extend(Foliage::read(bytes)?.meshes()),
             _ => {}
         }
         reach.sort_unstable();

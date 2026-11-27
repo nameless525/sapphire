@@ -21,7 +21,10 @@
 //! mobile cook and the device's preset's district together in `content/<preset>/mobile/`, bundles the release
 //! `dev` sandbox with them, boots a device of its own (a private simulator, or the headless emulator), installs
 //! the bundle and has the testkit walk each unit through `launch` into `logs/`, beside this Mac's, then shuts the
-//! device down. The device's verdicts are by counts alone.
+//! device down. The device's verdicts are by counts alone. On the emulator (M6 X4) each launch waits for the last
+//! one's app to be gone, process and activity, and a launch that gets no surface within a minute is launched
+//! again, once, rather than sitting to its unit's deadline; and an emulator lock left in the AVD's folder by one
+//! that was killed is cleared once the process it names is gone (`platforms/android.rs`).
 //!
 //! It never takes a gate slot itself: run `prepare` and `--smoke` through `q`, timed sittings through
 //! `slot --all --load 8` on a quiet machine, and `device` inside the device slot.

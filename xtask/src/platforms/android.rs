@@ -31,6 +31,8 @@ use std::{env, thread};
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 
+use sapphire_time::Stopwatch;
+
 use super::{App, Bundle, BundleClaim, Options, PhoneContent, Platform, aab};
 use crate::version;
 use crate::workspace::{self, BuildProfile, CargoBuild};
@@ -51,6 +53,17 @@ const AVD: &str = "sapphire_api36";
 const BOOT_TIMEOUT_SECS: u32 = 300;
 /// How long an emulator that holds the AVD's lock gets to show up in `adb devices`.
 const REGISTER_TIMEOUT_SECS: u32 = 30;
+/// The lock files an emulator keeps in its AVD's folder while it runs, each naming its process. One killed
+/// before it could clean up leaves them (M5's device rows), and [`start_avd`] would wait on them for ever.
+const AVD_LOCKS: [&str; 2] = ["hardware-qemu.ini.lock", "snapshot.lock.lock"];
+/// How long a bench walk's launch has to give SDL a surface, so that it runs the app's main function, before
+/// it's launched again, once (M6 X4). A launch on the emulator gets one in a few seconds, under load in
+/// tens; one that got none sat to its unit's deadline, four times the walk's length and ten minutes more
+/// (1,156 s for a walk of about 140, M5's device rows). A minute is a tenth of the least deadline.
+const SURFACE_BOUND: Duration = Duration::from_secs(60);
+/// How long a stopped app has to be gone, process and activity, and how often that's asked.
+const GONE_TIMEOUT: Duration = Duration::from_secs(30);
+const GONE_POLL: Duration = Duration::from_millis(250);
 /// The launcher activity's template, in the Gradle project. It sits outside the source sets: xtask
 /// compiles only what it fills in.
 const ACTIVITY_TEMPLATE: &str = "app/src/main/AppActivity.java.in";
@@ -300,18 +313,33 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     let adb = Adb::connect(&sdk, program)?;
     workspace::run(adb.command().args(["install", "-r"]).arg(&apk.path))?;
     drop(apk); // The device has its own copy now.
-    start_and_follow(&adb, app, args)
+    start_and_follow(&adb, app, args, None)
 }
 
 /// Launches `app`, already installed on the booted device `serial`, with `args`, and streams its logcat
-/// until its main function returns, judged as [`run`] judges it (M5 Z2: `bench-scale device`'s walks).
+/// until its main function returns, judged as [`run`] judges it (M5 Z2: `bench-scale device`'s walks). The
+/// last launch's app is stopped and gone first, and a launch that gets no surface within [`SURFACE_BOUND`]
+/// is launched again, once (M6 X4).
 pub fn launch(serial: &str, app: &App, args: &[String]) -> anyhow::Result<()> {
     let adb = Adb { program: adb()?, serial: serial.to_owned() };
-    start_and_follow(&adb, app, args)
+    for again in [false, true] {
+        adb.stop(&app.bundle_id)?;
+        match start_and_follow(&adb, app, args, Some(SURFACE_BOUND)) {
+            Err(error) if !again && error.is::<NoSurface>() => eprintln!("{error}; launching it again, once"),
+            followed => return followed,
+        }
+    }
+    unreachable!("the second launch's result is returned")
 }
 
-/// Starts `app`'s activity with `args` and follows its logcat to the end ([`follow_logcat`]).
-fn start_and_follow(adb: &Adb, app: &App, args: &[String]) -> anyhow::Result<()> {
+/// Starts `app`'s activity with `args` and follows its logcat to the end ([`follow_logcat`]), giving it up
+/// with [`NoSurface`] if its main function hasn't started within `surface_bound`.
+fn start_and_follow(
+    adb: &Adb,
+    app: &App,
+    args: &[String],
+    surface_bound: Option<Duration>,
+) -> anyhow::Result<()> {
     let component = activity(app).component();
     let mut start = adb.command();
     start_args(&mut start, app, args);
@@ -329,7 +357,7 @@ fn start_and_follow(adb: &Adb, app: &App, args: &[String]) -> anyhow::Result<()>
         _ => bail!("{} runs as several processes ({})", app.bundle_id, pids.join(", ")),
     };
     eprintln!("streaming logcat for pid {pid}; Ctrl-C detaches and leaves the app running");
-    follow_logcat(adb, &app.bundle_id, pid)
+    follow_logcat(adb, &app.bundle_id, pid, surface_bound)
 }
 
 /// `am start`'s arguments for `app` with `args`. `-S` stops a running instance first: the activity is
@@ -400,6 +428,10 @@ impl Drop for Emulator {
     }
 }
 
+/// SDLActivity logs this as it calls `SDL_main`, which it does only once its surface is ready, the activity
+/// resumed and its window focused.
+const MAIN_STARTED: &str = "Running main function";
+
 /// SDLActivity logs this once `SDL_main` has returned, whatever it returned.
 const MAIN_FINISHED: &str = "Finished main function";
 
@@ -413,14 +445,15 @@ const MAIN_RETURNED: &str = "main returned status=";
 const CRASH_MARKERS: [&str; 2] = ["Fatal signal", "FATAL EXCEPTION"];
 
 /// Streams process `pid`'s logcat to stdout until the app's main function returns (the
-/// process itself lives on, cached), the process dies, logcat stops or the device drops
-/// (`logcat --pid` would outlive the first two), then judges the run by [`AppLog::outcome`].
-fn follow_logcat(adb: &Adb, package: &str, pid: &str) -> anyhow::Result<()> {
+/// process itself lives on, cached), the process dies, logcat stops, the device drops
+/// (`logcat --pid` would outlive the first two) or, given a `surface_bound`, the main function
+/// hasn't started within it, then judges the run by [`AppLog::outcome`].
+fn follow_logcat(adb: &Adb, package: &str, pid: &str, surface_bound: Option<Duration>) -> anyhow::Result<()> {
     follow_logcat_with_timing(
         adb,
         package,
         pid,
-        LogcatTiming { process_poll: Duration::from_secs(1), drain: Duration::from_secs(1) },
+        LogcatTiming { process_poll: Duration::from_secs(1), drain: Duration::from_secs(1), surface_bound },
     )
 }
 
@@ -429,7 +462,30 @@ fn follow_logcat(adb: &Adb, package: &str, pid: &str) -> anyhow::Result<()> {
 struct LogcatTiming {
     process_poll: Duration,
     drain: Duration,
+    /// How long the app's main function has to start, if there's a limit.
+    surface_bound: Option<Duration>,
 }
+
+/// What the logcat forwarder tells [`follow_logcat`] of.
+enum Seen {
+    /// SDL started the app's main function: it had a surface.
+    Started,
+    /// The app's main function returned.
+    Returned,
+}
+
+/// A launch whose activity got no surface within its bound, so SDL never ran the app's main function: what
+/// [`launch`] launches again.
+#[derive(Debug)]
+struct NoSurface(Duration);
+
+impl std::fmt::Display for NoSurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the app got no surface in {} s, so SDL never ran its main function", self.0.as_secs())
+    }
+}
+
+impl std::error::Error for NoSurface {}
 
 fn follow_logcat_with_timing(
     adb: &Adb,
@@ -442,31 +498,43 @@ fn follow_logcat_with_timing(
     eprintln!("$ adb -s {} logcat --pid={pid}", adb.serial);
     let mut logcat = command.spawn().context("failed to start adb logcat")?;
     let stdout = logcat.stdout.take().expect("stdout is piped");
-    let (finished, finished_rx) = mpsc::channel();
+    let (seen, seen_rx) = mpsc::channel();
     let forward = thread::spawn(move || -> std::io::Result<AppLog> {
         let mut log = AppLog::default();
         let mut out = std::io::stdout().lock();
         for line in BufReader::new(stdout).lines() {
             let line = line?;
             writeln!(out, "{line}")?;
+            let started = log.started;
+            // The receiver is gone only if the caller already stopped following.
             if log.observe(&line) {
-                // The receiver is gone only if the caller already stopped following.
-                let _ = finished.send(());
+                let _ = seen.send(Seen::Returned);
+            } else if log.started && !started {
+                let _ = seen.send(Seen::Started);
             }
         }
         Ok(log)
     });
 
+    let clock = Stopwatch::start();
+    let mut started = false;
     let stop = loop {
-        let stop = match finished_rx.recv_timeout(timing.process_poll) {
-            Ok(()) => break None,
+        let stop = match seen_rx.recv_timeout(timing.process_poll) {
+            Ok(Seen::Returned) => break None,
+            Ok(Seen::Started) => {
+                started = true;
+                continue;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => match adb.process(package, pid) {
                 Process::Running => Stop::LogcatEnded,
                 Process::Gone => Stop::ProcessGone,
                 Process::Unreachable(why) => Stop::DeviceLost(why),
             },
             Err(mpsc::RecvTimeoutError::Timeout) => match adb.process(package, pid) {
-                Process::Running => continue,
+                Process::Running => match timing.surface_bound {
+                    Some(bound) if !started && clock.elapsed() > bound => Stop::NoSurface(bound),
+                    _ => continue,
+                },
                 Process::Gone => Stop::ProcessGone,
                 Process::Unreachable(why) => Stop::DeviceLost(why),
             },
@@ -491,11 +559,15 @@ enum Stop {
     LogcatEnded,
     /// adb no longer reaches the device: what it said.
     DeviceLost(String),
+    /// The app's main function hadn't started within this bound.
+    NoSurface(Duration),
 }
 
 /// What the app's logcat showed.
 #[derive(Debug, Default)]
 struct AppLog {
+    /// SDLActivity logged [`MAIN_STARTED`].
+    started: bool,
     /// SDLActivity logged [`MAIN_FINISHED`].
     main_finished: bool,
     /// The status the app's main function returned, where the platform layer logged it
@@ -508,6 +580,10 @@ struct AppLog {
 impl AppLog {
     /// Takes in one logcat line; true when it says the app's main function returned.
     fn observe(&mut self, line: &str) -> bool {
+        if line.contains(MAIN_STARTED) {
+            self.started = true;
+            return false;
+        }
         if line.contains(MAIN_FINISHED) {
             self.main_finished = true;
             return true;
@@ -547,6 +623,7 @@ impl AppLog {
             (Stop::DeviceLost(why), _) => {
                 bail!("lost the device while the app ran ({why}); its outcome is unknown")
             }
+            (Stop::NoSurface(bound), _) => Err(NoSurface(bound).into()),
         }
     }
 }
@@ -976,11 +1053,49 @@ impl Adb {
         Err(if said.is_empty() { format!("`adb get-state` {}", output.status) } else { said.join("; ") })
     }
 
+    /// Stops `package` and waits until it's gone: no process of it left and no activity of it in the activity
+    /// manager's tasks, so a launch after it can't meet the last one's activity on its way out (M5's device
+    /// rows: a launch 1.5 s after a walk's main function returned got no surface).
+    fn stop(&self, package: &str) -> anyhow::Result<()> {
+        workspace::output(self.command().args(["shell", "am", "force-stop", package]))?;
+        let clock = Stopwatch::start();
+        loop {
+            let pids = self
+                .pids(package)
+                .map_err(|why| anyhow!("lost {} stopping {package}: {why}", self.serial))?;
+            let tasks =
+                workspace::output(self.command().args(["shell", "dumpsys", "activity", "activities"]))?;
+            if pids.is_empty() && !holds_activity(&tasks, package) {
+                return Ok(());
+            }
+            ensure!(
+                clock.elapsed() < GONE_TIMEOUT,
+                "{package} was still there {} s after `am force-stop` ({})",
+                GONE_TIMEOUT.as_secs(),
+                if pids.is_empty() { "an activity of it in the tasks" } else { "its process running" }
+            );
+            thread::sleep(GONE_POLL);
+        }
+    }
+
     fn boot_completed(&self) -> bool {
         let output =
             self.command().args(["shell", "getprop", "sys.boot_completed"]).stderr(Stdio::null()).output();
         output.is_ok_and(|output| output.status.success() && output.stdout.trim_ascii() == b"1")
     }
+}
+
+/// Whether `dumpsys activity activities` holds an activity of `package` in a task's history, such as
+/// `* Hist  #0: ActivityRecord{2b7c3d1 u0 dev.sapphire.sandbox/.SandboxActivity t15 f} isExiting}`, which a
+/// stopped app's activity stays on for a few seconds (5 s on the emulator, 2026-11-27). The records the
+/// window manager keeps of past orientation requests (`source=ActivityRecord{…}`) name activities long gone
+/// and don't count.
+fn holds_activity(tasks: &str, package: &str) -> bool {
+    let component = format!(" {package}/");
+    tasks.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("* Hist ") && line.contains("ActivityRecord{") && line.contains(&component)
+    })
 }
 
 /// One line of `adb devices`.
@@ -1013,6 +1128,7 @@ fn list_devices(adb_devices: &str) -> Vec<Device> {
 /// waited for: a second instance would fail on the lock. Also returns the process this
 /// call started, with its log, if any. `extra` are arguments the emulator takes besides `run`'s.
 fn start_avd(sdk: &Path, adb: &Path, extra: &[&str]) -> anyhow::Result<(String, Option<(Child, PathBuf)>)> {
+    clear_dead_locks(&avd_dir()?)?;
     if avd_dir()?.join("hardware-qemu.ini.lock").exists() {
         eprintln!("an emulator for {AVD} is already starting; waiting for it");
         for _ in 0..REGISTER_TIMEOUT_SECS {
@@ -1062,6 +1178,66 @@ fn start_avd(sdk: &Path, adb: &Path, extra: &[&str]) -> anyhow::Result<(String, 
         thread::sleep(Duration::from_secs(1));
     }
     bail!("the emulator did not reach adb in {REGISTER_TIMEOUT_SECS} s; see {}", log_path.display())
+}
+
+/// Deletes the [`AVD_LOCKS`] in the AVD's folder `dir` that name a process that's gone, saying so; keeps any
+/// whose process runs, or whose process it can't read. Nothing else in the folder is touched.
+fn clear_dead_locks(dir: &Path) -> anyhow::Result<()> {
+    clear_locks(dir, emulator_runs)
+}
+
+/// [`clear_dead_locks`], with `runs` telling whether a lock's process is an emulator that runs.
+fn clear_locks(dir: &Path, runs: impl Fn(u32) -> bool) -> anyhow::Result<()> {
+    for name in AVD_LOCKS {
+        let path = dir.join(name);
+        let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+        let Some(pid) = lock_pid(&path) else { continue };
+        if runs(pid) {
+            continue;
+        }
+        eprintln!("{} names process {pid}, which is no emulator now: deleting it", path.display());
+        let removed = if metadata.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        removed.with_context(|| format!("failed to delete {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The process an emulator's lock at `path` names: the emulator writes its ID as a symbolic link's target,
+/// in a file (as the emulator 37.2 on macOS does, with a NUL after it), or in a `pid` file in a folder, by
+/// version and host, so any of the three is read, its last digits taken.
+fn lock_pid(path: &Path) -> Option<u32> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    let text = if metadata.file_type().is_symlink() {
+        fs::read_link(path).ok()?.to_string_lossy().into_owned()
+    } else if metadata.is_dir() {
+        fs::read_to_string(path.join("pid")).ok()?
+    } else {
+        fs::read_to_string(path).ok()?
+    };
+    // The emulator's own writes the ID and a NUL.
+    let text = text.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+    let digits = text.trim_end_matches(|c: char| c.is_ascii_digit());
+    text[digits.len()..].parse().ok().filter(|&pid| pid > 0)
+}
+
+/// Whether process `pid` runs on this machine and is an emulator, by `ps`: a dead emulator's ID that another
+/// process took since doesn't keep its lock. True when that can't be told, so a lock is kept.
+fn emulator_runs(pid: u32) -> bool {
+    let listed =
+        Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).stderr(Stdio::null()).output();
+    match listed {
+        Ok(output) if !output.status.success() => false,
+        Ok(output) => names_an_emulator(&String::from_utf8_lossy(&output.stdout)),
+        Err(_) => true,
+    }
+}
+
+/// Whether `ps`'s command name `comm` is the emulator's, by its last part: `emulator`, or the `qemu-system-…`
+/// it runs. A name `ps` gave none of is taken as one, so its lock is kept.
+fn names_an_emulator(comm: &str) -> bool {
+    let comm = comm.trim();
+    let name = comm.rsplit('/').next().unwrap_or(comm);
+    name.is_empty() || name.starts_with("emulator") || name.starts_with("qemu-system")
 }
 
 /// The serial of an emulator in `adb devices`, booting or booted, that runs [`AVD`].
@@ -1305,7 +1481,8 @@ case "$1 $scenario" in
     "logcat killed") before_death 'I sapphire::sandbox: frame stats fps=30.0' ;;
     "logcat crashed") before_death 'F libc    : Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 4260 (SDLThread), pid 4242' ;;
     "logcat stopped") line 'I sapphire::sandbox: frame stats fps=30.0'; exit 0 ;;
-    "shell finished"|"shell stopped") echo 4242 ;;
+    "logcat surfaceless") line 'V SDLActivity: onResume()'; exec sleep 30 ;;
+    "shell finished"|"shell stopped"|"shell surfaceless") echo 4242 ;;
     "shell killed"|"shell crashed")
         : > "$0.probed"
         if [ -f "$0.ready" ]; then exit 1; else echo 4242; fi ;;
@@ -1343,13 +1520,18 @@ esac
 
     #[cfg(unix)]
     fn follow(scenario: &str) -> anyhow::Result<()> {
+        follow_within(scenario, None)
+    }
+
+    #[cfg(unix)]
+    fn follow_within(scenario: &str, surface_bound: Option<Duration>) -> anyhow::Result<()> {
         let turn = FakeAdb::turn();
         let fake = FakeAdb::new(&turn, scenario);
         let result = follow_logcat_with_timing(
             &fake.adb,
             "dev.sapphire.sandbox",
             "4242",
-            LogcatTiming { process_poll: Duration::from_millis(5), drain: Duration::ZERO },
+            LogcatTiming { process_poll: Duration::from_millis(5), drain: Duration::ZERO, surface_bound },
         );
         let dir = fake.dir.clone();
         assert!(fake.adb.program.is_file());
@@ -1392,6 +1574,93 @@ esac
         assert!(error.contains("without returning from its main function"), "{error}");
         let error = follow("crashed").unwrap_err().to_string();
         assert!(error.contains("crashed") && error.contains("Fatal signal 6"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launch_with_no_surface_is_given_up_at_its_bound() {
+        let error = follow_within("surfaceless", Some(Duration::from_millis(50))).unwrap_err();
+        assert!(error.is::<NoSurface>(), "{error}");
+        // A main function that started within its bound runs to its end.
+        follow_within("finished", Some(Duration::from_secs(20))).unwrap();
+    }
+
+    #[test]
+    fn a_stopped_apps_activity_is_read_from_the_tasks() {
+        let tasks = "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\n\
+                     Display #0 (activities from top to bottom):\n\
+                     \x20 * Task{8d1c2e7 #15 type=standard A=10213:dev.sapphire.sandbox}\n\
+                     \x20   * Hist  #0: ActivityRecord{2b7c3d1 u0 dev.sapphire.sandbox/.SandboxActivity t15 f} isExiting}\n\
+                     \x20 ResumedActivity: ActivityRecord{6a0f2b4 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t2}";
+        assert!(holds_activity(tasks, "dev.sapphire.sandbox"), "an activity on its way out is still there");
+        assert!(!holds_activity(tasks, "dev.sapphire.game"));
+        assert!(!holds_activity(tasks, "dev.sapphire"), "a package is matched whole");
+        // Gone from the tasks, an activity stays in the window manager's orientation history.
+        let gone = "Display #0 (activities from top to bottom):\n\
+                    \x20   * Hist  #0: ActivityRecord{99937605 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t2}\n\
+                    \x20       source=ActivityRecord{141010201 u0 dev.sapphire.sandbox/.SandboxActivity t47} SCREEN_ORIENTATION_USER_LANDSCAPE";
+        assert!(!holds_activity(gone, "dev.sapphire.sandbox"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_lock_whose_process_is_gone_is_cleared() {
+        let dir = env::temp_dir().join(format!("xtask-avd-locks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut gone = Command::new("true").spawn().unwrap();
+        let gone_pid = gone.id();
+        gone.wait().unwrap();
+        let alive = std::process::id();
+
+        // Each of the shapes an emulator writes, naming a process that's gone, is cleared.
+        for shape in ["link", "file", "folder"] {
+            let lock = dir.join(AVD_LOCKS[0]);
+            match shape {
+                "link" => std::os::unix::fs::symlink(gone_pid.to_string(), &lock).unwrap(),
+                "file" => fs::write(&lock, format!("{gone_pid}\0")).unwrap(),
+                _ => {
+                    fs::create_dir(&lock).unwrap();
+                    fs::write(lock.join("pid"), gone_pid.to_string()).unwrap();
+                }
+            }
+            assert_eq!(lock_pid(&lock), Some(gone_pid), "{shape}");
+            clear_dead_locks(&dir).unwrap();
+            assert!(
+                fs::symlink_metadata(&lock).is_err(),
+                "a {shape} naming a process that's gone is cleared"
+            );
+        }
+        // A lock whose ID another process took since, this test's own, is cleared too.
+        std::os::unix::fs::symlink(alive.to_string(), dir.join(AVD_LOCKS[0])).unwrap();
+        clear_dead_locks(&dir).unwrap();
+        assert!(fs::symlink_metadata(dir.join(AVD_LOCKS[0])).is_err(), "a reused ID's lock is cleared");
+        // A lock whose emulator runs, one naming none, and the folder's other files are kept.
+        std::os::unix::fs::symlink(alive.to_string(), dir.join(AVD_LOCKS[0])).unwrap();
+        fs::write(dir.join(AVD_LOCKS[1]), "").unwrap();
+        fs::write(dir.join("multiinstance.lock"), gone_pid.to_string()).unwrap();
+        clear_locks(&dir, |pid| pid == alive).unwrap();
+        for kept in [AVD_LOCKS[0], AVD_LOCKS[1], "multiinstance.lock"] {
+            assert!(fs::symlink_metadata(dir.join(kept)).is_ok(), "{kept} is kept");
+        }
+        assert_eq!(lock_pid(&dir.join(AVD_LOCKS[1])), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_the_emulators_process_names_hold_its_lock() {
+        let emulators = [
+            "qemu-system-aarch64",
+            "/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64\n",
+            "emulator",
+            "",
+        ];
+        for name in emulators {
+            assert!(names_an_emulator(name), "{name:?}");
+        }
+        for name in ["/usr/libexec/sharingd", "xtask-0123abcd", "zsh"] {
+            assert!(!names_an_emulator(name), "{name:?}");
+        }
     }
 
     #[cfg(unix)]

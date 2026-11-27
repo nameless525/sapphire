@@ -3,6 +3,9 @@
 //!
 //! This holds the plain numbers and their checks, so a cook and a running app refuse the same document.
 //! Running on them, and what's worked out from them once, is `sapphire_gameplay`'s `controller` module.
+//!
+//! It also names the controller's traversal modes ([`TraversalMode`], M6 A14), which the controller holds in
+//! the state checksum and a body's graph compares by name, so both sides share one list.
 
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use serde::{Deserialize, Serialize};
@@ -78,6 +81,76 @@ pub struct ControllerProfile {
     pub stance_radius: f32,
     /// The fastest slide down ground too steep to stand on, in m/s.
     pub max_slide_speed: f32,
+
+    // Traversal (M6 A14): what each mode and move reads once the rows that build them land (A15 the mantle
+    // and vault, A16 climbing, A17 gliding, A19 swimming). Nothing enters a mode yet, so these move nobody;
+    // they're the profile's, so a document tunes them as it tunes a run.
+    /// The lowest ledge a mantle takes, in metres above the feet. A ledge within [`Self::step_height`] is
+    /// stepped onto and never mantled, so A15 mantles from the higher of the two: neither number refuses the
+    /// other, since a document written before either existed holds its step height alone.
+    pub mantle_min_height: f32,
+    /// The highest ledge a mantle reaches, in metres above the feet.
+    pub mantle_max_height: f32,
+    /// The tallest obstacle a vault carries the character over at a run, in metres above the feet.
+    pub vault_max_height: f32,
+    /// Speed along a climbed face, in m/s.
+    pub climb_speed: f32,
+    /// How far from the capsule's surface a climbable face is found and held, in metres.
+    pub climb_reach: f32,
+    /// The least height above the ground a glide starts from, in metres.
+    pub glide_min_height: f32,
+    /// A glide's speed across, in m/s.
+    pub glide_speed: f32,
+    /// A glide's steady fall, in m/s. A17 sinks at the lower of this and [`Self::max_fall_speed`], so neither
+    /// number refuses the other: a document written before gliding existed holds its fall speed alone.
+    pub glide_sink_speed: f32,
+    /// How deep water swims, as a share of the capsule's height, within 0..1: under it the character
+    /// wades, and nobody stands with the water over their head.
+    pub swim_depth: f32,
+    /// Speed through water, in m/s.
+    pub swim_speed: f32,
+    /// How long, in seconds, a character climbs, glides or swims before it must rest. `None`, the default,
+    /// is no stamina at all: traversal never tires.
+    pub stamina: Option<f32>,
+}
+
+/// How a character is getting about besides its feet (spec §5.22, M6 A14): held beside the controller's
+/// ground mode, in the state checksum, and compared by name in a body's graph (`traversal == Climbing`).
+/// [`Self::code`] numbers it for both, so a mode's number never moves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum TraversalMode {
+    /// On its feet or in the air, as the ground mode says.
+    #[default]
+    None = 0,
+    /// On a face of `Group::Climbable` scenery (A16).
+    Climbing = 1,
+    /// Sinking steadily, from a fall above [`ControllerProfile::glide_min_height`] (A17).
+    Gliding = 2,
+    /// In water deeper than [`ControllerProfile::swim_depth`] of its height (A19).
+    Swimming = 3,
+}
+
+impl TraversalMode {
+    /// Every mode, in [`Self::code`]'s order.
+    pub const ALL: [Self; 4] = [Self::None, Self::Climbing, Self::Gliding, Self::Swimming];
+
+    /// Its number, as the checksum writes it and a compiled graph compares it.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Its name, as a graph's condition writes it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Climbing => "Climbing",
+            Self::Gliding => "Gliding",
+            Self::Swimming => "Swimming",
+        }
+    }
 }
 
 impl Default for ControllerProfile {
@@ -103,6 +176,17 @@ impl Default for ControllerProfile {
             ground_snap: 0.3,
             stance_radius: 0.15,
             max_slide_speed: 8.0,
+            mantle_min_height: 0.5,
+            mantle_max_height: 2.0,
+            vault_max_height: 1.0,
+            climb_speed: 1.5,
+            climb_reach: 0.4,
+            glide_min_height: 3.0,
+            glide_speed: 6.0,
+            glide_sink_speed: 2.0,
+            swim_depth: 0.75,
+            swim_speed: 2.5,
+            stamina: None,
         }
     }
 }
@@ -137,7 +221,7 @@ const fn limit(field: &'static str, min: f32, max: f32, unit: &'static str) -> M
 /// character can use. Tighter than [`ControllerProfile::check`], which is what the arithmetic needs: this
 /// is for a person typing, so `run_speed: 600` is a typo that's refused rather than a character at the far
 /// end of the map, and neither a speed nor a rate can leave a character that never gets anywhere.
-pub const MOVEMENT_LIMITS: [MovementLimit; 20] = [
+pub const MOVEMENT_LIMITS: [MovementLimit; 30] = [
     limit("height", 0.5, 3.0, "m"),
     limit("radius", 0.1, 1.0, "m"),
     limit("skin", 0.001, 0.05, "m"),
@@ -158,7 +242,20 @@ pub const MOVEMENT_LIMITS: [MovementLimit; 20] = [
     limit("ground_snap", 0.0, 1.0, "m"),
     limit("stance_radius", 0.0, 1.0, "m"),
     limit("max_slide_speed", 0.5, 50.0, "m/s"),
+    limit("mantle_min_height", 0.1, 3.0, "m"),
+    limit("mantle_max_height", 0.2, 4.0, "m"),
+    limit("vault_max_height", 0.1, 3.0, "m"),
+    limit("climb_speed", 0.1, 10.0, "m/s"),
+    limit("climb_reach", 0.05, 2.0, "m"),
+    limit("glide_min_height", 0.5, 100.0, "m"),
+    limit("glide_speed", 0.5, 30.0, "m/s"),
+    limit("glide_sink_speed", 0.1, 30.0, "m/s"),
+    limit("swim_depth", 0.1, 1.0, "of the capsule's height"),
+    limit("swim_speed", 0.1, 15.0, "m/s"),
 ];
+
+/// The longest [`ControllerProfile::stamina`] a document may hold, in seconds.
+pub const MAX_STAMINA: f32 = 600.0;
 
 impl ControllerProfile {
     /// Whether a controller can run on these numbers: what its arithmetic needs of them. A document may
@@ -214,6 +311,29 @@ impl ControllerProfile {
             "within the radius",
         )?;
         positive("max_slide_speed", self.max_slide_speed)?;
+        positive("mantle_min_height", self.mantle_min_height)?;
+        check(
+            "mantle_max_height",
+            self.mantle_max_height,
+            self.mantle_max_height > self.mantle_min_height,
+            "above the lowest mantle",
+        )?;
+        check(
+            "vault_max_height",
+            self.vault_max_height,
+            self.vault_max_height > 0.0 && self.vault_max_height <= self.mantle_max_height,
+            "above 0, up to the highest mantle",
+        )?;
+        positive("climb_speed", self.climb_speed)?;
+        positive("climb_reach", self.climb_reach)?;
+        positive("glide_min_height", self.glide_min_height)?;
+        positive("glide_speed", self.glide_speed)?;
+        positive("glide_sink_speed", self.glide_sink_speed)?;
+        check("swim_depth", self.swim_depth, self.swim_depth > 0.0 && self.swim_depth <= 1.0, "within 0..1")?;
+        positive("swim_speed", self.swim_speed)?;
+        if let Some(stamina) = self.stamina {
+            positive("stamina", stamina)?;
+        }
         Ok(())
     }
 
@@ -248,6 +368,26 @@ impl ControllerProfile {
             let stance = self.stance_radius;
             issues.push(format!("`stance_radius` is {stance}: it must be within the radius, {radius}"));
         }
+        let Self { mantle_min_height, mantle_max_height, vault_max_height, .. } = *self;
+        if mantle_max_height <= mantle_min_height {
+            issues.push(format!(
+                "`mantle_max_height` is {mantle_max_height}: it must be above `mantle_min_height`, \
+                 {mantle_min_height}"
+            ));
+        }
+        if vault_max_height > mantle_max_height {
+            issues.push(format!(
+                "`vault_max_height` is {vault_max_height}: it must be at most `mantle_max_height`, \
+                 {mantle_max_height}"
+            ));
+        }
+        if let Some(stamina) = self.stamina
+            && !(stamina > 0.0 && stamina <= MAX_STAMINA)
+        {
+            issues.push(format!(
+                "`stamina` is {stamina}: it must be above 0 and at most {MAX_STAMINA} seconds, or left out for none"
+            ));
+        }
         let (speed, gravity) = (self.jump_speed, self.gravity);
         let reach = speed * speed / (2.0 * gravity);
         if reach > MAX_JUMP_REACH {
@@ -266,7 +406,7 @@ impl ControllerProfile {
     }
 
     /// Every number, in [`MOVEMENT_LIMITS`]' order: destructured, so a new field can't be forgotten.
-    fn numbers(&self) -> [f32; 20] {
+    fn numbers(&self) -> [f32; 30] {
         let Self {
             height,
             radius,
@@ -288,6 +428,18 @@ impl ControllerProfile {
             ground_snap,
             stance_radius,
             max_slide_speed,
+            mantle_min_height,
+            mantle_max_height,
+            vault_max_height,
+            climb_speed,
+            climb_reach,
+            glide_min_height,
+            glide_speed,
+            glide_sink_speed,
+            swim_depth,
+            swim_speed,
+            // Optional, so `document_issues` holds it on its own.
+            stamina: _,
         } = *self;
         [
             height,
@@ -311,6 +463,16 @@ impl ControllerProfile {
             ground_snap,
             stance_radius,
             max_slide_speed,
+            mantle_min_height,
+            mantle_max_height,
+            vault_max_height,
+            climb_speed,
+            climb_reach,
+            glide_min_height,
+            glide_speed,
+            glide_sink_speed,
+            swim_depth,
+            swim_speed,
         ]
     }
 }
@@ -322,7 +484,7 @@ mod tests {
     /// Today's numbers with one of them changed, by its name in the limits.
     fn with(field: &str, value: f32) -> ControllerProfile {
         let mut profile = ControllerProfile::default();
-        let slots: [&mut f32; 19] = [
+        let slots: [&mut f32; 29] = [
             &mut profile.height,
             &mut profile.radius,
             &mut profile.skin,
@@ -342,6 +504,16 @@ mod tests {
             &mut profile.ground_snap,
             &mut profile.stance_radius,
             &mut profile.max_slide_speed,
+            &mut profile.mantle_min_height,
+            &mut profile.mantle_max_height,
+            &mut profile.vault_max_height,
+            &mut profile.climb_speed,
+            &mut profile.climb_reach,
+            &mut profile.glide_min_height,
+            &mut profile.glide_speed,
+            &mut profile.glide_sink_speed,
+            &mut profile.swim_depth,
+            &mut profile.swim_speed,
         ];
         let names = MOVEMENT_LIMITS.iter().map(|limit| limit.field).filter(|name| *name != "coyote_ticks");
         match names.zip(slots).find(|(name, _)| *name == field) {
@@ -422,10 +594,45 @@ mod tests {
             (ControllerProfile { run_speed: 1.0, walk_speed: 2.0, ..good }, "`run_speed`"),
             (ControllerProfile { walk_stick: 0.9, run_stick: 0.5, ..good }, "`run_stick`"),
             (ControllerProfile { stance_radius: 0.5, radius: 0.3, ..good }, "`stance_radius`"),
+            (
+                ControllerProfile { mantle_max_height: 0.5, vault_max_height: 0.5, ..good },
+                "`mantle_max_height`",
+            ),
+            (
+                ControllerProfile { vault_max_height: 2.5, mantle_max_height: 2.0, ..good },
+                "`vault_max_height`",
+            ),
         ] {
             let issues = profile.document_issues();
             assert!(issues.len() == 1 && issues[0].starts_with(field), "{field}: {issues:?}");
         }
+    }
+
+    /// Stamina is off unless a document names it, and then it's a time a person could mean.
+    #[test]
+    fn stamina_is_off_unless_named() {
+        let good = ControllerProfile::default();
+        assert_eq!(good.stamina, None);
+        for stamina in [1.0, 30.0, MAX_STAMINA] {
+            let named = ControllerProfile { stamina: Some(stamina), ..good };
+            assert_eq!(named.document_issues(), Vec::<String>::new(), "{stamina}");
+            assert_eq!(named.check(), Ok(()));
+        }
+        for stamina in [0.0, -1.0, MAX_STAMINA + 1.0, f32::NAN, f32::INFINITY] {
+            let issues = ControllerProfile { stamina: Some(stamina), ..good }.document_issues();
+            assert!(issues.len() == 1 && issues[0].starts_with("`stamina`"), "{stamina}: {issues:?}");
+        }
+        assert!(ControllerProfile { stamina: Some(0.0), ..good }.check().is_err());
+    }
+
+    /// A mode's number is what checksums and compiled graphs hold, so none ever moves, and `ALL` is in their
+    /// order.
+    #[test]
+    fn traversal_modes_keep_their_numbers() {
+        let codes = TraversalMode::ALL.map(TraversalMode::code);
+        assert_eq!(codes, [0, 1, 2, 3]);
+        assert_eq!(TraversalMode::ALL.map(TraversalMode::name), ["None", "Climbing", "Gliding", "Swimming"]);
+        assert_eq!(TraversalMode::default(), TraversalMode::None);
     }
 
     /// `2.2` for `22` is a jump that leaves the arena, so the limit reads the pair.

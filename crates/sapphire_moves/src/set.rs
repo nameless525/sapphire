@@ -993,8 +993,9 @@ pub struct MoveSet {
 impl Versioned for MoveSet {
     /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
     /// 4: M2 G6's brain. 5: M2 T2's movement. 6: M3 Q3b's cinematics. 7: M3 Q3c's energy and costs. 8: M3
-    /// P3's `apart` and `watch` on a brain. 9: M3 B3 moved the brain to an enemy's document.
-    const VERSION: u32 = 9;
+    /// P3's `apart` and `watch` on a brain. 9: M3 B3 moved the brain to an enemy's document. 10: M6 A14's
+    /// traversal numbers in a fighter's movement.
+    const VERSION: u32 = 10;
 }
 
 /// A move set that can't be built, read or written.

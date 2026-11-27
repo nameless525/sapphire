@@ -94,7 +94,7 @@ use sapphire_physics::{BodyId, PhysicsWorld};
 use sapphire_time::{SimDuration, Stopwatch};
 
 pub use profile::ResolvedProfile;
-pub use sapphire_moves::{ControllerProfile, ProfileError};
+pub use sapphire_moves::{ControllerProfile, ProfileError, TraversalMode};
 pub use step::step_controller;
 
 use crate::actions::{Buttons, Controls};
@@ -292,6 +292,10 @@ pub struct ControllerEvents {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControllerState {
     pub mode: GroundMode,
+    /// How it's getting about besides its feet (M6 A14). Held from tick to tick and in the checksum; nothing
+    /// enters a mode yet, so it stays [`TraversalMode::None`] until the rows that build them (A15 to A19), and
+    /// a teleport, like a spawn, starts it there.
+    pub traversal: TraversalMode,
     /// In m/s. Horizontal while grounded, whatever the slope: a tick lays it along the ground.
     pub velocity: Vec3,
     /// The surface under the character while grounded or sliding, and otherwise the last one.
@@ -311,6 +315,7 @@ impl Default for ControllerState {
     fn default() -> Self {
         Self {
             mode: GroundMode::default(),
+            traversal: TraversalMode::None,
             velocity: Vec3::ZERO,
             ground_normal: Vec3::Y,
             coyote: SimDuration::ZERO,
@@ -349,6 +354,7 @@ impl ControllerState {
     fn write_canonical(&self, hasher: &mut StateHasher) {
         let Self {
             mode,
+            traversal,
             velocity,
             ground_normal,
             coyote,
@@ -359,6 +365,8 @@ impl ControllerState {
             events,
         } = *self;
         hasher.u8(mode.code());
+        // Always written (`CHECKSUM_LAYOUT` 10): every run has one, and A14 re-recorded every replay for it.
+        hasher.u8(traversal.code());
         hasher.vec3(velocity);
         hasher.vec3(ground_normal);
         hasher.u64(coyote.as_subticks());

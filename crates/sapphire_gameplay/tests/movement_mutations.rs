@@ -298,7 +298,7 @@ fn random_movement(rng: &mut Pcg32) -> ControllerProfile {
     loop {
         let mut numbers = MOVEMENT_LIMITS.iter().map(|limit| (limit.min, limit.max));
         let mut next = || {
-            let (min, max) = numbers.next().expect("twenty numbers");
+            let (min, max) = numbers.next().expect("one for each limit");
             pick(rng, min, max)
         };
         let profile = ControllerProfile {
@@ -322,6 +322,17 @@ fn random_movement(rng: &mut Pcg32) -> ControllerProfile {
             ground_snap: next(),
             stance_radius: next(),
             max_slide_speed: next(),
+            mantle_min_height: next(),
+            mantle_max_height: next(),
+            vault_max_height: next(),
+            climb_speed: next(),
+            climb_reach: next(),
+            glide_min_height: next(),
+            glide_speed: next(),
+            glide_sink_speed: next(),
+            swim_depth: next(),
+            swim_speed: next(),
+            stamina: None,
         };
         if profile.document_issues().is_empty() {
             return profile;

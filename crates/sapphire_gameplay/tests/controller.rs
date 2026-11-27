@@ -1697,6 +1697,17 @@ fn a_profile_refuses_numbers_that_cant_work() {
         ("ground_snap", ControllerProfile { ground_snap: -0.1, ..good }),
         ("stance_radius", ControllerProfile { stance_radius: 0.5, ..good }),
         ("max_slide_speed", ControllerProfile { max_slide_speed: 0.0, ..good }),
+        ("mantle_min_height", ControllerProfile { mantle_min_height: 0.0, ..good }),
+        ("mantle_max_height", ControllerProfile { mantle_max_height: 0.4, ..good }),
+        ("vault_max_height", ControllerProfile { vault_max_height: 2.5, ..good }),
+        ("climb_speed", ControllerProfile { climb_speed: f32::NAN, ..good }),
+        ("climb_reach", ControllerProfile { climb_reach: 0.0, ..good }),
+        ("glide_min_height", ControllerProfile { glide_min_height: -1.0, ..good }),
+        ("glide_speed", ControllerProfile { glide_speed: 0.0, ..good }),
+        ("glide_sink_speed", ControllerProfile { glide_sink_speed: 0.0, ..good }),
+        ("swim_depth", ControllerProfile { swim_depth: 1.5, ..good }),
+        ("swim_speed", ControllerProfile { swim_speed: f32::INFINITY, ..good }),
+        ("stamina", ControllerProfile { stamina: Some(0.0), ..good }),
     ];
     for (field, profile) in bad {
         assert_eq!(ResolvedProfile::new(&profile).expect_err(field).field, field);
@@ -1712,8 +1723,25 @@ fn a_profile_reads_from_a_document() {
         ControllerProfile { run_speed: 7.5, coyote_ticks: 2, ..ControllerProfile::default() }
     );
     assert!(ron::from_str::<ControllerProfile>("(run_sped: 7.5)").is_err());
+    let tiring: ControllerProfile =
+        ron::from_str("(climb_speed: 2.0, stamina: Some(30.0))").expect("it reads");
+    assert_eq!(tiring.stamina, Some(30.0));
+    assert_eq!(ControllerProfile::default().stamina, None, "no stamina unless a document names it");
     let text = ron::to_string(&profile).expect("it writes");
     assert_eq!(ron::from_str::<ControllerProfile>(&text).expect("it reads back"), profile);
+}
+
+/// A document written before traversal (M6 A14) names none of its numbers, and the defaults they take never
+/// refuse what it does name: a slow fall under the default glide's sink, a step over the default mantle's
+/// least height.
+#[test]
+fn a_profile_from_before_traversal_still_reads() {
+    let old: ControllerProfile =
+        ron::from_str("(max_fall_speed: 1.5, step_height: 0.6, run_speed: 5.0)").expect("it reads");
+    assert!(old.max_fall_speed < old.glide_sink_speed && old.step_height > old.mantle_min_height);
+    assert_eq!(old.document_issues(), Vec::<String>::new());
+    assert_eq!(old.check(), Ok(()));
+    ResolvedProfile::new(&old).expect("it resolves");
 }
 
 /// The input's own guard: a stick past 1 counts as 1, and NaN as the middle.

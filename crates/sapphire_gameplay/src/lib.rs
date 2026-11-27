@@ -171,7 +171,7 @@ pub use checksum::StateHasher;
 pub use controller::{
     CharacterController, CharacterWorld, ControllerDrive, ControllerEvents, ControllerInput,
     ControllerProfile, ControllerState, GroundMode, MovementMode, PhysicsWorldError, ProfileError, ProfileId,
-    ResolvedProfile, actor_body, step_controller,
+    ResolvedProfile, TraversalMode, actor_body, step_controller,
 };
 pub use cues::{
     CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PARTY_DEFEATED, PARTY_SWAP, PERFECT_DODGE,

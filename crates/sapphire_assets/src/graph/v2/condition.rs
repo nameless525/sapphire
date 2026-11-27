@@ -235,7 +235,7 @@ fn compare(
             if !equality {
                 return refuse("compare it with `==` or `!=`");
             }
-            out.ops.push(ConditionOp::Mode { parameter: index, mode: *mode as u8 });
+            out.ops.push(ConditionOp::Mode { parameter: index, mode: mode.code() });
             if comparison == Comparison::NotEqual {
                 out.ops.push(ConditionOp::Not);
             }

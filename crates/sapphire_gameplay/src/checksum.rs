@@ -47,8 +47,9 @@ use crate::zone::ZoneShelf;
 /// either, and none of what's recorded before them has one, so they left this where it was. So with M3
 /// L2's scripts, which write nothing in a world with no [`ScriptWorld`], and Q2's flags, which write
 /// nothing until one is set. 9: M3 S3b, a brain's `on`, `encounter` and `mind` each written in full, with a
-/// presence byte for the encounter (Z3c).
-const CHECKSUM_LAYOUT: u32 = 9;
+/// presence byte for the encounter (Z3c). 10: M6 A14, a controller's traversal mode, written in every state,
+/// with every recorded replay re-recorded in the same change.
+const CHECKSUM_LAYOUT: u32 = 10;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.

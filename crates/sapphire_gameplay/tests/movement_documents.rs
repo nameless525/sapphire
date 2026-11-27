@@ -39,6 +39,17 @@ const TODAY: ControllerProfile = ControllerProfile {
     ground_snap: 0.3,
     stance_radius: 0.15,
     max_slide_speed: 8.0,
+    mantle_min_height: 0.5,
+    mantle_max_height: 2.0,
+    vault_max_height: 1.0,
+    climb_speed: 1.5,
+    climb_reach: 0.4,
+    glide_min_height: 3.0,
+    glide_speed: 6.0,
+    glide_sink_speed: 2.0,
+    swim_depth: 0.75,
+    swim_speed: 2.5,
+    stamina: None,
 };
 
 fn full_stick() -> Stick {
@@ -469,6 +480,12 @@ fn every_edit() -> Vec<(&'static str, f32, ControllerProfile)> {
                     profile.radius = profile.radius.max(value);
                     profile.height = profile.height.max(2.0 * value + 0.1);
                 }
+                "mantle_min_height" => profile.mantle_max_height = profile.mantle_max_height.max(value + 0.1),
+                "mantle_max_height" => {
+                    profile.mantle_min_height = profile.mantle_min_height.min(value - 0.05);
+                    profile.vault_max_height = profile.vault_max_height.min(value);
+                }
+                "vault_max_height" => profile.mantle_max_height = profile.mantle_max_height.max(value),
                 _ => {}
             }
             if limit.field != "gravity" {
@@ -506,6 +523,16 @@ fn set_number(profile: &mut ControllerProfile, field: &str, value: f32) {
         "ground_snap" => profile.ground_snap = value,
         "stance_radius" => profile.stance_radius = value,
         "max_slide_speed" => profile.max_slide_speed = value,
+        "mantle_min_height" => profile.mantle_min_height = value,
+        "mantle_max_height" => profile.mantle_max_height = value,
+        "vault_max_height" => profile.vault_max_height = value,
+        "climb_speed" => profile.climb_speed = value,
+        "climb_reach" => profile.climb_reach = value,
+        "glide_min_height" => profile.glide_min_height = value,
+        "glide_speed" => profile.glide_speed = value,
+        "glide_sink_speed" => profile.glide_sink_speed = value,
+        "swim_depth" => profile.swim_depth = value,
+        "swim_speed" => profile.swim_speed = value,
         other => panic!("no number called {other}"),
     }
 }

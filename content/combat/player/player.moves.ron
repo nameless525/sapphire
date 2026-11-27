@@ -99,6 +99,17 @@
                 height: 1.6,
                 radius: 0.3,
                 skin: 0.01,
+                // Traversal (M6 A14): read once the mantle, climbing, gliding and swimming land. No stamina.
+                mantle_min_height: 0.5,
+                mantle_max_height: 2.0,
+                vault_max_height: 1.0,
+                climb_speed: 1.5,
+                climb_reach: 0.4,
+                glide_min_height: 3.0,
+                glide_speed: 6.0,
+                glide_sink_speed: 2.0,
+                swim_depth: 0.75,
+                swim_speed: 2.5,
             ),
         ),
         moves: [

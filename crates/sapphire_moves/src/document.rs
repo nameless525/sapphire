@@ -1805,8 +1805,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 10,
-                current: 9
+                found: 11,
+                current: 10
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];

@@ -380,6 +380,7 @@ fn every_state_field_is_in_the_checksum() {
     type Flip = fn(&mut CharacterController);
     let rows: &[(&str, Flip)] = &[
         ("mode", |c| c.state.mode = GroundMode::Sliding),
+        ("traversal", |c| c.state.traversal = TraversalMode::Gliding),
         ("velocity.x", |c| c.state.velocity.x += 1e-5),
         ("velocity.y", |c| c.state.velocity.y += 1e-5),
         ("velocity.z", |c| c.state.velocity.z += 1e-5),
@@ -479,6 +480,18 @@ fn every_profile_field_is_in_its_hash() {
         ControllerProfile { ground_snap: good.ground_snap + 0.01, ..good },
         ControllerProfile { stance_radius: good.stance_radius + 0.01, ..good },
         ControllerProfile { max_slide_speed: good.max_slide_speed + 1.0, ..good },
+        ControllerProfile { mantle_min_height: good.mantle_min_height + 0.1, ..good },
+        ControllerProfile { mantle_max_height: good.mantle_max_height + 0.1, ..good },
+        ControllerProfile { vault_max_height: good.vault_max_height + 0.1, ..good },
+        ControllerProfile { climb_speed: good.climb_speed + 0.1, ..good },
+        ControllerProfile { climb_reach: good.climb_reach + 0.1, ..good },
+        ControllerProfile { glide_min_height: good.glide_min_height + 0.1, ..good },
+        ControllerProfile { glide_speed: good.glide_speed + 0.1, ..good },
+        ControllerProfile { glide_sink_speed: good.glide_sink_speed + 0.1, ..good },
+        ControllerProfile { swim_depth: good.swim_depth + 0.1, ..good },
+        ControllerProfile { swim_speed: good.swim_speed + 0.1, ..good },
+        ControllerProfile { stamina: Some(30.0), ..good },
+        ControllerProfile { stamina: Some(31.0), ..good },
     ];
     let hash = |profile: &ControllerProfile| {
         let mut sim = Simulation::new(SimConfig::default());
@@ -487,9 +500,39 @@ fn every_profile_field_is_in_its_hash() {
     };
     let base = hash(&good);
     assert_eq!(hash(&good), base);
+    let mut seen = vec![base];
     for (index, row) in rows.iter().enumerate() {
-        assert_ne!(hash(row), base, "row {index}");
+        let found = hash(row);
+        assert!(!seen.contains(&found), "row {index}");
+        seen.push(found);
     }
+}
+
+/// A character's traversal mode is held from tick to tick and in the checksum (M6 A14), each mode its own,
+/// and a teleport starts it over as a spawn does.
+#[test]
+fn the_traversal_mode_is_held_and_in_the_checksum() {
+    let checksum_in = |mode: TraversalMode| {
+        let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO, Vec3::new(3.0, 0.0, 0.0)]);
+        let target = entity(&sim, actors[1]);
+        sim.ecs_mut().world_mut().get_mut::<CharacterController>(target).unwrap().state.traversal = mode;
+        sim.step(&run_right(actors[0]));
+        let held = sim.world().get::<CharacterController>(target).unwrap().state.traversal;
+        assert_eq!(held, mode, "a step keeps it");
+        sim.checksum()
+    };
+    let checksums = TraversalMode::ALL.map(checksum_in);
+    for (index, checksum) in checksums.iter().enumerate() {
+        assert!(!checksums[..index].contains(checksum), "{:?}", TraversalMode::ALL[index]);
+    }
+
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let actor = entity(&sim, actors[0]);
+    sim.ecs_mut().world_mut().get_mut::<CharacterController>(actor).unwrap().state.traversal =
+        TraversalMode::Gliding;
+    sim.teleport(actors[0], crate::checkpoint::Place { position: Vec3::new(1.0, 0.0, 1.0), yaw: 0.0 })
+        .unwrap();
+    assert_eq!(sim.world().get::<CharacterController>(actor).unwrap().state.traversal, TraversalMode::None);
 }
 
 // --- The seam, and the actor's life ---
@@ -808,12 +851,12 @@ fn a_stick_is_world_space() {
 mod mesh_arena;
 
 /// arm64: an Apple M5. CI's macOS runners must agree.
-const CHECKSUM_AARCH64: u64 = 0x2392_9d77_538b_475c;
+const CHECKSUM_AARCH64: u64 = 0x48c7_0f04_b2d2_93ed;
 
 /// x86-64: Linux and Windows must both reach this one value. **Not pinned yet:** the first CI run fails,
 /// printing the value to put here. Linux and Windows failing with different values is what this exists
 /// to find: something on that path reaches a platform's C math library.
-const CHECKSUM_X86_64: Option<u64> = Some(0x2392_9d77_538b_475c);
+const CHECKSUM_X86_64: Option<u64> = Some(0x48c7_0f04_b2d2_93ed);
 
 const EXPECTED: Option<u64> = if cfg!(target_arch = "aarch64") {
     Some(CHECKSUM_AARCH64)

@@ -39,6 +39,17 @@ pub(super) fn write_canonical(profile: &ControllerProfile, hasher: &mut StateHas
         ground_snap,
         stance_radius,
         max_slide_speed,
+        mantle_min_height,
+        mantle_max_height,
+        vault_max_height,
+        climb_speed,
+        climb_reach,
+        glide_min_height,
+        glide_speed,
+        glide_sink_speed,
+        swim_depth,
+        swim_speed,
+        stamina,
     } = *profile;
     hasher.f32s(&[
         height,
@@ -58,6 +69,26 @@ pub(super) fn write_canonical(profile: &ControllerProfile, hasher: &mut StateHas
     ]);
     hasher.u32(coyote_ticks);
     hasher.f32s(&[slope_limit_degrees, step_height, ground_snap, stance_radius, max_slide_speed]);
+    // Traversal's (M6 A14), written whole, so a profile hashes the same however a document spelt it.
+    hasher.f32s(&[
+        mantle_min_height,
+        mantle_max_height,
+        vault_max_height,
+        climb_speed,
+        climb_reach,
+        glide_min_height,
+        glide_speed,
+        glide_sink_speed,
+        swim_depth,
+        swim_speed,
+    ]);
+    match stamina {
+        Some(seconds) => {
+            hasher.u8(1);
+            hasher.f32(seconds);
+        }
+        None => hasher.u8(0),
+    }
 }
 
 /// A checked [`ControllerProfile`], with what ticks read worked out once: the only form a controller

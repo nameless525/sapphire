@@ -90,6 +90,9 @@ pub use super::{Blink, EntrySample, GraphClip, GraphMask, MaskBone};
 use crate::AssetId;
 pub use compile::{CompileError, GraphIssue};
 pub use program::{GraphProgram, Target};
+/// The traversal modes a [`TraversalValue::Mode`] parameter compares against: the controller's own (spec
+/// §5.22), numbered as it numbers them.
+pub use sapphire_moves::TraversalMode;
 
 /// An animation graph document at version 2. See the [module docs](self).
 #[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -225,31 +228,6 @@ pub enum LocomotionValue {
 pub enum TraversalValue {
     /// One of [`TraversalMode`], compared by name: `mode == Climbing`.
     Mode,
-}
-
-/// The traversal modes a [`TraversalValue::Mode`] parameter compares against (spec §5.22), in the
-/// order the controller numbers them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TraversalMode {
-    None,
-    Climbing,
-    Gliding,
-    Swimming,
-}
-
-impl TraversalMode {
-    pub const ALL: [Self; 4] = [Self::None, Self::Climbing, Self::Gliding, Self::Swimming];
-
-    /// Its name in a condition.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::None => "None",
-            Self::Climbing => "Climbing",
-            Self::Gliding => "Gliding",
-            Self::Swimming => "Swimming",
-        }
-    }
 }
 
 /// What kind of value a parameter holds, which says how a condition may use it.

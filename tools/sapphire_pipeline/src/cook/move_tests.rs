@@ -415,7 +415,7 @@ fn a_set_with_a_clip_cooks_to_one_set_of_bytes() {
     assert_eq!(blake3::hash(&bytes).to_hex().as_str(), COOKED_SET);
 }
 
-const COOKED_SET: &str = "7c04f1b0e3d7f8f8f0c8825d0886ef117066583243de8f7bb3549dc144788ae1";
+const COOKED_SET: &str = "63caf06a0c1ad45c8f540505ad73f6b91effbc94ebdea02101207bc42b39462a";
 
 /// A hit path through a joint a rig constraint drives, in a real cook: the sample character's twist
 /// helper follows its hand, which a table couldn't.
@@ -580,7 +580,7 @@ fn an_fbx_bakes_a_table() {
     tree.try_cook(false).expect("a key-pose document on an FBX's rig bakes");
 }
 
-const COOKED_FBX_SET: &str = "c804100047bbdcc7b3e9469e8dac0693ba96e70b7d4809785ee1ed4223aab18c";
+const COOKED_FBX_SET: &str = "a665d87080e336d00ce68ca6e3a15a48afbac6ee5f1a352d79875f5bba6c5ee8";
 
 /// A table's root stands for a hand-keyed one in the document, over the clip's bones.
 #[test]

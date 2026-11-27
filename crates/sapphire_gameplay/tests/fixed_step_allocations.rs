@@ -14,9 +14,9 @@ use sapphire_gameplay::replay::{
     StepAllocated, add_melee_buttons, find_scenario, find_script, melee,
 };
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CharacterWorld, CombatSet, ControllerProfile,
-    Faction, HitQuery, HurtboxId, INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation,
-    TickActions, VolumeSweep, WarpTarget, remove_hurtboxes,
+    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CharacterController, CharacterWorld,
+    CombatSet, ControllerProfile, Faction, HitQuery, HurtboxId, INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep,
+    SimConfig, Simulation, TickActions, TraversalMode, VolumeSweep, WarpTarget, remove_hurtboxes,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample};
@@ -285,6 +285,43 @@ fn asking_where_the_water_is_does_not_allocate_from_the_first_tick() {
     assert!(wading.samples > 1200, "they waded: {}", wading.samples);
     // The arena's ground is bumped by up to 12 cm, under a pond at 0.6 m.
     assert!(wading.deepest > 0.4 && wading.deepest <= 0.6, "{}", wading.deepest);
+}
+
+/// Puts every character in a traversal mode, a different one each half second and each its own, before the
+/// controllers run: what the traversal rows' modes will be, held in the step (M6 A14).
+fn hold_modes(mut ticks: Local<'_, u32>, mut controllers: Query<'_, '_, &mut CharacterController>) {
+    *ticks += 1;
+    for (index, mut controller) in controllers.iter_mut().enumerate() {
+        let modes = TraversalMode::ALL;
+        controller.state.traversal = modes[(*ticks as usize / 30 + index) % modes.len()];
+    }
+}
+
+/// Characters walking the mesh arena with every traversal mode held in turn (M6 A14), each step's checksum
+/// taken with them: holding a mode and hashing it allocate nothing, from the first step.
+#[test]
+fn traversal_modes_in_the_step_do_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let (mut sim, actors) = characters(6);
+    sim.add_combat_system(CombatSet::Movement, hold_modes);
+    let ticks: Vec<TickActions> = (0..1200).map(|tick| mesh_arena::tick_actions(tick, &actors)).collect();
+    let mut held = [0_u32; 4];
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &ticks {
+            sim.step(actions);
+            let _ = sim.checksum();
+            for view in sim.actors() {
+                held[usize::from(view.controller.state.traversal.code())] += 1;
+            }
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "1200 steps allocated {} times", counts.allocations);
+    assert_eq!(sim.stats().allocations, 0, "and the stat agrees");
+    assert!(held.iter().all(|&count| count > 1000), "every mode was held: {held:?}");
 }
 
 /// `count` different characters on the mesh arena.

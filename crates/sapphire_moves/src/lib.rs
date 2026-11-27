@@ -17,7 +17,8 @@
 //! - [`PlayableDocument`] and [`Playable`], one playable kind (M5 C8): its set of moves and what draws
 //!   it, as an enemy's kind;
 //! - [`ControllerProfile`], how a fighter moves, as numbers, and what a document may hold of them
-//!   ([`MOVEMENT_LIMITS`]);
+//!   ([`MOVEMENT_LIMITS`]), with its traversal numbers, and the controller's traversal modes
+//!   ([`TraversalMode`], M6 A14);
 //! - [`BakedTables`], its cooked form and how to read it at any sub-tick;
 //! - how a track meets a clock ([`Stretch`], [`Span::live`], [`Span::sweep`]), as pure functions.
 //!
@@ -260,7 +261,10 @@ pub use enemy::{
     EnemyMind, EnemyPhase, EnemyPhaseDocument, HeldDocument, HeldLook, MAX_BRAINS, MAX_ENEMY_PHASES,
     NamedBrain, PER_MILLE, QUARTERS, phase_of,
 };
-pub use movement::{ControllerProfile, MAX_JUMP_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError};
+pub use movement::{
+    ControllerProfile, MAX_JUMP_REACH, MAX_STAMINA, MOVEMENT_LIMITS, MovementLimit, ProfileError,
+    TraversalMode,
+};
 pub use playable::{
     ArchivedPlayable, HeldWeapon, HeldWeaponDocument, NAME_PREFIX, PLAYABLE_EXTENSION, Playable,
     PlayableDocument, PlayableError, PlayableLookDocument, RIG_SUB_ASSET, RestExpression, RestPose,

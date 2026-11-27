@@ -1160,10 +1160,12 @@ impl Scene {
     }
 
     /// Puts the zone stage's walk back at its rail's start, for a bench to walk the same tour again; the next
-    /// step moves the character and the camera there. Nothing without a walk.
+    /// step moves the character and the camera there, and the crowd forgets the cell it held, so the walk
+    /// stands whom it stood the first time (M6 X4). Nothing without a walk.
     pub fn restart_zone_walk(&mut self) {
         if let Some(walk) = &mut self.zone_walk {
             (walk.leg, walk.along) = (0, 0.0);
+            self.ambient.forget_own_cell();
         }
     }
 

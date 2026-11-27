@@ -10,9 +10,14 @@
 //! - **Who's there.** Each person belongs to the cell of the zone's grid their post stands in, or the middle
 //!   of their walk lies in. On every frame the cells within the tier's reach of the focus the zone streams
 //!   from are in ([`AmbientCap`]), and of their people the tier's count are drawn: by the ring of cells they're
-//!   in round the focus's own, then by a rank the crowd's seed gives each person. Nothing is remembered from
-//!   one frame to the next, so the same focus at the same tick draws the same people, whatever frames came
-//!   before, at any frame rate; and who comes and goes does so with their cell.
+//!   in round the focus's own, then by a rank the crowd's seed gives each person. A place is read to a few
+//!   millimetres before its cell is taken ([`CELL_READING`]), so a camera on a cell's edge, whose place is
+//!   the edge give or take a last bit that differs by machine, stands the same people everywhere (M6 X4: the
+//!   benchmark's tour walks x = 0). The focus's own cell is all that's remembered from one frame to the next:
+//!   it's kept until the focus goes [`CELL_MARGIN`] past its edge, so a focus hovering on an edge doesn't
+//!   choose again at every crossing; a walk started again, or a held focus that comes, moves or goes, forgets
+//!   it. So the same path draws the same people at any frame rate, but for one that goes past the margin
+//!   and back between two frames, and who comes and goes does so with their cell.
 //! - **Nothing the simulation reads.** A person is an entity with a mesh, a transform, a pose, a figure and
 //!   a light rig, as a fighter is to the renderer, and an [`AmbientPerson`]: no actor, collider, nav agent or
 //!   draw from the simulation's random numbers. The renderer gives them a crowd's shadows
@@ -72,6 +77,17 @@ const TURN_REACH: f32 = 0.6;
 const STEP_ASIDE: f32 = 0.8;
 const ASIDE_NEAR: f32 = 1.0;
 const ASIDE_FAR: f32 = 2.5;
+
+/// How finely the crowd reads a place before taking its cell: to 1/256 m. A place within half that of a cell's
+/// edge is on the edge, in the cell past it as `floor` would have it, whatever the sign of the last bits its
+/// arithmetic left (M6 X4: the tour's eye on x = 0 read -1.6e-6 on an M5 and +0 on x86-64, and the two stood
+/// different people). Any reading has edges of its own; these sit half a step off the cells', where no
+/// camera keeps.
+const CELL_READING: f32 = 256.0;
+
+/// How far past an edge of its own cell the focus goes before the crowd takes the cell it's in as its own, as
+/// a share of a cell's side: 2 m on a zone's 32 m grid.
+const CELL_MARGIN: f32 = 1.0 / 16.0;
 
 /// How many people a tier draws, and how far out from the focus their cells may lie (see the [module
 /// docs](self)).
@@ -509,11 +525,70 @@ fn fraction(pick: u64) -> f64 {
     (pick >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// A place along one of the grid's axes, read to [`CELL_READING`].
+fn read(at: f32) -> f32 {
+    (at * CELL_READING).round() / CELL_READING
+}
+
+/// The cell of a grid of `cell_size` cells a place along one of its axes lies in, once [`read`].
+fn cell_of(at: f32, cell_size: f32) -> i32 {
+    (read(at) / cell_size).floor() as i32
+}
+
+/// The focus's own cell along one of the grid's axes, at `at` once read: `held`, the last frame's, while the
+/// focus is within [`CELL_MARGIN`] of it, else the cell it's in.
+fn own_cell(held: Option<i32>, at: f32, cell_size: f32) -> i32 {
+    let margin = cell_size * CELL_MARGIN;
+    match held {
+        Some(cell)
+            if (cell as f32 * cell_size - margin..=(cell + 1) as f32 * cell_size + margin).contains(&at) =>
+        {
+            cell
+        }
+        _ => cell_of(at, cell_size),
+    }
+}
+
+/// Who stands for a focus, `focus` once read, whose own cell is `own`: into `chosen`, by index and in order,
+/// the tier's count of `people` whose cells come within the cap's reach of the focus, by the ring of cells
+/// they're in round `own`, then by rank. `candidates` is room to work in.
+fn choose(
+    people: &[Person],
+    cell_size: f32,
+    cap: AmbientCap,
+    focus: Vec3,
+    own: [i32; 2],
+    candidates: &mut Vec<(i32, u64, u32)>,
+    chosen: &mut Vec<u32>,
+) {
+    candidates.clear();
+    for (index, person) in people.iter().enumerate() {
+        let near = |cell: i32, at: f32| {
+            let least = cell as f32 * cell_size;
+            (least - at).max(at - (least + cell_size)).max(0.0)
+        };
+        let (dx, dz) = (near(person.cell[0], focus.x), near(person.cell[1], focus.z));
+        if dx * dx + dz * dz > cap.reach * cap.reach {
+            continue;
+        }
+        let ring = (person.cell[0] - own[0]).abs().max((person.cell[1] - own[1]).abs());
+        candidates.push((ring, person.rank, index as u32));
+    }
+    let count = usize::from(cap.count);
+    if candidates.len() > count {
+        candidates.select_nth_unstable(count);
+        candidates.truncate(count);
+    }
+    chosen.clear();
+    chosen.extend(candidates.iter().map(|&(_, _, index)| index));
+    chosen.sort_unstable();
+}
+
 /// The zone's people, from its section, on its grid's `cell_size`.
 fn people_of(section: &ArchivedAmbient, cast: &Cast, cell_size: f32) -> Vec<Person> {
     let seed = section.seed.to_native();
     let members = cast.members.len().max(1) as u64;
-    let cell = |at: Vec3| [(at.x / cell_size).floor() as i32, (at.z / cell_size).floor() as i32];
+    let cell = |at: Vec3| [cell_of(at.x, cell_size), cell_of(at.z, cell_size)];
     let member = |who: u16, index: u64| {
         if who == sapphire_zone::ambient::ANYONE { (pick(seed, index, 1) % members) as u16 } else { who }
     };
@@ -607,6 +682,10 @@ pub(super) struct Crowd {
     /// Those standing, by index, with their entities, and the list the next frame's are made in.
     shown: Vec<(u32, Entity)>,
     kept: Vec<(u32, Entity)>,
+    /// The focus's own cell, which the next frame keeps within [`CELL_MARGIN`] of it, and the zone's held
+    /// focus it was taken under.
+    own: Option<[i32; 2]>,
+    own_held: Option<[f32; 3]>,
     /// This frame's choice, by index: kept from frame to frame.
     chosen: Vec<u32>,
     candidates: Vec<(i32, u64, u32)>,
@@ -633,6 +712,8 @@ impl Default for Crowd {
             people: Vec::new(),
             shown: Vec::new(),
             kept: Vec::new(),
+            own: None,
+            own_held: None,
             chosen: Vec::new(),
             candidates: Vec::new(),
             places: Vec::new(),
@@ -652,6 +733,28 @@ impl Crowd {
         self.anim
     }
 
+    /// Forgets the focus's own cell, so the next frame takes the one its focus is in: for a walk that starts
+    /// again, whose first frame then stands whom it stood the first time, wherever the last walk ended.
+    pub(super) fn forget_own_cell(&mut self) {
+        (self.own, self.own_held) = (None, None);
+    }
+
+    /// The focus's own cell this frame, by axis: the last frame's while `focus` is within [`CELL_MARGIN`]
+    /// past its edges ([`own_cell`]), unless the zone's held focus `held` came, went or moved since, which
+    /// chooses afresh as a walk started again does.
+    fn own_cell_at(&mut self, held: Option<[f32; 3]>, focus: Vec3) -> [i32; 2] {
+        if self.own_held != held {
+            self.forget_own_cell();
+            self.own_held = held;
+        }
+        let own = [
+            own_cell(self.own.map(|own| own[0]), focus.x, self.cell_size),
+            own_cell(self.own.map(|own| own[1]), focus.z, self.cell_size),
+        ];
+        self.own = Some(own);
+        own
+    }
+
     /// Takes everyone away and lets go of what they're made of.
     fn clear(&mut self, world: &mut World) {
         for (_, entity) in self.shown.drain(..) {
@@ -659,6 +762,7 @@ impl Crowd {
         }
         self.load = Load::None;
         self.people.clear();
+        self.forget_own_cell();
         self.stats = AmbientStats::default();
         self.anim = AnimStats::default();
     }
@@ -824,7 +928,7 @@ impl Scene {
     }
 
     /// Who stands this frame, and standing them: the cells in reach of the focus, the tier's count of their
-    /// people, by ring and rank (the [module docs](self)). Allocates nothing once its lists have held a crowd,
+    /// people, by ring round its own cell and rank (the [module docs](self)). Allocates nothing once its lists have held a crowd,
     /// but for the people it stands.
     fn choose_ambient(&mut self) {
         let stopwatch = Stopwatch::start();
@@ -836,29 +940,10 @@ impl Scene {
         let eye = self.ecs.world().resource::<crate::orbit::OrbitCamera>().eye();
         let focus = zone.held_focus.map_or(eye + zone.stand, Vec3::from);
         let to_world = Mat4::from_translation(-zone.stand);
+        let focus = Vec3::new(read(focus.x), focus.y, read(focus.z));
+        let own = crowd.own_cell_at(zone.held_focus, focus);
         let cell_size = crowd.cell_size;
-        let own = [(focus.x / cell_size).floor() as i32, (focus.z / cell_size).floor() as i32];
-        crowd.candidates.clear();
-        for (index, person) in crowd.people.iter().enumerate() {
-            let near = |cell: i32, at: f32| {
-                let least = cell as f32 * cell_size;
-                (least - at).max(at - (least + cell_size)).max(0.0)
-            };
-            let (dx, dz) = (near(person.cell[0], focus.x), near(person.cell[1], focus.z));
-            if dx * dx + dz * dz > crowd.cap.reach * crowd.cap.reach {
-                continue;
-            }
-            let ring = (person.cell[0] - own[0]).abs().max((person.cell[1] - own[1]).abs());
-            crowd.candidates.push((ring, person.rank, index as u32));
-        }
-        let count = usize::from(crowd.cap.count);
-        if crowd.candidates.len() > count {
-            crowd.candidates.select_nth_unstable(count);
-            crowd.candidates.truncate(count);
-        }
-        crowd.chosen.clear();
-        crowd.chosen.extend(crowd.candidates.iter().map(|&(_, _, index)| index));
-        crowd.chosen.sort_unstable();
+        choose(&crowd.people, cell_size, crowd.cap, focus, own, &mut crowd.candidates, &mut crowd.chosen);
         crowd.follow_choice(self.ecs.world_mut(), to_world);
         crowd.stats.spawned = crowd.shown.len() as u32;
         crowd.stats.activation = stopwatch.elapsed();
@@ -1128,6 +1213,111 @@ mod tests {
         }
         let none = Gestures { moves: Vec::new(), every: [60.0, 120.0] };
         assert_eq!(gesture_at(&none, 7, 3, 100.0), None);
+    }
+
+    /// Four people a cell of 32 m, standing at its middle, over cells -3 to 2 each way.
+    fn a_grid_of_people() -> Vec<Person> {
+        let mut people = Vec::new();
+        for x in -3..3 {
+            for z in -3..3 {
+                for _ in 0..4 {
+                    let at = Vec3::new((x as f32 + 0.5) * 32.0, 0.0, (z as f32 + 0.5) * 32.0);
+                    people.push(Person {
+                        member: 0,
+                        rank: pick(7, people.len() as u64, 0),
+                        cell: [cell_of(at.x, 32.0), cell_of(at.z, 32.0)],
+                        clock: 0.0,
+                        what: What::Post { at, yaw: 0.0, post: 0 },
+                    });
+                }
+            }
+        }
+        people
+    }
+
+    /// Who a crowd of `people` stands for a focus at `x`, 10 m into a cell along z, after the own cell `held`;
+    /// and the own cell.
+    fn chosen_at(people: &[Person], held: Option<[i32; 2]>, x: f32) -> (Vec<u32>, [i32; 2]) {
+        let focus = Vec3::new(read(x), 0.0, read(10.0));
+        let own = [
+            own_cell(held.map(|own| own[0]), focus.x, 32.0),
+            own_cell(held.map(|own| own[1]), focus.z, 32.0),
+        ];
+        let (mut candidates, mut chosen) = (Vec::new(), Vec::new());
+        // Thirty of the 64 people within 48 m: the ring decides who.
+        choose(people, 32.0, AmbientCap::MOBILE_HIGH, focus, own, &mut candidates, &mut chosen);
+        (chosen, own)
+    }
+
+    #[test]
+    fn a_focus_on_a_cells_edge_stands_the_same_people_whatever_its_last_bits() {
+        let people = a_grid_of_people();
+        // The benchmark tour's eye on x = 0, as an M5 left it and as x86-64 did (M6 X4).
+        let (m5, own) = chosen_at(&people, None, -1.6e-6);
+        let (x86, _) = chosen_at(&people, None, 0.0);
+        assert_eq!(own, [0, 0], "on the edge is in the cell past it, as `floor` has an exact 0");
+        assert_eq!(m5, x86);
+        assert_eq!(chosen_at(&people, None, -0.0).0, x86);
+        assert_eq!(chosen_at(&people, None, 1.6e-6).0, x86);
+        // Read as it came, the residue's sign picked the own cell, and with it a different crowd.
+        let (floored, _) = chosen_at(&people, Some([-1, 0]), -1.6e-6);
+        assert_ne!(floored, x86, "the test's crowd tells the two cells apart");
+        // A place is read, not moved: a centimetre off the edge is off it.
+        assert_eq!(cell_of(-0.01, 32.0), -1);
+        assert_eq!(cell_of(31.99, 32.0), 0);
+    }
+
+    #[test]
+    fn a_focus_hovering_on_an_edge_keeps_its_own_cell() {
+        let people = a_grid_of_people();
+        let (start, mut own) = chosen_at(&people, None, 31.0);
+        assert_eq!(own[0], 0);
+        let (mut last, mut choices) = (start.clone(), 0);
+        let (mut stateless, mut afresh) = (start, 0);
+        // Back and forth over x = 32, a metre and a half either way, two hundred times.
+        for step in 0..200 {
+            let x = if step % 2 == 0 { 33.5 } else { 30.5 };
+            let (chosen, kept) = chosen_at(&people, Some(own), x);
+            choices += usize::from(chosen != last);
+            (last, own) = (chosen, kept);
+            // Chosen afresh each frame, as before M6 X4.
+            let (chosen, _) = chosen_at(&people, None, x);
+            afresh += usize::from(chosen != stateless);
+            stateless = chosen;
+        }
+        assert_eq!(own[0], 0);
+        assert_eq!(choices, 0, "the crowd never chose again");
+        assert_eq!(afresh, 200, "where a choice afresh changed at every crossing");
+        // Past the margin it chooses once, and keeps the new cell coming back as far.
+        let (past, kept) = chosen_at(&people, Some(own), 32.0 + 2.01);
+        assert_eq!(kept[0], 1);
+        assert_ne!(past, last);
+        assert_eq!(chosen_at(&people, Some(kept), 30.5), (past.clone(), kept));
+        assert_eq!(chosen_at(&people, Some(kept), 29.99).1[0], 0);
+        // A focus that jumps takes the cell it lands in.
+        assert_eq!(chosen_at(&people, Some(kept), -40.0).1[0], -2);
+    }
+
+    #[test]
+    fn a_walk_started_again_chooses_as_its_first_frame_did() {
+        let mut crowd = Crowd::default();
+        let (start, west) = (Vec3::new(1.0, 0.0, 10.0), Vec3::new(-5.0, 0.0, 10.0));
+        let fresh = crowd.own_cell_at(None, start);
+        assert_eq!(fresh, [0, 0]);
+        // The tour's last leg comes back up x = 0 from the west and holds the west cell 2 m past its edge.
+        assert_eq!(crowd.own_cell_at(None, west), [-1, 0]);
+        assert_eq!(crowd.own_cell_at(None, start), [-1, 0]);
+        // A walk started again forgets it, so its first frame stands the people the first walk's did.
+        crowd.forget_own_cell();
+        assert_eq!(crowd.own_cell_at(None, start), fresh);
+        // As does a held focus that comes, moves or goes.
+        let mut last = None;
+        for held in [Some(start.to_array()), Some([0.5, 0.0, 10.0]), None] {
+            crowd.own_cell_at(last, west);
+            assert_eq!(crowd.own_cell_at(last, start), [-1, 0], "held under {last:?}");
+            assert_eq!(crowd.own_cell_at(held, start), fresh, "{last:?} to {held:?}");
+            last = held;
+        }
     }
 
     #[test]

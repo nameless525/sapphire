@@ -133,5 +133,10 @@ runs and each package's pairs. `cargo xtask bench-scale` prepares, runs and repo
 `target/bench-scale/<commit>/`; `docs/development-iteration.md` ("The benches at scale") says how to run
 the batch and read its report.
 
+`bench/probes.ron` (M6 B9) holds M6's probes beside it: the runs that price docs/m6-plan.md's packages
+before they are built, each naming the packages it settles. `cargo xtask bench-scale plan|run|report --probes`
+plans, runs and reports them from the batch's prepared commit into `target/bench-scale/<commit>/probes/`,
+and the spec's §3.9 holds what they read.
+
 See `docs/m5-plan.md` (B1 to B4) and the spec's §5.27 for the route, and `sapphire_pipeline::procedural` for
 the procedural texture documents.

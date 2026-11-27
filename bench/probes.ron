@@ -1,5 +1,5 @@
 // M6's probes (M6 B9): every run docs/m6-plan.md's Track B names in B9, each priced for the packages whose "Measure
-// first" or "Kill if" reads it (`settles`, by the plan's IDs). `cargo xtask bench-scale --probes plan|run|report`
+// first" or "Kill if" reads it (`settles`, by the plan's IDs). `cargo xtask bench-scale plan|run|report --probes`
 // plans, runs and reports them as it does the batch (`bench/scale.ron`), from the same prepared commit
 // (`bench-scale prepare`), into `target/bench-scale/<commit>/probes/`, so a probe's sitting never mixes with the
 // batch's: two rounds a run, a pair's arms alternating inside one sitting, their order turned each round, every GPU

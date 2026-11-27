@@ -23,7 +23,7 @@
 //   reads as a pass.
 // - `settles`: the packages (docs/m6-plan.md's IDs) whose "Measure first" or "Kill if" reads it (M6 B9), which the
 //   report lists and spec §3.9 gives a go or kill from; `bench/probes.ron` holds M6's probes, the runs no exit test
-//   reads, which `cargo xtask bench-scale --probes` runs apart from this batch.
+//   reads, which `cargo xtask bench-scale run --probes` runs apart from this batch.
 // - `devices`: the devices it walks on in place of this Mac, by the `devices` list's names: a run of counts
 //   alone, run only by `cargo xtask bench-scale device --platform <name>` (M5 Z2), whose logs are
 //   `<run>.<tier>.<device>.r<n>.log` and whose verdicts are lines of their own.

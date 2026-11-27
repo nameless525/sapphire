@@ -350,6 +350,13 @@ its start and end, and the report marks one above the manifest's bound (8) rathe
 `--smoke` runs every unit at 200 frames and 320x180 into `smoke/` with the preset `prepare --preset ci`
 made: it proves the batch runs and its logs parse, in an ordinary slot, and measures nothing.
 
+**M6's probes (M6 B9)** are [`bench/probes.ron`](../bench/probes.ron): the same fields, plus `settles` on
+each run (the packages of [m6-plan.md](m6-plan.md) its reading decides), on the batch's tiers and preset.
+`--probes` on `plan`, `run` and `report` takes them in place of the batch, from the same `prepare`, into
+`probes/` (`probes-smoke/` with `--smoke`), so no sitting mixes the two; the report lists what each run
+settles and gives no verdicts, since no exit test reads a probe. A new probe is one more run at the end of
+the manifest, so no earlier sitting moves; spec §3.9 takes its reading.
+
 **On a device (M5 Z2).** A run that names `devices` in the manifest walks there instead of on the Mac:
 `cargo xtask bench-scale device --platform ios-sim|android [--tier <name>] [--smoke]` needs no `prepare`. It puts
 the mobile cook and the device's preset's district together (the manifest's `devices` say `ci`: the budget's is

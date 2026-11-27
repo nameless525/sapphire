@@ -746,6 +746,65 @@ Read against the plan's order:
 
 **What a phone must still answer:** every row above at its throttled clocks, on Mobile-High's and Mobile-Low's devices; whether the corner's stall is Metal's on a phone's tile GPU too; the start from a phone's storage, cold; memory against iOS's and Android's limits once M1 and M5 hold the pool; and the frame thread's core on a phone's own mix of cores.
 
+
+### 3.9 Measured for M6 (M6 B9)
+
+**Not yet run.** M6's probes are committed in [bench/probes.ron](../bench/probes.ron) beside the batch's [bench/scale.ron](../bench/scale.ron). `cargo xtask bench-scale plan|run|report --probes` plans, runs and reports them from the batch's prepared commit into `target/bench-scale/<commit>/probes/` (§5.27; [development-iteration.md](development-iteration.md), "The benches at scale"). The orchestrator runs them in quiet windows (`slot --all --load 8`): two rounds a run, with a pair's arms alternating inside one sitting of at most ten minutes. A run with no valid round under the display lock's rule ([m5-exit-run.md](m5-exit-run.md), "Final run at f4efa213e") runs again. Each row below takes its run's rounds, locks and figures. Each package the row settles takes its go or kill from them, into its own row of [m6-plan.md](m6-plan.md). No figure is entered before its run, so an empty cell is unmeasured.
+
+- **Hardware and code:** filled in with the run: the machine, the OS, the commit, the date and each sitting's load.
+- **How it is read:** as `bench-scale report` reads it (§9, "As built (M6 B1, how the batch's report reads rounds)"), not as §3.8 did. A figure is one round's own p50 and p95, with the round named: the round with the least p95 over every round on the CPU, and over the rounds the display lock leaves valid on the GPU. A void round (a lock of 0.10 or more) is shown but not read on the GPU. The least of every round is a labelled diagnostic, never a figure. Counts are exact, so either round gives them.
+
+**The probes,** in the manifest's order (DH, DL, MH and ML are Desktop-High, Desktop-Low, Mobile-High and Mobile-Low):
+
+| Run | Tiers | Arms | Settles | Rounds and locks | What it read | Verdicts |
+|---|---|---|---|---|---|---|
+| `pk-terms` | all four | base, own-shadows, no-shadows, no-outlines | P1, P2, J7 (base fills M5's void DH `party-kinds`) | | | |
+| `pk-scale` | DH | base, scale85, scale70 | P4, P5: whether the fight's main pass follows scene pixels | | | |
+| `pk-scale-mh` | MH | base, scale55, scale45 | P4, P5 | | | |
+| `pk-lods` | DH, MH, ML | lods1-c0, lods1-c1, lods2-c0, lods2-c2 | P5, K3: whether coarser character meshes save pixels | | | |
+| `df-terms` | DH | base, scale85, scale70, no-outlines, own-shadows, lods1-c0, lods1-c1 | P1, P2, P4, P5, K3, K4 | | | |
+| `pk-switches` | all four | base and B6's switches: no-rim, no-local-lights, one-slot, no-hull-shadow, unlit-hulls, read-fractional, read-whole, control-unbound, p3 | P1, P2, P3, P4, K4 | | | |
+| `df-switches` | DH | base and B6's switches, without the two light switches | P1, P2, P3, P4, K4 | | | |
+| `light-sweep` | DH, DL | cap64, cap8, cap0, no-loop | P6 | | | |
+| `counted-pixels` | all four, counts only, one round | none | P2, P5, F2: character, hull and flat-group pixels | | | |
+| `fight-springs` | all four | on, off | J1's ceiling | | | |
+| `fight-springs-interval` | DH | every-tick, every-second | J1: DH's interval at 2 | | | |
+| `running-hour` | DH, DL | held, running, held-late | S1, S2 | | | |
+| `shadow-cache3` | DH, DL | held, kept, turns | a tier's cache mode (`kept` must beat `held` by 0.1 ms at p95) | | | |
+| `mh-ao` | MH | full, capsule, capsule-no-shafts | F3 on the tour, and whether MH keeps its light shafts | | | |
+| `mh-ao-fight` | MH | full, capsule, capsule-no-shafts | F3 on the fight | | | |
+| `main-depth-fight` | DH, DL | own, prepass | F5, with `main_depth_prepass` counting the frames that took the prepass's depth | | | |
+| `main-depth-tour` | DH, DL | own, prepass | F5 | | | |
+| `desktop-opaque-runs` | DH, DL | every, every-opaque | F5 | | | |
+| `fight-pool` | MH, ML | one, three, mac | J3, B7 | | | |
+| `tour-night-dh` | DH | none | M5's void DH `tour-night` | | | |
+| `capsule-bins-dh` | DH | on, off | M5's void DH `capsule-bins` | | | |
+| `lods-dh` | DH | on, off | M5's void DH `lods` | | | |
+| `streaming-dl` | DL | none | J5: a raise's slow passes at the tier's own size | | | |
+| `streaming-dl-1440` | DL at 2560×1440 | none | J5: whether they follow the GPU's load | | | |
+| `streaming-dh-1080` | DH at 1920×1080 | none | J5: whether they follow the tier | | | |
+| `cutin-supersample` | DH, DL | twice, once | E2: the inset at 2× against 1× | | | |
+
+**The batch's runs that settle a package** (named by their `settles` in `bench/scale.ron`), read from the batch's own report:
+
+| Run | Settles | Rounds and locks | What it read | Verdicts |
+|---|---|---|---|---|
+| `fight-overlap` | B7 | | | |
+| `dialogue-closeup` | B8 | | | |
+| `tour-day-probes` | E3, E4 | | | |
+| `district-fight-day-probes` | E3, E4 | | | |
+| `fight-ships` | E1 | | | |
+| `counted-ships` | E1 | | | |
+| `fight-ships-cutin` | E2, J1 | | | |
+
+**Waiting on a package:** three arms wait on the packages that add their switches:
+
+- E2's 1.5× arm, which waits on E2's fractional supersample;
+- E4's trip unit with 20 or more reflection probes, which E4 adds;
+- J3's thread-class arms, which wait on J3's switch.
+
+Each later package's arms (W1's nature units, the G, H, Y, V and N probes) join the manifest after these, in that package's own pull request, and get a row here once they have run.
+
 ---
 
 ## 4. Architecture
@@ -5399,8 +5458,9 @@ A change can't merge if any of these fail:
 - **As built (gate 5):** no nightly device run exists, so gate 5 runs nowhere today. Beside it, CI's scale lane (M5 X4) walks the benchmark's `ci` district on lavapipe on every pull request and holds its count rows exactly, with lavapipe's differences beside the table ([tests/counts/district-ci.txt](../tests/counts/district-ci.txt)), which fails a moved count and times nothing, and timed rows are read by hand on this Mac in an exit run's quiet sittings (`cargo xtask bench-scale`). Restating the gate is owed ([m6-handoff.md](m6-handoff.md), "Everything deferred").
 - **As built (M6 B1, how the batch's report reads rounds):** a timed row in `bench-scale report` is one round's own figures, named: the round a verdict reads, the least p95 of every round on the CPU and of the rounds the display's 60 Hz lock leaves valid on the GPU. Each statistic's least over every round, void ones too, is shown beside it only as a labelled diagnostic, so no GPU figure a table reads is one no valid round produced. Each timed run's rounds table gives every round's lock beside its floor (about 1/√N for its N slow frames) and Rayleigh's chance of the lock with no lock at one period; the voiding rule stays the fixed 0.10 until M6 B0's rounds show the two agree ([m6-plan.md](m6-plan.md) §3, "Void rounds"). Read over M5's final logs, no verdict moves.
 - **As built (M6 B3, the frames no row reads and the thread's time on a core):** every frame a bench leaves out of its rows is a row of its own: a fight's restarts and its GPU phase's untimed frames (`fight excluded`) and a plain bench's warm-up (`bench excluded`), each with its count, its CPU frame's median and worst and its allocations; exit test 4 reads the restart's own time there ([m6-plan.md](m6-plan.md) §1). Beside the wall time of the frame's CPU span, its record and its wait for the GPU, the bench reads the frame thread's CPU time (`... on core` rows, `sapphire_platform::thread_cpu_time`), so a frame that waits reads apart from one that works; offscreen the GPU wait stands where a window's acquire would block. `bench-scale report` prints both under a run's CPU rows, and prints nothing new for a log from before them.
-- **As built (M6 B7, the bench's overlap and a phone's pool):** a bench waits for all it submitted after every frame, so it cannot say what a shipped frame waits on. With `--bench-overlap` a plain or fight bench waits after frame N's submit for the frame graph's submission of N−2 alone (`wgpu::PollType::Wait` by index), two frames in flight as behind a swapchain of two, and each GPU phase logs `bench overlap`: `limited` (`gpu` where most frames' CPU waited on the frame two back, `cpu` where it found it done), the work queued ahead of a frame at its submit and the queue's age to its GPU end, both on the GPU's clock. Off, every unit and figure reads as before. Only `cpu frame`, `gpu wait` and the `bench overlap` line compare across the two ways: overlapped, consecutive frames' GPU work can overlap (Metal's command buffers do), so pass times and `gpu frame` are taken on other frames than a waiting bench's. `bench-scale report` prints the `bench overlap` line under its run. `bench/scale.ron`'s `fight-pool` runs the phone tiers' district fight with one and three compute workers beside this Mac's own, and `fight-overlap` every tier waiting and overlapped ([m6-plan.md](m6-plan.md) B7). A CPU-limited tier under overlap is what decides a render thread (m6-plan §3).
+- **As built (M6 B7, the bench's overlap and a phone's pool):** a bench waits for all it submitted after every frame, so it cannot say what a shipped frame waits on. With `--bench-overlap` a plain or fight bench waits after frame N's submit for the frame graph's submission of N−2 alone (`wgpu::PollType::Wait` by index), two frames in flight as behind a swapchain of two, and each GPU phase logs `bench overlap`: `limited` (`gpu` where most frames' CPU waited on the frame two back, `cpu` where it found it done), the work queued ahead of a frame at its submit and the queue's age to its GPU end, both on the GPU's clock. Off, every unit and figure reads as before. Only `cpu frame`, `gpu wait` and the `bench overlap` line compare across the two ways: overlapped, consecutive frames' GPU work can overlap (Metal's command buffers do), so pass times and `gpu frame` are taken on other frames than a waiting bench's. `bench-scale report` prints the `bench overlap` line under its run. `fight-pool` (in `bench/scale.ron` until M6 B9, now in `bench/probes.ron`) runs the phone tiers' district fight with one and three compute workers beside this Mac's own, and `fight-overlap` every tier waiting and overlapped ([m6-plan.md](m6-plan.md) B7). A CPU-limited tier under overlap is what decides a render thread (m6-plan §3).
 - **As built (M6 B8, a close-up unit and the skins that repeat a palette):** `bench/scale.ron`'s `dialogue-closeup` runs the heroine's conversation close-up (the `dialogue-closeup` replay) on the four tiers, and every fight bench logs four more `skinning` count rows: the instances skinned again with their last pose, palette and morph weights, and their vertices, and the vertices whose own joints, and weights if morphed, held still and the instances with any (§5.12). The scale lane's table (`tests/counts/district-ci.txt`) gains the four in every walk.
+- **As built (M6 B9, M6's probes):** `bench/probes.ron` is a second ScaleBench manifest beside the batch's, with a `title` (the report's heading) and, on each run, `settles`: the m6-plan IDs whose "Measure first" or "Kill if" reads it, each checked as a package ID. `--probes` on `cargo xtask bench-scale plan`, `run` and `report` takes it, reading the batch's prepared commit and writing `probes/` (or `probes-smoke/`) beside the batch's `logs/`. A report whose runs serve no exit test gives no verdicts. Every report lists "What each run settles" and says it under each run. The fight bench's GPU `fight phase` line counts `main_depth_prepass`, which the report reads as a field. The new presentation switches are `--spring-interval <ticks>` and `--inset-supersample 1|2`, both the tier's own unless given. §3.9 holds the readings once they are run.
 - **M3 narrows gate 4 for scripts:** a hook's VM allocations count against their own budget, because `mlua` allows no custom allocator ([m3-plan.md](m3-plan.md) §3, §5.24). Every other step, and every Rust allocation in a binding, still fails it.
 - **As built (M2 D2, gates 2 and 4):** CI's `Replays` job plays `tests/replays/` on Linux, Windows and macOS with no GPU: each reaches its architecture's checksums with `SimStats::allocations` at zero in every step (`cargo xtask replay`, §5.22). A test holds the gate to biting on a system that allocates, naming the first tick.
 - **As built (own review DV-2, the golden gates):**

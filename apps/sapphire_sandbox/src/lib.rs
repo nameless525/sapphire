@@ -100,7 +100,7 @@
 //!   `tiers.ron` lists each tier's rungs): its scale, its passes shed in place and its frame-rate
 //!   cap, whatever the heat. The golden scenes `tier-*-rung-*` draw each rung.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
-//! - `--vfx arc|hit|dust|duel|mesh-*|decal-*|distort-*|forces`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
+//! - `--vfx arc|hit|dust|duel|mesh-*|decal-*|distort-*|forces|events`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
 //!   character (M2 E2; the `vfx` module): a sword arc each second, one that strikes with a spark
 //!   and a hitstop, dust on the ground, or a duel's worst moment held still, as the bench's load.
 //!   They play around the world's origin, where every stage but `--look-dev street` stands its
@@ -113,7 +113,8 @@
 //!   paving (M5 L6), and `distort-haze` one at the start, its haze shimmering over the burn; `distort-one` and
 //!   `distort-full` keep one landing, or the tier's cap of bends, playing, as the bench's load.
 //!   `forces` plays the particles' forces and ground (M6 N2) in a breeze: embers drifting through a noise,
-//!   sparks bouncing on the floor and a charge's motes spiralling in.
+//!   sparks bouncing on the floor and a charge's motes spiralling in. `events` plays the particles' events (M6 N3):
+//!   sparks bursting into embers as they die, and debris that flashes as it leaves and puffs dust where it lands.
 //! - `--lights`: place three colored local lights around the character.
 //! - `--street-lamp`: place a warm street lamp high in front of the character, a spot light
 //!   flagged to cast a shadow (M5 L16), as the spot shadows' golden scenes do at night.

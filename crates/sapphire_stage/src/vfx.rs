@@ -87,10 +87,12 @@ pub enum VfxShow {
     DistortFull,
     /// Embers drifting in a breeze, sparks bouncing on the floor and a charge gathering (M6 N2).
     Forces,
+    /// Sparks bursting into embers as they die and debris splashing dust where it lands (M6 N3).
+    Events,
 }
 
 impl VfxShow {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Arc,
         Self::Hit,
         Self::Dust,
@@ -108,6 +110,7 @@ impl VfxShow {
         Self::DistortOne,
         Self::DistortFull,
         Self::Forces,
+        Self::Events,
     ];
 
     pub fn name(self) -> &'static str {
@@ -129,6 +132,7 @@ impl VfxShow {
             Self::DistortOne => "distort-one",
             Self::DistortFull => "distort-full",
             Self::Forces => "forces",
+            Self::Events => "events",
         }
     }
 
@@ -173,6 +177,11 @@ const EMBER_SPOT: Vec3 = Vec3::new(0.7, 0.02, -3.0);
 const SPARK_SPOT: Vec3 = Vec3::new(-1.1, 0.9, -2.0);
 const CHARGE_SPOT: Vec3 = Vec3::new(0.3, 1.1, 0.45);
 const FORCES_WIND: WindSample = WindSample { velocity: Vec3::new(0.9, 0.0, 0.25) };
+
+/// Where the `events` show's sparks are thrown up from to burst, and its debris off the floor (M6 N3): either
+/// side of the character, behind it.
+const BURST_SPOT: Vec3 = Vec3::new(-0.9, 0.9, -2.2);
+const DEBRIS_SPOT: Vec3 = Vec3::new(1.0, 0.0, -3.4);
 
 /// The ticks a swing takes: a sixth of a second, as a light attack's strike.
 const SWING_TICKS: f32 = 10.0;
@@ -252,6 +261,8 @@ pub(crate) struct VfxPlayer {
     landing: Option<EffectId>,
     /// The embers, the sparks and the charge, for the `forces` show (M6 N2).
     forces: Option<[EffectId; 3]>,
+    /// The bursting sparks and the splashing debris, for the `events` show (M6 N3).
+    events: Option<[EffectId; 2]>,
     /// Whether its bends draw (`--distortion`): when not, a frame has none.
     distortion: bool,
     /// The decals `decal-one` and `decal-full` keep playing, and how many: one, or the tier's cap.
@@ -292,7 +303,8 @@ impl VfxPlayer {
             | VfxShow::DistortHaze
             | VfxShow::DistortOne
             | VfxShow::DistortFull
-            | VfxShow::Forces => None,
+            | VfxShow::Forces
+            | VfxShow::Events => None,
         }
         .map(effect);
         let landing = matches!(
@@ -304,6 +316,7 @@ impl VfxPlayer {
             .then(|| (effect("telegraph_ground"), effect("scorch_mark")));
         let forces = (show == VfxShow::Forces)
             .then(|| [effect("ember_drift"), effect("spark_bounce"), effect("charge_gather")]);
+        let events = (show == VfxShow::Events).then(|| [effect("spark_burst"), effect("debris_splash")]);
         let shown_count = match show {
             VfxShow::DecalOne | VfxShow::DistortOne => 1,
             VfxShow::DecalFull => (budget.max_decals as usize).min(MAX_SHOWN_DECALS),
@@ -322,6 +335,7 @@ impl VfxPlayer {
             decals,
             landing,
             forces,
+            events,
             distortion: true,
             shown: [None; MAX_SHOWN_DECALS],
             shown_count,
@@ -442,6 +456,10 @@ impl VfxPlayer {
                 self.start_the_forces();
                 None
             }
+            VfxShow::Events if world_step > 0.0 && self.world_ticks == 0 => {
+                self.start_the_events();
+                None
+            }
             _ => None,
         }
     }
@@ -532,6 +550,16 @@ impl VfxPlayer {
         self.world.spawn(charge, OwnerId::WORLD, Placement::at(CHARGE_SPOT));
     }
 
+    /// The events' two effects, each playing until the show ends: sparks thrown up behind the character to its
+    /// left that burst into embers as they die, and debris off the floor to its right that flashes as it leaves
+    /// and puffs dust where it lands.
+    fn start_the_events(&mut self) {
+        let Some([sparks, debris]) = self.events else { return };
+        self.world.spawn(sparks, OwnerId::WORLD, Placement::at(BURST_SPOT));
+        // Thrown from the floor at the world's origin's height, and landing on it.
+        self.world.spawn(debris, OwnerId::WORLD, Placement::at(DEBRIS_SPOT));
+    }
+
     /// A heavy's landing at `at` on flat ground, turned `turn` radians: its scorch, shockwave and haze.
     fn land(&mut self, at: Vec3, turn: f32) -> Option<EffectHandle> {
         let landing = self.landing?;
@@ -600,7 +628,8 @@ impl VfxPlayer {
             | VfxShow::DistortHaze
             | VfxShow::DistortOne
             | VfxShow::DistortFull
-            | VfxShow::Forces => {}
+            | VfxShow::Forces
+            | VfxShow::Events => {}
         }
     }
 
@@ -873,6 +902,32 @@ mod tests {
                 .filter(|sprite| sprite.position.y < 0.05 && sprite.position.x < 0.0)
                 .count();
             assert!(on_the_floor > 4, "{budget:?}: sparks on the floor, {on_the_floor}");
+            assert!(frame.sprites.iter().all(|sprite| sprite.position.y >= 0.0), "{budget:?}");
+        }
+    }
+
+    /// The events' show fires its events with nothing dropped on every tier (M6 N3): embers burst high behind the
+    /// character to its left, dust lies on the floor to its right, and nothing is under the floor.
+    #[test]
+    fn the_events_show_fires_its_events() {
+        for budget in
+            [VfxBudget::DESKTOP_HIGH, VfxBudget::DESKTOP_LOW, VfxBudget::MOBILE_HIGH, VfxBudget::MOBILE_LOW]
+        {
+            let (player, frame) = frame_after(VfxShow::Events, budget, 100);
+            assert_eq!(frame.stats.effects, 2, "{budget:?}");
+            let stats = frame.stats;
+            assert_eq!((stats.dropped_particles, stats.dropped_events), (0, 0), "{budget:?}");
+            assert!(stats.events > 60, "{budget:?}: {stats:?}");
+            assert!(!player.has_meshes() && !player.has_decals() && !player.has_distortion());
+            let burst =
+                frame.sprites.iter().filter(|sprite| sprite.position.distance(BURST_SPOT) < 2.0).count();
+            assert!(burst > 20, "{budget:?}: embers, {burst}");
+            let on_the_floor = frame
+                .sprites
+                .iter()
+                .filter(|sprite| sprite.position.y < 0.15 && sprite.position.distance(DEBRIS_SPOT) < 1.5)
+                .count();
+            assert!(on_the_floor > 4, "{budget:?}: dust on the floor, {on_the_floor}");
             assert!(frame.sprites.iter().all(|sprite| sprite.position.y >= 0.0), "{budget:?}");
         }
     }

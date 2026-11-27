@@ -520,8 +520,8 @@ pub(crate) struct Options {
     /// `--effect-scale <flashes>:<motion>`: the player's flashes (`normal` or `reduced`) and camera motion (0 to
     /// 1) on the fight's screen effects (M4 A2, A3; `FightShow::set_effect_scale`). None draws them as authored.
     pub effect_scale: Option<EffectScale>,
-    /// `--vfx arc|hit|dust|duel|mesh-*|decal-*|distort-*|forces`: plays effects at fixed ticks (M2 E2, M5 L5, L6,
-    /// L7, M6 N2).
+    /// `--vfx arc|hit|dust|duel|mesh-*|decal-*|distort-*|forces|events`: plays effects at fixed ticks (M2 E2,
+    /// M5 L5, L6, L7, M6 N2, N3).
     pub vfx: Option<VfxShow>,
     /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
     /// framing's (yaw orbits right from in front of the character; negative pitch looks up).

@@ -381,6 +381,8 @@ fn every_state_field_is_in_the_checksum() {
     let rows: &[(&str, Flip)] = &[
         ("mode", |c| c.state.mode = GroundMode::Sliding),
         ("traversal", |c| c.state.traversal = TraversalMode::Gliding),
+        ("climb", |c| c.state.climb = Some(ClimbHold::on(Vec3::NEG_Z))),
+        ("stamina_spent", |c| c.state.stamina_spent += SimDuration::from_subticks(1)),
         ("velocity.x", |c| c.state.velocity.x += 1e-5),
         ("velocity.y", |c| c.state.velocity.y += 1e-5),
         ("velocity.z", |c| c.state.velocity.z += 1e-5),
@@ -445,6 +447,40 @@ fn every_state_field_is_in_the_checksum() {
     let world = sim.ecs_mut().world_mut();
     world.resource_mut::<CharacterWorld>().physics.set_body_pose(actor_body(id), moved).unwrap();
     assert_ne!(sim.checksum(), base, "the world's bodies are in the checksum");
+}
+
+/// A climb's hold (M6 A16a) is in the checksum only while it's set, and then every part of it: each of its
+/// normal's parts and each lip moves it from a climber's.
+#[test]
+fn every_part_of_a_climbs_hold_is_in_the_checksum() {
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    sim.step(&TickActions::NEUTRAL);
+    let entity = entity(&sim, actors[0]);
+    let hold = ClimbHold::on(Vec3::NEG_Z);
+    let set = |sim: &mut Simulation, hold: ClimbHold| {
+        sim.ecs_mut().world_mut().get_mut::<CharacterController>(entity).unwrap().state.climb = Some(hold);
+        sim.checksum()
+    };
+    let base = set(&mut sim, hold);
+    let flips = [
+        ClimbHold { normal: Vec3::new(1e-5, 0.0, -1.0), ..hold },
+        ClimbHold { normal: Vec3::new(0.0, 1e-5, -1.0), ..hold },
+        ClimbHold { normal: Vec3::new(0.0, 0.0, -0.99999), ..hold },
+        ClimbHold { lip: Lip::Reached, ..hold },
+        ClimbHold { lip: Lip::Refused, ..hold },
+        ClimbHold { frame: Vec3::new(1e-5, 0.0, -1.0), ..hold },
+        ClimbHold { frame: Vec3::new(0.0, 1e-5, -1.0), ..hold },
+        ClimbHold { frame: Vec3::new(0.0, 0.0, -0.99999), ..hold },
+        ClimbHold { latched: Vec2::new(1e-5, 0.0), ..hold },
+        ClimbHold { latched: Vec2::new(0.0, 1e-5), ..hold },
+    ];
+    let mut seen = vec![base];
+    for flipped in flips {
+        let checksum = set(&mut sim, flipped);
+        assert!(!seen.contains(&checksum), "{flipped:?} isn't in the checksum");
+        seen.push(checksum);
+    }
+    assert_eq!(set(&mut sim, hold), base, "and it comes back");
 }
 
 /// A static collider moves the checksum too, since a replay in another arena isn't this one.

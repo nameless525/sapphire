@@ -382,6 +382,110 @@ fn mantles_and_their_probes_in_the_step_do_not_allocate_from_the_first_tick() {
     assert!(stats.ledges_refused > 0 && stats.ledge_casts > 0, "and the wall refused: {stats:?}");
 }
 
+/// A climbable wall 3 m tall, its face at z 1 facing −Z across x −3 to 3, with a climbable wing standing out from
+/// its east end toward the climber, its west side an inside corner with the face (M6 A16a).
+fn climbing_wall() -> Vec<StaticCollider> {
+    let block = |id: u32, min: Vec3, max: Vec3, memberships: GroupMask| StaticCollider {
+        id: ColliderId(id),
+        shape: StaticShape::Convex(Shape::Box { half_extents: (max - min) * 0.5 }),
+        pose: Pose::at((min + max) * 0.5),
+        memberships,
+    };
+    let climbable = Group::World | Group::Climbable;
+    vec![
+        block(0, Vec3::new(-50.0, -1.0, -50.0), Vec3::new(50.0, 0.0, 50.0), Group::World.mask()),
+        block(1, Vec3::new(-3.0, 0.0, 1.0), Vec3::new(3.0, 3.0, 3.0), climbable),
+        block(2, Vec3::new(3.0, 0.0, -1.0), Vec3::new(5.0, 3.0, 1.0), climbable),
+    ]
+}
+
+/// Two heroines climbing (M6 A16a), from the first step. One grabs the face, climbs up it and west round its
+/// outside corner, lets go there and falls, grabs the west side from the floor and climbs it to its top, over
+/// which she mantles. The other grabs the face further east, climbs east into the wing's inside corner, turns onto
+/// the wing and climbs it to its top. The grabs' rays, the holds, the corners, the let-go and the top-outs' probes
+/// allocate nothing.
+#[test]
+fn climbing_and_its_probes_in_the_step_do_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let mut sim = Simulation::new(SimConfig::default());
+    sim.set_physics_world(PhysicsWorld::new(climbing_wall(), sim.body_capacity()).expect("builds"))
+        .expect("room");
+    let set = sapphire_gameplay::replay::player_moves().expect("the heroine's moves");
+    let profile = set.movement().copied().unwrap_or_default();
+    let controller = Some(sim.add_controller_profile(&profile).expect("a good one"));
+    let moves = Some(sim.add_move_set(set));
+    let heroines = [-2.0, 1.5].map(|x| {
+        let position = Vec3::new(x, 0.0, 0.55);
+        sim.spawn(ActorSpawn { position, moves, controller, ..ActorSpawn::default() }).expect("room")
+    });
+    let stick = sapphire_gameplay::Stick::new;
+    let (still, toward, west, east) = (stick(0, 0), stick(0, 127), stick(-127, 0), stick(127, 0));
+    // Each leg: the tick it lasts until, its stick, and whether it presses jump on its first tick.
+    let outside = [
+        (20, still, false),
+        (60, toward, true),
+        (110, west, false),
+        (150, still, false),
+        (180, still, true),
+        (200, still, true),
+        (290, east, false),
+        (400, still, false),
+    ];
+    // Still once she's over the top, or the stick would run her off its far side.
+    // East into the corner and on along the wing, the stick's meaning latched; released, then east again,
+    // which on the wing's side is up it.
+    let wing = [
+        (20, still, false),
+        (40, toward, true),
+        (100, east, false),
+        (102, still, false),
+        (165, east, false),
+        (400, still, false),
+    ];
+    let at = |legs: &[(u32, sapphire_gameplay::Stick, bool)], tick: u32| {
+        let index = legs.iter().position(|(until, ..)| tick < *until).expect("a leg");
+        let (_, stick, press) = legs[index];
+        let first = index.checked_sub(1).map_or(0, |before| legs[before].0);
+        let buttons = if press && tick == first { Buttons::JUMP } else { Buttons::NONE };
+        ActorActions { buttons, stick }
+    };
+    let ticks: Vec<TickActions> = (0..400)
+        .map(|tick| {
+            let mut actions = TickActions::NEUTRAL;
+            actions.set(heroines[0], at(&outside, tick)).expect("room");
+            actions.set(heroines[1], at(&wing, tick)).expect("room");
+            actions
+        })
+        .collect();
+
+    let mut climbed = [0_u32; 2];
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &ticks {
+            sim.step(actions);
+            let _ = sim.checksum();
+            for (climbed, heroine) in climbed.iter_mut().zip(heroines) {
+                *climbed += u32::from(sim.actor(heroine).expect("alive").controller.state.climb.is_some());
+            }
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "400 steps allocated {} times", counts.allocations);
+    assert_eq!(sim.stats().allocations, 0, "and the stat agrees");
+    let stats = sim.stats();
+    assert_eq!(
+        (stats.climbs_started, stats.climb_top_outs),
+        (3, 2),
+        "three grabs and two top-outs: {stats:?}"
+    );
+    assert!(climbed.iter().all(|&ticks| ticks > 100), "{climbed:?} ticks on a face: {stats:?}");
+    for heroine in heroines {
+        let view = sim.actor(heroine).expect("alive");
+        assert!((view.position.y - 3.0).abs() < 0.01, "both on a top: {}", view.position);
+    }
+}
+
 /// `count` different characters on the mesh arena.
 fn characters(count: usize) -> (Simulation, Vec<ActorId>) {
     let mut sim = Simulation::new(SimConfig { max_actors: 16, ..SimConfig::default() });

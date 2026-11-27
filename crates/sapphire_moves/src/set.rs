@@ -727,6 +727,22 @@ impl TraversalMoves {
         }
         Ok(())
     }
+
+    /// What a climber's numbers ask of these (M6 A16a): a set with mantles climbs, and its top-out is a mantle
+    /// from a hang whose hands are the capsule's height over its feet, so the highest mantle and the profile's
+    /// `mantle_max_height` must both reach that height, or every top-out would be refused.
+    pub(crate) fn check_top_out(&self, profile: &ControllerProfile) -> Result<(), String> {
+        let Some(highest) = self.mantles.last() else { return Ok(()) };
+        let hang = profile.height;
+        if highest.up_to < hang || profile.mantle_max_height < hang {
+            return Err(format!(
+                "`height` is {hang}: a climber tops out from a hang that high, past its highest mantle ({} m) \
+                 or `mantle_max_height` ({} m)",
+                highest.up_to, profile.mantle_max_height
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// A presentation event at one instant of a move.
@@ -1186,6 +1202,12 @@ impl MoveSet {
         }
         if let Some(traversal) = &self.traversal
             && let Err(why) = traversal.check(&self.moves)
+        {
+            return damaged(format!("the traversal moves: {why}"));
+        }
+        if let (Some(traversal), Some(profile)) =
+            (&self.traversal, self.fighter.as_ref().and_then(|fighter| fighter.movement.as_ref()))
+            && let Err(why) = traversal.check_top_out(profile)
         {
             return damaged(format!("the traversal moves: {why}"));
         }
@@ -1957,6 +1979,15 @@ mod tests {
                 let mantles = vec![Mantle { at, up_to: 2.0 }, Mantle { at, up_to: 1.0 }];
                 s.traversal = Some(TraversalMoves { mantles, vault: None });
             }, "climb"),
+            ("a climber that can't top out (M6 A16a)", |s| {
+                let (at, _) = s.find(Name::new("light_1")).expect("in the test content");
+                light(s).drive = MoveDrive::Flight;
+                let warp = WarpWindow { span: Span { from: 1, to: 2 }, max_distance: 1.0, max_turn: 0.0, keep: 0.0, max_rise: 0.0 };
+                light(s).warps.push(warp);
+                s.traversal = Some(TraversalMoves { mantles: vec![Mantle { at, up_to: 1.0 }], vault: None });
+                let fighter = s.fighter.as_mut().expect("the test content fights");
+                fighter.movement = Some(ControllerProfile::default());
+            }, "tops out"),
 
             // A perfect dodge.
             ("a volume without i-frames", |s| dodge(s).invulnerable.clear(), "invulnerable"),

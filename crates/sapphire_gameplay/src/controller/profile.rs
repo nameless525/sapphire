@@ -1,8 +1,11 @@
 //! What's worked out once from a character's numbers ([`ControllerProfile`], which a document can hold).
 
+use std::time::Duration;
+
 use sapphire_math::{Vec2, Vec3, det};
 use sapphire_moves::{ControllerProfile, MAX_JUMP_REACH, ProfileError};
 use sapphire_physics::{BodyDesc, BodyId, CollisionGroups, Group, GroupMask, Pose, Shape};
+use sapphire_time::SimDuration;
 
 use crate::checksum::StateHasher;
 
@@ -101,6 +104,8 @@ pub struct ResolvedProfile {
     walkable_tan: f32,
     /// In radians a second.
     turn_rate: f32,
+    /// [`ControllerProfile::stamina`] on the owner's clock, to the sub-tick at or below it (M6 A16a).
+    stamina: Option<SimDuration>,
 }
 
 impl ResolvedProfile {
@@ -114,6 +119,10 @@ impl ResolvedProfile {
             walkable_cos: det::cos(limit),
             walkable_tan: det::tan(limit),
             turn_rate: profile.turn_rate_degrees.to_radians(),
+            // `check` held it to a positive number of seconds no longer than a document may hold.
+            stamina: profile
+                .stamina
+                .map(|seconds| SimDuration::from_duration(Duration::from_secs_f32(seconds))),
         })
     }
 
@@ -210,5 +219,12 @@ impl ResolvedProfile {
 
     pub(super) const fn turn_rate(&self) -> f32 {
         self.turn_rate
+    }
+
+    /// How long this character climbs before it must let go, on its own clock, or `None` if it never tires
+    /// (M6 A16a). Worked out once from the authored seconds.
+    #[must_use]
+    pub const fn stamina(&self) -> Option<SimDuration> {
+        self.stamina
     }
 }

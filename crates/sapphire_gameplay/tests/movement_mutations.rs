@@ -294,6 +294,9 @@ fn pick(rng: &mut Pcg32, min: f32, max: f32) -> f32 {
 }
 
 /// Numbers from inside the limits, every one at once, kept if they hold each other.
+/// The heroine's highest mantle's `up_to`, in metres, from `player.moves.ron`.
+const HEROINE_HIGHEST_MANTLE: f32 = 2.0;
+
 fn random_movement(rng: &mut Pcg32) -> ControllerProfile {
     loop {
         let mut numbers = MOVEMENT_LIMITS.iter().map(|limit| (limit.min, limit.max));
@@ -334,7 +337,10 @@ fn random_movement(rng: &mut Pcg32) -> ControllerProfile {
             swim_speed: next(),
             stamina: None,
         };
-        if profile.document_issues().is_empty() {
+        // A set with mantles climbs, and tops out from a hang its capsule's height up (M6 A16a): the heroine's
+        // highest mantle is 2 m, so a profile taller than that or than its own `mantle_max_height` is refused.
+        let tops_out = profile.height <= profile.mantle_max_height.min(HEROINE_HIGHEST_MANTLE);
+        if profile.document_issues().is_empty() && tops_out {
             return profile;
         }
     }

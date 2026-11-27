@@ -236,6 +236,7 @@ impl Simulation {
                     targeting::choose_soft_locks,
                     brain::think,
                     traversal::find_ledges,
+                    traversal::grab_faces,
                 )
                     .chain()
                     .in_set(CombatSet::Intents),
@@ -302,6 +303,7 @@ impl Simulation {
         *world.resource_mut::<CurrentActions>() = CurrentActions::default();
         *world.resource_mut::<MoveStats>() = MoveStats::default();
         *world.resource_mut::<TraversalStats>() = TraversalStats::default();
+        world.resource_mut::<CharacterWorld>().climb_casts = 0;
         *world.resource_mut::<CueQueue>() = CueQueue::default();
         world.resource_mut::<HitQuery>().reset();
         world.resource_mut::<AppliedHits>().0.clear();
@@ -1064,6 +1066,9 @@ impl Simulation {
         stats.mantles_started = traversal.mantles_started;
         stats.vaults_started = traversal.vaults_started;
         stats.ledges_refused = traversal.ledges_refused;
+        stats.climbs_started = traversal.climbs_started;
+        stats.climb_top_outs = traversal.climb_top_outs;
+        stats.climb_casts = traversal.climb_casts + world.resource::<CharacterWorld>().climb_casts;
         let cues = world.resource::<CueQueue>();
         stats.cues_published = cues.published();
         stats.cues_dropped = cues.dropped();

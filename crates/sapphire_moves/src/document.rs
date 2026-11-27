@@ -1468,6 +1468,11 @@ impl MoveSetDocument {
             {
                 check.add("traversal", why);
             }
+            if let Some(profile) = fighter.as_ref().and_then(|fighter| fighter.movement.as_ref())
+                && let Err(why) = built.check_top_out(profile)
+            {
+                check.add("movement", why);
+            }
             Some(built)
         });
 

@@ -45,6 +45,16 @@
 //! over a bank of 2 m that a jump's 1.11 m can't reach, and the numbers alone once had to be held so a
 //! curb couldn't throw anyone over the arena's walls. A rise or a fall can still be stopped.
 //!
+//! # Climbing (M6 A16a)
+//!
+//! A character holding a climbable face ([`ControllerState::climb`], put there by a press of jump in
+//! front of one, [`crate::traversal`]) doesn't walk: the stick moves it in the face's plane at the profile's
+//! `climb_speed`, read against the face (up the stick climbs up it, its sides go along it), and a ray from
+//! its hands keeps it at the face, around its outside and inside corners, and stops it where the tagged face ends. Gravity has no hold
+//! on it. It lets go onto the ground its feet climb down to, when a move takes the stick (a top-out's mantle,
+//! an attack, a hit's reaction), when its stamina runs out, and on a press, and falls from there as anyone
+//! does. The module `climb`'s docs have the rules and what each tick casts.
+//!
 //! # Teleports
 //!
 //! [`crate::Simulation::teleport`] puts a character somewhere as a spawn there would: the body, the
@@ -84,6 +94,7 @@
 //! each other, and that's all. Another capsule underfoot isn't ground, so a character slides off one, or
 //! the stick walks it off the gentle top where there's no slope to slide on, or a press jumps from there.
 
+mod climb;
 mod profile;
 mod step;
 
@@ -94,6 +105,7 @@ use sapphire_math::{Vec2, Vec3};
 use sapphire_physics::{BodyId, PhysicsWorld};
 use sapphire_time::{SimDuration, Stopwatch};
 
+pub(crate) use climb::{face as climbable_face, grab, hands, into_face, let_go, wants_up};
 pub use profile::ResolvedProfile;
 pub use sapphire_moves::{ControllerProfile, ProfileError, TraversalMode};
 pub use step::step_controller;
@@ -290,14 +302,70 @@ pub struct ControllerEvents {
     pub pushed_out: bool,
 }
 
+/// The face a climbing character holds (M6 A16a): what [`ControllerState::climb`] carries while
+/// [`ControllerState::traversal`] is [`TraversalMode::Climbing`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClimbHold {
+    /// Out of the face toward the character, from the face's own triangles as the hands' ray last met it:
+    /// the plane the stick moves it in, and what it faces.
+    pub normal: Vec3,
+    /// Whether its hands have come over the face's top.
+    pub lip: Lip,
+    /// The face whose plane the stick is read in: the held one's normal, but kept across a corner turn while
+    /// the stick holds the way it pointed then ([`Self::latched`]), so a stick held sideways carries round an
+    /// outside corner and on along an inside one rather than meaning something else on the new face.
+    pub frame: Vec3,
+    /// The stick's direction when a corner turn latched [`Self::frame`], or zero while nothing is latched. The
+    /// latch lets go when the stick is released or swings more than 45° from this.
+    pub latched: Vec2,
+}
+
+impl ClimbHold {
+    /// A fresh hold on `normal`'s face, below its top, the stick read in its plane.
+    #[must_use]
+    pub const fn on(normal: Vec3) -> Self {
+        Self { normal, lip: Lip::Below, frame: normal, latched: Vec2::ZERO }
+    }
+}
+
+/// Where a climber's hands are against the top of its face (M6 A16a).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Lip {
+    /// On the face: the stick may take it higher.
+    #[default]
+    Below,
+    /// At the top: a climb higher found no face for its hands, so it stayed, and a stick toward the face
+    /// asks for a top-out.
+    Reached,
+    /// At the top, and the top-out was refused there (no room, or no top a mantle takes): it hangs until it
+    /// climbs down from the lip.
+    Refused,
+}
+
+impl Lip {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Below => 0,
+            Self::Reached => 1,
+            Self::Refused => 2,
+        }
+    }
+}
+
 /// All a controller carries from tick to tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControllerState {
     pub mode: GroundMode,
-    /// How it's getting about besides its feet (M6 A14). Held from tick to tick and in the checksum; nothing
-    /// enters a mode yet, so it stays [`TraversalMode::None`] until the rows that build them (A15 to A19), and
-    /// a teleport, like a spawn, starts it there.
+    /// How it's getting about besides its feet (M6 A14). Held from tick to tick and in the checksum. A16a's
+    /// climbing enters [`TraversalMode::Climbing`] with [`Self::climb`] and leaves it with it; a teleport, like
+    /// a spawn, starts it at [`TraversalMode::None`].
     pub traversal: TraversalMode,
+    /// The face it climbs, while it climbs (M6 A16a). The climb's tick runs on this, not on the mode, so a
+    /// mode set with no face held walks as before.
+    pub climb: Option<ClimbHold>,
+    /// The stamina its climbs have spent since its feet last stood on the ground, on its own clock (M6 A16a).
+    /// It stays zero with the profile's stamina off.
+    pub stamina_spent: SimDuration,
     /// In m/s. Horizontal while grounded, whatever the slope: a tick lays it along the ground.
     pub velocity: Vec3,
     /// The surface under the character while grounded or sliding, and otherwise the last one.
@@ -318,6 +386,8 @@ impl Default for ControllerState {
         Self {
             mode: GroundMode::default(),
             traversal: TraversalMode::None,
+            climb: None,
+            stamina_spent: SimDuration::ZERO,
             velocity: Vec3::ZERO,
             ground_normal: Vec3::Y,
             coyote: SimDuration::ZERO,
@@ -357,6 +427,8 @@ impl ControllerState {
         let Self {
             mode,
             traversal,
+            climb,
+            stamina_spent,
             velocity,
             ground_normal,
             coyote,
@@ -398,6 +470,19 @@ impl ControllerState {
             hasher.u64(remaining.as_subticks());
             hasher.u8(u8::from(jump_preparation_moving));
             hasher.u64(jump_rebound.as_subticks());
+        }
+        // A climb's face and its stamina (M6 A16a), each only while it's set, so nothing that never climbs
+        // moves a checksum.
+        if let Some(ClimbHold { normal, lip, frame, latched }) = climb {
+            hasher.u8(2);
+            hasher.vec3(normal);
+            hasher.u8(lip.code());
+            hasher.vec3(frame);
+            hasher.f32s(&[latched.x, latched.y]);
+        }
+        if stamina_spent != SimDuration::ZERO {
+            hasher.u8(3);
+            hasher.u64(stamina_spent.as_subticks());
         }
     }
 }
@@ -443,13 +528,15 @@ pub struct CharacterWorld {
     profiles: Vec<ResolvedProfile>,
     /// See [`crate::SimStats::controllers_refused`].
     pub(crate) refused: u64,
+    /// The casts climbers' ticks have made so far: see [`crate::SimStats::climb_casts`].
+    pub(crate) climb_casts: u64,
     /// Wall time of the latest step's `move_characters`. Performance only: it never reaches state.
     pub(crate) last_time: Duration,
 }
 
 impl CharacterWorld {
     pub(crate) fn new(physics: PhysicsWorld) -> Self {
-        Self { physics, profiles: Vec::new(), refused: 0, last_time: Duration::ZERO }
+        Self { physics, profiles: Vec::new(), refused: 0, climb_casts: 0, last_time: Duration::ZERO }
     }
 
     /// The collision world, for queries: cameras and hit tests read this.
@@ -614,7 +701,8 @@ pub(crate) fn move_characters(
         };
         // A body comes and goes with its actor, and only spheres and capsules move, so this has no
         // way to fail.
-        let stepped = step_controller(
+        let mut casts = 0;
+        let stepped = step::step_counting(
             &mut characters.physics,
             actor_body(id),
             &mut transform,
@@ -622,7 +710,9 @@ pub(crate) fn move_characters(
             profile,
             &input,
             clock.0.last_delta(),
+            &mut casts,
         );
+        characters.climb_casts += u64::from(casts);
         debug_assert!(stepped.is_ok(), "{stepped:?}");
     }
     characters.last_time = stopwatch.elapsed();

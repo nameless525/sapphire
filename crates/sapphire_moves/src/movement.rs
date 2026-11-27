@@ -83,8 +83,8 @@ pub struct ControllerProfile {
     pub max_slide_speed: f32,
 
     // Traversal (M6 A14): what each mode and move reads once the rows that build them land (A15 the mantle
-    // and vault, A16 climbing, A17 gliding, A19 swimming). Nothing enters a mode yet, so these move nobody;
-    // they're the profile's, so a document tunes them as it tunes a run.
+    // and vault, A16 climbing, A17 gliding, A19 swimming). Climbing enters its mode (A16a); the others move
+    // nobody until their rows land. They're the profile's, so a document tunes them as it tunes a run.
     /// The lowest ledge a mantle takes, in metres above the feet. A ledge within [`Self::step_height`] is
     /// stepped onto and never mantled, so A15 mantles from the higher of the two: neither number refuses the
     /// other, since a document written before either existed holds its step height alone.

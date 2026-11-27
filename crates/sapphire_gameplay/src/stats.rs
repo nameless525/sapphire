@@ -72,8 +72,17 @@ pub struct SimStats {
     pub mantles_started: u64,
     /// Vaults an obstacle started so far.
     pub vaults_started: u64,
-    /// Presses of jump in front of nothing a traversal move takes, so far: they jumped.
+    /// Presses of jump in front of nothing a traversal move takes, so far: they jumped, or grabbed a face.
     pub ledges_refused: u64,
+    /// Casts climbing made so far (M6 A16a, [`crate::traversal`]): one on a press of jump looking for a face,
+    /// one on a tick a climber hangs still, two or three on a tick it moves on a flat face, three on an inside
+    /// corner, up to seven round an outside one, at most ten on a tick that tries everything, and a top-out's
+    /// four.
+    pub climb_casts: u64,
+    /// Climbable faces grabbed so far.
+    pub climbs_started: u64,
+    /// Climbs that topped out over a face's lip, by a mantle, so far.
+    pub climb_top_outs: u64,
     /// Wall time of the latest step's character controllers, physics included, to hold against
     /// [`PHYSICS_BUDGET_DESKTOP_LOW`] or [`PHYSICS_BUDGET_MOBILE_LOW`].
     pub controllers_last: Duration,

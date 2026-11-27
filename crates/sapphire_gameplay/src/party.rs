@@ -21,6 +21,15 @@
 //!   the first step that moves, as a cancel's would.
 //! - **While the ability can't fire it waits too,** to its buffer's end and no further: on cooldown, or with
 //!   nobody ready to come in. A press a few ticks early still swaps, and one too early is gone.
+//! - **Off its feet it waits as well** (M6 A16a): while the one on the field is in a traversal mode other than
+//!   [`crate::TraversalMode::None`], climbing a face, or while a traversal move runs (a mantle, a vault, a
+//!   top-out's mantle, which would be cut off), it's refused, and fires once it lets go or the move ends, if
+//!   the press is still buffered. A refused press gives no cue of its own yet: the HUD's to show, owed. Another member's set may not climb, nor its capsule hold the face this one
+//!   holds, so it can't take the climb over, and dropping it off the face would turn a press into a fall. A
+//!   swap a defeat forces waits off the face too: a fallen climber lets go of it on the next step's intents,
+//!   before the party's turn, so that wait is a tick at most.
+//! - **Stamina stays with its fighter** (M6 A16a): the one coming in keeps what it had spent, and the one
+//!   leaving keeps its own off the field, until each one's feet next stand on the ground.
 //! - **It names no slot.** It means the next member in slot order who's standing and rested. `TickActions`'
 //!   layout has one swap button and no room for more, and a stick's direction already means where to go.
 //!
@@ -89,7 +98,7 @@ use crate::actors::{ActorId, ActorTable};
 use crate::brain::Brain;
 use crate::checksum::StateHasher;
 use crate::controller::{
-    CharacterController, CharacterWorld, ControllerDrive, ControllerEvents, ControllerState,
+    CharacterController, CharacterWorld, ControllerDrive, ControllerEvents, ControllerState, TraversalMode,
 };
 use crate::cues::{CueEvent, CueQueue, PARTY_DEFEATED, PARTY_SWAP};
 use crate::intents::IntentRing;
@@ -339,16 +348,23 @@ fn due(formed: &Formed, table: &ActorTable, actors: &Query<'_, '_, Member<'_>>) 
     let member = table.entity(leaving.actor).and_then(|entity| actors.get(entity).ok());
     let forced = match member {
         // Fallen: when its reaction has played out, and whatever freeze it's under is over.
-        Some((clock, _, _, runner, _, _, _, fighter)) if fighter.is_defeated() => {
+        Some((clock, _, _, runner, _, _, controller, fighter)) if fighter.is_defeated() => {
             let frozen = clock.0.last_delta() == SimDuration::ZERO;
-            if frozen || runner.is_running() || runner.forced.is_some() {
+            let on_a_face = controller.state.traversal != TraversalMode::None;
+            if frozen || on_a_face || runner.is_running() || runner.forced.is_some() {
                 return Due::Nothing;
             }
             true
         }
-        Some((clock, _, _, _, ring, ..)) => {
+        Some((clock, _, _, runner, ring, _, controller, _)) => {
             let now = clock.0.now();
-            let can_leave = clock.0.last_delta() != SimDuration::ZERO && leaving.ready_at <= now;
+            // A traversal move (a mantle, a vault, a top-out's mantle) aims at a ledge of its own until it ends.
+            let traversing = runner.forced_toward.is_some()
+                || runner.running.is_some_and(|running| running.toward.is_some());
+            let can_leave = clock.0.last_delta() != SimDuration::ZERO
+                && leaving.ready_at <= now
+                && controller.state.traversal == TraversalMode::None
+                && !traversing;
             // The ring lets go of what's expired later in the step, so a press can still be here on the
             // first tick it can't fire.
             if !can_leave || !ring.iter().any(|press| press.name == SWAP_INTENT && press.expires_at > now) {
@@ -380,7 +396,9 @@ fn leave_field(
     runner.counter = None;
     ring.reset();
     *target = WarpTarget::None;
-    controller.state = ControllerState::default();
+    // Its stamina spent is its own, kept off the field until its feet next stand on the ground (M6 A16a).
+    controller.state =
+        ControllerState { stamina_spent: controller.state.stamina_spent, ..ControllerState::default() };
     controller.drive = ControllerDrive::NONE;
     fighter.stop_slide();
 }
@@ -416,7 +434,8 @@ impl Handover {
     fn apply(&self, world_clock: &WorldClock, member: &mut MemberItem<'_>) {
         let (clock, controls, transform, _, _, target, controller, _) = member;
         **transform = self.place;
-        controller.state = self.state;
+        // Everything but the stamina it has spent, which stays its own (M6 A16a).
+        controller.state = ControllerState { stamina_spent: controller.state.stamina_spent, ..self.state };
         **target = self.aim;
         **controls = self.controls;
         clock.0.remove_source(ScaleSource::PerfectDodge);

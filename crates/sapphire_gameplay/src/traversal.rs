@@ -1,5 +1,6 @@
 //! Traversal moves (M6 A15): a ledge in front of a fighter, found by a few casts on the tick it presses jump,
-//! starts a mantle onto it or a vault over it, in place of the jump.
+//! starts a mantle onto it or a vault over it, in place of the jump. And climbing's presses (M6 A16a): a
+//! climbable face in front of it grabbed, let go of, and topped out over by a mantle.
 //!
 //! # What finds a ledge
 //!
@@ -35,7 +36,35 @@
 //! top, [`CLEARANCE`] over it, for a mantle, and on the far ground for a vault. The aim is the move's own and
 //! ends with it, so the actor's [`crate::WarpTarget`] is left as it was and no later move warps toward the
 //! ledge. The move's warp windows bring the table there ([`sapphire_moves::WarpWindow::max_rise`] for the
-//! height) and it flies ([`sapphire_moves::MoveDrive::Flight`]). A refused press jumps as it would have. None of this enters a [`crate::TraversalMode`]: a mantle is a move.
+//! height) and it flies ([`sapphire_moves::MoveDrive::Flight`]). A refused press jumps as it would have, unless
+//! it grabs a face. None of this enters a [`crate::TraversalMode`]: a mantle is a move.
+//!
+//! # Climbing (M6 A16a)
+//!
+//! `grab_faces` runs after `find_ledges`, for the same fighters (a set that names mantles, since a climb's top
+//! is a mantle's), on the field, standing or defeated not, no move running or forced, clock moving:
+//!
+//! - **A grab:** a press of jump that no ledge took, standing or in the air, casts one ray from the hands (the
+//!   capsule's top) along the facing, `radius + climb_reach` long. A static face in [`Group::Climbable`],
+//!   too steep to stand on, not a ceiling and within 45° of the facing ([`APPROACH_COS`]) is grabbed: the
+//!   fighter enters [`crate::TraversalMode::Climbing`] holding it ([`crate::ClimbHold`]), and the controller
+//!   climbs from its next move. A face only in [`Group::World`] is never grabbed, and nor is any face once
+//!   its stamina is spent, until the feet stand on the ground again. Why a press, not a run into the face: the
+//!   button is one the ledges already read, so a tick with no press costs nothing, and nobody fighting beside
+//!   tagged scenery climbs it by walking into it.
+//! - **A let-go:** a press of jump while climbing: the fighter falls from where it hangs.
+//! - **A top-out:** once the hands have reached the face's lip ([`crate::Lip::Reached`]) and the stick asks
+//!   for higher, [`probe`] runs from where it hangs, as from the ground, and a ledge it finds forces the mantle
+//!   for its height (the heroine's lip is about 1.6 m over her feet: `mantle_high`). The move takes the stick,
+//!   which lets go of the face. A refused top-out marks the lip [`crate::Lip::Refused`], and it hangs there
+//!   until it climbs down or moves along the top. A16a reuses the set's mantles rather than adding a
+//!   `climb_top` move: a hang's top is a mantle from the feet's height, which their warp already bends to,
+//!   and a new move would change every set's format for no new motion. A16b may key one for the look, with
+//!   the format's bump and every replay's re-stamp that brings. A set whose numbers can't top out from a hang
+//!   is refused when it compiles or cooks.
+//!
+//! So a grab's press costs one cast more than a ledge's probe, a let-go none, and a top-out the probe's four.
+//! [`crate::SimStats::climb_casts`] counts them with the controller's.
 
 use std::f32::consts::FRAC_1_SQRT_2;
 
@@ -45,9 +74,13 @@ use sapphire_moves::Move;
 use sapphire_physics::{BodyId, Group, PhysicsWorld, QueryFilter};
 use sapphire_time::SimDuration;
 
+use crate::TraversalMode;
 use crate::actions::{Buttons, Controls};
 use crate::actors::ActorTable;
-use crate::controller::{CharacterController, CharacterWorld, GroundMode, ResolvedProfile, actor_body};
+use crate::controller::{
+    CharacterController, CharacterWorld, GroundMode, Lip, ResolvedProfile, actor_body, climbable_face, grab,
+    hands, into_face, let_go, wants_up,
+};
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveRunner};
 use crate::party::Party;
@@ -106,6 +139,9 @@ pub(crate) struct TraversalStats {
     pub(crate) mantles_started: u64,
     pub(crate) vaults_started: u64,
     pub(crate) ledges_refused: u64,
+    pub(crate) climb_casts: u64,
+    pub(crate) climbs_started: u64,
+    pub(crate) climb_top_outs: u64,
 }
 
 /// Static scenery is a ledge; characters and blockers aren't.
@@ -294,4 +330,128 @@ pub(crate) fn find_ledges(
             LedgeKind::Vault => stats.vaults_started += 1,
         }
     }
+}
+
+/// [`crate::CombatSet::Intents`], after [`find_ledges`]: a press of jump grabs a climbable face in front of a
+/// fighter or lets go of the one it holds, and a climber at a face's top tops out. See the [module
+/// docs](self).
+#[allow(clippy::type_complexity, reason = "a system's query reads as what it touches")]
+pub(crate) fn grab_faces(
+    table: Res<'_, ActorTable>,
+    party: Res<'_, Party>,
+    library: Res<'_, MoveLibrary>,
+    characters: Res<'_, CharacterWorld>,
+    mut stats: ResMut<'_, TraversalStats>,
+    mut actors: Query<
+        '_,
+        '_,
+        (&Controls, &EntityClock, &mut MoveRunner, &mut CharacterController, &ActorTransform, &Fighter),
+    >,
+) {
+    for (id, entity) in table.iter() {
+        let Ok((controls, clock, mut runner, mut controller, transform, fighter)) = actors.get_mut(entity)
+        else {
+            continue;
+        };
+        if fighter.is_defeated() && controller.state.climb.is_some() {
+            // A fallen climber lets go at once, whatever drives its fall, so nothing waits on it to.
+            let_go(&mut controller.state);
+            continue;
+        }
+        if party.is_off_field(id)
+            || fighter.is_defeated()
+            || runner.is_running()
+            || runner.forced.is_some()
+            || clock.0.last_delta() == SimDuration::ZERO
+        {
+            continue;
+        }
+        let pressed = controls.pressed().contains(Buttons::JUMP);
+        let Some(hold) = controller.state.climb else {
+            if pressed && controller.state.traversal == TraversalMode::None {
+                grab_ahead(&characters, &library, &runner, &mut controller, transform, &mut stats);
+            }
+            continue;
+        };
+        if pressed {
+            let_go(&mut controller.state);
+            continue;
+        }
+        if hold.lip != Lip::Reached || !wants_up(controls.current.stick.to_vec2(), &hold) {
+            continue;
+        }
+        let Some((profile, traversal, current)) = climber(&characters, &library, &runner, &controller) else {
+            continue;
+        };
+        let mut casts = 0;
+        let found = probe(
+            characters.physics(),
+            actor_body(id),
+            transform.position,
+            transform.yaw,
+            Vec3::ZERO,
+            profile,
+            None,
+            &mut casts,
+        );
+        stats.climb_casts += u64::from(casts);
+        let mantle = found.ok().filter(|ledge| ledge.kind == LedgeKind::Mantle).and_then(|ledge| {
+            let at = traversal.mantle_for(ledge.height - HEIGHT_SLACK)?;
+            Some((ledge, current.move_at(at)?.name()))
+        });
+        match mantle {
+            Some((ledge, name)) => {
+                // The mantle takes the stick, which lets go of the face as it starts.
+                runner.force_toward(name, ledge.target);
+                stats.climb_top_outs += 1;
+            }
+            None => {
+                if let Some(hold) = &mut controller.state.climb {
+                    hold.lip = Lip::Refused;
+                }
+            }
+        }
+    }
+}
+
+/// What a fighter climbs by, if it climbs: its numbers, its set's traversal moves and the set.
+fn climber<'a>(
+    characters: &'a CharacterWorld,
+    library: &'a MoveLibrary,
+    runner: &MoveRunner,
+    controller: &CharacterController,
+) -> Option<(&'a ResolvedProfile, &'a sapphire_moves::TraversalMoves, &'a sapphire_moves::MoveSet)> {
+    let set = runner.set()?;
+    let current = library.current(set)?;
+    let traversal = current.traversal().filter(|traversal| !traversal.mantles.is_empty())?;
+    let spawned = characters.profile(controller.profile()?)?;
+    Some((library.movement(set).unwrap_or(spawned), traversal, current))
+}
+
+/// A press's grab: the face along the facing, from the hands. Counts its cast, grabbed or not.
+fn grab_ahead(
+    characters: &CharacterWorld,
+    library: &MoveLibrary,
+    runner: &MoveRunner,
+    controller: &mut CharacterController,
+    transform: &ActorTransform,
+    stats: &mut TraversalStats,
+) {
+    let Some((profile, ..)) = climber(characters, library, runner, controller) else { return };
+    if profile.stamina().is_some_and(|stamina| controller.state.stamina_spent >= stamina) {
+        return;
+    }
+    let forward = det::direction_from_yaw(transform.yaw);
+    let center = transform.position + profile.feet_to_center();
+    let reach = profile.authored().radius + profile.authored().climb_reach;
+    stats.climb_casts += 1;
+    let Some(face) = climbable_face(characters.physics(), profile, hands(profile, center), forward, reach)
+    else {
+        return;
+    };
+    if forward.dot(into_face(face.normal)) < APPROACH_COS {
+        return;
+    }
+    grab(&mut controller.state, face.normal);
+    stats.climbs_started += 1;
 }

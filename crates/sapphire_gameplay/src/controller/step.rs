@@ -6,6 +6,7 @@ use sapphire_physics::{
 };
 use sapphire_time::SimDuration;
 
+use super::climb;
 use super::profile::ResolvedProfile;
 use super::{
     ControllerDrive, ControllerEvents, ControllerInput, ControllerState, GroundMode, JUMP_REBOUND_WINDOW,
@@ -48,6 +49,10 @@ fn ground_filter() -> QueryFilter {
 /// [`ControllerState::events`] clear, and a drive's motion is dropped, which a table can't notice:
 /// its reading can't move while its clock stands. A jump asked for with the stick its own waits, and goes
 /// on the first tick that moves, if the character can jump then and no move has taken the stick.
+///
+/// **On a face** ([`ControllerState::climb`], M6 A16a), the stick climbs and nothing else here runs, unless a
+/// move has the stick: then it lets go first, and the tick goes on as for anyone in the air. A press of jump is
+/// a climber's to let go by, which [`crate::traversal`] reads, so here it does nothing.
 pub fn step_controller(
     world: &mut PhysicsWorld,
     body: BodyId,
@@ -57,13 +62,43 @@ pub fn step_controller(
     input: &ControllerInput,
     delta: SimDuration,
 ) -> Result<(), WorldError> {
-    let pose = world.body_pose(body).ok_or(WorldError::UnknownBody(body))?;
+    step_counting(world, body, transform, state, profile, input, delta, &mut 0)
+}
+
+/// [`step_controller`], adding to `casts` what a climb's tick casts (M6 A16a): the ground's probes aren't
+/// counted, as they never were.
+#[allow(clippy::too_many_arguments, reason = "step_controller's, and the count")]
+pub(super) fn step_counting(
+    world: &mut PhysicsWorld,
+    body: BodyId,
+    transform: &mut ActorTransform,
+    state: &mut ControllerState,
+    profile: &ResolvedProfile,
+    input: &ControllerInput,
+    delta: SimDuration,
+    casts: &mut u32,
+) -> Result<(), WorldError> {
+    if world.body_pose(body).is_none() {
+        return Err(WorldError::UnknownBody(body));
+    }
     let just_landed = state.events.landed;
     state.events = ControllerEvents::default();
     if delta == SimDuration::ZERO {
-        state.jump_waiting |= input.jump && input.drive.locomotion;
+        // On a face a press is a let-go's, which a frozen clock doesn't take, as it takes no ledge's.
+        state.jump_waiting |= input.jump && input.drive.locomotion && state.climb.is_none();
         return Ok(());
     }
+    if let Some(hold) = state.climb {
+        if input.drive.locomotion
+            && climb::step(world, body, transform, state, hold, profile, input.stick, delta, casts)?
+        {
+            return Ok(());
+        }
+        // A move has taken the stick, or the climb let go: from here it's in the air.
+        climb::let_go(state);
+    }
+    // Read after the climb, which may have moved it before it let go.
+    let pose = world.body_pose(body).ok_or(WorldError::UnknownBody(body))?;
     let waited = std::mem::take(&mut state.jump_waiting) && input.drive.locomotion;
     let dt = delta.as_secs_f32();
     let drive = sanitized(&input.drive);
@@ -137,6 +172,10 @@ pub fn step_controller(
         tick.place(tick.center)?;
     }
     transform.position = tick.center - profile.feet_to_center();
+    if state.mode == GroundMode::Grounded {
+        // Stamina comes back whole on the ground: there is no rate of recovery (M6 A16a).
+        state.stamina_spent = SimDuration::ZERO;
+    }
     Ok(())
 }
 

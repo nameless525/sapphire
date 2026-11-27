@@ -325,6 +325,44 @@ fn a_zone_grade_over_a_time_blend_keeps_the_two_heaviest_luts() {
     assert!((post.grade_blend - 0.4).abs() < 1e-5, "the remaining pair renormalized");
 }
 
+/// M6 V1: a biome preset keys no grade, so walking through its volume's blend between two of the day's keys,
+/// when the day already holds both of post's grades, drops none and the look moves smoothly; a look that keyed
+/// one would jump in at the edge, which is why the cook refuses it.
+#[test]
+fn walking_a_biome_volumes_blend_between_day_keys_drops_no_grade() {
+    let presets = [
+        include_str!("../../../../content/looks/biomes/cave_day.ron"),
+        include_str!("../../../../content/looks/biomes/interior_warm_day.ron"),
+        include_str!("../../../../content/looks/biomes/forest_haze_day.ron"),
+    ];
+    for text in presets {
+        let look = Arc::new(TodTimeline::from_ron(text).expect("a preset reads"));
+        assert!(look.keys().iter().all(|key| key.grade.is_none()), "a volume's look keys no grade");
+        // 18:00 lies between golden hour and sunset, each with a grade of its own.
+        let (_, mut tod) = time_of_day(18.0);
+        let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 4.0 };
+        tod.add_volume(TodVolume { blend_distance: 8.0, ..TodVolume::new(shape, look) });
+        let mut last: Option<f32> = None;
+        for step in 0_u8..=56 {
+            let x = f32::from(step) * 0.25;
+            let exposure = tod.resolve(Vec3::new(x, 0.0, 0.0), 0.0).look.exposure;
+            assert_eq!(tod.stats().dropped_grade_weight, 0.0, "at {x} m");
+            if let Some(last) = last {
+                assert!((exposure - last).abs() < 0.1, "no jump at {x} m: {last} to {exposure}");
+            }
+            last = Some(exposure);
+        }
+    }
+    // A look that keys a grade drops one inside its blend.
+    let graded =
+        TodKey { grade: Some(ColorGrade { saturation: 1.3, ..ColorGrade::NEUTRAL }.into()), ..key(0.0) };
+    let (_, mut tod) = time_of_day(18.0);
+    let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 4.0 };
+    tod.add_volume(TodVolume { blend_distance: 8.0, ..TodVolume::new(shape, zone(graded)) });
+    tod.resolve(Vec3::new(10.0, 0.0, 0.0), 0.0);
+    assert!(tod.stats().dropped_grade_weight > 0.0);
+}
+
 #[test]
 fn a_cutscene_is_drawn_where_transforms_are_and_never_before_its_start() {
     let (mut world, mut tod) = time_of_day(DAY);

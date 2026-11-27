@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use sapphire_math::{Ease, Quat, Vec3};
 use sapphire_tod::TodTimeline;
-use sapphire_zone::ZoneShape;
+use sapphire_zone::{CookedAtmosphereVolume, ZoneShape};
 
 /// A zone's time-of-day override (WuWa gives every scene its own atmosphere and grade): inside
 /// its shape the zone's timeline blends over the base at full `strength`, and the blend fades
@@ -108,6 +108,18 @@ impl TodVolume {
         Self { shape, blend_distance: 0.0, priority: 0, strength: 1.0, timeline }
     }
 
+    /// A zone's atmosphere volume (M6 V1) over `look`, its look's timeline: its shape about its position, its
+    /// blend, strength and priority as the zone's document gives them, in the zone's space.
+    pub fn from_zone(volume: &CookedAtmosphereVolume, look: Arc<TodTimeline>) -> Self {
+        Self {
+            shape: VolumeShape::from_zone(volume.position, volume.shape),
+            blend_distance: volume.blend,
+            priority: i32::from(volume.priority),
+            strength: volume.strength,
+            timeline: look,
+        }
+    }
+
     /// The override's weight at `point`: `strength` inside the shape, easing smoothly down to 0
     /// at `blend_distance` outside it.
     pub fn weight_at(&self, point: Vec3) -> f32 {
@@ -185,6 +197,57 @@ mod tests {
         );
         let broken = VolumeShape::Ellipsoid { center: Vec3::ZERO, radii: Vec3::new(1.0, 0.0, 1.0), yaw: 0.0 };
         assert_eq!(broken.distance(Vec3::ZERO), f32::INFINITY, "a flat ellipsoid holds nothing");
+    }
+
+    /// A zone's volume of each shape weighs its strength inside and on its surface, half of it halfway out
+    /// along its blend (the smooth ease's midpoint), and nothing at the blend's edge and past it, measured in the
+    /// shape's own turned frame (M6 V1).
+    #[test]
+    fn a_zone_volume_of_each_shape_blends_out_at_its_edges() {
+        let placed = |shape: ZoneShape| CookedAtmosphereVolume {
+            id: 0,
+            order: 0,
+            name: "place".to_owned(),
+            position: [10.0, 2.0, -5.0],
+            shape,
+            look: 0,
+            blend: 4.0,
+            strength: 0.8,
+            priority: 3,
+        };
+        let look = Arc::new(crate::tod::default_day());
+        // Each shape, and where its surface is along a direction from its centre in its own frame.
+        let cases = [
+            (ZoneShape::Sphere { radius: 6.0 }, Vec3::X, 6.0),
+            (ZoneShape::Box { half_extents: [3.0, 1.0, 5.0], yaw: 0.0 }, Vec3::Z, 5.0),
+            // A quarter turn takes its own +X (3 m) to world +Z.
+            (ZoneShape::Box { half_extents: [3.0, 1.0, 5.0], yaw: -90.0 }, Vec3::Z, 3.0),
+            (ZoneShape::Ellipsoid { radii: [6.0, 2.0, 3.0], yaw: 0.0 }, Vec3::Y, 2.0),
+            (ZoneShape::Ellipsoid { radii: [6.0, 2.0, 3.0], yaw: -90.0 }, Vec3::Z, 6.0),
+        ];
+        for (shape, direction, surface) in cases {
+            let volume = TodVolume::from_zone(&placed(shape), Arc::clone(&look));
+            assert_eq!((volume.priority, volume.blend_distance, volume.strength), (3, 4.0, 0.8));
+            let centre = Vec3::new(10.0, 2.0, -5.0);
+            let at = |metres: f32| volume.weight_at(centre + direction * metres);
+            let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+            assert_eq!(at(0.0), 0.8, "{shape:?}: its strength inside");
+            assert!(close(at(surface - 0.01), 0.8), "{shape:?}: just inside");
+            assert!(
+                close(at(surface + 2.0), 0.4),
+                "{shape:?}: half its strength halfway out: {}",
+                at(surface + 2.0)
+            );
+            assert!(at(surface + 0.5) > 0.75 && at(surface + 3.5) < 0.05, "{shape:?}: smooth at both ends");
+            assert_eq!(at(surface + 4.01), 0.0, "{shape:?}: nothing past its blend");
+            assert_eq!(at(surface + 40.0), 0.0);
+        }
+        let hard = TodVolume::from_zone(
+            &CookedAtmosphereVolume { blend: 0.0, ..placed(ZoneShape::Sphere { radius: 6.0 }) },
+            look,
+        );
+        assert_eq!(hard.weight_at(Vec3::new(15.9, 2.0, -5.0)), 0.8);
+        assert_eq!(hard.weight_at(Vec3::new(16.1, 2.0, -5.0)), 0.0, "a hard edge");
     }
 
     #[test]

@@ -19,8 +19,8 @@
 //!
 //! # Zones bring their look (M5 M6)
 //!
-//! A zone's day, light rigs, probe grid, sky material, wind, weather and fog are its own, as it opens and as a
-//! trip arrives in it ([`ZoneLook`]). A zone coming next brings its grid and its sky in with it, its grid's bytes
+//! A zone's day, light rigs, probe grid, sky material, wind, weather, fog and atmosphere volumes are its own, as
+//! it opens and as a trip arrives in it ([`ZoneLook`]). A zone coming next brings its grid and its sky in with it, its grid's bytes
 //! kept aside, since the renderer holds one grid, and what a grid draws through warmed with its pipelines; the
 //! arrival puts them on. A zone that names none of something gets the stage's own back. And what the zone
 //! arriving prefetches stays mounted, the zone left behind included, so a hub's next zone isn't mounted again
@@ -57,13 +57,13 @@ use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary, LightRigs};
 use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer};
 use sapphire_world::tod::weather::WeatherDocument;
-use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline};
+use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline, TodVolume, TodVolumeId};
 #[cfg(any(test, feature = "dev"))]
 use sapphire_world::tod::{TodError, TodGroups};
 use sapphire_world::weather::{WeatherPlan, WeatherSetup, WeatherSystem};
 use sapphire_zone::{
-    ArchivedCookedLight, ArchivedZonePresentation, CookedLightShape, CookedVolume, CookedWeatherPlan, Zone,
-    ZoneFog,
+    ArchivedCookedLight, ArchivedZonePresentation, CookedAtmosphere, CookedLightShape, CookedVolume,
+    CookedWeatherPlan, Zone, ZoneFog,
 };
 
 use super::{Figure, LOG_TARGET, Lamp, Scene};
@@ -138,8 +138,8 @@ enum Coming {
     Prewarming,
     /// The zone, and what it depends on.
     Zone(Handle<Zone>),
-    /// Its day and rigs, parsed on a job off the frame's thread (exit test 2), the zone in.
-    Reading(Handle<Zone>, Receiver<ParsedLook>),
+    /// Its day, rigs, weather and volumes' looks, parsed on a job off the frame's thread (exit test 2), the zone in.
+    Reading(Handle<Zone>, Receiver<Result<ParsedLook, String>>),
     /// The meshes around where it's arrived at, boxed: a streamer is most of what a zone coming holds.
     Near(Box<Streamer<ZoneEntity>>),
     Failed(String),
@@ -250,16 +250,22 @@ impl NextZone {
                 let (server, _) = content.streaming_parts();
                 match server.state(zone) {
                     LoadState::Ready => {
-                        // Its day, rigs and weather's states are text, parsed on a job: nothing loads on the
-                        // frame's thread.
+                        // Its day, rigs, weather's states and atmosphere volumes' looks are text, parsed on a
+                        // job: nothing loads on the frame's thread.
                         let presentation = &server.get(zone).expect("the zone is ready").presentation;
                         let day = presentation.day.as_ref().map(|text| text.as_str().to_owned());
                         let rigs = presentation.rigs.as_ref().map(|text| text.as_str().to_owned());
                         let weather = presentation.weather_plan.as_ref().map(|plan| plan.to_native());
+                        let atmosphere = presentation.atmosphere.to_native();
                         let (sender, receiver) = mpsc::sync_channel(1);
                         sapphire_jobs::spawn_async(move || {
-                            let _ =
-                                sender.send(parse_look(day.as_deref(), rigs.as_deref(), weather.as_ref()));
+                            let texts = LookTexts {
+                                day: day.as_deref(),
+                                rigs: rigs.as_deref(),
+                                weather: weather.as_ref(),
+                                atmosphere: &atmosphere,
+                            };
+                            let _ = sender.send(parse_look(texts));
                         });
                         self.coming = Coming::Reading(zone.clone(), receiver);
                     }
@@ -282,14 +288,16 @@ impl NextZone {
                 let names = (probes, presentation.sky.as_ref().copied(), reflections);
                 // Its wet surfaces, off the frame, if it may go wet (M5 L4): the pack's prewarm
                 // couldn't say, with the zone unread.
-                let day_wet = matches!(&parsed, Ok((Some(day), ..)) if day.may_be_wet());
-                let plan_wet = || matches!(&parsed, Ok((.., Some(setup))) if setup.may_be_wet());
+                let day_wet = matches!(&parsed, Ok(look) if look.day.as_ref().is_some_and(TodTimeline::may_be_wet)
+                    || look.volumes.iter().any(|volume| volume.timeline.may_be_wet()));
+                let plan_wet =
+                    || matches!(&parsed, Ok(ParsedLook { weather: Some(setup), .. }) if setup.may_be_wet());
                 let carried = || carried(presentation.weather_plan.is_some());
                 let wet = !tool_weather && (own_weather_wets(presentation, plan_wet) || day_wet || carried());
                 // Its day and rigs read before it's ready, so a look that doesn't read fails the trip
                 // before the arrival switches anything (Z3 review F4).
                 let read = parsed
-                    .map(|(day, rigs, weather)| ZoneLook::with_air(presentation, day, rigs, weather))
+                    .map(|parsed| ZoneLook::with_air(presentation, parsed))
                     .map_err(|error| format!("its look: {error}"));
                 let priority = self.priority();
                 self.coming = match read.and_then(|read| {
@@ -410,29 +418,31 @@ pub struct ZoneLook {
     rooms: Arc<[Room]>,
     /// Its weather's states and plan (M6 W8a).
     weather_plan: Option<WeatherSetup>,
+    /// Its atmosphere volumes (M6 V1), in the zone's space, by ascending ID.
+    volumes: Vec<TodVolume>,
 }
 
 impl ZoneLook {
     /// Reads `presentation`'s: its day must be complete, as a stage's must, and its rigs a valid library. A cook
-    /// checked the day; the rigs only by their type (a content test reads the shipped zones'), so a zone coming
-    /// reads its look before it's ready, and can't come if it doesn't read (Z3 review F4).
-    /// A zone coming parses its day, rigs and weather plan on a job instead ([`parse_look`]).
+    /// checked the day and its volumes' looks; the rigs only by their type (a content test reads the shipped
+    /// zones'), so a zone coming reads its look before it's ready, and can't come if it doesn't read (Z3 review
+    /// F4). A zone coming parses its day, rigs, weather plan and volumes' looks on a job instead ([`parse_look`]).
     pub fn read(presentation: &ArchivedZonePresentation) -> Result<Self, String> {
-        let day = presentation.day.as_ref().map(|text| text.as_str());
         let weather = presentation.weather_plan.as_ref().map(|plan| plan.to_native());
-        let (day, rigs, weather) =
-            parse_look(day, presentation.rigs.as_ref().map(|text| text.as_str()), weather.as_ref())?;
-        Ok(Self::with_air(presentation, day, rigs, weather))
+        let atmosphere = presentation.atmosphere.to_native();
+        let parsed = parse_look(LookTexts {
+            day: presentation.day.as_ref().map(|text| text.as_str()),
+            rigs: presentation.rigs.as_ref().map(|text| text.as_str()),
+            weather: weather.as_ref(),
+            atmosphere: &atmosphere,
+        })?;
+        Ok(Self::with_air(presentation, parsed))
     }
 
-    /// `day`, `rigs` and the weather plan, parsed, with `presentation`'s wind, weather and fog, which are plain
-    /// numbers.
-    fn with_air(
-        presentation: &ArchivedZonePresentation,
-        day: Option<TodTimeline>,
-        rigs: Option<LightRigLibrary>,
-        weather_plan: Option<WeatherSetup>,
-    ) -> Self {
+    /// Its day, rigs, weather plan and volumes, `parsed`, with `presentation`'s wind, weather and fog, which are
+    /// plain numbers.
+    fn with_air(presentation: &ArchivedZonePresentation, parsed: ParsedLook) -> Self {
+        let ParsedLook { day, rigs, weather: weather_plan, volumes } = parsed;
         let wind = presentation.wind.as_ref().map(|wind| {
             let wind = wind.to_native();
             Wind { direction: Vec3::from(wind.direction), strength: wind.strength, gustiness: wind.gustiness }
@@ -442,7 +452,7 @@ impl ZoneLook {
             Weather { wetness: weather.wetness, puddles: weather.puddles, ..Weather::DRY }
         });
         let fog = presentation.fog.as_ref().map(|fog| fog.to_native());
-        Self { day, rigs, wind, weather, fog, rooms: rooms_of(presentation), weather_plan }
+        Self { day, rigs, wind, weather, fog, rooms: rooms_of(presentation), weather_plan, volumes }
     }
 }
 
@@ -467,14 +477,30 @@ fn rooms_of(presentation: &ArchivedZonePresentation) -> Arc<[Room]> {
         .collect()
 }
 
-/// A zone's day, rigs and weather plan, parsed on a job, or why they don't read.
-type ParsedLook = Result<(Option<TodTimeline>, Option<LightRigLibrary>, Option<WeatherSetup>), String>;
+/// A zone's texts that [`parse_look`] reads: its `day` and `rigs`, its weather plan and its atmosphere volumes'
+/// looks.
+struct LookTexts<'a> {
+    day: Option<&'a str>,
+    rigs: Option<&'a str>,
+    weather: Option<&'a CookedWeatherPlan>,
+    atmosphere: &'a CookedAtmosphere,
+}
 
-/// Parses a zone's `day` and `rigs` texts and its weather plan's states: its day must be complete, as a stage's
-/// must, its rigs a valid library and its plan's names its states' (M6 W8a). Building them from text is a load
-/// (exit test 2's count, `LoadWork::Build`), which a zone coming does on a job.
-fn parse_look(day: Option<&str>, rigs: Option<&str>, weather: Option<&CookedWeatherPlan>) -> ParsedLook {
-    if day.is_some() || rigs.is_some() || weather.is_some() {
+/// A zone's day, rigs, weather plan and atmosphere volumes, parsed on a job.
+struct ParsedLook {
+    day: Option<TodTimeline>,
+    rigs: Option<LightRigLibrary>,
+    weather: Option<WeatherSetup>,
+    volumes: Vec<TodVolume>,
+}
+
+/// Parses a zone's `day` and `rigs` texts, its weather plan's states and its atmosphere volumes' looks: its day
+/// must be complete, as a stage's must, its rigs a valid library, its plan's names its states' (M6 W8a) and each
+/// look a day, whole or partial, which is parsed once however many volumes name it (M6 V1). Building them from
+/// text is a load (exit test 2's count, `LoadWork::Build`), which a zone coming does on a job.
+fn parse_look(texts: LookTexts<'_>) -> Result<ParsedLook, String> {
+    let LookTexts { day, rigs, weather, atmosphere } = texts;
+    if day.is_some() || rigs.is_some() || weather.is_some() || !atmosphere.volumes.is_empty() {
         sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
     }
     let day = match day.map(TodTimeline::from_ron).transpose().map_err(|error| format!("its day: {error}"))? {
@@ -486,22 +512,53 @@ fn parse_look(day: Option<&str>, rigs: Option<&str>, weather: Option<&CookedWeat
     let rigs = rigs.map(LightRigLibrary::from_ron).transpose();
     let rigs = rigs.map_err(|error| format!("its light rigs: {error}"))?;
     let weather = weather.map(WeatherSetup::read).transpose();
-    Ok((day, rigs, weather.map_err(|error| format!("its weather: {error}"))?))
+    let weather = weather.map_err(|error| format!("its weather: {error}"))?;
+    Ok(ParsedLook { day, rigs, weather, volumes: volumes_of(atmosphere)? })
+}
+
+/// A zone's atmosphere volumes as time of day takes them (M6 V1), each look parsed once and shared by the volumes
+/// naming it, or which volume's look doesn't read.
+fn volumes_of(atmosphere: &CookedAtmosphere) -> Result<Vec<TodVolume>, String> {
+    let mut looks = Vec::with_capacity(atmosphere.looks.len());
+    for (index, text) in atmosphere.looks.iter().enumerate() {
+        let look = TodTimeline::from_ron(text).map_err(|error| {
+            let named = atmosphere.volumes.iter().find(|volume| volume.look as usize == index);
+            let name = named.map_or("", |volume| volume.name.as_str());
+            format!("its volume `{name}`'s look: {error}")
+        })?;
+        looks.push(Arc::new(look));
+    }
+    // In the document's order, which time of day keeps among volumes of one priority: a rename reorders none.
+    let mut volumes: Vec<_> = atmosphere.volumes.iter().collect();
+    volumes.sort_unstable_by_key(|volume| volume.order);
+    Ok(volumes
+        .into_iter()
+        .map(|volume| TodVolume::from_zone(volume, Arc::clone(&looks[volume.look as usize])))
+        .collect())
 }
 
 #[cfg(test)]
 impl ZoneLook {
     /// A look naming `day` and `rigs`, and no air.
     pub(crate) fn of(day: Option<TodTimeline>, rigs: Option<LightRigLibrary>) -> Self {
-        Self { day, rigs, wind: None, weather: None, fog: None, rooms: Arc::new([]), weather_plan: None }
+        Self {
+            day,
+            rigs,
+            wind: None,
+            weather: None,
+            fog: None,
+            rooms: Arc::new([]),
+            weather_plan: None,
+            volumes: Vec::new(),
+        }
     }
 }
 
 /// Whether a zone's frames may draw wet (M5 L4): its own weather is, or a state its weather plan may show wets
-/// (M6 Y2), or its day keys any. What a load or a trip declares for it (`PipelineInventory::wet_surfaces`), so
-/// its first wet frame builds nothing.
+/// (M6 Y2), or its day keys any, or an atmosphere volume's look does (M6 V1). What a load or a trip declares for
+/// it (`PipelineInventory::wet_surfaces`), so its first wet frame builds nothing.
 pub(crate) fn may_be_wet(presentation: &ArchivedZonePresentation) -> bool {
-    // A load's or a boot's: a zone coming parses its day and plan on a job.
+    // A load's or a boot's: a zone coming parses its day, plan and looks on a job.
     let plan = || {
         presentation.weather_plan.as_ref().is_some_and(|plan| {
             sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
@@ -515,7 +572,14 @@ pub(crate) fn may_be_wet(presentation: &ArchivedZonePresentation) -> bool {
         });
         day.is_some_and(|day| day.is_ok_and(|day| day.may_be_wet()))
     };
-    own_weather_wets(presentation, plan) || day()
+    let looks = || {
+        let looks = &presentation.atmosphere.looks;
+        if !looks.is_empty() {
+            sapphire_core::frame_loads::count(sapphire_core::frame_loads::LoadWork::Build);
+        }
+        looks.iter().any(|text| TodTimeline::from_ron(text.as_str()).is_ok_and(|look| look.may_be_wet()))
+    };
+    own_weather_wets(presentation, plan) || day() || looks()
 }
 
 /// Whether a zone's own weather may wet it: whether its weather `plan` may, if it has one, whose shares lie over
@@ -556,6 +620,8 @@ pub(super) struct ZoneAir {
     pub(super) sky: Option<MaterialHandle>,
     /// Its rooms (M6 U5), which [`Scene::sound`] hands the mixer while a zone is on stage.
     pub(super) rooms: Arc<[Room]>,
+    /// Its atmosphere volumes in time of day (M6 V1), which the next zone's look takes out.
+    volumes: Vec<TodVolumeId>,
 }
 
 /// What the stage looked like before a zone's: see [`ZoneAir::own`].
@@ -965,11 +1031,13 @@ impl Scene {
 
     /// Takes `look` in place of what the stage has (M5 M6): its day, light rigs and wind, or the stage's own again
     /// for what it names none of; its weather, dry with none; its fog over the day's, its height base in the
-    /// zone's space; its rooms (M6 U5); and its weather plan, arriving in the plan's state, or the stage's own
-    /// states and plan again with none (M6 W8a).
+    /// zone's space; its rooms (M6 U5); its weather plan, arriving in the plan's state, or the stage's own
+    /// states and plan again with none (M6 W8a); and its atmosphere volumes in place of the last zone's, in the
+    /// zone's space, which is the world's for a zone whose look the stage takes, since a stand and an arrival
+    /// lie where the zone's document says (M6 V1). Volumes the stage placed itself stay.
     /// Its probe grid and sky are the content's.
     pub fn take_zone_look(&mut self, look: ZoneLook) -> Result<(), String> {
-        let ZoneLook { day, rigs, wind, weather, fog, rooms, weather_plan } = look;
+        let ZoneLook { day, rigs, wind, weather, fog, rooms, weather_plan, volumes } = look;
         self.zone_air.plan_given_back = weather_plan.is_none();
         let (zone_day, zone_rigs) = (day.is_some(), rigs.is_some());
         let world = self.ecs.world();
@@ -996,6 +1064,11 @@ impl Scene {
         self.zone_air.fog = fog;
         self.zone_air.rooms = rooms;
         self.weather_system.set_plan(document, plan);
+        let mut time_of_day = self.ecs.world_mut().resource_mut::<TimeOfDay>();
+        for id in self.zone_air.volumes.drain(..) {
+            time_of_day.remove_volume(id);
+        }
+        self.zone_air.volumes = volumes.into_iter().map(|volume| time_of_day.add_volume(volume)).collect();
         Ok(())
     }
 
@@ -1139,6 +1212,11 @@ impl Scene {
         content: &mut Content,
         kept: &[String],
     ) -> Option<Result<UnmountReport, MountError>> {
+        // Its atmosphere volumes lie in its space, so they go with it, whether or not it got as far as opening.
+        let mut time_of_day = self.ecs.world_mut().resource_mut::<TimeOfDay>();
+        for id in self.zone_air.volumes.drain(..) {
+            time_of_day.remove_volume(id);
+        }
         let ZoneStage { streamer, pack, stand: _, held_focus: _ } = self.zone.take()?;
         let (server, _) = content.streaming_parts();
         let mut host = Host { world: self.ecs.world_mut(), find: &|_| None, to_world: Mat4::IDENTITY };

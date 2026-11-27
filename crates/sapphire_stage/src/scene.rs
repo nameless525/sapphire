@@ -2687,8 +2687,8 @@ impl Scene {
 
     /// Whether this scene's frames may draw wet (M5 L4): a tool's weather if it set one, or else the weather's
     /// shares and states while a plan is live (M6 Y2), the zone's fixed weather then shadowed, or the zone's fixed
-    /// weather and the shares with none; or any its day keys. A trip into a zone that may go wet declares it as
-    /// the zone comes.
+    /// weather and the shares with none; or any its day or a volume's look keys (M6 V1). A trip into a zone that
+    /// may go wet declares it as the zone comes.
     pub fn may_be_wet(&self) -> bool {
         match self.weather {
             Some(weather) => weather.is_wet(),
@@ -2698,7 +2698,9 @@ impl Scene {
                     Some(zone) if !self.zone_air.shares_lead(system) => zone.is_wet(),
                     _ => system.may_be_wet(),
                 };
-                own || self.time_of_day().timeline().may_be_wet()
+                let time_of_day = self.time_of_day();
+                own || time_of_day.timeline().may_be_wet()
+                    || time_of_day.volumes().any(|(_, volume)| volume.timeline.may_be_wet())
             }
         }
     }
@@ -5047,13 +5049,30 @@ mod tests {
         assert_eq!(weather(&mut scene), flag, "a tool's over all");
     }
 
-    /// The look's order (M6 W8a): the zone's day, then the weather's state, then atmosphere volumes, then a
-    /// cutscene, then the tool. A state that keys exposure and the sky shows over the day; a volume's exposure
-    /// over the state's, its sky left; a cutscene's keys over both, its own weather state over the world's; the
-    /// tool's state over the cutscene's, and the tool's look (fog off) over everything.
+    /// A zone whose one atmosphere volume (M6 V1), a sphere of `radius` with a `blend` about `centre`, keys
+    /// exposure 3 and nothing else, cooked from its document and read as the stage reads a zone's look.
+    fn lifting_zone(centre: Vec3, radius: f32, blend: f32) -> zone::ZoneLook {
+        let [x, y, z] = centre.to_array();
+        let document = sapphire_zone::ZoneDocument::from_ron(&format!(
+            r#"(type: "sapphire::zone::ZoneDocument", version: 1, data: (grid: (cell_size: 32.0), volumes: [(name: "lift", position: ({x:?}, {y:?}, {z:?}), shape: Sphere(radius: {radius:?}), look: "lift_day.ron", blend: {blend:?})]))"#
+        ))
+        .expect("a zone");
+        let lift = r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 0.0, exposure: 3.0)]))"#;
+        let geometry =
+            sapphire_zone::ZoneGeometry { volume_looks: vec![lift.to_owned()], ..Default::default() };
+        let bytes = document.cook(geometry).expect("cooks").to_cooked().expect("writes");
+        let cooked = sapphire_zone::Zone::read(&bytes).expect("reads");
+        zone::ZoneLook::read(&cooked.presentation).expect("its look reads")
+    }
+
+    /// The look's order (M6 W8a, M6 V1): the zone's day, then the weather's state, then atmosphere volumes, then a
+    /// cutscene, then the tool. A state that keys exposure and the sky shows over the day; a zone's volume's
+    /// exposure over the state's, its sky left, by its sphere's falloff at the camera; a cutscene's keys over
+    /// both, its own weather state over the world's; the tool's state over the cutscene's, and the tool's look (fog
+    /// off) over everything.
     #[test]
     fn the_look_is_the_days_under_the_weathers_under_volumes_under_a_cutscene_under_a_tools() {
-        use sapphire_world::tod::{TodCutscene, TodKey, TodVolume, VolumeShape};
+        use sapphire_world::tod::{TodCutscene, TodKey};
         let look = |scene: &mut Scene| {
             let packet = scene.frame_packet(1.0, None, &mut ());
             let look = (packet.post.exposure, packet.sky.zenith, packet.fog);
@@ -5061,6 +5080,7 @@ mod tests {
             look
         };
         let mut scene = scene();
+        let eye = scene.ecs.world().resource::<OrbitCamera>().eye();
         let (day_exposure, day_sky, day_fog) = look(&mut scene);
         let states = r#"(
             type: "sapphire::world::WeatherDocument",
@@ -5076,11 +5096,23 @@ mod tests {
         assert_eq!(look(&mut scene), (1.0, grey, day_fog), "the state over the day, at once");
         assert_ne!((day_exposure, day_sky), (1.0, grey));
 
-        let everywhere = VolumeShape::Sphere { center: Vec3::ZERO, radius: 1.0e4 };
-        let lift =
-            tod::TodTimeline::new(vec![TodKey { time: 0.0, exposure: Some(3.0), ..TodKey::default() }]);
-        scene.time_of_day_mut().add_volume(TodVolume::new(everywhere, Arc::new(lift.expect("valid"))));
+        // The camera halfway out through the zone's volume's blend: the smooth ease's midpoint, so half its look.
+        scene.take_zone_look(lifting_zone(eye + Vec3::new(10.0, 0.0, 0.0), 6.0, 8.0)).expect("it takes");
+        let (exposure, sky, fog) = look(&mut scene);
+        assert!((exposure - 2.0).abs() < 1e-5, "half a volume's lift over the state's: {exposure}");
+        assert_eq!((sky, fog), (grey, day_fog), "a volume leaves what it doesn't key");
+        assert_eq!(scene.time_of_day().stats().active_volumes, 1);
+        scene.take_zone_look(lifting_zone(eye + Vec3::new(10.0, 0.0, 0.0), 6.0, 4.0)).expect("it takes");
+        assert_eq!(look(&mut scene).0, 1.0, "outside its blend, the state's alone");
+        assert_eq!(scene.time_of_day().volumes().len(), 1, "a zone's look takes the last zone's volumes out");
+        scene.take_zone_look(lifting_zone(eye, 6.0, 4.0)).expect("it takes");
         assert_eq!(look(&mut scene), (3.0, grey, day_fog), "a volume over the state");
+        // Closing the zone takes its volumes with it.
+        let mut content = crate::content::new_renderer_tests::content();
+        assert!(scene.close_zone(&mut content).is_none(), "no zone was open, only its look");
+        assert_eq!(scene.time_of_day().volumes().len(), 0);
+        assert_eq!(look(&mut scene), (1.0, grey, day_fog), "a closed zone weighs no volume");
+        scene.take_zone_look(lifting_zone(eye, 6.0, 4.0)).expect("it takes");
 
         let shot = TodCutscene::new(
             60.0,

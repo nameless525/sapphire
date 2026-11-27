@@ -21,7 +21,8 @@
 //!   timelines as content.
 //! - **[`TodVolume`]**: a zone's override, a timeline that sets every group or only some, blended
 //!   over the base by its weight at a probe point (smoothly out over a blend distance around its
-//!   sphere or box), lowest priority first.
+//!   sphere, box or ellipsoid), lowest priority first. A zone places them as atmosphere volumes
+//!   (M6 V1, [`TodVolume::from_zone`]), each naming a partial day: a biome preset or its own.
 //! - **[`TodCutscene`]** (a `TodCutscene` document): one shot's track, setting the time of day,
 //!   overriding values over the shot's seconds, lighting its characters with a light rig of its
 //!   own (M1 C2, [`crate::light_rig`]), or any of these together, easing in and out.
@@ -79,8 +80,6 @@
 //!   grades can need three grades at once; post's two LUTs drop the lightest
 //!   ([`TodStats::dropped_grade_weight`]). A third LUT slot, or baking the mix on the GPU, lifts
 //!   that.
-//! - **Volumes as zone data** (M6 V1), placed by `sapphire_zone::ZoneShape` as weather regions are
-//!   (M6 W8a turned boxes and added ellipsoids), with streaming adding and removing them.
 //! - **Curves smoother than per-segment easing** (Catmull-Rom through the keys) if per-segment
 //!   kinks show in time-lapses.
 //! - **Live link** of timelines (A9) through [`TimeOfDay::set_timeline`] and

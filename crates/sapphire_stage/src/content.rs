@@ -3676,7 +3676,7 @@ pub fn newest_text<'a>(files: impl Iterator<Item = &'a PathBuf>) -> Option<Strin
 }
 
 #[cfg(test)]
-mod new_renderer_tests {
+pub(crate) mod new_renderer_tests {
     use sapphire_assets::material::{AnimeCharacterMaterial, CharacterSurface, HairShading};
     use sapphire_assets::mesh::{
         MaterialSlot, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
@@ -3700,7 +3700,7 @@ mod new_renderer_tests {
 
     /// Content over a pack in memory, with no platform and no renderer: all that deciding what a
     /// material uploads as takes.
-    fn content() -> Content {
+    pub(crate) fn content() -> Content {
         content_over(MemoryPackSource::new())
     }
 

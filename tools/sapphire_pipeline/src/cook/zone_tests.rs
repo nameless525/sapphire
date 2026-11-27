@@ -2438,3 +2438,189 @@ fn a_zones_ids_cook_to_nothing_and_a_yaw_rotation_to_its_turn() {
         assert!(text.contains("town.zone.ron") && text.contains(expected), "`{text}` must say `{expected}`");
     }
 }
+
+/// A pond over the arena's ground and its table, a race along its west side, and the sea under them: the lake
+/// and the river are drawn, the sea isn't.
+const WATER_BODIES: &str = r#"water: [
+    (name: "pond", shape: Lake(outline: [(-4.0, -4.0), (12.0, -4.0), (12.0, 12.0), (-4.0, 12.0)], height: 1.5)),
+    (name: "race", shape: River(points: [(at: (-28.0, 1.0, -28.0), width: 4.0, speed: 2.0), (at: (-28.0, 0.8, 24.0), width: 4.0, speed: 2.0)]), swim: false),
+    (name: "sea", shape: Ocean(height: -5.0)),
+],"#;
+
+/// [`NAV_COLLIDERS`]' ground with `water` and [`placements`].
+fn water_tree(name: &str, water: &str) -> (Tree, PathBuf) {
+    nav_tree(name, &format!(r##"colliders: Some("{COLLIDERS}"), {} {water}"##, placements()))
+}
+
+fn water_id(name: &str) -> AssetId {
+    ZONE.sub_asset(&sapphire_zone::water::water_part(Name::new(name).as_u64()))
+}
+
+/// A zone's lakes and rivers cook to a drawn surface each (M6 W3a), each the bytes the water cook makes alone
+/// on the zone's colliders: the `.szone` names them outside its digest, each body reflects the probe placed
+/// for it, and they ship with the zone. On one thread or eight, every byte the same.
+#[test]
+fn a_zones_lakes_and_rivers_cook_to_drawn_surfaces_that_ship_with_it() {
+    let (tree, _) = water_tree("zone-water-drawn", WATER_BODIES);
+    let report = tree.cook();
+    let zone_bytes = read_zone(&report);
+    let zone = Zone::read(&zone_bytes).unwrap();
+    let colliders = read_aligned(&by_id(&report, COLLIDERS).output);
+    let ground = zone::scatter::ColliderGround::from_cooked(&colliders).unwrap();
+    let text = fs::read_to_string(tree.content().join("town.zone.ron")).unwrap();
+    let document = ZoneDocument::from_ron(&text).unwrap();
+    let sizes = zone::water::sizes(&document.water, Cook::Desktop);
+
+    for (index, body) in document.water.iter().enumerate() {
+        let at = zone.simulation.water.iter().position(|volume| volume.name == body.name.as_str()).unwrap();
+        let surface = &zone.presentation.water[at];
+        if body.name == "sea" {
+            assert_eq!(surface.mesh.as_ref().copied(), None, "the sea isn't drawn");
+            assert_eq!(surface.probe.as_ref().copied(), None, "and reflects the sky");
+            continue;
+        }
+        assert_eq!(surface.mesh.as_ref().copied(), Some(water_id(&body.name)), "{}", body.name);
+        assert_eq!(
+            surface.probe.as_ref().map(|probe| probe.to_native()),
+            Some(index as u32),
+            "its own probe"
+        );
+        let asset = by_id(&report, water_id(&body.name));
+        let name = format!("town.water.{:016x}.swater", Name::new(&body.name).as_u64());
+        assert!(asset.output.ends_with(&name), "{}", asset.output.display());
+        let bytes = read_aligned(&asset.output);
+        assert_eq!(AssetKind::WaterMesh.references(&bytes).unwrap(), [], "it loads nothing else");
+        let alone =
+            zone::water::cook(body, Some(&ground), sizes[index].unwrap()).unwrap().to_cooked().unwrap();
+        assert_eq!(&bytes[..], &alone[..], "the cook is the body on the zone's colliders, and nothing else");
+
+        let mesh = WaterMesh::read(&bytes).unwrap();
+        assert_eq!(mesh.body.to_native(), Name::new(&body.name).as_u64());
+        let (low, high) = body.shape.bounds();
+        let margin = body.shore_margin;
+        for vertex in mesh.vertices.iter() {
+            let [x, _, z] = vertex.position.map(|value| value.to_native());
+            assert!(
+                low[0] - margin <= x && x <= high[0] + margin,
+                "{}: {x} within its grown bounds",
+                body.name
+            );
+            assert!(low[1] - margin - 0.01 <= z && z <= high[1] + margin + 0.01, "{}: {z}", body.name);
+        }
+        // The bed is the colliders' under the surface, wherever the body is.
+        let info = &mesh.info;
+        let mut sampled = 0;
+        for j in 0..info.height.to_native() {
+            for i in 0..info.width.to_native() {
+                let texel = info.texel.to_native();
+                let [x, z] = [i, j].map(|k| k as f32 + 0.5);
+                let (x, z) = (info.origin[0].to_native() + x * texel, info.origin[1].to_native() + z * texel);
+                let Some((surface, _)) = body.shape.column(x, z) else { continue };
+                let (bed, _) = ground.under(x, z, surface);
+                let bed = bed.expect("the arena's ground is under all of it");
+                let depth = ((f64::from(surface) - bed) / 0.1).round() as u8;
+                assert_eq!(info.texel(i, j)[0], depth, "{} at ({x}, {z})", body.name);
+                sampled += 1;
+            }
+        }
+        assert!(sampled > 100, "{sampled}");
+    }
+    let pond_bytes = read_aligned(&by_id(&report, water_id("pond")).output);
+    let pond = WaterMesh::read(&pond_bytes).unwrap();
+    let at = |x: f32, z: f32| {
+        let info = &pond.info;
+        let texel = info.texel.to_native();
+        let [i, j] = [(x, 0), (z, 1)].map(|(at, axis)| ((at - info.origin[axis].to_native()) / texel) as u32);
+        info.texel(i, j)[0]
+    };
+    assert_eq!((at(0.5, 0.5), at(8.5, 8.5)), (15, 5), "1.5 m over the ground, half a metre over the table");
+
+    // The probes placed for the pond and the race, in the water's order.
+    let probes = read_aligned(&by_id(&report, reflections_id()).output);
+    let probes = ReflectionProbes::read(&probes).unwrap();
+    let names: Vec<&str> = probes.probes.iter().map(|probe| probe.name.as_str()).collect();
+    assert_eq!(names, ["pond", "race"]);
+    assert_eq!(probes.probes[0].position.map(|value| value.to_native()), [4.0, 3.5, 4.0], "over its middle");
+    let race = probes.probes[1].position.map(|value| value.to_native());
+    assert!(race[0] == -28.0 && (race[1] - 2.9).abs() < 1e-5 && race[2] == -2.0, "halfway: {race:?}");
+
+    let reach = AssetKind::Zone.reach(&zone_bytes).unwrap();
+    assert!(reach.contains(&water_id("pond")) && reach.contains(&water_id("race")));
+    assert!(!zone.references().contains(&water_id("pond")), "the simulation reads none of it");
+    let packs = tree.dir.path().join("packs");
+    let packed = pack_cooked(&report, &packs, None).unwrap();
+    let holding = |id: AssetId| -> Vec<String> {
+        (packed.packs.iter())
+            .filter(|pack| {
+                let bytes = fs::read(&pack.path).unwrap();
+                PackReader::new(&bytes).unwrap().toc().entries().iter().any(|entry| entry.id == id)
+            })
+            .map(|pack| pack.name.clone())
+            .collect()
+    };
+    assert_eq!(holding(water_id("race")), ["zone_town"], "a surface ships with its zone, and only there");
+
+    // From nothing, on one thread and on eight: the same files.
+    let cook_with = |name: &str, workers: usize| {
+        let (tree, _) = water_tree(name, WATER_BODIES);
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
+        let report = cook_dir_on(&tree.content(), &tree.out(), &options, workers).unwrap();
+        report.assets.iter().map(|asset| (asset.id, fs::read(&asset.output).unwrap())).collect::<Vec<_>>()
+    };
+    let serial = cook_with("zone-water-serial", 1);
+    let drawn = serial.iter().find(|(id, _)| *id == water_id("pond")).expect("cooked");
+    assert_eq!(&drawn.1[..], &read_aligned(&by_id(&report, water_id("pond")).output)[..]);
+    assert_eq!(serial, cook_with("zone-water-workers", 8));
+}
+
+/// A surface's key holds its body's shape and margin, the sizes the zone's water gives it and the colliders,
+/// not the rest of the zone.
+#[test]
+fn only_its_shape_or_the_colliders_recook_a_bodys_surface() {
+    let (tree, colliders) = water_tree("zone-water-keys", WATER_BODIES);
+    tree.cook();
+    let status = |report: &CookReport, name: &str| by_id(report, water_id(name)).status;
+
+    let moved = placements().replace("(2.0, 0.0, 2.0)", "(3.0, 0.0, 2.0)");
+    write_zone(&tree, &format!(r##"colliders: Some("{COLLIDERS}"), {moved} {WATER_BODIES}"##));
+    let report = tree.cook();
+    assert_eq!(by_id(&report, cell_id(cell(0, 0))).status, CookStatus::Cooked, "a moved placement");
+    assert_eq!(
+        (status(&report, "pond"), status(&report, "race")),
+        (CookStatus::UpToDate, CookStatus::UpToDate)
+    );
+
+    let higher = WATER_BODIES.replace("height: 1.5", "height: 1.75");
+    write_zone(&tree, &format!(r##"colliders: Some("{COLLIDERS}"), {moved} {higher}"##));
+    let report = tree.cook();
+    assert_eq!(
+        (status(&report, "pond"), status(&report, "race")),
+        (CookStatus::Cooked, CookStatus::UpToDate)
+    );
+
+    tree.write_at(&colliders, NAV_COLLIDERS.replace("(8.0, 0.5, 8.0)", "(8.0, 0.5, 9.0)").as_bytes());
+    let report = tree.cook();
+    assert_eq!((status(&report, "pond"), status(&report, "race")), (CookStatus::Cooked, CookStatus::Cooked));
+}
+
+/// A lake whose outline grown by its margin meets itself, and a river turning too tightly for its width, fail
+/// the cook naming the zone and the field.
+#[test]
+fn what_a_zone_cant_draw_of_its_water_is_named() {
+    let cases = [
+        (
+            r#"water: [(name: "you", shape: Lake(outline: [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (6.5, 10.0), (6.5, 2.0), (5.5, 2.0), (5.5, 10.0), (0.0, 10.0)], height: 1.0))],"#,
+            "water[0].shore_margin",
+        ),
+        (
+            r#"water: [(name: "pond", shape: Lake(outline: [(-4.0, -4.0), (4.0, -4.0), (4.0, 4.0)], height: 1.0)), (name: "bend", shape: River(points: [(at: (0.0, 0.5, 0.0), width: 4.0), (at: (20.0, 0.5, 0.0), width: 4.0), (at: (0.0, 0.5, 3.5), width: 4.0)]))],"#,
+            "water[1].shape.points[1]",
+        ),
+    ];
+    for (index, (water, expected)) in cases.into_iter().enumerate() {
+        let (tree, _) = water_tree(&format!("zone-water-refused-{index}"), water);
+        let text = chain(&tree.try_cook(false).expect_err(water));
+        assert!(text.contains("town.zone.ron"), "the zone's named in `{text}`");
+        assert!(text.contains(expected), "`{text}` must say `{expected}`");
+    }
+}

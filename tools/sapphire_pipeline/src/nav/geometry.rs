@@ -11,7 +11,7 @@ pub type Triangle = [[f32; 3]; 3];
 const ROUND_SIDES: u32 = 12;
 
 /// [`colliders_to_triangles`]' version: bump it whenever it makes other triangles of the same set. A scatter set
-/// stands on them (`zone::scatter`), so its key holds this.
+/// stands on them (`zone::scatter`) and a water surface's bed lies on them (`zone::water`), so their keys hold this.
 pub const TRIANGULATION: u32 = 1;
 
 /// Whether a triangle's slope is walkable, for `slope_cos`, the cosine of the steepest walkable

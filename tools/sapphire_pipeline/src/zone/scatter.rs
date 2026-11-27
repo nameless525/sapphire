@@ -53,6 +53,16 @@ pub struct ColliderGround {
     triangles: Vec<[[f64; 3]; 3]>,
     /// Each bucket's triangles, by index, ascending.
     buckets: BTreeMap<(i64, i64), Vec<u32>>,
+    /// The closed solids among them (boxes, spheres' and capsules' prisms; not meshes, which have no underside),
+    /// each its footprint's bounds and all its faces: what water stands outside of (M6 W3a).
+    solids: Vec<Solid>,
+}
+
+/// A closed, convex collider: its footprint's bounds on the ground plane and every face of it.
+struct Solid {
+    low: [f64; 2],
+    high: [f64; 2],
+    faces: Vec<[[f64; 3]; 3]>,
 }
 
 impl ColliderGround {
@@ -60,12 +70,44 @@ impl ColliderGround {
     pub fn from_cooked(colliders: &[u8]) -> Result<Self, ZoneCookError> {
         let set = ColliderSet::from_cooked(colliders)
             .map_err(|error| ZoneCookError::invalid("colliders", format!("they don't read: {error}")))?;
-        Self::new(&nav::colliders_to_triangles(&set, Group::World.mask()))
+        let world = Group::World.mask();
+        let solids: Vec<Vec<Triangle>> = (set.colliders.iter())
+            .filter(|collider| collider.memberships & world.bits() != 0)
+            .filter(|collider| !matches!(collider.shape, sapphire_colliders::CookedShape::Mesh { .. }))
+            .map(|collider| {
+                let alone = ColliderSet { colliders: vec![collider.clone()], meshes: Vec::new() };
+                nav::colliders_to_triangles(&alone, world)
+            })
+            .collect();
+        Self::with_solids(&nav::colliders_to_triangles(&set, world), &solids)
+    }
+
+    /// [`Self::new`], with closed solids water stands outside of, each as its faces.
+    pub fn with_solids(triangles: &[Triangle], solids: &[Vec<Triangle>]) -> Result<Self, ZoneCookError> {
+        let mut ground = Self::new(triangles)?;
+        ground.solids = solids
+            .iter()
+            .map(|faces| {
+                let faces: Vec<[[f64; 3]; 3]> =
+                    faces.iter().map(|face| face.map(|corner| corner.map(f64::from))).collect();
+                let (low, high) = faces.iter().flatten().fold(
+                    ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
+                    |(low, high), corner| {
+                        (
+                            [low[0].min(corner[0]), low[1].min(corner[2])],
+                            [high[0].max(corner[0]), high[1].max(corner[2])],
+                        )
+                    },
+                );
+                Solid { low, high, faces }
+            })
+            .collect();
+        Ok(ground)
     }
 
     /// The ground of `triangles`: those that face up, as `colliders_to_triangles` writes a top.
     pub fn new(triangles: &[Triangle]) -> Result<Self, ZoneCookError> {
-        let mut ground = Self { triangles: Vec::new(), buckets: BTreeMap::new() };
+        let mut ground = Self { triangles: Vec::new(), buckets: BTreeMap::new(), solids: Vec::new() };
         for triangle in triangles {
             let corners = triangle.map(|corner| corner.map(f64::from));
             if up(&corners) <= 0.0 {
@@ -103,23 +145,79 @@ fn up([a, b, c]: &[[f64; 3]; 3]) -> f64 {
     (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2])
 }
 
-impl Ground for ColliderGround {
-    fn at(&self, x: f32, z: f32) -> Option<GroundPoint> {
+impl ColliderGround {
+    /// Each face over `(x, z)`, edges included, in the triangles' order: its height there and its normal, both
+    /// `f64` products and sums with no root.
+    fn faces_at(&self, x: f32, z: f32) -> impl Iterator<Item = (f64, [f64; 3])> + '_ {
         let (px, pz) = (f64::from(x), f64::from(z));
         let bucket = ((px / BUCKET).floor() as i64, (pz / BUCKET).floor() as i64);
-        let mut best: Option<(f64, [f64; 3])> = None;
-        for &index in self.buckets.get(&bucket)? {
+        let faces = self.buckets.get(&bucket).map_or(&[][..], Vec::as_slice);
+        faces.iter().filter_map(move |&index| {
             let [a, b, c] = self.triangles[index as usize];
             // Over it, edges included: each edge's side of the point as `up` measures a corner's.
             let side = |from: [f64; 3], to: [f64; 3]| {
                 (to[2] - from[2]) * (px - from[0]) - (to[0] - from[0]) * (pz - from[2])
             };
             if side(a, b) < 0.0 || side(b, c) < 0.0 || side(c, a) < 0.0 {
-                continue;
+                return None;
             }
             let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
             let normal = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-            let height = a[1] - (normal[0] * (px - a[0]) + normal[2] * (pz - a[2])) / normal[1];
+            Some((a[1] - (normal[0] * (px - a[0]) + normal[2] * (pz - a[2])) / normal[1], normal))
+        })
+    }
+
+    /// Under a water surface at `surface` over `(x, z)` (M6 W3a): the highest face at or below it, if any, and
+    /// whether any face stands above it there (land, where none is below). A point of the surface inside a closed
+    /// solid, a rock or an island standing on the bed, has no bed and is covered: land.
+    pub fn under(&self, x: f32, z: f32, surface: f32) -> (Option<f64>, bool) {
+        let surface = f64::from(surface);
+        if self.solids.iter().any(|solid| solid.holds(f64::from(x), surface, f64::from(z))) {
+            return (None, true);
+        }
+        let (mut bed, mut covered) = (None::<f64>, false);
+        for (height, _) in self.faces_at(x, z) {
+            if height > surface {
+                covered = true;
+            } else if bed.is_none_or(|bed| height > bed) {
+                bed = Some(height);
+            }
+        }
+        (bed, covered)
+    }
+}
+
+impl Solid {
+    /// Whether `(x, y, z)` lies in it, its faces included: between the lowest and the highest of its faces over
+    /// `(x, z)`, as a vertical line meets a convex solid. Sums, products and quotients, as `faces_at`'s.
+    fn holds(&self, x: f64, y: f64, z: f64) -> bool {
+        if !(self.low[0] <= x && x <= self.high[0] && self.low[1] <= z && z <= self.high[1]) {
+            return false;
+        }
+        let mut span = (f64::INFINITY, f64::NEG_INFINITY);
+        for &[a, b, c] in &self.faces {
+            let side = |from: [f64; 3], to: [f64; 3]| {
+                (to[2] - from[2]) * (x - from[0]) - (to[0] - from[0]) * (z - from[2])
+            };
+            let sides = [side(a, b), side(b, c), side(c, a)];
+            let over = sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0);
+            let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+            let normal = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            // A wall is met only at its edges, which the faces beside it already answer for.
+            if !over || normal[1] == 0.0 {
+                continue;
+            }
+            let height = a[1] - (normal[0] * (x - a[0]) + normal[2] * (z - a[2])) / normal[1];
+            span = (span.0.min(height), span.1.max(height));
+        }
+        span.0 <= y && y <= span.1
+    }
+}
+
+impl Ground for ColliderGround {
+    fn at(&self, x: f32, z: f32) -> Option<GroundPoint> {
+        let mut best: Option<(f64, [f64; 3])> = None;
+        for (height, normal) in self.faces_at(x, z) {
             // The highest, and of two as high the first, so the answer is the triangles' order's.
             if best.is_none_or(|(highest, _)| height > highest) {
                 best = Some((height, normal));

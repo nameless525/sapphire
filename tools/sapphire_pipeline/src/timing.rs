@@ -27,6 +27,7 @@ use sapphire_time::Stopwatch;
 
 use crate::cook::{Cook, CookReport, CookStatus};
 use crate::zone::scatter::SCATTER_COOKER;
+use crate::zone::water::WATER_COOKER;
 
 /// How many stages and assets `cook --report` prints.
 pub const SLOWEST: usize = 10;
@@ -226,15 +227,22 @@ impl fmt::Display for Slowest<'_> {
         for index in assets.into_iter().take(count) {
             line(f, index)?;
         }
-        // Every zone's scatter set, a line a cell in the report's order (M6 G1a): placement is the cook's to
-        // budget cell by cell, however few of them are among the slowest.
-        let cells: Vec<usize> = (0..timings.assets.len().min(report.assets.len()))
-            .filter(|&index| timings.assets[index].cooker == SCATTER_COOKER.name)
-            .collect();
-        if !cells.is_empty() {
-            writeln!(f, "  scatter sets, a line a cell, key and cook:")?;
-            for index in cells {
-                line(f, index)?;
+        // Every zone's scatter set, a line a cell (M6 G1a), and every drawn water surface, a line a body (M6
+        // W3a), in the report's order: placement and the water's cook are the cook's to budget one by one,
+        // however few of them are among the slowest.
+        let each = [
+            (SCATTER_COOKER.name, "scatter sets, a line a cell"),
+            (WATER_COOKER.name, "water surfaces, a line a body"),
+        ];
+        for (cooker, heading) in each {
+            let listed: Vec<usize> = (0..timings.assets.len().min(report.assets.len()))
+                .filter(|&index| timings.assets[index].cooker == cooker)
+                .collect();
+            if !listed.is_empty() {
+                writeln!(f, "  {heading}, key and cook:")?;
+                for index in listed {
+                    line(f, index)?;
+                }
             }
         }
         Ok(())
@@ -381,6 +389,49 @@ desktop: 3.900 s in all, 4 asset(s)
             ]
         );
         assert!(!fixed_report_text().contains("scatter sets"), "a cook with none says nothing of them");
+    }
+
+    #[test]
+    fn every_water_surface_has_a_line_of_its_own() {
+        let mut report = fixed_report();
+        report.assets.push(CookedAsset {
+            id: AssetId::from_bytes([7; 16]),
+            source: PathBuf::from("/content/wood/grove.zone.ron"),
+            output: PathBuf::from("/loose/wood/grove.water.00000000000000aa.swater"),
+            key: CacheKey::reach(&blake3::hash(&[7]), Stage { name: "test", version: 1 }),
+            output_hash: blake3::hash(&[7]),
+            status: CookStatus::Cooked,
+            name: String::new(),
+            texture: None,
+            ships_with: Vec::new(),
+        });
+        report.timings.assets.push(AssetTime {
+            importer: "zone",
+            cooker: WATER_COOKER.name,
+            key: millis(1),
+            cook: millis(3),
+        });
+        let slowest = Slowest {
+            report: &report,
+            cook: Cook::Desktop,
+            source: Path::new("/content"),
+            out: Path::new("/loose"),
+            count: 2,
+        };
+        let text = slowest.to_string();
+        let bodies: Vec<&str> = text
+            .split("water surfaces, a line a body, key and cook:\n")
+            .nth(1)
+            .expect("listed")
+            .lines()
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                "     0.004 s  wood/grove.zone.ron -> wood/grove.water.00000000000000aa.swater (cooked; key 0.001 s)"
+            ]
+        );
+        assert!(!fixed_report_text().contains("water surfaces"), "a cook with none says nothing of them");
     }
 
     fn fixed_report_text() -> String {

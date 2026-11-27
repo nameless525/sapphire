@@ -189,7 +189,8 @@ use sapphire_timeline::{TIMELINE_EXTENSION, Timeline};
 use sapphire_zone::grid::CellCoord;
 use sapphire_zone::{
     AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, FOLIAGE_EXTENSION, Foliage, Place,
-    SCATTER_EXTENSION, ScatterSet, ZONE_EXTENSION, Zone, ZoneDocument, ZoneError,
+    SCATTER_EXTENSION, ScatterSet, WATER_MESH_EXTENSION, WaterMesh, ZONE_EXTENSION, Zone, ZoneDocument,
+    ZoneError,
 };
 
 use crate::anim_graph::{self, AnimGraphCookError};
@@ -616,6 +617,16 @@ impl Recipe {
             cooker: zone::trunks::TRUNKS_COOKER,
             format: ColliderSet::VERSION,
             extension: COLLIDERS_EXTENSION,
+        }
+    }
+
+    /// The recipe of a zone's drawn surface of a lake or a river (M6 W3a).
+    fn zone_water() -> Self {
+        Self {
+            importer: zone::IMPORTER,
+            cooker: zone::water::WATER_COOKER,
+            format: WaterMesh::VERSION,
+            extension: WATER_MESH_EXTENSION,
         }
     }
 
@@ -1103,6 +1114,7 @@ impl TextureOf {
             | Part::Ambient
             | Part::Scatter(_)
             | Part::Trunks
+            | Part::Water(_)
             | Part::MergedMaterial { .. } => None,
         }
     }
@@ -1363,6 +1375,7 @@ fn cook_dir_through(
                 Part::Shape(shape) => zone::shape_path(&source_relative, shape, recipe.extension),
                 Part::Scatter(cell) => zone::scatter_path(&source_relative, *cell, recipe.extension),
                 Part::Trunks => zone::trunks_path(&source_relative, recipe.extension),
+                Part::Water(body) => zone::water_path(&source_relative, *body, recipe.extension),
                 Part::FontSubset { pack, .. } => {
                     let file = format!("{}.{pack}.{}", file_stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
@@ -1424,13 +1437,13 @@ fn cook_dir_through(
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
     // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
     // move sets read clips' keys, so those go before move sets; probe grids and a zone's reflection
-    // probes read cooked meshes and their materials, a zone's scatter sets read cooked colliders, its colliders
+    // probes read cooked meshes and their materials, a zone's scatter sets and water surfaces read cooked colliders, its colliders
     // with trunks joined read its sets, its navmesh reads those or its document's, and a zone's `.szone` reads its
     // meshes and holds its navmesh's key, so those cook last, in that order. `others` read none of what those cook.
     let (own_zones, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_own_zone());
     let (scatter, rest): (Vec<usize>, Vec<usize>) =
-        rest.into_iter().partition(|&index| matches!(plan[index].part, Part::Scatter(_)));
+        rest.into_iter().partition(|&index| matches!(plan[index].part, Part::Scatter(_) | Part::Water(_)));
     let (trunks, rest): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].part == Part::Trunks);
     let (navigation, rest): (Vec<usize>, Vec<usize>) =
@@ -1784,6 +1797,8 @@ enum Part {
     Scatter(CellCoord),
     /// A zone's colliders with its trees' trunks joined (M6 G1b).
     Trunks,
+    /// A zone's drawn surface of one lake or river, by its body's ID (M6 W3a).
+    Water(u64),
     /// A texture's level above its tail (M5 M3): the texture, the source's own asset, and which level,
     /// from its base.
     Level { texture: AssetId, level: u32 },
@@ -2025,8 +2040,16 @@ fn sub_assets(
                 part: Part::Trunks,
                 recipe: Recipe::zone_trunks(),
             });
+            let water: Vec<PlannedPart> = (plan.water_bodies())
+                .map(|body| PlannedPart {
+                    id: plan.water_id(body),
+                    part: Part::Water(body),
+                    recipe: Recipe::zone_water(),
+                })
+                .collect();
             let parts = (parts.chain(navigation).chain(reflections).chain(ambient))
                 .chain(scatter)
+                .chain(water)
                 .chain(colliders)
                 .collect();
             zones.insert(path.clone(), plan);
@@ -2811,13 +2834,14 @@ fn asset_key(
         Part::Ambient => assets.zones[path].ambient_recipe(),
         Part::Scatter(cell) => assets.zones[path].scatter_recipe(*cell),
         Part::Trunks => assets.zones[path].foliage_recipe().expect("only a zone with foliage joins trunks"),
+        Part::Water(body) => assets.zones[path].water_recipe(*body, cook),
         _ => source.hash,
     };
     // A navmesh and ambient characters read nothing of how a zone's meshes cook (its cells' levels and
     // outlines, M5 D6), so a save to those leaves them alone.
     let unread = ImportSettings::Zone(zone::ZoneSettings::default());
     let settings = match part {
-        Part::Navigation | Part::Ambient | Part::Scatter(_) | Part::Trunks => &unread,
+        Part::Navigation | Part::Ambient | Part::Scatter(_) | Part::Trunks | Part::Water(_) => &unread,
         _ => &meta.importer,
     };
     Ok(CacheKey::new(&KeyInputs {
@@ -3000,6 +3024,7 @@ fn cook_source(
         Part::Navigation => return cook_navigation(path, assets),
         Part::Scatter(cell) => return cook_scatter(path, *cell, assets),
         Part::Trunks => return cook_trunks(path, assets),
+        Part::Water(body) => return cook_water(path, *body, cook, assets),
         Part::Ambient => return cook_ambient(path, assets),
         Part::Reflections => {
             let plan = &assets.zones[path];
@@ -3269,6 +3294,14 @@ fn cook_scatter(path: &Path, cell: CellCoord, assets: &Assets<'_>) -> Result<Vec
     let plan = &assets.zones[path];
     let bytes = zone_colliders(path, assets)?;
     plan.cook_scatter(cell, &bytes).map_err(zone_error(path))
+}
+
+/// A zone's drawn surface of the lake or river `body` on `cook`, its bed on the zone's cooked colliders if it
+/// names any (M6 W3a).
+fn cook_water(path: &Path, body: u64, cook: Cook, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
+    let plan = &assets.zones[path];
+    let colliders = plan.document().colliders.map(|_| zone_colliders(path, assets)).transpose()?;
+    plan.cook_water(body, cook, colliders.as_deref()).map_err(zone_error(path))
 }
 
 /// The cooked collider set the zone at `path` names, which it must.
@@ -4313,6 +4346,12 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
             dependencies.push(cooked_bytes(plan.scatter_id(cell), "foliage".to_owned(), "a scatter set")?);
         }
         return Ok(dependencies.into_iter().chain(foliage).collect());
+    }
+    // Its bed is the colliders', if the zone names any (M6 W3a); its recipe holds the rest.
+    if let Part::Water(_) = part {
+        let colliders =
+            document.colliders.map(|id| cooked_key(id, "colliders".to_owned(), "a collider document"));
+        return colliders.into_iter().collect();
     }
     // What the probes see and the day they're baked under: their recipe holds the rest.
     if *part == Part::Reflections {

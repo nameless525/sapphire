@@ -144,6 +144,16 @@
 //! cells it plans. A zone without it cooks as it did but for the cooked version and an empty `foliage`, and keeps
 //! its digest.
 //!
+//! # Water
+//!
+//! Each lake and river in a document's `water` (M6 W3a) makes a `.swater`, a sub-asset of the zone
+//! (`town.water.<body ID>.swater`): its drawn mesh and its info texture, the bed on the zone's colliders when it
+//! names any ([`water`]). Its key holds the body's shape and margin, the sizes the zone's water gives it, the
+//! colliders' triangulation ([`crate::nav::TRIANGULATION`]) and the colliders' key, so a moved placement recooks none. Each that names no reflection probe has one placed for
+//! it, baked with the document's ([`sapphire_zone::WaterBody::placed_probe`]). The `.szone` names each surface's
+//! mesh outside its digest; a zone without water cooks as it did but for the cooked version
+//! (`sapphire_zone::Zone::VERSION`, 14).
+//!
 //! A foliage document whose rules place a tree with a trunk (M6 G1b) also makes the zone's own collider set,
 //! `grove.trunks.scol`, its colliders with every trunk joined ([`trunks`]), which the `.szone`'s simulation half
 //! names in place of the document's `colliders`, and which the navmesh bakes from. Only such a zone moves its
@@ -202,6 +212,7 @@ pub mod claims;
 mod levels_tests;
 pub mod scatter;
 pub mod trunks;
+pub mod water;
 
 /// Reads and checks the document, its prefabs' too. Bump the version whenever that changes output for
 /// the same document.
@@ -367,6 +378,12 @@ pub fn scatter_path(relative: &Path, cell: CellCoord, extension: &str) -> PathBu
     relative.with_file_name(format!("{}.scatter.{}.{}.{extension}", stem(relative), cell.x, cell.z))
 }
 
+/// The file a water body's drawn surface cooks to (M6 W3a), by its ID: `town.zone.ron` →
+/// `town.water.0f3a1b2c3d4e5f60.swater`.
+pub fn water_path(relative: &Path, body: u64, extension: &str) -> PathBuf {
+    relative.with_file_name(format!("{}.water.{body:016x}.{extension}", stem(relative)))
+}
+
 /// What a navmesh's sub-asset is called among a zone's. Never changed: its ID is derived from it.
 pub const NAVIGATION_PART: &str = "navigation";
 
@@ -504,6 +521,8 @@ pub struct ZonePlan {
     shapes: BTreeMap<String, ShapePlan>,
     /// The foliage document the zone names, if it names one (M6 G1a).
     foliage: Option<FoliagePlan>,
+    /// The ground its water's beds lie on, made by the first body that cooks (M6 W3a).
+    water_ground: scatter::SharedGround,
 }
 
 /// What a zone's foliage document plans: a scatter set for each cell its layers reach ([`scatter`]).
@@ -718,7 +737,16 @@ impl ZonePlan {
                 });
             }
         }
-        let mut plan = Self { id, document, prefabs: read, materials, places, shapes, foliage: None };
+        let mut plan = Self {
+            id,
+            document,
+            prefabs: read,
+            materials,
+            places,
+            shapes,
+            foliage: None,
+            water_ground: scatter::SharedGround::default(),
+        };
         plan.foliage = plan.document.foliage.map(|id| FoliagePlan::read(id, &plan, sources)).transpose()?;
         Ok(plan)
     }
@@ -950,6 +978,64 @@ impl ZonePlan {
                 .map(|&cell| CookedScatterCell { coord: [cell.x, cell.z], scatter: self.scatter_id(cell) })
                 .collect(),
         })
+    }
+
+    /// The IDs of the zone's lakes and rivers, each a drawn surface of its own (M6 W3a, [`water`]), in the
+    /// document's order: the sea has none.
+    pub fn water_bodies(&self) -> impl Iterator<Item = u64> + '_ {
+        (self.document.water.iter())
+            .filter(|body| body.shape.kind() != sapphire_zone::WaterKind::Ocean)
+            .map(|body| sapphire_core::Name::new(&body.name).as_u64())
+    }
+
+    /// The ID of a body's drawn surface.
+    pub fn water_id(&self, body: u64) -> AssetId {
+        self.id.sub_asset(&sapphire_zone::water::water_part(body))
+    }
+
+    /// The body of the document with ID `body`, and its place among the document's.
+    fn water_body(&self, body: u64) -> (usize, &sapphire_zone::WaterBody) {
+        let found = self
+            .document
+            .water
+            .iter()
+            .enumerate()
+            .find(|(_, water)| sapphire_core::Name::new(&water.name).as_u64() == body);
+        found.expect("only the plan's bodies are drawn")
+    }
+
+    /// What the key of a body's drawn surface holds in place of the document's hash on `cook`: its shape, its
+    /// margin, the sizes the zone's water gives it and the triangles' version ([`nav::TRIANGULATION`]: its bed is
+    /// the colliders' triangles), the colliders being its dependency ([`water`]).
+    pub fn water_recipe(&self, body: u64, cook: Cook) -> blake3::Hash {
+        let (index, water) = self.water_body(body);
+        water::recipe(water, water::sizes(&self.document.water, cook)[index])
+    }
+
+    /// Cooks a body's drawn surface on `cook`, its bed on the zone's cooked `colliders` if it names any: the
+    /// `.swater`'s bytes, read back through the runtime's check.
+    pub fn cook_water(
+        &self,
+        body: u64,
+        cook: Cook,
+        colliders: Option<&[u8]>,
+    ) -> Result<Vec<u8>, ZoneCookError> {
+        let (index, water) = self.water_body(body);
+        let sizes = water::sizes(&self.document.water, cook)[index].expect("the sea isn't drawn");
+        let ground = colliders.map(|colliders| self.water_ground.of(colliders)).transpose()?;
+        let mesh = water::cook(water, ground.as_deref(), sizes)
+            .map_err(|(field, problem)| ZoneCookError::invalid(format!("water[{index}].{field}"), problem))?;
+        let cooked = mesh.to_cooked()?;
+        sapphire_zone::WaterMesh::read(&cooked)?;
+        Ok(cooked.into_vec())
+    }
+
+    /// What the `.szone` names of its drawn water: each lake's and river's surface, by its body's name.
+    fn cooked_water(&self) -> BTreeMap<String, AssetId> {
+        (self.document.water.iter())
+            .filter(|body| body.shape.kind() != sapphire_zone::WaterKind::Ocean)
+            .map(|body| (body.name.clone(), self.water_id(sapphire_core::Name::new(&body.name).as_u64())))
+            .collect()
     }
 
     /// Whether a placement or an instance names colliders that stand for it, which the `.szone`'s cook then
@@ -1639,7 +1725,7 @@ pub fn cook(
         foliage,
         volume_looks,
         joined_colliders,
-        water: BTreeMap::new(),
+        water: plan.cooked_water(),
     };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;

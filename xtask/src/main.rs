@@ -210,7 +210,7 @@ Commands:
       differences from it (CI's lavapipe lane: tests/counts/district-ci-vulkan-lavapipe.txt).
       Every walk runs with --compute-threads 3. Walks' logs and what they counted are in
       target/counts/.
-  bench-scale prepare|plan|run|report [--preset ci|budget|double] [--smoke] [--sitting <n>]
+  bench-scale prepare|plan|run|report [--preset ci|budget|double] [--smoke] [--probes] [--sitting <n>]
       [--counts] [--baseline <dir>]
       The benches at scale (M5 Z1): every row exit tests 1, 2, 5, 6 and 7 measure, and the packages'
       costs on and off beside exit test 3, on each tier,
@@ -224,7 +224,9 @@ Commands:
       sitting only under `slot --all --load 8` on a quiet machine. report writes report.md, each
       tier's rows beside their budgets and beside --baseline's logs (B4's), a verdict for each exit
       test and tier, and fails on a failed verdict or on what is missing or differs between rounds. --smoke runs everything at 200 frames and 320x180 into
-      smoke/, which proves the batch runs and parses and measures nothing.
+      smoke/, which proves the batch runs and parses and measures nothing. --probes plans, runs and
+      reports M6's probes (M6 B9, bench/probes.ron) in place of the batch, from the same prepare, into
+      probes/ (probes-smoke/ with --smoke); their report says what each run settles, not verdicts.
   bench-scale device --platform ios-sim|android [--tier <name>]... [--smoke] [--dry-run]
       The manifest's runs with `devices` on the iOS Simulator or the Android emulator (M5 Z2):
       bundles the release dev sandbox with the mobile cook and the device's preset's district

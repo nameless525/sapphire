@@ -15,7 +15,10 @@
 //!   what a resumed batch runs;
 //! - `replays/`: the crowd scenarios' replays, recorded here since none is committed, and the committed ones the
 //!   runs play;
-//! - `logs/` (or `smoke/` for `--smoke`): each run's log, trace and status, and `report.md`.
+//! - `logs/` (or `smoke/` for `--smoke`): each run's log, trace and status, and `report.md`;
+//! - `probes/` (or `probes-smoke/`): the same for M6's probes (M6 B9), `--probes` on `plan`, `run` and
+//!   `report`, whose runs are `bench/probes.ron`'s: they run from the same prepared content, sandbox and replays,
+//!   and their sittings and report stay apart from the batch's.
 //!
 //! `device --platform ios-sim|android` (M5 Z2) walks the manifest's runs that name a device there: it puts the
 //! mobile cook and the device's preset's district together in `content/<preset>/mobile/`, bundles the release
@@ -44,6 +47,9 @@ use crate::workspace::{self, BuildProfile, CargoBuild};
 
 /// The manifest of runs, relative to the workspace root.
 pub const MANIFEST: &str = "bench/scale.ron";
+
+/// M6's probes (M6 B9): a manifest of the same shape, run from the same prepared commit into its own folder.
+pub const PROBES: &str = "bench/probes.ron";
 
 const SANDBOX: &str = "sapphire_sandbox";
 const TESTKIT: &str = "sapphire_testkit";
@@ -75,7 +81,11 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
     };
     let preset = args.value::<Preset>("--preset")?;
     let smoke = args.flag("--smoke");
+    let which = if args.flag("--probes") { Manifest::Probes } else { Manifest::Batch };
     let folder = commit_dir()?;
+    if which == Manifest::Probes && !matches!(command.as_str(), "plan" | "run" | "report") {
+        bail!("--probes goes with `plan`, `run` or `report`: the probes run from the batch's `prepare`");
+    }
     match command.as_str() {
         "prepare" => {
             args.finish(false)?;
@@ -83,7 +93,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
         }
         "plan" => {
             args.finish(false)?;
-            let mut testkit = testkit(&folder, "plan", smoke)?;
+            let mut testkit = testkit(&folder, which, "plan", smoke)?;
             workspace::run(&mut testkit)
         }
         "run" => {
@@ -95,7 +105,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                 None => prepared(&folder)?,
             };
             let content = folder.join("content").join(preset.name());
-            let mut testkit = testkit(&folder, "run", smoke)?;
+            let mut testkit = testkit(&folder, which, "run", smoke)?;
             testkit
                 .arg("--sandbox")
                 .arg(bin(&folder, SANDBOX))
@@ -116,7 +126,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
         "report" => {
             let baseline = args.value::<PathBuf>("--baseline")?;
             args.finish(false)?;
-            let mut testkit = testkit(&folder, "report", smoke)?;
+            let mut testkit = testkit(&folder, which, "report", smoke)?;
             let commit = folder.file_name().expect("keyed by commit").to_string_lossy().into_owned();
             testkit.arg("--commit").arg(commit);
             if let Some(baseline) = baseline {
@@ -188,7 +198,7 @@ fn device(
     let device = platforms::boot(platform, &app, &bundle)?;
     drop(bundle); // The device has its own copy now.
     let launcher = std::env::current_exe().context("finding xtask's own executable, the units' launcher")?;
-    let mut walks = self::testkit(folder, "run", smoke)?;
+    let mut walks = self::testkit(folder, Manifest::Batch, "run", smoke)?;
     walks.args(["--device", platform.name()]);
     for tier in tiers {
         walks.args(["--tier", tier]);
@@ -294,8 +304,35 @@ fn copy_into_bin(folder: &Path, built: &Path, name: &str) -> anyhow::Result<Path
     Ok(to)
 }
 
-/// `sapphire_testkit scale <command>` from `bin/`, over the manifest and the logs folder.
-fn testkit(folder: &Path, command: &str, smoke: bool) -> anyhow::Result<Command> {
+/// Which manifest a command reads: the batch's or M6's probes (M6 B9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Manifest {
+    Batch,
+    Probes,
+}
+
+impl Manifest {
+    /// Its file, relative to the workspace root.
+    fn path(self) -> &'static str {
+        match self {
+            Self::Batch => MANIFEST,
+            Self::Probes => PROBES,
+        }
+    }
+
+    /// The folder its logs and report go in, under the commit's.
+    fn out(self, smoke: bool) -> &'static str {
+        match (self, smoke) {
+            (Self::Batch, false) => "logs",
+            (Self::Batch, true) => "smoke",
+            (Self::Probes, false) => "probes",
+            (Self::Probes, true) => "probes-smoke",
+        }
+    }
+}
+
+/// `sapphire_testkit scale <command>` from `bin/`, over `manifest` and its logs folder.
+fn testkit(folder: &Path, manifest: Manifest, command: &str, smoke: bool) -> anyhow::Result<Command> {
     let testkit = bin(folder, TESTKIT);
     if !testkit.is_file() {
         bail!(
@@ -306,9 +343,9 @@ fn testkit(folder: &Path, command: &str, smoke: bool) -> anyhow::Result<Command>
     let mut process = Command::new(testkit);
     process
         .args(["scale", command, "--manifest"])
-        .arg(workspace::root().join(MANIFEST))
+        .arg(workspace::root().join(manifest.path()))
         .arg("--out")
-        .arg(folder.join(if smoke { "smoke" } else { "logs" }));
+        .arg(folder.join(manifest.out(smoke)));
     if smoke {
         process.arg("--smoke");
     }
@@ -394,6 +431,45 @@ mod tests {
         let second = copy_into_bin(&folder, &built, TESTKIT).unwrap();
         assert_eq!(fs::read_to_string(second).unwrap(), "a binary");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// M6's probes (M6 B9) run from the batch's prepared content: their preset is the batch's, and their logs go
+    /// in a folder of their own, so no probe's unit or report lands among the batch's.
+    #[test]
+    fn the_probes_share_the_batchs_preset_and_keep_their_own_logs() {
+        let read = |manifest: Manifest| {
+            fs::read_to_string(workspace::root().join(manifest.path())).expect("the committed manifest")
+        };
+        let (batch, probes) = (read(Manifest::Batch), read(Manifest::Probes));
+        assert_eq!(preset_in(&probes), preset_in(&batch));
+        let folders = [false, true].map(|smoke| [Manifest::Batch.out(smoke), Manifest::Probes.out(smoke)]);
+        let folders: Vec<&str> = folders.into_iter().flatten().collect();
+        let mut distinct = folders.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), folders.len(), "{folders:?}");
+    }
+
+    /// Every replay a manifest's run plays (`{replays}/<name>.sreplay`, in the batch or the probes) is one
+    /// `prepare` copies or records, so a run naming a new one fails here rather than in a quiet window.
+    #[test]
+    fn every_replay_a_manifest_plays_is_one_prepare_puts_beside_it() {
+        let mut named = 0;
+        for manifest in [Manifest::Batch, Manifest::Probes] {
+            let text =
+                fs::read_to_string(workspace::root().join(manifest.path())).expect("the committed manifest");
+            for (at, _) in text.match_indices("{replays}/") {
+                let rest = &text[at + "{replays}/".len()..];
+                let name = rest.split(".sreplay").next().expect("a name");
+                assert!(
+                    COMMITTED.contains(&name) || CROWDS.contains(&name),
+                    "{}: `{name}` is not among prepare's replays",
+                    manifest.path()
+                );
+                named += 1;
+            }
+        }
+        assert!(named > 20, "the manifests' replays: {named}");
     }
 
     #[test]

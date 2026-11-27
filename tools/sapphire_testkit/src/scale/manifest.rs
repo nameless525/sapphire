@@ -13,6 +13,9 @@ use serde::Deserialize;
 #[type_path = "sapphire::testkit"]
 #[serde(deny_unknown_fields)]
 pub struct ScaleBench {
+    /// The report's heading: "Benches at scale" unless it says otherwise (M6 B9's probes, `bench/probes.ron`).
+    #[serde(default)]
+    pub title: Option<String>,
     /// The benchmark preset the district's runs mount (`cargo xtask bench-content --preset`).
     pub preset: String,
     /// Rounds of each run, unless the run says otherwise.
@@ -214,6 +217,10 @@ pub struct Run {
     /// variants, and only `bench-scale device` runs it, its units apart from the batch's.
     #[serde(default)]
     pub devices: Vec<String>,
+    /// The packages (docs/m6-plan.md's IDs, `P1`, `J5`) whose "Measure first" or "Kill if" reads it (M6 B9): the
+    /// report lists each package's runs, which spec §3.9 gives its go or kill from.
+    #[serde(default)]
+    pub settles: Vec<String>,
 }
 
 fn three() -> u32 {
@@ -334,6 +341,9 @@ impl ScaleBench {
             if !run.rows.is_empty() && run.variants.is_empty() {
                 return Err(format!("{what}: `rows` are a pair's table, and it has no variants"));
             }
+            if let Some(package) = run.settles.iter().find(|package| !package_ok(package)) {
+                return Err(format!("{what} settles {package:?}: a package is the plan's ID, `P1` or `A5a`"));
+            }
         }
         for run in &self.runs {
             if let Some(beside) = &run.beside
@@ -376,6 +386,22 @@ impl ScaleBench {
             }
         }
         Ok(())
+    }
+
+    /// The report's heading.
+    pub fn title(&self) -> &str {
+        self.title.as_deref().unwrap_or("Benches at scale")
+    }
+
+    /// Each package a run settles, with the runs that settle it, in the runs' order.
+    pub fn packages(&self) -> BTreeMap<&str, Vec<&str>> {
+        let mut packages: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for run in &self.runs {
+            for package in &run.settles {
+                packages.entry(package.as_str()).or_default().push(run.name.as_str());
+            }
+        }
+        packages
     }
 
     /// The tier called `name`.
@@ -613,6 +639,18 @@ fn unit_name(run: &Run, tier: &Tier, variant: Option<usize>, device: Option<&str
     format!("{name}.r{round}")
 }
 
+/// A package's ID in docs/m6-plan.md: a track's capital, its number, and a lowercase letter for a part (`A5a`).
+fn package_ok(id: &str) -> bool {
+    let mut chars = id.chars();
+    let track = chars.next().is_some_and(|c| c.is_ascii_uppercase());
+    let rest = chars.as_str();
+    let digits = rest.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    track
+        && !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit())
+        && rest.len() - digits.len() <= 1
+}
+
 /// `<width>x<height>`, both above 0.
 fn size(text: &str) -> Option<(u32, u32)> {
     let (width, height) = text.split_once('x')?;
@@ -803,7 +841,7 @@ mod tests {
             );
             district += 1;
         }
-        assert_eq!(district, 21, "M5's and B7's runs in the district");
+        assert_eq!(district, 20, "M5's and B7's runs in the district");
     }
 
     /// A phone draws its tier's capped scene onto a native panel and upscales it (spec §3.1's "~1600×740 →
@@ -934,20 +972,23 @@ mod tests {
     }
 
     /// M6 B7's two runs are the batch's district fight, by its own arguments: on the phones alone with the compute
-    /// pool at one thread, three and the machine's own, and on every tier waiting for every frame and overlapped.
+    /// pool at one thread, three and the machine's own (`fight-pool`, M6's probes since B9), and on every tier
+    /// waiting for every frame and overlapped (the batch's `fight-overlap`).
     #[test]
     fn the_pool_and_overlap_arms_are_the_district_fights() {
         let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let probes = ScaleBench::parse(PROBES).unwrap();
         let fight = manifest.run("district-fight").unwrap();
         let arms = |run: &Run| -> Vec<(String, Vec<String>)> {
             run.variants.iter().map(|variant| (variant.name.clone(), variant.args.clone())).collect()
         };
         let owned = |args: &[&str]| -> Vec<String> { args.iter().map(|arg| (*arg).to_owned()).collect() };
-        let pool = manifest.run("fight-pool").unwrap();
+        assert!(manifest.run("fight-pool").is_none(), "moved to the probes");
+        let pool = probes.run("fight-pool").unwrap();
         assert_eq!((&pool.args, pool.frames, pool.trace), (&fight.args, fight.frames, true));
         assert_eq!(pool.tiers, ["mobile-high", "mobile-low"]);
         assert!(
-            pool.tiers.iter().all(|tier| manifest.tier(tier).is_some_and(|tier| tier.cook == Cook::Mobile))
+            pool.tiers.iter().all(|tier| probes.tier(tier).is_some_and(|tier| tier.cook == Cook::Mobile))
         );
         assert_eq!(
             arms(pool),
@@ -964,9 +1005,148 @@ mod tests {
             arms(overlap),
             [("waits".to_owned(), Vec::new()), ("overlaps".to_owned(), owned(&["--bench-overlap"]))]
         );
-        let units = manifest.units(None);
-        for (name, count) in [("fight-pool.", 3 * 2 * 2), ("fight-overlap.", 2 * 4 * 2)] {
-            assert_eq!(units.iter().filter(|unit| unit.name.starts_with(name)).count(), count, "{name}");
+        let count =
+            |units: Vec<Unit>, name: &str| units.iter().filter(|unit| unit.name.starts_with(name)).count();
+        assert_eq!(count(probes.units(None), "fight-pool."), 3 * 2 * 2);
+        assert_eq!(count(manifest.units(None), "fight-overlap."), 2 * 4 * 2);
+    }
+
+    /// M6's probes (`bench/probes.ron`, M6 B9).
+    const PROBES: &str = include_str!("../../../../bench/probes.ron");
+
+    /// docs/m6-plan.md, whose rows say which packages wait on B9.
+    const PLAN: &str = include_str!("../../../../docs/m6-plan.md");
+
+    /// The packages whose plan row names B9 among what it waits on but that no run here settles, each with why:
+    /// what it reads is its own, or another package's.
+    const LEFT_OUT: [(&str, &str); 16] = [
+        ("P7", "its own half-precision spike"),
+        ("F4", "B2's passes timed alone"),
+        ("J4", "the streamer's split and its count of textures skipped, J4's own counter"),
+        ("X3", "the phone session"),
+        ("Z1", "the exit run"),
+        ("W3", "its own probe, added in its pull request"),
+        ("W6", "its own probe, added in its pull request"),
+        ("G2", "its own probe, added in its pull request"),
+        ("V2", "its own probe, added in its pull request"),
+        ("V4", "its own probe, added in its pull request"),
+        ("V5", "its own probe, added in its pull request"),
+        ("V10", "its own probe, added in its pull request"),
+        ("V11", "its own probe, added in its pull request"),
+        ("V14a", "its own probe, added in its pull request"),
+        ("N13", "its own probe, added in its pull request"),
+        ("N14", "its own probe, added in its pull request"),
+    ];
+
+    /// Each package row of the plan (`| ID | ... | size | waits on | as built |`): its ID and what it waits on.
+    fn plan_rows() -> Vec<(&'static str, &'static str)> {
+        PLAN.lines()
+            .filter_map(|line| {
+                let cells: Vec<&str> = line.strip_prefix("| ")?.split(" | ").collect();
+                let id = cells.first()?.trim();
+                (cells.len() >= 4 && package_ok(id)).then(|| (id, cells[cells.len() - 2]))
+            })
+            .collect()
+    }
+
+    /// The probes parse and plan on the batch's tiers, from its preset, each sitting within its length and every
+    /// tier with one; they serve no exit test, and none of their runs has a batch's run's name, so neither's logs
+    /// can be read for the other's.
+    #[test]
+    fn the_probes_plan_on_the_batchs_tiers_apart_from_its_runs() {
+        let batch = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let probes = ScaleBench::parse(PROBES).unwrap();
+        assert_eq!(probes.title(), "M6's probes");
+        assert_eq!(probes.preset, batch.preset, "they run from the batch's prepared content");
+        let tiers = |manifest: &ScaleBench| -> Vec<(String, String, Cook, u32)> {
+            let tiers = manifest.tiers.iter();
+            tiers.map(|tier| (tier.name.clone(), tier.size.clone(), tier.cook, tier.lap)).collect()
+        };
+        assert_eq!(tiers(&probes), tiers(&batch));
+        let sittings = probes.sittings(None);
+        for tier in 0..probes.tiers.len() {
+            assert!(sittings.iter().any(|sitting| sitting.tier == tier), "{}", probes.tiers[tier].name);
+        }
+        assert!(sittings.iter().all(|sitting| sitting.seconds() <= probes.sitting_seconds));
+        // A round's arms share a sitting, so they alternate inside one hold.
+        for unit in probes.units(None) {
+            let held = sittings.iter().find(|sitting| sitting.units.contains(&unit)).unwrap();
+            let arms = probes
+                .units(None)
+                .into_iter()
+                .filter(|other| (other.run, other.tier, other.round) == (unit.run, unit.tier, unit.round));
+            assert!(arms.into_iter().all(|arm| held.units.contains(&arm)), "{}", unit.name);
+        }
+        assert!(probes.runs.iter().all(|run| run.serves.is_empty() && run.devices.is_empty()));
+        assert!(probes.runs.iter().all(|run| batch.run(&run.name).is_none()), "a name of the batch's");
+        assert!(!probes.counting(None).is_empty(), "the character pixels' counted run");
+    }
+
+    /// Every package whose plan row waits on B9 is settled by a run of the probes or of the batch, or is left out
+    /// with its reason; nothing left out is also settled or has stopped waiting on B9; and every package a run
+    /// settles is a row of the plan.
+    #[test]
+    fn every_package_b9_names_is_settled_by_a_run() {
+        let batch = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let probes = ScaleBench::parse(PROBES).unwrap();
+        let mut settled: BTreeSet<&str> = probes.packages().into_keys().collect();
+        settled.extend(batch.packages().into_keys());
+        let rows = plan_rows();
+        assert!(rows.len() > 200, "the plan's package rows: {}", rows.len());
+        let waits: BTreeSet<&str> = rows
+            .iter()
+            .filter(|(_, waits_on)| waits_on.split(|c: char| !c.is_ascii_alphanumeric()).any(|id| id == "B9"))
+            .map(|(id, _)| *id)
+            .collect();
+        let left_out: BTreeSet<&str> = LEFT_OUT.iter().map(|(id, _)| *id).collect();
+        let unsettled: Vec<&&str> =
+            waits.iter().filter(|id| !settled.contains(**id) && !left_out.contains(**id)).collect();
+        assert!(unsettled.is_empty(), "wait on B9 with no run and no reason: {unsettled:?}");
+        assert!(left_out.iter().all(|id| waits.contains(id) && !settled.contains(id)), "{left_out:?}");
+        let ids: BTreeSet<&str> = rows.iter().map(|(id, _)| *id).collect();
+        assert!(settled.iter().all(|id| ids.contains(id)), "a package the plan doesn't have: {settled:?}");
+        assert!(settled.is_superset(&["S1", "P1", "J1", "J3", "F5", "E2", "B7"].into()));
+        assert!(ScaleBench::parse(&PROBES.replacen("settles: [\"P1\"", "settles: [\"p1\"", 1)).is_err());
+    }
+
+    /// Each probe of the party fight or the district's stands on the batch's unit by its exact arguments, so its
+    /// base arm is the batch's row: `party-kinds` and `district-fight`, at night with the probes pinned off.
+    #[test]
+    fn the_probes_fights_are_the_batchs_by_their_arguments() {
+        let batch = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let probes = ScaleBench::parse(PROBES).unwrap();
+        let (party, district) = (batch.run("party-kinds").unwrap(), batch.run("district-fight").unwrap());
+        for run in ["pk-terms", "pk-scale", "pk-scale-mh", "pk-lods", "pk-switches"] {
+            let probe = probes.run(run).unwrap();
+            assert_eq!((&probe.args, probe.frames), (&party.args, party.frames), "{run}");
+        }
+        for run in [
+            "df-terms",
+            "df-switches",
+            "fight-springs",
+            "fight-springs-interval",
+            "mh-ao-fight",
+            "fight-pool",
+        ] {
+            let probe = probes.run(run).unwrap();
+            assert_eq!((&probe.args, probe.frames), (&district.args, district.frames), "{run}");
+        }
+        // M5's void Desktop-High rows, by the batch's arguments.
+        for (probe, of) in
+            [("tour-night-dh", "tour-night"), ("capsule-bins-dh", "capsule-bins"), ("lods-dh", "lods")]
+        {
+            let (probe, of) = (probes.run(probe).unwrap(), batch.run(of).unwrap());
+            assert_eq!((&probe.args, probe.frames), (&of.args, of.frames), "{}", probe.name);
+            assert_eq!(probe.tiers, ["desktop-high"]);
+        }
+        // Every probe in the district but the fight that ships pins the probe grid and the reflection probes off.
+        for run in &probes.runs {
+            let zone = run.args.windows(2).any(|pair| pair[0] == "--zone" && pair[1].starts_with("district"));
+            let fight = run.args.iter().any(|arg| arg.ends_with("/district-encounter.sreplay"));
+            if zone || fight {
+                let pinned = |flag: &str| run.args.iter().any(|arg| arg == flag);
+                assert!(pinned("--no-probe-grid") && pinned("--no-reflection-probes"), "{}", run.name);
+            }
         }
     }
 

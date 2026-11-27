@@ -271,9 +271,16 @@ pub struct Log {
     /// Whether it is a plain bench's log (a `bench` or `bench gpu` line, M5 Z2): one that holds the camera and
     /// logs fields, never a `fight row`.
     pub plain_bench: bool,
-    /// A plain bench's `bench` and `bench gpu` fields, numbers only.
+    /// A plain bench's `bench` and `bench gpu` fields, numbers only, and a fight's GPU phase's
+    /// [`MAIN_DEPTH_PREPASS`].
     pub fields: BTreeMap<String, f64>,
 }
+
+/// The field a fight's or a walk's bench gives the share, in percent, of the GPU phase's frames whose main pass
+/// tested `Equal` against the scene prepass's depth (`fight phase`'s `main_depth_prepass` over its `frames`, M6
+/// B9), which a pair's `rows` can name: the renderer falls back to the main pass's own depth where it can't, and
+/// says so only here, so a prepass arm prices anything only at 100.
+pub const MAIN_DEPTH_PREPASS: &str = "main_depth_prepass";
 
 impl Log {
     /// The timed row `row` of `phase`, if the log has it.
@@ -534,6 +541,15 @@ impl Log {
                         ],
                     },
                 ));
+            } else if has(line, "fight phase") {
+                // The share of the GPU phase's frames whose main pass took the prepass's depth (M6 B9, F5's
+                // probes), read as a field so a pair's table can show it beside its times.
+                if field("phase") == Some("gpu")
+                    && let (Some(prepass), Some(frames)) = (float("main_depth_prepass"), float("frames"))
+                    && frames > 0.0
+                {
+                    log.fields.insert(MAIN_DEPTH_PREPASS.to_owned(), 100.0 * prepass / frames);
+                }
             } else if has(line, "bench of a fight") || has(line, "bench") || has(line, "bench gpu") {
                 if let Some(startup) = float("startup_ms") {
                     log.startup_ms = Some(startup);
@@ -782,6 +798,25 @@ mod tests {
         assert_eq!((overlap.frames, overlap.phase_frames, overlap.timed), (1547, Some(1600), Some(1590)));
         assert_eq!((overlap.behind, overlap.queue_age), ([3926.0, 5220.6], [7163.1, 8737.1, 25282.9]));
         assert!(!log.plain_bench && log.fields.is_empty(), "not a plain bench's line");
+    }
+
+    /// The share of the GPU phase's frames whose main pass took the prepass's depth (M6 B9) is a field a pair can
+    /// show; the other phases', and a log from before it, give none.
+    #[test]
+    fn the_gpu_phases_main_depth_is_read_as_a_field() {
+        let line = |phase: &str, frames: u32| {
+            format!(
+                "x  INFO sapphire::sandbox: fight phase phase=\"{phase}\" frames=600 allocations_per_frame=0 \
+                 post_first_use=0 main_depth_prepass={frames} mix_us_p50=0.0\n"
+            )
+        };
+        let log = Log::parse(&[line("cpu", 7), line("gpu", 597)].concat());
+        assert_eq!(log.fields.get(MAIN_DEPTH_PREPASS), Some(&99.5), "597 of 600 frames");
+        let clean = Log::parse(&line("gpu", 600));
+        assert_eq!(clean.fields.get(MAIN_DEPTH_PREPASS), Some(&100.0));
+        assert!(!log.plain_bench);
+        let older = "x  INFO sapphire::sandbox: fight phase phase=\"gpu\" frames=600 post_first_use=0\n";
+        assert!(Log::parse(older).fields.is_empty());
     }
 
     #[test]

@@ -1,0 +1,573 @@
+// M6's probes (M6 B9): every run docs/m6-plan.md's Track B names in B9, each priced for the packages whose "Measure
+// first" or "Kill if" reads it (`settles`, by the plan's IDs). `cargo xtask bench-scale --probes plan|run|report`
+// plans, runs and reports them as it does the batch (`bench/scale.ron`), from the same prepared commit
+// (`bench-scale prepare`), into `target/bench-scale/<commit>/probes/`, so a probe's sitting never mixes with the
+// batch's: two rounds a run, a pair's arms alternating inside one sitting, their order turned each round, every GPU
+// row read from the rounds the display's lock leaves valid. Spec §3.9, "Measured for M6", takes each run's rounds
+// and each package's go or kill from them; a run with no valid round runs again.
+//
+// The fields are `bench/scale.ron`'s, and its header says what each means; `settles` is this manifest's. The probes
+// serve no exit test, so none says `serves`, and the report gives no verdicts, only what each run settles.
+//
+// What they stand on. Every probe in the district pins its probe grid and reflection probes off
+// (`--no-probe-grid --no-reflection-probes`), as `bench/scale.ron`'s M5 units do, so each prices the frame M5
+// measured and the packages' rows quote; `cutin-supersample` alone is M6 B5's fight that ships, at midday with both.
+// `party-kinds` and `district-fight` are the batch's units by their exact arguments, so a probe's base is the
+// batch's row. B6's switches are pipeline-override constants at their shipping values unless an arm sets one
+// (`--measure-*`, `dev` builds alone, as the prepared sandbox is). B4 to B8's units are the batch's
+// (`tour-day-probes` and `district-fight-day-probes` for E3 and E4, `fight-ships`, `counted-ships` and
+// `fight-ships-cutin` for E1 and E2, `fight-overlap` for B7, `dialogue-closeup` for B8), whose `settles` name
+// them there; B7's `fight-pool` moved here, since its readings were always B9's.
+//
+// Left out, until the package that adds the switch lands:
+// - E2's 1.5× supersample: `InsetSettings::supersample` is a whole 1 or 2, so `cutin-supersample` prices 2
+//   against 1, the bound; E2 adds the fractional field, and its 1.5 arm, in its own pull request.
+// - E4's trip unit with 20 or more reflection probes: no zone a trip reaches has probes, and the district's first
+//   show of its set lands in the cold phase alone (M6 B4), which no timed row reads. E4 adds the unit.
+// - J3's thread classes on and off: J3 adds the switch; `fight-pool` is its first reading.
+// - J4's streamer split, with its count of textures skipped: the counter is J4's own, so J4 adds the counted
+//   streaming arm beside the batch's `counted-streaming` units. P7, F4, X3 and Z1 wait on B9 but read their own
+//   spike, B2's passes timed alone, the phone session and the exit run.
+// - Each later package's own arms (W1's nature units, the G, H, Y, V and N probes) join here in that package's pull
+//   request, after every run above, so no earlier sitting moves.
+//
+// Planning figures are `bench/scale.ron`'s: they size the sittings and measure nothing.
+(
+    type: "sapphire::testkit::ScaleBench",
+    version: 1,
+    data: (
+        title: Some("M6's probes"),
+        preset: "budget",
+        rounds: 2,
+        sitting_seconds: 600,
+        load_bound: 8.0,
+        tiers: [
+            (name: "desktop-high", size: "2560x1440", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12, memory_mib: Some(10240), crowd: Some(60)),
+            (name: "desktop-low", size: "1920x1080", cook: desktop, lap: 7600, frames_a_second: 90, startup_seconds: 12, memory_mib: Some(6144), crowd: Some(60)),
+            (name: "mobile-high", size: "2532x1170", cook: mobile, lap: 7600, frames_a_second: 170, startup_seconds: 12, memory_mib: Some(2867), crowd: Some(30)),
+            (name: "mobile-low", size: "2532x1170", cook: mobile, lap: 3800, frames_a_second: 85, startup_seconds: 12, memory_mib: Some(1638), crowd: Some(30)),
+        ],
+        runs: [
+            // The arena's party fight (`party-kinds`) by the character pixel's terms: other characters' shadows off
+            // (each character receives its own alone), every shadow off, and outlines off (no hull drawn, in the
+            // prepasses or the main pass). Base fills M5's void Desktop-High `party-kinds` row, and J7's
+            // Desktop-High far-world ceiling waits on it.
+            (
+                name: "pk-terms",
+                about: "the arena's party fight by the character pixel's terms: other characters' shadows, every shadow and the outlines each taken away",
+                args: [
+                    "--arena", "--party", "--replay", "{replays}/party-three-kinds.sreplay", "--no-hot-reload",
+                    "--live-link", "off",
+                ],
+                frames: Count(600),
+                read: [Cpu, Gpu, Counts],
+                trace: true,
+                variants: [
+                    (name: "base", args: []),
+                    (name: "own-shadows", args: ["--character-shadows", "own"]),
+                    (name: "no-shadows", args: ["--shadows", "off"]),
+                    (name: "no-outlines", args: ["--outline-distance", "0"]),
+                ],
+                rows: ["gpu frame", "gpu main", "gpu prepasses", "gpu shadows", "main character triangles"],
+                settles: ["P1", "P2", "J7"],
+            ),
+            // Whether the fight's main pass scales with scene pixels: main = a + b × pixels, fitted over the scales.
+            // If b explains under half the character increment, P4 and P5 lose their priority. Mobile-High's arms
+            // sit under its own 0.632 (`--render-scale` takes the tier's place), so they draw fewer pixels.
+            (
+                name: "pk-scale",
+                about: "the arena's party fight at 85% and 70% scene scale against the tier's",
+                args: [
+                    "--arena", "--party", "--replay", "{replays}/party-three-kinds.sreplay", "--no-hot-reload",
+                    "--live-link", "off",
+                ],
+                tiers: ["desktop-high"],
+                frames: Count(600),
+                read: [Cpu, Gpu],
+                trace: true,
+                variants: [
+                    (name: "base", args: []),
+                    (name: "scale85", args: ["--render-scale", "0.85"]),
+                    (name: "scale70", args: ["--render-scale", "0.7"]),
+                ],
+                rows: ["gpu frame", "gpu main", "gpu prepasses", "gpu shadows"],
+                settles: ["P4", "P5"],
+            ),
+            (
+                name: "pk-scale-mh",
+                about: "the arena's party fight on Mobile-High at 55% and 45% scene scale against the tier's 63.2%",
+                args: [
+                    "--arena", "--party", "--replay", "{replays}/party-three-kinds.sreplay", "--no-hot-reload",
+                    "--live-link", "off",
+                ],
+                tiers: ["mobile-high"],
+                frames: Count(600),
+                read: [Cpu, Gpu],
+                trace: true,
+                variants: [
+                    (name: "base", args: []),
+                    (name: "scale55", args: ["--render-scale", "0.55"]),
+                    (name: "scale45", args: ["--render-scale", "0.45"]),
+                ],
+                rows: ["gpu frame", "gpu main", "gpu prepasses", "gpu shadows"],
+                settles: ["P4", "P5"],
+            ),
+            // Whether coarser character meshes save pixels and not only vertices: the statics held at one level in
+            // each pair, the characters drawn whole (`--character-lods off`) against let down to it (`hero`: the
+            // pinned figures and the hero too). Read with "skinned instances above level 0". On the mobile cook the
+            // cast's leading levels are already dropped, so its arms may coarsen only the hero: the count says how
+            // many, and P5's phone question needs the cast coarsened.
+            (
+                name: "pk-lods",
+                about: "the arena's party fight with the characters at levels 1 and 2 against level 0, the statics at the same level",
+                args: [
+                    "--arena", "--party", "--replay", "{replays}/party-three-kinds.sreplay", "--no-hot-reload",
+                    "--live-link", "off",
+                ],
+                tiers: ["desktop-high", "mobile-high", "mobile-low"],
+                frames: Count(600),
+                read: [Cpu, Gpu, Counts, Cast],
+                variants: [
+                    (name: "lods1-c0", args: ["--lods", "1", "--character-lods", "off"]),
+                    (name: "lods1-c1", args: ["--lods", "1", "--character-lods", "hero"]),
+                    (name: "lods2-c0", args: ["--lods", "2", "--character-lods", "off"]),
+                    (name: "lods2-c2", args: ["--lods", "2", "--character-lods", "hero"]),
+                ],
+                rows: [
+                    "gpu frame", "gpu main", "gpu prepasses", "gpu skinning", "main triangles", "skinned vertices",
+                    "skinned instances above level 0",
+                ],
+                settles: ["P5", "K3"],
+            ),
+            // The same terms on the one unit over its line, Desktop-High's district fight (M5's 12.03 ms at p95):
+            // the two scales, outlines off, other characters' shadows off and the character levels. Base is also
+            // K4's: the unbound control slot's arm is `df-switches`'.
+            (
+                name: "df-terms",
+                about: "the district's fight on Desktop-High by the character pixel's terms: scene scale, outlines, other characters' shadows and character levels",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high"],
+                frames: Count(1600),
+                read: [Cpu, Gpu, Counts],
+                trace: true,
+                variants: [
+                    (name: "base", args: []),
+                    (name: "scale85", args: ["--render-scale", "0.85"]),
+                    (name: "scale70", args: ["--render-scale", "0.7"]),
+                    (name: "no-outlines", args: ["--outline-distance", "0"]),
+                    (name: "own-shadows", args: ["--character-shadows", "own"]),
+                    (name: "lods1-c0", args: ["--lods", "1", "--character-lods", "off"]),
+                    (name: "lods1-c1", args: ["--lods", "1", "--character-lods", "hero"]),
+                ],
+                rows: [
+                    "gpu frame", "gpu main", "gpu prepasses", "gpu shadows", "skinned vertices",
+                    "skinned instances above level 0",
+                ],
+                settles: ["P1", "P2", "P4", "P5", "K3", "K4"],
+            ),
+            // B6's switches on the arena's party fight, each against the shipping pipeline: the rim off, the local
+            // lights' loop off, one received character shadow, the hull's shadow skipped, the hulls unlit, one
+            // material read at the fractional level and at a whole one, the control slot unbound, and P3's three
+            // (one ramp row at full night, one hair style, the face light constant) together, as P3 reads them.
+            (
+                name: "pk-switches",
+                about: "the arena's party fight with each of B6's switches for the character pixel against the shipping pipeline",
+                args: [
+                    "--arena", "--party", "--replay", "{replays}/party-three-kinds.sreplay", "--no-hot-reload",
+                    "--live-link", "off",
+                ],
+                frames: Count(600),
+                read: [Cpu, Gpu],
+                variants: [
+                    (name: "base", args: []),
+                    (name: "no-rim", args: ["--measure-no-rim"]),
+                    (name: "no-local-lights", args: ["--measure-no-local-lights"]),
+                    (name: "one-slot", args: ["--measure-one-received-slot"]),
+                    (name: "no-hull-shadow", args: ["--measure-no-hull-shadow"]),
+                    (name: "unlit-hulls", args: ["--measure-unlit-hulls"]),
+                    (name: "read-fractional", args: ["--measure-material-read", "fractional"]),
+                    (name: "read-whole", args: ["--measure-material-read", "whole"]),
+                    (name: "control-unbound", args: ["--measure-control-unbound"]),
+                    (
+                        name: "p3",
+                        args: ["--measure-one-ramp-row", "--measure-one-hair-style", "--measure-face-light-constant"],
+                    ),
+                ],
+                rows: ["gpu frame", "gpu main", "gpu prepasses"],
+                settles: ["P1", "P2", "P3", "P4", "K4"],
+            ),
+            // The same on the district's fight at night on Desktop-High, where P1's, P2's, P4's and K4's kills read
+            // `gpu main`, and where one ramp row at full night is the night's.
+            (
+                name: "df-switches",
+                about: "the district's fight on Desktop-High with B6's switches for the character pixel against the shipping pipeline",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high"],
+                frames: Count(1600),
+                read: [Cpu, Gpu],
+                variants: [
+                    (name: "base", args: []),
+                    (name: "one-slot", args: ["--measure-one-received-slot"]),
+                    (name: "no-hull-shadow", args: ["--measure-no-hull-shadow"]),
+                    (name: "unlit-hulls", args: ["--measure-unlit-hulls"]),
+                    (name: "read-fractional", args: ["--measure-material-read", "fractional"]),
+                    (name: "read-whole", args: ["--measure-material-read", "whole"]),
+                    (name: "control-unbound", args: ["--measure-control-unbound"]),
+                    (
+                        name: "p3",
+                        args: ["--measure-one-ramp-row", "--measure-one-hair-style", "--measure-face-light-constant"],
+                    ),
+                ],
+                rows: ["gpu frame", "gpu main", "gpu prepasses"],
+                settles: ["P1", "P2", "P3", "P4", "K4"],
+            ),
+            // P6's sweep: the character pixel's local lights capped at 64, 8 and none, and the loop off, on the
+            // night tour, where the district's lamps are lit.
+            (
+                name: "light-sweep",
+                about: "the tour at night with the characters' local lights capped at 64, 8 and none, and their loop off",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "23", "--no-hot-reload",
+                    "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(3800),
+                read: [Cpu, Gpu],
+                variants: [
+                    (name: "cap64", args: ["--measure-light-cap", "64"]),
+                    (name: "cap8", args: ["--measure-light-cap", "8"]),
+                    (name: "cap0", args: ["--measure-light-cap", "0"]),
+                    (name: "no-loop", args: ["--measure-no-local-lights"]),
+                ],
+                rows: ["gpu frame", "gpu main"],
+                settles: ["P6"],
+            ),
+            // The district fight's character pixels, hull pixels and the phones' flat upscale groups (B6's counters,
+            // `--measure-pixels`), a frame in seven drawn: P2's hull share, P5's pixels a triangle and F2's flat
+            // groups on Mobile-High. One round: the counters read back a few frames late, as the GPU returns them,
+            // so two rounds need not land them on the same frames.
+            (
+                name: "counted-pixels",
+                about: "the district's fight at night by its character pixels, hull pixels and flat upscale groups, a frame in seven drawn",
+                args: [
+                    "--draw-every", "7", "--measure-pixels", "--arena", "--replay", "{replays}/district-encounter.sreplay",
+                    "--party", "--time-of-day", "23", "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live",
+                    "--no-hot-reload", "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                ],
+                frames: Count(1600),
+                phases: 1,
+                rounds: Some(1),
+                read: [Counts],
+                timed: false,
+                settles: ["P2", "P5", "F2"],
+            ),
+            // J1's ceiling: the lead's secondary motion on against off. Off zeroes `secondary motion` and the trace's
+            // `springs` column; its rig's entry frame (tick 1001) loads on the frame with the springs off, so the
+            // ceiling reads the p95 and the mean, not the worst.
+            (
+                name: "fight-springs",
+                about: "the district's fight with the lead's secondary motion on against off",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                frames: Count(1600),
+                read: [Cpu, Gpu],
+                trace: true,
+                variants: [(name: "on", args: ["--springs", "on"]), (name: "off", args: ["--springs", "off"])],
+                rows: ["cpu frame", "secondary motion", "animation and ik", "gpu frame"],
+                settles: ["J1"],
+            ),
+            // J1's interval: Desktop-High's clothes' clearance solved every second tick against its tier's every tick
+            // (`--spring-interval`, M6 B9).
+            (
+                name: "fight-springs-interval",
+                about: "the district's fight on Desktop-High with the clothes' clearance solved every second tick against every tick",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high"],
+                frames: Count(1600),
+                read: [Cpu],
+                trace: true,
+                variants: [(name: "every-tick", args: []), (name: "every-second", args: ["--spring-interval", "2"])],
+                rows: ["cpu frame", "secondary motion", "animation and ik"],
+                settles: ["J1"],
+            ),
+            // The light step's whole cost without the exit walk's crowd and hub: the tour from dusk with the hour
+            // held against running at the exit walk's day length. The running arm ends each phase near 21:24 (3,800
+            // frames at 60 Hz, 63 s of a 935 s day), so a third arm holds that hour: running against held splits
+            // into the steps' redraws and the night's own light.
+            (
+                name: "running-hour",
+                about: "the tour from dusk with the hour held against running at the exit walk's day length, and held at the hour the running arm ends",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [
+                    (name: "held", args: ["--time-of-day", "19.75"]),
+                    (name: "running", args: ["--time-of-day", "19.75", "--day-length", "935"]),
+                    (name: "held-late", args: ["--time-of-day", "21.4"]),
+                ],
+                rows: ["gpu frame", "gpu shadows", "gpu main", "shadow triangles", "cascades drawn"],
+                settles: ["S1", "S2"],
+            ),
+            // The shadow cache's three modes on the tour: `kept`, never timed, and Desktop-High's void `turns`. A
+            // tier's default moves only if `kept` beats `held` by 0.1 ms at p95.
+            (
+                name: "shadow-cache3",
+                about: "the tour's cascades held, kept and drawn in turns",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload",
+                    "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [
+                    (name: "held", args: ["--shadow-cache", "held"]),
+                    (name: "kept", args: ["--shadow-cache", "kept"]),
+                    (name: "turns", args: ["--shadow-cache", "turns"]),
+                ],
+                rows: ["cpu frame", "render", "gpu frame", "gpu shadows", "shadow triangles", "cascades drawn"],
+            ),
+            // F3: Mobile-High's ambient occlusion from the characters' capsules alone, on the tour and then the
+            // fight, with a third arm that also turns its light shafts off: shafts read the scene prepass, which
+            // capsules alone might otherwise let go, so the third prices keeping it alive for them.
+            (
+                name: "mh-ao",
+                about: "the tour on Mobile-High with its ambient occlusion full against capsules alone, and capsules alone without light shafts",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload",
+                    "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["mobile-high"],
+                frames: Count(3800),
+                read: [Cpu, Gpu],
+                variants: [
+                    (name: "full", args: ["--ao", "full"]),
+                    (name: "capsule", args: ["--ao", "capsule"]),
+                    (name: "capsule-no-shafts", args: ["--ao", "capsule", "--shafts", "off"]),
+                ],
+                rows: ["gpu frame", "gpu prepasses", "gpu clustering and ao", "gpu main", "gpu post"],
+                settles: ["F3"],
+            ),
+            (
+                name: "mh-ao-fight",
+                about: "the district's fight on Mobile-High with its ambient occlusion full against capsules alone, and capsules alone without light shafts",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["mobile-high"],
+                frames: Count(1600),
+                read: [Cpu, Gpu],
+                variants: [
+                    (name: "full", args: ["--ao", "full"]),
+                    (name: "capsule", args: ["--ao", "capsule"]),
+                    (name: "capsule-no-shafts", args: ["--ao", "capsule", "--shafts", "off"]),
+                ],
+                rows: ["gpu frame", "gpu prepasses", "gpu clustering and ao", "gpu main", "gpu post"],
+                settles: ["F3"],
+            ),
+            // F5: the main pass's own depth against the scene prepass's (`--main-depth prepass`, tested `Equal`),
+            // both arms with the shadow views' runs alone, since the depth-equal pass draws the main view a call a
+            // draw. The renderer falls back to its own depth, saying nothing, where it can't (an uncut prepass
+            // variant, a tier without temporal AA): `main_depth_prepass` is the share of the GPU phase's frames that
+            // took the prepass's, which must be every frame for the pair to price anything (the report names a mix).
+            (
+                name: "main-depth-fight",
+                about: "the arena's party fight with the main pass's own depth against the scene prepass's",
+                args: [
+                    "--arena", "--party", "--replay", "{replays}/party-three-kinds.sreplay", "--no-hot-reload",
+                    "--live-link", "off", "--draw-runs", "shadows",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(600),
+                read: [Cpu, Gpu],
+                variants: [(name: "own", args: ["--main-depth", "own"]), (name: "prepass", args: ["--main-depth", "prepass"])],
+                rows: ["gpu frame", "gpu main", "gpu prepasses", "main_depth_prepass"],
+                settles: ["F5"],
+            ),
+            (
+                name: "main-depth-tour",
+                about: "the tour with the main pass's own depth against the scene prepass's",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload",
+                    "--live-link", "off", "--no-probe-grid", "--no-reflection-probes", "--draw-runs", "shadows",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [(name: "own", args: ["--main-depth", "own"]), (name: "prepass", args: ["--main-depth", "prepass"])],
+                rows: ["gpu frame", "gpu main", "gpu prepasses", "draw calls", "main_depth_prepass"],
+                settles: ["F5"],
+            ),
+            // F5's other half: the desktops' main view drawing its opaque buildings in instanced runs too
+            // (`every-opaque`) against a call a draw (`every`, the tiers'). Read on `render` and the GPU frame.
+            (
+                name: "desktop-opaque-runs",
+                about: "the tour with the main view's opaque buildings in instanced runs against a call a draw",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--no-hot-reload",
+                    "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [
+                    (name: "every", args: ["--draw-runs", "every"]),
+                    (name: "every-opaque", args: ["--draw-runs", "every-opaque"]),
+                ],
+                rows: ["cpu frame", "render", "gpu frame", "gpu main", "draw calls", "main draws"],
+                settles: ["F5"],
+            ),
+            // The district's fight on a phone-shaped CPU (M6 B7, moved here from `bench/scale.ron`): the job system's
+            // compute pool at one thread and at three, as a phone's cores leave the frame room for, beside this
+            // Mac's own (a physical core less one, nine on the M5). J3 reads its tails, the frames over 4 ms by the
+            // kind of core, from the traces.
+            (
+                name: "fight-pool",
+                about: "the district's fight on the phones with the compute pool at one thread, at three and at this Mac's own",
+                args: [
+                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["mobile-high", "mobile-low"],
+                frames: Count(1600),
+                read: [Cpu],
+                trace: true,
+                variants: [
+                    (name: "one", args: ["--compute-threads", "1"]),
+                    (name: "three", args: ["--compute-threads", "3"]),
+                    (name: "mac", args: []),
+                ],
+                rows: ["cpu frame", "record", "animation and ik", "gpu wait"],
+                settles: ["J3", "B7"],
+            ),
+            // M5's void rows on Desktop-High, by the batch's own arguments: the tour at night, and the levels' and
+            // the capsules' pairs.
+            (
+                name: "tour-night-dh",
+                about: "the tour at night on Desktop-High, as the batch's `tour-night` walks it (both of M5's final rounds void)",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "23", "--no-probe-grid",
+                    "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high"],
+                frames: Lap,
+                read: [Cpu, Gpu, Counts, Memory],
+            ),
+            (
+                name: "capsule-bins-dh",
+                about: "the characters' capsules by cluster (L18) on the crowd's tour on Desktop-High, on against off, as the batch's `capsule-bins`",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high"],
+                frames: Count(3800),
+                read: [Gpu],
+                variants: [(name: "on", args: ["--capsule-bins", "on"]), (name: "off", args: ["--capsule-bins", "off"])],
+                rows: ["gpu frame", "gpu main", "gpu clustering and ao"],
+            ),
+            (
+                name: "lods-dh",
+                about: "levels of detail (D4, D5) on Desktop-High, on against off, as the batch's `lods`",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--mount", "zone_proving_hub",
+                    "--no-hot-reload", "--live-link", "off",
+                    "--no-probe-grid", "--no-reflection-probes",
+                ],
+                tiers: ["desktop-high"],
+                frames: Count(3800),
+                read: [Cpu, Gpu, Counts],
+                variants: [(name: "on", args: ["--lods", "on"]), (name: "off", args: ["--lods", "off"])],
+                rows: ["gpu frame", "gpu main", "gpu shadows", "gpu prepasses", "triangles", "lod1+ draws", "level switches"],
+            ),
+            // J5: whether a texture raise's slow passes follow the GPU's load (a clock effect), or the tier. The
+            // streamer under the batch's binding pool (half the desktop cook's whole), Desktop-Low at its size and
+            // at 2560x1440, Desktop-High at 1920x1080; the traces give each pass's slow share on upload frames
+            // against the rest.
+            (
+                name: "streaming-dl",
+                about: "the tour on Desktop-Low with the streamer binding, at its own size",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--texture-streaming", "on",
+                    "--no-hot-reload", "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                    "--texture-pool", "1303",
+                ],
+                tiers: ["desktop-low"],
+                frames: Lap,
+                read: [Gpu, Memory, Streaming],
+                trace: true,
+                settles: ["J5"],
+            ),
+            (
+                name: "streaming-dl-1440",
+                about: "the tour on Desktop-Low with the streamer binding, drawn at 2560x1440",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--texture-streaming", "on",
+                    "--no-hot-reload", "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                    "--texture-pool", "1303",
+                ],
+                tiers: ["desktop-low"],
+                size: Some("2560x1440"),
+                frames: Lap,
+                read: [Gpu, Memory, Streaming],
+                trace: true,
+                settles: ["J5"],
+            ),
+            (
+                name: "streaming-dh-1080",
+                about: "the tour on Desktop-High with the streamer binding, drawn at 1920x1080",
+                args: [
+                    "--zone", "district", "--zone-walk", "tour", "--time-of-day", "19.75", "--texture-streaming", "on",
+                    "--no-hot-reload", "--live-link", "off", "--no-probe-grid", "--no-reflection-probes",
+                    "--texture-pool", "1303",
+                ],
+                tiers: ["desktop-high"],
+                size: Some("1920x1080"),
+                frames: Lap,
+                read: [Gpu, Memory, Streaming],
+                trace: true,
+                settles: ["J5"],
+            ),
+            // E2: the cut-in's supersample, the desktops' 2 against 1 (`--inset-supersample`, M6 B9), over the
+            // cut-in's ticks of M6 B5's fight that ships, as `fight-ships-cutin` reads them.
+            (
+                name: "cutin-supersample",
+                about: "the fight that ships over its cut-in's ticks, the inset supersampled twice against once",
+                args: [
+                    "--arena", "--replay", "{replays}/district-ultimate.sreplay", "--party", "--time-of-day", "13",
+                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--cues", "--no-hot-reload",
+                    "--live-link", "off", "--bench-ticks", "415-464",
+                ],
+                tiers: ["desktop-high", "desktop-low"],
+                frames: Count(1600),
+                read: [Cpu, Gpu],
+                variants: [(name: "twice", args: ["--inset-supersample", "2"]), (name: "once", args: ["--inset-supersample", "1"])],
+                rows: ["cpu frame", "gpu frame", "gpu main", "gpu ui", "gpu post", "inset draws"],
+                settles: ["E2"],
+            ),
+        ],
+    ),
+)

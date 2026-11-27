@@ -73,7 +73,8 @@ use sapphire_platform::{AppInitError, CoreKind};
 use sapphire_render::graph::GpuTimings;
 use sapphire_render::quality::TierId;
 use sapphire_render::{
-    CHARACTER_PREPASS, DISTORTION_PASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, post, shadows, temporal, vfx,
+    CHARACTER_PREPASS, DISTORTION_PASS, MAIN_PASS, MainDepth, PREPASSES, UI_PASS, ambient, post, shadows,
+    temporal, vfx,
 };
 use sapphire_rhi::wgpu;
 use sapphire_time::{Stopwatch, TICK_HZ};
@@ -281,6 +282,9 @@ struct Traced {
     /// Post variants built on the frame they first drew, so far.
     post_first_use: u32,
     draws: u32,
+    /// Whether its main pass tested `Equal` against the scene prepass's depth (M5 D10, `--main-depth prepass`),
+    /// which the renderer falls back from, saying nothing, where it can't (M6 B9: F5's probes read it).
+    main_depth_from_prepass: bool,
     gpu: GpuTimes,
     /// Post work of this submitted frame, used when its delayed timestamps arrive.
     bloom_chain: bool,
@@ -1004,6 +1008,7 @@ impl Run<'_> {
             world_scale,
             post_first_use: stats.post.first_use_builds,
             draws: stats.draws,
+            main_depth_from_prepass: stats.main_depth == MainDepth::FromPrepass,
             gpu: GpuTimes::default(),
             bloom_chain: stats.post.bloom_chain,
             bloom_levels: self.bloom_levels,
@@ -1133,6 +1138,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             sim_allocations = frames().map(|frame| frame.sim_allocations).sum::<u64>(),
             timed_frames = frames().filter(|frame| frame.gpu.timed).count(),
             post_first_use = frames().map(|frame| frame.post_first_use).max().unwrap_or(0),
+            main_depth_prepass = frames().filter(|frame| frame.main_depth_from_prepass).count(),
             mix_us_p50 = format_args!(
                 "{:.1}",
                 spread(frames().map(|frame| (frame.mix, frame.tick))).map_or(0.0, |spread| micros(spread.p50))
@@ -1496,6 +1502,7 @@ mod tests {
             world_scale: 1.0,
             post_first_use: 0,
             draws: 0,
+            main_depth_from_prepass: false,
             gpu: GpuTimes::default(),
             bloom_chain: false,
             bloom_levels: 0,
@@ -1503,6 +1510,99 @@ mod tests {
             core: None,
             counted: counts::Counted::default(),
         }
+    }
+
+    /// Every run of the benches at scale and of M6's probes (`bench/scale.ron`, `bench/probes.ron`, M6 B9) is one
+    /// this sandbox takes: each arm's arguments, after the runner's own, parse with nothing unknown on every tier
+    /// it names, and each row a pair's table shows is a row a bench of a fight or a walk logs. A switch only `dev`
+    /// builds take (B6's `--measure-*`) is held in a `dev` build alone.
+    #[test]
+    fn every_benched_arm_is_a_flag_and_every_row_one_the_bench_logs() {
+        use sapphire_serialize::ron::{Value, from_str};
+
+        let key = |map: &Value, name: &str| match map {
+            Value::Map(map) => map.get(&Value::String(name.to_owned())).cloned(),
+            _ => None,
+        };
+        let strings = |value: Option<Value>| -> Vec<String> {
+            match value {
+                Some(Value::Seq(items)) => items
+                    .into_iter()
+                    .map(|item| match item {
+                        Value::String(text) => text,
+                        other => panic!("not a string: {other:?}"),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            }
+        };
+        let text = |value: Option<Value>| match value {
+            Some(Value::String(text)) => text,
+            other => panic!("not a string: {other:?}"),
+        };
+        let counted: Vec<&str> = counts::COUNT_ROWS.iter().map(|row| row.name).collect();
+        let timed: Vec<&str> = ROWS.iter().map(|row| row.name).collect();
+        let mut arms = 0;
+        for (file, source) in [
+            ("bench/scale.ron", include_str!("../../../bench/scale.ron")),
+            ("bench/probes.ron", include_str!("../../../bench/probes.ron")),
+        ] {
+            let manifest: Value = from_str(source).unwrap_or_else(|error| panic!("{file}: {error}"));
+            let data = key(&manifest, "data").expect("its data");
+            let tiers: Vec<String> = match key(&data, "tiers") {
+                Some(Value::Seq(tiers)) => tiers.iter().map(|tier| text(key(tier, "name"))).collect(),
+                _ => panic!("{file} lists its tiers"),
+            };
+            let Some(Value::Seq(runs)) = key(&data, "runs") else { panic!("{file} lists its runs") };
+            for run in &runs {
+                let name = text(key(run, "name"));
+                let on = strings(key(run, "tiers"));
+                let variants: Vec<Vec<String>> = match key(run, "variants") {
+                    Some(Value::Seq(variants)) if !variants.is_empty() => {
+                        variants.iter().map(|variant| strings(key(variant, "args"))).collect()
+                    }
+                    _ => vec![Vec::new()],
+                };
+                for tier in tiers.iter().filter(|tier| on.is_empty() || on.contains(tier)) {
+                    let tier_args = key(run, "tier_args").and_then(|args| key(&args, tier));
+                    for variant in &variants {
+                        let mut args: Vec<String> =
+                            ["sapphire_sandbox", "--bench", "1", "--tier", tier, "--size", "64x36"]
+                                .map(str::to_owned)
+                                .to_vec();
+                        args.extend(strings(key(run, "args")));
+                        args.extend(strings(tier_args.clone()));
+                        args.extend(variant.iter().cloned());
+                        let args: Vec<String> =
+                            args.iter().map(|arg| arg.replace("{replays}", "replays")).collect();
+                        if cfg!(not(feature = "dev")) && args.iter().any(|arg| arg.starts_with("--measure-"))
+                        {
+                            continue;
+                        }
+                        let (options, unknown) = Options::parse(&args)
+                            .unwrap_or_else(|error| panic!("{file} {name} on {tier}: {error}"));
+                        assert!(unknown.is_empty(), "{file} {name} on {tier}: {unknown:?} unknown");
+                        options.refuse_unknown(&unknown).unwrap();
+                        arms += 1;
+                    }
+                }
+                // A walk's or a fight's pair reads its rows from `fight row` and `count row` lines, or the GPU
+                // phase's main depth (M6 B9); a plain bench's (one phase) reads its own fields, which aren't held here.
+                let plain =
+                    matches!(key(run, "phases"), Some(Value::Number(phases)) if phases.into_f64() == 1.0);
+                if !plain {
+                    for row in strings(key(run, "rows")) {
+                        assert!(
+                            timed.contains(&row.as_str())
+                                || counted.contains(&row.as_str())
+                                || row == "main_depth_prepass",
+                            "{file} {name}: the bench logs no row {row:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(arms > 100, "{arms} arms parsed");
     }
 
     #[test]

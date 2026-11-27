@@ -21,6 +21,9 @@
 //   numbers, whose verdicts read it (a pair serving 3 is a cost read beside its other side, judged by none);
 //   `stands_in`: what it stands in for, where the exit test's own run can't be made yet, which the report never
 //   reads as a pass.
+// - `settles`: the packages (docs/m6-plan.md's IDs) whose "Measure first" or "Kill if" reads it (M6 B9), which the
+//   report lists and spec §3.9 gives a go or kill from; `bench/probes.ron` holds M6's probes, the runs no exit test
+//   reads, which `cargo xtask bench-scale --probes` runs apart from this batch.
 // - `devices`: the devices it walks on in place of this Mac, by the `devices` list's names: a run of counts
 //   alone, run only by `cargo xtask bench-scale device --platform <name>` (M5 Z2), whose logs are
 //   `<run>.<tier>.<device>.r<n>.log` and whose verdicts are lines of their own.
@@ -201,30 +204,6 @@
                 beside: Some("tour-night"),
                 serves: [1, 5, 7],
             ),
-            // The district's fight on a phone-shaped CPU (M6 B7): the job system's compute pool at one thread and at
-            // three, as a phone's cores leave the frame room for, beside this Mac's own (a physical core less one,
-            // nine on the M5). J3 reads its tails, the frames over 4 ms by the kind of core, from the traces; m6-plan
-            // B9 names it `fight-pool`.
-            (
-                name: "fight-pool",
-                about: "the district's fight on the phones with the compute pool at one thread, at three and at this Mac's own",
-                args: [
-                    "--arena", "--replay", "{replays}/district-encounter.sreplay", "--party", "--time-of-day", "23",
-                    "--mount", "zone_proving_hub", "--ambient", "on", "--hud", "live", "--no-hot-reload", "--live-link", "off",
-                    "--no-probe-grid", "--no-reflection-probes",
-                ],
-                tiers: ["mobile-high", "mobile-low"],
-                frames: Count(1600),
-                read: [Cpu],
-                trace: true,
-                variants: [
-                    (name: "one", args: ["--compute-threads", "1"]),
-                    (name: "three", args: ["--compute-threads", "3"]),
-                    (name: "mac", args: []),
-                ],
-                rows: ["cpu frame", "record", "animation and ik", "gpu wait"],
-                serves: [3],
-            ),
             // The district's fight with CPU and GPU overlapped (M6 B7, `--bench-overlap`): each frame waits for the
             // frame two back rather than for everything, as behind a swapchain of two, beside the batch's way. Its
             // `bench overlap` line says whether the tier is CPU- or GPU-limited so: a CPU-limited tier reopens a
@@ -245,6 +224,7 @@
                 variants: [(name: "waits", args: []), (name: "overlaps", args: ["--bench-overlap"])],
                 rows: ["cpu frame", "gpu wait"],
                 serves: [3],
+                settles: ["B7"],
             ),
             // Exit test 5's fight (M5 C12b): the heroine, Aster and Wren against twelve Ember Lancers on the arena,
             // from the root that holds the kinds at the preset's rows (`bench/kinds.ron`): Aster at 80,000
@@ -272,6 +252,7 @@
                 args: ["--arena", "--replay", "{replays}/dialogue-closeup.sreplay", "--no-hot-reload", "--live-link", "off"],
                 frames: Count(1000),
                 read: [Cpu, Gpu, Counts],
+                settles: ["B8"],
             ),
             // Each package's own on/off pair.
             (
@@ -534,6 +515,7 @@
                 ],
                 rows: ["cpu frame", "gpu frame", "gpu main", "gpu clustering and ao", "gpu shadows", "ambient dispatches",
                     "probe dispatches"],
+                settles: ["E3", "E4"],
             ),
             (
                 name: "district-fight-day",
@@ -564,6 +546,7 @@
                 ],
                 rows: ["cpu frame", "gpu frame", "gpu main", "gpu clustering and ao", "gpu shadows", "ambient dispatches",
                     "probe dispatches"],
+                settles: ["E3", "E4"],
             ),
             // M6 B4's day by counts: the tour at midday with the grid and the probes, a frame in seven drawn, failing on
             // any pipeline built after the load, as `counted` does.
@@ -597,6 +580,7 @@
                 frames: Count(1600),
                 read: [Cpu, Gpu, Counts, Cast, Pipelines],
                 trace: true,
+                settles: ["E1"],
             ),
             // The cut-in's own cost in that fight (spec §5.17 measured +1.02 ms of GPU and +1.05 ms of CPU on
             // Desktop-High in the arena): its frames alone (`--bench-ticks`, the 50 ticks a trace of the fight shows
@@ -616,6 +600,7 @@
                 rows: ["cpu frame", "record", "animation and ik", "secondary motion", "gpu frame", "gpu main", "gpu ui",
                     "gpu post", "inset draws"],
                 serves: [3],
+                settles: ["E2", "J1"],
             ),
             // The fight that ships by counts, a frame in seven drawn, failing on any pipeline built after the load, as
             // `counted-fight` does: whatever its cues and cut-in draw is in its load's inventory.
@@ -631,6 +616,7 @@
                 phases: 1,
                 read: [Counts, Pipelines],
                 timed: false,
+                settles: ["E1"],
             ),
             // M6 W1: the nature zone (`bench/nature/`, `--zone nature`), the unit every world-look, foliage, water,
             // weather and environment package is priced and judged on. Terrain as cell meshes, a lake and a river, grass

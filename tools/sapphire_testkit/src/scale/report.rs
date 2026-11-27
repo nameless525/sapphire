@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use super::log::{Counted, Entry, Log, Timed, percentile, trace_column};
+use super::log::{Counted, Entry, Log, MAIN_DEPTH_PREPASS, Timed, percentile, trace_column};
 use super::manifest::{Device, Read, Run, ScaleBench, Tier, Unit};
 use super::status::Status;
 
@@ -322,7 +322,7 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
         units.iter().map(|unit| (unit.name.as_str(), Status::read(inputs.logs, &unit.name))).collect();
     let done = statuses.values().filter(|status| status.as_ref().is_some_and(Status::complete)).count();
 
-    let _ = writeln!(out, "# Benches at scale: {}\n", inputs.commit);
+    let _ = writeln!(out, "# {}: {}\n", manifest.title(), inputs.commit);
     let _ = writeln!(
         out,
         "The `{}` district{}, {} round(s) of each run. A time is one round's own, named: the round a verdict \
@@ -393,7 +393,11 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
         let _ = writeln!(out);
         failures.extend(failed);
     }
-    verdict::section(&mut out, &mut failures, inputs, &units, &statuses);
+    // A manifest of probes (M6 B9) serves no exit test: it says which packages each run settles instead.
+    if manifest.runs.iter().any(|run| !run.serves.is_empty()) {
+        verdict::section(&mut out, &mut failures, inputs, &units, &statuses);
+    }
+    packages_section(&mut out, manifest);
     if !manifest.gaps.is_empty() {
         let _ = writeln!(out, "**What this batch can't measure yet:**\n");
         for gap in &manifest.gaps {
@@ -428,6 +432,7 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
     }
     for (run_index, run) in pairs {
         let _ = writeln!(out, "### {}: {}\n", run.name, run.about);
+        settles_note(&mut out, run);
         if let Some(size) = &run.size {
             let _ = writeln!(out, "At {size}, its package's own size, not the tier's.\n");
         }
@@ -512,6 +517,35 @@ pub fn device_verdicts(manifest: &ScaleBench, logs: &Path, device: usize) -> (Ve
     (lines, failures)
 }
 
+/// The packages the runs settle (M6 B9), each with its runs, whose rounds spec §3.9 reads for its go or kill.
+/// Nothing where no run names one.
+fn packages_section(out: &mut String, manifest: &ScaleBench) {
+    let packages = manifest.packages();
+    if packages.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## What each run settles\n");
+    let _ = writeln!(
+        out,
+        "The packages of docs/m6-plan.md whose \"Measure first\" or \"Kill if\" reads a run here, each with its \
+         runs. The go or kill is the package's row's, read from the runs' valid rounds into spec §3.9.\n"
+    );
+    let _ = writeln!(out, "| Package | Runs |");
+    let _ = writeln!(out, "|---|---|");
+    for (package, runs) in packages {
+        let runs: Vec<String> = runs.iter().map(|run| format!("`{run}`")).collect();
+        let _ = writeln!(out, "| {package} | {} |", runs.join(", "));
+    }
+    let _ = writeln!(out);
+}
+
+/// The packages a run settles, under its heading.
+fn settles_note(out: &mut String, run: &Run) {
+    if !run.settles.is_empty() {
+        let _ = writeln!(out, "Settles {}.\n", run.settles.join(", "));
+    }
+}
+
 /// A run's section on one tier: a table for each thing it's read for.
 fn section(
     out: &mut String,
@@ -523,6 +557,7 @@ fn section(
     beside: Option<&Rounds>,
 ) {
     let _ = writeln!(out, "### {}: {}\n", run.name, run.about);
+    settles_note(out, run);
     if let Some(stands_in) = &run.stands_in {
         let tests: Vec<String> = run.serves.iter().map(u32::to_string).collect();
         let _ = writeln!(
@@ -1484,6 +1519,9 @@ fn pair_cell(rounds: &Rounds, row: &str) -> String {
         CountCell::Missing => {}
     }
     match rounds.field(row) {
+        // The share of frames that took the prepass's depth (M6 B9, F5): a prepass arm prices the prepass only
+        // at all of them, so a mix says so.
+        Some(value) if row == MAIN_DEPTH_PREPASS => main_depth_share(value),
         Some(value) if row.contains("_us") => ms(value),
         Some(value) => trim(value),
         None => "missing".to_owned(),
@@ -1544,6 +1582,17 @@ fn ms(micros: f64) -> String {
 }
 
 /// A number without trailing zeros: 4.9, 12, 0.5.
+/// [`MAIN_DEPTH_PREPASS`]'s cell: every frame, none, or a mix, which no arm should read as clean.
+fn main_depth_share(percent: f64) -> String {
+    if percent >= 100.0 {
+        "every frame".to_owned()
+    } else if percent <= 0.0 {
+        "no frame".to_owned()
+    } else {
+        format!("{}% of frames: a mix", trim(percent))
+    }
+}
+
 fn trim(value: f64) -> String {
     let text = format!("{value:.3}");
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
@@ -1618,6 +1667,35 @@ mod tests {
              frames=100 p50={p50} p95={p95} worst={worst} total=1000 worst_tick=0 worst_walked_m=\"1.0\" \
              budget={budget} over_p50=false over_worst=false"
         )
+    }
+
+    /// F5's main-depth share reads as every frame, none, or a mix (M6 B9), so a prepass arm that fell back on some
+    /// frames can't pass for a clean one.
+    #[test]
+    fn the_main_depth_share_names_a_mix() {
+        assert_eq!(main_depth_share(100.0), "every frame");
+        assert_eq!(main_depth_share(0.0), "no frame");
+        assert_eq!(main_depth_share(99.5), "99.5% of frames: a mix");
+    }
+
+    /// M6's probes (M6 B9) report under their own title with no verdicts, since they serve no exit test, and say
+    /// which packages each run settles: in a table of their own and under each run's heading.
+    #[test]
+    fn the_probes_report_what_each_run_settles_and_no_verdicts() {
+        let probes = ScaleBench::parse(include_str!("../../../../bench/probes.ron")).unwrap();
+        let empty = std::env::temp_dir().join(format!("testkit_probes_report_{}", std::process::id()));
+        let (text, failures) =
+            report(&Inputs { manifest: &probes, logs: &empty, baseline: None, commit: "c", smoke: false });
+        assert!(text.starts_with("# M6's probes: c\n"), "{text}");
+        assert!(!text.contains("## Verdicts"), "no exit test is served");
+        assert!(text.contains("## What each run settles"));
+        assert!(text.contains("| P1 | `pk-terms`, `df-terms`, `pk-switches`, `df-switches` |"), "{text}");
+        assert!(text.contains("### df-terms: the district's fight on Desktop-High"));
+        assert!(text.contains("Settles P1, P2, P4, P5, K3, K4.\n"));
+        assert!(failures.is_empty(), "nothing run is nothing failed: {failures:?}");
+        // The batch keeps its title and its verdicts.
+        let (batch, _) = generate(false);
+        assert!(batch.starts_with("# Benches at scale: fixture\n") && batch.contains("## Verdicts"));
     }
 
     /// §3.4's draw budget is on the main view's calls after culling (m5-plan §3), and a counting walk's table

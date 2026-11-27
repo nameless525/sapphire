@@ -111,6 +111,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
             water: Vec::new(),
             rooms: Vec::new(),
             weather_plan: None,
+            foliage: None,
         },
     })
 }

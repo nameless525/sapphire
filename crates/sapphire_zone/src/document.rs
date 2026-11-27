@@ -58,6 +58,8 @@
 //!         water: [(name: "well_pool", shape: Lake(outline: [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)], height: -0.4))],
 //!         // Where its sound takes a reverb (the `rooms` module): the listener's room chooses.
 //!         rooms: [(name: "gatehouse", position: (3.2, 2.0, -20.0), volume: Box(half_extents: (3.0, 2.0, 2.0)), reverb: "shelter", fade: 0.4)],
+//!         // What grows on it (the `foliage` module): placed by its rules into a scatter set per cell.
+//!         foliage: Some("6c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5"),
 //!     ),
 //! )
 //! ```
@@ -93,8 +95,8 @@ use serde::{Deserialize, Serialize};
 use crate::ambient::{Ambient, ZoneAmbient};
 use crate::cooked::{
     CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedPatrol, CookedSpawner,
-    CookedSpline, CookedTrigger, CookedVolume, PlaceContents, Zone, ZoneCell, ZonePresentation,
-    ZoneSimulation,
+    CookedSpline, CookedTrigger, CookedVolume, CookedZoneFoliage, PlaceContents, Zone, ZoneCell,
+    ZonePresentation, ZoneSimulation,
 };
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
@@ -188,6 +190,11 @@ pub struct ZoneDocument {
     /// most [`rooms::MAX_ROOMS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rooms: Vec<ZoneRoom>,
+    /// What grows on it (M6 G1a): a `.foliage.ron` source, by its sidecar's ID, which the cook places into a
+    /// scatter set per cell standing on `colliders`, as presentation alone: the [`foliage`](crate::foliage)
+    /// module.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foliage: Option<AssetId>,
 }
 
 impl Versioned for ZoneDocument {
@@ -468,6 +475,8 @@ pub struct ZoneGeometry {
     pub exit_packs: Vec<String>,
     /// The reflection probes baked for the document's `reflections`, if it has any.
     pub reflections: Option<AssetId>,
+    /// The scatter sets planned for the document's `foliage`, if it names one.
+    pub foliage: Option<CookedZoneFoliage>,
 }
 
 impl ZoneDocument {
@@ -634,6 +643,10 @@ impl ZoneDocument {
             ambient.check()?;
         }
         rooms::check(&self.rooms)?;
+        if self.foliage.is_some() && self.colliders.is_none() {
+            let problem = "plants stand on the zone's colliders, and it names no `colliders`";
+            return Err(ZoneError::invalid("foliage", problem));
+        }
         self.check_water()
     }
 
@@ -856,6 +869,10 @@ impl ZoneDocument {
             );
             return Err(ZoneError::invalid("reflections", problem));
         }
+        if geometry.foliage.as_ref().map(|foliage| foliage.foliage) != self.foliage {
+            let problem = "the cook's scatter sets aren't of the document's foliage";
+            return Err(ZoneError::invalid("foliage", problem));
+        }
         if geometry.exit_packs.len() != self.exits.len() {
             let problem = format!("{} packs for {} exits", geometry.exit_packs.len(), self.exits.len());
             return Err(ZoneError::invalid("exits", problem));
@@ -915,6 +932,7 @@ impl ZoneDocument {
             water: self.cooked_water_surfaces(&simulation),
             rooms: rooms::cook(&self.rooms),
             weather_plan,
+            foliage: geometry.foliage,
         };
         // In `Place`'s order: the backdrop's entries, then each cell's.
         for place in places {

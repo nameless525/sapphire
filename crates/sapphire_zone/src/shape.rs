@@ -77,6 +77,32 @@ impl ZoneShape {
         }
         Ok(())
     }
+
+    /// Whether it holds `offset` from its position, its surface included: in scalars, its yaw through
+    /// `sapphire_math::det`, so every architecture answers alike (a foliage rule's clearing, M6 G1a).
+    #[must_use]
+    pub fn holds(&self, offset: [f32; 3]) -> bool {
+        let local = |yaw: f32| {
+            let (sin, cos) = sapphire_math::det::sin_cos(-yaw.to_radians());
+            let [x, y, z] = offset;
+            // Turned back by the yaw: +X toward −Z is a positive turn, as a placement's `turn` is.
+            [x * cos + z * sin, y, z * cos - x * sin]
+        };
+        match *self {
+            Self::Sphere { radius } => offset.iter().map(|v| v * v).sum::<f32>() <= radius * radius,
+            Self::Box { half_extents, yaw } => {
+                local(yaw).iter().zip(half_extents).all(|(value, half)| value.abs() <= half)
+            }
+            Self::Ellipsoid { radii, yaw } => {
+                local(yaw)
+                    .iter()
+                    .zip(radii)
+                    .map(|(value, radius)| (value / radius) * (value / radius))
+                    .sum::<f32>()
+                    <= 1.0
+            }
+        }
+    }
 }
 
 impl ArchivedZoneShape {

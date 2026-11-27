@@ -31,6 +31,10 @@
 //!   the hour (a seeded schedule) and by place (regions), in [`ZonePresentation`] alone.
 //! - **The volume shape** ([`shape`], M6 W8a): [`ZoneShape`], the one shape a zone places a volume of air by
 //!   (a sphere, or a box or an ellipsoid turned about +Y), which the world measures distances from.
+//! - **Foliage** ([`foliage`], M6 G1a): `.foliage.ron`, [`FoliageDocument`], its cooked kinds (`.sfoliage`)
+//!   and a cell's scatter set (`.sscatter`) of 16-byte instances with stable IDs, and the pure placement a cook
+//!   makes them by ([`foliage::place_rules`], [`foliage::place_grass`]). A zone names one by its `foliage`;
+//!   its sets are presentation alone.
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //! - **Prefabs** ([`prefab`], M6 T4): `.assembly.ron`, [`Assembly`], as plain data: what a zone places as a
@@ -66,6 +70,7 @@ pub mod built;
 pub mod cooked;
 pub mod document;
 pub mod encounter;
+pub mod foliage;
 pub mod grid;
 pub mod look;
 pub mod prefab;
@@ -85,8 +90,9 @@ pub use cooked::{
     ArchivedCookedLightShape, ArchivedCookedPatrol, ArchivedCookedSpawner, ArchivedCookedSpline,
     ArchivedCookedTrigger, ArchivedCookedVolume, ArchivedPlaceContents, ArchivedZone, ArchivedZoneCell,
     ArchivedZonePresentation, ArchivedZoneSimulation, CookedCheckpoint, CookedExit, CookedInstance,
-    CookedLight, CookedLightShape, CookedPatrol, CookedSpawner, CookedSpline, CookedTrigger, CookedVolume,
-    PlaceContents, ZONE_EXTENSION, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
+    CookedLight, CookedLightShape, CookedPatrol, CookedScatterCell, CookedSpawner, CookedSpline,
+    CookedTrigger, CookedVolume, CookedZoneFoliage, PlaceContents, ZONE_EXTENSION, Zone, ZoneCell,
+    ZonePresentation, ZoneSimulation,
 };
 pub use document::{
     Checkpoint, Exit, Instance, Light, LightShape, Placement, Spawner, Spline, Split, Trigger, Volume,
@@ -95,6 +101,10 @@ pub use document::{
 pub use encounter::{
     ArchivedCookedWave, ArchivedEncounter, ArchivedWaveStart, CookedWave, ENCOUNTER_EXTENSION, Encounter,
     EncounterDocument, MAX_FACTION, MAX_TOKENS, MAX_WAVE_SPAWNS, MAX_WAVES, Wave, WaveStart,
+};
+pub use foliage::{
+    ArchivedFoliage, ArchivedScatterSet, FOLIAGE_EXTENSION, Foliage, FoliageDocument, SCATTER_EXTENSION,
+    ScatterInstance, ScatterSet,
 };
 pub use grid::{Bounds, CellCoord, Grid, Place};
 pub use look::{ArchivedZoneFog, ArchivedZoneWeather, ArchivedZoneWind, ZoneFog, ZoneWeather, ZoneWind};

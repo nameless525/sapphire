@@ -1206,7 +1206,7 @@ pub fn cook(
     let navigation = plan.navigation_id();
     let reflections = plan.reflections_id();
     let geometry =
-        ZoneGeometry { meshes, instances, day, rigs, weather, navigation, exit_packs, reflections };
+        ZoneGeometry { meshes, instances, day, rigs, weather, navigation, exit_packs, reflections, foliage: None };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;
     Ok(cooked.into_vec())

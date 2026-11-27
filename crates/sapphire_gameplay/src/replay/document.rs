@@ -1106,6 +1106,7 @@ fn archived(document: &ZoneDocument) -> Result<AlignedVec, ScenarioError> {
             water,
             rooms: Vec::new(),
             weather_plan: None,
+            foliage: None,
         },
     };
     Ok(zone.to_cooked()?)

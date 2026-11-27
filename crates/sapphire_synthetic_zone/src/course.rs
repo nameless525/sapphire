@@ -198,6 +198,7 @@ pub fn document() -> ZoneDocument {
         water: water(),
         rooms: Vec::new(),
         weather_plan: None,
+        foliage: None,
     }
 }
 

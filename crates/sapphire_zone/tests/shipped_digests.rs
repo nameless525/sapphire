@@ -52,6 +52,7 @@ fn digest(stem: &str) -> u64 {
             water: Vec::new(),
             rooms: Vec::new(),
             weather_plan: None,
+            foliage: None,
         },
     };
     let bytes = zone.to_cooked().expect("writes");

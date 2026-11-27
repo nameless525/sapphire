@@ -83,6 +83,7 @@ impl Small {
                 water: Vec::new(),
                 rooms: Vec::new(),
                 weather_plan: None,
+                foliage: None,
             },
         };
         let encounter = format!(

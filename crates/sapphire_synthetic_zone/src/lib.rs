@@ -293,6 +293,7 @@ impl SyntheticZone {
                 water: Vec::new(),
                 rooms: Vec::new(),
                 weather_plan: None,
+                foliage: None,
             },
         };
         dress(&mut zone.presentation);

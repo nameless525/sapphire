@@ -35,6 +35,7 @@ use crate::water::{
 use crate::weather::CookedWeatherPlan;
 
 mod v10;
+mod v11;
 mod v8;
 mod v9;
 
@@ -55,8 +56,9 @@ impl Versioned for Zone {
     /// patrols, and who walks them (P3). 6: a sky material, wind, weather and fog in the presentation (M5 M6).
     /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16). 9: water, in both
     /// halves (M6 W2). 10: rooms, in the presentation's (M6 U5). 11: a weather plan, in the presentation's
-    /// (M6 W8a). Versions 8 to 10 are still read ([`Zone::upgrade`]).
-    const VERSION: u32 = 11;
+    /// (M6 W8a). 12: foliage's scatter sets, in the presentation's (M6 G1a). Versions 8 to 11 are still read
+    /// ([`Zone::upgrade`]).
+    const VERSION: u32 = 12;
 }
 
 impl Versioned for ZoneSimulation {
@@ -239,6 +241,28 @@ pub struct ZonePresentation {
     pub rooms: Vec<CookedRoom>,
     /// Which weather states its sky shows (M6 W8a): the [`weather`](crate::weather) module.
     pub weather_plan: Option<CookedWeatherPlan>,
+    /// What grows on it (M6 G1a): its foliage's kinds and a scatter set for each cell its layers reach, the
+    /// [`foliage`](crate::foliage) module.
+    pub foliage: Option<CookedZoneFoliage>,
+}
+
+/// A zone's foliage, cooked: the assets a renderer draws its plants from.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct CookedZoneFoliage {
+    /// The foliage document's kinds (`.sfoliage`), by its sidecar's ID.
+    pub foliage: AssetId,
+    /// A set for each cell its layers reach, some perhaps empty, by ascending `[x, z]`.
+    pub cells: Vec<CookedScatterCell>,
+}
+
+/// A cell's scatter set, a sub-asset of the zone (`town.scatter.2.-1.sscatter`).
+#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct CookedScatterCell {
+    /// `[x, z]`.
+    pub coord: [i32; 2],
+    pub scatter: AssetId,
 }
 
 /// One cell of a zone's grid.
@@ -338,7 +362,8 @@ impl Zone {
     /// Cooked zone bytes of an older version as this version's, checked by [`Self::read`]; `None` for bytes
     /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water,
     /// no rooms and no weather plan, version 9 as one with no rooms and no plan, version 10 as one with no plan,
-    /// each with the digest it had (cooker rule 2, for one release). Any other version is [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
+    /// version 11 as one with no foliage, each with the digest it had (cooker rule 2, for one release); none of
+    /// them has foliage. Any other version is [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
     pub fn upgrade(bytes: &[u8]) -> Result<Option<AlignedVec>, ZoneError> {
         let found = sapphire_serialize::cooked::schema_version::<Self>(bytes)?;
         if found == Self::VERSION {
@@ -348,6 +373,7 @@ impl Zone {
             v8::VERSION => v8::read(bytes)?,
             v9::VERSION => v9::read(bytes)?,
             v10::VERSION => v10::read(bytes)?,
+            v11::VERSION => v11::read(bytes)?,
             _ => return Err(sapphire_serialize::CookedError::Stale { found, current: Self::VERSION }.into()),
         };
         let cooked = zone.to_cooked()?;
@@ -550,8 +576,8 @@ impl ArchivedZone {
     }
 
     /// What the zone names without holding: the meshes of its cells and instances, its probe grid, its
-    /// reflection probes, its sky material and its water's materials, for the world to ask for and let go of,
-    /// and for a packer to place. Sorted, without repeats.
+    /// reflection probes, its sky material, its water's materials and its foliage's kinds and scatter sets, for
+    /// the world to ask for and let go of, and for a packer to place. Sorted, without repeats.
     pub fn presentation_references(&self) -> Vec<AssetId> {
         let presentation = &self.presentation;
         let contents = presentation
@@ -565,8 +591,17 @@ impl ArchivedZone {
         let reflections = presentation.reflections.as_ref().copied();
         let sky = presentation.sky.as_ref().copied();
         let water = presentation.water.iter().filter_map(|surface| surface.material.as_ref().copied());
-        let mut references: Vec<AssetId> =
-            meshes.chain(instances).chain(probes).chain(reflections).chain(sky).chain(water).collect();
+        let foliage = presentation.foliage.as_ref().into_iter().flat_map(|foliage| {
+            std::iter::once(foliage.foliage).chain(foliage.cells.iter().map(|cell| cell.scatter))
+        });
+        let mut references: Vec<AssetId> = meshes
+            .chain(instances)
+            .chain(probes)
+            .chain(reflections)
+            .chain(sky)
+            .chain(water)
+            .chain(foliage)
+            .collect();
         references.sort_unstable();
         references.dedup();
         references
@@ -825,7 +860,27 @@ impl ArchivedZone {
         }
         crate::rooms::validate(presentation)?;
         crate::weather::validate(presentation)?;
+        self.validate_foliage()?;
         self.validate_water_surfaces()
+    }
+
+    /// Whether its scatter sets are at most [`MAX_CELLS`](crate::foliage::MAX_CELLS), by ascending cell, each
+    /// once.
+    fn validate_foliage(&self) -> Result<(), ZoneError> {
+        let Some(foliage) = self.presentation.foliage.as_ref() else { return Ok(()) };
+        if foliage.cells.len() > crate::foliage::MAX_CELLS {
+            let problem = format!("{} scatter sets is more than a zone may hold", foliage.cells.len());
+            return Err(ZoneError::invalid("foliage", problem));
+        }
+        let coords = foliage.cells.iter().map(|cell| cell.coord.each_ref().map(|value| value.to_native()));
+        let coords: Vec<[i32; 2]> = coords.collect();
+        if coords.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(ZoneError::invalid(
+                "foliage",
+                "its scatter sets aren't by ascending cell, each once",
+            ));
+        }
+        Ok(())
     }
 
     /// Whether each body has one surface, in the simulation's order, with a margin a cook would write and a
@@ -1166,6 +1221,7 @@ mod tests {
             navigation: Some(NAVIGATION),
             exit_packs: vec!["zone_market".to_owned(), "zone_market".to_owned()],
             reflections: Some(REFLECTIONS),
+            foliage: None,
         }
     }
 
@@ -1973,5 +2029,63 @@ mod tests {
         assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's");
         let rooms = Zone::upgrade(&v10::write(&room_zone())).expect("reads").expect("rewritten");
         assert_eq!(Zone::read(&rooms).expect("read").presentation.rooms.len(), 2, "rooms come through");
+    }
+
+    const FOLIAGE: AssetId = AssetId::from_text("6c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5");
+
+    /// [`zone`] with foliage: two cells' scatter sets.
+    fn foliage_zone() -> Zone {
+        let mut document = document();
+        document.foliage = Some(FOLIAGE);
+        let cells = [[0, -1], [1, -1]]
+            .map(|coord| CookedScatterCell { coord, scatter: FOLIAGE.sub_asset(&format!("{coord:?}")) });
+        let foliage = CookedZoneFoliage { foliage: FOLIAGE, cells: cells.to_vec() };
+        let geometry = |foliage| ZoneGeometry { foliage, ..geometry() };
+        assert!(document.cook(geometry(None)).is_err(), "foliage needs its sets");
+        document.cook(geometry(Some(foliage))).expect("cooks")
+    }
+
+    /// Foliage is presentation: its kinds and sets are named, never held, and the digest is [`digest_pins`'].
+    #[test]
+    fn foliage_is_named_and_leaves_the_digest_alone() {
+        let zone = foliage_zone();
+        let bytes = zone.to_cooked().expect("write");
+        let read = Zone::read(&bytes).expect("read");
+        let named = read.presentation_references();
+        let foliage = zone.presentation.foliage.as_ref().expect("there");
+        assert!(named.contains(&FOLIAGE) && foliage.cells.iter().all(|cell| named.contains(&cell.scatter)));
+        assert!(!read.references().contains(&FOLIAGE), "loading the zone doesn't hold it");
+        let colliders = colliders();
+        let digest = read.simulation_digest(|_| Some(&colliders[..])).expect("digests");
+        assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's: foliage isn't the simulation's");
+
+        let mut unordered = zone.clone();
+        unordered.presentation.foliage.as_mut().expect("there").cells.swap(0, 1);
+        let message = Zone::read(&unordered.to_cooked().expect("write")).expect_err("refused").to_string();
+        assert!(message.contains("ascending cell"), "{message}");
+    }
+
+    /// A zone without colliders has nothing for its plants to stand on.
+    #[test]
+    fn foliage_needs_colliders() {
+        let text = format!(
+            r#"(type: "sapphire::zone::ZoneDocument", version: 1, data: (grid: (cell_size: 32.0), foliage: Some("{FOLIAGE}")))"#
+        );
+        let message = ZoneDocument::from_ron(&text).expect_err("refused").to_string();
+        assert!(message.contains("`foliage`") && message.contains("colliders"), "{message}");
+    }
+
+    /// Version 11 bytes, as M6 W8a cooked them, read for one release (cooker rule 2): `upgrade` makes them this
+    /// version's, a zone with no foliage whose digest and bytes are those it had at this version.
+    #[test]
+    fn a_version_11_zone_upgrades_to_one_without_foliage() {
+        let current = weather_zone();
+        let old = v11::write(&current);
+        let message = Zone::read(&old).expect_err("stale").to_string();
+        assert!(message.contains("schema version 11") && message.contains("recook"), "{message}");
+        let upgraded = Zone::upgrade(&old).expect("reads").expect("version 11 bytes are rewritten");
+        assert_eq!(upgraded.as_slice(), current.to_cooked().expect("write").as_slice(), "today's very bytes");
+        let dropped = Zone::upgrade(&v11::write(&foliage_zone())).expect("reads").expect("rewritten");
+        assert!(Zone::read(&dropped).expect("read").presentation.foliage.is_none());
     }
 }

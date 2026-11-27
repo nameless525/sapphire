@@ -93,6 +93,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
             water,
             rooms,
             weather_plan: None,
+            foliage: None,
         },
     })
 }

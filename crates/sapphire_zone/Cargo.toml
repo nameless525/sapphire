@@ -10,6 +10,8 @@ license.workspace = true
 [dependencies]
 # Documents derive `Reflect` and cooked data `TypePath`, whose derives find the crate by this name.
 bevy_reflect.workspace = true
+# A scatter instance is what the GPU reads, so it's plain old data (G2a uploads it).
+bytemuck.workspace = true
 glam.workspace = true
 rkyv.workspace = true
 # Spawners', triggers' and splines' stable IDs are names' hashes.

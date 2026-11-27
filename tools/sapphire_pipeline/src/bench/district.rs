@@ -534,6 +534,7 @@ pub fn generate(dir: &Path, preset: Preset, cook: Cook) -> Result<Vec<Source>, B
         water: Vec::new(),
         rooms: Vec::new(),
         weather_plan: None,
+        foliage: None,
     };
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
     sources.push(Source::asset(

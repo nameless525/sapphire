@@ -5239,6 +5239,7 @@ name = "sapphire_zone"
 version = "0.2.0"
 dependencies = [
  "bevy_reflect",
+ "bytemuck",
  "glam 0.33.12",
  "rkyv",
  "ron",

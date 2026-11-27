@@ -1224,6 +1224,41 @@ mod tests {
         }
     }
 
+    /// What naga's parse and validation of a program may take of the stack. wgpu runs both on the thread that
+    /// creates the module, which at boot is the app's: iOS's main thread or Android's SDL thread, 1 MiB each,
+    /// with the app's start above it (held small by the size tests of `Stage`, `Renderer` and `Scene`). naga
+    /// recurses as an expression nests, and on an M5 the post program took 24 KiB, the same at v0.2.0.
+    const PARSE_STACK: usize = 128 * 1024;
+
+    /// Every program, as each device reads reflection probes, parses and validates on a thread of
+    /// [`PARSE_STACK`], and the sky's and post's every variant specializes there: a shader that nests deeper than
+    /// this allows overflows that thread, which aborts this test binary ("thread 'shader parse' has overflowed its
+    /// stack"). The backend's writer (SPIR-V on Android, MSL on Apple) runs there too, but which one a host has
+    /// depends on wgpu's backends for its platform, so it isn't held here.
+    #[test]
+    fn every_program_parses_within_its_share_of_a_phone_thread() {
+        let parse = std::thread::Builder::new().name("shader parse".to_owned()).stack_size(PARSE_STACK);
+        let parsed = parse
+            .spawn(|| {
+                for read in [ProbeRead::Faces, ProbeRead::CubeArray] {
+                    let sources = ShaderSources::compiled_in().reading(read);
+                    let capabilities = match read {
+                        ProbeRead::Faces => naga::valid::Capabilities::empty(),
+                        ProbeRead::CubeArray => naga::valid::Capabilities::CUBE_ARRAY_TEXTURES,
+                    };
+                    for program in Program::ALL {
+                        match super::validate(program, &sources) {
+                            Ok(module) => specialize(program, &module, capabilities),
+                            Err(error) => panic!("{} reading probes as {read:?}: {error}", program.name()),
+                        }
+                    }
+                }
+            })
+            .expect("the thread starts")
+            .join();
+        assert!(parsed.is_ok(), "a program didn't validate");
+    }
+
     /// The stateless include (M6 N8a) stands alone until N8b's draw or W6's weather includes it: with a
     /// compute entry point evaluating a particle, it validates with no optional capability, its structs are
     /// the size of `sapphire_look`'s, and its constants are the CPU's.
@@ -2160,24 +2195,7 @@ fn cs_particle(@builtin(global_invocation_id) id: vec3<u32>) {{
             assert!(sky.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(name)), "{name}");
         }
         // Every variant specializes: discs on and off, and each set of layers.
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
-        )
-        .validate(&sky)
-        .expect("validated above");
-        for bits in 0..1u32 << names.len() {
-            let constants: naga::back::PipelineConstants = names
-                .iter()
-                .zip(0..)
-                .map(|(name, bit)| (name.to_string(), f64::from(bits >> bit & 1)))
-                .collect();
-            for entry_point in &sky.entry_points {
-                let stage = Some((entry_point.stage, entry_point.name.as_str()));
-                naga::back::pipeline_constants::process_overrides(&sky, &info, stage, &constants)
-                    .unwrap_or_else(|error| panic!("sky.wgsl {bits:05b} {}: {error}", entry_point.name));
-            }
-        }
+        specialize(Program::Sky, &sky, naga::valid::Capabilities::empty());
     }
 
     /// Post's constants are written by the CPU every frame, so every field must sit where the
@@ -2289,24 +2307,66 @@ fn cs_particle(@builtin(global_invocation_id) id: vec3<u32>) {{
         for name in names.into_iter().chain([RADIAL_TAPS_CONSTANT]) {
             assert!(post.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(name)), "{name}");
         }
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
-        )
-        .validate(&post)
-        .expect("validated above");
-        for (bits, taps) in (0..32u32).flat_map(|bits| [4, 8, 12, 16].map(|taps| (bits, taps))) {
-            let constants: naga::back::PipelineConstants = names
+        specialize(Program::Post, &post, naga::valid::Capabilities::empty());
+    }
+
+    /// Every set of override constants `program`'s pipelines are made with, whatever the tier: for the sky, discs
+    /// on and off and each set of layers; for post, each of its five switches with every tap count the radial
+    /// blur takes. Other programs have none that vary.
+    fn variants(program: Program) -> Vec<naga::back::PipelineConstants> {
+        use crate::post::{
+            CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, LAYERS_CONSTANT, LENS_EFFECTS_CONSTANT,
+            RADIAL_TAPS_CONSTANT, SHARPEN_CONSTANT,
+        };
+        use crate::sky::{
+            CLOUDS_CONSTANT, DISCS_CONSTANT, LIT_CLOUDS_CONSTANT, NEBULA_CONSTANT, STARS_CONSTANT,
+        };
+        let switches = |names: &[&str], bits: u32| -> naga::back::PipelineConstants {
+            names
                 .iter()
                 .zip(0..)
-                .map(|(name, bit)| (name.to_string(), f64::from(bits >> bit & 1)))
-                .chain([(RADIAL_TAPS_CONSTANT.to_owned(), f64::from(taps))])
-                .collect();
-            for entry_point in &post.entry_points {
+                .map(|(name, bit)| ((*name).to_owned(), f64::from(bits >> bit & 1)))
+                .collect()
+        };
+        match program {
+            Program::Sky => {
+                let names =
+                    [DISCS_CONSTANT, STARS_CONSTANT, CLOUDS_CONSTANT, NEBULA_CONSTANT, LIT_CLOUDS_CONSTANT];
+                (0..1u32 << names.len()).map(|bits| switches(&names, bits)).collect()
+            }
+            Program::Post => {
+                let names = [
+                    LAYERS_CONSTANT,
+                    SHARPEN_CONSTANT,
+                    CHARACTERS_CONSTANT,
+                    LENS_EFFECTS_CONSTANT,
+                    COLOR_EFFECTS_CONSTANT,
+                ];
+                (0..1u32 << names.len())
+                    .flat_map(|bits| [4, 8, 12, 16].map(|taps| (bits, taps)))
+                    .map(|(bits, taps)| {
+                        let mut constants = switches(&names, bits);
+                        constants.insert(RADIAL_TAPS_CONSTANT.to_owned(), f64::from(taps));
+                        constants
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Specializes each of `module`'s entry points with each of [`variants`], as making a pipeline does: naga's
+    /// `process_overrides` runs on the thread that makes it, the app's own at boot.
+    fn specialize(program: Program, module: &naga::Module, capabilities: naga::valid::Capabilities) {
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
+            .validate(module)
+            .expect("validated before");
+        for constants in variants(program) {
+            for entry_point in &module.entry_points {
                 let stage = Some((entry_point.stage, entry_point.name.as_str()));
-                naga::back::pipeline_constants::process_overrides(&post, &info, stage, &constants)
+                naga::back::pipeline_constants::process_overrides(module, &info, stage, &constants)
                     .unwrap_or_else(|error| {
-                        panic!("post.wgsl {bits:05b} {taps} {}: {error}", entry_point.name)
+                        panic!("{} {constants:?} {}: {error}", program.name(), entry_point.name)
                     });
             }
         }

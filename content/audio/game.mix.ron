@@ -7,7 +7,10 @@
 // - `pause` holds the world where it is, tails and all, and leaves the music on, quieter and darker.
 // - A line takes the music and the effects down by its voice's loudness, which its sound's mouth curve
 //   carries, and lets them back up in its pauses. The music's -9 dB was the score's own `duck_db` before.
-// - `Portable` is a phone's speaker: narrower and louder. Which one plays is a later package's (U10).
+// - `Home` (a desktop) and `Portable` (a phone's speaker, narrower and louder) each play at their loudness
+//   (M6 U10): -24 and -18 LUFS, within 2 LU, under a limiter at -1 dBTP. Each profile's `volume_db` is its
+//   normalization, set by the mix as authored (`Wide`): measured by sapphire_cues' `tests/loudness.rs` on the
+//   fights' replays, and fixed here when one misses, never in the test's tolerance.
 // - `footsteps` (M6 U3): six feet heard at once, the oldest giving way, however many walk.
 // - The reverbs (M6 U5) are what a zone's rooms sound like, by name: `shelter` a small covered space that rings
 //   briefly, `street` open lanes between walls, short and dark. The world's buses and the voices reach the
@@ -66,10 +69,10 @@
             ),
         ],
         profiles: [
-            (profile: Home),
+            (profile: Home, volume_db: -5.6),
             (
                 profile: Portable,
-                volume_db: 2.0,
+                volume_db: -2.1,
                 effects: [Compressor(threshold_db: -18.0, ratio: 3.0, attack_ms: 10.0, release_ms: 120.0, makeup_db: 4.0)],
             ),
         ],

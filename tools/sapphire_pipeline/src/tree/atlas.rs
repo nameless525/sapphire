@@ -19,7 +19,7 @@ use crate::color::{linear_to_srgb, unorm8};
 use crate::samples::noise::{NO_PERIOD, Rng, smoothstep, value_noise};
 
 /// The light falls on the sprig from the top left: the lighter stroke on each leaf sits on this side.
-const LIGHT: Vec2 = Vec2::new(-0.6, -0.8);
+pub(super) const LIGHT: Vec2 = Vec2::new(-0.6, -0.8);
 
 /// The atlas's columns and rows for `brush`: a willow's strands are cells [`STRAND_ASPECT`] times as tall as
 /// they are wide, side by side, so every atlas is square.
@@ -32,7 +32,7 @@ pub fn cells(brush: Brush) -> (u32, u32) {
 
 /// How a stroke's half width runs from its start (0) to its end (1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Profile {
+pub(super) enum Profile {
     /// Widest a third of the way out, pointed at its tip.
     Leaf,
     /// Round at both ends: a petal, a dab.
@@ -44,7 +44,7 @@ enum Profile {
 }
 
 impl Profile {
-    fn width(self, t: f32) -> f32 {
+    pub(super) fn width(self, t: f32) -> f32 {
         match self {
             Self::Leaf => det::sin(PI * det::pow(t, 0.7)),
             Self::Petal => det::sin(PI * t).max(0.0).sqrt(),
@@ -56,7 +56,7 @@ impl Profile {
 
 /// One mark of the brush, in a cell's units (its width is 1, Y down).
 #[derive(Clone, Copy, Debug)]
-struct Stroke {
+pub(super) struct Stroke {
     start: Vec2,
     /// Unit length.
     direction: Vec2,
@@ -69,12 +69,19 @@ struct Stroke {
 }
 
 impl Stroke {
-    fn new(start: Vec2, direction: Vec2, length: f32, width: f32, profile: Profile, seed: u32) -> Self {
+    pub(super) fn new(
+        start: Vec2,
+        direction: Vec2,
+        length: f32,
+        width: f32,
+        profile: Profile,
+        seed: u32,
+    ) -> Self {
         Self { start, direction: direction.normalize(), length, width, profile, wobble: 0.18, seed }
     }
 
     /// A narrower stroke on this one's lit side, over `span` of its length from `from`: its lighter tone.
-    fn lit_side(&self, from: f32, span: f32, width: f32) -> Self {
+    pub(super) fn lit_side(&self, from: f32, span: f32, width: f32) -> Self {
         let across = Vec2::new(-self.direction.y, self.direction.x);
         let side = if across.dot(LIGHT) >= 0.0 { across } else { -across };
         Self {
@@ -112,7 +119,7 @@ impl Stroke {
 }
 
 /// A cell being painted: linear colour and coverage, a texel a cell's `1 / width` wide.
-struct Cell {
+pub(super) struct Cell {
     width: u32,
     height: u32,
     color: Vec<Vec3>,
@@ -130,13 +137,13 @@ impl Cell {
     }
 
     /// Paints `stroke` in `color`, laying down its coverage.
-    fn paint(&mut self, stroke: &Stroke, color: Vec3) {
+    pub(super) fn paint(&mut self, stroke: &Stroke, color: Vec3) {
         self.paint_within(stroke, None, color);
     }
 
     /// Paints `stroke` in `color` only where `within` covers, laying down no coverage of its own: a leaf's
     /// lit side stays on the leaf.
-    fn paint_on(&mut self, stroke: &Stroke, within: &Stroke, color: Vec3) {
+    pub(super) fn paint_on(&mut self, stroke: &Stroke, within: &Stroke, color: Vec3) {
         self.paint_within(stroke, Some(within), color);
     }
 
@@ -167,36 +174,57 @@ impl Cell {
 }
 
 /// The species' palette, in linear light.
-struct Palette {
-    fill: Vec3,
-    light: Vec3,
-    shade: Vec3,
-    accent: Vec3,
+pub(super) struct Palette {
+    pub fill: Vec3,
+    pub light: Vec3,
+    pub shade: Vec3,
+    pub accent: Vec3,
+}
+
+impl Palette {
+    /// The palette of four `"#rrggbb"` colours.
+    pub(super) fn read(fill: &str, light: &str, shade: &str, accent: &str) -> io::Result<Self> {
+        let rgb =
+            |text: &str| color(text).ok_or_else(|| io::Error::other(format!("{text:?} isn't a colour")));
+        Ok(Self { fill: rgb(fill)?, light: rgb(light)?, shade: rgb(shade)?, accent: rgb(accent)? })
+    }
 }
 
 /// The atlas of `species`, `size` texels a side, as a PNG: colour in sRGB, coverage in alpha.
 pub fn atlas_png(species: &TreeSpecies, size: u32) -> io::Result<Vec<u8>> {
     let leaves = &species.leaves;
-    let rgb = |text: &str| color(text).ok_or_else(|| io::Error::other(format!("{text:?} isn't a colour")));
-    let palette = Palette {
-        fill: rgb(&leaves.fill)?,
-        light: rgb(&leaves.light)?,
-        shade: rgb(&leaves.shade)?,
-        accent: rgb(&leaves.accent)?,
-    };
-    let (columns, rows) = cells(leaves.brush);
+    let palette = Palette::read(&leaves.fill, &leaves.light, &leaves.shade, &leaves.accent)?;
+    paint(
+        species.seed,
+        cells(leaves.brush),
+        size,
+        |_| palette.shade,
+        |_, cell, rng| match leaves.brush {
+            Brush::Broad => sprig(cell, &palette, rng),
+            Brush::Petal => blossoms(cell, &palette, rng),
+            Brush::Needle => frond(cell, &palette, rng),
+            Brush::Strand => strands(cell, &palette, rng),
+        },
+    )
+}
+
+/// An atlas of `columns` × `rows` cells, `size` texels a side, as a PNG: each cell painted by `painter` (its
+/// index, the cell over its `ground` colour, and a roll of its own from `seed`), colour in sRGB, coverage in
+/// alpha, every cell clear at its border. A cell's ground is the colour its strokes' soft edges blend from, so
+/// it is the shade of what the cell paints: a flower's head over its petals' shade, never its leaves'. A tree's atlas and ground cover's ([`super::cover`]) are painted alike.
+pub(super) fn paint(
+    seed: u32,
+    (columns, rows): (u32, u32),
+    size: u32,
+    ground: impl Fn(u32) -> Vec3,
+    mut painter: impl FnMut(u32, &mut Cell, &mut Rng),
+) -> io::Result<Vec<u8>> {
     let (cell_width, cell_height) = (size / columns, size / rows);
     let mut image = image::RgbaImage::new(size, size);
     for index in 0..columns * rows {
-        let mut cell = Cell::new(cell_width, cell_height, palette.shade);
-        let mut rng =
-            Rng(crate::samples::noise::hash(species.seed ^ 0xa71a5 ^ index.wrapping_mul(0x9e37_79b9)));
-        match leaves.brush {
-            Brush::Broad => sprig(&mut cell, &palette, &mut rng),
-            Brush::Petal => blossoms(&mut cell, &palette, &mut rng),
-            Brush::Needle => frond(&mut cell, &palette, &mut rng),
-            Brush::Strand => strands(&mut cell, &palette, &mut rng),
-        }
+        let mut cell = Cell::new(cell_width, cell_height, ground(index));
+        let mut rng = Rng(crate::samples::noise::hash(seed ^ 0xa71a5 ^ index.wrapping_mul(0x9e37_79b9)));
+        painter(index, &mut cell, &mut rng);
         let (left, top) = ((index % columns) * cell_width, (index / columns) * cell_height);
         for y in 0..cell_height {
             for x in 0..cell_width {
@@ -215,7 +243,7 @@ pub fn atlas_png(species: &TreeSpecies, size: u32) -> io::Result<Vec<u8>> {
 }
 
 /// A tone between `shade` (0) and `fill` (1), a little lighter or darker by `rng`.
-fn tone(palette: &Palette, out: f32, rng: &mut Rng) -> Vec3 {
+pub(super) fn tone(palette: &Palette, out: f32, rng: &mut Rng) -> Vec3 {
     palette.shade.lerp(palette.fill, out.clamp(0.0, 1.0)) * rng.range(0.93, 1.07)
 }
 

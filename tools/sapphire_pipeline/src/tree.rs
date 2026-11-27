@@ -322,41 +322,53 @@ impl TreeSpecies {
         }
     }
 
-    fn wind(&self) -> Wind {
-        let TreeWind { sway, bend, flutter, flutter_frequency } = self.wind;
-        Wind { sway, bend, flutter, flutter_frequency }
-    }
-
     /// The bark: opaque, its gradient root to crown, swaying with its leaves.
     pub fn bark_material(&self) -> FoliageMaterial {
         let rgb = |text: &str| color(text).expect("a checked colour").to_array();
-        FoliageMaterial {
-            base_color: [1.0; 4],
-            alpha_cutoff: 0.0,
-            wrap: 0.35,
-            terminator_width: 0.08,
-            canopy_occlusion: 0.0,
-            translucency: Translucency { strength: 0.0, ..Translucency::default() },
-            gradient: FoliageGradient { root: rgb(&self.wood.root), tip: rgb(&self.wood.top) },
-            wind: self.wind(),
-            ..painted()
-        }
+        wood_material(rgb(&self.wood.root), rgb(&self.wood.top), self.wind.into())
     }
 
     /// The leaves: the atlas `atlas`, alpha-tested, darker toward the canopy's inside, glowing against a
     /// low sun.
     pub fn leaves_material(&self, atlas: AssetId) -> FoliageMaterial {
         let rgb = |text: &str| color(text).expect("a checked colour").to_array();
-        FoliageMaterial {
-            base_color: [1.0; 4],
-            base_color_map: Some(atlas),
-            alpha_cutoff: 0.45,
-            canopy_occlusion: 0.5,
-            translucency: Translucency { color: rgb(&self.leaves.translucency), strength: 0.6, power: 4.0 },
-            gradient: FoliageGradient { root: rgb(&self.leaves.inner), tip: [1.0; 3] },
-            wind: self.wind(),
-            ..painted()
-        }
+        card_material(atlas, rgb(&self.leaves.inner), rgb(&self.leaves.translucency), self.wind.into())
+    }
+}
+
+impl From<TreeWind> for Wind {
+    fn from(TreeWind { sway, bend, flutter, flutter_frequency }: TreeWind) -> Self {
+        Self { sway, bend, flutter, flutter_frequency }
+    }
+}
+
+/// Wood, or a flower's stalks: opaque, its gradient `root` to `top` (linear RGB), swaying in `wind`.
+fn wood_material(root: [f32; 3], top: [f32; 3], wind: Wind) -> FoliageMaterial {
+    FoliageMaterial {
+        base_color: [1.0; 4],
+        alpha_cutoff: 0.0,
+        wrap: 0.35,
+        terminator_width: 0.08,
+        canopy_occlusion: 0.0,
+        translucency: Translucency { strength: 0.0, ..Translucency::default() },
+        gradient: FoliageGradient { root, tip: top },
+        wind,
+        ..painted()
+    }
+}
+
+/// Cards showing `atlas`: alpha-tested, `inner` (linear RGB) deep in the canopy and white at its surface,
+/// glowing `translucency` against a low sun, swaying in `wind`.
+fn card_material(atlas: AssetId, inner: [f32; 3], translucency: [f32; 3], wind: Wind) -> FoliageMaterial {
+    FoliageMaterial {
+        base_color: [1.0; 4],
+        base_color_map: Some(atlas),
+        alpha_cutoff: 0.45,
+        canopy_occlusion: 0.5,
+        translucency: Translucency { color: translucency, strength: 0.6, power: 4.0 },
+        gradient: FoliageGradient { root: inner, tip: [1.0; 3] },
+        wind,
+        ..painted()
     }
 }
 

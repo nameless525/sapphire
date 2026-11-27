@@ -26,18 +26,21 @@ pub fn tree_glb(species: &TreeSpecies, age: usize, skeleton: &Skeleton) -> Vec<u
     let wood = wood(species, skeleton);
     let leaves = cards(species, age, skeleton);
     let name = format!("{}_{}", species.name, species.ages[age].name);
+    slots_glb(&name, &[(BARK_SLOT, &wood), (LEAVES_SLOT, &leaves)])
+}
+
+/// A binary glTF of one mesh `name` at the root, a primitive and a material slot for each of `parts`, in order.
+pub(super) fn slots_glb(name: &str, parts: &[(&str, &Geometry)]) -> Vec<u8> {
     let mut gltf = GltfWriter::default();
-    let mut parts = Vec::new();
-    for (slot, geometry) in [(BARK_SLOT, wood), (LEAVES_SLOT, leaves)] {
+    let mut primitives: Vec<(&Geometry, Option<usize>)> = Vec::new();
+    for &(slot, geometry) in parts {
         let material = gltf.add_material(json!({
             "name": slot,
             "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0] },
         }));
-        parts.push((geometry, material));
+        primitives.push((geometry, Some(material)));
     }
-    let primitives: Vec<(&Geometry, Option<usize>)> =
-        parts.iter().map(|(geometry, material)| (geometry, Some(*material))).collect();
-    let mesh = gltf.add_mesh(&name, &primitives);
+    let mesh = gltf.add_mesh(name, &primitives);
     let root = gltf.add_node(json!({ "name": name, "mesh": mesh }));
     gltf.add_root(root);
     gltf.to_glb()
@@ -95,7 +98,7 @@ pub(crate) fn wood(species: &TreeSpecies, skeleton: &Skeleton) -> Geometry {
 
 /// A tube along `points` with a radius per point, `sides` around, its rings carried along by parallel
 /// transport so they don't twist, its end closed by a point; darker toward the trunk's foot.
-fn tube(points: &[Vec3], radii: &[f32], sides: u32, height: f32) -> Geometry {
+pub(super) fn tube(points: &[Vec3], radii: &[f32], sides: u32, height: f32) -> Geometry {
     let mut geometry = Geometry::default();
     let count = points.len();
     let tangent = |index: usize| {
@@ -204,7 +207,7 @@ pub(crate) fn cards(species: &TreeSpecies, age: usize, skeleton: &Skeleton) -> G
 }
 
 /// A random unit vector.
-fn unit(rng: &mut Rng) -> Vec3 {
+pub(super) fn unit(rng: &mut Rng) -> Vec3 {
     loop {
         let v = Vec3::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
         if (0.05..=1.0).contains(&v.length_squared()) {
@@ -214,7 +217,7 @@ fn unit(rng: &mut Rng) -> Vec3 {
 }
 
 /// Two axes across `normal`, turned `spin` radians about it.
-fn frame(normal: Vec3, spin: f32) -> (Vec3, Vec3) {
+pub(super) fn frame(normal: Vec3, spin: f32) -> (Vec3, Vec3) {
     let helper = if normal.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
     let u0 = normal.cross(helper).normalize();
     let v0 = normal.cross(u0);
@@ -230,13 +233,13 @@ fn horizontal_across(direction: Vec3) -> Vec3 {
 
 /// A quad's corners about `center`, `u` and `v` its half sides: the corner at −u, +v first, then
 /// counter-clockwise seen from `u × v`, the side toward which `v` points the card's top.
-fn quad(center: Vec3, u: Vec3, v: Vec3) -> [Vec3; 4] {
+pub(super) fn quad(center: Vec3, u: Vec3, v: Vec3) -> [Vec3; 4] {
     [center - u + v, center - u - v, center + u - v, center + u + v]
 }
 
 /// A card at `corners` showing atlas cell `cell` of `columns` × `rows`, the cell's top at the corners' first
 /// and last.
-fn card(corners: [Vec3; 4], cell: u32, columns: u32, rows: u32) -> Geometry {
+pub(super) fn card(corners: [Vec3; 4], cell: u32, columns: u32, rows: u32) -> Geometry {
     let (column, row) = (cell % columns, cell / columns);
     let (u0, v0) = (column as f32 / columns as f32, row as f32 / rows as f32);
     let (u1, v1) = ((column + 1) as f32 / columns as f32, (row + 1) as f32 / rows as f32);
@@ -252,7 +255,7 @@ fn card(corners: [Vec3; 4], cell: u32, columns: u32, rows: u32) -> Geometry {
 }
 
 /// Appends `part` to `geometry`.
-fn append(geometry: &mut Geometry, part: Geometry) {
+pub(super) fn append(geometry: &mut Geometry, part: Geometry) {
     let first = geometry.positions.len() as u32;
     geometry.positions.extend(part.positions);
     geometry.normals.extend(part.normals);

@@ -301,7 +301,10 @@ mod tests {
 
         let digest = || {
             let built = built(&[]).unwrap();
-            let zone = built.document.cook(ZoneGeometry::default()).expect("cooks");
+            // The pool names no probe, so a cook places one for it (M6 W3a), baked by some ID.
+            let reflections = Some(crate::BENCH_ROOT.sub_asset("course/reflections"));
+            let zone =
+                built.document.cook(ZoneGeometry { reflections, ..ZoneGeometry::default() }).expect("cooks");
             let bytes = zone.to_cooked().expect("archives");
             let colliders = built.colliders;
             let digest = Zone::read(&bytes)

@@ -27,6 +27,9 @@
 //! zone's splines, which are camera rails outside the digest. A zone with no water writes no water section in
 //! its digest, so its digest is the one it had before water existed.
 //!
+//! **Drawn** (M6 W3a): each lake and river cooks with its zone into a mesh and an info texture of its own
+//! ([`drawn`]), and one that names no probe has one placed for it ([`WaterBody::placed_probe`]).
+//!
 //! **The query:** [`WaterVolumes::at`] says whether a point is in water and which, with the surface over it, the
 //! current there and how deep the water stands over the floor. The floor is the first thing a ray straight down
 //! from the surface meets, which the caller's [`Floor`] casts (`sapphire_physics`' `PhysicsWorld::floor_below`
@@ -40,6 +43,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{check_name, check_position};
 use crate::grid::MAX_COORDINATE;
+use crate::reflections::{ParallaxBox, ReflectionProbe};
+
+pub mod drawn;
+
+pub use drawn::{ArchivedWaterMesh, InfoTexture, WATER_MESH_EXTENSION, WaterMesh, WaterVertex, water_part};
 
 /// The most water bodies a zone may hold (spec §3.4).
 pub const MAX_BODIES: usize = 16;
@@ -131,7 +139,7 @@ pub struct WaterBody {
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub swim: bool,
     /// The reflection probe its surface reflects, by its name in the zone's `reflections`. With none, the
-    /// water cook places one at its surface.
+    /// cook places one over its surface ([`WaterBody::placed_probe`]), but for the sea's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe: Option<String>,
     /// How far its drawn surface runs onto land past its shape, in metres, for the shore's wet film.
@@ -221,7 +229,7 @@ impl WaterShape {
         match self {
             Self::Lake { outline, height } => {
                 check_height(*height).map_err(|problem| ("shape.height".to_owned(), problem))?;
-                check_outline(outline.len(), |index| outline[index])
+                check_outline(outline.len(), MAX_OUTLINE_POINTS, |index| outline[index])
                     .map_err(|problem| ("shape.outline".to_owned(), problem))
             }
             Self::River { points } => check_river(points.len(), |index| points[index]),
@@ -231,9 +239,41 @@ impl WaterShape {
         }
     }
 
+    /// The rest surface over `(x, z)` and the current there, if it covers that column: what
+    /// [`ArchivedCookedWaterVolume::column`] answers of the same shape cooked, by the same arithmetic.
+    #[must_use]
+    pub fn column(&self, x: f32, z: f32) -> Option<(f32, [f32; 2])> {
+        let (min, max) = self.bounds();
+        if !(min[0] <= x && x <= max[0] && min[1] <= z && z <= max[1]) {
+            return None;
+        }
+        match self {
+            Self::Lake { outline, height } => {
+                inside(outline.len(), |index| outline[index], x, z).then_some((*height, [0.0; 2]))
+            }
+            Self::River { points } => river_column(points.len(), |index| points[index], x, z),
+            Self::Ocean { height } => Some((*height, [0.0; 2])),
+        }
+    }
+
+    /// Its rest surface's lowest and highest heights, in metres: a lake's and the sea's one height, a river's
+    /// over its points.
+    #[must_use]
+    pub fn heights(&self) -> (f32, f32) {
+        match self {
+            Self::Lake { height, .. } | Self::Ocean { height } => (*height, *height),
+            Self::River { points } => {
+                points.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), point| {
+                    (low.min(point.at[1]), high.max(point.at[1]))
+                })
+            }
+        }
+    }
+
     /// Around it on the ground plane: `[min x, min z]` and `[max x, max z]`, a river's banks included, the sea's
     /// the whole zone. Only comparisons and a halving, so it's the same on every machine.
-    pub(crate) fn bounds(&self) -> ([f32; 2], [f32; 2]) {
+    #[must_use]
+    pub fn bounds(&self) -> ([f32; 2], [f32; 2]) {
         match self {
             Self::Lake { outline, .. } => bounds_of(outline.iter().map(|&point| (point, 0.0))),
             Self::River { points } => {
@@ -275,6 +315,105 @@ impl WaterBody {
     }
 }
 
+/// How high over a body's surface the probe the cook places for it stands, in metres.
+pub const PROBE_LIFT: f32 = 2.0;
+/// How far past a body's drawn surface, on the ground plane, the box of the probe the cook places for it
+/// reaches, in metres.
+pub const PROBE_REACH: f32 = 8.0;
+/// How far under a body's lowest surface the box of the probe the cook places for it reaches, in metres.
+pub const PROBE_DEPTH: f32 = 4.0;
+/// How far over a body's highest surface the box of the probe the cook places for it reaches, in metres.
+pub const PROBE_HEIGHT: f32 = 16.0;
+
+impl WaterBody {
+    /// The reflection probe the cook places for it (M6 W3a), if it names none and isn't the sea, under its own
+    /// name, which the zone's `reflections` then mustn't use: [`PROBE_LIFT`] over its surface, a lake's over
+    /// the middle of its outline's bounds (or, where that's land, of the widest span of water through it) and a
+    /// river's over the point halfway along it; its box its drawn
+    /// surface's bounds (its shape's grown by its `shore_margin`) grown by [`PROBE_REACH`], from
+    /// [`PROBE_DEPTH`] under its lowest surface to [`PROBE_HEIGHT`] over its highest. Halvings, sums and a
+    /// river's stretches' square roots, each correctly rounded, so it's the same on every machine. The sea
+    /// reflects the sky until it has a grid of its own (H1b).
+    #[must_use]
+    pub fn placed_probe(&self) -> Option<ReflectionProbe> {
+        if self.probe.is_some() {
+            return None;
+        }
+        let ([x, z], y) = match &self.shape {
+            WaterShape::Lake { outline, height } => (lake_middle(outline), *height),
+            WaterShape::River { points } => river_halfway(points),
+            WaterShape::Ocean { .. } => return None,
+        };
+        let (min, max) = self.shape.bounds();
+        let (low, high) = self.shape.heights();
+        let reach = self.shore_margin + PROBE_REACH;
+        Some(ReflectionProbe {
+            name: self.name.clone(),
+            position: [x, y + PROBE_LIFT, z],
+            parallax: ParallaxBox {
+                min: [min[0] - reach, low - PROBE_DEPTH, min[1] - reach],
+                max: [max[0] + reach, high + PROBE_HEIGHT, max[1] + reach],
+            },
+        })
+    }
+}
+
+/// Where over a lake its probe stands: the middle of its outline's bounds if that's water, or else, as for an L
+/// or a crescent, the middle of the widest span of water along the line through it.
+fn lake_middle(outline: &[[f32; 2]]) -> [f32; 2] {
+    let (min, max) = bounds_of(outline.iter().map(|&point| (point, 0.0)));
+    let [x, z] = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    let point = |index: usize| outline[index];
+    if inside(outline.len(), point, x, z) {
+        return [x, z];
+    }
+    let mut crossings: Vec<f32> = Vec::new();
+    let mut previous = outline[outline.len() - 1];
+    for &next in outline {
+        if (previous[1] > z) != (next[1] > z) {
+            crossings
+                .push(previous[0] + (z - previous[1]) * (next[0] - previous[0]) / (next[1] - previous[1]));
+        }
+        previous = next;
+    }
+    crossings.sort_by(f32::total_cmp);
+    // Even-odd, as `inside` counts: water runs between the first and second crossings, the third and fourth.
+    let widest = crossings.as_chunks::<2>().0.iter().fold(None::<[f32; 2]>, |widest, &span| match widest {
+        Some(best) if best[1] - best[0] >= span[1] - span[0] => Some(best),
+        _ => Some(span),
+    });
+    widest.map_or([x, z], |[from, to]| [(from + to) * 0.5, z])
+}
+
+/// The middle `(x, z)` of a river's centreline, by its length across the ground, and its surface there.
+fn river_halfway(points: &[RiverPoint]) -> ([f32; 2], f32) {
+    let length = |from: &RiverPoint, to: &RiverPoint| {
+        let (dx, dz) = (to.at[0] - from.at[0], to.at[2] - from.at[2]);
+        (dx * dx + dz * dz).sqrt()
+    };
+    let total: f32 = points.windows(2).map(|pair| length(&pair[0], &pair[1])).sum();
+    let mut left = total * 0.5;
+    for pair in points.windows(2) {
+        let stretch = length(&pair[0], &pair[1]);
+        if left <= stretch {
+            // A stretch is at least `MIN_STRETCH` long, so the share is a number.
+            let t = left / stretch;
+            let along = |axis: usize| pair[0].at[axis] + (pair[1].at[axis] - pair[0].at[axis]) * t;
+            return ([along(0), along(2)], along(1));
+        }
+        left -= stretch;
+    }
+    let last = points[points.len() - 1].at;
+    ([last[0], last[2]], last[1])
+}
+
+/// Whether `points` are an outline a lake may have, or what's wrong with them: a simple polygon of some area,
+/// of 3 to twice [`MAX_OUTLINE_POINTS`] points (a grown corner may be two) within the zone's reach. The cook
+/// holds a lake's outline grown by its margin to it, as the document's check holds the outline.
+pub fn check_outline_points(points: &[[f32; 2]]) -> Result<(), String> {
+    check_outline(points.len(), 2 * MAX_OUTLINE_POINTS, |index| points[index])
+}
+
 fn check_height(height: f32) -> Result<(), String> {
     check_position([0.0, height, 0.0])
         .map_err(|_| format!("{height} isn't a finite height within {MAX_COORDINATE} m"))
@@ -290,9 +429,9 @@ pub(crate) fn check_shore_margin(margin: f32) -> Result<(), String> {
 
 /// Whether an outline of `count` points is a simple polygon of some area, or what's wrong with it: no two of
 /// its edges meet but neighbours at their shared corner.
-fn check_outline(count: usize, point: impl Fn(usize) -> [f32; 2]) -> Result<(), String> {
-    if !(3..=MAX_OUTLINE_POINTS).contains(&count) {
-        return Err(format!("{count} points isn't from 3 to {MAX_OUTLINE_POINTS}"));
+fn check_outline(count: usize, most: usize, point: impl Fn(usize) -> [f32; 2]) -> Result<(), String> {
+    if !(3..=most).contains(&count) {
+        return Err(format!("{count} points isn't from 3 to {most}"));
     }
     for index in 0..count {
         let [x, z] = point(index);
@@ -414,6 +553,9 @@ pub struct CookedWaterSurface {
     pub probe: Option<u32>,
     /// How far its drawn surface runs onto land, in metres.
     pub shore_margin: f32,
+    /// Its surface as drawn (`.swater`, M6 W3a): its mesh and its info texture, a sub-asset of the zone
+    /// ([`drawn`]). None for the sea, whose grid isn't cooked (H1b), and in a zone cooked before version 14.
+    pub mesh: Option<AssetId>,
 }
 
 /// What [`WaterVolumes::at`] found at a point in water.

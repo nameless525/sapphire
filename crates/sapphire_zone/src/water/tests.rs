@@ -24,8 +24,15 @@ fn document(data: &str) -> ZoneDocument {
     .expect("a good document")
 }
 
+/// The reflection probes a cook would bake, by some ID: the cook places one for each lake and river that names
+/// none.
+const REFLECTIONS: AssetId = AssetId::from_bytes([0x77; 16]);
+
 fn cooked(data: &str) -> AlignedVec {
-    document(data).cook(ZoneGeometry::default()).expect("cooks").to_cooked().expect("writes")
+    let document = document(data);
+    let reflections = (!document.reflection_probes().is_empty()).then_some(REFLECTIONS);
+    let geometry = ZoneGeometry { reflections, ..ZoneGeometry::default() };
+    document.cook(geometry).expect("cooks").to_cooked().expect("writes")
 }
 
 /// The ground under it all: the pond's bed a metre down, a hill west of x = −30 standing over the sea, nothing
@@ -314,4 +321,50 @@ fn water_round_trips_through_its_text() {
     assert_eq!((surface.probe, surface.shore_margin), (Some(0), 4.0));
     assert_eq!(surface.id, zone.simulation.water[sea].id);
     assert!(zone.simulation.water.is_sorted_by_key(|body| body.id));
+}
+
+/// The probe a cook places for each lake and river that names none (M6 W3a): named the body's name, over the
+/// middle of a lake's outline or halfway along a river, its box past the body's surface; never the sea's. The
+/// zone's probes are its document's then these, in its water's order, and a cooked surface reflects its own.
+#[test]
+fn each_lake_and_river_without_a_probe_has_one_placed() {
+    let document = document(WATER);
+    let pond = document.water[0].placed_probe().expect("the pond names none");
+    assert_eq!(pond.name, "pond");
+    assert_eq!(pond.position, [5.0, 1.0 + PROBE_LIFT, 5.0], "over the outline's middle");
+    let reach = DEFAULT_SHORE_MARGIN + PROBE_REACH;
+    assert_eq!(pond.parallax.min, [-reach, 1.0 - PROBE_DEPTH, -reach]);
+    assert_eq!(pond.parallax.max, [10.0 + reach, 1.0 + PROBE_HEIGHT, 10.0 + reach]);
+    let race = document.water[1].placed_probe().expect("the race names none");
+    assert_eq!(race.position, [40.0, 1.0 + PROBE_LIFT, 5.0], "halfway along its 40 m");
+    assert_eq!((race.parallax.min[1], race.parallax.max[1]), (1.0 - PROBE_DEPTH, 3.0 + PROBE_HEIGHT));
+    assert_eq!(document.water[3].placed_probe(), None, "the sea reflects the sky");
+    // An L's bounds' middle, (5, 5), is land: its probe stands over the middle of the water across that line.
+    let ell = WaterBody {
+        shape: WaterShape::Lake {
+            outline: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 4.0], [4.0, 4.0], [4.0, 10.0], [0.0, 10.0]],
+            height: 0.0,
+        },
+        ..document.water[0].clone()
+    };
+    assert_eq!(ell.placed_probe().expect("placed").position, [2.0, PROBE_LIFT, 5.0]);
+    let names: Vec<String> = document.reflection_probes().into_iter().map(|probe| probe.name).collect();
+    assert_eq!(names, ["pond", "race", "rink"]);
+
+    let zone = Zone::read(&cooked(WATER)).map(|zone| {
+        let by_name = |name: &str| {
+            let index = zone.simulation.water.iter().position(|body| body.name == name).expect("there");
+            zone.presentation.water[index].probe.as_ref().map(|probe| probe.to_native())
+        };
+        [by_name("pond"), by_name("race"), by_name("rink"), by_name("sea")]
+    });
+    assert_eq!(zone.expect("reads"), [Some(0), Some(1), Some(2), None]);
+
+    // A document's own probe named for a body that names none is refused: the placed one would take its name.
+    let reflections = r#"reflections: [(name: "rink", position: (0.0, 1.6, 0.0), parallax: (min: (-8.0, 0.0, -8.0), max: (8.0, 8.0, 8.0)))],"#;
+    let text = format!(
+        r#"(type: "sapphire::zone::ZoneDocument", version: 1, data: (grid: (cell_size: 32.0), {reflections} {WATER}))"#
+    );
+    let message = ZoneDocument::from_ron(&text).expect_err("refused").to_string();
+    assert!(message.contains("water[2].probe") && message.contains("rink"), "{message}");
 }

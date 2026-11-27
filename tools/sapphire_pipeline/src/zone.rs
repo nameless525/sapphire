@@ -747,17 +747,18 @@ impl ZonePlan {
         blake3::hash(&postcard::to_allocvec(&recipe).expect("a navigation recipe always encodes"))
     }
 
-    /// The ID of the zone's reflection probes, which it has if its document places any (M5 L2).
+    /// The ID of the zone's reflection probes, which it has if its document places any (M5 L2), or the cook
+    /// places one for its water (M6 W3a, [`ZoneDocument::reflection_probes`]).
     pub fn reflections_id(&self) -> Option<AssetId> {
-        (!self.document.reflections.is_empty()).then(|| self.id.sub_asset(REFLECTIONS_PART))
+        (!self.document.reflection_probes().is_empty()).then(|| self.id.sub_asset(REFLECTIONS_PART))
     }
 
-    /// What the key of the zone's reflection probes holds in place of the document's hash: the probes and
-    /// where the instances stand, the rest of what they see being their meshes' keys and the day's keys
-    /// ([`crate::reflections`]).
+    /// What the key of the zone's reflection probes holds in place of the document's hash: the probes, those
+    /// placed for its water among them, and where the instances stand, the rest of what they see being their
+    /// meshes' keys and the day's keys ([`crate::reflections`]).
     pub fn reflections_recipe(&self) -> blake3::Hash {
         let recipe = ReflectionsRecipe {
-            probes: &self.document.reflections,
+            probes: &self.document.reflection_probes(),
             instances: (self.document.instances.iter())
                 .map(|instance| InstanceRecipe {
                     mesh: instance.mesh,
@@ -1638,6 +1639,7 @@ pub fn cook(
         foliage,
         volume_looks,
         joined_colliders,
+        water: BTreeMap::new(),
     };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;

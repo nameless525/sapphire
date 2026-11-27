@@ -5,13 +5,13 @@ use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::AssetId;
 
+use super::v13::{self, SurfaceV13};
 use super::{
     CookedInstance, CookedLight, CookedSpline, PlaceContents, Zone, ZoneCell, ZoneError, ZonePresentation,
     ZoneSimulation,
 };
 use crate::atmosphere::CookedAtmosphere;
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
-use crate::water::CookedWaterSurface;
 
 /// The version this reads.
 pub(super) const VERSION: u32 = 9;
@@ -45,7 +45,7 @@ pub(super) struct PresentationV9 {
     pub wind: Option<ZoneWind>,
     pub weather: Option<ZoneWeather>,
     pub fog: Option<ZoneFog>,
-    pub water: Vec<CookedWaterSurface>,
+    pub water: Vec<SurfaceV13>,
 }
 
 /// Version 9 bytes as a zone of today's version, unchecked past the archive: the caller writes and reads it
@@ -88,7 +88,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
             wind,
             weather,
             fog,
-            water,
+            water: v13::surfaces(water),
             rooms: Vec::new(),
             weather_plan: None,
             foliage: None,
@@ -118,7 +118,7 @@ pub(super) fn write(zone: &Zone) -> sapphire_serialize::cooked::AlignedVec {
             wind: presentation.wind,
             weather: presentation.weather,
             fog: presentation.fog,
-            water: presentation.water,
+            water: v13::old_surfaces(presentation.water),
         },
     };
     sapphire_serialize::to_cooked(&old).expect("writes")

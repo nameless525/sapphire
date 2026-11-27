@@ -31,13 +31,14 @@ use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 use crate::rooms::CookedRoom;
 use crate::water::{
     ArchivedCookedWaterVolume, ArchivedWaterShape, CookedWaterSurface, CookedWaterVolume, MAX_BODIES,
-    WaterShape, WaterSurface, check_shore_margin,
+    WaterKind, WaterShape, WaterSurface, check_shore_margin,
 };
 use crate::weather::CookedWeatherPlan;
 
 mod v10;
 mod v11;
 mod v12;
+mod v13;
 mod v8;
 mod v9;
 
@@ -59,8 +60,9 @@ impl Versioned for Zone {
     /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16). 9: water, in both
     /// halves (M6 W2). 10: rooms, in the presentation's (M6 U5). 11: a weather plan, in the presentation's
     /// (M6 W8a). 12: foliage's scatter sets, in the presentation's (M6 G1a). 13: atmosphere volumes, in the
-    /// presentation's (M6 V1). Versions 8 to 12 are still read ([`Zone::upgrade`]).
-    const VERSION: u32 = 13;
+    /// presentation's (M6 V1). 14: each water surface's drawn mesh, in the presentation's (M6 W3a). Versions 8
+    /// to 13 are still read ([`Zone::upgrade`]).
+    const VERSION: u32 = 14;
 }
 
 impl Versioned for ZoneSimulation {
@@ -366,8 +368,10 @@ impl Zone {
     /// Cooked zone bytes of an older version as this version's, checked by [`Self::read`]; `None` for bytes
     /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water,
     /// no rooms and no weather plan, version 9 as one with no rooms and no plan, version 10 as one with no plan,
-    /// version 11 as one with no foliage, version 12 as one with no atmosphere volumes, each with the digest it
-    /// had (cooker rule 2, for one release); none of them has atmosphere volumes. Any other version is [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
+    /// version 11 as one with no foliage, version 12 as one with no atmosphere volumes, version 13 as one with
+    /// no drawn water, each with the digest it had (cooker rule 2, for one release); none of them has a water
+    /// surface's mesh, and none before 13 atmosphere volumes. Any other version is
+    /// [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
     pub fn upgrade(bytes: &[u8]) -> Result<Option<AlignedVec>, ZoneError> {
         let found = sapphire_serialize::cooked::schema_version::<Self>(bytes)?;
         if found == Self::VERSION {
@@ -379,6 +383,7 @@ impl Zone {
             v10::VERSION => v10::read(bytes)?,
             v11::VERSION => v11::read(bytes)?,
             v12::VERSION => v12::read(bytes)?,
+            v13::VERSION => v13::read(bytes)?,
             _ => return Err(sapphire_serialize::CookedError::Stale { found, current: Self::VERSION }.into()),
         };
         let cooked = zone.to_cooked()?;
@@ -581,7 +586,8 @@ impl ArchivedZone {
     }
 
     /// What the zone names without holding: the meshes of its cells and instances, its probe grid, its
-    /// reflection probes, its sky material, its water's materials and its foliage's kinds and scatter sets, for
+    /// reflection probes, its sky material, its water's materials and meshes and its foliage's kinds and scatter
+    /// sets, for
     /// the world to ask for and let go of, and for a packer to place. Sorted, without repeats.
     pub fn presentation_references(&self) -> Vec<AssetId> {
         let presentation = &self.presentation;
@@ -595,7 +601,9 @@ impl ArchivedZone {
         let probes = presentation.probes.as_ref().copied();
         let reflections = presentation.reflections.as_ref().copied();
         let sky = presentation.sky.as_ref().copied();
-        let water = presentation.water.iter().filter_map(|surface| surface.material.as_ref().copied());
+        let water = presentation.water.iter().flat_map(|surface| {
+            surface.material.as_ref().copied().into_iter().chain(surface.mesh.as_ref().copied())
+        });
         let foliage = presentation.foliage.as_ref().into_iter().flat_map(|foliage| {
             std::iter::once(foliage.foliage).chain(foliage.cells.iter().map(|cell| cell.scatter))
         });
@@ -907,6 +915,9 @@ impl ArchivedZone {
             if surface.probe.is_some() && self.presentation.reflections.is_none() {
                 return Err(invalid("it reflects a probe, and the zone has none".to_owned()));
             }
+            if surface.mesh.is_some() && volume.kind() == WaterKind::Ocean {
+                return Err(invalid("the sea has a mesh, which a cook never draws".to_owned()));
+            }
         }
         Ok(())
     }
@@ -1165,7 +1176,13 @@ mod tests {
     /// [`zone`] with water: a moat reflecting the gate's probe, a brook nobody swims in and the sea.
     fn water_zone() -> Zone {
         let mut document = document();
-        document.water = vec![
+        document.water = water_bodies();
+        cook(&document)
+    }
+
+    /// [`water_zone`]'s bodies.
+    fn water_bodies() -> Vec<WaterBody> {
+        vec![
             WaterBody {
                 name: "moat".to_owned(),
                 shape: WaterShape::Lake {
@@ -1201,8 +1218,7 @@ mod tests {
                 probe: None,
                 shore_margin: 4.0,
             },
-        ];
-        cook(&document)
+        ]
     }
 
     /// What a cook makes of [`document`]'s geometry.
@@ -1231,6 +1247,7 @@ mod tests {
             foliage: None,
             volume_looks: Vec::new(),
             joined_colliders: None,
+            water: std::collections::BTreeMap::new(),
         }
     }
 
@@ -2038,6 +2055,8 @@ mod tests {
         assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's");
         let rooms = Zone::upgrade(&v10::write(&room_zone())).expect("reads").expect("rewritten");
         assert_eq!(Zone::read(&rooms).expect("read").presentation.rooms.len(), 2, "rooms come through");
+        let water = Zone::upgrade(&v10::write(&water_zone())).expect("reads").expect("rewritten");
+        assert_eq!(Zone::read(&water).expect("read").presentation.water.len(), 3, "water comes through");
     }
 
     const FOLIAGE: AssetId = AssetId::from_text("6c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5");
@@ -2096,6 +2115,8 @@ mod tests {
         assert_eq!(upgraded.as_slice(), current.to_cooked().expect("write").as_slice(), "today's very bytes");
         let dropped = Zone::upgrade(&v11::write(&foliage_zone())).expect("reads").expect("rewritten");
         assert!(Zone::read(&dropped).expect("read").presentation.foliage.is_none());
+        let water = Zone::upgrade(&v11::write(&water_zone())).expect("reads").expect("rewritten");
+        assert_eq!(Zone::read(&water).expect("read").presentation.water.len(), 3, "water comes through");
     }
 
     /// [`zone`] with three atmosphere volumes (M6 V1), two of them naming one preset.
@@ -2206,5 +2227,81 @@ mod tests {
         let colliders = colliders();
         let digest = read.simulation_digest(|_| Some(&colliders[..])).expect("digests");
         assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's");
+        let water = Zone::upgrade(&v12::write(&water_zone())).expect("reads").expect("rewritten");
+        assert_eq!(Zone::read(&water).expect("read").presentation.water.len(), 3, "water comes through");
+    }
+
+    const MOAT_MESH: AssetId = AssetId::from_text("1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b");
+    const BROOK_MESH: AssetId = AssetId::from_text("2a3b4c5d-6e7f-4809-9a1b-2c3d4e5f6a7b");
+
+    /// [`water_zone`] with its moat's and brook's drawn meshes, as a cook names them (M6 W3a).
+    fn drawn_water_zone() -> Zone {
+        let mut zone = water_zone();
+        for surface in &mut zone.presentation.water {
+            let volume =
+                zone.simulation.water.iter().find(|volume| volume.id == surface.id).expect("its body");
+            surface.mesh = match volume.name.as_str() {
+                "moat" => Some(MOAT_MESH),
+                "brook" => Some(BROOK_MESH),
+                _ => None,
+            };
+        }
+        zone
+    }
+
+    /// A surface's mesh is presentation: named, never in the digest, and never the sea's; a cook gives each lake
+    /// and river the mesh its geometry names, by the body's name.
+    #[test]
+    fn water_meshes_are_named_and_leave_the_digest_alone() {
+        let colliders = colliders();
+        let digest_of = |zone: &Zone| {
+            let bytes = zone.to_cooked().expect("write");
+            Zone::read(&bytes).expect("read").simulation_digest(|_| Some(&colliders[..])).expect("digests")
+        };
+        let drawn = drawn_water_zone();
+        assert_eq!(digest_of(&drawn), digest_of(&water_zone()), "a mesh isn't the simulation's");
+        let bytes = drawn.to_cooked().expect("write");
+        let read = Zone::read(&bytes).expect("read");
+        let named = read.presentation_references();
+        assert!(named.contains(&MOAT_MESH) && named.contains(&BROOK_MESH), "{named:?}");
+        assert!(!read.references().contains(&MOAT_MESH), "loading the zone doesn't hold it");
+
+        let mut document = document();
+        document.water = water_bodies();
+        let meshes = [("moat", MOAT_MESH), ("brook", BROOK_MESH)].map(|(name, id)| (name.to_owned(), id));
+        let cooked =
+            document.cook(ZoneGeometry { water: meshes.clone().into(), ..geometry() }).expect("cooks");
+        assert_eq!(cooked, drawn, "the cook names each body's mesh");
+        let sea = ZoneGeometry { water: [("sea".to_owned(), MOAT_MESH)].into(), ..geometry() };
+        let message = document.cook(sea).expect_err("refused").to_string();
+        assert!(message.contains("sea"), "{message}");
+
+        let mut wet_sea = drawn.clone();
+        let index = wet_sea.simulation.water.iter().position(|volume| volume.name == "sea").expect("there");
+        wet_sea.presentation.water[index].mesh = Some(MOAT_MESH);
+        let message = Zone::read(&wet_sea.to_cooked().expect("write")).expect_err("refused").to_string();
+        assert!(message.contains("the sea has a mesh"), "{message}");
+    }
+
+    /// Version 13 bytes, as M6 V1 cooked them, read for one release (cooker rule 2): `upgrade` makes them this
+    /// version's, a zone whose surfaces have no meshes and whose digest and bytes are those it had at this version,
+    /// its atmosphere volumes and foliage kept.
+    #[test]
+    fn a_version_13_zone_upgrades_to_one_without_drawn_water() {
+        let current = water_zone();
+        let old = v13::write(&current);
+        let message = Zone::read(&old).expect_err("stale").to_string();
+        assert!(message.contains("schema version 13") && message.contains("recook"), "{message}");
+        let upgraded = Zone::upgrade(&old).expect("reads").expect("version 13 bytes are rewritten");
+        assert_eq!(upgraded.as_slice(), current.to_cooked().expect("write").as_slice(), "today's very bytes");
+        let dropped = Zone::upgrade(&v13::write(&drawn_water_zone())).expect("reads").expect("rewritten");
+        let read = Zone::read(&dropped).expect("read");
+        assert!(read.presentation.water.iter().all(|surface| surface.mesh.is_none()));
+        let atmosphere = atmosphere_zone();
+        let kept = Zone::upgrade(&v13::write(&atmosphere)).expect("reads").expect("rewritten");
+        let kept = Zone::read(&kept).expect("read").presentation.atmosphere.to_native();
+        assert_eq!(kept, atmosphere.presentation.atmosphere, "atmosphere volumes come through");
+        let foliage = Zone::upgrade(&v13::write(&foliage_zone())).expect("reads").expect("rewritten");
+        assert!(Zone::read(&foliage).expect("read").presentation.foliage.is_some(), "foliage comes through");
     }
 }

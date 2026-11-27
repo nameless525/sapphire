@@ -571,6 +571,9 @@ pub struct ZoneGeometry {
     /// The zone's own collider set, its `colliders` with its foliage's trunks joined (M6 G1b), if it has one:
     /// what its simulation reads in place of `colliders`.
     pub joined_colliders: Option<AssetId>,
+    /// Each lake's and river's drawn surface (`.swater`, M6 W3a), by the body's name: a body the cook drew
+    /// none for has none.
+    pub water: BTreeMap<String, AssetId>,
 }
 
 impl ZoneDocument {
@@ -774,6 +777,21 @@ impl ZoneDocument {
                 let problem = format!("`{probe}` isn't one of the zone's reflections");
                 return Err(ZoneError::invalid(format!("water[{index}].probe"), problem));
             }
+            // The probe the cook places for a body that names none (M6 W3a) joins the zone's.
+            if let Some(placed) = body.placed_probe() {
+                let field = format!("water[{index}].probe");
+                if self.reflections.iter().any(|reflection| reflection.name == placed.name) {
+                    let problem = format!(
+                        "it names no probe, and the one the cook would place for it takes its name, `{}`, which one \
+                         of the zone's reflections has: name that one here, or rename it",
+                        placed.name
+                    );
+                    return Err(ZoneError::invalid(field, problem));
+                }
+                placed.check().map_err(|(_, problem)| {
+                    ZoneError::invalid(field, format!("the probe the cook would place for it: {problem}"))
+                })?;
+            }
             if body.shape.kind() == WaterKind::Ocean {
                 seas += 1;
                 if seas > 1 {
@@ -782,7 +800,25 @@ impl ZoneDocument {
                 }
             }
         }
+        let probes = self.reflection_probes().len();
+        if probes > reflections::MAX_PROBES {
+            let problem = format!(
+                "the zone's reflections and the probes the cook places for its water come to {probes}, more than \
+                 the {} a zone may hold: name one of its reflections for some of its bodies",
+                reflections::MAX_PROBES
+            );
+            return Err(ZoneError::invalid("water", problem));
+        }
         Ok(())
+    }
+
+    /// The reflection probes a cook bakes: the document's `reflections`, then the probe it places for each water
+    /// body that names none, in the document's order ([`WaterBody::placed_probe`], M6 W3a). A zone whose bodies
+    /// each name one, or that has no water, bakes its `reflections` alone.
+    #[must_use]
+    pub fn reflection_probes(&self) -> Vec<ReflectionProbe> {
+        let placed = self.water.iter().filter_map(WaterBody::placed_probe);
+        self.reflections.iter().cloned().chain(placed).collect()
     }
 
     /// Its ambient characters, cooked, if it has any: an asset of its own, never part of [`Zone`], so a
@@ -966,13 +1002,19 @@ impl ZoneDocument {
             return Err(ZoneError::invalid("navigation", problem));
         }
         simulation.navigation = geometry.navigation;
-        if geometry.reflections.is_some() == self.reflections.is_empty() {
+        let probes = self.reflection_probes().len();
+        if geometry.reflections.is_some() == (probes == 0) {
             let problem = format!(
-                "the document places {} probes and the cook baked {}",
-                self.reflections.len(),
+                "the document places {probes} probes and the cook baked {}",
                 if geometry.reflections.is_some() { "an asset of them" } else { "none" },
             );
             return Err(ZoneError::invalid("reflections", problem));
+        }
+        for name in geometry.water.keys() {
+            if !self.water.iter().any(|body| body.name == *name && body.shape.kind() != WaterKind::Ocean) {
+                let problem = format!("the cook drew `{name}`, which is no lake or river of the document's");
+                return Err(ZoneError::invalid("water", problem));
+            }
         }
         if geometry.foliage.as_ref().map(|foliage| foliage.foliage) != self.foliage {
             let problem = "the cook's scatter sets aren't of the document's foliage";
@@ -1041,7 +1083,13 @@ impl ZoneDocument {
             wind: self.wind,
             weather: self.weather,
             fog: self.fog,
-            water: self.cooked_water_surfaces(&simulation),
+            water: (self.cooked_water_surfaces(&simulation).into_iter())
+                .zip(&simulation.water)
+                .map(|(surface, volume)| CookedWaterSurface {
+                    mesh: geometry.water.get(&volume.name).copied(),
+                    ..surface
+                })
+                .collect(),
             rooms: rooms::cook(&self.rooms),
             weather_plan,
             foliage: geometry.foliage,
@@ -1116,23 +1164,29 @@ impl ZoneDocument {
     /// # Panics
     ///
     /// If `simulation` isn't this document's, or names a probe [`Self::check`] wouldn't pass.
+    ///
+    /// Each reflects its probe by its place among [`Self::reflection_probes`], the one the cook places for it if
+    /// it names none, and has no mesh: [`Self::cook`] gives each lake and river the one its cook drew.
     #[must_use]
     pub fn cooked_water_surfaces(&self, simulation: &ZoneSimulation) -> Vec<CookedWaterSurface> {
+        let probes = self.reflection_probes();
         simulation
             .water
             .iter()
             .map(|volume| {
                 let body =
                     self.water.iter().find(|body| body.name == volume.name).expect("cooked from these");
-                let probe = body.probe.as_ref().map(|probe| {
-                    let index = self.reflections.iter().position(|reflection| reflection.name == *probe);
-                    index.expect("`check` found it") as u32
+                let name = body.probe.as_ref().unwrap_or(&body.name);
+                let probe = (body.shape.kind() != WaterKind::Ocean || body.probe.is_some()).then(|| {
+                    let index = probes.iter().position(|reflection| reflection.name == *name);
+                    index.expect("`check` found it, or it's the one the cook places") as u32
                 });
                 CookedWaterSurface {
                     id: volume.id,
                     material: body.material,
                     probe,
                     shore_margin: body.shore_margin,
+                    mesh: None,
                 }
             })
             .collect()

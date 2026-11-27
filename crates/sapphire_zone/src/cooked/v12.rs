@@ -6,6 +6,7 @@ use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::AssetId;
 
+use super::v13::{self, SurfaceV13};
 use super::{
     CookedInstance, CookedLight, CookedSpline, CookedZoneFoliage, PlaceContents, Zone, ZoneCell, ZoneError,
     ZonePresentation, ZoneSimulation,
@@ -13,7 +14,6 @@ use super::{
 use crate::atmosphere::CookedAtmosphere;
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 use crate::rooms::CookedRoom;
-use crate::water::CookedWaterSurface;
 use crate::weather::CookedWeatherPlan;
 
 /// The version this reads.
@@ -48,7 +48,7 @@ pub(super) struct PresentationV12 {
     pub wind: Option<ZoneWind>,
     pub weather: Option<ZoneWeather>,
     pub fog: Option<ZoneFog>,
-    pub water: Vec<CookedWaterSurface>,
+    pub water: Vec<SurfaceV13>,
     pub rooms: Vec<CookedRoom>,
     pub weather_plan: Option<CookedWeatherPlan>,
     pub foliage: Option<CookedZoneFoliage>,
@@ -97,7 +97,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
             wind,
             weather,
             fog,
-            water,
+            water: v13::surfaces(water),
             rooms,
             weather_plan,
             foliage,
@@ -106,7 +106,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
     })
 }
 
-/// `zone` written as version 12 would have, for tests: its atmosphere volumes dropped.
+/// `zone` written as version 12 would have, for tests: its atmosphere volumes and surfaces' meshes dropped.
 #[cfg(test)]
 pub(super) fn write(zone: &Zone) -> sapphire_serialize::cooked::AlignedVec {
     let Zone { simulation, presentation } = zone.clone();
@@ -127,7 +127,7 @@ pub(super) fn write(zone: &Zone) -> sapphire_serialize::cooked::AlignedVec {
             wind: presentation.wind,
             weather: presentation.weather,
             fog: presentation.fog,
-            water: presentation.water,
+            water: v13::old_surfaces(presentation.water),
             rooms: presentation.rooms,
             weather_plan: presentation.weather_plan,
             foliage: presentation.foliage,

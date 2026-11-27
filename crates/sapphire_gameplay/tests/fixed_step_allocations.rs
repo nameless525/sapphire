@@ -264,7 +264,9 @@ fn asking_where_the_water_is_does_not_allocate_from_the_first_tick() {
         ))"#,
     )
     .expect("a good zone");
-    let zone = document.cook(ZoneGeometry::default()).expect("cooks");
+    // The pond and the brook name no probe, so a cook places one for each (M6 W3a), baked by some ID.
+    let reflections = Some(sapphire_serialize::AssetId::from_bytes([0x77; 16]));
+    let zone = document.cook(ZoneGeometry { reflections, ..ZoneGeometry::default() }).expect("cooks");
     let cooked: &'static AlignedVec = Box::leak(Box::new(zone.to_cooked().expect("archives")));
     let zone = &Zone::read(cooked).expect("reads").simulation;
 

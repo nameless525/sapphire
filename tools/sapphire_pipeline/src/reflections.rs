@@ -117,7 +117,7 @@ pub fn cook<'a>(
 ) -> Result<Vec<u8>, ReflectionCookError> {
     let scene = probes::scene(&placed_meshes(plan), &input)?;
     let keys = probes::keys(&timeline(plan), zone)?;
-    let document = &plan.document().reflections;
+    let document = &plan.document().reflection_probes();
     let size = size(cook);
     let baked = bake(&scene, &keys, document, size, probes::bake::workers())?;
     let bytes = baked.to_cooked().map_err(ReflectionProbesError::Cooked)?;

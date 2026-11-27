@@ -124,8 +124,9 @@ pub use reflections::{ParallaxBox, ReflectionProbe};
 pub use rooms::{ArchivedCookedRoom, CookedRoom, ZoneRoom};
 pub use shape::{ArchivedZoneShape, ZoneShape};
 pub use water::{
-    ArchivedCookedWaterSurface, ArchivedCookedWaterVolume, CookedWaterSurface, CookedWaterVolume, Floor,
-    RiverPoint, WaterBody, WaterKind, WaterSample, WaterShape, WaterSurface, WaterVolumes,
+    ArchivedCookedWaterSurface, ArchivedCookedWaterVolume, ArchivedWaterMesh, CookedWaterSurface,
+    CookedWaterVolume, Floor, RiverPoint, WATER_MESH_EXTENSION, WaterBody, WaterKind, WaterMesh, WaterSample,
+    WaterShape, WaterSurface, WaterVolumes,
 };
 pub use weather::{
     ArchivedCookedWeatherPlan, ArchivedCookedWeatherRegion, CookedWeatherPlan, CookedWeatherRegion,

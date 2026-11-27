@@ -44,6 +44,11 @@ sapphire_time.workspace = true
 sapphire_moves.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
+# The documents' problems by field (M6 T6): a refusal finds its field as the editor's pane does, and `content-check`
+# reads each document of a tree as the editor would and prints what's wrong as the pane lists it. Plain data: it
+# links the documents' crates, which the cooker links already, and no renderer, GPU or egui. Its sidecars and a
+# cook's are one thing too (`tests/document_sidecars.rs`).
+sapphire_document.workspace = true
 # The string table's format. Plain data: the cooker links no ICU data but what a tag's check needs.
 sapphire_strings.workspace = true
 # Timeline documents' checks and cooked format. Plain data: the tool links neither the simulation nor the
@@ -105,8 +110,6 @@ sapphire_gameplay.workspace = true
 # The same, on a zone's own colliders (`tests/zone_ward.rs`), and a walker on a zone's cooked navmesh
 # and colliders (`tests/nav_patrols.rs`).
 sapphire_physics.workspace = true
-# The editor's sidecars and a cook's are one thing (`tests/document_sidecars.rs`).
-sapphire_document.workspace = true
 # Reads a subset the way the runtime will.
 sapphire_text.workspace = true
 swash.workspace = true

@@ -13,6 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use bevy_reflect::TypePath;
+use sapphire_document::{Kind, problem};
 use sapphire_reflect::{Decoder, VersionError, Versioned};
 use serde::{Deserialize, Serialize};
 
@@ -46,11 +47,7 @@ impl Refusal {
     /// The refusal a cook's error amounts to.
     #[must_use]
     pub fn of_cook(error: &CookError) -> Self {
-        Self {
-            source: source_of(error).map(Path::to_owned),
-            field: field_of(error).map(ToOwned::to_owned),
-            message: chain(error),
-        }
+        Self { source: source_of(error).map(Path::to_owned), field: field_of(error), message: chain(error) }
     }
 
     /// A refusal that names no source: what went wrong after the assets cooked (the audit, the index, the packs).
@@ -78,7 +75,7 @@ impl Refusal {
 }
 
 /// An error and what caused it, a line each.
-fn chain(error: &(dyn Error + 'static)) -> String {
+pub(crate) fn chain(error: &(dyn Error + 'static)) -> String {
     let mut message = error.to_string();
     let mut cause = error.source();
     while let Some(error) = cause {
@@ -156,13 +153,37 @@ fn source_of(error: &CookError) -> Option<&Path> {
     }
 }
 
-/// The field of the source's document a cook's error is about, where it knows one. Only a material's refusals name
-/// one so far; the problems pane (T6) adds the others' as it lists them.
-fn field_of(error: &CookError) -> Option<&str> {
+/// The field of the source's document a cook's error is about, where it knows one (M6 T6): a material's texture
+/// binding or a reference to another asset by its error's own field, else the first error of the chain that names one by the documents' convention
+/// (`` `placements[2].scale`: … ``, [`problem::named_field`]), else, if the source's own text doesn't read as its
+/// kind, where its parser says it stopped ([`problem::locate`]). A RON position in the chain itself is never
+/// read: it may be another document's, one the source names (an assembly's part, an effect library's sheet). So
+/// a new refusal names its field by its message alone, as the zone's, the effect sheets' and the foliage's do;
+/// one that doesn't is the whole document's.
+fn field_of(error: &CookError) -> Option<String> {
     match error {
-        CookError::Material { source, .. } => source.field(),
-        _ => None,
+        CookError::Material { source, .. } if let Some(field) = source.field() => {
+            return Some(field.to_owned());
+        }
+        CookError::EnemyReference { field, .. } | CookError::PlayableReference { field, .. } => {
+            return Some((*field).to_owned());
+        }
+        CookError::FoliageReference { field, .. } | CookError::ZoneReference { field, .. } => {
+            return Some(field.clone());
+        }
+        _ => {}
     }
+    let mut cause: Option<&(dyn Error + 'static)> = Some(error);
+    while let Some(error) = cause {
+        if let Some(field) = problem::named_field(&error.to_string()) {
+            return Some(field.to_owned());
+        }
+        cause = error.source();
+    }
+    let path = source_of(error)?;
+    let text = fs::read_to_string(path).ok()?;
+    let failure = Kind::of(path)?.read(&text).err()?;
+    problem::locate(&failure, Some(&text)).field().map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
@@ -171,6 +192,56 @@ mod tests {
 
     use super::*;
     use crate::material::MaterialCookError;
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../sapphire_document/test_content/problems").join(name)
+    }
+
+    /// The errors that carry their field as data name it; a cause that leads with a path names that; with
+    /// neither, a source whose own text doesn't read is on the field its parser stopped at.
+    #[test]
+    fn a_refusal_names_its_field_by_its_data_its_chain_or_its_own_parse() {
+        let id = AssetId::from_bytes([3; 16]);
+        let path = PathBuf::from("content/zones/a.zone.ron");
+        let zone = CookError::ZoneReference {
+            path: path.clone(),
+            field: "kinds[1].prefab".into(),
+            what: "a prefab",
+            id,
+        };
+        assert_eq!(Refusal::of_cook(&zone).field.as_deref(), Some("kinds[1].prefab"));
+        let foliage = CookError::FoliageReference { path: path.clone(), field: "rules[0].model".into(), id };
+        assert_eq!(Refusal::of_cook(&foliage).field.as_deref(), Some("rules[0].model"));
+        let enemy = CookError::EnemyReference { path: path.clone(), field: "moves", what: "a move set", id };
+        assert_eq!(Refusal::of_cook(&enemy).field.as_deref(), Some("moves"));
+        let playable =
+            CookError::PlayableReference { path: path.clone(), field: "brain", what: "a brain", id };
+        assert_eq!(Refusal::of_cook(&playable).field.as_deref(), Some("brain"));
+
+        let chain = CookError::Read {
+            path: path.clone(),
+            source: io::Error::other("`placements[0].scale`: is zero"),
+        };
+        assert_eq!(Refusal::of_cook(&chain).field.as_deref(), Some("placements[0].scale"));
+
+        let broken = fixture("unknown_field.zone.ron");
+        let own = CookError::Read { path: broken, source: io::Error::other("it stopped") };
+        assert_eq!(Refusal::of_cook(&own).field.as_deref(), Some("placements[0].colour"), "its own parse");
+    }
+
+    /// A RON position in a refusal of a source that reads is another document's (one it names, whose text
+    /// failed), so it lands on no field of the source's.
+    #[test]
+    fn a_nested_documents_position_is_not_the_sources() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/zones/square/square.zone.ron");
+        let source = source.canonicalize().expect("a shipped zone");
+        let nested = CookError::Read {
+            path: source,
+            source: io::Error::other("its prefab doesn't read: 7:12: expected a float"),
+        };
+        let refusal = Refusal::of_cook(&nested);
+        assert_eq!(refusal.field, None, "{}", refusal.message);
+    }
 
     #[test]
     fn a_material_refusal_names_its_source_and_field_and_reads_back() {

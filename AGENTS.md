@@ -105,7 +105,7 @@ From [xtask/layers.toml](xtask/layers.toml), which `cargo xtask check-layers` en
 | dev-only | `sapphire_hot_reload`, `sapphire_watch` | Desktop hot reload and the file watcher under it |
 | dev-only | `sapphire_livelink` | Live link: the device half and the desktop tool |
 | dev-only | `sapphire_document` (in `tools/`) | What the editor edits: typed documents with change records |
-| dev-only | `sapphire_synthetic_zone` | An art-free zone for streaming's tests and benches |
+| dev-only | `sapphire_synthetic_zone` | An art-free zone for streaming's tests and benches; the benchmark district's, nature zone's and traversal course's simulation halves |
 | dev-only | `sapphire_playtest` | A playtest build's sessions on disk |
 | tool | `sapphire_pipeline` | Importers, bakers, cookers, packer, content cache |
 | tool | `sapphire_editor` | The combat timeline editor (desktop) |

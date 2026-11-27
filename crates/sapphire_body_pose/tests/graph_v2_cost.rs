@@ -55,7 +55,7 @@ fn each_shipped_graph_converted_evaluates_within_a5s_kill_line_of_v1() {
         let fixture = humanoid::Humanoid::new(graph.clips.iter().map(|clip| clip.id));
         let old = fixture.bind_v1(&graph);
         let new = fixture.bind(&convert(&graph).compile().expect("it compiles"));
-        let steps = humanoid::session(&graph);
+        let steps = humanoid::session(&sapphire_assets::graph::v2::convert::convert(&graph));
         // Alternate, so a warming or a throttling machine weighs on both alike.
         let (mut v1, mut v2) = (f64::INFINITY, f64::INFINITY);
         for _ in 0..2 {

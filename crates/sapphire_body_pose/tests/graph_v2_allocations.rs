@@ -32,7 +32,7 @@ fn the_heroines_converted_graph_plays_a_session_with_no_allocation() {
     let presentation = fixture.bind(&converted.compile().expect("it compiles"));
     let simulation =
         fixture.bind(&converted.compile_for(Target::Simulation).expect("it compiles for the fixed step"));
-    let steps = humanoid::session(&graph);
+    let steps = humanoid::session(&sapphire_assets::graph::v2::convert::convert(&graph));
     let source = fixture.source();
     let clips = source.as_slice();
     let mut player = GraphPlayer::new(Arc::clone(&presentation), fixture.pose(), 11);

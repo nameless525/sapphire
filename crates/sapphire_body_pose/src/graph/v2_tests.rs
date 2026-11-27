@@ -175,6 +175,106 @@ fn must_reach(name: &str, binding: &GraphBinding, reached: u64) {
     }
 }
 
+/// FNV-1a over 64 bits: the same digest on every machine and every toolchain.
+struct Digest(u64);
+
+impl Digest {
+    fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
+/// What `binding` plays through `steps`, as two digests that read the same on every machine: the fixed
+/// step's checksum bytes each step (pose, weights, target and the whole history, on the deterministic
+/// maths), and presentation's clips sampled, state, stats, teleports and foot contact each frame and
+/// what it reached.
+fn played(humanoid: &Humanoid, binding: &Arc<GraphBinding>, steps: &[Step]) -> (u64, u64) {
+    let source = humanoid.source();
+    let clips = source.as_slice();
+    let mut history = FixedGraphHistory::try_new(Arc::clone(binding), humanoid.pose(), 11, clips)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut player = GraphPlayer::new(Arc::clone(binding), humanoid.pose(), 11);
+    let (mut fixed, mut shown) = (Digest::new(), Digest::new());
+    let mut generation = 0;
+    for (frame, step) in steps.iter().enumerate() {
+        if step.input.cut {
+            generation += 1;
+        }
+        let stamp = GraphStepStamp {
+            step: frame as u64,
+            owner_now: SimTime::from_subticks((step.input.ticks * f64::from(SUBTICKS_PER_TICK)) as u64),
+            generation,
+        };
+        let prepared = history.prepare(stamp, step.input, false).expect("a step forward");
+        let changed =
+            history.advance_prepared(prepared, step.turn, step.ground, step.gather.unwrap_or(false));
+        fixed.write(&[u8::from(changed)]);
+        history.write_canonical(&mut |chunk: &[u8]| fixed.write(chunk));
+
+        if step.replace {
+            player.replace(Arc::clone(binding));
+        }
+        if let Some(released) = step.gather {
+            player.request_grounded_gather(released);
+        }
+        let before = sample::SAMPLED.with(std::cell::Cell::get);
+        let changed = player.evaluate_with_support(&step.input, clips, 0, step.turn, step.ground);
+        let sampled = sample::SAMPLED.with(std::cell::Cell::get) - before;
+        shown.write(&[u8::from(changed)]);
+        shown.write(&sampled.to_le_bytes());
+        shown.write(player.state().to_string().as_bytes());
+        let stats = player.stats();
+        for count in [stats.transitions, stats.unmapped_moves, stats.missing_clips, player.teleports()] {
+            shown.write(&count.to_le_bytes());
+        }
+        shown.write(format!("{:?}", player.ground_foot_contact()).as_bytes());
+    }
+    shown.write(&player.reached.to_le_bytes());
+    (fixed.0, shown.0)
+}
+
+/// What each shipped graph plays through the session, in [`shipped`]'s order (by path; a boss's graph is
+/// content, so no path is named here): [`played`]'s two digests, taken from version 1's player before
+/// the switch (M6 A5c). A new shipped graph adds its row.
+const PLAYED: [(u64, u64); 7] = [
+    (0x6672_79b6_4c92_18b5, 0xc621_2f18_d6c2_afc6),
+    (0x5ef1_844f_2257_309e, 0x1287_50ea_9c42_cfeb),
+    (0x677d_a669_6679_be33, 0x60b0_7dde_1999_5b2e),
+    (0x41d3_096e_1ec1_0102, 0x635a_f86c_e5f1_1c7f),
+    (0xe154_eb74_2d99_313d, 0x8a25_ea98_e032_317a),
+    (0x4493_f9c4_5842_eab6, 0x9241_2dae_1049_254a),
+    (0xb401_d98f_b0c1_6085, 0xe2ae_71cc_0f1a_1f9f),
+];
+
+/// A5c's bar, kept once v1 is gone: each shipped graph, read, compiled for the fixed step and bound as
+/// the game binds it, plays what version 1's player played, through a session that reaches every state,
+/// transition, rule and reset of the smoothed velocity.
+#[test]
+fn every_shipped_graph_plays_what_version_1_played() {
+    let shipped = shipped();
+    assert_eq!(shipped.len(), PLAYED.len(), "each shipped graph has its row");
+    let mut found = Vec::new();
+    for (name, text) in &shipped {
+        let graph = version_1(text);
+        let humanoid = Humanoid::new(graph.clips.iter().map(|clip| clip.id));
+        let converted = v2::convert::convert(&graph);
+        let program =
+            converted.compile_for(Target::Simulation).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let binding = humanoid.bind(&program);
+        let steps = session(&converted);
+        let old = played(&humanoid, &humanoid.bind_v1(&graph), &steps);
+        assert_eq!(played(&humanoid, &binding, &steps), old, "{name}: the program against v1's player");
+        found.push(old);
+    }
+    assert_eq!(found, PLAYED, "{found:#x?}");
+}
+
 /// A5c's bar: v2 evaluating each shipped graph's conversion gives v1's poses bit for bit, frame for
 /// frame, on presentation's maths and the fixed step's, through a session that reaches every state,
 /// transition, rule and reset of the smoothed velocity.
@@ -194,7 +294,7 @@ fn every_shipped_graph_plays_v1s_poses_bit_for_bit_on_both_maths() {
         assert!(old.changes.iter().all(|change| matches!(change.guard, Guard::Condition(_))));
         assert!(presentation.changes.iter().all(|change| matches!(change.guard, Guard::Program { .. })));
         assert_eq!(presentation.target(), Some(Target::Presentation));
-        let steps = session(&graph);
+        let steps = session(&v2::convert::convert(&graph));
         let (_, reached) = presentation_matches(&name, &humanoid, &old, &presentation, &steps);
         must_reach(&name, &presentation, reached);
         simulation_matches(&name, &humanoid, &old, &simulation, &steps);
@@ -233,7 +333,7 @@ fn each_shipped_graph_costs_what_v1_does() {
         let old = humanoid.bind_v1(&graph);
         let program = v2::convert::convert(&graph).compile().expect("compiles");
         let new = humanoid.bind(&program);
-        let steps = session(&graph);
+        let steps = session(&v2::convert::convert(&graph));
         let (samples, _) = presentation_matches(&name, &humanoid, &old, &new, &steps);
         let worst = samples.iter().copied().max().unwrap_or(0);
         let mean = samples.iter().sum::<u64>() as f64 / samples.len() as f64;

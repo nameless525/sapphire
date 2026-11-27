@@ -155,6 +155,7 @@ use std::thread;
 
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
 use sapphire_assets::cue::{CUE_EXTENSION, Cue};
+use sapphire_assets::effect_sheet::{EffectSheet, SHEET_EXTENSION};
 use sapphire_assets::effects::{EFFECTS_EXTENSION, Effects};
 use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains};
 use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
@@ -206,6 +207,7 @@ use crate::clip::{
 };
 use crate::colliders::{self, ColliderCookError};
 use crate::dialogue::{self, DialogueCookError, MissingKey, Registry, RegistryError};
+use crate::effect_sheet::{self, EffectSheetDocument, SheetCookError};
 use crate::effects::{self, EffectsCookError};
 use crate::encounter::{self, EncounterCookError};
 use crate::enemy::{self, EnemyCookError};
@@ -432,6 +434,12 @@ impl Recipe {
                 format: Effects::VERSION,
                 extension: EFFECTS_EXTENSION,
             },
+            ImportSettings::EffectSheet(_) => Self {
+                importer: effect_sheet::IMPORTER,
+                cooker: effect_sheet::COOKER,
+                format: EffectSheet::VERSION,
+                extension: SHEET_EXTENSION,
+            },
             ImportSettings::Sound(_) => Self {
                 importer: audio::SOUND_IMPORTER,
                 cooker: audio::SOUND_COOKER,
@@ -639,6 +647,8 @@ impl Recipe {
             motion::output_path(relative, self.extension)
         } else if effects::is_source(relative) {
             effects::output_path(relative, self.extension)
+        } else if effect_sheet::is_source(relative) {
+            effect_sheet::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
         } else if audio::is_score_source(relative) {
@@ -827,6 +837,19 @@ pub enum CookError {
         #[source]
         source: Box<EffectsCookError>,
     },
+    #[error("failed to cook effect sheet {}", path.display())]
+    EffectSheet {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<SheetCookError>,
+    },
+    /// An effects library's emitter names an asset that isn't an effect sheet (M6 N4a).
+    #[error(
+        "effects library {}: emitter `{emitter}` names {id} as its sheet, which is no effect sheet's document",
+        path.display()
+    )]
+    NotASheet { path: PathBuf, emitter: String, id: AssetId },
     #[error("failed to cook locale {}", path.display())]
     Locale {
         path: PathBuf,
@@ -1889,6 +1912,7 @@ fn sub_assets(
         | ImportSettings::VoiceLines(_)
         | ImportSettings::Mix(_)
         | ImportSettings::Effects(_)
+        | ImportSettings::EffectSheet(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
@@ -2123,6 +2147,10 @@ impl Planned {
     fn is_material(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::Material(_))
             || matches!(self.part, Part::MergedMaterial { .. })
+    }
+
+    fn is_effect_sheet(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::EffectSheet(_))
     }
 
     fn is_probe_grid(&self) -> bool {
@@ -2985,6 +3013,16 @@ fn cook_source(
             .map_err(|source| CookError::Motion { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Effects(_) => effects::cook(bytes)
             .map_err(|source| CookError::Effects { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::EffectSheet(_) => {
+            let sheet_error =
+                |source| CookError::EffectSheet { path: path.to_owned(), source: Box::new(source) };
+            let document = EffectSheetDocument::read(bytes).map_err(sheet_error)?;
+            let image_path = document.image_path(path);
+            let image =
+                fs::read(&image_path).map_err(|source| CookError::Read { path: image_path, source })?;
+            let _held = assets.memory.hold(effect_sheet::cook_memory(&document));
+            effect_sheet::cook(&document, &image, cook).map_err(sheet_error)
+        }
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Timeline(_) => timeline::cook(bytes)
@@ -3618,7 +3656,28 @@ fn source_dependencies(
         // It reads nothing besides itself.
         ImportSettings::Motion(_) => Ok(Vec::new()),
         // It names effects by name and assets not at all (M6 N1).
-        ImportSettings::Effects(_) => Ok(Vec::new()),
+        // It names its sheets by their IDs, which must be sheets' (M6 N4a); it reads none of their output.
+        ImportSettings::Effects(_) => {
+            let library = effects::read(bytes)
+                .map_err(|source| CookError::Effects { path: path.to_owned(), source: Box::new(source) })?;
+            for (emitter, id) in effects::named_sheets(&library) {
+                if !assets.get(id).is_some_and(Planned::is_effect_sheet) {
+                    return Err(CookError::NotASheet { path: path.to_owned(), emitter, id });
+                }
+            }
+            Ok(Vec::new())
+        }
+        // A sheet reads its painting, beside it.
+        ImportSettings::EffectSheet(_) => {
+            let document = EffectSheetDocument::read(bytes).map_err(|source| CookError::EffectSheet {
+                path: path.to_owned(),
+                source: Box::new(source),
+            })?;
+            let image_path = document.image_path(path);
+            let image =
+                fs::read(&image_path).map_err(|source| CookError::Read { path: image_path, source })?;
+            Ok(vec![Dependency::File { path: document.image, hash: blake3::hash(&image) }])
+        }
         ImportSettings::CharacterMap(settings, _) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -4280,6 +4339,7 @@ pub(crate) fn imported_mesh(
         | ImportSettings::VoiceLines(_)
         | ImportSettings::Mix(_)
         | ImportSettings::Effects(_)
+        | ImportSettings::EffectSheet(_)
         | ImportSettings::Font(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)

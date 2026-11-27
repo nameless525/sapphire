@@ -18,6 +18,7 @@ use sapphire_pipeline::code_names;
 use sapphire_pipeline::combat;
 use sapphire_pipeline::cook::{self, Cook, CookError, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::documents;
+use sapphire_pipeline::effect_sheet;
 use sapphire_pipeline::extract::{self, ExtractOptions};
 use sapphire_pipeline::figure;
 use sapphire_pipeline::generators::{GENERATORS, generate_missing};
@@ -30,7 +31,7 @@ use sapphire_pipeline::pack::{self, PackReport, PackStatus};
 use sapphire_pipeline::procedural::{self, ProceduralTexture, SurfaceMap};
 use sapphire_pipeline::refusal::Refusal;
 use sapphire_pipeline::release::{self, ReleaseOptions};
-use sapphire_pipeline::samples::{self, Existing, Generated};
+use sapphire_pipeline::samples::{self, Existing, Generated, write_files};
 use sapphire_pipeline::scaffold::{self, NewCharacter};
 use sapphire_pipeline::timing::{self, Phase, Slowest};
 use sapphire_pipeline::vo;
@@ -52,6 +53,9 @@ Usage:
       Write the combat slice's generated sources into DIR, created if missing: the enemy's
       model, from the pack's that DIR's ../third_party holds, and its palette and masks. Missing
       files only, as gen-samples, unless --force.
+  sapphire_pipeline gen-effects --out <DIR> [--force]
+      Write the placeholder effect sheets into DIR's sheets/, created if missing: each sheet's
+      painting and its document (M6 N4a). Missing files only, as gen-samples, unless --force.
   sapphire_pipeline gen-figures --specs <DIR> --out <DIR> [--force]
       Write every figure spec's model and maps (each <name>.figure.ron in --specs, such as
       tools/figures) under the content directory --out, in the folder each spec names. Missing
@@ -177,7 +181,7 @@ Options:
   --json                     check: the report as JSON on stdout.
   --index <FILE>             graph: the asset index to read.
   --reverse                  graph: what uses the asset, rather than what it uses.
-  --force                    gen-samples, gen-lookdev, gen-combat, gen-figures: also replace generated files that
+  --force                    gen-samples, gen-lookdev, gen-combat, gen-effects, gen-figures: also replace generated files that
                              differ from what the generator makes, after changing it.
   --cook <COOK>              Target cook: desktop or mobile.
   --packs <DIR>              Where packs go: the content apps ship.
@@ -215,6 +219,10 @@ enum Command {
         force: bool,
     },
     GenCombat {
+        out: PathBuf,
+        force: bool,
+    },
+    GenEffects {
         out: PathBuf,
         force: bool,
     },
@@ -348,6 +356,11 @@ fn run(command: Command) -> anyhow::Result<()> {
             let generated = combat::write_all(&out, existing(force))
                 .with_context(|| format!("failed to write the combat sources to {}", out.display()))?;
             print_generated(&generated, "gen-combat");
+        }
+        Command::GenEffects { out, force } => {
+            let generated = write_files(&out, effect_sheet::paint::outputs(&out), existing(force))
+                .with_context(|| format!("failed to write the effect sheets to {}", out.display()))?;
+            print_generated(&generated, "gen-effects");
         }
         Command::GenFigures { specs, out, force } => {
             let generated = figure::write_all(&specs, &out, existing(force)).with_context(|| {
@@ -846,6 +859,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
         "gen-combat" => {
             Command::GenCombat { out: options.required("--out")?, force: options.flag("--force") }
         }
+        "gen-effects" => {
+            Command::GenEffects { out: options.required("--out")?, force: options.flag("--force") }
+        }
         "gen-figures" => Command::GenFigures {
             specs: options.required("--specs")?,
             out: options.required("--out")?,
@@ -1102,6 +1118,10 @@ mod tests {
         assert_eq!(
             parse(&["gen-combat", "--out", "dir"]).unwrap(),
             Command::GenCombat { out: "dir".into(), force: false }
+        );
+        assert_eq!(
+            parse(&["gen-effects", "--out", "dir"]).unwrap(),
+            Command::GenEffects { out: "dir".into(), force: false }
         );
         assert_eq!(
             parse(&["icons", "--source", "icon.png", "--out", "dir"]).unwrap(),

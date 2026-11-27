@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "3269bd9d-62b1-4efd-b166-c36e06347a09",
+        importer: EffectSheet(()),
+    ),
+)

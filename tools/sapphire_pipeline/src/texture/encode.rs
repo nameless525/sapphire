@@ -77,7 +77,7 @@ pub(super) fn encode_level(
 }
 
 /// [`encode_level`] on up to `threads` threads.
-fn encode_level_on(
+pub(super) fn encode_level_on(
     level: &Level,
     format: TextureFormat,
     encoding: Encoding,

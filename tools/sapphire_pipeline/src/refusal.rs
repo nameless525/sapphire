@@ -119,6 +119,8 @@ fn source_of(error: &CookError) -> Option<&Path> {
         | E::PlayableReference { path, .. }
         | E::Motion { path, .. }
         | E::Effects { path, .. }
+        | E::EffectSheet { path, .. }
+        | E::NotASheet { path, .. }
         | E::Locale { path, .. }
         | E::Timeline { path, .. }
         | E::Dialogue { path, .. }

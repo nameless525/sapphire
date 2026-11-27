@@ -708,17 +708,34 @@ fn prepare_pixels(
 }
 
 impl PreparedTexture {
-    /// Encodes every level.
+    /// Encodes every level, each a block format's in strips on as many threads as the machine has.
     pub fn encode(&self) -> Result<CookedTexture, TextureError> {
+        self.encode_with(encode::encode_level)
+    }
+
+    /// Encodes every level on up to `threads` threads: the same bytes as [`Self::encode`]'s. For a cook that
+    /// spreads its own work over threads, as an effect sheet's frames are (M6 N4a).
+    pub fn encode_on(&self, threads: usize) -> Result<CookedTexture, TextureError> {
+        self.encode_with(|texels, format, encoding| {
+            encode::encode_level_on(texels, format, encoding, threads)
+        })
+    }
+
+    fn encode_with(
+        &self,
+        encode: impl Fn(&Level, TextureFormat, Encoding) -> Result<Vec<u8>, EncodeError>,
+    ) -> Result<CookedTexture, TextureError> {
         let format = self.desc.format;
-        let levels =
-            (0..)
-                .zip(&self.levels)
-                .map(|(level, texels)| {
-                    encode::encode_level(texels, format, self.encoding)
-                        .map_err(|source| TextureError::Encode { level, format, source })
+        let levels = (0..)
+            .zip(&self.levels)
+            .map(|(level, texels)| {
+                encode(texels, format, self.encoding).map_err(|source| TextureError::Encode {
+                    level,
+                    format,
+                    source,
                 })
-                .collect::<Result<_, _>>()?;
+            })
+            .collect::<Result<_, _>>()?;
         Ok(CookedTexture { desc: self.desc, levels })
     }
 }

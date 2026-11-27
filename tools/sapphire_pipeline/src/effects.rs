@@ -6,10 +6,16 @@
 //! (`importer: Effects(())`) that reads nothing besides itself. A library written at any version the effects
 //! crate reads (1 to 5) is checked whole and cooks as that crate writes it back at its current version, so a
 //! runtime never upgrades a cooked library, and an old library and its rewrite cook to the same bytes.
+//!
+//! An emitter may name a painted sheet by its document's ID (M6 N4a, [`crate::effect_sheet`]): the cook holds
+//! that each is a sheet's, and lists them beside the document, so the library depends on its sheets and its
+//! pack holds them. It reads none of their output, so a library cooks beside its sheets.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::effects::{Effects, EffectsError};
+use sapphire_serialize::AssetId;
 use sapphire_serialize::DocumentError;
 use sapphire_vfx::EffectLibrary;
 use serde::{Deserialize, Serialize};
@@ -20,8 +26,9 @@ use crate::cache::Stage;
 /// as a new schema version of `EffectLibrary` does: the cooked document is written at it.
 pub const IMPORTER: Stage = Stage { name: "effects library document", version: 1 };
 
-/// The `.seffects` writer. Bump the version whenever it changes output for the same document.
-pub const COOKER: Stage = Stage { name: "seffects", version: 1 };
+/// The `.seffects` writer. Bump the version whenever it changes output for the same document. 2: the sheets its
+/// emitters name, beside the document (M6 N4a).
+pub const COOKER: Stage = Stage { name: "seffects", version: 2 };
 
 /// What an effects library's source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".effects.ron";
@@ -63,10 +70,25 @@ pub fn read(bytes: &[u8]) -> Result<EffectLibrary, EffectsCookError> {
     Ok(EffectLibrary::from_ron(std::str::from_utf8(bytes)?)?)
 }
 
-/// Cooks a document's bytes: the library as the effects crate writes it back, read again through the
-/// runtime's check.
+/// Each sheet a library's emitters name, with the first emitter naming it (`effect/emitter`), in the order the
+/// library lists its sheets: what the cook checks are sheets'.
+pub fn named_sheets(library: &EffectLibrary) -> Vec<(String, AssetId)> {
+    let mut named = BTreeMap::new();
+    for effect in library.effects() {
+        for emitter in &effect.emitters {
+            if let Some(sheet) = emitter.sheet {
+                named.entry(sheet).or_insert_with(|| format!("{}/{}", effect.name, emitter.name));
+            }
+        }
+    }
+    named.into_iter().map(|(sheet, emitter)| (emitter, sheet)).collect()
+}
+
+/// Cooks a document's bytes: the library as the effects crate writes it back, and the sheets its emitters name,
+/// read again through the runtime's check.
 pub fn cook(bytes: &[u8]) -> Result<Vec<u8>, EffectsCookError> {
-    let cooked = Effects { library: read(bytes)?.to_ron()?, sheets: Vec::new() }.to_cooked()?;
+    let library = read(bytes)?;
+    let cooked = Effects { library: library.to_ron()?, sheets: library.sheets() }.to_cooked()?;
     Effects::read(&cooked)?;
     Ok(cooked.into_vec())
 }

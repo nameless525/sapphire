@@ -39,6 +39,8 @@
 //! | `vroid-region-light` | warning | A VRM's unbound slot named as VRoid names hair or skin but without its group (`Hair_00_hair`): it fell back to no region light ([`vroid_region_gi`]). |
 //! | `duplicate-spring-name` | warning | A VRM whose spring chains share a name: a cloth sheet names chains, so it can't name these. |
 //! | `duplicate-texture` | warning | A texture source with the same bytes as another, under its own ID. |
+//! | `sheet` | error | An effect sheet whose document names a wrong field ([`EffectSheetDocument::problem`]) or doesn't read, whose painting is missing or isn't its grid's size, an effects library that doesn't read (so its sheets can't be checked), or one whose emitter names an ID that's no sheet of the tree (M6 N4a). |
+//! | `atlas-budget` | error | An effects library whose sheets' frames take more than its atlas holds on a cook: [`ATLAS_BUDGET_DESKTOP`] or [`ATLAS_BUDGET_MOBILE`], each layer at its whole chain. |
 //! | `stale-waiver`, `unexplained-waiver` | error | A waiver nothing needs, or one with no reason. |
 //!
 //! Warnings never fail a check; errors do, unless waived.
@@ -66,12 +68,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::AssetId;
+use sapphire_assets::effect_sheet::{ATLAS_BUDGET_DESKTOP, ATLAS_BUDGET_MOBILE, LAYER_SIZE, atlas_bytes};
 use sapphire_assets::material::{AnyMaterialDocument, RegionGi};
 use sapphire_assets::mesh::{Mesh, SlotMaterial};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::character_maps;
 use crate::cook::{self, Cook, CookError};
+use crate::effect_sheet::EffectSheetDocument;
+use crate::effects;
 use crate::import::image::{SourceFormat, header_size};
 use crate::import::vrm::{self, vroid_eye_layer, vroid_region_gi};
 use crate::material;
@@ -193,6 +198,8 @@ pub enum Rule {
     VroidRegionLight,
     DuplicateSpringName,
     DuplicateTexture,
+    Sheet,
+    AtlasBudget,
     StaleWaiver,
     UnexplainedWaiver,
 }
@@ -213,6 +220,8 @@ impl Rule {
             Self::VroidRegionLight => "vroid-region-light",
             Self::DuplicateSpringName => "duplicate-spring-name",
             Self::DuplicateTexture => "duplicate-texture",
+            Self::Sheet => "sheet",
+            Self::AtlasBudget => "atlas-budget",
             Self::StaleWaiver => "stale-waiver",
             Self::UnexplainedWaiver => "unexplained-waiver",
         }
@@ -232,6 +241,8 @@ impl Rule {
             | Self::UncappedMap
             | Self::NonAsciiPath
             | Self::MisplacedRole
+            | Self::Sheet
+            | Self::AtlasBudget
             | Self::StaleWaiver
             | Self::UnexplainedWaiver => Severity::Error,
         }
@@ -436,6 +447,7 @@ pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckE
         }
     }
     check.duplicate_textures(&assets)?;
+    check.sheets(&assets)?;
     let Checker { mut findings, .. } = check;
     waive(&assets, root, &mut findings);
     findings.sort_by(|a, b| {
@@ -552,6 +564,84 @@ impl Checker<'_> {
             }
         }
         Ok(count)
+    }
+
+    /// `sheet` and `atlas-budget`: each sheet's document, by field, and its painting's size; then each effects
+    /// library's sheets, which must be the tree's, against its atlas's budget on each cook.
+    fn sheets(&mut self, assets: &[&SourceAsset]) -> Result<(), CheckError> {
+        let mut frames: HashMap<AssetId, u32> = HashMap::new();
+        for asset in
+            assets.iter().filter(|asset| matches!(asset.meta.importer, ImportSettings::EffectSheet(_)))
+        {
+            let document = match EffectSheetDocument::read(&read(asset)?) {
+                Ok(document) => document,
+                Err(error) => {
+                    self.find(asset, Rule::Sheet, None, error.to_string());
+                    continue;
+                }
+            };
+            let image = document.image_path(&asset.path);
+            let size =
+                fs::read(&image).ok().and_then(|bytes| header_size(&bytes, SourceFormat::from_path(&image)?));
+            let grid = (document.columns * LAYER_SIZE, document.rows * LAYER_SIZE);
+            match size {
+                None => {
+                    let message = format!("`image`: its painting, {}, doesn't read as a PNG", document.image);
+                    self.find(asset, Rule::Sheet, None, message);
+                }
+                Some(size) if size != grid => {
+                    let message = format!(
+                        "`image`: its painting is {} × {}, and a grid of {} × {} frames of {LAYER_SIZE} needs {} × {}",
+                        size.0, size.1, document.columns, document.rows, grid.0, grid.1
+                    );
+                    self.find(asset, Rule::Sheet, None, message);
+                }
+                Some(_) => {
+                    frames.insert(asset.meta.id, document.frames);
+                }
+            }
+        }
+        for asset in assets.iter().filter(|asset| matches!(asset.meta.importer, ImportSettings::Effects(_))) {
+            let library = match effects::read(&read(asset)?) {
+                Ok(library) => library,
+                Err(error) => {
+                    let message =
+                        format!("the library doesn't read, so its sheets can't be checked: {error}");
+                    self.find(asset, Rule::Sheet, None, message);
+                    continue;
+                }
+            };
+            let mut layers = 0;
+            for (emitter, id) in effects::named_sheets(&library) {
+                let sheet = self
+                    .by_id
+                    .get(&id)
+                    .filter(|sheet| matches!(sheet.meta.importer, ImportSettings::EffectSheet(_)));
+                match sheet {
+                    None => {
+                        let message =
+                            format!("`{emitter}` names {id} as its sheet, and it's no sheet of the tree");
+                        self.find(asset, Rule::Sheet, None, message);
+                    }
+                    Some(_) => layers += u64::from(frames.get(&id).copied().unwrap_or_default()),
+                }
+            }
+            for (cook, budget) in [(Cook::Desktop, ATLAS_BUDGET_DESKTOP), (Cook::Mobile, ATLAS_BUDGET_MOBILE)]
+            {
+                let bytes = atlas_bytes(layers);
+                if bytes > budget {
+                    let message = format!(
+                        "its sheets' {layers} frames take {:.1} MiB of atlas at {LAYER_SIZE}² with their chains, \
+                         over the {} cook's {} MiB: name fewer sheets or frames, or split the library",
+                        bytes as f64 / f64::from(1 << 20),
+                        cook.name(),
+                        budget >> 20
+                    );
+                    self.find(asset, Rule::AtlasBudget, Some(cook), message);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `asset`'s mesh as `cook` would cook it in this tree.
@@ -748,9 +838,14 @@ impl Checker<'_> {
     }
 }
 
+/// A source's bytes.
+fn read(asset: &SourceAsset) -> Result<Vec<u8>, CheckError> {
+    fs::read(&asset.path).map_err(|source| CheckError::Read { path: asset.path.clone(), source })
+}
+
 fn read_material(asset: &SourceAsset) -> Result<AnyMaterialDocument, CheckError> {
     let path = &asset.path;
-    let bytes = fs::read(path).map_err(|source| CheckError::Read { path: path.clone(), source })?;
+    let bytes = read(asset)?;
     material::read(&bytes).map_err(|error| CheckError::Invalid { path: path.clone(), why: error.to_string() })
 }
 

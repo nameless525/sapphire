@@ -151,6 +151,7 @@ pub mod combat;
 pub mod cook;
 pub mod dialogue;
 pub mod documents;
+pub mod effect_sheet;
 pub mod effects;
 pub mod encounter;
 pub mod enemy;

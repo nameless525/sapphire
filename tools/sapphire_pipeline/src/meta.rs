@@ -154,6 +154,7 @@ use crate::check::Budget;
 use crate::clip::ClipSettings;
 use crate::colliders::{self, ColliderSettings};
 use crate::dialogue::{self, DialogueSettings};
+use crate::effect_sheet::{self, EffectSheetSettings};
 use crate::effects::{self, EffectsSettings};
 use crate::encounter::{self, EncounterSettings};
 use crate::enemy::{self, EnemySettings};
@@ -306,6 +307,8 @@ pub enum ImportSettings {
     /// A BVH motion capture (`.bvh`): a skeleton and one clip, cooked as an animation source's, with
     /// the pose it calibrates on (M6 A3).
     Bvh(BvhSettings),
+    /// A painted effect sheet's document (`.sheet.ron`), naming its painting beside it (M6 N4a).
+    EffectSheet(EffectSheetSettings),
 }
 
 impl ImportSettings {
@@ -346,6 +349,13 @@ impl ImportSettings {
         }
         if effects::is_source(source) {
             return Some(Self::Effects(EffectsSettings::default()));
+        }
+        if effect_sheet::is_source(source) {
+            return Some(Self::EffectSheet(EffectSheetSettings::default()));
+        }
+        // A sheet's painting is read through its document, never cooked as a texture of its own.
+        if effect_sheet::is_image(source) {
+            return None;
         }
         if zone::is_source(source) {
             return Some(Self::Zone(ZoneSettings::default()));
@@ -452,6 +462,7 @@ impl ImportSettings {
             Self::VoiceLines(_) => "voice lines",
             Self::Mix(_) => "mix",
             Self::Effects(_) => "effects",
+            Self::EffectSheet(_) => "effect sheet",
             Self::Font(_) => "font",
             Self::FontChains(_) => "font chains",
             Self::MoveSet(_) => "move set",
@@ -492,6 +503,7 @@ impl ImportSettings {
             | Self::VoiceLines(_)
             | Self::Mix(_)
             | Self::Effects(_)
+            | Self::EffectSheet(_)
             | Self::Font(_)
             | Self::FontChains(_)
             | Self::MoveSet(_)
@@ -532,6 +544,7 @@ impl ImportSettings {
             | Self::VoiceLines(_)
             | Self::Mix(_)
             | Self::Effects(_)
+            | Self::EffectSheet(_)
             | Self::Font(_)
             | Self::FontChains(_)
             | Self::MoveSet(_)

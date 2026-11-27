@@ -1,0 +1,11 @@
+(
+    type: "sapphire::pipeline::EffectSheetDocument",
+    version: 1,
+    data: (
+        image: "splash.sheet.png",
+        columns: 4,
+        rows: 4,
+        frames: 16,
+        timing: Life,
+    ),
+)

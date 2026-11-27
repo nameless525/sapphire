@@ -8,7 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::samples::{Existing, Generated, write_files};
-use crate::{combat, lookdev, samples};
+use crate::{combat, effect_sheet, lookdev, samples};
 
 type Make = Box<dyn FnOnce() -> io::Result<Vec<u8>>>;
 
@@ -44,10 +44,11 @@ pub struct Generator {
 }
 
 /// The generators a cook runs when one of their files is missing.
-pub const GENERATORS: [Generator; 3] = [
+pub const GENERATORS: [Generator; 4] = [
     Generator { command: "gen-samples", dir: "samples", outputs: |_| samples::files() },
     Generator { command: "gen-lookdev", dir: "lookdev", outputs: lookdev::outputs },
     Generator { command: "gen-combat", dir: "combat", outputs: combat::outputs },
+    Generator { command: "gen-effects", dir: "effects", outputs: effect_sheet::paint::outputs },
 ];
 
 /// Why generation stopped.

@@ -1,10 +1,13 @@
 use std::num::NonZeroU32;
 
+use sapphire_assets::effect_sheet::SheetTiming;
 use sapphire_assets::material::AnimeCharacterMaterial;
 use serde_json::json;
 
 use super::*;
 use crate::cook::{CookOptions, CookReport, CookStatus, cook_dir};
+use crate::effect_sheet::EffectSheetSettings;
+use crate::effects::EffectsSettings;
 use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet};
 use crate::import::vrm::{VrmSettings, VrmVersion, samples};
 use crate::meta::{self, AssetMeta, MeshSettings};
@@ -336,4 +339,78 @@ fn a_budget_changes_no_key_and_no_cooked_byte() {
     assert_eq!(keys(&second), keys(&first));
     assert!(second.assets.iter().all(|asset| asset.status == CookStatus::UpToDate), "{:?}", second.assets);
     assert_eq!(second.waivers.len(), 2);
+}
+
+/// A sheet's document and painting, `columns` × `rows` cells of `frames`, its painting `side` a side.
+fn sheet(tree: &Tree, name: &str, (columns, rows, frames): (u32, u32, u32), side: u32) -> AssetId {
+    let image = format!("{name}.sheet.png");
+    fs::create_dir_all(tree.root().join("fx")).unwrap();
+    fs::write(tree.root().join("fx").join(&image), samples::png(side, |_, _| [9, 9, 9, 255])).unwrap();
+    let document = EffectSheetDocument { image, columns, rows, frames, timing: SheetTiming::Life };
+    let ron = sapphire_serialize::to_ron(&document).unwrap();
+    let importer = ImportSettings::EffectSheet(EffectSheetSettings::default());
+    tree.source(&format!("fx/{name}.sheet.ron"), ron.as_bytes(), importer, None)
+}
+
+/// An effects library whose emitters each name one of `sheets`.
+fn library(tree: &Tree, path: &str, sheets: &[AssetId]) {
+    let emitters: Vec<String> = (sheets.iter().enumerate())
+        .map(|(i, sheet)| {
+            format!(
+                "(name: \"e{i}\", spawn: Burst(count: 1), lifetime: (1.0, 1.0), size: [(0.0, 0.1)], \
+                 color: [(0.0, (1.0, 1.0, 1.0))], sheet: Some(\"{sheet}\"))"
+            )
+        })
+        .collect();
+    let ron = format!(
+        "(type: \"sapphire::vfx::EffectLibrary\", version: 5, data: (effects: [(name: \"fx\", emitters: [{}])]))",
+        emitters.join(", ")
+    );
+    tree.source(path, ron.as_bytes(), ImportSettings::Effects(EffectsSettings::default()), None);
+}
+
+/// A sheet's wrong field and wrong painting are each named, an emitter naming what's no sheet is found on its
+/// library, and a library whose sheets pass the desktops' atlas but not the phones' is over on the mobile
+/// cook alone.
+#[test]
+fn sheets_are_checked_by_field_and_libraries_by_their_atlas() {
+    let tree = Tree::new("sheets");
+    let good = sheet(&tree, "good", (2, 2, 4), 512);
+    let bad = sheet(&tree, "bad", (2, 2, 9), 512);
+    sheet(&tree, "small", (2, 2, 4), 256);
+    let many = sheet(&tree, "many", (8, 8, 64), 2048);
+    let more = sheet(&tree, "more", (8, 8, 64), 2048);
+    let map = tree.texture("maps/a.png", 4, MaxSize::NONE, None);
+    library(&tree, "fx/fine.effects.ron", &[good, bad]);
+    library(&tree, "fx/stray.effects.ron", &[good, map]);
+    library(&tree, "fx/full.effects.ron", &[many, more, good]);
+    let importer = ImportSettings::Effects(EffectsSettings::default());
+    tree.source(
+        "fx/broken.effects.ron",
+        b"(type: \"sapphire::vfx::EffectLibrary\", version: 5, data: (",
+        importer,
+        None,
+    );
+
+    let report = tree.check();
+    assert_eq!(
+        found(&report),
+        [
+            ("fx/bad.sheet.ron", Rule::Sheet, None, false),
+            ("fx/broken.effects.ron", Rule::Sheet, None, false),
+            ("fx/full.effects.ron", Rule::AtlasBudget, Some(Cook::Mobile), false),
+            ("fx/small.sheet.ron", Rule::Sheet, None, false),
+            ("fx/stray.effects.ron", Rule::Sheet, None, false),
+        ],
+        "{report}"
+    );
+    let message = |source: &str, rule: Rule| report.of(source, rule).next().unwrap().message.clone();
+    assert!(message("fx/bad.sheet.ron", Rule::Sheet).starts_with("`frames`"), "{report}");
+    assert!(message("fx/small.sheet.ron", Rule::Sheet).contains("256 × 256"), "{report}");
+    assert!(
+        message("fx/stray.effects.ron", Rule::Sheet).contains(&format!("`fx/e1` names {map}")),
+        "{report}"
+    );
+    assert!(message("fx/full.effects.ron", Rule::AtlasBudget).contains("132 frames"), "{report}");
+    assert!(message("fx/broken.effects.ron", Rule::Sheet).contains("doesn't read"), "{report}");
 }

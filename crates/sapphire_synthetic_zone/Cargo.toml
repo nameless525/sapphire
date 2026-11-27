@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_synthetic_zone"
-description = "Zones built in code for tests and benches: one with no art, and the benchmark district's and nature zone's simulation halves."
+description = "Zones built in code for tests and benches: one with no art, the benchmark district's and nature zone's simulation halves, and the traversal course's."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -10,8 +10,10 @@
 //!
 //! [`district`] and [`nature`] are the other zones built here: the benchmark district's simulation half (M5
 //! B2) and the benchmark nature zone's (M6 W1), which a fight on either generated zone builds in code, as
-//! simulation data stays compiled in. [`ZONES`] hands both over.
+//! simulation data stays compiled in. [`course`] is the traversal course's (M6 A14), the yard the traversal
+//! rows prove on. [`ZONES`] hands all three over.
 
+pub mod course;
 pub mod district;
 pub mod nature;
 
@@ -42,8 +44,11 @@ pub const DIRECTIONS: [[f32; 2]; 16] = [
 
 /// The zones this crate builds for a scenario to stand on, by the name its `built` gives each: what the replay
 /// runner and a development build's fight hand over (`sapphire_gameplay::replay::Scenario::zones`).
-pub const ZONES: &[(&str, sapphire_zone::BuildZone)] =
-    &[(district::ZONE_NAME, district::built), (nature::ZONE_NAME, nature::built)];
+pub const ZONES: &[(&str, sapphire_zone::BuildZone)] = &[
+    (district::ZONE_NAME, district::built),
+    (nature::ZONE_NAME, nature::built),
+    (course::ZONE_NAME, course::built),
+];
 
 use sapphire_assets::material::{AnimeCharacterMaterial, Material};
 use sapphire_assets::mesh::{

@@ -1,0 +1,16 @@
+// The traversal course (M6 A14): the player at the course's south end, facing its ledges, vault, climbing wall,
+// glide drop and pool, which the traversal rows prove on (A15's mantle, A16's climb, A17's glide, A19's swim).
+// The course is a zone code builds (`built`), so this names no colliders or zone: the builder
+// (`sapphire_synthetic_zone::course`) brings them, and only the replay runner and a development build's fight hand
+// it over. It has no fight, so it names no enemies.
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the player at the traversal course's south end, before its ledges, vault, climbing wall, glide drop and pool (M6 A14)",
+        max_actors: 1,
+        built: Some("course"),
+        moves: ["content/combat/player/player.moves.ron"],
+        cast: [(moves: "player", at: "player_start", faction: 1)],
+    ),
+)

@@ -1797,3 +1797,38 @@ fn bodies_outside_its_groups_dont_block_it() {
     rig.sticks(RIGHT, 30);
     assert!(rig.feet().x > 2.0, "{}", rig.feet());
 }
+
+/// The traversal course's pool (M6 A14): a body on its floor, run hard at each of the basin's sides for four
+/// seconds, stays in the basin on the floor. Its sides are the ground's boxes, reaching under the floor, so
+/// there's no gap under them to walk out through, and 3 m is no step. The colliders are the course's own.
+#[test]
+fn the_courses_pool_holds_a_body_run_at_each_side() {
+    use sapphire_colliders::ColliderShape;
+    use sapphire_synthetic_zone::course;
+    let statics: Vec<StaticCollider> = (1..)
+        .zip(&course::colliders().colliders)
+        .map(|(id, entry)| {
+            let ColliderShape::Box { half_extents } = entry.shape else { panic!("the course is boxes") };
+            let (middle, half) = (Vec3::from(entry.position), Vec3::from(half_extents));
+            solid(id, middle - half, middle + half)
+        })
+        .collect();
+    let ([x0, x1], [z0, z1]) = course::POOL;
+    let (middle_x, middle_z) = ((x0 + x1) / 2.0, (z0 + z1) / 2.0);
+    for (side, start, stick) in [
+        ("east", Vec3::new(x1 - 1.0, course::POOL_FLOOR, middle_z), Vec2::X),
+        ("west", Vec3::new(x0 + 1.0, course::POOL_FLOOR, middle_z), -Vec2::X),
+        ("south", Vec3::new(middle_x, course::POOL_FLOOR, z1 - 1.0), Vec2::Y),
+        ("north", Vec3::new(middle_x, course::POOL_FLOOR, z0 + 1.0), -Vec2::Y),
+    ] {
+        let mut rig = Rig::new(statics.clone(), start).settled();
+        rig.sticks(stick, 240);
+        let feet = rig.feet();
+        assert!(
+            feet.x > x0 && feet.x < x1 && feet.z > z0 && feet.z < z1,
+            "{side}: it left the basin at {feet}"
+        );
+        near(feet.y, course::POOL_FLOOR, 0.02, side);
+        assert_eq!(rig.mode(), GroundMode::Grounded, "{side}");
+    }
+}

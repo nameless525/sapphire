@@ -1,0 +1,31 @@
+// The traversal course walked on foot (M6 A14), before any traversal mode exists: from the start at z 40 the
+// player runs north, steps west in front of the 1 m ledge and jumps onto it, runs off its far side and on to the
+// climbing wall's face, which nothing climbs yet, runs east along it into the gap before the plain wall, and north
+// through the gap off the ground's edge into the pool's basin, which it walks along the bottom of. Legs fitted by
+// running them: the replay's checksums say where it went.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the traversal course on foot: a jump onto a ledge, the climbing wall's face, the gap between the walls and a fall into the pool's basin (M6 A14)",
+        ticks: 760,
+        tracks: [
+            (
+                stick: Legs([
+                    // North, toward the ledges.
+                    (stick: (0, -127), ticks: 60),
+                    // West, in front of the 1 m ledge.
+                    (stick: (-127, 0), ticks: 50),
+                    // North, a jump onto the ledge, off its far side, and on to the climbing wall's face.
+                    (stick: (0, -127), ticks: 340, jump: 80),
+                    // East along the wall's face, into the gap before the plain wall.
+                    (stick: (127, 0), ticks: 110),
+                    // North through the gap, off the ground's edge into the pool's basin, and along its floor.
+                    (stick: (0, -127), ticks: 150),
+                    // Standing.
+                    (stick: (0, 0), ticks: 50),
+                ]),
+            ),
+        ],
+    ),
+)

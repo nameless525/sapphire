@@ -75,7 +75,9 @@
 //! The benchmark district is the one (`sapphire_synthetic_zone::district`), in a crate no shipped build links, so
 //! the builders are a value whoever sets a scenario up hands over ([`super::Scenario::zones`]): the replay runner
 //! and a development build's fight do, and a scenario naming a zone nobody handed over can't start, saying so.
-//! Its encounters' spawners spawn the kinds of enemy `enemies` lists, in turn, so those are the document's names.
+//! Its encounters' spawners spawn the kinds of enemy `enemies` lists, in turn, so those are the document's names;
+//! the builder says whether it needs any, since a zone with no fight, such as the traversal course (M6 A14),
+//! takes none.
 
 use bevy_reflect::Reflect;
 use sapphire_colliders::{ColliderDocument, ColliderSet};
@@ -474,16 +476,12 @@ impl ScenarioDocument {
             }
             _ => {}
         }
-        if self.built.is_some() {
-            if self.zone.is_some() || !self.encounters.is_empty() || !self.cleared.is_empty() {
-                let problem = "a zone code builds is the scenario's zone, with its own encounters: name no `zone`, \
-                               `encounters` or `cleared`";
-                return Err(invalid("built", problem));
-            }
-            if self.enemies.is_empty() {
-                let problem = "a zone code builds brings the kinds of enemy this lists, and it lists none";
-                return Err(invalid("enemies", problem));
-            }
+        if self.built.is_some()
+            && (self.zone.is_some() || !self.encounters.is_empty() || !self.cleared.is_empty())
+        {
+            let problem = "a zone code builds is the scenario's zone, with its own encounters: name no `zone`, \
+                           `encounters` or `cleared`";
+            return Err(invalid("built", problem));
         }
         if self.zone.is_none() && !self.encounters.is_empty() {
             return Err(invalid("encounters", "an encounter stands in a zone, and this has none"));

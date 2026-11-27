@@ -220,7 +220,8 @@ fn uploads_are_plain_cooked_data() {
                 | AssetKind::Effects
                 | AssetKind::EffectSheet
                 | AssetKind::Foliage
-                | AssetKind::Scatter => {
+                | AssetKind::Scatter
+                | AssetKind::WaterMesh => {
                     unreachable!("music and voice never go to the uploader")
                 }
                 AssetKind::TextureLevel => unreachable!("these assets include no texture level"),

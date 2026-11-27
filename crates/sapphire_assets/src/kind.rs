@@ -16,7 +16,7 @@ use sapphire_strings::{STRINGS_EXTENSION, StringTable, StringsError};
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline, TimelineError};
 use sapphire_zone::{
     AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, FOLIAGE_EXTENSION, Foliage,
-    SCATTER_EXTENSION, ScatterSet, ZONE_EXTENSION, Zone, ZoneError,
+    SCATTER_EXTENSION, ScatterSet, WATER_MESH_EXTENSION, WaterMesh, ZONE_EXTENSION, Zone, ZoneError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -146,11 +146,15 @@ pub enum AssetKind {
     /// foliage, so it depends on nothing. CPU data, never uploaded by the server: the renderer takes its
     /// instances (G2a).
     Scatter = 35,
+    /// A lake's or a river's drawn surface (`.swater`, M6 W3a): [`WaterMesh`], its mesh and its info texture, a
+    /// zone's sub-asset its presentation names. It depends on nothing. CPU data, never uploaded by the server: the
+    /// renderer takes its vertices and texels (W3b).
+    WaterMesh = 36,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -186,6 +190,7 @@ impl AssetKind {
         Self::EffectSheet,
         Self::Foliage,
         Self::Scatter,
+        Self::WaterMesh,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -232,6 +237,7 @@ impl AssetKind {
             Self::EffectSheet => SHEET_EXTENSION,
             Self::Foliage => FOLIAGE_EXTENSION,
             Self::Scatter => SCATTER_EXTENSION,
+            Self::WaterMesh => WATER_MESH_EXTENSION,
         }
     }
 
@@ -273,6 +279,7 @@ impl AssetKind {
             Self::EffectSheet => "effect sheet",
             Self::Foliage => "foliage",
             Self::Scatter => "scatter set",
+            Self::WaterMesh => "water mesh",
         }
     }
 
@@ -280,7 +287,7 @@ impl AssetKind {
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
     /// string table, a font, font chains, a navmesh, a timeline, a UI document, an encounter, a script, a
     /// dialogue, an enemy, a score, voice lines, a playable kind, a character motion, a mix, an effects library, an
-    /// effect sheet, a foliage's kinds or a scatter set is ready once it and its dependencies are decoded.
+    /// effect sheet, a foliage's kinds, a scatter set or a water mesh is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -289,6 +296,7 @@ impl AssetKind {
                 | Self::EffectSheet
                 | Self::Foliage
                 | Self::Scatter
+                | Self::WaterMesh
                 | Self::Rig
                 | Self::Skeleton
                 | Self::Clip
@@ -325,7 +333,7 @@ impl AssetKind {
     /// skeletons, clips, collider sets,
     /// sounds, cues, move sets, animation graphs, zones, string tables, fonts, font chains, navmeshes,
     /// timelines, UI documents, encounters, scripts, dialogues, enemies, scores, voice lines, playable
-    /// kinds, character motions, mixes, effects libraries, foliages' kinds and scatter sets are read on the CPU
+    /// kinds, character motions, mixes, effects libraries, foliages' kinds, scatter sets and water meshes are read on the CPU
     /// only, so they stay, and so does an effect sheet, whose library's atlas is built from its bytes (M6 N4b).
     pub const fn keeps_bytes(self) -> bool {
         matches!(
@@ -335,6 +343,7 @@ impl AssetKind {
                 | Self::EffectSheet
                 | Self::Foliage
                 | Self::Scatter
+                | Self::WaterMesh
                 | Self::Material
                 | Self::ProbeGrid
                 | Self::Rig
@@ -377,7 +386,7 @@ impl AssetKind {
     /// graphs on clips, zones on collider sets, navmeshes and encounters, font chains on fonts, enemies on
     /// move sets, effects libraries on sheets, and textures, rigs, probe grids, skeletons, collider sets, sounds, move sets, string
     /// tables, fonts, navmeshes, timelines, UI documents, encounters, scripts, dialogues, reflection
-    /// probes, playable kinds, character motions, ambient characters, sheets, foliages and scatter sets on nothing. A zone's meshes and probes and an enemy's or a playable kind's
+    /// probes, playable kinds, character motions, ambient characters, sheets, foliages, scatter sets and water meshes on nothing. A zone's meshes and probes and an enemy's or a playable kind's
     /// look aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and
     /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -435,6 +444,7 @@ impl AssetKind {
             33 => Some(Self::EffectSheet),
             34 => Some(Self::Foliage),
             35 => Some(Self::Scatter),
+            36 => Some(Self::WaterMesh),
             _ => None,
         }
     }
@@ -458,7 +468,8 @@ impl AssetKind {
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
     /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
     /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`,
-    /// `Ambient::read`, `Mix::read`, `Effects::read`, `EffectSheet::read`, `Foliage::read`, `ScatterSet::read`), and
+    /// `Ambient::read`, `Mix::read`, `Effects::read`, `EffectSheet::read`, `Foliage::read`, `ScatterSet::read`,
+    /// `WaterMesh::read`), and
     /// returns the assets they reference, sorted and without repeats: a mesh's material slots bound to material
     /// assets and its skeleton, a material's textures, a texture level's texture, a clip's skeleton, a cue's sounds, a score's stems' sounds, voice
     /// lines' cues, a graph's clips, what the simulation reads of a zone, font chains' fonts, an enemy's move
@@ -606,6 +617,11 @@ impl AssetKind {
             // It names its kinds by their index in the zone's foliage.
             Self::Scatter => {
                 ScatterSet::read(bytes)?;
+                Vec::new()
+            }
+            // Its body's material is the zone's to name.
+            Self::WaterMesh => {
+                WaterMesh::read(bytes)?;
                 Vec::new()
             }
         };

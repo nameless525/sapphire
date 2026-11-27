@@ -157,7 +157,8 @@ fn round(
                     | AssetKind::Effects
                     | AssetKind::EffectSheet
                     | AssetKind::Foliage
-                    | AssetKind::Scatter => {
+                    | AssetKind::Scatter
+                    | AssetKind::WaterMesh => {
                         unreachable!("music and voice never go to the uploader")
                     }
                     AssetKind::TextureLevel => unreachable!("these textures stay whole"),
@@ -189,7 +190,7 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
         resident: [
             600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
             1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source, budgets);

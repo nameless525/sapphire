@@ -65,7 +65,9 @@ impl AssetBudgets {
     /// is a zone's most, 42 probes of ten keys at 128 (315 MiB), with room for a second zone's few (M5 L2).
     /// Playable kinds 1 MiB (M5 C8), character motions 1 MiB (M5 C4), a zone's ambient characters 1 MiB (M5 C10),
     /// mixes 1 MiB (M6 U2), effects libraries 1 MiB (M6 N1), effect sheets 64 MiB (M6 N4a: two libraries' atlases
-    /// at the desktops' 32 MiB), foliages' kinds 1 MiB and scatter sets 32 MiB (M6 G1a).
+    /// at the desktops' 32 MiB), foliages' kinds 1 MiB, scatter sets 32 MiB (M6 G1a)
+    /// and water meshes 16 MiB (M6 W3a: a zone's info textures at their 4 MiB and its meshes at their 12 MiB, both of
+    /// which the cook holds a zone to).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
         admission: 256 * MIB,
@@ -117,6 +119,8 @@ impl AssetBudgets {
             MIB,
             // Scatter sets: the cells about the camera, sixteen bytes and an ID a plant.
             32 * MIB,
+            // Water meshes: a zone's bodies, their info textures at most 4 MiB and their meshes 12.
+            16 * MIB,
         ]),
     };
     /// Mobile: 4 MiB of uploads a frame and 64 MiB admitted, sixteen frames of them; meshes 192 MiB,
@@ -127,7 +131,9 @@ impl AssetBudgets {
     /// dialogues 1 MiB, enemies 1 MiB, scores 1 MiB, voice lines 1 MiB; texture levels count in the textures'
     /// pool; reflection probes 96 MiB (42 probes of ten keys at 64 are 79 MiB, M5 L2); playable kinds 1 MiB;
     /// character motions 1 MiB; ambient characters 1 MiB; mixes 1 MiB; effects libraries 1 MiB; effect sheets
-    /// 16 MiB (two libraries' atlases at the phones' 8); foliages' kinds 1 MiB; scatter sets 16 MiB.
+    /// 16 MiB (two libraries' atlases at the phones' 8); foliages' kinds 1 MiB; scatter sets 16 MiB;
+    /// water meshes 4 MiB (a zone's info textures at their 1 MiB and its meshes at their 3 MiB, as the cook holds
+    /// them).
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
         admission: 64 * MIB,
@@ -177,6 +183,8 @@ impl AssetBudgets {
             MIB,
             // Scatter sets.
             16 * MIB,
+            // Water meshes.
+            4 * MIB,
         ]),
     };
 

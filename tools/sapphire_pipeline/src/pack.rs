@@ -231,7 +231,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Mix
         | AssetKind::Effects
         | AssetKind::Foliage
-        | AssetKind::Scatter => Codec::Lz4,
+        | AssetKind::Scatter
+        | AssetKind::WaterMesh => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }

@@ -82,6 +82,7 @@ mod sealed {
     impl Sealed for sapphire_zone::Ambient {}
     impl Sealed for sapphire_zone::Foliage {}
     impl Sealed for sapphire_zone::ScatterSet {}
+    impl Sealed for sapphire_zone::WaterMesh {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for crate::score::Score {}
@@ -262,6 +263,17 @@ impl Asset for sapphire_zone::ScatterSet {
         // SAFETY: as for meshes: `ScatterSet::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<sapphire_zone::ScatterSet>(bytes) }
             .expect("the envelope was checked when the scatter set was decoded")
+    }
+}
+
+impl Asset for sapphire_zone::WaterMesh {
+    const KIND: AssetKind = AssetKind::WaterMesh;
+    type View<'a> = &'a sapphire_zone::ArchivedWaterMesh;
+
+    unsafe fn view(bytes: &[u8]) -> &sapphire_zone::ArchivedWaterMesh {
+        // SAFETY: as for meshes: `WaterMesh::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<sapphire_zone::WaterMesh>(bytes) }
+            .expect("the envelope was checked when the water mesh was decoded")
     }
 }
 

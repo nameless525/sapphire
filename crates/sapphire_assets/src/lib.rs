@@ -64,7 +64,8 @@
 //!   effects atlas reads them.
 //! - Where foliage goes (`.sfoliage` and `.sscatter`, M6 G1a): [`AssetKind::Foliage`] and [`AssetKind::Scatter`]
 //!   pack and load a foliage document's kinds and a zone's per-cell scatter sets. Their format, checks and
-//!   placement are `sapphire_zone::foliage`'s.
+//!   placement are `sapphire_zone::foliage`'s. A lake's or a river's drawn surface (`.swater`, M6 W3a):
+//!   [`AssetKind::WaterMesh`], its mesh and info texture, a zone's sub-asset (`sapphire_zone::water`).
 //! - Animation graphs (M2 N3, spec §5.13): [`graph`], the RON documents (cooked to `.sgraph`) that say
 //!   how a character's clips play: which layers, which states, what plays for which move. Plain
 //!   data, with its clips as dependencies; `sapphire_anim` runs it.

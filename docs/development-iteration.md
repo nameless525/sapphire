@@ -247,9 +247,10 @@ frame.
 
 **On CI** the lane runs on every pull request and push, a job for each desktop walk on lavapipe (the phones'
 ASTC textures can't load there; they are walked here and by `bench-scale device`). Every walk runs with three
-compute threads, so its animation jobs are the scene's, not the machine's. lavapipe on x86-64 counts a few rows
-differently from this table, which an M5's Metal takes (the crowd's arithmetic: results identical across
-architectures are a non-goal), so CI holds each walk to the table plus
+compute threads, so its animation jobs are the scene's, not the machine's. lavapipe on x86-64 can count a row
+differently from this table, which an M5's Metal takes (results identical across architectures are a non-goal:
+until M6 X4 the crowd's own cell on the tour's edge made most of them; one capsule bit at dusk is left), so CI
+holds each walk to the table plus
 [`tests/counts/district-ci-vulkan-lavapipe.txt`](../tests/counts/district-ci-vulkan-lavapipe.txt): each
 difference with its reason. A change that moves a row the same on both needs only the table. When the CI job
 fails on a row the table holds here, the difference moved: refresh the file from the jobs' artifacts
@@ -355,7 +356,11 @@ the mobile cook and the device's preset's district together (the manifest's `dev
 too big to bundle), bundles the release `dev` sandbox with them, boots its own device headless (a private
 simulator, deleted after, or the emulator, killed after), installs, walks each unit through `bench-scale
 launch` into `logs/<run>.<tier>.<device>.r<n>.log` and prints the device's verdicts, by counts alone. One device
-is up at a time on the machine, so run it under the device slot, after `--dry-run` has built the bundle.
+is up at a time on the machine, so run it under the device slot, after `--dry-run` has built the bundle. On the
+emulator (M6 X4) each launch first stops the last one's app and waits for its process and activity to be gone, a
+launch whose app gets no surface (SDL runs no main function) within a minute is launched again, once, and a lock
+left in the AVD's folder by an emulator that was killed (`hardware-qemu.ini.lock`, `snapshot.lock.lock`) is
+deleted once the process it names is gone or isn't an emulator (its ID taken since).
 [m5-exit-run.md](m5-exit-run.md)'s exit test 2 says what it reads.
 
 **Reading the report.** First the verdicts (M5 Z2): one line for each exit test and tier, pass, fail, or

@@ -1354,9 +1354,9 @@ impl OutlineCurve {
 
     fn validate(&self) -> Result<(), MaterialError> {
         let ((near, near_scale), mid, (far, far_scale)) = (self.near, self.mid, self.far);
-        non_negative("outline.curve.near", near)?;
-        non_negative("outline.curve.near scale", near_scale)?;
-        non_negative("outline.curve.far scale", far_scale)?;
+        non_negative("outline.curve.near[0]", near)?;
+        non_negative("outline.curve.near[1]", near_scale)?;
+        non_negative("outline.curve.far[1]", far_scale)?;
         finite("outline.curve.cutoff", self.cutoff)?;
         if !(near <= mid && mid <= far && far.is_finite()) {
             return Err(invalid("outline.curve", "needs near ≤ mid ≤ far, all finite"));

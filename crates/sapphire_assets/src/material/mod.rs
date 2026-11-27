@@ -415,7 +415,9 @@ pub enum MaterialError {
     /// The envelope, the schema version or the archive itself.
     #[error(transparent)]
     Cooked(#[from] CookedError),
-    #[error("{field} {reason}")]
+    /// A field out of its range, by its path in the document (`regions[0].outline_width`), in the documents'
+    /// convention of a field's path in backticks first (M6 T6), so a problem lands on its field.
+    #[error("`{field}` {reason}")]
     Invalid { field: String, reason: &'static str },
     #[error("the {family} family has {expected} texture slots, not {found}")]
     SlotCount { family: MaterialFamily, expected: usize, found: usize },

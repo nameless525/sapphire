@@ -236,46 +236,47 @@ fn validation_names_the_field() {
         edit(&mut material);
         AnyMaterialDocument::AnimeCharacter(material)
     };
-    assert!(error(character(|m| m.base_color[1] = f32::NAN)).starts_with("base_color "));
-    assert!(error(character(|m| m.regions.clear())).starts_with("regions "));
-    assert!(error(character(|m| m.regions = vec![CharacterRegion::default(); 9])).starts_with("regions "));
+    assert!(error(character(|m| m.base_color[1] = f32::NAN)).starts_with("`base_color` "));
+    assert!(error(character(|m| m.regions.clear())).starts_with("`regions` "));
+    assert!(error(character(|m| m.regions = vec![CharacterRegion::default(); 9])).starts_with("`regions` "));
     assert!(
-        error(character(|m| m.regions[0].outline_color = [-1.0; 3])).starts_with("regions[0].outline_color")
+        error(character(|m| m.regions[0].outline_color = [-1.0; 3])).starts_with("`regions[0].outline_color")
     );
-    assert!(error(character(|m| m.alpha = AlphaMode::Mask { cutoff: 2.0 })).starts_with("alpha.cutoff"));
+    assert!(error(character(|m| m.alpha = AlphaMode::Mask { cutoff: 2.0 })).starts_with("`alpha.cutoff"));
     assert!(
         error(character(|m| m.diffuse = DiffuseMode::Ramp(RampDiffuse { map: id(RAMP), mix: 1.5 })))
-            .starts_with("diffuse.mix")
+            .starts_with("`diffuse.mix")
     );
-    assert!(error(character(|m| m.outline.width = -1.0)).starts_with("outline.width"));
-    assert!(error(character(|m| m.outline.curve.mid = 30.0)).starts_with("outline.curve "));
-    assert!(error(character(|m| m.outline.curve.far.0 = f32::INFINITY)).starts_with("outline.curve "));
-    assert!(error(character(|m| m.outline.curve.cutoff = 0.0)).starts_with("outline.curve.cutoff"));
-    assert!(error(character(|m| m.outline.curve.near.1 = -1.0)).starts_with("outline.curve.near scale"));
-    assert!(error(character(|m| m.outline.model_scale = f32::NAN)).starts_with("outline.model_scale"));
-    assert!(error(character(|m| m.outline.flatten = -0.1)).starts_with("outline.flatten"));
-    assert!(error(character(|m| m.outline.albedo = 1.5)).starts_with("outline.albedo"));
-    assert!(error(character(|m| m.outline.lighting = -0.5)).starts_with("outline.lighting"));
+    assert!(error(character(|m| m.outline.width = -1.0)).starts_with("`outline.width"));
+    assert!(error(character(|m| m.outline.curve.mid = 30.0)).starts_with("`outline.curve` "));
+    assert!(error(character(|m| m.outline.curve.far.0 = f32::INFINITY)).starts_with("`outline.curve` "));
+    assert!(error(character(|m| m.outline.curve.cutoff = 0.0)).starts_with("`outline.curve.cutoff"));
+    assert!(error(character(|m| m.outline.curve.near.1 = -1.0)).starts_with("`outline.curve.near[1]`"));
+    assert!(error(character(|m| m.outline.model_scale = f32::NAN)).starts_with("`outline.model_scale"));
+    assert!(error(character(|m| m.outline.flatten = -0.1)).starts_with("`outline.flatten"));
+    assert!(error(character(|m| m.outline.albedo = 1.5)).starts_with("`outline.albedo"));
+    assert!(error(character(|m| m.outline.lighting = -0.5)).starts_with("`outline.lighting"));
     assert!(
-        error(character(|m| m.regions[0].night_ramp_row = Some(16))).starts_with("regions[0].night_ramp_row")
+        error(character(|m| m.regions[0].night_ramp_row = Some(16)))
+            .starts_with("`regions[0].night_ramp_row")
     );
-    assert!(error(character(|m| m.regions[0].gi.sphere = 1.5)).starts_with("regions[0].gi.sphere"));
-    assert!(error(character(|m| m.regions[0].gi.skin = f32::NAN)).starts_with("regions[0].gi.skin"));
+    assert!(error(character(|m| m.regions[0].gi.sphere = 1.5)).starts_with("`regions[0].gi.sphere"));
+    assert!(error(character(|m| m.regions[0].gi.skin = f32::NAN)).starts_with("`regions[0].gi.skin"));
     let environment = EnvironmentMaterial { roughness_range: [0.6, 0.2], ..EnvironmentMaterial::default() };
-    assert!(error(AnyMaterialDocument::Environment(environment)).starts_with("roughness_range"));
+    assert!(error(AnyMaterialDocument::Environment(environment)).starts_with("`roughness_range"));
     for steady in [-0.1, 1.5, f32::NAN] {
         let environment = EnvironmentMaterial { emission_steady: steady, ..EnvironmentMaterial::default() };
-        assert!(error(AnyMaterialDocument::Environment(environment)).starts_with("emission_steady"));
+        assert!(error(AnyMaterialDocument::Environment(environment)).starts_with("`emission_steady"));
     }
     let foliage = FoliageMaterial { wrap: 3.0, ..FoliageMaterial::default() };
-    assert!(error(AnyMaterialDocument::Foliage(foliage)).starts_with("wrap"));
+    assert!(error(AnyMaterialDocument::Foliage(foliage)).starts_with("`wrap"));
     let sky = SkyMaterial { sun: Disc { size: f32::INFINITY, softness: 0.1 }, ..SkyMaterial::default() };
-    assert!(error(AnyMaterialDocument::Sky(sky)).starts_with("sun.size"));
+    assert!(error(AnyMaterialDocument::Sky(sky)).starts_with("`sun.size"));
     let lit = CloudLayer { shading: CloudShading::Lit, ..CloudLayer::default() };
     let sky = SkyMaterial { cirrus: lit, ..SkyMaterial::default() };
-    assert!(error(AnyMaterialDocument::Sky(sky)).starts_with("cirrus.shading"), "the cirrus is painted");
+    assert!(error(AnyMaterialDocument::Sky(sky)).starts_with("`cirrus.shading"), "the cirrus is painted");
     let fog = FogCardMaterial { camera_fade: [3.0, 1.0], ..FogCardMaterial::default() };
-    assert!(error(AnyMaterialDocument::FogCard(fog)).starts_with("camera_fade"));
+    assert!(error(AnyMaterialDocument::FogCard(fog)).starts_with("`camera_fade"));
     // Cooking validates too.
     let invalid = character(|m| m.light_split.softness = -0.1);
     assert!(matches!(invalid.cook(&swizzles(&invalid)), Err(MaterialError::Invalid { .. })));
@@ -541,21 +542,21 @@ fn face_materials_bind_their_maps_and_pack_their_settings() {
         let document = AnimeCharacterMaterial { surface: CharacterSurface::Face(face), ..Default::default() };
         document.validate().unwrap_err().to_string()
     };
-    assert!(invalid(|f| f.nose_line = -0.1).starts_with("surface.nose_line"));
-    assert!(invalid(|f| f.highlight_reveal = f32::NAN).starts_with("surface.highlight_reveal"));
-    assert!(invalid(|f| f.blush_color = [2.0, -1.0, 0.0]).starts_with("surface.blush_color"));
-    assert!(invalid(|f| f.hair_shadow.strength = 1.5).starts_with("surface.hair_shadow.strength"));
-    assert!(invalid(|f| f.hair_shadow.distance = -0.1).starts_with("surface.hair_shadow.distance"));
-    assert!(invalid(|f| f.hair_shadow.softness = f32::NAN).starts_with("surface.hair_shadow.softness"));
+    assert!(invalid(|f| f.nose_line = -0.1).starts_with("`surface.nose_line"));
+    assert!(invalid(|f| f.highlight_reveal = f32::NAN).starts_with("`surface.highlight_reveal"));
+    assert!(invalid(|f| f.blush_color = [2.0, -1.0, 0.0]).starts_with("`surface.blush_color"));
+    assert!(invalid(|f| f.hair_shadow.strength = 1.5).starts_with("`surface.hair_shadow.strength"));
+    assert!(invalid(|f| f.hair_shadow.distance = -0.1).starts_with("`surface.hair_shadow.distance"));
+    assert!(invalid(|f| f.hair_shadow.softness = f32::NAN).starts_with("`surface.hair_shadow.softness"));
     let through = |edit: fn(&mut ThroughHair)| {
         let mut through = ThroughHair::default();
         edit(&mut through);
         invalid_through(through)
     };
-    assert!(through(|t| t.opacity = 1.5).starts_with("surface.through_hair.opacity"));
-    assert!(through(|t| t.fade_yaw = 0.0).starts_with("surface.through_hair.fade_yaw"));
-    assert!(through(|t| t.fade_pitch = 200.0).starts_with("surface.through_hair.fade_pitch"));
-    assert!(through(|t| t.distance = f32::NAN).starts_with("surface.through_hair.distance"));
+    assert!(through(|t| t.opacity = 1.5).starts_with("`surface.through_hair.opacity"));
+    assert!(through(|t| t.fade_yaw = 0.0).starts_with("`surface.through_hair.fade_yaw"));
+    assert!(through(|t| t.fade_pitch = 200.0).starts_with("`surface.through_hair.fade_pitch"));
+    assert!(through(|t| t.distance = f32::NAN).starts_with("`surface.through_hair.distance"));
 }
 
 fn invalid_through(through: ThroughHair) -> String {
@@ -571,14 +572,14 @@ fn rims_and_regions_validate_their_ranges() {
         edit(&mut document);
         document.validate().unwrap_err().to_string()
     };
-    assert!(invalid(|m| m.rim.width = -1.0).starts_with("rim.width"));
-    assert!(invalid(|m| m.rim.threshold = f32::INFINITY).starts_with("rim.threshold"));
-    assert!(invalid(|m| m.rim.fresnel = 1.5).starts_with("rim.fresnel"));
-    assert!(invalid(|m| m.rim.light_gate = -0.5).starts_with("rim.light_gate"));
-    assert!(invalid(|m| m.rim.back_light = 2.0).starts_with("rim.back_light"));
-    assert!(invalid(|m| m.regions[0].rim_strength = -1.0).starts_with("regions[0].rim_strength"));
-    assert!(invalid(|m| m.regions[0].rim_width = f32::NAN).starts_with("regions[0].rim_width"));
-    assert!(invalid(|m| m.regions[0].rim_overlap = 1.5).starts_with("regions[0].rim_overlap"));
+    assert!(invalid(|m| m.rim.width = -1.0).starts_with("`rim.width"));
+    assert!(invalid(|m| m.rim.threshold = f32::INFINITY).starts_with("`rim.threshold"));
+    assert!(invalid(|m| m.rim.fresnel = 1.5).starts_with("`rim.fresnel"));
+    assert!(invalid(|m| m.rim.light_gate = -0.5).starts_with("`rim.light_gate"));
+    assert!(invalid(|m| m.rim.back_light = 2.0).starts_with("`rim.back_light"));
+    assert!(invalid(|m| m.regions[0].rim_strength = -1.0).starts_with("`regions[0].rim_strength"));
+    assert!(invalid(|m| m.regions[0].rim_width = f32::NAN).starts_with("`regions[0].rim_width"));
+    assert!(invalid(|m| m.regions[0].rim_overlap = 1.5).starts_with("`regions[0].rim_overlap"));
 }
 
 /// Version 1 documents (M1 A3 to C4) load: their rim's width, the share of N·V it covered,
@@ -687,7 +688,7 @@ fn eye_layers_pack_their_settings_and_blend_over_the_eye() {
         (HairTransmission { strength: 1.0, sharpness: f32::INFINITY }, "surface.transmission.sharpness"),
     ] {
         let error = transmitting(transmission).validate().unwrap_err().to_string();
-        assert!(error.starts_with(field), "{error}");
+        assert!(error.starts_with(&format!("`{field}`")), "{error}");
     }
 
     // An eye material from before C6 (the eye layer, no iris) packs as it did: nothing in the
@@ -709,8 +710,8 @@ fn eye_layers_pack_their_settings_and_blend_over_the_eye() {
     // Overlays must blend and the eye mustn't; the iris needs a positive size and the depth
     // and motion can't be negative.
     let error = |material: AnimeCharacterMaterial| material.validate().unwrap_err().to_string();
-    assert!(error(eye(EyeLayer::Iris, AlphaMode::Opaque)).starts_with("alpha"));
-    assert!(error(eye(EyeLayer::Eye, AlphaMode::Blend)).starts_with("alpha"));
+    assert!(error(eye(EyeLayer::Iris, AlphaMode::Opaque)).starts_with("`alpha"));
+    assert!(error(eye(EyeLayer::Eye, AlphaMode::Blend)).starts_with("`alpha"));
     assert!(eye(EyeLayer::Eye, AlphaMode::Mask { cutoff: 0.5 }).validate().is_ok());
     let edited = |edit: fn(&mut EyeShading)| {
         let mut material = eye(EyeLayer::Iris, AlphaMode::Blend);
@@ -718,18 +719,18 @@ fn eye_layers_pack_their_settings_and_blend_over_the_eye() {
         edit(shading);
         error(material)
     };
-    assert!(edited(|e| e.parallax = -0.001).starts_with("surface.parallax"));
+    assert!(edited(|e| e.parallax = -0.001).starts_with("`surface.parallax"));
     assert!(
         edited(|e| e.iris = Some(IrisShape { radius: [0.0, 0.2], ..IrisShape::default() }))
-            .starts_with("surface.iris.radius")
+            .starts_with("`surface.iris.radius")
     );
     assert!(
         edited(|e| e.iris = Some(IrisShape { center: [f32::NAN, 0.5], ..IrisShape::default() }))
-            .starts_with("surface.iris.center")
+            .starts_with("`surface.iris.center")
     );
     assert!(
         edited(|e| e.layer = EyeLayer::Highlight(HighlightMotion { sparkle: -1.0, ..Default::default() }))
-            .starts_with("surface.layer.sparkle")
+            .starts_with("`surface.layer.sparkle")
     );
 }
 
@@ -931,29 +932,29 @@ fn layers_validate_their_ranges() {
         document.validate().unwrap_err().to_string()
     };
     assert!(layered().validate().is_ok());
-    assert!(invalid(|m| m.specular.albedo = 1.5).starts_with("specular.albedo"));
-    assert!(invalid(|m| m.regions[0].metallic = -0.1).starts_with("regions[0].metallic"));
-    assert!(invalid(|m| m.regions[0].roughness = 2.0).starts_with("regions[0].roughness"));
-    assert!(invalid(|m| m.regions[1].stocking = f32::NAN).starts_with("regions[1].stocking"));
-    assert!(invalid(|m| m.regions[1].emission = [-1.0, 0.0, 0.0]).starts_with("regions[1].emission"));
+    assert!(invalid(|m| m.specular.albedo = 1.5).starts_with("`specular.albedo"));
+    assert!(invalid(|m| m.regions[0].metallic = -0.1).starts_with("`regions[0].metallic"));
+    assert!(invalid(|m| m.regions[0].roughness = 2.0).starts_with("`regions[0].roughness"));
+    assert!(invalid(|m| m.regions[1].stocking = f32::NAN).starts_with("`regions[1].stocking"));
+    assert!(invalid(|m| m.regions[1].emission = [-1.0, 0.0, 0.0]).starts_with("`regions[1].emission"));
     assert!(
-        invalid(|m| m.regions[0].matcap.color = [f32::INFINITY; 3]).starts_with("regions[0].matcap.color")
+        invalid(|m| m.regions[0].matcap.color = [f32::INFINITY; 3]).starts_with("`regions[0].matcap.color")
     );
-    assert!(invalid(|m| m.stockings.range = [0.8, 0.2]).starts_with("stockings.range"));
-    assert!(invalid(|m| m.stockings.facing_opacity = 1.5).starts_with("stockings.facing_opacity"));
-    assert!(invalid(|m| m.stockings.sheen_sharpness = 0.5).starts_with("stockings.sheen_sharpness"));
-    assert!(invalid(|m| m.stockings.weave_scale = -1.0).starts_with("stockings.weave_scale"));
-    assert!(invalid(|m| m.emission.depth = 2.0).starts_with("emission.depth"));
-    assert!(invalid(|m| m.emission.period = -1.0).starts_with("emission.period"));
-    assert!(invalid(|m| m.emission.bloom = 1.5).starts_with("emission.bloom"));
+    assert!(invalid(|m| m.stockings.range = [0.8, 0.2]).starts_with("`stockings.range"));
+    assert!(invalid(|m| m.stockings.facing_opacity = 1.5).starts_with("`stockings.facing_opacity"));
+    assert!(invalid(|m| m.stockings.sheen_sharpness = 0.5).starts_with("`stockings.sheen_sharpness"));
+    assert!(invalid(|m| m.stockings.weave_scale = -1.0).starts_with("`stockings.weave_scale"));
+    assert!(invalid(|m| m.emission.depth = 2.0).starts_with("`emission.depth"));
+    assert!(invalid(|m| m.emission.period = -1.0).starts_with("`emission.period"));
+    assert!(invalid(|m| m.emission.bloom = 1.5).starts_with("`emission.bloom"));
     // Faces, hair and eyes bind their own masks in the layer mask's slot.
     let face =
         |m: &mut AnimeCharacterMaterial| m.surface = CharacterSurface::Face(FaceShading::new(id(RAMP)));
-    assert!(invalid(face).starts_with("layer_mask"));
+    assert!(invalid(face).starts_with("`layer_mask"));
     // M5 L11: opacity and glass are shares, for bodies that don't blend; the dissolve's cells
     // and edge stay in range.
-    assert!(invalid(|m| m.regions[0].opacity = 1.5).starts_with("regions[0].opacity"));
-    assert!(invalid(|m| m.regions[0].glass = -0.5).starts_with("regions[0].glass"));
+    assert!(invalid(|m| m.regions[0].opacity = 1.5).starts_with("`regions[0].opacity"));
+    assert!(invalid(|m| m.regions[0].glass = -0.5).starts_with("`regions[0].glass"));
     assert!(
         invalid(|m| {
             m.regions[0].opacity = 0.5;
@@ -969,9 +970,9 @@ fn layers_validate_their_ranges() {
         })
         .contains("for bodies")
     );
-    assert!(invalid(|m| m.dissolve.scale = 0.0).starts_with("dissolve.scale"));
-    assert!(invalid(|m| m.dissolve.edge = 1.5).starts_with("dissolve.edge"));
-    assert!(invalid(|m| m.dissolve.edge_color = [f32::NAN; 3]).starts_with("dissolve.edge_color"));
+    assert!(invalid(|m| m.dissolve.scale = 0.0).starts_with("`dissolve.scale"));
+    assert!(invalid(|m| m.dissolve.edge = 1.5).starts_with("`dissolve.edge"));
+    assert!(invalid(|m| m.dissolve.edge_color = [f32::NAN; 3]).starts_with("`dissolve.edge_color"));
 }
 
 #[test]
@@ -1205,9 +1206,9 @@ fn environment_wetness_inputs_cook_nothing_new_until_authored() {
     for wrong in [-0.1, 1.5, f32::NAN] {
         let error = |document| AnyMaterialDocument::Environment(document).validate().unwrap_err().to_string();
         let porous = EnvironmentMaterial { porosity: Some(wrong), ..paving.clone() };
-        assert!(error(porous).starts_with("porosity"), "{wrong}");
+        assert!(error(porous).starts_with("`porosity"), "{wrong}");
         let pooled = EnvironmentMaterial { puddles: Some(wrong), ..paving.clone() };
-        assert!(error(pooled).starts_with("puddles"), "{wrong}");
+        assert!(error(pooled).starts_with("`puddles"), "{wrong}");
     }
 }
 

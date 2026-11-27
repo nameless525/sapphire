@@ -217,7 +217,8 @@ impl MaterialDocument for FoliageMaterial {
         color("translucency.color", &self.translucency.color)?;
         non_negative("translucency.strength", self.translucency.strength)?;
         for channel in self.translucency.color {
-            finite("translucency.color × strength", channel * self.translucency.strength)?;
+            // Their product is what the shader takes, so a finite strength may still overflow it.
+            finite("translucency.strength", channel * self.translucency.strength)?;
         }
         non_negative("translucency.power", self.translucency.power)?;
         color("gradient.root", &self.gradient.root)?;

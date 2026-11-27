@@ -354,7 +354,10 @@ fn a_shot_rig_blends_in_and_out_with_its_cutscene() {
 fn shot_rigs_are_checked_and_written() {
     let bad = LightRig { rim: -1.0, ..LightRig::default() };
     let error = TodCutscene::new(1.0, 0.0, 0.0, None, Vec::new(), Some(bad)).unwrap_err();
-    assert_eq!(error.to_string(), "cutscene: `light_rig.rim` must be finite and not negative");
+    assert_eq!(
+        error.to_string(),
+        "`light_rig.rim`: cutscene: `light_rig.rim` must be finite and not negative"
+    );
     let shot = TodCutscene::new(1.0, 0.0, 0.0, None, Vec::new(), Some(portrait())).expect("valid");
     let text = shot.to_ron().expect("write");
     assert!(text.contains("light_rig: Some("), "{text}");

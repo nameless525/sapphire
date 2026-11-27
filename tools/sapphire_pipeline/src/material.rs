@@ -231,8 +231,8 @@ pub enum MaterialCookError {
 impl MaterialCookError {
     /// The field of the material's document this refuses, as a property path the editor's walker reads, where it
     /// names one: a texture slot's binding (`MaterialDocument::texture_fields`). A value out of its range names its
-    /// field in the validator's own words (`surface.softness` for `surface[0].softness`, some with spaces), which
-    /// aren't paths, so it names none here; its message still says which (M6 T6 maps them).
+    /// field in its message, by the documents' convention (`` `regions[0].outline_width` must be … ``), which the
+    /// refusal reads (M6 T6), so it names none here.
     #[must_use]
     pub fn field(&self) -> Option<&str> {
         match self {

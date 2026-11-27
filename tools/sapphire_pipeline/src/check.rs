@@ -630,15 +630,16 @@ impl Checker<'_> {
                 }
             };
             let mut layers = 0;
-            for (emitter, id) in effects::named_sheets(&library) {
+            for effects::NamedSheet { emitter, field, sheet: id } in effects::named_sheets(&library) {
                 let sheet = self
                     .by_id
                     .get(&id)
                     .filter(|sheet| matches!(sheet.meta.importer, ImportSettings::EffectSheet(_)));
                 match sheet {
                     None => {
-                        let message =
-                            format!("`{emitter}` names {id} as its sheet, and it's no sheet of the tree");
+                        let message = format!(
+                            "`{field}`: `{emitter}` names {id} as its sheet, and it's no sheet of the tree"
+                        );
                         self.find(asset, Rule::Sheet, None, message);
                     }
                     Some(_) => layers += u64::from(frames.get(&id).copied().unwrap_or_default()),

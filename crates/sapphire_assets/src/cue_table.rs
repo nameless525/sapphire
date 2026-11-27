@@ -172,8 +172,9 @@ impl CueRow {
         }
     }
 
-    fn validate(&self) -> Result<(), CueTableError> {
+    fn validate(&self, index: usize) -> Result<(), CueTableError> {
         let invalid = |field: &'static str, problem: &'static str| CueTableError::Invalid {
+            index,
             row: self.label(),
             field,
             problem,
@@ -221,8 +222,9 @@ pub enum CueTableError {
     Duplicate(String),
     #[error("more rows than a table can hold")]
     TooMany,
-    #[error("cue `{row}`: `{field}` {problem}")]
-    Invalid { row: String, field: &'static str, problem: &'static str },
+    /// A field of the row at `index`, which the message leads with from the document's root (M6 T6).
+    #[error("`rows[{index}].{field}`: cue `{row}`: `{field}` {problem}")]
+    Invalid { index: usize, row: String, field: &'static str, problem: &'static str },
     #[error("cue `{row}`: no effect `{name}` in the effects library")]
     UnknownEffect { row: String, name: String },
     #[error("cue `{row}`: effect `{name}` plays until it's stopped, and a cue keeps nothing to stop it with")]
@@ -305,7 +307,7 @@ impl CueTable {
             if !names.insert((row.cue.as_str(), row.weight)) {
                 return Err(CueTableError::Duplicate(row.label()));
             }
-            row.validate()?;
+            row.validate(index)?;
         }
         Ok(Self { music: None, voices: Vec::new(), mix: None, effect_library: None, rows })
     }

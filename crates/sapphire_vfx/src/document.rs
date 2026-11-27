@@ -405,9 +405,11 @@ pub enum EffectLibraryError {
     TooManyMeshLayers(String),
     #[error("effect `{0}`: it has more than {MAX_DECAL_LAYERS} decal layers")]
     TooManyDecalLayers(String),
-    /// A field of an emitter, a trail, a mesh layer or a decal: `part` says which.
-    #[error("effect `{effect}`, {part}: `{field}` {problem}")]
-    Invalid { effect: String, part: String, field: &'static str, problem: &'static str },
+    /// A field of an emitter, a trail, a mesh layer or a decal: `part` says which, and `at` where it is in the
+    /// document (`effects[0].emitters[1]`), which the message leads with in the documents' convention (M6 T6), so a
+    /// problem lands on its field.
+    #[error("`{at}.{field}`: effect `{effect}`, {part}: `{field}` {problem}")]
+    Invalid { effect: String, part: String, at: String, field: &'static str, problem: &'static str },
 }
 
 /// Named effects (an `EffectLibrary` document, schema 5).
@@ -495,6 +497,7 @@ impl EffectLibrary {
                     } else {
                         format!("decal layer `{}`", layer.name)
                     },
+                    at: format!("effects[{index}].decals[{layer_index}]"),
                     field,
                     problem,
                 })?;
@@ -507,6 +510,7 @@ impl EffectLibrary {
                     } else {
                         format!("mesh layer `{}`", layer.name)
                     },
+                    at: format!("effects[{index}].meshes[{layer_index}]"),
                     field,
                     problem,
                 })?;
@@ -520,6 +524,7 @@ impl EffectLibrary {
                     } else {
                         format!("emitter `{name}`")
                     },
+                    at: format!("effects[{index}].emitters[{emitter_index}]"),
                     field,
                     problem,
                 }
@@ -534,6 +539,7 @@ impl EffectLibrary {
                 trail.problem().map_err(|(field, problem)| EffectLibraryError::Invalid {
                     effect: effect.name.clone(),
                     part: "the trail".to_owned(),
+                    at: format!("effects[{index}].trail"),
                     field,
                     problem,
                 })?;

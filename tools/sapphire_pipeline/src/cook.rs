@@ -3811,7 +3811,7 @@ fn source_dependencies(
         ImportSettings::Effects(_) => {
             let library = effects::read(bytes)
                 .map_err(|source| CookError::Effects { path: path.to_owned(), source: Box::new(source) })?;
-            for (emitter, id) in effects::named_sheets(&library) {
+            for effects::NamedSheet { emitter, sheet: id, .. } in effects::named_sheets(&library) {
                 if !assets.get(id).is_some_and(Planned::is_effect_sheet) {
                     return Err(CookError::NotASheet { path: path.to_owned(), emitter, id });
                 }

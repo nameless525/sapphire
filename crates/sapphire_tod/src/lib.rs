@@ -91,21 +91,23 @@ pub use timeline::{DAY_HOURS, KeyTimes, Segment, TodTimeline, check_keys, segmen
 pub enum TodError {
     #[error("there are no keys")]
     NoKeys,
-    #[error("key {key}: time {time} is outside {expected}")]
+    // Each leads with its field's path from the document's root, the documents' convention (M6 T6): a day's
+    // keys and a cutscene's are both its `keys`.
+    #[error("`keys[{key}].time`: key {key}: time {time} is outside {expected}")]
     TimeOutOfRange { key: usize, time: f32, expected: &'static str },
-    #[error("key {key}: times must increase from one key to the next")]
+    #[error("`keys[{key}].time`: key {key}: times must increase from one key to the next")]
     Unordered { key: usize },
     #[error("key {key} sets {found} but the first key sets {expected}: every key must set the same groups")]
     MixedGroups { key: usize, found: TodGroups, expected: TodGroups },
-    #[error("key {key}: `{field}` {problem}")]
+    #[error("`keys[{key}].{field}`: key {key}: `{field}` {problem}")]
     Invalid { key: usize, field: &'static str, problem: &'static str },
     #[error(
         "the base timeline must set every group but the optional ones (the sky's and post's layers, \
          the emission scale, the characters' shadow hue and the weather), and its keys have no `{0}`"
     )]
     Incomplete(TodGroup),
-    #[error("cutscene: `{field}` {problem}")]
+    #[error("`{field}`: cutscene: `{field}` {problem}")]
     Cutscene { field: &'static str, problem: &'static str },
-    #[error("cutscene: `light_rig.{field}` {problem}")]
+    #[error("`light_rig.{field}`: cutscene: `light_rig.{field}` {problem}")]
     CutsceneRig { field: &'static str, problem: &'static str },
 }

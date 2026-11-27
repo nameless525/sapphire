@@ -251,8 +251,9 @@ pub enum LightRigError {
     DuplicateName(String),
     #[error("more presets than a light rig ID can name")]
     TooMany,
-    #[error("preset `{name}`: `{field}` {problem}")]
-    Invalid { name: String, field: &'static str, problem: &'static str },
+    /// A field of the preset at `index`, which the message leads with from the document's root (M6 T6).
+    #[error("`rigs[{index}].rig.{field}`: preset `{name}`: `{field}` {problem}")]
+    Invalid { index: usize, name: String, field: &'static str, problem: &'static str },
 }
 
 /// A library as written, before [`LightRigLibrary::new`] checks it.
@@ -289,6 +290,7 @@ impl LightRigLibrary {
                 return Err(LightRigError::DuplicateName(name.clone()));
             }
             rig.validate().map_err(|(field, problem)| LightRigError::Invalid {
+                index,
                 name: name.clone(),
                 field,
                 problem,

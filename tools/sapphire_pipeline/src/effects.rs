@@ -70,18 +70,32 @@ pub fn read(bytes: &[u8]) -> Result<EffectLibrary, EffectsCookError> {
     Ok(EffectLibrary::from_ron(std::str::from_utf8(bytes)?)?)
 }
 
-/// Each sheet a library's emitters name, with the first emitter naming it (`effect/emitter`), in the order the
-/// library lists its sheets: what the cook checks are sheets'.
-pub fn named_sheets(library: &EffectLibrary) -> Vec<(String, AssetId)> {
+/// Each sheet a library's emitters name, with the first emitter naming it, in the order the library lists its
+/// sheets: what the cook checks are sheets'.
+pub fn named_sheets(library: &EffectLibrary) -> Vec<NamedSheet> {
     let mut named = BTreeMap::new();
-    for effect in library.effects() {
-        for emitter in &effect.emitters {
+    for (effect_index, effect) in library.effects().iter().enumerate() {
+        for (emitter_index, emitter) in effect.emitters.iter().enumerate() {
             if let Some(sheet) = emitter.sheet {
-                named.entry(sheet).or_insert_with(|| format!("{}/{}", effect.name, emitter.name));
+                named.entry(sheet).or_insert_with(|| NamedSheet {
+                    emitter: format!("{}/{}", effect.name, emitter.name),
+                    field: format!("effects[{effect_index}].emitters[{emitter_index}].sheet"),
+                    sheet,
+                });
             }
         }
     }
-    named.into_iter().map(|(sheet, emitter)| (emitter, sheet)).collect()
+    named.into_values().collect()
+}
+
+/// A sheet an emitter names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedSheet {
+    /// The emitter, as `effect/emitter`.
+    pub emitter: String,
+    /// Its `sheet` field's path from the document's root (`effects[0].emitters[1].sheet`).
+    pub field: String,
+    pub sheet: AssetId,
 }
 
 /// Cooks a document's bytes: the library as the effects crate writes it back, and the sheets its emitters name,

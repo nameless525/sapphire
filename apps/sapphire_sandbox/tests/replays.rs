@@ -1386,9 +1386,14 @@ fn the_nature_encounter_plays_with_no_hitch_cold_and_warm() {
 /// the run's row must read no first use, no pipeline built on the frame's thread and no frame that waited for
 /// one. Crowd on and off alike reach the replay's checksums, since the people are presentation alone.
 ///
-/// And that it drew the fight, by count, no pixels compared: on every drawn frame from tick 402, when all twelve
-/// stand (`sapphire_replay`'s `tests/district.rs`), the twelve and the party member on the field are skinned
-/// and drawn (13 skinned instances at least) and the HUD draws; each of the party's three kinds, the heroine,
+/// And what it played, by count, no pixels compared, on every drawn frame from tick 402, when all twelve stand
+/// (`sapphire_replay`'s `tests/district.rs`): the HUD draws, and on every run the twelve and the party member on
+/// the field are animated, posed or held (13 animated characters at least past the crowd's people; one held
+/// off screen counts too, so this isn't that they were drawn). Only Desktop-High with the crowd off shows them
+/// skinned unpadded (13 skinned instances at least); with the crowd on the same bound holds with people's skins
+/// in it. Mobile-Low's levels can hold a fighter's pose across the frames between two drawn ones, so it can
+/// skin 12 of the 13: main does at tick 452 with the crowd off (M6 X4), and only people's skins made up the
+/// count with it on, so Mobile-Low isn't held to it. Each of the party's three kinds, the heroine,
 /// Aster and Wren, is the one on the field for some of those frames (who is, at each tick, read from the same
 /// replay played headless, which the stage's checksum matches); with the crowd on, people stand in view about
 /// the plaza on some of those frames. The game's own lane, `game_app`'s `zero_hitches`, plays the ward and not
@@ -1478,6 +1483,7 @@ fn the_district_encounter_plays_with_no_hitch_cold_and_warm() {
             column("ui_draws"),
             column("ambient_in_view"),
         );
+        let (animated, spawned) = (column("animated"), column("ambient_spawned"));
         let every: u64 = DRAW_EVERY.parse().expect("a number");
         let (mut drawn, mut most_people, mut by_kind) = (0, 0, [0_u32; 3]);
         for line in lines {
@@ -1487,7 +1493,15 @@ fn the_district_encounter_plays_with_no_hitch_cold_and_warm() {
                 continue;
             }
             drawn += 1;
-            assert!(number(skinned) >= 13, "{what}: tick {}: {line}", number(tick));
+            let fighters = number(animated).saturating_sub(number(spawned));
+            assert!(
+                fighters >= 13,
+                "{what}: tick {}: {fighters} of the fight animated: {line}",
+                number(tick)
+            );
+            if tier == "desktop-high" {
+                assert!(number(skinned) >= 13, "{what}: tick {}: {line}", number(tick));
+            }
             assert!(number(ui) >= 1, "{what}: tick {}: no HUD: {line}", number(tick));
             most_people = most_people.max(number(people));
             by_kind[fielded[(number(tick) as usize).min(fielded.len() - 1)]] += 1;

@@ -1,6 +1,6 @@
 //! The traversal course (M6 A14) walked on foot, as `tests/replays/course-walk.sreplay` plays it headless on the
-//! runner's scenarios, which hand the course's builder over. No traversal mode exists to enter yet, so the walk
-//! is what the course is to the controller as it stands: a jump onto the 1 m ledge, the climbing wall's face
+//! runner's scenarios, which hand the course's builder over. The walk grabs no face and takes no traversal move,
+//! so it is what the course is to the controller on foot: a jump onto the 1 m ledge, the climbing wall's face
 //! met and not climbed, and a fall off the ground's edge into the pool's basin, with the mode `None` throughout.
 
 use std::path::Path;
@@ -20,7 +20,7 @@ fn the_walk_jumps_a_ledge_meets_the_wall_and_falls_into_the_pool() {
         let sim = player.simulation();
         let walker = sim.actors().next().expect("the player");
         let at = walker.position;
-        assert_eq!(walker.controller.state.traversal, TraversalMode::None, "nothing enters a mode yet");
+        assert_eq!(walker.controller.state.traversal, TraversalMode::None, "the walk enters no mode");
         on_the_ledge |= (at.y - 1.0).abs() < 0.05 && at.z > 23.0 && at.z < 25.0;
         at_the_wall |= at.z > 0.0 && at.z < 0.5 && at.x > wall_x0 && at.x < wall_x1;
         lowest = lowest.min(at.y);

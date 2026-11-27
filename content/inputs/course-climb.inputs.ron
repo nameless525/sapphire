@@ -1,0 +1,46 @@
+// The traversal course's climbing wall climbed (M6 A16a): from the start at z 40 the player runs east into the
+// gap past the ledges, north to just short of the walls, west along the climbing wall's face and into it, and
+// presses jump there, which grabs it. She climbs up, lets go with a press and falls, grabs it again, climbs up a
+// little and then west along it into the inside corner with the wing, onto whose east side she turns, the stick
+// held west carrying her on along it (M6 A16a's latched stick); south along that side round the outside corner
+// onto the wing's south face, the stick held south carrying her on along that; and up that to the top, where
+// the stick still up tops out with a mantle onto the wing's top. There she steps in from its edge and stands.
+// Legs fitted by running them: the replay's checksums say where it went.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the traversal course's climbing wall grabbed, let go of and grabbed again, its inside and outside corners turned and topped out over by a mantle (M6 A16a)",
+        ticks: 1280,
+        tracks: [
+            (
+                stick: Legs([
+                    // East into the gap between the tallest ledge and the low wall.
+                    (stick: (127, 0), ticks: 68),
+                    // North past the ledges, to just short of the walls.
+                    (stick: (0, -127), ticks: 375),
+                    // West in front of the climbing wall's face.
+                    (stick: (-127, 0), ticks: 100),
+                    // North into the face, and a press there: a grab.
+                    (stick: (0, -127), ticks: 40),
+                    (stick: (0, 0), ticks: 20, jump: 5),
+                    // Up the face, a press that lets go and a fall, and a press that grabs it again.
+                    (stick: (0, -127), ticks: 60),
+                    (stick: (0, 0), ticks: 50, jump: 0),
+                    (stick: (0, 0), ticks: 10, jump: 2),
+                    // Up a little, then west along the face into the inside corner with the wing, and up its side.
+                    (stick: (0, -127), ticks: 40),
+                    (stick: (-127, 0), ticks: 115),
+                    // South along the wing's east side, round the outside corner onto its south face.
+                    (stick: (0, 127), ticks: 110),
+                    // Up the wing's south face to its top, and over it by a mantle.
+                    (stick: (0, -127), ticks: 230),
+                    // Standing on the wing's top once the mantle is done, a step west from its edge, and still.
+                    (stick: (0, 0), ticks: 25),
+                    (stick: (-127, 0), ticks: 8),
+                    (stick: (0, 0), ticks: 29),
+                ]),
+            ),
+        ],
+    ),
+)

@@ -16,8 +16,10 @@
 //!   West of them, **the ledge with no room** ([`NO_ROOM`]): a 1 m ledge under a slab 1.2 m over its top, too
 //!   low to stand under, where a mantle is refused and the press jumps.
 //! - **The climbing wall** ([`CLIMB`]): a block [`TOWER_HEIGHT`] tall in `Climbable` scenery, whose south face
-//!   is the wall and whose top is a platform to top out on. East of it, **the plain wall** ([`PLAIN`]), as tall
-//!   and only `World`: a face climbing must refuse, since only tagged scenery climbs.
+//!   is the wall and whose top is a platform to top out on. At its west end **the wing** ([`WING`], M6 A16a), as
+//!   tall and as climbable, stands out south of the face: its east side meets the wall's face in an inside
+//!   corner, and its south and west sides turn outside corners. East of the wall, **the plain wall**
+//!   ([`PLAIN`]), as tall and only `World`: a face climbing must refuse, since only tagged scenery climbs.
 //! - **The glide drop**: the platform's north edge, [`TOWER_HEIGHT`] over **the pool** ([`POOL`]), a basin
 //!   [`POOL_FLOOR`] down whose water lies at [`WATER_HEIGHT`], deep enough for the default `swim_depth` of
 //!   any capsule a document may hold. North of the pool, the ground goes on to the course's end.
@@ -58,6 +60,9 @@ pub const NO_ROOM_GAP: (f32, f32) = (1.2, 0.3);
 pub const VAULT: ([f32; 2], [f32; 2], f32) = ([12.0, 24.0], [2.0, 0.2], 1.0);
 /// The climbing wall's block: its south face's span along X, and its extent along Z, in metres.
 pub const CLIMB: ([f32; 2], [f32; 2]) = ([-6.0, 4.0], [0.0, 8.0]);
+/// The wing's block (M6 A16a): its span along X, and how far south of the climbing wall's face it stands out, in
+/// metres. Its east side is the inside corner with the wall's face, at the face's west end.
+pub const WING: ([f32; 2], f32) = ([-8.0, -6.0], 3.0);
 /// The plain wall's block, as [`CLIMB`]: the same height, beside it to the east.
 pub const PLAIN: ([f32; 2], [f32; 2]) = ([8.0, 14.0], [0.0, 8.0]);
 /// How tall both walls stand, in metres: the climb's height and the glide's drop.
@@ -94,7 +99,7 @@ fn block(name: &str, min: [f32; 3], max: [f32; 3], extra: &[Group]) -> ColliderE
 }
 
 /// The course's colliders: the ground around the pool's hole, the pool's floor, the ledges, the vault and the
-/// two walls, the climbing wall's block alone `Climbable`.
+/// two walls, the climbing wall's block and its wing alone `Climbable`.
 #[must_use]
 pub fn colliders() -> ColliderDocument {
     let [half_x, half_z] = HALF_EXTENT;
@@ -142,6 +147,15 @@ pub fn colliders() -> ColliderDocument {
         // A wall's block reaches north from its south face, the one a climb meets.
         colliders.push(block(name, [x0, 0.0, -z1], [x1, TOWER_HEIGHT, -z0], extra));
     }
+    // The wing reaches south from the climbing wall's face, from its west end.
+    let ([x0, x1], out) = WING;
+    let face = -CLIMB.1[0];
+    colliders.push(block(
+        "climbing_wing",
+        [x0, 0.0, face],
+        [x1, TOWER_HEIGHT, face + out],
+        &[Group::Climbable],
+    ));
     ColliderDocument { colliders }
 }
 
@@ -249,6 +263,28 @@ pub fn built(enemies: &[&str]) -> Result<BuiltZone, String> {
     Ok(BuiltZone { document: document(), encounters: Vec::new(), colliders, navmesh: None })
 }
 
+/// The blocks the newest station added (M6 A16a, the climbing wing): a station after it puts its own here
+/// instead. `sapphire_replay`'s `course_paths` plays every older `course-*` replay on the course with these
+/// and without them ([`BEFORE_NEWEST`]), each tick alike, since a new block moves their checksums from tick 0
+/// (the statics' digest is in the tables' hash) and the re-stamp alone can't show their paths stood still.
+pub const NEWEST: &[&str] = &["climbing_wing"];
+
+/// The course as it stood before [`NEWEST`]'s blocks, a [`sapphire_zone::BuildZone`] as [`built`] is.
+///
+/// # Errors
+///
+/// As [`built`]'s.
+pub fn built_before_newest(enemies: &[&str]) -> Result<BuiltZone, String> {
+    let mut built = built(enemies)?;
+    let mut colliders = colliders();
+    colliders.colliders.retain(|collider| !NEWEST.contains(&collider.name.as_str()));
+    built.colliders = colliders.cook().and_then(|set| set.to_cooked()).map_err(|error| error.to_string())?;
+    Ok(built)
+}
+
+/// The zones a scenario on the course as it stood before [`NEWEST`] stands on.
+pub const BEFORE_NEWEST: &[(&str, sapphire_zone::BuildZone)] = &[(ZONE_NAME, built_before_newest)];
+
 #[cfg(test)]
 mod tests {
     use sapphire_colliders::{ColliderSet, GroupMask};
@@ -284,10 +320,10 @@ mod tests {
         let line =
             format!("sapphire_synthetic_zone course digest {first:#018x} on {}\n", std::env::consts::ARCH);
         std::io::stderr().write_all(line.as_bytes()).expect("stderr takes it");
-        assert_eq!(first, 0x6434_99d5_72ab_976e, "the course's digest moved; {line}");
+        assert_eq!(first, 0x8673_6bbc_ab3f_e4aa, "the course's digest moved; {line}");
     }
 
-    /// Only the climbing wall's block is climbable, and every block is scenery.
+    /// Only the climbing wall's block and its wing are climbable, and every block is scenery.
     #[test]
     fn only_the_climbing_wall_climbs() {
         let cooked = built(&[]).unwrap().colliders;
@@ -300,7 +336,7 @@ mod tests {
             })
             .map(|collider| collider.name.as_str())
             .collect();
-        assert_eq!(climbable, ["climbing_wall"]);
+        assert_eq!(climbable, ["climbing_wall", "climbing_wing"]);
         assert!(set.colliders.iter().all(|collider| {
             GroupMask::from_bits(collider.memberships.to_native()).intersects(Group::World.mask())
         }));
@@ -320,6 +356,9 @@ mod tests {
         assert!(x0 > -HALF_EXTENT[0] && x1 < HALF_EXTENT[0] && z0 > -HALF_EXTENT[1] && z1 < HALF_EXTENT[1]);
         // The walls' north edge is the pool's south edge: the glide drops off the platform over the water.
         assert_eq!(-CLIMB.1[1], z1);
+        // The wing's east side meets the wall's face inside its span: an inside corner, its other sides outside.
+        let ([wing_x0, wing_x1], out) = WING;
+        assert!(wing_x1 == CLIMB.0[0] && wing_x0 < wing_x1 && out > 1.0);
         // The ledge with no room is a ledge a mantle takes but for the slab, which the default capsule can't stand
         // under, west of the others.
         let ([x, _], height) = NO_ROOM;

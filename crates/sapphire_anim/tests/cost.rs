@@ -15,7 +15,7 @@ use sapphire_anim::{
     AnimGraph, ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, ClothSheet, CombatInput, FeetInput,
     FootGround, GraphBinding, GraphInput, GraphPlayer, Grip, GroundHit, Hand, HeldWeapon, IkInput, Joint,
     JointMask, JointTransform, LocomotionInput, LookInput, PackedRotation, RotationTrack, Skeleton,
-    SpringBones, SpringFrame, Substeps, Transform, VectorRange, VectorTrack, WeaponPlace, add, blend,
+    SpringBones, SpringFrame, Substeps, Target, Transform, VectorRange, VectorTrack, WeaponPlace, add, blend,
     make_delta, sample,
 };
 use sapphire_assets::AssetId;
@@ -98,9 +98,11 @@ fn graph_costs(skeleton: &ArchivedSkeleton, clip: &ArchivedClip) -> f64 {
     )"#;
     let mut graph = AnimGraph::from_document(text).expect("a good document");
     graph.resolve(|_| id);
+    let program = graph.compile_for(Target::COOKED).expect("it compiles");
     let clips = [(id, clip)];
     let source = clips.as_slice();
-    let binding = Arc::new(GraphBinding::new(&graph, skeleton, None, 8, source).expect("it binds"));
+    let binding =
+        Arc::new(GraphBinding::from_program(&program, skeleton, None, 8, source).expect("it binds"));
     let mut player = GraphPlayer::new(binding, CharacterPose::new(skeleton, &[], &[], vec![0.0; 8]), 1);
     let mut ticks = 0.0;
     let walking = LocomotionInput { speed: 4.0, ..LocomotionInput::default() };

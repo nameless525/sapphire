@@ -23,21 +23,6 @@ pub(super) struct FootworkClips {
 }
 
 impl FootworkClips {
-    pub(super) fn bind(
-        clip: impl Fn(&str) -> Option<u16>,
-        skeleton: &ArchivedSkeleton,
-        hips: usize,
-        spine: usize,
-    ) -> Option<Self> {
-        let clips =
-            [[clip("brake_left")?, clip("brake_right")?], [clip("launch_left")?, clip("launch_right")?]];
-        // The ball stays down through these authored ticks in locomotion.py. Each cycle
-        // uses its own contact duration, including walk's overlap and run's flight.
-        let forward_gaits =
-            vec![(clip("walk")?, 24.0 / 42.0), (clip("jog")?, 12.0 / 34.0), (clip("run")?, 7.0 / 26.0)];
-        Some(Self::of(clips, forward_gaits, skeleton, hips, spine))
-    }
-
     /// A program's footwork: its brakes and launches, left before right, and its gaits.
     pub(super) fn of(
         clips: [[u16; 2]; 2],

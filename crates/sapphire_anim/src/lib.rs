@@ -12,19 +12,19 @@ pub use face::{FaceLayer, FaceOrder, Mouth};
 pub use motion::{CharacterMotion, CharacterMotionError};
 pub use sapphire_body_pose::graph::{FixedGraphHistory, GraphStepStamp};
 pub use sapphire_body_pose::{
-    AimGoal, AnimGraph, ArchivedAnimGraph, ArchivedClip, ArchivedJointTransform, ArchivedRootMotion,
+    AimGoal, AnimGraph, ArchivedClip, ArchivedGraphProgram, ArchivedJointTransform, ArchivedRootMotion,
     ArchivedRotationTrack, ArchivedSkeleton, ArchivedVectorRange, ArchivedVectorTrack, ArchivedWeightRange,
     ArchivedWeightTrack, ArmBones, AuthoredFootMotion, Bind, BlendPoint, CLIP_EXTENSION, CharacterIk,
-    CharacterPose, Clip, ClipError, ClipSource, CombatInput, ConstraintCycle, Constraints, DEFAULT_RATE,
-    EyeDrive, EyeRig, FeetInput, FootContact, FootGround, FootPlacement, FootProbe, FootSettings,
-    GRAPH_EXTENSION, GraphBindError, GraphBinding, GraphError, GraphInput, GraphIssue, GraphPlayer,
-    GraphStats, Grip, GroundHit, Hand, HeldWeapon, IkInput, IkRig, Joint, JointMask, JointTransform, KeySpan,
-    LegBones, LocomotionInput, LookAt, LookBones, LookInput, LookSettings, MAX_JOINTS, MAX_RATE, MAX_TICKS,
-    NO_PARENT, PackedRotation, PackedVector, RangeMap, ReactionInput, RootMotion, RotationTrack,
-    SKELETON_EXTENSION, Skeleton, SkeletonError, SolvePose, Transform, TwoBone, TwoBoneGoal, VectorRange,
-    VectorTrack, WeaponPlace, WeightRange, WeightTrack, add, aim, blend, blend_weights, graph, inertia,
-    key_span, lerp3, local_to_model, make_delta, nlerp, overlay, overlay_weights, palette, rest_pose,
-    root_motion, sample, two_bone,
+    CharacterPose, Clip, ClipError, ClipSource, CombatInput, CompileError, ConstraintCycle, Constraints,
+    DEFAULT_RATE, EyeDrive, EyeRig, FeetInput, FootContact, FootGround, FootPlacement, FootProbe,
+    FootSettings, GRAPH_EXTENSION, GraphBindError, GraphBinding, GraphError, GraphInput, GraphIssue,
+    GraphPlayer, GraphProgram, GraphStats, Grip, GroundHit, Hand, HeldWeapon, IkInput, IkRig, Joint,
+    JointMask, JointTransform, KeySpan, LegBones, LocomotionInput, LookAt, LookBones, LookInput,
+    LookSettings, MAX_JOINTS, MAX_RATE, MAX_TICKS, NO_PARENT, PackedRotation, PackedVector, RangeMap,
+    ReactionInput, RootMotion, RotationTrack, SKELETON_EXTENSION, Skeleton, SkeletonError, SolvePose, Target,
+    Transform, TwoBone, TwoBoneGoal, VectorRange, VectorTrack, WeaponPlace, WeightRange, WeightTrack, add,
+    aim, blend, blend_weights, graph, inertia, key_span, lerp3, local_to_model, make_delta, nlerp, overlay,
+    overlay_weights, palette, rest_pose, root_motion, sample, two_bone,
 };
 pub use sapphire_body_pose::{AuthoredHeadLook, GroundTurn, SolvedBody, graph_foot_contact};
 pub use sapphire_body_pose::{BodyRoot, BodySample, BodyStep, BodyStepError, FixedBody, FixedBodyPolicy};

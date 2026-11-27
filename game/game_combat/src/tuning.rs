@@ -47,7 +47,8 @@
 use std::path::{Path, PathBuf};
 
 use sapphire_anim::{BodyTuning, CharacterMotion};
-use sapphire_assets::graph::{AnimGraph, clip_id};
+use sapphire_assets::graph::clip_id;
+use sapphire_assets::graph::v2::{AnimGraph, Target};
 use sapphire_assets::ui::UiDocument;
 use sapphire_assets::{AssetChange, AssetKind, Handle};
 use sapphire_camera::CameraTuning;
@@ -256,13 +257,15 @@ impl Document {
                 tuning.moves_document(origin, text, cooked.as_ref(), LiveFight { combat, scene })
             }
             Self::Camera => tuning.camera_document(text, &mut fight.show, scene),
-            // Checked as a cook checks it, its clips loaded if they aren't, and bound against this character.
-            // Everything before the swap can fail, and leaves what's playing.
+            // Checked and compiled as a cook compiles it (`Target::COOKED`), its clips loaded if they aren't,
+            // and bound against this character. Everything before the swap can fail, and leaves what's
+            // playing.
             Self::Graph => {
                 let (owner, path) = graph_of(origin)?;
                 let mut graph = AnimGraph::from_document(text).map_err(|error| error_chain(&error))?;
                 graph.resolve(clip_id);
-                fight.show.replace_graph_document(scene, owner, graph, content, renderer, gpu)?;
+                let program = graph.compile_for(Target::COOKED).map_err(|error| error_chain(&error))?;
+                fight.show.replace_graph_program(scene, owner, program, content, renderer, gpu)?;
                 tuning.count_edit(document_file_name(path));
                 Ok(format!("{owner}'s animation graph, from the next state's start"))
             }

@@ -1,7 +1,6 @@
-//! A version 2 graph's [`GraphProgram`] bound to a character: the same [`GraphBinding`] a version 1
-//! graph resolves to, which the one [`GraphPlayer`](super::GraphPlayer) plays. A converted graph binds
-//! to what its version 1 document does, rule for rule, so it plays the same poses bit for bit
-//! (`graph::v2_tests`).
+//! A graph's compiled [`GraphProgram`] bound to a character: the [`GraphBinding`] the one
+//! [`GraphPlayer`](super::GraphPlayer) plays. A graph converted from version 1 binds to what its version 1
+//! document did, rule for rule, so it plays the poses version 1's player did (`graph::v2_tests`).
 
 use sapphire_assets::clip::Marker;
 use sapphire_assets::graph::v2::program::{BlendAxes, GraphProgram, PoseOp, ProgramEntry};
@@ -13,12 +12,12 @@ use sapphire_core::Name;
 use super::ground_footwork::FootworkClips;
 use super::{
     AcceleratingCatch, Added, Axes, BlendPoint, BoundEvent, BoundMachine, ClipSource, EventFrom,
-    GraphBindError, GraphBinding, Guard, LayerOp, MachineLayer, Motion, MoveEntry, OneShot, Sample, Space,
-    State, StateChange, Value, bind_blink, bind_mask,
+    GraphBindError, GraphBinding, LayerOp, MachineLayer, Motion, MoveEntry, OneShot, Sample, Space, State,
+    StateChange, Value, bind_blink, bind_mask,
 };
 
 impl GraphBinding {
-    /// Resolves a compiled `program` for this character, as [`Self::new`] resolves a version 1 graph:
+    /// Resolves a compiled `program` for this character:
     /// its `skeleton`, its `rig` if masks, a blink or footwork need one, and how many morph targets its
     /// mesh has. Every clip must be loaded and cooked for this skeleton. A program read from bytes
     /// has passed [`GraphProgram::validate`]; one built any other way is checked here.
@@ -87,7 +86,7 @@ impl GraphBinding {
                 PoseOp::Blend { blend, .. } => {
                     let blend = &program.blends[usize::from(blend)];
                     let axes = match blend.axes {
-                        // v1's blend space reads the smoothed velocity itself.
+                        // A blend over the smoothed velocity reads it itself, as version 1's did.
                         BlendAxes::Two(x, y)
                             if reads(x, LocomotionValue::SmoothedX)
                                 && reads(y, LocomotionValue::SmoothedZ) =>
@@ -163,7 +162,8 @@ impl GraphBinding {
                     machine: index as u16,
                     from: transition.from,
                     to: transition.to,
-                    guard: Guard::Program { condition: transition.condition, finished: transition.finished },
+                    condition: transition.condition,
+                    finished: transition.finished,
                     decay: f32::from(transition.decay),
                     rules: transition.rules,
                     phase: transition.phase,
@@ -278,8 +278,6 @@ impl GraphBinding {
             let clips = [footwork.brake, footwork.launch];
             Some(FootworkClips::of(clips, footwork.gaits.clone(), skeleton, hips, spine))
         });
-        let landing_aware = changes.iter().any(|change| change.rules.lands)
-            || states.iter().any(|state| matches!(state.motion, Motion::Touchdown(_)));
         let mut binding = Self {
             clips: program.clips.iter().map(|clip| clip.id).collect(),
             masks,
@@ -294,8 +292,7 @@ impl GraphBinding {
             ops,
             start: 0,
             smoothing: program.smoothing,
-            landing_aware,
-            target: Some(program.target),
+            target: program.target,
             takeoff,
             resume_joints,
             resume_hips: find_joint(HumanBone::Hips),

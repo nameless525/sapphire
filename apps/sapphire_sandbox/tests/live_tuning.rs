@@ -503,12 +503,10 @@ fn the_camera_and_the_graph_reach_a_running_app() {
         .push_document(graph, GRAPH.replacen("start: \"ground\"", "start: \"nowhere\"", 1))
         .expect_err("no such state");
     assert!(refused.to_string().contains("nowhere"), "{refused}");
-    let missing = GRAPH.replacen(
-        "(name: \"idle\", source: \"0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4\")",
-        "(name: \"idle\", source: \"00000000-0000-4000-8000-000000000000\")",
-        1,
-    );
-    assert_ne!(missing, GRAPH);
+    // The idle clip's source ID, which the file names once: the graph's layout moves, its IDs don't.
+    let missing =
+        GRAPH.replacen("0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4", "00000000-0000-4000-8000-000000000000", 1);
+    assert_ne!(missing, GRAPH, "the idle clip is still there to lose");
     let refused = client.push_document(graph, missing).expect_err("no such clip");
     assert!(refused.to_string().contains("idle"), "{refused}");
 

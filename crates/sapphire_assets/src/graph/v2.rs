@@ -1,8 +1,8 @@
 //! Graph v2 (M6 A5a, spec §5.13's "Graph v2"): the `.animgraph.ron` document at version 2, a node graph
 //! an animator can grow, and its [compiler](compile) to a flat [program] with a static
-//! worst-case cost. `sapphire_body_pose` binds and plays a program on either of its maths (M6 A5b), but
-//! nothing the game runs reads one yet: the switch is A5c's, so today's [`super::AnimGraph`] is still
-//! what cooks to `.sgraph` and plays.
+//! worst-case cost. The cook compiles every graph for the fixed step and writes the program to `.sgraph`
+//! (M6 A5c), and `sapphire_body_pose` binds and plays it on either of its maths (M6 A5b). The clips' IDs
+//! below are made up.
 //!
 //! ```ron
 //! (
@@ -21,11 +21,11 @@
 //!         // The half-life, in ticks, the smoothed locomotion parameters follow the controller at.
 //!         smoothing: 3.0,
 //!         clips: [
-//!             (name: "idle", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Idle_A"),
-//!             (name: "run", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Running_A"),
-//!             (name: "fall", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Jump_Idle"),
-//!             (name: "jab", source: "15af86bb-67b3-4208-bc54-1618aabf450b"),
-//!             (name: "jab_behind", source: "0c4be2d4-4149-4852-80c5-109683aad3e1"),
+//!             (name: "idle", source: "11111111-1111-4111-8111-111111111111", clip: "Idle_A"),
+//!             (name: "run", source: "11111111-1111-4111-8111-111111111111", clip: "Running_A"),
+//!             (name: "fall", source: "11111111-1111-4111-8111-111111111111", clip: "Jump_Idle"),
+//!             (name: "jab", source: "22222222-2222-4222-8222-222222222222"),
+//!             (name: "jab_behind", source: "33333333-3333-4333-8333-333333333333"),
 //!         ],
 //!         masks: [(name: "upper", bones: [(bone: Spine, weight: 1.0)])],
 //!         // Clips in a group share one phase, counted between one foot's landings.
@@ -65,8 +65,8 @@
 //! A version 1 document reads as version 2 ([`convert`]): its locomotion layer becomes a machine named
 //! `locomotion`, its conditions expressions over the parameters they read, its combat table, additive
 //! layers and reactions layers, and what v1's runtime did by name or by asset ID (the heel-and-ball
-//! footwork's clips, the takeoff's carry) says so in the document. Every shipped graph converts and
-//! compiles (`sapphire_pipeline`'s `every_shipped_graph_converts_and_compiles`).
+//! footwork's clips, the takeoff's carry) says so in the document. The shipped graphs were moved to
+//! version 2 so (`sapphire_pipeline upgrade-graphs`, M6 A5c); nothing writes version 1.
 //!
 //! # Where an editor's layout goes
 //!
@@ -121,7 +121,7 @@ pub struct AnimGraph {
 }
 
 impl Versioned for AnimGraph {
-    /// 1: M2 N3 ([`super::AnimGraph`]).
+    /// 1: M2 N3 (`graph::v1`'s document, read alone).
     /// 2: the node graph (M6 A5a). Version 1 reads, converted ([`convert`]). An upgrade can't refuse
     /// what it decodes, so [`AnimGraph::from_document`] reads a version 1 document through version 1's
     /// own check first: one that check refuses never converts.
@@ -131,7 +131,7 @@ impl Versioned for AnimGraph {
         version: u32,
         data: D,
     ) -> Result<Self, sapphire_reflect::VersionError<D::Error>> {
-        sapphire_reflect::decode_versioned::<super::AnimGraph, D>(version, data)
+        sapphire_reflect::decode_versioned::<super::v1::AnimGraph, D>(version, data)
             .map(|old| convert::convert(&old))
     }
 }
@@ -774,7 +774,7 @@ impl AnimGraph {
     pub fn from_document(text: &str) -> Result<Self, GraphError> {
         // Version 1 reads through its own check, so a document it refuses never converts; anything
         // newer is version 2's to read.
-        match super::AnimGraph::from_document(text) {
+        match super::v1::AnimGraph::from_document(text) {
             Ok(old) => return Ok(convert::convert(&old)),
             Err(GraphError::Document(error)) if matches!(*error, DocumentError::TooNew { .. }) => {}
             Err(error) => return Err(error),
@@ -806,10 +806,12 @@ impl AnimGraph {
         }
     }
 
-    /// Everything wrong with it that doesn't depend on a character, each by its path in the document.
+    /// Everything wrong with it that doesn't depend on a character, each by its path in the document:
+    /// what its cook refuses, since it compiles for [`Target::COOKED`] as the cook does, so an editor
+    /// shows an event or a game slot as an issue rather than as a cook's failure later.
     #[must_use]
     pub fn check(&self) -> Vec<GraphIssue> {
-        match compile::compile(self) {
+        match compile::compile_for(self, Target::COOKED) {
             Ok(_) => Vec::new(),
             Err(CompileError { issues }) => issues,
         }

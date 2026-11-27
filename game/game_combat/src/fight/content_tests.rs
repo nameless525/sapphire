@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use sapphire_anim::{AnimGraph, Clip, ClipSource, Joint, JointTransform};
+use sapphire_anim::{Clip, ClipSource, GraphProgram, Joint, JointTransform};
 use sapphire_assets::material::{AnimeCharacterMaterial, Material};
 use sapphire_assets::mesh::{
     Influences, MaterialSlot, Mesh, PositionFormat, Skin, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex,
@@ -138,12 +138,12 @@ fn pack_of(x: f32, extra: usize, decay: u32, recovery: u32) -> Vec<u8> {
 }
 
 /// The first pack, with `graph` naming `clip`.
-fn pack_of_graph(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: u32) -> Vec<u8> {
+fn pack_of_graph(x: f32, extra: usize, graph: GraphProgram, clip: AssetId, recovery: u32) -> Vec<u8> {
     write_pack(pack_assets(x, extra, graph, clip, recovery)).expect("a pack")
 }
 
 /// What [`pack_of_graph`] packs.
-fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: u32) -> Vec<PackAsset> {
+fn pack_assets(x: f32, extra: usize, graph: GraphProgram, clip: AssetId, recovery: u32) -> Vec<PackAsset> {
     let count = HumanBone::REQUIRED.len() + extra;
     let at = |joint: usize| [joint as f32 * 0.1, 1.0, 0.0];
     let joints: Vec<Joint> = (0..count)
@@ -200,7 +200,9 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
         panic!("a kind names its moves")
     };
     let mut enemy_graph = graph.clone();
-    enemy_graph.resolve(|_| ENEMY_SWING);
+    for clip in &mut enemy_graph.clips {
+        clip.id = ENEMY_SWING;
+    }
     let mut humanoid: Vec<_> = HumanBone::REQUIRED
         .iter()
         .enumerate()
@@ -274,11 +276,22 @@ fn swing_document(decay: u32) -> String {
     )
 }
 
-/// [`swing_document`], as a cook makes it.
-fn swing_graph(decay: u32) -> AnimGraph {
-    let mut graph = AnimGraph::from_document(&swing_document(decay)).expect("a good document");
+/// A graph document, read (of either version), with its clips' IDs derived and compiled as the cook
+/// compiles it (`Target::COOKED`): what a cooked `.sgraph` holds.
+fn cooked(text: &str) -> GraphProgram {
+    let mut graph = sapphire_anim::AnimGraph::from_document(text).expect("a good document");
     graph.resolve(sapphire_assets::graph::clip_id);
-    graph
+    graph.compile_for(sapphire_anim::Target::COOKED).expect("it compiles")
+}
+
+/// The combat layer's decay, in ticks, of a program that has one.
+fn decay_of(graph: GraphProgram) -> u32 {
+    graph.combat.map_or(0, |combat| u32::from(combat.decay))
+}
+
+/// [`swing_document`], as a cook makes it.
+fn swing_graph(decay: u32) -> GraphProgram {
+    cooked(&swing_document(decay))
 }
 
 /// The root from 0.75 m to the character's right to 0.75 m to its left, a clip for `joints` joints.
@@ -300,7 +313,7 @@ fn swing(joints: usize) -> Clip {
 }
 
 /// A graph naming `ids`, looping the first in its one state.
-fn graph_naming(ids: &[AssetId]) -> AnimGraph {
+fn graph_naming(ids: &[AssetId]) -> GraphProgram {
     let clips: Vec<String> = ids
         .iter()
         .enumerate()
@@ -317,9 +330,7 @@ fn graph_naming(ids: &[AssetId]) -> AnimGraph {
         ))"#,
         clips = clips.join(", "),
     );
-    let mut graph = AnimGraph::from_document(&text).expect("a good document");
-    graph.resolve(sapphire_assets::graph::clip_id);
-    graph
+    cooked(&text)
 }
 
 /// [`swing_document`] with a blink no character here can bind, though it reads and its clip is in the
@@ -334,10 +345,8 @@ fn blinking_document(decay: u32) -> String {
 
 /// [`blinking_document`], as a cook makes it: a cook reads the same file a save writes.
 #[cfg(feature = "dev")]
-fn blinking_graph(decay: u32) -> AnimGraph {
-    let mut graph = AnimGraph::from_document(&blinking_document(decay)).expect("a good document");
-    graph.resolve(sapphire_assets::graph::clip_id);
-    graph
+fn blinking_graph(decay: u32) -> GraphProgram {
+    cooked(&blinking_document(decay))
 }
 
 impl Stage {
@@ -620,8 +629,8 @@ fn an_enemy_waits_for_the_rest_of_a_new_version_to_land() {
     stage.recook_all_but(&[look().mesh], 1, 7);
     // Revisions identify changed views; readiness is the actual new graph and clip data.
     stage.frames_until(|stage| {
-        stage.content.character_graph().is_ok_and(|graph| graph.combat.decay == 7)
-            && stage.content.graph_document_of(ENEMY_GRAPH).is_ok_and(|graph| graph.combat.decay == 7)
+        stage.content.character_graph().is_ok_and(|graph| decay_of(graph) == 7)
+            && stage.content.graph_program_of(ENEMY_GRAPH).is_ok_and(|graph| decay_of(graph) == 7)
             && stage
                 .content
                 .character_clips()
@@ -638,10 +647,12 @@ fn an_enemy_waits_for_the_rest_of_a_new_version_to_land() {
     assert!(!waiting.has_replacement(), "a graph bound to other joints waits with it");
 
     let mut edited = swing_graph(4);
-    edited.resolve(|_| ENEMY_SWING);
+    for clip in &mut edited.clips {
+        clip.id = ENEMY_SWING;
+    }
     let Stage { scene, show, content, renderer, gpu, .. } = &mut stage;
     let error = show
-        .replace_graph_document(scene, ENEMY_GRAPH, edited, content, renderer, gpu)
+        .replace_graph_program(scene, ENEMY_GRAPH, edited, content, renderer, gpu)
         .expect_err("an edit waits with it");
     assert!(error.contains("still landing"), "{error}");
 
@@ -685,7 +696,7 @@ fn an_edited_enemy_graph_stays_until_a_pack_replaces_it() {
 
     // The character's clip is for the character's joints.
     let error = show
-        .replace_graph_document(scene, ENEMY_GRAPH, swing_graph(4), content, renderer, gpu)
+        .replace_graph_program(scene, ENEMY_GRAPH, swing_graph(4), content, renderer, gpu)
         .expect_err("another skeleton's clip");
     assert!(error.contains("swing"), "{error}");
     let player = |scene: &Scene, show: &FightShow| {
@@ -694,18 +705,20 @@ fn an_edited_enemy_graph_stays_until_a_pack_replaces_it() {
     assert!(!player(scene, show));
 
     let mut edited = swing_graph(4);
-    edited.resolve(|_| ENEMY_SWING);
-    show.replace_graph_document(scene, ENEMY_GRAPH, edited, content, renderer, gpu).expect("it binds");
+    for clip in &mut edited.clips {
+        clip.id = ENEMY_SWING;
+    }
+    show.replace_graph_program(scene, ENEMY_GRAPH, edited, content, renderer, gpu).expect("it binds");
     assert!(player(scene, show));
-    assert_eq!(content.graph_document_of(ENEMY_GRAPH).expect("a graph").combat.decay, 4);
-    assert_eq!(content.character_graph().expect("a graph").combat.decay, 5, "the character's stays");
+    assert_eq!(decay_of(content.graph_program_of(ENEMY_GRAPH).expect("a graph")), 4);
+    assert_eq!(decay_of(content.character_graph().expect("a graph")), 5, "the character's stays");
     assert!(!content.take_graph_changed(), "its own clips are nothing new");
 
     stage.source.insert(PACK, pack_with_decay(0.0, 0, 9));
     stage.content.remount(PACK).expect("the new pack");
     for _ in 0..1000 {
         stage.frame();
-        if stage.content.graph_document_of(ENEMY_GRAPH).expect("a graph").combat.decay == 9 {
+        if decay_of(stage.content.graph_program_of(ENEMY_GRAPH).expect("a graph")) == 9 {
             return;
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -848,23 +861,24 @@ fn an_enemys_graph_that_never_fits_keeps_nothing_waiting() {
     stage.content.remount(PACK).expect("the new pack");
     stage.frames_until(|stage| stage.enemy_joints() != joints);
     std::fs::remove_dir_all(&folder).expect("cleaned up");
-    assert_eq!(stage.content.graph_document_of(ENEMY_GRAPH).expect("a graph").combat.decay, 7, "the cook's");
+    assert_eq!(decay_of(stage.content.graph_program_of(ENEMY_GRAPH).expect("a graph")), 7, "the cook's");
 
     stage.source.insert(PACK, pack_of_graph(0.0, 2, blinking_graph(9), SWING, 0));
     stage.content.remount(PACK).expect("the next pack");
     stage.frames_until(|stage| {
         stage.show.enemy_versions(&stage.content) == Some((2, 2))
-            && stage.content.graph_document_of(ENEMY_GRAPH).is_ok_and(|g| g.blink.is_some())
+            && stage.content.graph_program_of(ENEMY_GRAPH).is_ok_and(|g| g.blink.is_some())
     });
     for _ in 0..30 {
         stage.frame();
     }
     assert_eq!(stage.enemy_joints(), joints + 1, "it keeps what it has");
     let mut corrected = swing_graph(4);
-    corrected.resolve(|_| ENEMY_SWING);
+    for clip in &mut corrected.clips {
+        clip.id = ENEMY_SWING;
+    }
     let Stage { scene, show, content, renderer, gpu, .. } = &mut stage;
-    show.replace_graph_document(scene, ENEMY_GRAPH, corrected, content, renderer, gpu)
-        .expect("that one fits");
+    show.replace_graph_program(scene, ENEMY_GRAPH, corrected, content, renderer, gpu).expect("that one fits");
     assert_eq!(stage.enemy_joints(), joints + 2, "it started over on the new joints");
 }
 

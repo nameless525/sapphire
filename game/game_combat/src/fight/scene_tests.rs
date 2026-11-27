@@ -207,7 +207,7 @@ fn skeleton_pose_rest() -> CharacterPose {
 }
 
 /// A graph with `clip()` for its only clip, playing it standing and for the show's moves.
-fn graph() -> sapphire_anim::AnimGraph {
+fn graph() -> sapphire_anim::GraphProgram {
     let mut graph = sapphire_anim::AnimGraph::from_document(
         r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
             clips: [(name: "turn", source: "15af86bb-67b3-4208-bc54-1618aabf450b")],
@@ -223,7 +223,7 @@ fn graph() -> sapphire_anim::AnimGraph {
     )
     .expect("a good document");
     graph.resolve(|_| GRAPH_CLIP);
-    graph
+    graph.compile_for(sapphire_anim::Target::COOKED).expect("it compiles")
 }
 
 fn driver(table: &ClipTable<'_>) -> GraphDriver {
@@ -232,7 +232,8 @@ fn driver(table: &ClipTable<'_>) -> GraphDriver {
     let binds: Vec<SkinBind> = (0..5)
         .map(|joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
         .collect();
-    let binding = sapphire_anim::GraphBinding::new(&graph(), skeleton, None, 2, table).expect("it binds");
+    let binding =
+        sapphire_anim::GraphBinding::from_program(&graph(), skeleton, None, 2, table).expect("it binds");
     let pose = CharacterPose::new(skeleton, &binds, &[], vec![0.25, 0.0]);
     let player = sapphire_anim::GraphPlayer::new(Arc::new(binding), pose, 1);
     GraphDriver::new(player, FigureJoints::of_joints(&skeleton_pose_rest(), 2, 0.0, [3, 4]))

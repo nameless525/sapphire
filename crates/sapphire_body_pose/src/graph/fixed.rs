@@ -69,7 +69,7 @@ impl<C: ClipSource> FixedGraphHistory<C> {
         }
     }
 
-    /// [`Self::new`] for a version 1 graph or a program compiled for the fixed step (`Target::Simulation`): a
+    /// [`Self::new`] for a program compiled for the fixed step (`compile_for(Target::Simulation)`): a
     /// program compiled for presentation may hold what only presentation runs, so it's refused.
     pub fn try_new(
         graph: Arc<GraphBinding>,
@@ -77,7 +77,7 @@ impl<C: ClipSource> FixedGraphHistory<C> {
         seed: u32,
         clips: C,
     ) -> Result<Self, GraphBindError> {
-        if graph.target() == Some(Target::Presentation) {
+        if graph.target() == Target::Presentation {
             return Err(GraphBindError::PresentationProgram);
         }
         let mut player = GraphPlayer::new(graph, pose.into_fixed(), seed);

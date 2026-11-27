@@ -1,0 +1,255 @@
+// How Wren's clips play (M5 C12). Every clip is the heroine's, which its sidecar cooks for Wren's model too
+// (`also`), so each names Wren's model as its `target`: a key-pose document turns bones in rest space, and
+// fits any humanoid rig in a T-pose. The staff is skinned to the right hand's slot, so it follows the
+// heroine's sword hand through her cuts. Her run, jog and knockdown move morph targets only her model has,
+// so Wren strides at a walk and falls as defeated for a knockdown, getting up as the move ends, as Aster
+// does; her finisher moves her sleeves' morph targets, so Wren has none.
+(
+    type: "sapphire::assets::AnimGraph",
+    version: 2,
+    data: (
+        parameters: [
+            (
+                name: "velocity_x",
+                from: Locomotion(SmoothedX),
+            ),
+            (
+                name: "velocity_z",
+                from: Locomotion(SmoothedZ),
+            ),
+        ],
+        smoothing: 3.0,
+        clips: [
+            // The heroine's (`content/lookdev/character/`, `content/combat/player/`), all of them.
+            (
+                name: "light_1",
+                source: "6d321a52-1aed-4279-bc32-a177b8fd81d4",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "light_2",
+                source: "0c4be2d4-4149-4852-80c5-109683aad3e1",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "skill",
+                source: "9491f5d1-0c11-45c9-8139-8f54918b25f6",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "idle_combat",
+                source: "5fa1f634-6e77-4485-9f50-577be76b7323",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "walk",
+                source: "fbec3961-0e19-4289-9f89-6bba045a6f33",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "walk_back",
+                source: "8de71a71-5b97-536a-9aae-3d5a6fcc4450",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "strafe_left",
+                source: "2690ea79-80aa-5daf-9ac5-c04f22cbe329",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "strafe_right",
+                source: "7b639f71-2c36-51ae-9b4d-5bfd4a34f2ea",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "breathing",
+                source: "5d9c1f6e-3a47-4b28-9e0d-7c21a4f8b6d3",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "flinch",
+                source: "902e79bb-d646-52f3-9baa-4ed7b1e72869",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "stagger",
+                source: "02ecbb4a-cb11-54ce-843e-2da99ff6f38c",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "dazed",
+                source: "2ec5f601-115a-5655-a2e2-85293ecf2b8e",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "defeat",
+                source: "a4baad9b-81c5-54e1-9a11-c9a594146361",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "dodge",
+                source: "9b5f353a-2c97-45c7-a70f-bcab216de811",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+            (
+                name: "dash_attack",
+                source: "997ddfa0-e2bf-4887-94dd-e8f51cb6e958",
+                target: Some("d24300b3-9034-4deb-8bc9-9b621dc19915"),
+            ),
+        ],
+        masks: [
+            // From the spine up: what a flinch moves, with the legs left to what they're doing.
+            (
+                name: "upper",
+                bones: [
+                    (
+                        bone: Spine,
+                        weight: 1.0,
+                    ),
+                ],
+            ),
+        ],
+        machines: [
+            (
+                name: "locomotion",
+                start: "ground",
+                states: [
+                    (
+                        name: "ground",
+                        plays: Blend2D((
+                            x: "velocity_x",
+                            y: "velocity_z",
+                            // The heroine's samples at her speeds; above a walk the walk plays quicker.
+                            samples: [
+                                (
+                                    clip: "idle_combat",
+                                    at: (0.0, 0.0),
+                                    phase: 0.0,
+                                    sync: false,
+                                ),
+                                (
+                                    clip: "walk",
+                                    at: (0.0, 2.0),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "walk_back",
+                                    at: (0.0, -0.95),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "strafe_left",
+                                    at: (4.78, 2.76),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "strafe_right",
+                                    at: (-4.78, 2.76),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                            ],
+                            rate: (0.5, 1.6),
+                        )),
+                    ),
+                ],
+            ),
+        ],
+        layers: [
+            (
+                name: "locomotion",
+                plays: Machine((
+                    machine: "locomotion",
+                )),
+            ),
+            (
+                name: "combat",
+                plays: Combat((
+                    decay: 5,
+                    exit: 12,
+                    moves: [
+                        (
+                            move: "light_1",
+                            clip: "light_1",
+                        ),
+                        (
+                            move: "light_2",
+                            clip: "light_2",
+                        ),
+                        (
+                            move: "skill",
+                            clip: "skill",
+                        ),
+                        (
+                            move: "dodge",
+                            clip: "dodge",
+                            decay: Some(3),
+                        ),
+                        // A swap cuts to it, so there's nothing to blend from.
+                        (
+                            move: "swap_in",
+                            clip: "dash_attack",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "flinch",
+                            clip: "flinch",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "stagger",
+                            clip: "stagger",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "dazed",
+                            clip: "dazed",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "knockdown",
+                            clip: "defeat",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "defeat",
+                            clip: "defeat",
+                            decay: Some(3),
+                        ),
+                    ],
+                )),
+            ),
+            (
+                name: "breathing",
+                plays: Additive((
+                    clip: "breathing",
+                    weight: 0.35,
+                )),
+            ),
+            (
+                name: "reactions",
+                plays: Reactions([
+                    (
+                        name: "flinch",
+                        clip: "flinch",
+                        mask: Some("upper"),
+                        weight: 0.7,
+                        fade_out: 12,
+                        restart: 4,
+                    ),
+                ]),
+            ),
+        ],
+        blink: Some((
+            // Every 2.5 to 6 seconds, on Wren's own clock: the face has VRM's `blink`.
+            expression: "blink",
+            every: (150, 360),
+            close: 3,
+            hold: 1,
+            open: 7,
+        )),
+    ),
+)

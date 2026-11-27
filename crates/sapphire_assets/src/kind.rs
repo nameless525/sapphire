@@ -26,7 +26,8 @@ use crate::cue::{CUE_EXTENSION, Cue, CueError};
 use crate::effect_sheet::{EffectSheet, EffectSheetError, SHEET_EXTENSION};
 use crate::effects::{EFFECTS_EXTENSION, Effects, EffectsError};
 use crate::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains, FontError};
-use crate::graph::{AnimGraph, GRAPH_EXTENSION, GraphError};
+use crate::graph::v2::GraphProgram;
+use crate::graph::{GRAPH_EXTENSION, GraphError};
 use crate::material::{MATERIAL_EXTENSION, Material, MaterialError};
 use crate::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use crate::mix::{MIX_EXTENSION, Mix, MixError};
@@ -71,7 +72,8 @@ pub enum AssetKind {
     /// A character's moves (`.smoves`, M2 G2): [`MoveSet`], which the simulation reads and which
     /// never goes near a GPU.
     MoveSet = 11,
-    /// A character's animation graph (`.sgraph`, M2 N3): [`AnimGraph`], naming the clips it plays.
+    /// A character's animation graph (`.sgraph`, M2 N3; M6 A5c): its compiled [`GraphProgram`], naming the
+    /// clips it plays.
     /// Animation's CPU data, never uploaded.
     AnimGraph = 12,
     /// A cooked zone (`.szone`, M3 W1): [`Zone`], which the simulation and the world read and which
@@ -464,7 +466,7 @@ impl AssetKind {
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`, `Skeleton::read`,
     /// `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`, `MoveSet::from_cooked`,
-    /// `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`, `FontChains::read`,
+    /// `GraphProgram::read`, `Zone::read`, `StringTable::read`, `Font::read`, `FontChains::read`,
     /// `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `Encounter::read`, `ScriptChunk::read`,
     /// `Dialogue::read`, `Enemy::from_cooked`, `Score::read`, `VoiceLines::read`, `TextureLevel::read`,
     /// `ReflectionProbes::read`, `Playable::from_cooked`, `Motion::read`,
@@ -529,7 +531,7 @@ impl AssetKind {
                 MoveSet::from_cooked(bytes)?;
                 Vec::new()
             }
-            Self::AnimGraph => AnimGraph::read(bytes)?.clip_ids().collect(),
+            Self::AnimGraph => GraphProgram::read(bytes)?.clip_ids().collect(),
             Self::Zone => Zone::read(bytes)?.references(),
             // An encounter names a zone's things and moves by name, so it needs nothing loaded first.
             Self::Encounter => {

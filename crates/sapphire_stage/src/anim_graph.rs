@@ -953,7 +953,8 @@ impl std::fmt::Debug for GraphShow {
 #[cfg(test)]
 mod tests {
     use sapphire_anim::{
-        AnimGraph, CharacterPose, Clip, GraphBinding, PackedRotation, RotationTrack, Skeleton,
+        AnimGraph, CharacterPose, Clip, GraphBinding, GraphProgram, PackedRotation, RotationTrack, Skeleton,
+        Target,
     };
     use sapphire_assets::clip::DEFAULT_RATE;
     use sapphire_assets::skeleton::{Joint, JointTransform};
@@ -1091,15 +1092,22 @@ mod tests {
         assert!(show.transform(1.0).transform_point3(Vec3::ZERO).z < -0.5);
     }
 
+    /// A graph document compiled as the cook compiles it, with its clips' IDs derived.
+    fn program_of(text: &str) -> GraphProgram {
+        let mut graph = AnimGraph::from_document(text).expect("a good document");
+        graph.resolve(sapphire_assets::graph::clip_id);
+        graph.compile_for(Target::COOKED).expect("it compiles")
+    }
+
     /// What the graph on the look-dev stage has for the moves its show plays.
     #[test]
     fn the_characters_graph_plays_the_shows_moves() {
         let text = include_str!("../../../content/lookdev/character/character.animgraph.ron");
-        let graph = AnimGraph::from_document(text).expect("a good document");
+        let graph = program_of(text);
         let set = show_moves();
         for name in ["strike", "dodge_back"] {
             assert!(set.find(Name::new(name)).is_some(), "{name} isn't in the show's moves");
-            assert!(graph.combat.moves.iter().any(|entry| entry.name == name), "{name} isn't in the graph");
+            assert!(graph.move_row(name).is_some(), "{name} isn't in the graph");
         }
     }
 
@@ -1110,8 +1118,8 @@ mod tests {
     #[test]
     fn the_characters_graph_has_a_row_for_all_a_fight_plays() {
         let text = include_str!("../../../content/lookdev/character/character.animgraph.ron");
-        let graph = AnimGraph::from_document(text).expect("a good document");
-        let has_row = |name: &str| graph.combat.moves.iter().any(|entry| entry.name == name);
+        let graph = program_of(text);
+        let has_row = |name: &str| graph.move_row(name).is_some();
         let slice = include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron");
         let slice = MoveSetDocument::parse(slice).expect("it parses");
         assert!(slice.moves.len() >= 14, "{}", slice.moves.len());
@@ -1127,10 +1135,13 @@ mod tests {
             assert!(has_row(name), "the enemy's {name} has no row");
         }
         // Both defeat intents stay down. A knockdown plays the separate stand-up sequence.
-        let row = |name: &str| graph.combat.moves.iter().find(|entry| entry.name == name).expect(name);
-        assert_eq!(row("defeat").clip, "defeat");
-        assert_eq!(row("death").clip, "defeat");
-        assert_eq!(row("knockdown").clip, "knockdown");
+        let row = |name: &str| {
+            let row = graph.move_row(name).expect(name);
+            graph.clips[usize::from(row.clip)].name.as_str()
+        };
+        assert_eq!(row("defeat"), "defeat");
+        assert_eq!(row("death"), "defeat");
+        assert_eq!(row("knockdown"), "knockdown");
     }
 
     /// A defeat's move ends and the graph hears that it's still down: `combat` goes and `defeated` stays.
@@ -1229,8 +1240,9 @@ mod tests {
         )
         .expect("a good document");
         graph.resolve(|_| id);
+        let graph = graph.compile_for(Target::COOKED).expect("it compiles");
         let binding =
-            Arc::new(GraphBinding::new(&graph, cooked_skeleton, None, 0, &table).expect("it binds"));
+            Arc::new(GraphBinding::from_program(&graph, cooked_skeleton, None, 0, &table).expect("it binds"));
         let pose = CharacterPose::new(cooked_skeleton, &[], &[], Vec::new());
         let mut player = GraphPlayer::new(binding, pose, 1);
         let mut show = GraphShow::new(GraphScript::Hitstop);
@@ -1371,9 +1383,11 @@ mod tests {
         )
         .expect("a good document");
         graph.resolve(|_| id);
+        let graph = graph.compile_for(Target::COOKED).expect("it compiles");
         for time_scale in [None, Some(500)] {
-            let binding =
-                Arc::new(GraphBinding::new(&graph, cooked_skeleton, None, 0, &table).expect("it binds"));
+            let binding = Arc::new(
+                GraphBinding::from_program(&graph, cooked_skeleton, None, 0, &table).expect("it binds"),
+            );
             let pose = CharacterPose::new(cooked_skeleton, &[], &[], Vec::new());
             let mut player = GraphPlayer::new(binding, pose, 1);
             let mut simulation = Simulation::new(SimConfig::default());

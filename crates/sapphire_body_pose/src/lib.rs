@@ -47,7 +47,9 @@ pub use sapphire_assets::clip::{
     MAX_RATE, MAX_TICKS, PackedRotation, PackedVector, RootMotion, RotationTrack, VectorRange, VectorTrack,
     WeightRange, WeightTrack, key_span, lerp3, nlerp,
 };
-pub use sapphire_assets::graph::{AnimGraph, ArchivedAnimGraph, GRAPH_EXTENSION, GraphError, GraphIssue};
+pub use sapphire_assets::graph::v2::program::{ArchivedGraphProgram, GraphProgram, Target};
+pub use sapphire_assets::graph::v2::{AnimGraph, CompileError};
+pub use sapphire_assets::graph::{GRAPH_EXTENSION, GraphError, GraphIssue};
 pub use sapphire_assets::skeleton::{
     ArchivedJointTransform, ArchivedSkeleton, Joint, JointTransform, MAX_JOINTS, NO_PARENT,
     SKELETON_EXTENSION, Skeleton, SkeletonError,

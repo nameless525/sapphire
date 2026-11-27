@@ -20,7 +20,7 @@ use bevy_reflect::{GetTypeRegistration, TypeRegistry};
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
 use sapphire_assets::cue_table::CueTable;
-use sapphire_assets::graph::AnimGraph;
+use sapphire_assets::graph::v2::AnimGraph;
 use sapphire_assets::material::{AnimeCharacterMaterial, EnvironmentMaterial, MaterialDocument};
 use sapphire_assets::ramp::RampMap;
 use sapphire_assets::ui::UiDocument;

@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use std::str::FromStr;
 
 use anyhow::{Context as _, anyhow, bail, ensure};
+use sapphire_pipeline::anim_graph;
 use sapphire_pipeline::audit;
 use sapphire_pipeline::bake::OutlineSettings;
 use sapphire_pipeline::bench::{self, Preset};
@@ -93,6 +94,11 @@ Usage:
       the source's sidecar. By default only the materials that
       bind textures; --all extracts every material. Never overwrites a file, and keeps the
       materials the sidecar already binds.
+  sapphire_pipeline upgrade-graphs <DIR>
+      Move every version 1 animation graph document under DIR (.animgraph.ron) to version 2 on disk,
+      written as the converter reads it, so it compiles to the program it cooked before. A document
+      already at version 2 is left as its author wrote it. The converter drops comments: it prints
+      each file it rewrote with the count of comment lines it dropped, to carry over by hand.
   sapphire_pipeline new-character --model <MODEL> [--out <DIR>] [--role <ROLE>] [--preset <FILE>]
                                   [--part <SLOT>=<PART>]...
       Scaffold a .vrm/.glb/.gltf/.fbx character so it cooks with no hand edit: copy MODEL into --out
@@ -272,6 +278,9 @@ enum Command {
     ExtractMaterials {
         source: PathBuf,
         all: bool,
+    },
+    UpgradeGraphs {
+        content: PathBuf,
     },
     /// `new-character`: a model's sidecar, and its slots' materials and maps.
     NewCharacter(NewCharacter),
@@ -494,6 +503,13 @@ fn run(command: Command) -> anyhow::Result<()> {
                 extraction.bound.len(),
                 extraction.written.len()
             );
+        }
+        Command::UpgradeGraphs { content } => {
+            let written = anim_graph::upgrade_tree(&content)?;
+            for (path, comments) in &written {
+                eprintln!("wrote {} ({comments} comment line(s) dropped)", path.display());
+            }
+            eprintln!("{}: {} graph(s) moved to version 2", content.display(), written.len());
         }
         Command::Cook { source, out, packs, code, cook, cache, locked, editor, report: show, refusal } => {
             let options = CookOptions { cook, cache: cache.as_deref(), locked, editor };
@@ -933,6 +949,10 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             let [source] = options.positional()?;
             Command::ExtractMaterials { source: source.into(), all }
         }
+        "upgrade-graphs" => {
+            let [content] = options.positional()?;
+            Command::UpgradeGraphs { content: content.into() }
+        }
         "new-character" => {
             let role = match options.value::<String>("--role")? {
                 Some(name) => Some(check::Role::named(&name).with_context(|| {
@@ -1201,6 +1221,10 @@ mod tests {
         assert_eq!(
             parse(&["extract-materials", "--all", "alicia.vrm"]).unwrap(),
             Command::ExtractMaterials { source: "alicia.vrm".into(), all: true }
+        );
+        assert_eq!(
+            parse(&["upgrade-graphs", "content"]).unwrap(),
+            Command::UpgradeGraphs { content: "content".into() }
         );
         assert_eq!(
             parse(&["cook", "--source", "content", "--out", "out", "--cook", "desktop", "--locked"]).unwrap(),

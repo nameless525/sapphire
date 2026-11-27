@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use sapphire_anim::{
     AnimGraph, CharacterPose, Clip, CombatInput, GraphBinding, GraphInput, GraphPlayer, Joint,
-    JointTransform, LocomotionInput, PackedRotation, ReactionInput, RotationTrack, Skeleton,
+    JointTransform, LocomotionInput, PackedRotation, ReactionInput, RotationTrack, Skeleton, Target,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::DEFAULT_RATE;
@@ -156,10 +156,11 @@ fn playing_a_graph_allocates_nothing_once_it_is_made() {
     let mut graph = AnimGraph::from_document(GRAPH).expect("a good document");
     let id = AssetId::from_bytes([3; 16]);
     graph.resolve(|_| id);
+    let program = graph.compile_for(Target::COOKED).expect("it compiles");
     let clips = [(id, clip)];
     let source = clips.as_slice();
-    let binding = Arc::new(GraphBinding::new(&graph, cooked, Some(rig), 4, source).expect("it binds"));
-    let replacement = Arc::new(GraphBinding::new(&graph, cooked, Some(rig), 4, source).expect("it binds"));
+    let bind = || GraphBinding::from_program(&program, cooked, Some(rig), 4, source).expect("it binds");
+    let (binding, replacement) = (Arc::new(bind()), Arc::new(bind()));
     let pose = CharacterPose::new(cooked, &[], &[], vec![0.0; 4]);
     let mut player = GraphPlayer::new(binding, pose, 7);
 

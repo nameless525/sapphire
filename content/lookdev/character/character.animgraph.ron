@@ -1,151 +1,579 @@
 // How the character's clips play (M2 N3). The hero's guard and ground strides share the sword rig.
 (
     type: "sapphire::assets::AnimGraph",
-    version: 1,
+    version: 2,
     data: (
+        parameters: [
+            (
+                name: "smoothed_speed",
+                from: Locomotion(SmoothedSpeed),
+            ),
+            (
+                name: "velocity_x",
+                from: Locomotion(SmoothedX),
+            ),
+            (
+                name: "velocity_z",
+                from: Locomotion(SmoothedZ),
+            ),
+            (
+                name: "grounded",
+                from: Locomotion(Grounded),
+            ),
+            (
+                name: "landed",
+                from: Locomotion(Landed),
+            ),
+            (
+                name: "preparing_jump",
+                from: Locomotion(PreparingJump),
+            ),
+        ],
+        // Half the gap to the character's velocity in 3 ticks: quick enough not to lag a stop.
+        smoothing: 3.0,
         clips: [
             // Rig_Medium_MovementAdvanced.
-            (name: "dodge_back", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Dodge_Backward", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
-            (name: "dodge_forward", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Dodge_Forward", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (
+                name: "dodge_back",
+                source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35",
+                clip: Some("Dodge_Backward"),
+                target: Some("6f8a81b6-29c4-485f-b161-847b001d561f"),
+            ),
+            (
+                name: "dodge_forward",
+                source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35",
+                clip: Some("Dodge_Forward"),
+                target: Some("6f8a81b6-29c4-485f-b161-847b001d561f"),
+            ),
             // The character's own key-pose documents.
-            (name: "walk", source: "fbec3961-0e19-4289-9f89-6bba045a6f33"),
-            (name: "jog", source: "83268f6b-36f8-5637-aec5-a326de518b6e"),
-            (name: "run", source: "4315c96c-311a-4762-90f7-90bef1b89ec4"),
-            (name: "walk_back", source: "8de71a71-5b97-536a-9aae-3d5a6fcc4450"),
-            (name: "strafe_left", source: "2690ea79-80aa-5daf-9ac5-c04f22cbe329"),
-            (name: "strafe_right", source: "7b639f71-2c36-51ae-9b4d-5bfd4a34f2ea"),
-            (name: "idle", source: "0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4"),
-            (name: "strike", source: "15af86bb-67b3-4208-bc54-1618aabf450b"),
-            (name: "breathing", source: "5d9c1f6e-3a47-4b28-9e0d-7c21a4f8b6d3"),
-            (name: "idle_combat", source: "5fa1f634-6e77-4485-9f50-577be76b7323"),
+            (
+                name: "walk",
+                source: "fbec3961-0e19-4289-9f89-6bba045a6f33",
+            ),
+            (
+                name: "jog",
+                source: "83268f6b-36f8-5637-aec5-a326de518b6e",
+            ),
+            (
+                name: "run",
+                source: "4315c96c-311a-4762-90f7-90bef1b89ec4",
+            ),
+            (
+                name: "walk_back",
+                source: "8de71a71-5b97-536a-9aae-3d5a6fcc4450",
+            ),
+            (
+                name: "strafe_left",
+                source: "2690ea79-80aa-5daf-9ac5-c04f22cbe329",
+            ),
+            (
+                name: "strafe_right",
+                source: "7b639f71-2c36-51ae-9b4d-5bfd4a34f2ea",
+            ),
+            (
+                name: "idle",
+                source: "0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4",
+            ),
+            (
+                name: "strike",
+                source: "15af86bb-67b3-4208-bc54-1618aabf450b",
+            ),
+            (
+                name: "breathing",
+                source: "5d9c1f6e-3a47-4b28-9e0d-7c21a4f8b6d3",
+            ),
+            (
+                name: "idle_combat",
+                source: "5fa1f634-6e77-4485-9f50-577be76b7323",
+            ),
             // Body keys for the heel-and-ball ground phrases, one for each initial support.
-            (name: "brake_left", source: "4696608f-e046-4b30-989d-5c3b4a03d45c"),
-            (name: "brake_right", source: "3c2c3d8c-dfe4-49f1-b6eb-2b6b341f7c16"),
-            (name: "launch_left", source: "4f0ea3c9-3da7-4c56-953c-676724a9a13e"),
-            (name: "launch_right", source: "da0c530e-a6c3-4895-9bc4-d6a5507bd3b9"),
+            (
+                name: "brake_left",
+                source: "4696608f-e046-4b30-989d-5c3b4a03d45c",
+            ),
+            (
+                name: "brake_right",
+                source: "3c2c3d8c-dfe4-49f1-b6eb-2b6b341f7c16",
+            ),
+            (
+                name: "launch_left",
+                source: "4f0ea3c9-3da7-4c56-953c-676724a9a13e",
+            ),
+            (
+                name: "launch_right",
+                source: "da0c530e-a6c3-4895-9bc4-d6a5507bd3b9",
+            ),
             // Authored jumps, landings, and hit reactions.
-            (name: "jump_prepare", source: "34c6f10f-4f34-5ec5-9614-02f68f3150ea"),
-            (name: "air", source: "32e5765d-fe14-552e-9361-dcb6ee8d5c36"),
-            (name: "air_run", source: "e70e0e76-9728-59a9-bd18-9911fd2fb07c"),
-            (name: "land", source: "240325d2-2b22-5121-b051-14cca03807cd"),
-            (name: "land_move", source: "c8809808-bbf9-5d41-b251-4186eb5b9e1a"),
-            (name: "land_run", source: "d94ee427-5878-5ee1-94aa-cb647ba08741"),
-            (name: "land_accel", source: "6ab3e9bb-636c-51da-bd83-103d1a947227"),
-            (name: "flinch", source: "902e79bb-d646-52f3-9baa-4ed7b1e72869"),
-            (name: "stagger", source: "02ecbb4a-cb11-54ce-843e-2da99ff6f38c"),
-            (name: "dazed", source: "2ec5f601-115a-5655-a2e2-85293ecf2b8e"),
-            (name: "knockdown", source: "ce9242a5-bde1-5bdc-ab72-7f69a67140cc"),
-            (name: "defeat", source: "a4baad9b-81c5-54e1-9a11-c9a594146361"),
+            (
+                name: "jump_prepare",
+                source: "34c6f10f-4f34-5ec5-9614-02f68f3150ea",
+            ),
+            (
+                name: "air",
+                source: "32e5765d-fe14-552e-9361-dcb6ee8d5c36",
+            ),
+            (
+                name: "air_run",
+                source: "e70e0e76-9728-59a9-bd18-9911fd2fb07c",
+            ),
+            (
+                name: "land",
+                source: "240325d2-2b22-5121-b051-14cca03807cd",
+            ),
+            (
+                name: "land_move",
+                source: "c8809808-bbf9-5d41-b251-4186eb5b9e1a",
+            ),
+            (
+                name: "land_run",
+                source: "d94ee427-5878-5ee1-94aa-cb647ba08741",
+            ),
+            (
+                name: "land_accel",
+                source: "6ab3e9bb-636c-51da-bd83-103d1a947227",
+            ),
+            (
+                name: "flinch",
+                source: "902e79bb-d646-52f3-9baa-4ed7b1e72869",
+            ),
+            (
+                name: "stagger",
+                source: "02ecbb4a-cb11-54ce-843e-2da99ff6f38c",
+            ),
+            (
+                name: "dazed",
+                source: "2ec5f601-115a-5655-a2e2-85293ecf2b8e",
+            ),
+            (
+                name: "knockdown",
+                source: "ce9242a5-bde1-5bdc-ab72-7f69a67140cc",
+            ),
+            (
+                name: "defeat",
+                source: "a4baad9b-81c5-54e1-9a11-c9a594146361",
+            ),
             // The player's moves (`content/combat/player/`).
-            (name: "light_1", source: "6d321a52-1aed-4279-bc32-a177b8fd81d4"),
-            (name: "light_2", source: "0c4be2d4-4149-4852-80c5-109683aad3e1"),
-            (name: "light_3", source: "5fe300c9-a4a3-4339-a556-7bc112f2bb59"),
-            (name: "dodge", source: "9b5f353a-2c97-45c7-a70f-bcab216de811"),
-            (name: "dash_attack", source: "997ddfa0-e2bf-4887-94dd-e8f51cb6e958"),
-            (name: "skill", source: "9491f5d1-0c11-45c9-8139-8f54918b25f6"),
-            (name: "ultimate", source: "9f178fb9-f64d-4d78-9854-2fb5fed80dd9"),
+            (
+                name: "light_1",
+                source: "6d321a52-1aed-4279-bc32-a177b8fd81d4",
+            ),
+            (
+                name: "light_2",
+                source: "0c4be2d4-4149-4852-80c5-109683aad3e1",
+            ),
+            (
+                name: "light_3",
+                source: "5fe300c9-a4a3-4339-a556-7bc112f2bb59",
+            ),
+            (
+                name: "dodge",
+                source: "9b5f353a-2c97-45c7-a70f-bcab216de811",
+            ),
+            (
+                name: "dash_attack",
+                source: "997ddfa0-e2bf-4887-94dd-e8f51cb6e958",
+            ),
+            (
+                name: "skill",
+                source: "9491f5d1-0c11-45c9-8139-8f54918b25f6",
+            ),
+            (
+                name: "ultimate",
+                source: "9f178fb9-f64d-4d78-9854-2fb5fed80dd9",
+            ),
             // Cutscene poses (`content/zones/`, M3 Q3), which a timeline's character track plays.
-            (name: "court_guard", source: "08570a0b-1c6b-4fb6-873b-bff74e6d2264"),
+            (
+                name: "court_guard",
+                source: "08570a0b-1c6b-4fb6-873b-bff74e6d2264",
+            ),
         ],
         masks: [
             // From the spine up: what a flinch moves, with the legs left to what they're doing.
-            (name: "upper", bones: [(bone: Spine, weight: 1.0)]),
+            (
+                name: "upper",
+                bones: [
+                    (
+                        bone: Spine,
+                        weight: 1.0,
+                    ),
+                ],
+            ),
         ],
-        locomotion: (
-            start: "ground",
-            // Half the gap to the character's velocity in 3 ticks: quick enough not to lag a stop.
-            smoothing: 3.0,
-            states: [
-                (name: "ground", plays: Blend((
-                    // Forward contact and diagonal contact share the same left-foot phase.
-                    // Each sample rolls against the floor at its authored controller speed.
-                    samples: [
-                        (clip: "idle_combat", at: (0.0, 0.0), sync: false),
-                        (clip: "walk", at: (0.0, 2.0), phase: 0.0),
-                        (clip: "jog", at: (0.0, 3.8), phase: 0.0),
-                        (clip: "run", at: (0.0, 6.0), phase: 0.0),
-                        (clip: "walk_back", at: (0.0, -0.95), phase: 0.0),
-                        (clip: "strafe_left", at: (4.780, 2.76), phase: 0.0),
-                        (clip: "strafe_right", at: (-4.780, 2.76), phase: 0.0),
+        machines: [
+            (
+                name: "locomotion",
+                start: "ground",
+                states: [
+                    (
+                        name: "ground",
+                        plays: Blend2D((
+                            x: "velocity_x",
+                            y: "velocity_z",
+                            // Forward contact and diagonal contact share the same left-foot phase.
+                            // Each sample rolls against the floor at its authored controller speed.
+                            samples: [
+                                (
+                                    clip: "idle_combat",
+                                    at: (0.0, 0.0),
+                                    phase: 0.0,
+                                    sync: false,
+                                ),
+                                (
+                                    clip: "walk",
+                                    at: (0.0, 2.0),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "jog",
+                                    at: (0.0, 3.8),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "run",
+                                    at: (0.0, 6.0),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "walk_back",
+                                    at: (0.0, -0.95),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "strafe_left",
+                                    at: (4.78, 2.76),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "strafe_right",
+                                    at: (-4.78, 2.76),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                            ],
+                            rate: (0.5, 1.6),
+                            footwork: Some((
+                                brake: ("brake_left", "brake_right"),
+                                launch: ("launch_left", "launch_right"),
+                                gaits: [
+                                    (
+                                        clip: "walk",
+                                        contact: 0.5714286,
+                                    ),
+                                    (
+                                        clip: "jog",
+                                        contact: 0.3529412,
+                                    ),
+                                    (
+                                        clip: "run",
+                                        contact: 0.26923078,
+                                    ),
+                                ],
+                            )),
+                        )),
+                    ),
+                    (
+                        name: "jump_prepare",
+                        plays: Clip(
+                            clip: "jump_prepare",
+                            looping: false,
+                        ),
+                    ),
+                    (
+                        name: "air",
+                        plays: Takeoff((
+                            standing: "air",
+                            moving: [
+                                (
+                                    clip: "air_run",
+                                    fade: (0.6, 3.8),
+                                    short_lead: None,
+                                ),
+                            ],
+                            anticipate: true,
+                            carry: true,
+                        )),
+                    ),
+                    (
+                        name: "land",
+                        plays: Landing((
+                            standing: "land",
+                            moving: [
+                                (
+                                    clip: "land_move",
+                                    fade: (0.6, 3.8),
+                                    short_lead: None,
+                                ),
+                                (
+                                    clip: "land_run",
+                                    fade: (3.4, 5.6),
+                                    short_lead: None,
+                                ),
+                                (
+                                    clip: "land_accel",
+                                    fade: (4.8, 5.65),
+                                    short_lead: Some((0.95, 2.2)),
+                                ),
+                            ],
+                        )),
+                    ),
+                ],
+                transitions: [
+                    (
+                        from: "ground",
+                        to: "air",
+                        when: "!grounded",
+                        decay: 8,
+                    ),
+                    (
+                        from: "ground",
+                        to: "jump_prepare",
+                        when: "preparing_jump",
+                        decay: 0,
+                        rules: (
+                            rebound: true,
+                        ),
+                    ),
+                    (
+                        from: "jump_prepare",
+                        to: "air",
+                        when: "!grounded",
+                        decay: 8,
+                    ),
+                    (
+                        from: "jump_prepare",
+                        to: "ground",
+                        when: "!preparing_jump",
+                        decay: 5,
+                    ),
+                    (
+                        from: "air",
+                        to: "land",
+                        when: "landed && grounded",
+                        decay: 3,
+                        rules: (
+                            lands: true,
+                        ),
+                    ),
+                    (
+                        from: "air",
+                        to: "ground",
+                        when: "grounded",
+                        decay: 6,
+                    ),
+                    (
+                        from: "land",
+                        to: "air",
+                        when: "!grounded",
+                        decay: 8,
+                    ),
+                    (
+                        from: "land",
+                        to: "jump_prepare",
+                        when: "preparing_jump",
+                        decay: 4,
+                        rules: (
+                            rebound: true,
+                        ),
+                    ),
+                    // Absorb the catch before resuming a gait. Faster landings accept weight
+                    // for longer; the receiving gait matches the drawn support foot.
+                    (
+                        from: "land",
+                        to: "ground",
+                        when: "finished_at(0.65384614)",
+                        decay: 8,
+                        rules: (
+                            at_drawn: true,
+                            catch: true,
+                        ),
+                    ),
+                    (
+                        from: "land",
+                        to: "ground",
+                        when: "smoothed_speed >= 1.0",
+                        decay: 8,
+                        rules: (
+                            waits_for_landing: true,
+                        ),
+                    ),
+                    (
+                        from: "land",
+                        to: "ground",
+                        when: "finished",
+                        decay: 10,
+                        rules: (
+                            at_drawn: true,
+                        ),
+                    ),
+                ],
+            ),
+        ],
+        layers: [
+            (
+                name: "locomotion",
+                plays: Machine((
+                    machine: "locomotion",
+                )),
+            ),
+            (
+                name: "combat",
+                plays: Combat((
+                    // A cancel closes 38% of the way to its new pose by the first frame, 79% by the second and
+                    // 96% by the third, with the old pose's motion carried into it. A dodge reads quicker.
+                    decay: 5,
+                    exit: 12,
+                    moves: [
+                        // The graph show's moves (`show.moves.ron`).
+                        (
+                            move: "strike",
+                            clip: "strike",
+                        ),
+                        (
+                            move: "dodge_back",
+                            clip: "dodge_back",
+                            decay: Some(3),
+                        ),
+                        // The player's moves, each playing the clip it bakes from, so what's drawn is what hits.
+                        (
+                            move: "light_1",
+                            clip: "light_1",
+                        ),
+                        (
+                            move: "light_2",
+                            clip: "light_2",
+                        ),
+                        (
+                            move: "light_3",
+                            clip: "light_3",
+                        ),
+                        (
+                            move: "dodge",
+                            clip: "dodge",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "dash_attack",
+                            clip: "dash_attack",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "skill",
+                            clip: "skill",
+                        ),
+                        (
+                            move: "ultimate",
+                            clip: "ultimate",
+                        ),
+                        // A party's assist. A swap cuts to it, so there's nothing to blend from.
+                        (
+                            move: "swap_in",
+                            clip: "dash_attack",
+                            decay: Some(3),
+                        ),
+                        // A timeline's rows (M3 Q3): no move plays them, a character track does, over what the
+                        // simulation says, and the exit decay takes the fighter back to it.
+                        (
+                            move: "court_guard",
+                            clip: "court_guard",
+                            decay: Some(12),
+                        ),
+                        // The combat slice's moves that the player hasn't got.
+                        (
+                            move: "heavy",
+                            clip: "strike",
+                        ),
+                        (
+                            move: "spin",
+                            clip: "strike",
+                        ),
+                        (
+                            move: "dodge_counter",
+                            clip: "dodge_forward",
+                            decay: Some(3),
+                        ),
+                        // The knockdown includes its own stand-up before the cancel window.
+                        // A defeated actor instead holds the separate final down pose.
+                        (
+                            move: "flinch",
+                            clip: "flinch",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "stagger",
+                            clip: "stagger",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "dazed",
+                            clip: "dazed",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "knockdown",
+                            clip: "knockdown",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "defeat",
+                            clip: "defeat",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "stagger_light",
+                            clip: "flinch",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "stagger_heavy",
+                            clip: "stagger",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "recover",
+                            clip: "idle_combat",
+                            decay: Some(12),
+                        ),
+                        (
+                            move: "death",
+                            clip: "defeat",
+                            decay: Some(5),
+                        ),
                     ],
-                    rate: (0.5, 1.6),
-                ))),
-                (name: "jump_prepare", plays: Clip(clip: "jump_prepare", looping: false)),
-                (name: "air", plays: TakeoffAnticipating((
-                    standing: "air",
-                    moving: [(clip: "air_run", fade: (0.6, 3.8))],
-                ))),
-                (name: "land", plays: LandingBlend((
-                    standing: "land",
-                    moving: [
-                        (clip: "land_move", fade: (0.6, 3.8)),
-                        (clip: "land_run", fade: (3.4, 5.6)),
-                        (clip: "land_accel", fade: (4.8, 5.65), short_lead: Some((0.95, 2.2))),
-                    ],
-                ))),
-            ],
-            transitions: [
-                (from: "ground", to: "air", when: Airborne, decay: 8),
-                (from: "ground", to: "jump_prepare", when: JumpPreparation(true), decay: 0),
-                (from: "jump_prepare", to: "air", when: Airborne, decay: 8),
-                (from: "jump_prepare", to: "ground", when: JumpPreparation(false), decay: 5),
-                (from: "air", to: "land", when: Landed, decay: 3),
-                (from: "air", to: "ground", when: Grounded, decay: 6),
-                (from: "land", to: "air", when: Airborne, decay: 8),
-                (from: "land", to: "jump_prepare", when: JumpPreparation(true), decay: 4),
-                // Absorb the catch before resuming a gait. Faster landings accept weight
-                // for longer; the receiving gait matches the drawn support foot.
-                (from: "land", to: "ground", when: FinishedAtPhase(0.65384615), decay: 8),
-                (from: "land", to: "ground", when: Moving(1.0), decay: 8),
-                (from: "land", to: "ground", when: Finished, decay: 10),
-            ],
-        ),
-        combat: (
-            // A cancel closes 38% of the way to its new pose by the first frame, 79% by the second and
-            // 96% by the third, with the old pose's motion carried into it. A dodge reads quicker.
-            decay: 5,
-            exit: 12,
-            moves: [
-                // The graph show's moves (`show.moves.ron`).
-                (move: "strike", clip: "strike"),
-                (move: "dodge_back", clip: "dodge_back", decay: 3),
-                // The player's moves, each playing the clip it bakes from, so what's drawn is what hits.
-                (move: "light_1", clip: "light_1"),
-                (move: "light_2", clip: "light_2"),
-                (move: "light_3", clip: "light_3"),
-                (move: "dodge", clip: "dodge", decay: 3),
-                (move: "dash_attack", clip: "dash_attack", decay: 3),
-                (move: "skill", clip: "skill"),
-                (move: "ultimate", clip: "ultimate"),
-                // A party's assist. A swap cuts to it, so there's nothing to blend from.
-                (move: "swap_in", clip: "dash_attack", decay: 3),
-                // A timeline's rows (M3 Q3): no move plays them, a character track does, over what the
-                // simulation says, and the exit decay takes the fighter back to it.
-                (move: "court_guard", clip: "court_guard", decay: 12),
-                // The combat slice's moves that the player hasn't got.
-                (move: "heavy", clip: "strike"),
-                (move: "spin", clip: "strike"),
-                (move: "dodge_counter", clip: "dodge_forward", decay: 3),
-                // The knockdown includes its own stand-up before the cancel window.
-                // A defeated actor instead holds the separate final down pose.
-                (move: "flinch", clip: "flinch", decay: 3),
-                (move: "stagger", clip: "stagger", decay: 3),
-                (move: "dazed", clip: "dazed", decay: 3),
-                (move: "knockdown", clip: "knockdown", decay: 3),
-                (move: "defeat", clip: "defeat", decay: 3),
-                (move: "stagger_light", clip: "flinch", decay: 3),
-                (move: "stagger_heavy", clip: "stagger", decay: 3),
-                (move: "recover", clip: "idle_combat", decay: 12),
-                (move: "death", clip: "defeat", decay: 5),
-            ],
-        ),
-        additive: [
-            (name: "breathing", clip: "breathing", weight: 0.35),
+                )),
+            ),
+            (
+                name: "breathing",
+                plays: Additive((
+                    clip: "breathing",
+                    weight: 0.35,
+                )),
+            ),
+            (
+                name: "reactions",
+                plays: Reactions([
+                    (
+                        name: "flinch",
+                        clip: "flinch",
+                        mask: Some("upper"),
+                        weight: 0.7,
+                        fade_out: 12,
+                        restart: 4,
+                    ),
+                ]),
+            ),
         ],
-        reactions: [
-            (name: "flinch", clip: "flinch", mask: "upper", weight: 0.7, fade_out: 12),
-        ],
-        // Every 2.5 to 6 seconds, on the owner's clock, so hitstop holds a blink half shut.
-        blink: Some((expression: "blink", every: (150, 360), close: 3, hold: 1, open: 7)),
+        blink: Some((
+            // Every 2.5 to 6 seconds, on the owner's clock, so hitstop holds a blink half shut.
+            expression: "blink",
+            every: (150, 360),
+            close: 3,
+            hold: 1,
+            open: 7,
+        )),
     ),
 )

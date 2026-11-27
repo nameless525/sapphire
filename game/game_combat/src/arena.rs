@@ -1743,7 +1743,10 @@ mod tests {
     /// locomotion, so a knocked-down fighter would stand there.
     #[test]
     fn every_move_a_fighter_has_is_in_its_graph() {
-        let read = |text: &str| sapphire_assets::graph::AnimGraph::from_document(text).expect("it reads");
+        let read = |text: &str| {
+            let graph = sapphire_assets::graph::v2::AnimGraph::from_document(text).expect("it reads");
+            graph.compile_for(sapphire_assets::graph::v2::Target::COOKED).expect("it compiles")
+        };
         let warrior = read(include_str!("../../../content/combat/enemy/warrior.animgraph.ron"));
         let character = read(include_str!("../../../content/lookdev/character/character.animgraph.ron"));
         for (graph, set) in [
@@ -1761,7 +1764,7 @@ mod tests {
                 if traversal.contains(&index) {
                     continue;
                 }
-                assert!(graph.combat.moves.iter().any(|row| row.name == label), "no clip plays {label}");
+                assert!(graph.move_row(label).is_some(), "no clip plays {label}");
             }
         }
     }

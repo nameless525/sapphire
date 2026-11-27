@@ -2,7 +2,7 @@ use std::alloc::System;
 use std::path::Path;
 
 use sapphire_assets::clip::{Clip, DEFAULT_RATE};
-use sapphire_assets::graph::AnimGraph;
+use sapphire_assets::graph::v2::{AnimGraph, Target};
 use sapphire_assets::rig::{CharacterRig, HumanBone};
 use sapphire_assets::skeleton::{Joint, JointTransform, Skeleton};
 use sapphire_assets::{AssetId, CpuResident};
@@ -30,6 +30,21 @@ fn id(value: u8) -> AssetId {
     AssetId::from_bytes([value; 16])
 }
 
+/// One idle, read as a version 1 document was written: it reads converted.
+fn test_graph() -> AnimGraph {
+    let mut graph = AnimGraph::from_document(
+        r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
+            clips: [(name: "idle", source: "01010101-0101-0101-0101-010101010101")],
+            locomotion: (start: "ground", states: [
+                (name: "ground", plays: Clip(clip: "idle", looping: true)),
+            ]),
+        ))"#,
+    )
+    .unwrap();
+    graph.resolve(|_| id(1));
+    graph
+}
+
 fn test_assets() -> BodyAssets {
     test_assets_with_joint("root")
 }
@@ -46,19 +61,13 @@ fn test_assets_with_joint(name: &str) -> BodyAssets {
         ticks: 30,
         ..Clip::default()
     };
-    let mut graph = AnimGraph::from_document(
-        r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
-            clips: [(name: "idle", source: "01010101-0101-0101-0101-010101010101")],
-            locomotion: (start: "ground", states: [
-                (name: "ground", plays: Clip(clip: "idle", looping: true)),
-            ]),
-        ))"#,
-    )
-    .unwrap();
-    graph.resolve(|_| id(1));
+    let graph = test_graph();
     BodyAssets {
         graph: BodyGraphAssets {
-            graph: CpuResident::from_cooked(graph.to_cooked().unwrap()).unwrap(),
+            graph: CpuResident::from_cooked(
+                graph.compile_for(Target::Simulation).unwrap().to_cooked().unwrap(),
+            )
+            .unwrap(),
             skeleton_id: id(2),
             skeleton: CpuResident::from_cooked(skeleton.to_cooked().unwrap()).unwrap(),
             clips: vec![(id(1), CpuResident::from_cooked(clip.to_cooked().unwrap()).unwrap())],
@@ -103,6 +112,19 @@ fn fixed_body_profile_binds_exact_cooked_ids_and_policy() {
     let mut wrong = test_assets();
     wrong.graph.skeleton_id = id(4);
     assert!(matches!(BodyProfile::bind(wrong, test_options(1.0)), Err(BodyBindError::ClipSkeleton(_))));
+}
+
+/// A fixed body binds a program compiled for the fixed step, as the cook writes every graph, and refuses
+/// one compiled for presentation as an error, never a panic (M6 A5c).
+#[test]
+fn fixed_body_refuses_a_program_compiled_for_presentation() {
+    let graph = test_graph();
+    let mut assets = test_assets();
+    assets.graph.graph = CpuResident::from_cooked(graph.compile().unwrap().to_cooked().unwrap()).unwrap();
+    assert!(matches!(
+        BodyProfile::bind(assets, test_options(1.0)),
+        Err(BodyBindError::GraphBind(sapphire_body_pose::GraphBindError::PresentationProgram))
+    ));
 }
 
 /// A body with legs and a head, playing the same idle as [`test_assets`]: what the feet and the look act on.

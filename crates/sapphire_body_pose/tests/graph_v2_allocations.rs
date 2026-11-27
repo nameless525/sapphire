@@ -1,4 +1,4 @@
-//! Graph v2's runtime allocates nothing once a player is made: the heroine's converted graph through a
+//! Graph v2's runtime allocates nothing once a player is made: the heroine's graph through a
 //! scripted session (locomotion with starts, stops and turns, jumps and every landing, a combo with
 //! hitstop and cancels, reactions, a cut, a defeat and a replacement), on presentation's maths and the
 //! fixed step's. Installs `CountingAllocator` as this test binary's global allocator.
@@ -6,7 +6,6 @@
 use std::alloc::System;
 use std::sync::Arc;
 
-use sapphire_assets::graph::v2::convert::convert;
 use sapphire_assets::graph::v2::program::Target;
 use sapphire_body_pose as body;
 use sapphire_body_pose::GraphPlayer;
@@ -21,18 +20,15 @@ mod humanoid;
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 
 #[test]
-fn the_heroines_converted_graph_plays_a_session_with_no_allocation() {
-    let (_, text) = humanoid::shipped()
-        .into_iter()
-        .find(|(name, _)| name.ends_with("character.animgraph.ron"))
-        .expect("the heroine's graph ships");
-    let graph = humanoid::version_1(&text);
+fn the_heroines_graph_plays_a_session_with_no_allocation() {
+    let (_, text) =
+        humanoid::frozen().into_iter().find(|(name, _)| name == "heroine").expect("the heroine is frozen");
+    let graph = humanoid::read(&text);
     let fixture = humanoid::Humanoid::new(graph.clips.iter().map(|clip| clip.id));
-    let converted = convert(&graph);
-    let presentation = fixture.bind(&converted.compile().expect("it compiles"));
+    let presentation = fixture.bind(&graph.compile().expect("it compiles"));
     let simulation =
-        fixture.bind(&converted.compile_for(Target::Simulation).expect("it compiles for the fixed step"));
-    let steps = humanoid::session(&sapphire_assets::graph::v2::convert::convert(&graph));
+        fixture.bind(&graph.compile_for(Target::Simulation).expect("it compiles for the fixed step"));
+    let steps = humanoid::session(&graph);
     let source = fixture.source();
     let clips = source.as_slice();
     let mut player = GraphPlayer::new(Arc::clone(&presentation), fixture.pose(), 11);

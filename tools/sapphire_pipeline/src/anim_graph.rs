@@ -1,22 +1,23 @@
-//! Animation graph documents (`.animgraph.ron`) cook to `.sgraph` (M2 N3, spec §5.13): how a character's
-//! clips play, checked by [`sapphire_assets::graph`], with each clip's derived ID filled in so the
-//! asset server can load the clips as the graph's dependencies.
+//! Animation graph documents (`.animgraph.ron`) cook to `.sgraph` (M2 N3, M6 A5c, spec §5.13): how a
+//! character's clips play, compiled by [`sapphire_assets::graph::v2`] to the [`GraphProgram`] a character
+//! binds, with each clip's derived ID in it so the asset server can load the clips as the graph's
+//! dependencies.
 //!
 //! A person names a clip by the file it comes from, its name in that file and the character it was
 //! retargeted to, because that's what a person knows. Those three hash to the same ID the clip's own
 //! cook gave it ([`clip_id`]), and a cook fails if nothing in the content tree has that ID.
 //!
-//! **Graph v2 (M6 A5a).** Every graph also converts to version 2 and compiles ([`compile`]), so a
-//! version 1 graph that graph v2 can't hold is refused now, by the path in the converted document,
-//! rather than when the shipped graphs switch (A5c). The cooked `.sgraph` is the same bytes: nothing
-//! the game runs reads a program until A5c switches it to v2's runtime (A5b, in `sapphire_body_pose`),
-//! so the cook writes none, and a version 2 document doesn't cook yet. An editor's layout sidecar (`<name>.animgraph.layout.ron`) is no source.
+//! **Every graph compiles for the fixed step** ([`Target::COOKED`], which says why): what only
+//! presentation may run (a game slot, a move's side variants, an event) is refused by its path at cook. A version 1 document still cooks, converted; `upgrade-graphs` moves one to
+//! version 2 on disk ([`upgrade`]). An editor's layout sidecar (`<name>.animgraph.layout.ron`) is no
+//! source.
 
 use std::path::{Path, PathBuf};
 
+use sapphire_assets::graph::GraphError;
 pub use sapphire_assets::graph::clip_id;
-use sapphire_assets::graph::v2::{self, CompileError, GraphProgram};
-use sapphire_assets::graph::{AnimGraph, GraphError};
+use sapphire_assets::graph::v2::{self, CompileError, GraphProgram, Target};
+use sapphire_serialize::DocumentError;
 use sapphire_serialize::cooked::CookedError;
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +35,8 @@ pub const IMPORTER: Stage = Stage { name: "animation graph document", version: 1
 /// 3: imported clips use the unambiguous v2 name/target identity encoding.
 /// 4: also compiles every graph as version 2 (M6 A5a), so a warm cache checks each graph once; the
 /// same bytes, and since a pack keys its assets by their bytes, the same packs.
-pub const COOKER: Stage = Stage { name: "sgraph", version: 4 };
+/// 5: writes the compiled program, for the fixed step (M6 A5c).
+pub const COOKER: Stage = Stage { name: "sgraph", version: 5 };
 
 /// What a graph source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".animgraph.ron";
@@ -52,11 +54,13 @@ pub enum AnimGraphCookError {
     NotUtf8(#[source] std::str::Utf8Error),
     #[error(transparent)]
     Graph(#[from] GraphError),
-    /// What graph v2's compiler refuses in the document converted to version 2.
-    #[error("as version 2: {0}")]
+    /// What graph v2's compiler refuses, by its path in the document (in a version 1 document, converted).
+    #[error(transparent)]
     Compile(#[from] CompileError),
     #[error(transparent)]
     Cooked(#[from] CookedError),
+    #[error(transparent)]
+    Document(#[from] DocumentError),
 }
 
 /// Whether `path` names a graph source.
@@ -73,31 +77,100 @@ pub fn output_path(relative: &Path, extension: &str) -> PathBuf {
     relative.with_file_name(format!("{stem}.{extension}"))
 }
 
-/// Reads and checks a document's bytes, with its clips' IDs filled in.
-pub fn read(bytes: &[u8]) -> Result<AnimGraph, AnimGraphCookError> {
+/// Reads a document's bytes, of either version, with its clips' IDs filled in.
+pub fn read(bytes: &[u8]) -> Result<v2::AnimGraph, AnimGraphCookError> {
     let text = std::str::from_utf8(bytes).map_err(AnimGraphCookError::NotUtf8)?;
-    let mut graph = AnimGraph::from_document(text)?;
+    let mut graph = v2::AnimGraph::from_document(text)?;
     graph.resolve(clip_id);
     Ok(graph)
 }
 
-/// A graph document of either version compiled to graph v2's program, a version 1 document converted,
-/// with its clips' IDs derived as for its cook.
+/// A graph document compiled as its cook compiles it: for the fixed step, with its clips' IDs derived.
 pub fn compile(bytes: &[u8]) -> Result<GraphProgram, AnimGraphCookError> {
-    let text = std::str::from_utf8(bytes).map_err(AnimGraphCookError::NotUtf8)?;
-    let mut graph = v2::AnimGraph::from_document(text)?;
-    graph.resolve(clip_id);
-    Ok(graph.compile()?)
+    Ok(read(bytes)?.compile_for(Target::COOKED)?)
 }
 
-/// The bytes of a graph's cooked file, read back through the runtime's check. It must compile as
-/// version 2 too, though the program isn't written yet.
+/// The bytes of a graph's cooked file, its program, read back through the runtime's check.
 pub fn cook(bytes: &[u8]) -> Result<Vec<u8>, AnimGraphCookError> {
-    let graph = read(bytes)?;
-    v2::convert::convert(&graph).compile()?;
-    let cooked = graph.to_cooked()?;
-    AnimGraph::read(&cooked)?;
+    let cooked = compile(bytes)?.to_cooked()?;
+    GraphProgram::read(&cooked)?;
     Ok(cooked.into_vec())
+}
+
+/// A version 1 document's text at version 2, or `None` for a document already at version 2, which is
+/// left as its author wrote it. What converts is what cooks: the program compiled from the text written
+/// is the one compiled from the text read.
+pub fn upgrade(text: &str) -> Result<Option<String>, AnimGraphCookError> {
+    #[derive(Deserialize)]
+    struct Envelope {
+        version: u32,
+    }
+    let envelope: Envelope = sapphire_serialize::ron::from_str(text).map_err(DocumentError::Parse)?;
+    if envelope.version >= <v2::AnimGraph as sapphire_reflect::Versioned>::VERSION {
+        return Ok(None);
+    }
+    let graph = v2::AnimGraph::from_document(text)?;
+    Ok(Some(graph.to_document()?))
+}
+
+/// The lines of a document holding a comment (`//` outside a string), which the converter drops: it
+/// writes the document it read, and a comment isn't part of one.
+pub fn comment_lines(text: &str) -> usize {
+    text.lines()
+        .filter(|line| {
+            let mut quoted = false;
+            let mut escaped = false;
+            let mut slash = false;
+            for character in line.chars() {
+                if quoted {
+                    match character {
+                        _ if escaped => escaped = false,
+                        '\\' => escaped = true,
+                        '"' => quoted = false,
+                        _ => {}
+                    }
+                    continue;
+                }
+                match character {
+                    '"' => quoted = true,
+                    '/' if slash => return true,
+                    _ => {}
+                }
+                slash = character == '/';
+            }
+            false
+        })
+        .count()
+}
+
+/// Moves every version 1 graph document under `content` to version 2, returning the files it rewrote,
+/// each with the count of comment lines it dropped ([`comment_lines`]).
+pub fn upgrade_tree(content: &Path) -> anyhow::Result<Vec<(PathBuf, usize)>> {
+    use anyhow::Context;
+
+    let mut written = Vec::new();
+    let mut folders = vec![content.to_owned()];
+    while let Some(folder) = folders.pop() {
+        let mut entries = std::fs::read_dir(&folder)
+            .with_context(|| format!("reading {}", folder.display()))?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                folders.push(path);
+            } else if is_source(&path) {
+                let text =
+                    std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+                if let Some(upgraded) = upgrade(&text).with_context(|| path.display().to_string())? {
+                    std::fs::write(&path, upgraded).with_context(|| format!("writing {}", path.display()))?;
+                    written.push((path, comment_lines(&text)));
+                }
+            }
+        }
+    }
+    written.sort();
+    Ok(written)
 }
 
 /// What keeps walking inside the character's cooked bounds, for the tests that hold locomotion to them.
@@ -167,26 +240,27 @@ impl LocomotionBounds {
         farthest.sqrt()
     }
 
-    /// What the look-dev character's locomotion plays: its states' clips and its blend space's samples.
+    /// What the look-dev character's locomotion plays: its states' clips and its blend spaces' samples.
     pub fn clips() -> Vec<sapphire_assets::graph::GraphClip> {
-        use sapphire_assets::graph::StateMotion;
+        use sapphire_assets::graph::v2::Motion;
 
         let text = include_str!("../../../content/lookdev/character/character.animgraph.ron");
         let graph = read(text.as_bytes()).expect("it reads");
         let named: Vec<&str> = graph
-            .locomotion
-            .states
+            .machines
             .iter()
+            .flat_map(|machine| &machine.states)
             .flat_map(|state| match &state.plays {
-                StateMotion::Clip { clip, .. } => vec![clip.as_str()],
-                StateMotion::Blend(space) => {
-                    space.samples.iter().map(|sample| sample.clip.as_str()).collect()
-                }
-                StateMotion::TakeoffBlend(blend)
-                | StateMotion::LandingBlend(blend)
-                | StateMotion::TakeoffAnticipating(blend) => std::iter::once(blend.standing.as_str())
-                    .chain(blend.moving.iter().map(|sample| sample.clip.as_str()))
+                Motion::Clip { clip, .. } => vec![clip.as_str()],
+                Motion::Blend1D(blend) => blend.samples.iter().map(|sample| sample.clip.as_str()).collect(),
+                Motion::Blend2D(blend) => blend.samples.iter().map(|sample| sample.clip.as_str()).collect(),
+                Motion::Takeoff(takeoff) => std::iter::once(takeoff.standing.as_str())
+                    .chain(takeoff.moving.iter().map(|sample| sample.clip.as_str()))
                     .collect(),
+                Motion::Landing(entry) => std::iter::once(entry.standing.as_str())
+                    .chain(entry.moving.iter().map(|sample| sample.clip.as_str()))
+                    .collect(),
+                Motion::Machine(_) => Vec::new(),
             })
             .collect();
         graph.clips.iter().filter(|clip| named.contains(&clip.name.as_str())).cloned().collect()
@@ -376,5 +450,84 @@ mod tests {
         let error = cook_one(dir.path(), text).expect_err("it doesn't check");
         let source = std::error::Error::source(&error).map(ToString::to_string).unwrap_or_default();
         assert!(source.contains("nowhere"), "{error}: {source}");
+    }
+
+    /// A version 1 document with a machine of states, a blend space and a rule, as one was written.
+    const VERSION_1: &str = r#"(
+    type: "sapphire::assets::AnimGraph",
+    version: 1,
+    data: (
+        clips: [
+            (name: "idle", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Idle_A"),
+            (name: "walk", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Walk_A"),
+            (name: "fall", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Fall_A"),
+        ],
+        locomotion: (
+            start: "ground",
+            states: [
+                (name: "ground", plays: Blend((samples: [
+                    (clip: "idle", at: (0.0, 0.0), sync: false),
+                    (clip: "walk", at: (0.0, 1.5)),
+                ]))),
+                (name: "air", plays: Clip(clip: "fall", looping: true)),
+            ],
+            transitions: [
+                (from: "ground", to: "air", when: Airborne, decay: 8),
+                (from: "air", to: "ground", when: Landed, decay: 4),
+            ],
+        ),
+    ),
+)"#;
+
+    /// A version 1 document upgrades to version 2 text that compiles to the program the version 1 text
+    /// did, and that text, upgraded again, is left alone.
+    #[test]
+    fn a_version_1_document_upgrades_to_what_it_cooked() {
+        let upgraded = upgrade(VERSION_1).expect("it upgrades").expect("version 1 moves");
+        assert!(upgraded.contains("version: 2"), "{upgraded}");
+        assert_eq!(
+            compile(upgraded.as_bytes()).expect("compiles"),
+            compile(VERSION_1.as_bytes()).expect("compiles")
+        );
+        assert_eq!(upgrade(&upgraded).expect("it reads"), None);
+    }
+
+    /// `upgrade-graphs` rewrites the version 1 documents in a tree and leaves the rest as they were.
+    #[test]
+    fn upgrading_a_tree_rewrites_only_version_1_graphs() {
+        let dir = TempDir::new("anim_graph_upgrade");
+        let upgraded = upgrade(VERSION_1).expect("it upgrades").expect("version 1 moves");
+        fs::create_dir_all(dir.path().join("a/b")).expect("folders");
+        let commented = format!("// A note.\n{}", VERSION_1.replacen("(", "( // \"Its\" note.", 1));
+        fs::write(dir.path().join("a/b/old.animgraph.ron"), &commented).expect("a document");
+        fs::write(dir.path().join("a/new.animgraph.ron"), &upgraded).expect("a document");
+        fs::write(dir.path().join("a/other.ron"), VERSION_1).expect("not a graph source");
+        let written = upgrade_tree(dir.path()).expect("it upgrades");
+        assert_eq!(written, vec![(dir.path().join("a/b/old.animgraph.ron"), 2)], "both notes go");
+        assert_eq!(fs::read_to_string(dir.path().join("a/b/old.animgraph.ron")).expect("read"), upgraded);
+        assert_eq!(fs::read_to_string(dir.path().join("a/other.ron")).expect("read"), VERSION_1);
+        assert!(upgrade_tree(dir.path()).expect("it upgrades").is_empty());
+    }
+
+    /// Every shipped graph is at version 2 on disk: nothing in the content tree is left for
+    /// `upgrade-graphs` to move (M6 A5c).
+    #[test]
+    fn every_shipped_graph_is_version_2() {
+        let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let mut folders = vec![content];
+        let mut found = 0;
+        while let Some(folder) = folders.pop() {
+            for entry in fs::read_dir(&folder).expect("a content folder") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if is_source(&path) {
+                    let text = fs::read_to_string(&path).expect("a graph");
+                    assert_eq!(upgrade(&text).expect("it reads"), None, "{} is at version 1", path.display());
+                    found += 1;
+                }
+            }
+        }
+        assert!(found > 0, "graphs ship");
     }
 }

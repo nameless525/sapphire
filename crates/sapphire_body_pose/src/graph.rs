@@ -1,20 +1,18 @@
 //! The animation graph (spec §5.13, `docs/m2-plan.md`'s N3): one character's layered state machine,
 //! plain and allocation-free once built, evaluated on its owner's clock.
 //!
-//! [`GraphBinding`] is a [document](sapphire_assets::graph) resolved for one skeleton and rig: indices
-//! where the document has names and masks. [`GraphPlayer`] plays a
-//! binding: each frame the app hands it a plain [`GraphInput`] and it writes a [`CharacterPose`].
+//! [`GraphBinding`] is a [graph](sapphire_assets::graph)'s compiled
+//! [`GraphProgram`](sapphire_assets::graph::v2::GraphProgram) resolved for one skeleton and rig
+//! ([`GraphBinding::from_program`]): indices where the program has names and masks. [`GraphPlayer`]
+//! plays a binding: each frame the app hands it a plain [`GraphInput`] and it writes a [`CharacterPose`].
 //!
-//! **Graph v2 (M6 A5b).** [`GraphBinding::from_program`] binds a compiled
-//! [`GraphProgram`](sapphire_assets::graph::v2::GraphProgram) to the same binding, which the same player
-//! plays: one evaluator, acting on each transition's `rules` (a version 1 binding gets them from the
-//! converter's table) and on the program's layer ops, so a converted graph plays its version 1 poses bit
-//! for bit (`v2_tests`). A program adds nested machines, 1D blends and 2D blends over any value
-//! registers, machine layers by mask (an additive one against each clip's first tick), sync groups by
-//! foot marker, game slots ([`GraphPlayer::set_game_slot`]) and events ([`GraphPlayer::events`]). One
-//! compiled with `compile_for(Target::Simulation)` runs in the fixed step;
-//! [`FixedGraphHistory::try_new`] refuses one compiled for presentation. Nothing the game runs binds a
-//! program until A5c.
+//! **Graph v2 (M6 A5).** The player acts on each transition's `rules` and on the program's layer ops. A
+//! graph converted from version 1 plays version 1's poses bit for bit (`v2_tests` holds what each shipped
+//! graph played before the switch, M6 A5c). A program has nested machines, 1D blends and 2D blends over
+//! any value registers, machine layers by mask (an additive one against each clip's first tick), sync
+//! groups by foot marker, game slots ([`GraphPlayer::set_game_slot`]) and events
+//! ([`GraphPlayer::events`]). One compiled for the fixed step (`compile_for(Target::Simulation)`, what the
+//! cook writes) runs there; [`FixedGraphHistory::try_new`] refuses one compiled for presentation.
 //!
 //! # The layers, bottom to top
 //!
@@ -100,9 +98,7 @@ use sapphire_assets::graph::v2::program::{ConditionOp, Span, Target};
 use sapphire_assets::graph::v2::{
     self, MAX_GAME_SLOTS, MAX_LAYERS, MAX_MACHINE_DEPTH, MAX_PARAMETERS, TransitionRules,
 };
-use sapphire_assets::graph::{
-    AnimGraph, Condition, GraphMask, MAX_ADDITIVE_LAYERS, MAX_BLEND_SAMPLES, StateMotion,
-};
+use sapphire_assets::graph::{GraphMask, MAX_ADDITIVE_LAYERS, MAX_BLEND_SAMPLES};
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
 use sapphire_assets::skeleton::ArchivedSkeleton;
 use sapphire_core::Name;
@@ -318,7 +314,7 @@ enum Motion {
     Machine(u16),
 }
 
-/// A state machine, resolved. A version 1 graph has one, its locomotion.
+/// A state machine, resolved. A graph converted from version 1 has one, its locomotion.
 #[derive(Clone, Debug)]
 struct BoundMachine {
     name: Name,
@@ -329,7 +325,8 @@ struct BoundMachine {
 }
 
 /// One step of a frame's layers, bottom first: what [`GraphProgram`](v2::GraphProgram)'s layer ops
-/// resolve to. A version 1 graph's are its locomotion, combat, additive layers and reactions.
+/// resolve to. A graph converted from version 1 has its locomotion, combat, additive layers and
+/// reactions.
 #[derive(Clone, Copy, Debug)]
 enum LayerOp {
     /// The first layer's machine, over the whole body, with the footwork and a landing's catch.
@@ -453,7 +450,7 @@ struct Space {
 /// What places a blend.
 #[derive(Clone, Copy, Debug)]
 enum Axes {
-    /// The smoothed velocity: v1's blend space, and a 2D blend over `velocity_x` and `velocity_z`.
+    /// The smoothed velocity: a 2D blend over `velocity_x` and `velocity_z`.
     Velocity,
     /// Two value registers, by gradient bands.
     Two(u8, u8),
@@ -478,21 +475,15 @@ struct StateChange {
     /// `None` for any of its machine's states.
     from: Option<u16>,
     to: u16,
-    guard: Guard,
+    /// Its postfix condition over the value registers, in [`GraphBinding::conditions`].
+    condition: Span,
+    /// Whether the condition reads `finished`.
+    finished: bool,
     decay: f32,
-    /// What it does beyond its condition: v1 keyed these on the condition's variant, v2 says them.
+    /// What it does beyond its condition.
     rules: TransitionRules,
     /// Where the next gait starts (`finished_at`).
     phase: Option<f32>,
-}
-
-/// What a transition tests.
-#[derive(Clone, Copy, Debug)]
-enum Guard {
-    /// v1's condition, by its variant.
-    Condition(Condition),
-    /// A program's postfix condition over the value registers, in [`GraphBinding::conditions`].
-    Program { condition: Span, finished: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -548,9 +539,8 @@ pub struct GraphBinding {
     /// The base machine's start, entered to its leaf.
     start: u16,
     smoothing: f32,
-    landing_aware: bool,
-    /// Where its program was compiled to run: `None` for a version 1 graph.
-    target: Option<Target>,
+    /// Where its program was compiled to run.
+    target: Target,
     takeoff: Option<u16>,
     resume_joints: [Option<usize>; 4],
     resume_hips: Option<usize>,
@@ -565,247 +555,6 @@ pub struct GraphBinding {
 }
 
 impl GraphBinding {
-    /// Resolves `graph`, which has passed its check, for this character: its `skeleton`, its `rig` if
-    /// masks or a blink need one, and how many morph targets its mesh has. Every clip must be loaded
-    /// and cooked for this skeleton, and every mask's bones and blink's expression in its rig.
-    pub fn new(
-        graph: &AnimGraph,
-        skeleton: &ArchivedSkeleton,
-        rig: Option<&ArchivedCharacterRig>,
-        morph_targets: usize,
-        clips: &(impl ClipSource + ?Sized),
-    ) -> Result<Self, GraphBindError> {
-        for clip in &graph.clips {
-            let name = || clip.name.clone();
-            let cooked = clips
-                .clip(clip.id)
-                .ok_or_else(|| GraphBindError::MissingClip { name: name(), id: clip.id })?;
-            cooked.check_skeleton(skeleton).map_err(|source| GraphBindError::WrongSkeleton {
-                name: name(),
-                id: clip.id,
-                source,
-            })?;
-        }
-        let clip_index = |name: &str| -> Result<u16, GraphBindError> {
-            graph
-                .clips
-                .iter()
-                .position(|clip| clip.name == name)
-                .map(|index| index as u16)
-                .ok_or(GraphBindError::Unchecked("a layer"))
-        };
-        let mask_index = |name: Option<&String>| -> Result<Option<u16>, GraphBindError> {
-            name.map(|name| {
-                graph
-                    .masks
-                    .iter()
-                    .position(|mask| mask.name == *name)
-                    .map(|index| index as u16)
-                    .ok_or(GraphBindError::Unchecked("a layer's mask"))
-            })
-            .transpose()
-        };
-        let state_index = |name: &str| -> Result<u16, GraphBindError> {
-            graph
-                .locomotion
-                .states
-                .iter()
-                .position(|state| state.name == name)
-                .map(|index| index as u16)
-                .ok_or(GraphBindError::Unchecked("a transition"))
-        };
-        let masks =
-            graph.masks.iter().map(|mask| bind_mask(mask, skeleton, rig)).collect::<Result<Vec<_>, _>>()?;
-        let mut states = Vec::with_capacity(graph.locomotion.states.len());
-        for state in &graph.locomotion.states {
-            let motion = match &state.plays {
-                StateMotion::Clip { clip, looping } => {
-                    Motion::Clip { clip: clip_index(clip)?, looping: *looping, sync: None }
-                }
-                StateMotion::Blend(space) => {
-                    let points: Vec<BlendPoint> = space
-                        .samples
-                        .iter()
-                        .map(|sample| BlendPoint::new(sample.at[0], sample.at[1]))
-                        .collect();
-                    let mut samples = Vec::with_capacity(space.samples.len());
-                    for (sample, point) in space.samples.iter().zip(&points) {
-                        samples.push(Sample {
-                            clip: clip_index(&sample.clip)?,
-                            at: *point,
-                            speed: point.speed(),
-                            phase: sample.phase,
-                            sync: sample.sync,
-                        });
-                    }
-                    // v1 played its footwork over every blend, once it bound.
-                    Motion::Blend(Space {
-                        points,
-                        samples,
-                        rate: space.rate,
-                        axes: Axes::Velocity,
-                        group: None,
-                        footwork: true,
-                    })
-                }
-                StateMotion::TakeoffBlend(entry)
-                | StateMotion::LandingBlend(entry)
-                | StateMotion::TakeoffAnticipating(entry) => {
-                    let moving = entry.moving.first().ok_or(GraphBindError::Unchecked("an entry blend"))?;
-                    let running = entry.moving.get(1);
-                    let accelerating = entry.moving.get(2);
-                    let shots = OneShot {
-                        clips: [
-                            clip_index(&entry.standing)?,
-                            clip_index(&moving.clip)?,
-                            running.map_or(Ok(0), |sample| clip_index(&sample.clip))?,
-                            accelerating.map_or(Ok(0), |sample| clip_index(&sample.clip))?,
-                        ],
-                        departure: moving.fade,
-                        touchdown: running.map(|sample| sample.fade),
-                        anticipate: matches!(state.plays, StateMotion::TakeoffAnticipating(_)),
-                        accelerating: accelerating.and_then(|sample| {
-                            Some(AcceleratingCatch { departure: sample.short_lead?, touchdown: sample.fade })
-                        }),
-                    };
-                    if matches!(
-                        state.plays,
-                        StateMotion::TakeoffBlend(_) | StateMotion::TakeoffAnticipating(_)
-                    ) {
-                        Motion::Takeoff(shots)
-                    } else {
-                        Motion::Touchdown(shots)
-                    }
-                }
-            };
-            states.push(State { name: Name::intern(&state.name), machine: 0, motion });
-        }
-        let landing_aware = graph
-            .locomotion
-            .transitions
-            .iter()
-            .any(|change| matches!(change.when, Condition::LandedMoving(_)))
-            || states.iter().any(|state| matches!(state.motion, Motion::Touchdown(_)));
-        let mut changes = Vec::with_capacity(graph.locomotion.transitions.len());
-        for change in &graph.locomotion.transitions {
-            let from = state_index(&change.from)?;
-            let touchdown = matches!(states[usize::from(from)].motion, Motion::Touchdown(_));
-            changes.push(StateChange {
-                machine: 0,
-                from: Some(from),
-                to: state_index(&change.to)?,
-                guard: Guard::Condition(change.when),
-                decay: change.decay as f32,
-                // The rules version 2 says, from the same table its converter reads.
-                rules: v2::convert::rules(change.when, touchdown, landing_aware),
-                phase: match change.when {
-                    Condition::FinishedAtPhase(phase) => Some(phase),
-                    _ => None,
-                },
-            });
-        }
-        let mut moves = Vec::with_capacity(graph.combat.moves.len());
-        for entry in &graph.combat.moves {
-            moves.push(MoveEntry {
-                name: Name::intern(&entry.name),
-                clip: clip_index(&entry.clip)?,
-                mask: mask_index(entry.mask.as_ref())?,
-                decay: entry.decay.unwrap_or(graph.combat.decay) as f32,
-            });
-        }
-        moves.sort_unstable_by_key(|entry| entry.name);
-        let mut additive = Vec::with_capacity(graph.additive.len());
-        for layer in &graph.additive {
-            additive.push(Added {
-                name: Name::intern(&layer.name),
-                clip: clip_index(&layer.clip)?,
-                mask: mask_index(layer.mask.as_ref())?,
-                weight: layer.weight,
-                fade_out: 0.0,
-                restart: 0.0,
-            });
-        }
-        let mut reactions = Vec::with_capacity(graph.reactions.len());
-        for layer in &graph.reactions {
-            reactions.push(Added {
-                name: Name::intern(&layer.name),
-                clip: clip_index(&layer.clip)?,
-                mask: mask_index(layer.mask.as_ref())?,
-                weight: layer.weight,
-                fade_out: layer.fade_out as f32,
-                restart: layer.restart as f32,
-            });
-        }
-        let blink = graph.blink.as_ref().map(|blink| bind_blink(blink, rig, morph_targets)).transpose()?;
-        let find_joint = |bone| {
-            rig?.humanoid
-                .iter()
-                .find(|entry| entry.bone == bone)
-                .map(|entry| usize::from(entry.joint.to_native()))
-                .filter(|&joint| joint < skeleton.len())
-        };
-        let resume_joints =
-            [HumanBone::LeftFoot, HumanBone::LeftToes, HumanBone::RightFoot, HumanBone::RightToes]
-                .map(find_joint);
-        let takeoff =
-            states.iter().position(|state| matches!(state.motion, Motion::Takeoff(_))).map(|i| i as u16);
-        let takeoff_carry = takeoff.and_then(|state| {
-            let Motion::Takeoff(shots) = states[usize::from(state)].motion else { return None };
-            let [stand, run, _, _] = shots.clips;
-            if graph.clips[usize::from(stand)].id
-                != AssetId::from_text("32e5765d-fe14-552e-9361-dcb6ee8d5c36")
-                || graph.clips[usize::from(run)].id
-                    != AssetId::from_text("e70e0e76-9728-59a9-bd18-9911fd2fb07c")
-            {
-                return None;
-            }
-            Some([
-                find_joint(HumanBone::UpperChest)?,
-                find_joint(HumanBone::LeftShoulder)?,
-                find_joint(HumanBone::LeftUpperArm)?,
-            ])
-        });
-        let footwork =
-            find_joint(HumanBone::Hips).zip(find_joint(HumanBone::Spine)).and_then(|(hips, spine)| {
-                FootworkClips::bind(|name| clip_index(name).ok(), skeleton, hips, spine)
-            });
-        let start = state_index(&graph.locomotion.start)?;
-        let mut ops = vec![LayerOp::Base, LayerOp::Combat];
-        ops.extend((0..additive.len()).map(|slot| LayerOp::Additive(slot as u16)));
-        ops.push(LayerOp::Reactions);
-        Ok(Self {
-            clips: graph.clips.iter().map(|clip| clip.id).collect(),
-            masks,
-            machines: vec![BoundMachine {
-                name: Name::intern(v2::convert::LOCOMOTION),
-                start,
-                played_by: None,
-            }],
-            states,
-            changes,
-            conditions: Vec::new(),
-            parameters: Vec::new(),
-            slots: Vec::new(),
-            sync: Vec::new(),
-            events: Vec::new(),
-            ops,
-            start,
-            smoothing: graph.locomotion.smoothing,
-            landing_aware,
-            target: None,
-            takeoff,
-            resume_joints,
-            resume_hips: find_joint(HumanBone::Hips),
-            takeoff_carry,
-            footwork,
-            moves,
-            combat_exit: graph.combat.exit as f32,
-            additive,
-            reactions,
-            blink,
-        })
-    }
-
     fn move_entry(&self, name: Name) -> Option<u16> {
         self.moves.binary_search_by_key(&name, |entry| entry.name).ok().map(|index| index as u16)
     }
@@ -858,9 +607,9 @@ impl GraphBinding {
             && matches!(&self.states[usize::from(state)].motion, Motion::Blend(space) if space.footwork)
     }
 
-    /// Where its program was compiled to run, or `None` for a version 1 graph.
+    /// Where its program was compiled to run.
     #[must_use]
-    pub fn target(&self) -> Option<Target> {
+    pub fn target(&self) -> Target {
         self.target
     }
 
@@ -1738,10 +1487,8 @@ impl GraphPlayer {
             }
         }
         // Locomotion, whether it shows or not, so it's where it should be when a move ends.
-        let speed = self.layers.velocity.length();
         self.layers.refresh_values(&self.graph, input, &self.slots);
-        let change =
-            self.next_change(self.layers.state, self.layers.started, true, input, drawn, speed, clips);
+        let change = self.next_change(self.layers.state, self.layers.started, true, input, drawn, clips);
         if let Some((index, change)) = change {
             self.note(Reached::change(index));
             let rebound = change.rules.rebound
@@ -1833,7 +1580,7 @@ impl GraphPlayer {
             let LayerOp::Machine(layer) = self.graph.ops[op] else { continue };
             let active = self.layers.layer_states[usize::from(layer.slot)];
             if let Some((index, change)) =
-                self.next_change(active.state, active.started, false, input, drawn, speed, clips)
+                self.next_change(active.state, active.started, false, input, drawn, clips)
             {
                 self.note(Reached::change(index));
                 let state = self.graph.leaf(change.to);
@@ -1874,7 +1621,6 @@ impl GraphPlayer {
         base: bool,
         input: &GraphInput,
         drawn: f64,
-        speed: f32,
         clips: &(impl ClipSource + ?Sized),
     ) -> Option<(usize, StateChange)> {
         let graph = &self.graph;
@@ -1898,36 +1644,23 @@ impl GraphPlayer {
                         return false;
                     }
                     let at = if change.rules.at_drawn { drawn } else { input.ticks };
-                    match change.guard {
-                        Guard::Condition(when) => {
-                            if graph.landing_aware
-                                && matches!(when, Condition::Landed)
-                                && !input.locomotion.grounded
-                            {
-                                return false;
-                            }
-                            self.layers.holds(when, &input.locomotion, speed, at, graph, clips)
-                        }
-                        Guard::Program { condition, finished } => {
-                            // Only a leaf can finish: a state playing a machine never does.
-                            let finished = finished
-                                && active == leaf
-                                && self.layers.finished(
-                                    leaf,
-                                    started,
-                                    base && change.rules.catch,
-                                    &input.locomotion,
-                                    at,
-                                    graph,
-                                    clips,
-                                );
-                            v2::program::evaluate(
-                                &graph.conditions[condition.range()],
-                                &self.layers.values,
-                                finished,
-                            )
-                        }
-                    }
+                    // Only a leaf can finish: a state playing a machine never does.
+                    let finished = change.finished
+                        && active == leaf
+                        && self.layers.finished(
+                            leaf,
+                            started,
+                            base && change.rules.catch,
+                            &input.locomotion,
+                            at,
+                            graph,
+                            clips,
+                        );
+                    v2::program::evaluate(
+                        &graph.conditions[change.condition.range()],
+                        &self.layers.values,
+                        finished,
+                    )
                 })
                 .map(|(index, change)| (index, *change));
             if found.is_some() {
@@ -2719,40 +2452,6 @@ impl Layers {
         let [least, most] = space.rate;
         let scale = if authored > 0.0 { (speed * total / authored).clamp(least, most) } else { 1.0 };
         cycles / total * scale
-    }
-
-    /// Whether `when` holds for the state playing.
-    fn holds(
-        &self,
-        when: Condition,
-        input: &LocomotionInput,
-        speed: f32,
-        now: f64,
-        graph: &GraphBinding,
-        clips: &(impl ClipSource + ?Sized),
-    ) -> bool {
-        match when {
-            Condition::Airborne => !input.grounded,
-            Condition::AirborneMoving(limit) => !input.grounded && input.speed >= limit,
-            Condition::Grounded => input.grounded,
-            Condition::Landed => input.landed,
-            Condition::JumpPreparation(active) => input.preparing_jump == active,
-            Condition::LandedMoving(limit) => {
-                input.landed && input.grounded && input.speed * self.math.cos(input.direction) >= limit
-            }
-            Condition::Moving(limit) => speed >= limit,
-            Condition::Stopped(limit) => speed < limit,
-            Condition::ForwardBelow(limit) => self.velocity.y < limit,
-            Condition::Finished | Condition::FinishedAtPhase(_) => self.finished(
-                self.state,
-                self.started,
-                matches!(when, Condition::FinishedAtPhase(_)),
-                input,
-                now,
-                graph,
-                clips,
-            ),
-        }
     }
 
     /// Whether `state`, started at `started`, has played to its end at `now`: a clip that holds, or an

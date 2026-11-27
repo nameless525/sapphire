@@ -483,6 +483,39 @@ fn a_placement_moves_by_its_place_alone() {
     assert_eq!(zone.text(), text, "one gesture, one undo");
 }
 
+/// M6 V1: an atmosphere volume comes into a zone as a list left out does (every field written, since the zone's
+/// entries are built by reflection, as its weather regions are), and a negative blend or a shape with no size is
+/// refused by the field it's in, the text left as it was. A look that's missing is the cook's and
+/// `check`'s to say, as the day's is.
+#[test]
+fn a_zone_refuses_a_bad_atmosphere_volume_by_its_field() {
+    let mut zone = open("content/zones/proving_ground/proving_ground.zone.ron", kinds::zone());
+    assert_eq!(zone.failure(), None);
+    let text = zone.text().to_owned();
+    let volume = r#"[(name: "grotto", position: (0.0, 1.0, 0.0), shape: Sphere(radius: 2.0), look: "../../looks/biomes/cave_day.ron", blend: 2.0, strength: 1.0, priority: 0)]"#;
+    assert_eq!(zone.set_text("add a cave", &path("volumes"), volume), Ok(Outcome::Changed));
+    let placed = zone.text().to_owned();
+    assert!(placed.contains("cave_day.ron"), "{placed}");
+
+    let refused = zone.set("bad blend", &path("volumes[0].blend"), &-1.0_f32);
+    assert!(
+        matches!(&refused, Err(Refused::Document(why)) if why.contains("volumes[0].blend")),
+        "{refused:?}"
+    );
+    let refused = zone.set_text("bad shape", &path("volumes[0].shape"), "Sphere(radius: 0.0)");
+    assert!(
+        matches!(&refused, Err(Refused::Document(why)) if why.contains("volumes[0].shape")),
+        "{refused:?}"
+    );
+    assert_eq!(zone.text(), placed, "refused edits leave the text as it was");
+
+    assert_eq!(zone.set("soften", &path("volumes[0].blend"), &4.0_f32), Ok(Outcome::Changed));
+    assert_eq!(zone.text(), placed.replace("blend: 2.0", "blend: 4.0"));
+    assert!(zone.undo());
+    assert!(zone.undo());
+    assert_eq!(zone.text(), text);
+}
+
 #[test]
 fn a_value_of_the_wrong_type_is_refused() {
     let mut document = sample(LAID_OUT);

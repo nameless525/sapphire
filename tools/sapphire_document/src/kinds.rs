@@ -31,9 +31,9 @@ use sapphire_timeline::TimelineDocument;
 use sapphire_tod::TodTimeline;
 use sapphire_tod::light_rig::LightRigLibrary;
 use sapphire_vfx::EffectLibrary;
-use sapphire_zone::ZoneDocument;
 use sapphire_zone::encounter::EncounterDocument;
 use sapphire_zone::prefab::Assembly;
+use sapphire_zone::{FoliageDocument, ZoneDocument};
 
 use crate::journal::JournalEntry;
 use crate::set::{DocumentSet, Noticed, SetError};
@@ -104,6 +104,17 @@ pub fn timeline() -> Schema<TimelineDocument> {
         parse: read_document,
         check: |document| document.check().err().map(|error| error.to_string()).into_iter().collect(),
         importer: Some("Timeline(())"),
+    }
+}
+
+/// A `.foliage.ron` (M6 G1a): a zone's plants' kinds and the rules that place them. Whether a kind's mesh is a
+/// static mesh is a cook's to check.
+#[must_use]
+pub fn foliage() -> Schema<FoliageDocument> {
+    Schema {
+        parse: read_document,
+        check: |document| document.check().err().map(|error| error.to_string()).into_iter().collect(),
+        importer: Some("Foliage(())"),
     }
 }
 
@@ -288,13 +299,14 @@ pub enum Kind {
     Day,
     LightRigs,
     Colliders,
+    Foliage,
 }
 
 /// What every material family's file name ends with.
 const MATERIAL_SUFFIX: &str = ".material.ron";
 
 impl Kind {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Moves,
         Self::Graph,
         Self::Cue,
@@ -311,6 +323,7 @@ impl Kind {
         Self::Day,
         Self::LightRigs,
         Self::Colliders,
+        Self::Foliage,
     ];
 
     /// What a file is, if it's a document this crate knows: by its name, and for a material by the family its
@@ -363,6 +376,7 @@ impl Kind {
             Self::Day => "_day.ron",
             Self::LightRigs => "_rigs.ron",
             Self::Colliders => ".colliders.ron",
+            Self::Foliage => ".foliage.ron",
         })
     }
 
@@ -386,6 +400,7 @@ impl Kind {
             Self::Day => "Days",
             Self::LightRigs => "Light rigs",
             Self::Colliders => "Colliders",
+            Self::Foliage => "Foliage",
         }
     }
 
@@ -410,6 +425,7 @@ impl Kind {
             Self::Day => set.open(path, day(), Arc::new(registry_of::<TodTimeline>())),
             Self::LightRigs => set.open(path, light_rigs(), Arc::new(registry_of::<LightRigLibrary>())),
             Self::Colliders => set.open(path, colliders(), Arc::new(registry_of::<ColliderDocument>())),
+            Self::Foliage => set.open(path, foliage(), Arc::new(registry_of::<FoliageDocument>())),
         }
     }
 
@@ -436,6 +452,7 @@ impl Kind {
             Self::Day => set.recover(entry, day(), Arc::new(registry_of::<TodTimeline>())),
             Self::LightRigs => set.recover(entry, light_rigs(), Arc::new(registry_of::<LightRigLibrary>())),
             Self::Colliders => set.recover(entry, colliders(), Arc::new(registry_of::<ColliderDocument>())),
+            Self::Foliage => set.recover(entry, foliage(), Arc::new(registry_of::<FoliageDocument>())),
         }
     }
 }

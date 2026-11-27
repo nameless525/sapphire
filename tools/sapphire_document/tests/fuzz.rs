@@ -342,6 +342,13 @@ fn every_property_of_a_zone_undoes_or_is_refused() {
     );
 }
 
+/// No shipped zone names foliage yet (M6 G1a), so the fuzz runs on the placement tests' grove. Its checks run beside
+/// its reading, so no edit is refused.
+#[test]
+fn every_property_of_a_foliage_document_undoes_to_the_same_bytes() {
+    run("grove.foliage.ron", "crates/sapphire_zone/testdata/grove.foliage.ron", kinds::foliage(), false);
+}
+
 /// The library checks everything as it reads, so many values are refused here, each with the text as it
 /// was, and that's its rule at work.
 #[test]
@@ -482,13 +489,18 @@ fn every_document_in_the_content_opens_for_editing() {
             Kind::Day => open(&relative, kinds::day()).failure().cloned(),
             Kind::LightRigs => open(&relative, kinds::light_rigs()).failure().cloned(),
             Kind::Colliders => open(&relative, kinds::colliders()).failure().cloned(),
+            Kind::Foliage => open(&relative, kinds::foliage()).failure().cloned(),
         };
         assert_eq!(failure, None, "{relative}");
         seen.insert(kind);
         count += 1;
     }
     let missing: Vec<_> = Kind::ALL.into_iter().filter(|kind| !seen.contains(kind)).collect();
-    assert_eq!(missing, [Kind::Effects], "every kind but effects, which the content has none of");
+    assert_eq!(
+        missing,
+        [Kind::Effects, Kind::Foliage],
+        "every kind but effects and foliage, which the content has none of (no shipped zone grows plants yet, M6 G1a)"
+    );
     assert!(count >= 220, "{count}");
 }
 

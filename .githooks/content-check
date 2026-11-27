@@ -1,0 +1,28 @@
+#!/bin/sh
+# An opt-in pre-commit hook (M6 T6): refuses a commit whose staged documents under content/ have a problem, by
+# running `cargo xtask content-check` on them (the problems print by document and field, as the editor's problems
+# pane lists them). Nothing installs it: see "Checking content before a commit" in docs/getting-started.md.
+#
+# It checks the working tree's copies of the files a commit stages, which are what's staged unless only part of
+# a file is, and fails on a problem anywhere in the tree: a commit that takes a document away (a prefab a zone
+# places) is checked too, and a cook stops at its first refusal, whichever document's it is. A commit touching
+# nothing under content/ isn't checked. SAPPHIRE_CONTENT_CHECK names another command to run in place of
+# `cargo xtask content-check`, given the same files (its tests run the pipeline itself).
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+if [ -z "$(git diff --cached --name-only -- content/)" ]; then
+    exit 0
+fi
+staged=$(git diff --cached --name-only --diff-filter=ACMR -- content/)
+# One path a line, as git wrote them; a path with a space in it isn't a content path (`non-ascii-path` and the
+# importers' names keep to plain ones). The check refuses a path that isn't a file under content/.
+status=0
+# shellcheck disable=SC2086
+${SAPPHIRE_CONTENT_CHECK:-cargo xtask content-check} $staged || status=$?
+# 3 is the check's own "it ran and found problems"; anything else is a check that couldn't run.
+case $status in
+0) ;;
+3) echo "content-check: the content has problems (above); mend them, or commit with --no-verify" >&2 ;;
+*) echo "content-check: the check itself failed (exit $status; above): it couldn't say whether the content has problems" >&2 ;;
+esac
+exit $status

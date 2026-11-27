@@ -148,6 +148,7 @@ pub mod code_names;
 pub mod colliders;
 mod color;
 pub mod combat;
+pub mod content_check;
 pub mod cook;
 pub mod dialogue;
 pub mod documents;

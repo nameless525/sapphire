@@ -1,3 +1,7 @@
 #!/bin/sh
 set -eu
-exec python3 .github/scripts/privacy_guard.py --staged
+python3 .github/scripts/privacy_guard.py --staged
+# The content check (M6 T6) runs only for those who turned it on: `git config sapphire.contentCheck true`.
+if [ "$(git config --bool sapphire.contentCheck || true)" = true ]; then
+    exec "$(dirname "$0")/content-check"
+fi

@@ -16,6 +16,7 @@ use sapphire_pipeline::character_maps::{self, FaceSdfSettings, MapKind, MapSetti
 use sapphire_pipeline::check;
 use sapphire_pipeline::code_names;
 use sapphire_pipeline::combat;
+use sapphire_pipeline::content_check;
 use sapphire_pipeline::cook::{self, Cook, CookError, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::documents;
 use sapphire_pipeline::effect_sheet;
@@ -155,6 +156,13 @@ Usage:
       recognize, duplicate spring-chain names, non-ASCII paths, duplicate texture bytes). Prints each
       role mesh's numbers and every finding, waived ones with their reasons, as text or, with --json, as
       JSON; fails on an error no sidecar waives (`waive: [(rule: Slots, why: \"...\")]`).
+  sapphire_pipeline content-check --source <DIR> --out <DIR> [--cook <COOK>] [--cache <DIR>] [--locked]
+                                  [<FILE>...]
+      Print everything wrong with the source tree DIR, by document and field, as the editor's problems pane
+      lists it: each document of a kind the editor opens read as the editor reads it, the content rules
+      as check applies them, and a cook (desktop unless --cook says) into the scratch folder --out, which
+      must be no folder an app reads. Fails on any problem; refuses a FILE that isn't a file under DIR
+      (the hook's staged files): what cargo xtask content-check and the opt-in pre-commit hook run.
   sapphire_pipeline release-key new <FILE>
       Write a new release key to FILE, which mustn't be there: an ed25519 seed from the OS's
       generator, in hex, readable only by its owner, as SAPPHIRE_RELEASE_KEY takes it
@@ -300,6 +308,16 @@ enum Command {
     Check {
         source: PathBuf,
         json: bool,
+    },
+    /// `content-check`: a tree's problems by document and field, through a cook into a scratch folder.
+    ContentCheck {
+        source: PathBuf,
+        out: PathBuf,
+        cook: Cook,
+        cache: Option<PathBuf>,
+        locked: bool,
+        /// The documents to fail on, or none for every one.
+        touched: Vec<PathBuf>,
     },
     /// `graph`: what an asset uses, or what uses it, from a cook's asset index.
     Graph {
@@ -511,6 +529,17 @@ fn run(command: Command) -> anyhow::Result<()> {
                     source.display(),
                     report.failures().count()
                 );
+            }
+        }
+        Command::ContentCheck { source, out, cook, cache, locked, touched } => {
+            let options =
+                content_check::Options { source: &source, out: &out, cook, cache: cache.as_deref(), locked };
+            let checked = content_check::content_check(&options, &touched)?;
+            println!("{}", content_check::report(&checked));
+            if !checked.passes() {
+                eprintln!("{} failed content-check: {} problem(s)", source.display(), checked.problems.len());
+                // Its own exit code, so the hook tells problems from a check that couldn't run.
+                std::process::exit(content_check::FOUND_PROBLEMS);
             }
         }
         Command::Graph { index, asset, reverse } => {
@@ -964,6 +993,14 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             let [source] = options.positional()?;
             Command::Check { source: source.into(), json }
         }
+        "content-check" => Command::ContentCheck {
+            source: options.required("--source")?,
+            out: options.required("--out")?,
+            cook: options.value("--cook")?.unwrap_or(Cook::Desktop),
+            cache: options.value("--cache")?,
+            locked: options.flag("--locked"),
+            touched: options.rest().into_iter().map(PathBuf::from).collect(),
+        },
         "graph" => {
             let index = options.required("--index")?;
             let reverse = options.flag("--reverse");
@@ -1019,6 +1056,11 @@ impl Options {
     fn flag(&mut self, name: &str) -> bool {
         let found = self.0.iter().position(|arg| arg == name);
         found.map(|i| self.0.remove(i)).is_some()
+    }
+
+    /// Takes every positional argument left, in order.
+    fn rest(&mut self) -> Vec<String> {
+        self.0.extract_if(.., |arg| !arg.starts_with("--")).collect()
     }
 
     /// Takes exactly `N` positional arguments, in order.
@@ -1313,6 +1355,27 @@ mod tests {
             Command::Check { source: "content".into(), json: true }
         );
         assert!(parse(&["check"]).is_err(), "missing the tree");
+        assert_eq!(
+            parse(&[
+                "content-check",
+                "--source",
+                "content",
+                "--out",
+                "scratch",
+                "content/a.zone.ron",
+                "b.cue.ron"
+            ])
+            .unwrap(),
+            Command::ContentCheck {
+                source: "content".into(),
+                out: "scratch".into(),
+                cook: Cook::Desktop,
+                cache: None,
+                locked: false,
+                touched: vec!["content/a.zone.ron".into(), "b.cue.ron".into()],
+            }
+        );
+        assert!(parse(&["content-check", "--source", "content"]).is_err(), "missing --out");
         assert_eq!(
             parse(&["graph", "lookdev/body.png", "--index", "index.json", "--reverse"]).unwrap(),
             Command::Graph { index: "index.json".into(), asset: "lookdev/body.png".into(), reverse: true }

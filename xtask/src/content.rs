@@ -274,6 +274,54 @@ pub fn pipeline() -> anyhow::Result<PathBuf> {
     )
 }
 
+/// `cargo xtask content-check` (M6 T6): generates whatever sources are missing, then has the pipeline print
+/// everything wrong with `content/` by document and field, as the editor's problems pane lists it, failing on any
+/// problem, or with `files`, on theirs. Its cook goes to `target/content-check/` with a cache of its own, under a
+/// lock of its own, so it cooks nothing into `target/content/` and waits for no cook of it.
+pub fn check(cook: Cook, files: &[PathBuf]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        cook != Cook::Editor,
+        "content-check cooks as desktop or mobile; the editor's cook adds no rules"
+    );
+    let pipeline = pipeline()?;
+    generate(&pipeline)?;
+    let scratch = check_dir();
+    fs::create_dir_all(&scratch)?;
+    let lock = workspace::lock_file(&scratch.join("check.lock"))?;
+    workspace::wait_for_lock(&lock, File::try_lock, File::lock, "to finish its content check")?;
+    let mut command = Command::new(&pipeline);
+    command
+        .arg("content-check")
+        .arg("--source")
+        .arg(workspace::root().join(SOURCE_DIR))
+        .arg("--out")
+        .arg(scratch.join("loose").join(cook.name()))
+        .args(["--cook", cook.target()])
+        .arg("--cache")
+        .arg(scratch.join("cache"));
+    if workspace::locked() {
+        command.arg("--locked");
+    }
+    // Named from where it was run, as a hook names them from the checkout's root.
+    for file in files {
+        command.arg(std::path::absolute(file)?);
+    }
+    // The pipeline's own code for "it ran and found problems" (`content_check::FOUND_PROBLEMS`), passed on so the
+    // hook tells that from a check that couldn't run.
+    const FOUND_PROBLEMS: i32 = 3;
+    let status = command.status().map_err(|error| anyhow!("running {}: {error}", pipeline.display()))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(FOUND_PROBLEMS) => std::process::exit(FOUND_PROBLEMS),
+        _ => anyhow::bail!("{} content-check failed: {status}", pipeline.display()),
+    }
+}
+
+/// Where `content-check`'s cook goes: `target/content-check/`, beside `target/content/` and never in it.
+fn check_dir() -> PathBuf {
+    workspace::output_dir().join("content-check")
+}
+
 /// The lock generation runs under: `target/content/generate.lock`.
 fn generate_lock() -> PathBuf {
     workspace::output_dir().join("content").join("generate.lock")
@@ -282,6 +330,13 @@ fn generate_lock() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_content_check_cooks_beside_the_content_and_never_in_it() {
+        let check = check_dir();
+        assert!(!check.starts_with(cooked_dir(Cook::Desktop).parent().unwrap()), "{}", check.display());
+        assert_eq!(check.parent(), cooked_dir(Cook::Desktop).parent().unwrap().parent());
+    }
 
     #[test]
     fn parses_cooks_and_places_their_output() {

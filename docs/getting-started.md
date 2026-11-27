@@ -204,6 +204,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask check-layers                                  # crate layering, xtask/layers.toml
 cargo deny check
 cargo xtask content --cook desktop                        # cook content/ into target/content/
+cargo xtask content-check                                 # what's wrong with content/, by document and field
 cargo xtask bench-content --preset ci                     # generate and cook the benchmark into target/bench/
 cargo xtask bundle --platform android --release
 ```
@@ -211,7 +212,19 @@ cargo xtask bundle --platform android --release
 - **`cargo xtask content`** cooks through a content cache. Only assets whose source, `.meta` sidecar, importer or cooker version changed are cooked again.
 - **Sidecars:** the first cook of a new source asset creates its sidecar, which holds the asset's ID. Commit it with the source.
 - **CI** runs xtask as `cargo --locked xtask --locked …`, so a build that would change `Cargo.lock`, or a source without a committed sidecar, fails.
+- **`cargo xtask content-check [<file>...]`** prints everything wrong with `content/` by document and field, as the editor's Problems pane lists it: each document's parse failure or rules, the content rules of `sapphire_pipeline check`, and a cook's refusal. Its cook goes to `target/content-check/`, never `target/content/`. It fails on any problem; files it's given must be files under `content/`.
 - **The smallest useful check** for each kind of edit is in [development-iteration.md](development-iteration.md).
+
+### Checking content before a commit
+
+`.githooks/content-check` is a pre-commit hook that runs `cargo xtask content-check` when a commit stages anything under `content/`, a deletion included, and refuses the commit if any document of the tree has a problem. Nothing installs it; turn it on in your own clone if you want it:
+
+```bash
+git config sapphire.contentCheck true                     # if your clone runs .githooks/ (the privacy hooks)
+ln -s "$PWD/.githooks/content-check" "$(git rev-parse --git-path hooks)/pre-commit"  # if it doesn't, and has none
+```
+
+It checks the working tree's copies of the commit's documents, which are what's staged unless only part of a file is, and says so when the check itself couldn't run (a build that fails). Its first run cooks the whole tree into its own cache, which takes a while. `git commit --no-verify` skips it.
 
 ## Troubleshooting
 

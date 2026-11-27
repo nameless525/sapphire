@@ -55,6 +55,13 @@ Commands:
       --watch then cooks again each time a file in content/ changes, until interrupted (M6 C4): a
       running dev app's hot reload remounts the packs that rewrites, and `link watch` pushes them
       to a device reading the cook. A cook that fails is printed and the watch goes on.
+  content-check [--cook desktop|mobile] [<file>...]
+      Print everything wrong with content/ by document and field, as the editor's problems pane
+      lists it (M6 T6): each document of a kind the editor opens, the content rules (`sapphire_pipeline
+      check`) and a cook (default: desktop) into target/content-check/, which no app reads, with a cache
+      of its own; nothing goes into target/content/. Fails on any problem, or given files, on any of
+      theirs. The opt-in pre-commit hook (.githooks/content-check) runs it on the documents a commit
+      touches.
   bench-content [--preset ci|budget|double] [--cook desktop|mobile] [--with-content]
       Generate the benchmark's sources from the documents in bench/ at a preset's scale into
       target/bench/<preset>/sources/ (the phones' into sources-mobile/, their district's cells
@@ -353,6 +360,15 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             let cooked = content::cook_reporting(cook, report)?;
             eprintln!("cooked content for {cook} into {}", cooked.dir.display());
             Ok(())
+        }
+        "content-check" => {
+            let cook = args.value::<Cook>("--cook")?.unwrap_or(Cook::Desktop);
+            let files = args.rest();
+            if let Some(option) = files.iter().find(|file| file.starts_with("--")) {
+                bail!("content-check takes --cook and files, not `{option}`");
+            }
+            let files: Vec<PathBuf> = files.into_iter().map(Into::into).collect();
+            content::check(cook, &files)
         }
         "bench-content" => {
             let preset = args.value::<bench::Preset>("--preset")?;

@@ -382,6 +382,7 @@ pub(crate) fn extract<E: From<ExtractError>>(
         | ImportSettings::Mix(_)
         | ImportSettings::Effects(_)
         | ImportSettings::EffectSheet(_)
+        | ImportSettings::Foliage(_)
         | ImportSettings::Font(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::GltfClips(_)

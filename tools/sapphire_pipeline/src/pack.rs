@@ -536,10 +536,12 @@ fn reach_map(report: &CookReport, cache: Option<&Cache>) -> Result<Reach, PackEr
     let by_id: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
     let mut reach = HashMap::new();
     for asset in &report.assets {
-        // A kind that may depend on nothing reaches nothing, but for a zone's ambient characters (M5 C10): it
-        // needn't be read.
-        let reaches = kind(&asset.output)
-            .filter(|&of| of == AssetKind::Ambient || AssetKind::ALL.iter().any(|&to| of.may_depend_on(to)));
+        // A kind that may depend on nothing reaches nothing, but for a zone's ambient characters (M5 C10) and a
+        // foliage's kinds (M6 G1a): it needn't be read.
+        let reaches = kind(&asset.output).filter(|&of| {
+            matches!(of, AssetKind::Ambient | AssetKind::Foliage)
+                || AssetKind::ALL.iter().any(|&to| of.may_depend_on(to))
+        });
         if let Some(of) = reaches {
             let mut reached = reach_of(asset, of, cache)?;
             // Ambient characters may name another tree's cast and graph: the benchmark's district names the

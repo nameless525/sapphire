@@ -121,6 +121,8 @@ fn source_of(error: &CookError) -> Option<&Path> {
         | E::Effects { path, .. }
         | E::EffectSheet { path, .. }
         | E::NotASheet { path, .. }
+        | E::FoliageDocument { path, .. }
+        | E::FoliageReference { path, .. }
         | E::Locale { path, .. }
         | E::Timeline { path, .. }
         | E::Dialogue { path, .. }

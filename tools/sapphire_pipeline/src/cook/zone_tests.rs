@@ -1820,3 +1820,180 @@ fn what_a_zones_ambient_characters_name_is_held_to_its_kind() {
         }
     }
 }
+
+const FOLIAGE: AssetId = AssetId::from_bytes([0x30; 16]);
+/// The meshes the grove's kinds draw: an oak, a fern and a clump of grass.
+const PLANTS: [AssetId; 3] =
+    [AssetId::from_bytes([0x31; 16]), AssetId::from_bytes([0x32; 16]), AssetId::from_bytes([0x33; 16])];
+
+/// The placement tests' grove (`sapphire_zone`'s), its kinds drawing [`PLANTS`].
+fn grove_text() -> String {
+    let grove = include_str!("../../../../crates/sapphire_zone/testdata/grove.foliage.ron");
+    let ids = [
+        "2b0f0d43-6d4e-4b59-9b1f-5f3c6f0b8e21",
+        "8f5a7c1e-0c3d-4e1b-a2f6-3d9e4b7c5a10",
+        "4d2c6b8a-1e3f-4a5b-9c7d-0e1f2a3b4c5d",
+    ];
+    ids.into_iter().zip(PLANTS).fold(grove.to_owned(), |text, (from, to)| text.replace(from, &to.to_string()))
+}
+
+/// A zone's text naming [`NAV_COLLIDERS`] and the grove, with `data`.
+fn foliage_zone(data: &str) -> String {
+    zone_text(&format!(r##"colliders: Some("{COLLIDERS}"), foliage: Some("{FOLIAGE}"), {data}"##))
+}
+
+/// A tree with [`NAV_COLLIDERS`]' ground, the grove and its plants' meshes, and [`foliage_zone`] of `data`: the
+/// colliders' and the grove's paths.
+fn foliage_tree(name: &str, data: &str) -> (Tree, PathBuf, PathBuf) {
+    let tree = tree(name);
+    let colliders = tree.write("arena.colliders.ron", NAV_COLLIDERS.as_bytes());
+    tree.sidecar(&colliders, COLLIDERS, ImportSettings::Colliders(Default::default()));
+    for (name, id) in ["oak", "fern", "clump"].into_iter().zip(PLANTS) {
+        let mesh = tree.write(&format!("plants/{name}.glb"), &piece_glb(1.0));
+        tree.sidecar(&mesh, id, ImportSettings::Gltf(MeshSettings::default()));
+    }
+    let foliage = tree.write("grove.foliage.ron", grove_text().as_bytes());
+    tree.sidecar(&foliage, FOLIAGE, ImportSettings::Foliage(Default::default()));
+    let path = tree.write("town.zone.ron", foliage_zone(data).as_bytes());
+    tree.sidecar(&path, ZONE, ImportSettings::Zone(zone::ZoneSettings::default()));
+    (tree, colliders, foliage)
+}
+
+fn scatter_id(x: i32, z: i32) -> AssetId {
+    ZONE.sub_asset(&sapphire_zone::foliage::scatter_part(CellCoord { x, z }))
+}
+
+/// The grove's 16 m cells: its layers reach from -40 m to 40 m, cells -3 to 2 each way.
+fn grove_cells() -> Vec<CellCoord> {
+    (-3..=2).flat_map(|x| (-3..=2).map(move |z| CellCoord { x, z })).collect()
+}
+
+/// A zone's foliage cooks to its kinds and a set a cell (M6 G1a), each the bytes placement makes alone on the
+/// zone's colliders; the `.szone` names them outside its digest, and they ship with the zone.
+#[test]
+fn a_zones_foliage_cooks_to_a_set_a_cell_that_ships_with_it() {
+    let (tree, _, _) = foliage_tree("zone-foliage", &placements());
+    let report = tree.cook();
+
+    let kinds = read_aligned(&by_id(&report, FOLIAGE).output);
+    assert!(by_id(&report, FOLIAGE).output.ends_with("grove.sfoliage"));
+    assert_eq!(AssetKind::Foliage.references(&kinds).unwrap(), [], "loading it loads nothing else");
+    let mut meshes = PLANTS.to_vec();
+    meshes.sort_unstable();
+    assert_eq!(AssetKind::Foliage.reach(&kinds).unwrap(), meshes, "but its meshes ship with it");
+
+    let zone_bytes = read_zone(&report);
+    let zone = Zone::read(&zone_bytes).unwrap();
+    let foliage = zone.presentation.foliage.as_ref().expect("named");
+    assert_eq!(foliage.foliage, FOLIAGE);
+    let cells: Vec<CellCoord> = foliage
+        .cells
+        .iter()
+        .map(|cell| CellCoord { x: cell.coord[0].to_native(), z: cell.coord[1].to_native() })
+        .collect();
+    assert_eq!(cells, grove_cells());
+    assert_eq!(zone.references(), [COLLIDERS], "the simulation reads none of it");
+
+    let document = sapphire_zone::FoliageDocument::from_ron(&grove_text()).unwrap();
+    let colliders = read_aligned(&by_id(&report, COLLIDERS).output);
+    let ground = zone::scatter::ColliderGround::from_cooked(&colliders).unwrap();
+    let grid = sapphire_zone::grid::Grid { cell_size: 16.0 };
+    let mut plants = 0;
+    for &cell in &cells {
+        assert_eq!(foliage.cells.iter().filter(|set| set.scatter == scatter_id(cell.x, cell.z)).count(), 1);
+        let asset = by_id(&report, scatter_id(cell.x, cell.z));
+        let name = format!("town.scatter.{}.{}.sscatter", cell.x, cell.z);
+        assert!(asset.output.ends_with(&name), "{}", asset.output.display());
+        let bytes = read_aligned(&asset.output);
+        assert_eq!(AssetKind::Scatter.references(&bytes).unwrap(), []);
+        let alone = zone::scatter::cook(&document, &ground, grid, cell).unwrap();
+        assert_eq!(&bytes[..], &alone[..], "the cook is placement on the zone's colliders, and nothing else");
+        let set = ScatterSet::read(&bytes).unwrap();
+        for index in 0..set.len() {
+            let [x, y, z] = set.instance(index).position;
+            assert!(x.abs() <= 32.0 && z.abs() <= 32.0, "only where there's ground: {x}, {z}");
+            assert!([0.0, 1.0, 6.5].contains(&y), "on the ground, the table or the slab: {y}");
+        }
+        plants += set.len();
+    }
+    assert!(plants > 1_000, "{plants} plants");
+
+    // The same zone with no foliage has the same digest: plants are drawn, never simulated.
+    let bare = self::tree("zone-foliage-bare");
+    let bare_colliders = bare.write("arena.colliders.ron", NAV_COLLIDERS.as_bytes());
+    bare.sidecar(&bare_colliders, COLLIDERS, ImportSettings::Colliders(Default::default()));
+    write_zone(&bare, &format!(r##"colliders: Some("{COLLIDERS}"), {}"##, placements()));
+    let bare_bytes = read_zone(&bare.cook());
+    let digest = |bytes: &[u8]| {
+        Zone::read(bytes)
+            .unwrap()
+            .simulation_digest(|id| (id == COLLIDERS).then_some(&colliders[..]))
+            .unwrap()
+    };
+    assert_eq!(digest(&zone_bytes), digest(&bare_bytes));
+
+    let packs = tree.dir.path().join("packs");
+    let packed = pack_cooked(&report, &packs, None).unwrap();
+    let holding = |id: AssetId| -> Vec<String> {
+        (packed.packs.iter())
+            .filter(|pack| {
+                let bytes = fs::read(&pack.path).unwrap();
+                PackReader::new(&bytes).unwrap().toc().entries().iter().any(|entry| entry.id == id)
+            })
+            .map(|pack| pack.name.clone())
+            .collect()
+    };
+    assert_eq!(holding(scatter_id(0, 0)), ["zone_town"], "a set ships with its zone, and only there");
+    assert_eq!(holding(FOLIAGE), ["zone_town"], "and so do its kinds");
+    assert_eq!(holding(PLANTS[0]), ["zone_town"], "and their meshes");
+}
+
+/// A set's key holds the foliage document and the colliders, not the rest of the zone.
+#[test]
+fn only_the_foliage_or_the_colliders_recook_a_zones_sets() {
+    let (tree, colliders, foliage) = foliage_tree("zone-foliage-keys", &placements());
+    tree.cook();
+    let set = scatter_id(0, 0);
+
+    let moved = foliage_zone(&placements().replace("(2.0, 0.0, 2.0)", "(3.0, 0.0, 2.0)"));
+    tree.write("town.zone.ron", moved.as_bytes());
+    let report = tree.cook();
+    assert_eq!(by_id(&report, cell_id(cell(0, 0))).status, CookStatus::Cooked, "a moved placement");
+    assert_eq!(by_id(&report, set).status, CookStatus::UpToDate, "plants stand on colliders, not on cells");
+    assert_eq!(by_id(&report, FOLIAGE).status, CookStatus::UpToDate);
+
+    tree.write_at(&foliage, grove_text().replace("seed: 3", "seed: 4").as_bytes());
+    let report = tree.cook();
+    assert_eq!(by_id(&report, FOLIAGE).status, CookStatus::Cooked);
+    assert_eq!(by_id(&report, set).status, CookStatus::Cooked, "a saved foliage document");
+    assert_eq!(by_id(&report, ZONE).status, CookStatus::Cooked, "which cells have a set is the document's");
+    assert_eq!(by_id(&report, cell_id(cell(0, 0))).status, CookStatus::UpToDate);
+
+    tree.write_at(&colliders, NAV_COLLIDERS.replace("(8.0, 0.5, 8.0)", "(8.0, 0.5, 9.0)").as_bytes());
+    let report = tree.cook();
+    assert_eq!(by_id(&report, set).status, CookStatus::Cooked, "a moved collider");
+}
+
+#[test]
+fn what_a_zone_gets_wrong_about_foliage_is_named() {
+    let refused = |name: &str, tree: &Tree| chain(&tree.try_cook(false).expect_err(name));
+
+    // A foliage document's kind that draws something other than a mesh.
+    let (tree, _, foliage) = foliage_tree("zone-foliage-not-a-mesh", &placements());
+    tree.write_at(&foliage, grove_text().replace(&PLANTS[1].to_string(), &WOOD.to_string()).as_bytes());
+    let text = refused("a material for a mesh", &tree);
+    assert!(text.contains("kinds[1].model") && text.contains("static mesh"), "{text}");
+
+    // A zone naming as its foliage something that isn't one.
+    let (tree, _, _) = foliage_tree("zone-foliage-not-foliage", &placements());
+    let wrong = foliage_zone(&placements()).replace(&FOLIAGE.to_string(), &WOOD.to_string());
+    tree.write("town.zone.ron", wrong.as_bytes());
+    let text = refused("a material for foliage", &tree);
+    assert!(text.contains("`foliage`") && text.contains("isn't a foliage document"), "{text}");
+
+    // A malformed foliage document, by its field.
+    let (tree, _, foliage) = foliage_tree("zone-foliage-malformed", &placements());
+    tree.write_at(&foliage, grove_text().replace("contrast: 0.6", "contrast: 1.6").as_bytes());
+    let text = refused("a contrast past 1", &tree);
+    assert!(text.contains("rules[0].cluster.contrast"), "{text}");
+}

@@ -414,3 +414,61 @@ fn sheets_are_checked_by_field_and_libraries_by_their_atlas() {
     assert!(message("fx/full.effects.ron", Rule::AtlasBudget).contains("132 frames"), "{report}");
     assert!(message("fx/broken.effects.ron", Rule::Sheet).contains("doesn't read"), "{report}");
 }
+
+/// A static glTF plant: a unit square of two triangles, with no skin.
+fn plant() -> Vec<u8> {
+    let mut writer = GltfWriter::default();
+    let square = Geometry {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Geometry::default()
+    };
+    let mesh = writer.add_mesh("Plant", &[(&square, None)]);
+    let node = writer.add_node(json!({ "mesh": mesh }));
+    writer.add_root(node);
+    writer.to_glb()
+}
+
+/// A foliage document (M6 G1a) that doesn't read, or names what isn't a static mesh (a texture, a skinned
+/// mesh), is refused by its field as the cook refuses it, and one that's right passes.
+#[test]
+fn a_malformed_foliage_document_is_refused_by_its_field() {
+    let tree = Tree::new("foliage");
+    let gltf = || ImportSettings::Gltf(MeshSettings::default());
+    let meshes: Vec<AssetId> =
+        (0..3).map(|n| tree.source(&format!("plants/{n}.glb"), &plant(), gltf(), None)).collect();
+    let skinned = tree.source("plants/rigged.glb", &figure(2, 1, 1), gltf(), None);
+    let map = tree.texture("maps/leaf.png", 4, MaxSize::NONE, None);
+    let grove = include_str!("../../../../crates/sapphire_zone/testdata/grove.foliage.ron");
+    let ids = [
+        "2b0f0d43-6d4e-4b59-9b1f-5f3c6f0b8e21",
+        "8f5a7c1e-0c3d-4e1b-a2f6-3d9e4b7c5a10",
+        "4d2c6b8a-1e3f-4a5b-9c7d-0e1f2a3b4c5d",
+    ];
+    let grove = ids
+        .into_iter()
+        .zip(&meshes)
+        .fold(grove.to_owned(), |text, (from, to)| text.replace(from, &to.to_string()));
+    let importer = || ImportSettings::Foliage(foliage::FoliageDocumentSettings::default());
+    tree.source("wood/grove.foliage.ron", grove.as_bytes(), importer(), None);
+    let leafy = grove.replace(&meshes[2].to_string(), &map.to_string());
+    tree.source("wood/leafy.foliage.ron", leafy.as_bytes(), importer(), None);
+    let rigged = grove.replace(&meshes[1].to_string(), &skinned.to_string());
+    tree.source("wood/rigged.foliage.ron", rigged.as_bytes(), importer(), None);
+    let steep = grove.replace("slope_degrees: (0.0, 30.0)", "slope_degrees: (30.0, 0.0)");
+    tree.source("wood/steep.foliage.ron", steep.as_bytes(), importer(), None);
+
+    let report = tree.check();
+    let foliage: Vec<(&str, &str)> = (report.findings.iter())
+        .filter(|finding| finding.rule == Rule::FoliageDocument)
+        .map(|finding| (finding.source.as_str(), finding.message.as_str()))
+        .collect();
+    assert_eq!(foliage.len(), 3, "{report}");
+    assert_eq!(foliage[0].0, "wood/leafy.foliage.ron");
+    assert!(foliage[0].1.contains("kinds[2].model"), "{}", foliage[0].1);
+    assert_eq!(foliage[1].0, "wood/rigged.foliage.ron");
+    assert!(foliage[1].1.contains("kinds[1].model"), "{}", foliage[1].1);
+    assert_eq!(foliage[2].0, "wood/steep.foliage.ron");
+    assert!(foliage[2].1.contains("rules[0].slope_degrees"), "{}", foliage[2].1);
+    assert!(report.failures().all(|finding| finding.rule == Rule::FoliageDocument), "{report}");
+}

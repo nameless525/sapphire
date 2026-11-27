@@ -134,6 +134,15 @@
 //! it, and the `.szone`'s cook holds the two together ([`claims`]), so its key holds the colliders' too
 //! whenever something names one.
 //!
+//! # Foliage
+//!
+//! A document with `foliage` (M6 G1a) names a foliage document's sidecar ID, which the plan reads and checks
+//! before anything cooks, and makes a `.sscatter` for each cell the foliage's layers reach, a sub-asset of the
+//! zone (`grove.scatter.2.-1.sscatter`), its plants on the zone's colliders ([`scatter`]). The `.szone` names the
+//! document and the sets outside its digest, and holds the document's bytes in its key. A zone without it cooks
+//! as it did but for the cooked version (`sapphire_zone::Zone::VERSION`, 12) and an empty `foliage`, and keeps
+//! its digest.
+//!
 //! # What it doesn't do
 //!
 //! The coplanar check runs within an assembly and not between placements, so two prefabs fighting in
@@ -154,9 +163,13 @@ use sapphire_navmesh::NavMesh;
 use sapphire_serialize::postcard;
 use sapphire_tod::TodTimeline;
 use sapphire_tod::weather::{WeatherDocument, WeatherSchedule};
-use sapphire_zone::grid::Grid;
+use sapphire_zone::foliage::scatter_part;
+use sapphire_zone::grid::{CellCoord, Grid};
 use sapphire_zone::weather::ZoneWeatherPlan;
-use sapphire_zone::{Bounds, Place, Zone, ZoneDocument, ZoneError, ZoneGeometry};
+use sapphire_zone::{
+    Bounds, CookedScatterCell, CookedZoneFoliage, FoliageDocument, Place, Zone, ZoneDocument, ZoneError,
+    ZoneGeometry,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::assembly::{self, Assembly, AssemblyError, Detail, matches_pattern};
@@ -164,6 +177,7 @@ use crate::bake::OutlineSettings;
 use crate::cache::{Cache, CacheError, CacheKey, Stage};
 use crate::character_maps;
 use crate::cook::Cook;
+use crate::foliage;
 use crate::mesh::{ImportedMaterial, ImportedMesh};
 use crate::meta::{ImportSettings, SourceAsset};
 use crate::nav::{self, BakeSettings, NavBakeError, Seed};
@@ -172,6 +186,7 @@ use crate::optimize::{self, LodSettings};
 pub mod claims;
 #[cfg(test)]
 mod levels_tests;
+pub mod scatter;
 
 /// Reads and checks the document, its prefabs' too. Bump the version whenever that changes output for
 /// the same document.
@@ -271,6 +286,13 @@ pub enum ZoneCookError {
     Cache(#[from] CacheError),
     #[error("`navigation`: its bake failed")]
     Navigation(#[source] NavBakeError),
+    /// The foliage document a zone names doesn't read, or a field of it is wrong: the error names it (M6 G1a).
+    #[error("`foliage`: {}", path.display())]
+    Foliage {
+        path: PathBuf,
+        #[source]
+        source: ZoneError,
+    },
 }
 
 impl ZoneCookError {
@@ -318,6 +340,11 @@ pub fn part_path(relative: &Path, place: Place, extension: &str) -> PathBuf {
 pub fn shape_path(relative: &Path, shape: &str, extension: &str) -> PathBuf {
     let stem = stem(relative);
     relative.with_file_name(format!("{stem}.{}.{extension}", shape.replace('/', ".")))
+}
+
+/// The file a cell's scatter set cooks to (M6 G1a): `grove.zone.ron` → `grove.scatter.2.-1.sscatter`.
+pub fn scatter_path(relative: &Path, cell: CellCoord, extension: &str) -> PathBuf {
+    relative.with_file_name(format!("{}.scatter.{}.{}.{extension}", stem(relative), cell.x, cell.z))
 }
 
 /// What a navmesh's sub-asset is called among a zone's. Never changed: its ID is derived from it.
@@ -441,6 +468,28 @@ pub struct ZonePlan {
     places: BTreeMap<Place, PlacePlan>,
     /// Each shape's mesh, by [`sapphire_zone::Placement::shape_name`]: none if a placement is split.
     shapes: BTreeMap<String, ShapePlan>,
+    /// The foliage document the zone names, if it names one (M6 G1a).
+    foliage: Option<FoliagePlan>,
+}
+
+/// What a zone's foliage document plans: a scatter set for each cell its layers reach ([`scatter`]).
+struct FoliagePlan {
+    /// Its sidecar's ID, which the zone names.
+    id: AssetId,
+    path: PathBuf,
+    /// What the document's bytes hashed to when the plan read them.
+    hash: blake3::Hash,
+    document: FoliageDocument,
+    cells: Vec<CellCoord>,
+    /// The ground the sets stand on, made by the first that cooks.
+    ground: scatter::SharedGround,
+}
+
+/// What keys a cell's scatter set in place of the zone's document (see [`scatter`]).
+#[derive(Serialize)]
+struct ScatterRecipe {
+    cell: [i32; 2],
+    cell_size: f32,
 }
 
 /// What a zone's placements of one shape have in common: a mesh of the prefab alone, for an editor to draw
@@ -480,11 +529,13 @@ fn placement_transform(at: [f32; 3], turn: f32, scale: [f32; 3]) -> Mat4 {
 
 impl ZonePlan {
     /// Reads a zone document and its prefabs and plans its parts, checking everything that takes no
-    /// geometry and nothing that has cooked. `prefabs` is [`prefab_sources`].
+    /// geometry and nothing that has cooked. `prefabs` is [`prefab_sources`]; `sources` is every source of
+    /// the tree that cooks, by ID, which its `foliage` is found among.
     pub fn new(
         id: AssetId,
         bytes: &[u8],
         prefabs: &HashMap<AssetId, SourceAsset>,
+        sources: &HashMap<AssetId, SourceAsset>,
         cache: Option<&Cache>,
     ) -> Result<Self, ZoneCookError> {
         let document = parse_document(bytes, cache)?;
@@ -595,7 +646,8 @@ impl ZonePlan {
                 });
             }
         }
-        Ok(Self { id, document, prefabs: read, materials, places, shapes })
+        let foliage = document.foliage.map(|id| FoliagePlan::read(id, document.grid, sources)).transpose()?;
+        Ok(Self { id, document, prefabs: read, materials, places, shapes, foliage })
     }
 
     /// The zone source's ID.
@@ -652,6 +704,46 @@ impl ZonePlan {
         let section =
             serde_json::to_vec(&self.document.ambient).expect("a checked section's numbers are finite");
         blake3::hash(&section)
+    }
+
+    /// The cells that have a scatter set, by ascending `[x, z]`: none unless the document names `foliage`.
+    pub fn scatter_cells(&self) -> &[CellCoord] {
+        self.foliage.as_ref().map_or(&[], |foliage| &foliage.cells)
+    }
+
+    /// The ID of a cell's scatter set.
+    pub fn scatter_id(&self, cell: CellCoord) -> AssetId {
+        self.id.sub_asset(&scatter_part(cell))
+    }
+
+    /// What the key of a cell's scatter set holds in place of the document's hash: the cell and the grid, the
+    /// foliage document and the colliders being its dependencies ([`scatter`]).
+    pub fn scatter_recipe(&self, cell: CellCoord) -> blake3::Hash {
+        let recipe = ScatterRecipe { cell: [cell.x, cell.z], cell_size: self.document.grid.cell_size };
+        blake3::hash(&postcard::to_allocvec(&recipe).expect("a scatter recipe always encodes"))
+    }
+
+    /// The foliage document the zone names, as the plan read it: its ID, its file and what its bytes hashed to.
+    pub fn foliage_file(&self) -> Option<(AssetId, &Path, blake3::Hash)> {
+        self.foliage.as_ref().map(|foliage| (foliage.id, foliage.path.as_path(), foliage.hash))
+    }
+
+    /// Cooks a cell's scatter set, standing on the zone's cooked `colliders` ([`scatter`]).
+    pub fn cook_scatter(&self, cell: CellCoord, colliders: &[u8]) -> Result<Vec<u8>, ZoneCookError> {
+        let foliage = self.foliage.as_ref().expect("only a zone that names `foliage` plans scatter sets");
+        let ground = foliage.ground.of(colliders)?;
+        scatter::cook(&foliage.document, &*ground, self.document.grid, cell)
+            .map_err(|error| foliage.error(error))
+    }
+
+    /// What the `.szone` names of its foliage: the document and each cell's set.
+    fn cooked_foliage(&self) -> Option<CookedZoneFoliage> {
+        self.foliage.as_ref().map(|foliage| CookedZoneFoliage {
+            foliage: foliage.id,
+            cells: (foliage.cells.iter())
+                .map(|&cell| CookedScatterCell { coord: [cell.x, cell.z], scatter: self.scatter_id(cell) })
+                .collect(),
+        })
     }
 
     /// Whether a placement or an instance names colliders that stand for it, which the `.szone`'s cook then
@@ -932,6 +1024,39 @@ impl Placing {
     }
 }
 
+impl FoliagePlan {
+    /// Reads and checks the foliage document `id` names among `sources`, and plans its cells on `grid`.
+    fn read(id: AssetId, grid: Grid, sources: &HashMap<AssetId, SourceAsset>) -> Result<Self, ZoneCookError> {
+        let source = sources
+            .get(&id)
+            .filter(|source| matches!(source.meta.importer, ImportSettings::Foliage(_)))
+            .ok_or_else(|| {
+                ZoneCookError::invalid(
+                    "foliage",
+                    format!("{id} isn't a foliage document of this content tree"),
+                )
+            })?;
+        let path = source.path.clone();
+        let bytes =
+            std::fs::read(&path).map_err(|source| ZoneCookError::Read { path: path.clone(), source })?;
+        let error = |source| ZoneCookError::Foliage { path: path.clone(), source };
+        let document = foliage::read(&bytes).map_err(|cook| match cook {
+            foliage::FoliageCookError::Encoding(utf8) => ZoneCookError::Encoding(utf8),
+            foliage::FoliageCookError::Document(source) => error(source),
+        })?;
+        let cells = document.cells(grid).map_err(error)?;
+        Ok(Self { id, hash: blake3::hash(&bytes), path, document, cells, ground: Default::default() })
+    }
+
+    /// A placement error, blamed on the document.
+    fn error(&self, error: ZoneCookError) -> ZoneCookError {
+        match error {
+            ZoneCookError::Zone(source) => ZoneCookError::Foliage { path: self.path.clone(), source },
+            other => other,
+        }
+    }
+}
+
 impl Prefab {
     fn read(source: &SourceAsset, field: &str) -> Result<Self, ZoneCookError> {
         let path = source.path.clone();
@@ -1205,8 +1330,9 @@ pub fn cook(
     let meshes = places.into_iter().map(|place| (place.place, (place.id, place.bounds))).collect();
     let navigation = plan.navigation_id();
     let reflections = plan.reflections_id();
+    let foliage = plan.cooked_foliage();
     let geometry =
-        ZoneGeometry { meshes, instances, day, rigs, weather, navigation, exit_packs, reflections, foliage: None };
+        ZoneGeometry { meshes, instances, day, rigs, weather, navigation, exit_packs, reflections, foliage };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;
     Ok(cooked.into_vec())

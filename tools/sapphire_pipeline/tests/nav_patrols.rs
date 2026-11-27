@@ -127,7 +127,7 @@ fn cook(points: &str) -> Result<Vec<u8>, ZoneCookError> {
             ),
         )"#
     );
-    let plan = ZonePlan::new(NAVIGATION, text.as_bytes(), &HashMap::new(), None)?;
+    let plan = ZonePlan::new(NAVIGATION, text.as_bytes(), &HashMap::new(), &HashMap::new(), None)?;
     let colliders = ColliderDocument::from_ron(TWO_FLOORS).expect("it reads").cook().expect("it cooks");
     cook_navigation(&plan, &colliders.to_cooked().expect("it writes"), None)
 }
@@ -165,7 +165,7 @@ fn a_navmeshs_key_sees_what_is_patrolled_and_only_that() {
                 ),
             )"#
         );
-        ZonePlan::new(NAVIGATION, text.as_bytes(), &HashMap::new(), None)
+        ZonePlan::new(NAVIGATION, text.as_bytes(), &HashMap::new(), &HashMap::new(), None)
             .expect("it plans")
             .navigation_recipe()
     };

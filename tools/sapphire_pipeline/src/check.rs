@@ -42,6 +42,7 @@
 //! | `sheet` | error | An effect sheet whose document names a wrong field ([`EffectSheetDocument::problem`]) or doesn't read, whose painting is missing or isn't its grid's size, an effects library that doesn't read (so its sheets can't be checked), or one whose emitter names an ID that's no sheet of the tree (M6 N4a). |
 //! | `atlas-budget` | error | An effects library whose sheets' frames take more than its atlas holds on a cook: [`ATLAS_BUDGET_DESKTOP`] or [`ATLAS_BUDGET_MOBILE`], each layer at its whole chain. |
 //! | `stale-waiver`, `unexplained-waiver` | error | A waiver nothing needs, or one with no reason. |
+//! | `foliage-document` | error | A foliage document (M6 G1a) that doesn't read, a field of it that's wrong, named, or a kind's model that isn't a static mesh source of the tree. |
 //!
 //! Warnings never fail a check; errors do, unless waived.
 //!
@@ -77,6 +78,7 @@ use crate::character_maps;
 use crate::cook::{self, Cook, CookError};
 use crate::effect_sheet::EffectSheetDocument;
 use crate::effects;
+use crate::foliage;
 use crate::import::image::{SourceFormat, header_size};
 use crate::import::vrm::{self, vroid_eye_layer, vroid_region_gi};
 use crate::material;
@@ -202,6 +204,7 @@ pub enum Rule {
     AtlasBudget,
     StaleWaiver,
     UnexplainedWaiver,
+    FoliageDocument,
 }
 
 impl Rule {
@@ -224,6 +227,7 @@ impl Rule {
             Self::AtlasBudget => "atlas-budget",
             Self::StaleWaiver => "stale-waiver",
             Self::UnexplainedWaiver => "unexplained-waiver",
+            Self::FoliageDocument => "foliage-document",
         }
     }
 
@@ -244,7 +248,8 @@ impl Rule {
             | Self::Sheet
             | Self::AtlasBudget
             | Self::StaleWaiver
-            | Self::UnexplainedWaiver => Severity::Error,
+            | Self::UnexplainedWaiver
+            | Self::FoliageDocument => Severity::Error,
         }
     }
 }
@@ -448,6 +453,7 @@ pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckE
     }
     check.duplicate_textures(&assets)?;
     check.sheets(&assets)?;
+    check.foliage_documents(&assets)?;
     let Checker { mut findings, .. } = check;
     waive(&assets, root, &mut findings);
     findings.sort_by(|a, b| {
@@ -831,6 +837,39 @@ impl Checker<'_> {
                 }
                 None => {
                     first.insert(blake3::hash(&bytes), path.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `foliage-document`: each foliage document read and checked as a cook would, and each kind's model held to a
+    /// static mesh source of the tree. A cook refuses the same; this says so before one, by the field.
+    fn foliage_documents(&mut self, assets: &[&SourceAsset]) -> Result<(), CheckError> {
+        for asset in assets.iter().filter(|asset| matches!(asset.meta.importer, ImportSettings::Foliage(_))) {
+            let path = &asset.path;
+            let bytes = fs::read(path).map_err(|source| CheckError::Read { path: path.clone(), source })?;
+            let document = match foliage::read(&bytes) {
+                Ok(document) => document,
+                Err(error) => {
+                    self.find(asset, Rule::FoliageDocument, None, error.to_string());
+                    continue;
+                }
+            };
+            for (index, kind) in document.kinds.iter().enumerate() {
+                let id = kind.model.mesh();
+                // The cook's own test, so a skinned model is refused here as it is there.
+                let is_static = match self.by_id.get(&id) {
+                    Some(source) => cook::is_static_mesh_source(source).map_err(|source| {
+                        CheckError::Cook { path: path.clone(), source: Box::new(source) }
+                    })?,
+                    None => false,
+                };
+                if !is_static {
+                    let message = format!(
+                        "`kinds[{index}].model`: {id} isn't a static mesh source of this content tree"
+                    );
+                    self.find(asset, Rule::FoliageDocument, None, message);
                 }
             }
         }

@@ -186,9 +186,10 @@ use sapphire_reflect::Versioned;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable};
 use sapphire_time::Stopwatch;
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline};
+use sapphire_zone::grid::CellCoord;
 use sapphire_zone::{
-    AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, Place, ZONE_EXTENSION, Zone, ZoneDocument,
-    ZoneError,
+    AMBIENT_EXTENSION, Ambient, ENCOUNTER_EXTENSION, Encounter, FOLIAGE_EXTENSION, Foliage, Place,
+    SCATTER_EXTENSION, ScatterSet, ZONE_EXTENSION, Zone, ZoneDocument, ZoneError,
 };
 
 use crate::anim_graph::{self, AnimGraphCookError};
@@ -211,6 +212,7 @@ use crate::effect_sheet::{self, EffectSheetDocument, SheetCookError};
 use crate::effects::{self, EffectsCookError};
 use crate::encounter::{self, EncounterCookError};
 use crate::enemy::{self, EnemyCookError};
+use crate::foliage::{self, FoliageCookError};
 use crate::font::{self, FontCookError};
 use crate::import::bvh::{self, Capture};
 use crate::import::fbx::{self, FbxImportError};
@@ -440,6 +442,12 @@ impl Recipe {
                 format: EffectSheet::VERSION,
                 extension: SHEET_EXTENSION,
             },
+            ImportSettings::Foliage(_) => Self {
+                importer: foliage::IMPORTER,
+                cooker: foliage::COOKER,
+                format: Foliage::VERSION,
+                extension: FOLIAGE_EXTENSION,
+            },
             ImportSettings::Sound(_) => Self {
                 importer: audio::SOUND_IMPORTER,
                 cooker: audio::SOUND_COOKER,
@@ -591,6 +599,16 @@ impl Recipe {
         }
     }
 
+    /// The recipe of a zone's scatter set for a cell (M6 G1a).
+    fn zone_scatter() -> Self {
+        Self {
+            importer: foliage::IMPORTER,
+            cooker: zone::scatter::SCATTER_COOKER,
+            format: ScatterSet::VERSION,
+            extension: SCATTER_EXTENSION,
+        }
+    }
+
     /// The recipe of a zone's navmesh.
     fn zone_navigation() -> Self {
         Self {
@@ -649,6 +667,8 @@ impl Recipe {
             effects::output_path(relative, self.extension)
         } else if effect_sheet::is_source(relative) {
             effect_sheet::output_path(relative, self.extension)
+        } else if foliage::is_source(relative) {
+            foliage::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
         } else if audio::is_score_source(relative) {
@@ -850,6 +870,15 @@ pub enum CookError {
         path.display()
     )]
     NotASheet { path: PathBuf, emitter: String, id: AssetId },
+    #[error("failed to cook foliage document {}", path.display())]
+    FoliageDocument {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<FoliageCookError>,
+    },
+    #[error("foliage document {} names {id} in `{field}`, which is not a static mesh of this content tree", path.display())]
+    FoliageReference { path: PathBuf, field: String, id: AssetId },
     #[error("failed to cook locale {}", path.display())]
     Locale {
         path: PathBuf,
@@ -1058,6 +1087,7 @@ impl TextureOf {
             | Part::Navigation
             | Part::Reflections
             | Part::Ambient
+            | Part::Scatter(_)
             | Part::MergedMaterial { .. } => None,
         }
     }
@@ -1316,6 +1346,7 @@ fn cook_dir_through(
                 }
                 Part::Cell(place) => zone::part_path(&source_relative, *place, recipe.extension),
                 Part::Shape(shape) => zone::shape_path(&source_relative, shape, recipe.extension),
+                Part::Scatter(cell) => zone::scatter_path(&source_relative, *cell, recipe.extension),
                 Part::FontSubset { pack, .. } => {
                     let file = format!("{}.{pack}.{}", file_stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
@@ -1377,12 +1408,12 @@ fn cook_dir_through(
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
     // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
     // move sets read clips' keys, so those go before move sets; probe grids and a zone's reflection
-    // probes read cooked meshes and their materials, a navmesh reads cooked colliders, and a zone's `.szone` reads its meshes and holds
+    // probes read cooked meshes and their materials, a navmesh and a zone's scatter sets read cooked colliders, and a zone's `.szone` reads its meshes and holds
     // its navmesh's key, so those cook last. `others` read none of what those cook.
     let (own_zones, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_own_zone());
     let (navigation, rest): (Vec<usize>, Vec<usize>) =
-        rest.into_iter().partition(|&index| plan[index].part == Part::Navigation);
+        rest.into_iter().partition(|&index| matches!(plan[index].part, Part::Navigation | Part::Scatter(_)));
     let (probe_grids, rest): (Vec<usize>, Vec<usize>) = rest
         .into_iter()
         .partition(|&index| plan[index].is_probe_grid() || plan[index].part == Part::Reflections);
@@ -1728,6 +1759,8 @@ enum Part {
     Reflections,
     /// A zone's ambient characters (M5 C10).
     Ambient,
+    /// A zone's scatter set for one cell (M6 G1a).
+    Scatter(CellCoord),
     /// A texture's level above its tail (M5 M3): the texture, the source's own asset, and which level,
     /// from its base.
     Level { texture: AssetId, level: u32 },
@@ -1913,6 +1946,7 @@ fn sub_assets(
         | ImportSettings::Mix(_)
         | ImportSettings::Effects(_)
         | ImportSettings::EffectSheet(_)
+        | ImportSettings::Foliage(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
@@ -1923,7 +1957,7 @@ fn sub_assets(
         | ImportSettings::Ui(_)
         | ImportSettings::Script(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => {
-            let plan = ZonePlan::new(meta.id, &read()?, prefabs, cache).map_err(zone_error(path))?;
+            let plan = ZonePlan::new(meta.id, &read()?, prefabs, sources, cache).map_err(zone_error(path))?;
             let cells = plan.places().map(|place| PlannedPart {
                 id: plan.part_id(place),
                 part: Part::Cell(place),
@@ -1956,7 +1990,14 @@ fn sub_assets(
                 part: Part::Ambient,
                 recipe: Recipe::zone_ambient(),
             });
-            let parts = parts.chain(navigation).chain(reflections).chain(ambient).collect();
+            let scatter: Vec<PlannedPart> = (plan.scatter_cells().iter())
+                .map(|&cell| PlannedPart {
+                    id: plan.scatter_id(cell),
+                    part: Part::Scatter(cell),
+                    recipe: Recipe::zone_scatter(),
+                })
+                .collect();
+            let parts = parts.chain(navigation).chain(reflections).chain(ambient).chain(scatter).collect();
             zones.insert(path.clone(), plan);
             Ok(parts)
         }
@@ -2159,6 +2200,14 @@ impl Planned {
 
     fn is_move_set(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::MoveSet(_))
+    }
+
+    /// Whether it cooks to a mesh with no skeleton that isn't a zone's cell or shape: what a zone's instance or a
+    /// foliage kind draws.
+    fn is_static_mesh(&self) -> bool {
+        self.recipe.extension == MESH_EXTENSION
+            && self.skeleton.is_none()
+            && !matches!(self.part, Part::Cell(_) | Part::Shape(_))
     }
 
     /// Whether it cooks to a mesh: a mesh source's own asset.
@@ -2660,6 +2709,28 @@ impl LastTexture {
     }
 }
 
+/// Whether a source's own asset is a static mesh, as [`Planned::is_static_mesh`] judges it once the tree is
+/// planned: a mesh that shares no rig and has no skeleton of its own. `check` holds a foliage kind's model to
+/// it without planning the tree (M6 G1a).
+pub(crate) fn is_static_mesh_source(asset: &SourceAsset) -> Result<bool, CookError> {
+    let importer = &asset.meta.importer;
+    if Recipe::for_settings(importer).extension != MESH_EXTENSION || importer.shared_rig().is_some() {
+        return Ok(false);
+    }
+    let path = &asset.path;
+    let read = || fs::read(path).map_err(|source| CookError::Read { path: path.clone(), source });
+    match importer {
+        ImportSettings::Vrm(_) => Ok(false),
+        ImportSettings::Gltf(settings) => gltf::has_skeleton(&read()?, settings.clips.is_some())
+            .map(|skinned| !skinned)
+            .map_err(|source| CookError::Import { path: path.clone(), source }),
+        ImportSettings::Fbx(settings) => fbx::has_skeleton(&read()?, settings.clips.is_some())
+            .map(|skinned| !skinned)
+            .map_err(|source| CookError::Fbx { path: path.clone(), source: Box::new(source) }),
+        _ => Ok(true),
+    }
+}
+
 /// Runs `cook` for the source at `path`, a panic becoming an error that names it. Importers and
 /// cookers report what they find wrong themselves; this is the last line of defence, for what
 /// slips past them or panics inside a crate they call, so that the file is named all the same.
@@ -2707,13 +2778,14 @@ fn asset_key(
         Part::Navigation => assets.zones[path].navigation_recipe(),
         Part::Reflections => assets.zones[path].reflections_recipe(),
         Part::Ambient => assets.zones[path].ambient_recipe(),
+        Part::Scatter(cell) => assets.zones[path].scatter_recipe(*cell),
         _ => source.hash,
     };
     // A navmesh and ambient characters read nothing of how a zone's meshes cook (its cells' levels and
     // outlines, M5 D6), so a save to those leaves them alone.
     let unread = ImportSettings::Zone(zone::ZoneSettings::default());
     let settings = match part {
-        Part::Navigation | Part::Ambient => &unread,
+        Part::Navigation | Part::Ambient | Part::Scatter(_) => &unread,
         _ => &meta.importer,
     };
     Ok(CacheKey::new(&KeyInputs {
@@ -2889,6 +2961,7 @@ fn cook_source(
             return cook_shape(path, shape, settings, cook, assets);
         }
         Part::Navigation => return cook_navigation(path, assets),
+        Part::Scatter(cell) => return cook_scatter(path, *cell, assets),
         Part::Ambient => return cook_ambient(path, assets),
         Part::Reflections => {
             let plan = &assets.zones[path];
@@ -3023,6 +3096,8 @@ fn cook_source(
             let _held = assets.memory.hold(effect_sheet::cook_memory(&document));
             effect_sheet::cook(&document, &image, cook).map_err(sheet_error)
         }
+        ImportSettings::Foliage(_) => foliage::cook(bytes)
+            .map_err(|source| CookError::FoliageDocument { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Timeline(_) => timeline::cook(bytes)
@@ -3118,6 +3193,13 @@ fn cook_navigation(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookErro
     let plan = &assets.zones[path];
     let bytes = zone_colliders(path, assets)?;
     zone::cook_navigation(plan, &bytes, assets.cache).map_err(zone_error(path))
+}
+
+/// A zone's scatter set for `cell`, on its cooked colliders (M6 G1a).
+fn cook_scatter(path: &Path, cell: CellCoord, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
+    let plan = &assets.zones[path];
+    let bytes = zone_colliders(path, assets)?;
+    plan.cook_scatter(cell, &bytes).map_err(zone_error(path))
 }
 
 /// The cooked collider set the zone at `path` names, which it must.
@@ -3678,6 +3760,22 @@ fn source_dependencies(
                 fs::read(&image_path).map_err(|source| CookError::Read { path: image_path, source })?;
             Ok(vec![Dependency::File { path: document.image, hash: blake3::hash(&image) }])
         }
+        // It reads nothing else, but each kind's mesh is held to a static mesh of the tree on every cook (M6
+        // G1a): a renderer instances it, so it has no skeleton.
+        ImportSettings::Foliage(_) => {
+            let document = foliage::read(bytes).map_err(|source| CookError::FoliageDocument {
+                path: path.to_owned(),
+                source: Box::new(source),
+            })?;
+            for (index, kind) in document.kinds.iter().enumerate() {
+                let id = kind.model.mesh();
+                if !assets.get(id).is_some_and(Planned::is_static_mesh) {
+                    let field = format!("kinds[{index}].model");
+                    return Err(CookError::FoliageReference { path: path.to_owned(), field, id });
+                }
+            }
+            Ok(Vec::new())
+        }
         ImportSettings::CharacterMap(settings, _) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -4090,6 +4188,24 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
         let id = document.colliders.expect("a document with `navigation` names `colliders`");
         return Ok(vec![cooked_key(id, "colliders".to_owned(), "a collider document")?]);
     }
+    // Its colliders and the foliage document, which the plan read (M6 G1a).
+    let foliage = plan.foliage_file().map(|(id, file, hash)| {
+        reference("foliage".to_owned(), "a foliage document", id, |planned| {
+            matches!(planned.asset.meta.importer, ImportSettings::Foliage(_))
+        })?;
+        let bytes = fs::read(file).map_err(|source| CookError::Read { path: file.to_owned(), source })?;
+        // What's placed is the document the plan read: a save since then cooks again from the top.
+        if blake3::hash(&bytes) != hash {
+            return Err(CookError::SourceChanged { path: file.to_owned() });
+        }
+        Ok(Dependency::File { path: format!("#foliage {id}"), hash })
+    });
+    let foliage = foliage.transpose()?;
+    if let Part::Scatter(_) = part {
+        let id = document.colliders.expect("a document with `foliage` names `colliders`");
+        let colliders = cooked_key(id, "colliders".to_owned(), "a collider document")?;
+        return Ok([colliders].into_iter().chain(foliage).collect());
+    }
     // What the probes see and the day they're baked under: their recipe holds the rest.
     if *part == Part::Reflections {
         return reflections::dependencies(plan, path, |id| assets.probe_input(id)).map_err(|source| {
@@ -4099,6 +4215,8 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     if let Some(id) = plan.navigation_id() {
         dependencies.push(cooked_key(id, "navigation".to_owned(), "a navmesh")?);
     }
+    // Which cells have a set is the foliage document's to say.
+    dependencies.extend(foliage);
     // What names a collider is held to it as the `.szone` cooks, so a collider moved cooks it again.
     if plan.has_claims() {
         let id = document.colliders.expect("a document that names a collider names `colliders`");
@@ -4106,11 +4224,7 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     }
     for (index, instance) in document.instances.iter().enumerate() {
         let field = format!("instances[{index}].mesh");
-        reference(field.clone(), "a static mesh", instance.mesh, |planned| {
-            planned.recipe.extension == MESH_EXTENSION
-                && planned.skeleton.is_none()
-                && !matches!(planned.part, Part::Cell(_) | Part::Shape(_))
-        })?;
+        reference(field.clone(), "a static mesh", instance.mesh, Planned::is_static_mesh)?;
         dependencies.push(cooked_key(instance.mesh, field, "a static mesh")?);
     }
     for place in plan.places() {
@@ -4340,6 +4454,7 @@ pub(crate) fn imported_mesh(
         | ImportSettings::Mix(_)
         | ImportSettings::Effects(_)
         | ImportSettings::EffectSheet(_)
+        | ImportSettings::Foliage(_)
         | ImportSettings::Font(_)
         | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)

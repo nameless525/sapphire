@@ -157,6 +157,7 @@ pub mod encounter;
 pub mod enemy;
 pub mod extract;
 pub mod figure;
+pub mod foliage;
 pub mod font;
 pub mod font_field;
 pub mod font_subset;

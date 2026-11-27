@@ -127,6 +127,7 @@ impl TextureKind {
             | ImportSettings::Mix(_)
             | ImportSettings::Effects(_)
             | ImportSettings::EffectSheet(_)
+            | ImportSettings::Foliage(_)
             | ImportSettings::Font(_)
             | ImportSettings::FontChains(_)
             | ImportSettings::MoveSet(_)

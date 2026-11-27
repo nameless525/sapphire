@@ -158,6 +158,7 @@ use crate::effect_sheet::{self, EffectSheetSettings};
 use crate::effects::{self, EffectsSettings};
 use crate::encounter::{self, EncounterSettings};
 use crate::enemy::{self, EnemySettings};
+use crate::foliage::{self, FoliageDocumentSettings};
 use crate::font::{self, FontChainsSettings, FontSettings};
 use crate::import::bvh::BvhSettings;
 use crate::import::vrm::{self, VrmSettings};
@@ -309,6 +310,9 @@ pub enum ImportSettings {
     Bvh(BvhSettings),
     /// A painted effect sheet's document (`.sheet.ron`), naming its painting beside it (M6 N4a).
     EffectSheet(EffectSheetSettings),
+    /// A foliage document (`.foliage.ron`): the kinds a zone's scatter sets draw and the rules that place them
+    /// (M6 G1a).
+    Foliage(FoliageDocumentSettings),
 }
 
 impl ImportSettings {
@@ -356,6 +360,9 @@ impl ImportSettings {
         // A sheet's painting is read through its document, never cooked as a texture of its own.
         if effect_sheet::is_image(source) {
             return None;
+        }
+        if foliage::is_source(source) {
+            return Some(Self::Foliage(FoliageDocumentSettings::default()));
         }
         if zone::is_source(source) {
             return Some(Self::Zone(ZoneSettings::default()));
@@ -479,6 +486,7 @@ impl ImportSettings {
             Self::Dialogue(_) => "dialogue",
             Self::ProceduralTexture(_) => "procedural texture",
             Self::Bvh(_) => "BVH",
+            Self::Foliage(_) => "foliage",
         }
     }
 
@@ -519,7 +527,8 @@ impl ImportSettings {
             | Self::Timeline(_)
             | Self::Dialogue(_)
             | Self::ProceduralTexture(_)
-            | Self::Bvh(_) => None,
+            | Self::Bvh(_)
+            | Self::Foliage(_) => None,
         }
     }
 
@@ -560,7 +569,8 @@ impl ImportSettings {
             | Self::Timeline(_)
             | Self::Dialogue(_)
             | Self::ProceduralTexture(_)
-            | Self::Bvh(_) => None,
+            | Self::Bvh(_)
+            | Self::Foliage(_) => None,
         }
     }
 

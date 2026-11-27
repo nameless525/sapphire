@@ -987,3 +987,31 @@ fn the_packers_name_tracks_its_encoders() {
         "a new encoder may compress differently: rename the packer with it"
     );
 }
+
+/// CI's cooks-agree check (`.github/scripts/cooks_agree.py`) lets a texture, a texture level and an effect
+/// sheet differ between architectures by their kind's number, and names every kind in its report: its
+/// numbers must be the enum's, or a renumbering would let another kind differ unseen.
+#[test]
+fn the_cooks_agree_check_numbers_kinds_as_the_enum_does() {
+    let script = include_str!("../../../../.github/scripts/cooks_agree.py");
+    let line = script
+        .lines()
+        .find(|line| line.starts_with("TEXTURE, TEXTURE_LEVEL, EFFECT_SHEET = "))
+        .expect("the encoded kinds' line");
+    let numbers: Vec<u8> =
+        line.split(" = ").nth(1).unwrap().split(", ").map(|n| n.parse().unwrap()).collect();
+    let encoded = [AssetKind::Texture, AssetKind::TextureLevel, AssetKind::EffectSheet];
+    assert_eq!(numbers, encoded.map(|kind| kind as u8));
+
+    let start = script.find("KINDS = {").expect("the kinds' table") + "KINDS = {".len();
+    let table = &script[start..start + script[start..].find('}').unwrap()];
+    let mut named: Vec<u8> = table
+        .split(',')
+        .filter_map(|entry| entry.split_once(':'))
+        .map(|(number, _)| number.trim().parse().unwrap())
+        .collect();
+    named.sort_unstable();
+    let mut all: Vec<u8> = AssetKind::ALL.iter().map(|&kind| kind as u8).collect();
+    all.sort_unstable();
+    assert_eq!(named, all, "KINDS names each kind once");
+}

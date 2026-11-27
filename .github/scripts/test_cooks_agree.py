@@ -1,5 +1,5 @@
-"""Cooks agree: same-architecture cooks must match whole, and across architectures all but textures and
-their levels."""
+"""Cooks agree: same-architecture cooks must match whole, and across architectures all but textures, their
+levels and effect sheets."""
 
 from contextlib import redirect_stdout
 import io
@@ -10,7 +10,7 @@ import unittest
 
 import cooks_agree
 
-MESH, TEXTURE, TEXTURE_LEVEL = 1, 2, 26
+MESH, TEXTURE, TEXTURE_LEVEL, EFFECTS, EFFECT_SHEET = 1, 2, 26, 32, 33
 
 
 def pack(assets: dict) -> bytes:
@@ -38,6 +38,8 @@ class CooksAgreeTests(unittest.TestCase):
         self.mesh = ("11" * 16, (MESH, 10, "aa" * 32))
         self.texture = ("22" * 16, (TEXTURE, 20, "bb" * 32))
         self.level = ("33" * 16, (TEXTURE_LEVEL, 40, "ee" * 32))
+        self.sheet = ("44" * 16, (EFFECT_SHEET, 60, "99" * 32))
+        self.library = ("55" * 16, (EFFECTS, 8, "88" * 32))
 
     def cook(self, name: str, assets: dict) -> cooks_agree.Cook:
         directory = self.root / name
@@ -64,6 +66,19 @@ class CooksAgreeTests(unittest.TestCase):
         second = self.cook("aarch64", dict([self.mesh, self.texture, (level_id, (kind, size, "ff" * 32))]))
         self.assertEqual(cooks_agree.compare(first, second, across_architectures=True), 0)
         self.assertGreater(cooks_agree.compare(first, second, across_architectures=False), 0)
+
+    def test_an_effect_sheet_may_differ_only_across_architectures(self):
+        sheet_id, (kind, size, _) = self.sheet
+        first = self.cook("x86-64", dict([self.library, self.sheet]))
+        second = self.cook("aarch64", dict([self.library, (sheet_id, (kind, size, "77" * 32))]))
+        self.assertEqual(cooks_agree.compare(first, second, across_architectures=True), 0)
+        self.assertGreater(cooks_agree.compare(first, second, across_architectures=False), 0)
+
+    def test_an_effects_library_never_differs(self):
+        library_id, (kind, size, _) = self.library
+        first = self.cook("x86-64", dict([self.library, self.sheet]))
+        second = self.cook("aarch64", dict([(library_id, (kind, size, "66" * 32)), self.sheet]))
+        self.assertEqual(cooks_agree.compare(first, second, across_architectures=True), 1)
 
     def test_a_mesh_never_differs(self):
         mesh_id, (kind, size, _) = self.mesh

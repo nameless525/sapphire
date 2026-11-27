@@ -8,8 +8,9 @@ found without downloading anything.
 
 With `--across-architectures` the second cook is AArch64's (the Metal golden job's packs) and the first
 x86-64's. Block-compressed textures are encoded by each architecture's own kernels, by design, so
-they may differ and are only counted, a texture's tail and each of its levels alike (M5 M3); every
-other asset, every mesh among them, must match."""
+they may differ and are only counted, a texture's tail and each of its levels alike (M5 M3), and so
+are effect sheets, whose layers the same encoders write (M6 N4a); every other asset, every mesh
+among them, must match."""
 
 import argparse
 import hashlib
@@ -25,8 +26,10 @@ KINDS = {
     8: "colliders", 9: "sound", 10: "cue", 11: "move set", 12: "anim graph", 13: "zone", 14: "strings",
     15: "font", 16: "font chains", 17: "navmesh", 18: "timeline", 19: "ui", 20: "encounter",
     21: "script", 22: "dialogue", 23: "enemy", 24: "score", 25: "voice lines", 26: "texture level",
+    27: "reflection probes", 28: "playable", 29: "motion", 30: "ambient", 31: "mix", 32: "effects",
+    33: "effect sheet",
 }
-TEXTURE, TEXTURE_LEVEL = 2, 26
+TEXTURE, TEXTURE_LEVEL, EFFECT_SHEET = 2, 26, 33
 
 
 class Cook:
@@ -80,7 +83,7 @@ def compare(first: Cook, second: Cook, across_architectures: bool) -> int:
     print(f"{len(a)} content files from {first.family}, {len(b)} from {second.family}"
           + (f", commit {first.commit}" if first.commit else ""))
     failures = 0
-    encoded = {TEXTURE: 0, TEXTURE_LEVEL: 0}
+    encoded = {TEXTURE: 0, TEXTURE_LEVEL: 0, EFFECT_SHEET: 0}
     for name in differing:
         if name not in a or name not in b:
             print(f"differs: {name} ({first.family} {a.get(name, 'missing')}, {second.family} {b.get(name, 'missing')})")
@@ -104,8 +107,8 @@ def compare(first: Cook, second: Cook, across_architectures: bool) -> int:
                 failures += 1
             print(f"  {name}: asset {asset} ({KINDS.get(kind, kind)}): {x and x[1:]} against {y and y[1:]}")
     if across_architectures:
-        print(f"{encoded[TEXTURE]} textures and {encoded[TEXTURE_LEVEL]} texture levels differ, "
-              "as each architecture's block encoders do.")
+        print(f"{encoded[TEXTURE]} textures, {encoded[TEXTURE_LEVEL]} texture levels and "
+              f"{encoded[EFFECT_SHEET]} effect sheets differ, as each architecture's block encoders do.")
     return failures
 
 
@@ -114,7 +117,8 @@ def main() -> int:
     parser.add_argument("first", type=Path, help="a golden-bundle.tar.gz")
     parser.add_argument("second", type=Path, help="another from the same commit, or a directory of its packs")
     parser.add_argument("--across-architectures", action="store_true",
-                        help="the second cook is another architecture's: only textures and their levels may differ")
+                        help="the second cook is another architecture's: only textures, their levels and effect "
+                             "sheets may differ")
     args = parser.parse_args()
     first, second = Cook(args.first), Cook(args.second)
     if first.commit and second.commit and first.commit != second.commit:
@@ -124,7 +128,8 @@ def main() -> int:
               "\"Reproducible cooks\", says what must hold.")
         return 1
     print("The cooks agree"
-          + (" but for textures and their levels." if args.across_architectures else " byte for byte."))
+          + (" but for textures, their levels and effect sheets." if args.across_architectures
+             else " byte for byte."))
     return 0
 
 

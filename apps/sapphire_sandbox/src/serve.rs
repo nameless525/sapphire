@@ -208,7 +208,7 @@ impl Serving {
                     &mut stage.content,
                     &stage.gpu,
                 );
-                *stage.renderer = renderer.renderer;
+                stage.renderer = renderer.renderer;
                 stage.hooks.dev.renderer_created(&mut stage.renderer);
                 stage.scene.prewarm(&*stage.show, &mut stage.renderer);
                 // The new renderer's scene starts empty.

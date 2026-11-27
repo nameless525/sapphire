@@ -63,9 +63,9 @@ pub struct SandboxApp {
     /// The debug overlay and its cvars.
     #[cfg(feature = "dev")]
     dev: DevTools,
-    renderer: Renderer,
+    renderer: Box<Renderer>,
     /// The asset server and what it uploaded to the renderer.
-    content: Content,
+    content: Box<Content>,
     graph: GraphExecutor,
     surface: Option<RenderSurface>,
     gpu: GpuContext,
@@ -82,13 +82,13 @@ pub struct SandboxApp {
     /// The command line's overrides of the tier's renderer settings.
     options: Options,
 
-    scene: Scene,
+    scene: Box<Scene>,
     input: SandboxInput,
     /// The audio system, with `--cue`: nothing audio exists without it.
     audio: Option<DeviceAudio>,
     /// What plays on the scene: with `--record` a simulation that takes a tick with each fixed step,
     /// played by the bindings, with `--arena` what stands it there, and with `--hud` the HUD.
-    show: ShownFight,
+    show: Box<ShownFight>,
     /// Whether the window last held the pointer for a fight.
     pointer_held: bool,
 
@@ -152,7 +152,7 @@ impl App for SandboxApp {
         // Frames are paced to the tier's rate (spec §6.2): on iOS the platform's display link asks
         // the display for it, and on Android its frame limiter holds it and the window asks for it.
         platform.set_frame_rate(quality.frame_rate());
-        let mut content = options.mount_content(platform.host())?;
+        let mut content = Box::new(options.mount_content(platform.host())?);
         content.set_tier(quality.tier());
         // A window streams textures by what its views draw, in the tier's pool (M5 M5).
         content.set_texture_pool(options.texture_pool_mib.map(|mib| u64::from(mib) << 20));
@@ -164,7 +164,7 @@ impl App for SandboxApp {
             content.watch_uploads(Box::<PartyLooks>::default());
         }
         content.override_materials(options.material_overrides());
-        let mut show = ShownFight::default();
+        let mut show = Box::new(ShownFight::default());
         let combat = options
             .combat
             .as_ref()
@@ -227,7 +227,8 @@ impl App for SandboxApp {
         if matches!(options.combat, Some(CombatOption::Fight { .. })) {
             input.listen_for_fight_restart()?;
         }
-        let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
+        let mut scene =
+            Box::new(Scene::with_character(renderer.character, renderer.character_bounds, options.skinned));
         scene.set_spring_floor(options.spring_floor != Some(false));
         scene.set_spring_turns(options.spring_turns.unwrap_or(0));
         scene.set_anim_levels_on(options.anim_levels != Some(false));
@@ -477,7 +478,7 @@ impl App for SandboxApp {
         )?;
         // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky
         // and its HUD show on their first frame.
-        scene.prewarm(&show, &mut renderer.renderer);
+        scene.prewarm(&*show, &mut renderer.renderer);
         // Its bars read the fighters from the first frame, with no step yet.
         if let Some(combat) = &show.fight.combat {
             let followed = show.fight.show.follow_simulation(&mut scene, combat.simulation(), combat.cast());
@@ -635,7 +636,7 @@ impl App for SandboxApp {
             );
             // Finished reads, unloads and this frame's uploads, within the upload budget.
             self.content.update(&mut self.renderer, &self.gpu);
-            self.scene.follow_content(&mut self.content, &mut self.show);
+            self.scene.follow_content(&mut self.content, &mut *self.show);
         }
         // Recovery, tier changes and loading are no stage of the frame.
         stopwatch.lap();
@@ -943,13 +944,13 @@ impl SandboxApp {
             // drops device-lost errors), and the rebuilt renderer is sent everything.
             #[cfg(feature = "dev")]
             self.dev.after_steps(self.show.fight.combat.as_ref(), &self.scene);
-            self.scene.animate(&self.content, alpha, &mut self.show);
+            self.scene.animate(&self.content, alpha, &mut *self.show);
             self.stages.secondary_motion = self.scene.anim_stats().spring_time;
             if target.is_some() {
                 self.show.begin_interface(self.renderer.ui_page_state());
             }
             self.scene.follow_render_settings(self.renderer.settings());
-            let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size), &mut self.show);
+            let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size), &mut *self.show);
             self.stages.extract = presentation + stopwatch.lap();
             // Before `prepare`, which culls hulls by it, and readies the debug view.
             self.renderer.set_outline_distance(self.quality.outline_distance());
@@ -1162,7 +1163,7 @@ impl SandboxApp {
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
-                self.scene.prewarm(&self.show, &mut self.renderer);
+                self.scene.prewarm(&*self.show, &mut self.renderer);
                 self.graph = GraphExecutor::new();
                 self.gpu = device.gpu;
                 self.format = device.format;
@@ -1209,7 +1210,7 @@ impl SandboxApp {
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
-                self.scene.prewarm(&self.show, &mut self.renderer);
+                self.scene.prewarm(&*self.show, &mut self.renderer);
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, tier = %self.quality.active().id, "renderer rebuilt for the quality tier");
@@ -1440,7 +1441,7 @@ struct GpuDevice {
 /// A renderer and the meshes it holds: built with the device, and again for a new quality
 /// tier.
 pub(crate) struct SceneRenderer {
-    pub(crate) renderer: Renderer,
+    pub(crate) renderer: Box<Renderer>,
     character: MeshHandle,
     character_bounds: [[f32; 3]; 2],
     /// Each party member's mesh, with `--party`.
@@ -1611,7 +1612,7 @@ pub(crate) fn create_renderer(
     settings: RenderSettings,
     options: &Options,
 ) -> Result<SceneRenderer, AppInitError> {
-    let mut renderer = Renderer::new(gpu, format, settings)?;
+    let mut renderer = Box::new(Renderer::new(gpu, format, settings)?);
     // Before any upload, so nothing the packs list builds on a first use (M3 K1).
     renderer.prewarm(&content.pipeline_inventory());
     // A new renderer starts empty, so every asset goes to it again. If it fails, the content goes
@@ -1750,6 +1751,22 @@ fn surface_target(handle: &SurfaceHandle) -> Result<SurfaceTarget, HandleError> 
 mod pause_tests;
 #[cfg(test)]
 mod touch_tests;
+
+#[cfg(test)]
+mod size_tests {
+    use super::SandboxApp;
+
+    /// The app is made and moved through `Result`s from `App::init` up through the platform's start, on the SDL
+    /// thread on Android and the main thread on iOS, both 1 MiB, with the renderer's first shaders below it: with
+    /// its renderer, content, scene and show by value it was 80 KiB, and its start took 609 KiB of the Android
+    /// emulator's 1,052. Boxed, it is 19.5 KiB with `dev`. Box the next large part rather than raise
+    /// this.
+    #[test]
+    fn a_sandbox_app_is_small_enough_to_move_on_the_main_thread() {
+        let size = size_of::<SandboxApp>();
+        assert!(size <= 24 * 1024, "a sandbox app takes {size} bytes");
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -83,7 +83,7 @@ A cook that fails (a file the importer refuses, say) prints why, and the watch w
 budget: (role: Hero),
 ```
 
-The roles are `Hero`, `Enemy`, `Boss`, `Ambient` and `Tree`; spec §3.4 has their rows, and [`check.rs`](../tools/sapphire_pipeline/src/check.rs) every rule.
+The roles are `Hero`, `Enemy`, `Boss`, `Ambient`, `Tree` and `Cover`; spec §3.4 has their rows, and [`check.rs`](../tools/sapphire_pipeline/src/check.rs) every rule.
 
 ## The test character
 

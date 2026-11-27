@@ -1,0 +1,25 @@
+// Meadow grass (M6 G6b): a short dense clump of soft blades, blue-green at the roots and warm yellow-green at
+// the tips, in three flat tones, darker toward its middle. Opaque blades, no cards: the field draws them as the
+// nature zone's grass, lit as the ground.
+//
+// Sizes in metres (a variant's size is its tallest blade); the rest as shares (`sapphire_pipeline::tree::cover`).
+(
+    type: "sapphire::pipeline::CoverSpecies",
+    version: 1,
+    data: (
+        name: "meadow_grass",
+        seed: 6511,
+        form: Grass((
+            blades: 56,
+            radius: 0.35,
+            shortest: 0.55,
+            width: 0.045,
+            lean: 0.35,
+            segments: 3,
+            root: "#3f7a4e",
+            tip: "#b6d978",
+            wind: (sway: 0.05, bend: 0.25, flutter: 0.08, flutter_frequency: 2.4),
+        )),
+        variants: [(name: "clump", size: 0.35)],
+    ),
+)

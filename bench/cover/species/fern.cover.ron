@@ -1,0 +1,32 @@
+// A fern (M6 G6b): fronds rising from one heart and arching out under their weight, each a strip of cards
+// along its curve showing a painted frond: leaflets both sides of a stalk, longest a third of the way up.
+// Fresh green, lighter on the lit leaflets, teal in the shade.
+//
+// Sizes in metres (a variant's size is its longest frond); lengths and widths as shares, angles in degrees
+// (`sapphire_pipeline::tree::cover`).
+(
+    type: "sapphire::pipeline::CoverSpecies",
+    version: 1,
+    data: (
+        name: "fern",
+        seed: 6203,
+        form: Fern((
+            fronds: 14,
+            rise: (45.0, 75.0),
+            arch: 0.4,
+            length: (0.7, 1.0),
+            width: 0.26,
+            segments: 6,
+            leaves: (
+                fill: "#4f9a52",
+                light: "#9fd66e",
+                shade: "#286a5a",
+                accent: "#3d6e3a",
+                inner: "#5f7ea6",
+                translucency: "#c4e874",
+            ),
+            wind: (sway: 0.02, bend: 0.06, flutter: 0.05, flutter_frequency: 2.0),
+        )),
+        variants: [(name: "small", size: 0.6), (name: "large", size: 1.0)],
+    ),
+)

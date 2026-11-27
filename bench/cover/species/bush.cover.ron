@@ -1,0 +1,41 @@
+// A bush (M6 G6b): a low round mass of leafy clumps, grown as a small tree whose crown reaches the ground, so
+// its root forks into stems at once. The broadleaf's colours a shade deeper, as undergrowth in the trees' shade.
+//
+// Sizes in metres (a variant's size is its height); the crown and the growth in fractions of the height and in
+// growth steps, the card a share of the height (`sapphire_pipeline::tree::cover`).
+(
+    type: "sapphire::pipeline::CoverSpecies",
+    version: 1,
+    data: (
+        name: "bush",
+        seed: 6101,
+        form: Bush((
+            crown: (shape: Ellipsoid, base: 0.12, radius: 0.55, shell: 0.55),
+            growth: (steps: 16, influence: 6.0, kill: 1.5, leader: 0.0, tropism: 0.3, lean: 0.0),
+            wood: (
+                tip: 0.006,
+                exponent: 2.2,
+                thinnest: 0.012,
+                sides: (5, 3),
+                flare: 0.0,
+                root: "#4e3e38",
+                top: "#6e5c4c",
+            ),
+            leaves: (
+                brush: Broad,
+                cards: 2,
+                fill: "#5f9e4a",
+                light: "#a8d46a",
+                shade: "#2f6a56",
+                accent: "#4a3a2e",
+                inner: "#6a7ea0",
+                translucency: "#cfe870",
+            ),
+            wind: (sway: 0.03, bend: 0.05, flutter: 0.03, flutter_frequency: 2.6),
+            points: 220,
+            card: 0.26,
+            clumps: 4,
+        )),
+        variants: [(name: "small", size: 0.8), (name: "large", size: 1.4)],
+    ),
+)

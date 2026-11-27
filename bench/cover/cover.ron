@@ -1,0 +1,19 @@
+// The benchmark's ground cover (M6 G6b): the plants and stones the nature zone's foliage places under and
+// between the trees (M6 G2b), each a spec in `species/`, built at its variants by
+// `sapphire_pipeline::tree::cover` on the deterministic maths: a bush grown as the trees are, a fern's fronds
+// along their curves, two flowers, two grass clumps of opaque blades and rocks cut from planes, the plants
+// with atlases painted in the trees' brush strokes. Every one is generated: no plant, stone or texture is
+// downloaded or licensed. A preset sizes only the plants' atlases; every model is the same at every preset and
+// on every cook.
+(
+    type: "sapphire::pipeline::BenchCover",
+    version: 1,
+    data: (
+        species: ["bush", "fern", "daisy", "starflower", "meadow_grass", "tall_grass", "rock"],
+        presets: (
+            ci: (atlas: 128),
+            // The cover row's map (`sapphire_pipeline check`): 512 a side, capped to 256 on the phones.
+            budget: (atlas: 512),
+        ),
+    ),
+)

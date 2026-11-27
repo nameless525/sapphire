@@ -1,0 +1,24 @@
+// Tall grass (M6 G6b): a looser clump of long blades arching out and over, green at the roots and pale straw at
+// the tips, in three flat tones: the meadow's edges and the clearing's rim.
+//
+// Sizes in metres (a variant's size is its tallest blade); the rest as shares (`sapphire_pipeline::tree::cover`).
+(
+    type: "sapphire::pipeline::CoverSpecies",
+    version: 1,
+    data: (
+        name: "tall_grass",
+        seed: 6613,
+        form: Grass((
+            blades: 32,
+            radius: 0.25,
+            shortest: 0.5,
+            width: 0.03,
+            lean: 0.55,
+            segments: 4,
+            root: "#4a7a52",
+            tip: "#d6dc8a",
+            wind: (sway: 0.06, bend: 0.3, flutter: 0.1, flutter_frequency: 2.0),
+        )),
+        variants: [(name: "clump", size: 0.9)],
+    ),
+)

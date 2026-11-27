@@ -5,7 +5,9 @@
 //! its crown, how it grows, its wood, its leaves' brush and palette, its wind and its ages. Nothing is
 //! modelled by hand and nothing is downloaded: every branch and every texel comes from the spec and its seed,
 //! on the deterministic maths, so a species writes the same bytes on every machine. The benchmark's trees
-//! (`bench::trees`) are the species the repository grows; nothing in `content/` is one yet.
+//! (`bench::trees`) are the species the repository grows; nothing in `content/` is one yet. Ground cover, the
+//! bushes, ferns, flowers, grass and rocks beneath them, is built beside them in [`cover`] with the same
+//! painter, cards and bake.
 //!
 //! # Growing
 //!
@@ -34,6 +36,7 @@
 //! Never photographic: two tones and a hand-painted edge, as the reference games' foliage reads.
 
 pub mod atlas;
+pub mod cover;
 pub mod grow;
 pub mod mesh;
 #[cfg(test)]

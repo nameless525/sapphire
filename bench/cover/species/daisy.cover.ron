@@ -1,0 +1,35 @@
+// A daisy (M6 G6b): a clump of thin stalks, each a white head of narrow rays round a golden heart, facing up
+// and out over a fan of leaves at their foot. The rays' shade is a cool lavender, never grey.
+//
+// Sizes in metres (a variant's size is its tallest stalk); the rest as shares (`sapphire_pipeline::tree::cover`).
+(
+    type: "sapphire::pipeline::CoverSpecies",
+    version: 1,
+    data: (
+        name: "daisy",
+        seed: 6307,
+        form: Flower((
+            stems: 7,
+            spread: 0.18,
+            shortest: 0.6,
+            lean: 0.25,
+            head: 0.075,
+            petals: 13,
+            petal_width: 0.24,
+            heart: 0.34,
+            leaves: 5,
+            stalk: ("#4f7d3c", "#7aa64e"),
+            bloom: (
+                fill: "#f6f3ea",
+                light: "#ffffff",
+                shade: "#c6c8dc",
+                accent: "#f2b43a",
+                inner: "#b8c4d8",
+                translucency: "#fff4c8",
+            ),
+            leaf: ("#5a9a48", "#9ccc64", "#2e6650"),
+            wind: (sway: 0.02, bend: 0.08, flutter: 0.06, flutter_frequency: 3.0),
+        )),
+        variants: [(name: "clump", size: 0.35)],
+    ),
+)

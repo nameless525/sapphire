@@ -48,9 +48,9 @@ fn generating_twice_writes_the_same_bytes() {
 
 /// The `ci` preset's generated tree, pinned folder by folder: blake3 over each file's path, length
 /// and bytes, in path order. Everything the generator does is integer hashes, the four operations,
-/// `sqrt`, `floor` and `sapphire_math::det` (the figures' rings, rotations and colours, and the trees'
-/// growth, tubes, cards and painted atlases, included), so these are the same on every OS and
-/// architecture: CI's x86-64 runs fail here if one disagrees, and say which folder. A change to `bench/` or a generator moves them on purpose: update them then.
+/// `sqrt`, `floor` and `sapphire_math::det` (the figures' rings, rotations and colours, the trees'
+/// growth, tubes, cards and painted atlases, and the ground cover's fronds, blades, stalks and cut stones,
+/// included), so these are the same on every OS and architecture: CI's x86-64 runs fail here if one disagrees, and say which folder. A change to `bench/` or a generator moves them on purpose: update them then.
 #[test]
 fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
     const PINNED: &[(&str, &str)] = &[
@@ -59,6 +59,13 @@ fn the_ci_preset_generates_the_same_bytes_on_every_machine() {
         ("cast/ambient_b_00", "a8fc041b56341744077c5846701d8b134ade32a74b08e2cb78072bbbb41294e7"),
         ("cast/enemy_00", "a4d4bf649b5df5e3e778fac27194fa8062a9e8905919a6bb630453de7c7f47d4"),
         ("cast/hero_00", "641bbc8d36b100df33d0d4eec3af37178f3ac55920bdb4df3e7c573a186c4b95"),
+        ("cover/bush", "c0411bddf2aa7aa559ad20729a705a5f83f5d582638fc79f1cf6bc9c0b6f764f"),
+        ("cover/daisy", "28fb110b5f68825576ce5d950afb63ebd1bb4469d57d48e5fdc08926dba4daa0"),
+        ("cover/fern", "657ea13148b464327ae1bd91de6375900a0ce3b44e6f8c94ed4b995938b8acae"),
+        ("cover/meadow_grass", "48b9b2d49e566b1cb8cc36e50b90f8d23795e1e94951c5529d77d5952e9661c2"),
+        ("cover/rock", "3da5a292e0136f85e79c22f407cc24b2c6fdd44c4d246de27b986ac2df78e433"),
+        ("cover/starflower", "9d0c231dda61c429bd71db8b25e9ffa30982b555058712b5a1acf30ba3bab6f5"),
+        ("cover/tall_grass", "6470e832d17de4c50119599ee0fa8918f70967e9a17e09f1d5977e80049c7365"),
         ("district", "578307ba34ed170956227f9333d90fe9e2bce8bb59471074e3c47d4189c2d650"),
         ("district/buildings", "4ba81538425fc6d90cb7a002164f7b9b40b0a76b3323f104ace974afb131d6e4"),
         ("district/materials", "57aaa0fc00432b725fe541e79abfa9e0b89db350aad58b9d6045af8e407685b0"),
@@ -148,11 +155,11 @@ fn a_preset_scales_the_district_and_the_cast() {
     // The district's sets, and the nature zone's five grounds (M6 W1) at every preset.
     assert_eq!(count(Preset::Ci, ".ptex.ron"), 4 * 3 + 5 * 3);
     assert_eq!(count(Preset::Budget, ".ptex.ron"), 160 * 3 + 5 * 3);
-    // The cast's models, the trees' four species at three ages, and the nature zone's 32 × 20 terrain cells and
-    // its grass tuft at every preset.
+    // The cast's models, the trees' four species at three ages, the ground cover's eleven variants (M6 G6b), and
+    // the nature zone's 32 × 20 terrain cells and its grass tuft at every preset.
     let nature = 32 * 20 + 1;
-    assert_eq!((count(Preset::Ci, ".vrm"), count(Preset::Ci, ".glb")), (1, 3 + 12 + nature));
-    assert_eq!((count(Preset::Budget, ".vrm"), count(Preset::Budget, ".glb")), (3, 3 + 6 + 12 + nature));
+    assert_eq!((count(Preset::Ci, ".vrm"), count(Preset::Ci, ".glb")), (1, 3 + 12 + 11 + nature));
+    assert_eq!((count(Preset::Budget, ".vrm"), count(Preset::Budget, ".glb")), (3, 3 + 6 + 12 + 11 + nature));
 
     // Every source but the control maps, the face's threshold masks, the district's day and the nature zone's
     // day and weather states has a sidecar, every sidecar's ID is its own, and the zone reaches every material.

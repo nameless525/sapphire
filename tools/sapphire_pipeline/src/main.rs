@@ -96,8 +96,8 @@ Usage:
                                   [--part <SLOT>=<PART>]...
       Scaffold a .vrm/.glb/.gltf/.fbx character so it cooks with no hand edit: copy MODEL into --out
       (default: its own folder), start its sidecar from a preset (FILE, an ImportPreset document, or the
-      built-in character preset of its kind) cast as ROLE (hero, enemy, boss, ambient or tree; default the
-      preset's), extract every material as extract-materials --all does, and give each slot, by its
+      built-in character preset of its kind) cast as ROLE (hero, enemy, boss, ambient, tree or cover;
+      default the preset's), extract every material as extract-materials --all does, and give each slot, by its
       part (skin, face, hair, eye or cloth: from --part, else the importer and the slot's name), a ramp,
       an ILM map and a layer mask, and a face its SDF map from masks baked from its normals, each a
       document with its sidecar under <stem>/shading/, bound in its material. Every ID is new. Never

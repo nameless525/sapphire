@@ -1,0 +1,26 @@
+// Rocks (M6 G6b): stones cut from a few planes, broad flat faces with narrow lighter bevels between them, moss
+// on the faces turned up, darker at the foot where they sink into the ground. Warm grey with a cool violet shade:
+// the world's stylized stone, not a scan's.
+//
+// Sizes in metres (a variant's size is its width); the height and the sink as shares
+// (`sapphire_pipeline::tree::cover`).
+(
+    type: "sapphire::pipeline::CoverSpecies",
+    version: 1,
+    data: (
+        name: "rock",
+        seed: 6719,
+        form: Rock((
+            planes: 14,
+            height: 0.75,
+            sink: 0.2,
+            rough: 0.25,
+            fill: "#9a9488",
+            light: "#d2ccbc",
+            shade: "#5e6474",
+            moss: "#6e9a4c",
+            mossy: 0.35,
+        )),
+        variants: [(name: "small", size: 0.5), (name: "medium", size: 1.2), (name: "large", size: 2.6)],
+    ),
+)

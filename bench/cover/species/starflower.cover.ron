@@ -1,0 +1,35 @@
+// A starflower (M6 G6b): a few low stalks, each a sky-blue head of five broad petals round a pale heart, the
+// meadow's cool accent against the daisies' white and the grass's yellow-green.
+//
+// Sizes in metres (a variant's size is its tallest stalk); the rest as shares (`sapphire_pipeline::tree::cover`).
+(
+    type: "sapphire::pipeline::CoverSpecies",
+    version: 1,
+    data: (
+        name: "starflower",
+        seed: 6409,
+        form: Flower((
+            stems: 5,
+            spread: 0.15,
+            shortest: 0.7,
+            lean: 0.3,
+            head: 0.065,
+            petals: 5,
+            petal_width: 0.75,
+            heart: 0.22,
+            leaves: 4,
+            stalk: ("#4a7a40", "#6e9c4c"),
+            bloom: (
+                fill: "#7fb2f0",
+                light: "#cfe6ff",
+                shade: "#5a6ec8",
+                accent: "#fff0a0",
+                inner: "#a0b0d0",
+                translucency: "#d8ecff",
+            ),
+            leaf: ("#5a9a48", "#9ccc64", "#2e6650"),
+            wind: (sway: 0.02, bend: 0.08, flutter: 0.06, flutter_frequency: 3.2),
+        )),
+        variants: [(name: "clump", size: 0.3)],
+    ),
+)

@@ -12,9 +12,9 @@
 //! # Parts
 //!
 //! The tree is made of parts ([`PARTS`]), each a folder of `bench/` and a generator of its own: the
-//! district ([`district`], M5 B2's), the cast ([`cast`], M5 B3's), the trees ([`trees`], M6 G6a's) and the
-//! nature zone ([`nature`], M6 W1's). A part reads its own folder, so its presets and documents are its own,
-//! and returns its sources ([`Source`]) relative to its folder in the output. This module writes them, gives each its sidecar with an ID derived from its path ([`asset_id`]),
+//! district ([`district`], M5 B2's), the cast ([`cast`], M5 B3's), the trees ([`trees`], M6 G6a's), the ground
+//! cover ([`cover`], M6 G6b's) and the nature zone ([`nature`], M6 W1's). A part reads its own folder, so its
+//! presets and documents are its own, and returns its sources ([`Source`]) relative to its folder in the output. This module writes them, gives each its sidecar with an ID derived from its path ([`asset_id`]),
 //! and removes whatever an earlier run wrote that this one didn't. A part names another part's assets by
 //! the same IDs, without reading its files.
 //!
@@ -62,6 +62,7 @@ use crate::samples::{Existing, Generated, write_files};
 use crate::tree::TreeError;
 
 pub mod cast;
+pub mod cover;
 pub mod district;
 pub mod kinds;
 pub mod nature;
@@ -78,10 +79,11 @@ pub const BENCH_ROOT: AssetId = sapphire_synthetic_zone::BENCH_ROOT;
 pub const MARKER: &str = ".bench-source";
 
 /// Every part: its folder under `bench/` and in the output, and its generator.
-pub const PARTS: [(&str, Generator); 4] = [
+pub const PARTS: [(&str, Generator); 5] = [
     ("district", district::generate),
     ("cast", cast::generate),
     (trees::PART, trees::generate),
+    (cover::PART, cover::generate),
     (nature::PART, nature::generate),
 ];
 

@@ -138,9 +138,16 @@
 //!
 //! A document with `foliage` (M6 G1a) names a foliage document's sidecar ID, which the plan reads and checks
 //! before anything cooks, and makes a `.sscatter` for each cell the foliage's layers reach, a sub-asset of the
-//! zone (`grove.scatter.2.-1.sscatter`), its plants on the zone's colliders ([`scatter`]). The `.szone` names the
-//! document and the sets outside its digest, and holds the document's bytes in its key. A zone without it cooks
-//! as it did but for the cooked version and an empty `foliage`, and keeps its digest.
+//! zone (`grove.scatter.2.-1.sscatter`), its plants on the zone's colliders ([`scatter`]), kept off what of the
+//! zone its rules say (its splines, its placements' footprints, its water: [`ZonePlan::cook_scatter`]). The
+//! `.szone` names the document and the sets outside its digest, and holds in its key the document's ID and the
+//! cells it plans. A zone without it cooks as it did but for the cooked version and an empty `foliage`, and keeps
+//! its digest.
+//!
+//! A foliage document whose rules place a tree with a trunk (M6 G1b) also makes the zone's own collider set,
+//! `grove.trunks.scol`, its colliders with every trunk joined ([`trunks`]), which the `.szone`'s simulation half
+//! names in place of the document's `colliders`, and which the navmesh bakes from. Only such a zone moves its
+//! digest.
 //!
 //! # Atmosphere volumes
 //!
@@ -170,7 +177,7 @@ use sapphire_navmesh::NavMesh;
 use sapphire_serialize::postcard;
 use sapphire_tod::TodTimeline;
 use sapphire_tod::weather::{WeatherDocument, WeatherSchedule};
-use sapphire_zone::foliage::scatter_part;
+use sapphire_zone::foliage::{Avoid, Footprint, Surroundings, scatter_part};
 use sapphire_zone::grid::{CellCoord, Grid};
 use sapphire_zone::weather::ZoneWeatherPlan;
 use sapphire_zone::{
@@ -194,6 +201,7 @@ pub mod claims;
 #[cfg(test)]
 mod levels_tests;
 pub mod scatter;
+pub mod trunks;
 
 /// Reads and checks the document, its prefabs' too. Bump the version whenever that changes output for
 /// the same document.
@@ -349,6 +357,11 @@ pub fn shape_path(relative: &Path, shape: &str, extension: &str) -> PathBuf {
     relative.with_file_name(format!("{stem}.{}.{extension}", shape.replace('/', ".")))
 }
 
+/// The file a zone's colliders with its trunks joined cook to (M6 G1b): `grove.zone.ron` → `grove.trunks.scol`.
+pub fn trunks_path(relative: &Path, extension: &str) -> PathBuf {
+    relative.with_file_name(format!("{}.trunks.{extension}", stem(relative)))
+}
+
 /// The file a cell's scatter set cooks to (M6 G1a): `grove.zone.ron` → `grove.scatter.2.-1.sscatter`.
 pub fn scatter_path(relative: &Path, cell: CellCoord, extension: &str) -> PathBuf {
     relative.with_file_name(format!("{}.scatter.{}.{}.{extension}", stem(relative), cell.x, cell.z))
@@ -488,8 +501,14 @@ struct FoliagePlan {
     hash: blake3::Hash,
     document: FoliageDocument,
     cells: Vec<CellCoord>,
+    /// Whether a rule places a tree with a trunk, so the zone joins trunks to its colliders ([`trunks`]).
+    trunks: bool,
+    /// What of the zone its rules keep off, as the scatter sets' keys hold it ([`ScatterRecipe::around`]).
+    around: blake3::Hash,
     /// The ground the sets stand on, made by the first that cooks.
     ground: scatter::SharedGround,
+    /// What of the zone the sets keep off, made by the first that cooks.
+    surroundings: Mutex<Option<Arc<Surroundings>>>,
 }
 
 /// What keys a cell's scatter set in place of the zone's document (see [`scatter`]).
@@ -497,6 +516,40 @@ struct FoliagePlan {
 struct ScatterRecipe {
     cell: [i32; 2],
     cell_size: f32,
+    /// [`nav::TRIANGULATION`]: the colliders' triangles are its ground.
+    triangulation: u32,
+    /// The assembly importer's version, when its rules keep off placements: each piece's box is its import's.
+    assembly: Option<u32>,
+    /// What of the zone its rules keep off: a hash of [`AroundRecipe`].
+    around: [u8; 32],
+}
+
+/// What of a zone a foliage document's rules keep off, for the scatter sets' keys: each only if a rule names it.
+#[derive(Serialize)]
+struct AroundRecipe<'a> {
+    splines: Option<&'a [sapphire_zone::Spline]>,
+    water: Vec<&'a sapphire_zone::water::WaterShape>,
+    /// Each piece in a cell, as its cell's recipe has it.
+    placements: Option<Vec<FootprintRecipe>>,
+}
+
+/// What keys a zone's joined colliders and its `.szone` of its foliage, in place of the foliage document: the
+/// document, its cells and whether it has trunks.
+#[derive(Serialize)]
+struct FoliageRecipe {
+    id: AssetId,
+    cells: Vec<[i32; 2]>,
+    trunks: bool,
+}
+
+/// What a piece in a cell adds to the scatter sets' keys when they keep off its footprint.
+#[derive(Serialize)]
+struct FootprintRecipe {
+    prefab: AssetId,
+    part: Option<u32>,
+    at: [f32; 3],
+    turn: f32,
+    scale: [f32; 3],
 }
 
 /// What a zone's placements of one shape have in common: a mesh of the prefab alone, for an editor to draw
@@ -653,8 +706,9 @@ impl ZonePlan {
                 });
             }
         }
-        let foliage = document.foliage.map(|id| FoliagePlan::read(id, document.grid, sources)).transpose()?;
-        Ok(Self { id, document, prefabs: read, materials, places, shapes, foliage })
+        let mut plan = Self { id, document, prefabs: read, materials, places, shapes, foliage: None };
+        plan.foliage = plan.document.foliage.map(|id| FoliagePlan::read(id, &plan, sources)).transpose()?;
+        Ok(plan)
     }
 
     /// The zone source's ID.
@@ -724,10 +778,79 @@ impl ZonePlan {
     }
 
     /// What the key of a cell's scatter set holds in place of the document's hash: the cell and the grid, the
-    /// foliage document and the colliders being its dependencies ([`scatter`]).
+    /// triangles' version, and what of the zone its rules keep off, the foliage document, the colliders and the
+    /// prefabs whose footprints it keeps off being its dependencies ([`scatter`]).
     pub fn scatter_recipe(&self, cell: CellCoord) -> blake3::Hash {
-        let recipe = ScatterRecipe { cell: [cell.x, cell.z], cell_size: self.document.grid.cell_size };
+        let foliage = self.foliage.as_ref().expect("only a zone that names `foliage` plans scatter sets");
+        let recipe = ScatterRecipe {
+            cell: [cell.x, cell.z],
+            cell_size: self.document.grid.cell_size,
+            triangulation: nav::TRIANGULATION,
+            assembly: self.scatter_reads_prefabs().then_some(assembly::IMPORTER.version),
+            around: *foliage.around.as_bytes(),
+        };
         blake3::hash(&postcard::to_allocvec(&recipe).expect("a scatter recipe always encodes"))
+    }
+
+    /// Every piece in a cell, in the order its footprint is measured ([`Self::footprints`]).
+    fn cell_pieces(&self) -> Vec<FootprintRecipe> {
+        let cells = self.places.iter().filter(|(place, _)| **place != Place::Backdrop);
+        cells
+            .flat_map(|(_, plan)| &plan.pieces)
+            .map(|piece| {
+                let placement = &self.document.placements[piece.placement];
+                FootprintRecipe {
+                    prefab: placement.prefab,
+                    part: piece.part.map(|part| part as u32),
+                    at: placement.at,
+                    turn: placement.turn,
+                    scale: placement.scale,
+                }
+            })
+            .collect()
+    }
+
+    /// Whether its scatter sets keep off its placements' footprints, and so read its prefabs.
+    pub fn scatter_reads_prefabs(&self) -> bool {
+        self.foliage.as_ref().is_some_and(|foliage| foliage.avoids_placements())
+    }
+
+    /// Every prefab a cell places, each once, for a key: what the footprints its scatter sets keep off are of.
+    pub fn prefab_files(&self) -> Vec<(AssetId, &Path, blake3::Hash)> {
+        let cells = self.places.keys().filter(|place| **place != Place::Backdrop);
+        let ids: BTreeSet<AssetId> = cells
+            .flat_map(|place| self.places[place].pieces.iter())
+            .map(|piece| self.document.placements[piece.placement].prefab)
+            .collect();
+        ids.into_iter().map(|id| (id, self.prefabs[&id].path.as_path(), self.prefabs[&id].hash)).collect()
+    }
+
+    /// The ID of its trunks, its document's colliders with its trees' trunks joined, which it has if its foliage
+    /// has a rule placing a kind with a trunk, whether or not one stands (M6 G1b, [`trunks`]). A zone without
+    /// has none, colliders or not.
+    pub fn trunks_id(&self) -> Option<AssetId> {
+        self.foliage
+            .as_ref()
+            .is_some_and(|foliage| foliage.trunks)
+            .then(|| self.id.sub_asset(trunks::TRUNKS_PART))
+    }
+
+    /// What the key of its joined colliders, and of its `.szone`, holds of its foliage in place of the foliage
+    /// document's bytes: the document, the cells it plans and whether it has trunks. The sets' keys hold the rest.
+    pub fn foliage_recipe(&self) -> Option<blake3::Hash> {
+        let foliage = self.foliage.as_ref()?;
+        let recipe = FoliageRecipe {
+            id: foliage.id,
+            cells: foliage.cells.iter().map(|cell| [cell.x, cell.z]).collect(),
+            trunks: foliage.trunks,
+        };
+        Some(blake3::hash(&postcard::to_allocvec(&recipe).expect("a foliage recipe always encodes")))
+    }
+
+    /// Joins its trees' trunks, from its cooked scatter `sets`, to its document's cooked `colliders` ([`trunks`]).
+    pub fn cook_trunks(&self, colliders: &[u8], sets: &[&[u8]]) -> Result<Vec<u8>, ZoneCookError> {
+        let foliage = self.foliage.as_ref().expect("only a zone with trunks joins them");
+        trunks::join(colliders, &foliage.document, sets).map_err(|error| foliage.error(error))
     }
 
     /// The foliage document the zone names, as the plan read it: its ID, its file and what its bytes hashed to.
@@ -735,12 +858,69 @@ impl ZonePlan {
         self.foliage.as_ref().map(|foliage| (foliage.id, foliage.path.as_path(), foliage.hash))
     }
 
-    /// Cooks a cell's scatter set, standing on the zone's cooked `colliders` ([`scatter`]).
+    /// Cooks a cell's scatter set, standing on the zone's cooked `colliders` ([`scatter`]) and kept off what of
+    /// the zone its rules say: its splines and its water from its document, its placements' footprints from
+    /// each piece's box in its prefab's space, each turned and placed as its placement is.
     pub fn cook_scatter(&self, cell: CellCoord, colliders: &[u8]) -> Result<Vec<u8>, ZoneCookError> {
         let foliage = self.foliage.as_ref().expect("only a zone that names `foliage` plans scatter sets");
         let ground = foliage.ground.of(colliders)?;
-        scatter::cook(&foliage.document, &*ground, self.document.grid, cell)
+        let around = self.surroundings(foliage)?;
+        scatter::cook(&foliage.document, &*ground, &around, self.document.grid, cell)
             .map_err(|error| foliage.error(error))
+    }
+
+    /// What of the zone its scatter sets keep off, made once.
+    fn surroundings(&self, foliage: &FoliagePlan) -> Result<Arc<Surroundings>, ZoneCookError> {
+        let mut kept = foliage.surroundings.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(around) = &*kept {
+            return Ok(Arc::clone(around));
+        }
+        let footprints = if foliage.avoids_placements() { self.footprints()? } else { Vec::new() };
+        let around = Arc::new(Surroundings::new(&self.document, footprints));
+        *kept = Some(Arc::clone(&around));
+        Ok(around)
+    }
+
+    /// Every piece's footprint in a cell, the backdrop's aside: the box round its triangles in its prefab's space
+    /// at full detail, placed as its placement is. A split placement's pieces are each their own.
+    fn footprints(&self) -> Result<Vec<Footprint>, ZoneCookError> {
+        let mut footprints = Vec::new();
+        for (place, plan) in &self.places {
+            if *place == Place::Backdrop {
+                continue;
+            }
+            for piece in &plan.pieces {
+                let placement = &self.document.placements[piece.placement];
+                let field = format!("placements[{}]", piece.placement);
+                let read = &self.prefabs[&placement.prefab];
+                let geometry = read.geometry(Detail::Full).map_err(|source| ZoneCookError::Prefab {
+                    field,
+                    path: read.path.clone(),
+                    source: Box::new(source),
+                })?;
+                let parts = match piece.part {
+                    Some(part) => &geometry.parts[part..=part],
+                    None => &geometry.parts[..],
+                };
+                let corners = parts.iter().flatten().flat_map(|slot| &slot.indices);
+                let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                for &index in corners {
+                    let position = geometry.vertices[index as usize].position;
+                    min = std::array::from_fn(|axis| det::min(min[axis], position[axis]));
+                    max = std::array::from_fn(|axis| det::max(max[axis], position[axis]));
+                }
+                if min[0] <= max[0] {
+                    footprints.push(Footprint::placed(
+                        min,
+                        max,
+                        placement.at,
+                        placement.turn,
+                        placement.scale,
+                    ));
+                }
+            }
+        }
+        Ok(footprints)
     }
 
     /// What the `.szone` names of its foliage: the document and each cell's set.
@@ -1032,8 +1212,13 @@ impl Placing {
 }
 
 impl FoliagePlan {
-    /// Reads and checks the foliage document `id` names among `sources`, and plans its cells on `grid`.
-    fn read(id: AssetId, grid: Grid, sources: &HashMap<AssetId, SourceAsset>) -> Result<Self, ZoneCookError> {
+    /// Reads and checks the foliage document `id` names among `sources`, and plans its cells on the zone `plan`'s
+    /// grid, holding the splines its rules name to the zone's.
+    fn read(
+        id: AssetId,
+        plan: &ZonePlan,
+        sources: &HashMap<AssetId, SourceAsset>,
+    ) -> Result<Self, ZoneCookError> {
         let source = sources
             .get(&id)
             .filter(|source| matches!(source.meta.importer, ImportSettings::Foliage(_)))
@@ -1051,8 +1236,36 @@ impl FoliagePlan {
             foliage::FoliageCookError::Encoding(utf8) => ZoneCookError::Encoding(utf8),
             foliage::FoliageCookError::Document(source) => error(source),
         })?;
-        let cells = document.cells(grid).map_err(error)?;
-        Ok(Self { id, hash: blake3::hash(&bytes), path, document, cells, ground: Default::default() })
+        let zone = &plan.document;
+        let cells = document.cells(zone.grid).map_err(error)?;
+        Surroundings::new(zone, Vec::new()).check(&document)?;
+        let water = document.avoids(|avoid| matches!(avoid, Avoid::Water { .. }));
+        let placements = document.avoids(|avoid| matches!(avoid, Avoid::Placements { .. }));
+        let around = AroundRecipe {
+            splines: document
+                .avoids(|avoid| matches!(avoid, Avoid::Splines { .. }))
+                .then_some(&zone.splines[..]),
+            water: if water { zone.water.iter().map(|body| &body.shape).collect() } else { Vec::new() },
+            placements: placements.then(|| plan.cell_pieces()),
+        };
+        let around =
+            blake3::hash(&postcard::to_allocvec(&around).expect("a zone's surroundings always encode"));
+        Ok(Self {
+            id,
+            hash: blake3::hash(&bytes),
+            path,
+            trunks: document.has_trunks(),
+            document,
+            cells,
+            around,
+            ground: Default::default(),
+            surroundings: Mutex::default(),
+        })
+    }
+
+    /// Whether a rule or grass keeps off the zone's placements.
+    fn avoids_placements(&self) -> bool {
+        self.document.avoids(|avoid| matches!(avoid, Avoid::Placements { .. }))
     }
 
     /// A placement error, blamed on the document.
@@ -1394,6 +1607,7 @@ pub fn cook(
     let navigation = plan.navigation_id();
     let reflections = plan.reflections_id();
     let foliage = plan.cooked_foliage();
+    let joined_colliders = plan.trunks_id();
     let geometry = ZoneGeometry {
         meshes,
         instances,
@@ -1405,6 +1619,7 @@ pub fn cook(
         reflections,
         foliage,
         volume_looks,
+        joined_colliders,
     };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;

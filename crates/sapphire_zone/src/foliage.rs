@@ -9,7 +9,7 @@
 //!         // What grows: a species the tree generator grows, at one age, or a ground-cover model, each a
 //!         // mesh by its sidecar's ID.
 //!         kinds: [
-//!             (name: "oak", model: Tree("2b0f0d43-6d4e-4b59-9b1f-5f3c6f0b8e21")),
+//!             (name: "oak", model: Tree("2b0f0d43-6d4e-4b59-9b1f-5f3c6f0b8e21"), trunk: Some((radius: 0.3, height: 4.0))),
 //!             (name: "fern", model: Cover("8f5a7c1e-0c3d-4e1b-a2f6-3d9e4b7c5a10")),
 //!         ],
 //!         // Where it may grow: named outlines on the ground, in metres in X and Z.
@@ -20,6 +20,9 @@
 //!              slope_degrees: (0.0, 30.0), cluster: Some((scale: 24.0, contrast: 0.6)), scale: (0.8, 1.3)),
 //!             (name: "ferns", kind: "fern", on: ["wood"], per_100m2: 20.0, spacing: 1.0,
 //!              avoid: [Kinds(kinds: ["oak"], distance: 1.5), Area(position: (0.0, 0.0, 0.0), shape: Sphere(radius: 6.0))]),
+//!             // Off the zone's path, out of its buildings and back from its water.
+//!             (name: "birches", kind: "oak", on: ["wood"], per_100m2: 0.5, spacing: 3.0,
+//!              avoid: [Splines(names: ["path"], distance: 2.0), Placements(distance: 1.0), Water(distance: 3.0)]),
 //!         ],
 //!         // Grass: dense clumps by the square metre, after every rule.
 //!         grass: [(name: "floor", kind: "fern", on: ["wood"], per_m2: 2.0, avoid: [Kinds(kinds: ["oak"], distance: 0.6)])],
@@ -28,8 +31,27 @@
 //! ```
 //!
 //! A zone names one by its `foliage` field, and its cook places it into a scatter set for each cell its layers
-//! reach, in the zone's presentation half: nothing here is the simulation's, so no digest moves with it (trunk
-//! colliders are G1b's). Plants stand on the zone's static colliders, so a zone with foliage names `colliders`.
+//! reach, in the zone's presentation half. Plants stand on the zone's static colliders, so a zone with foliage
+//! names `colliders`. The one thing of it the simulation reads is its trunks (below): a zone whose foliage has
+//! none keeps the digest it had without foliage.
+//!
+//! # Trunks
+//!
+//! A tree kind may have a [`Trunk`], a capsule's radius and height at scale 1 (M6 G1b). The cook joins one
+//! capsule a tree to the zone's static colliders (`sapphire_pipeline::zone::trunks`), in the `World` group, so a
+//! body walks round it and the navmesh is baked round it; nothing else of the field collides. A trunk is
+//! [`Trunk::capsule`] of its instance: upright, from its radius under the root (so it meets the ground on any
+//! slope a tree may stand on) to its height over it, both times the instance's scale, a product of `f32`s and
+//! `det`'s `exp2`. Its collider is named by its plant's stable ID ([`trunk_name`]).
+//!
+//! # Keeping off the zone
+//!
+//! A rule's [`Avoid`] can name what of the zone a plant keeps away from, across the ground: its splines (each
+//! the uniform Catmull-Rom through its points, sampled), its placements' footprints (each piece's box in its
+//! prefab's space, turned as placed) and its water bodies (a lake's outline, a river's banks, an ocean's shore
+//! by the ground round a root). The cook gives placement these as [`Surroundings`], made from the zone
+//! ([`Surroundings::new`]), so whether a plant stands is still a pure function of the document, the ground and
+//! the zone, decided at cook time.
 //!
 //! # Placing
 //!
@@ -58,6 +80,7 @@
 //! The ID stays beside it in the set, never uploaded: what draws needs no identity, and what edits needs no
 //! GPU.
 
+mod keep;
 pub mod place;
 #[cfg(test)]
 mod tests;
@@ -71,6 +94,7 @@ use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::AlignedVec;
 use serde::{Deserialize, Serialize};
 
+pub use keep::{Footprint, Surroundings};
 pub use place::{Ground, GroundPoint, Placed, Region, grass_reach, place_grass, place_rules, scatter_set};
 
 use crate::document::{ZoneError, check_finite, check_name, check_names, check_position};
@@ -107,6 +131,12 @@ pub const CHUNK_SIZE: f32 = 16.0;
 pub const MIN_SCALE: f32 = 0.5;
 /// The largest scale an instance can hold.
 pub const MAX_SCALE: f32 = 2.0;
+/// The thinnest trunk, in metres, at scale 1.
+pub const MIN_TRUNK_RADIUS: f32 = 0.05;
+/// The thickest trunk, in metres, at scale 1.
+pub const MAX_TRUNK_RADIUS: f32 = 4.0;
+/// The tallest trunk, in metres, at scale 1.
+pub const MAX_TRUNK_HEIGHT: f32 = 64.0;
 
 /// A foliage document (see the [module docs](self)).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
@@ -138,6 +168,60 @@ pub struct FoliageKind {
     /// Unique among the document's kinds: its identity.
     pub name: String,
     pub model: FoliageModel,
+    /// Its trunk's collider, a tree's alone (see the [module docs](self#trunks)): none by default, so it collides
+    /// with nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trunk: Option<Trunk>,
+}
+
+/// A tree's trunk as the simulation meets it: an upright capsule of `radius`, reaching `height` metres over its
+/// root, both at scale 1 (see the [module docs](self#trunks)): the tree's own numbers, written by whoever grew it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::zone"]
+#[serde(deny_unknown_fields)]
+pub struct Trunk {
+    /// From [`MIN_TRUNK_RADIUS`] to [`MAX_TRUNK_RADIUS`].
+    pub radius: f32,
+    /// From twice the radius to [`MAX_TRUNK_HEIGHT`].
+    pub height: f32,
+}
+
+/// A trunk's capsule, placed: what a collider set holds of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrunkCapsule {
+    /// Its middle, in metres in the zone's space.
+    pub centre: [f32; 3],
+    /// Its cylinder's half height, along +Y.
+    pub half_height: f32,
+    pub radius: f32,
+}
+
+impl Trunk {
+    /// The capsule of the trunk of the plant `instance`: from its radius under the root to its height over it,
+    /// scaled by the instance's scale (see the [module docs](self#trunks)).
+    #[must_use]
+    pub fn capsule(self, instance: ScatterInstance) -> TrunkCapsule {
+        let scale = instance.scale();
+        let (radius, height) = (self.radius * scale, self.height * scale);
+        // A cylinder from the root to `height − radius`, and a cap at each end.
+        let half_height = (height - radius) * 0.5;
+        let [x, y, z] = instance.position;
+        TrunkCapsule { centre: [x, y + half_height, z], half_height, radius }
+    }
+
+    fn check(self) -> Result<(), (String, String)> {
+        check_positive_in(self.radius, MIN_TRUNK_RADIUS, MAX_TRUNK_RADIUS)
+            .map_err(|problem| ("radius".to_owned(), problem))?;
+        check_positive_in(self.height, 2.0 * self.radius, MAX_TRUNK_HEIGHT)
+            .map_err(|problem| ("height".to_owned(), problem))
+    }
+}
+
+/// The name of the collider a plant's trunk joins its zone's colliders as: `foliage` and its stable ID in hex,
+/// which sorts by the ID.
+#[must_use]
+pub fn trunk_name(id: u64) -> String {
+    format!("foliage {id:016x}")
 }
 
 /// What a kind draws, by a mesh's sidecar ID. The same plain value in the document and the cooked kinds.
@@ -277,6 +361,20 @@ pub enum Avoid {
     Kinds { kinds: Vec<String>, distance: f32 },
     /// A clearing: no root inside the shape about `position`.
     Area { position: [f32; 3], shape: ZoneShape },
+    /// The zone's splines it names, or every one if it names none, by more than `distance` metres across the
+    /// ground, whatever their height: a path's verge. A camera's rail over a wood would clear what's under it
+    /// too, so name the splines meant.
+    Splines {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        names: Vec<String>,
+        distance: f32,
+    },
+    /// The footprints of the zone's placements, its backdrop's aside, by more than `distance` metres: nothing
+    /// grows through a house. Only prefab placements have footprints: a mesh the zone places as one of its
+    /// `instances` isn't kept off.
+    Placements { distance: f32 },
+    /// The zone's water bodies, by more than `distance` metres from their edges, and never in one.
+    Water { distance: f32 },
 }
 
 fn any_slope() -> [f32; 2] {
@@ -375,6 +473,16 @@ impl FoliageDocument {
             }
         }
         check_names("kinds", self.kinds.iter().map(|kind| kind.name.as_str()))?;
+        for (index, kind) in self.kinds.iter().enumerate() {
+            let Some(trunk) = kind.trunk else { continue };
+            if !matches!(kind.model, FoliageModel::Tree(_)) {
+                let problem = "only a tree has a trunk: ground cover collides with nothing";
+                return Err(ZoneError::invalid(format!("kinds[{index}].trunk"), problem));
+            }
+            trunk.check().map_err(|(field, problem)| {
+                ZoneError::invalid(format!("kinds[{index}].trunk.{field}"), problem)
+            })?;
+        }
         check_names("layers", self.layers.iter().map(|layer| layer.name.as_str()))?;
         for (index, layer) in self.layers.iter().enumerate() {
             check_layer(layer).map_err(|(field, problem)| {
@@ -414,6 +522,10 @@ impl FoliageDocument {
                 .map_err(|(name, problem)| ZoneError::invalid(field(&name), problem))?;
             check_positive_in(grass.per_m2, f32::MIN_POSITIVE, MAX_GRASS_PER_M2)
                 .map_err(|problem| ZoneError::invalid(field("per_m2"), problem))?;
+            if self.kind_index(&grass.kind).is_some_and(|kind| self.kinds[kind].trunk.is_some()) {
+                let problem = format!("`{}` has a trunk, and grass is never solid", grass.kind);
+                return Err(ZoneError::invalid(field("kind"), problem));
+            }
         }
         Ok(())
     }
@@ -480,6 +592,17 @@ impl FoliageDocument {
                     check_position(*position).map_err(|problem| (field("position"), problem))?;
                     shape.check().map_err(|problem| (field("shape"), problem))?;
                 }
+                Avoid::Splines { names, distance } => {
+                    for (which, name) in names.iter().enumerate() {
+                        check_name(name).map_err(|problem| (field(&format!("names[{which}]")), problem))?;
+                    }
+                    check_positive_in(*distance, f32::MIN_POSITIVE, MAX_AVOID_DISTANCE)
+                        .map_err(|problem| (field("distance"), problem))?;
+                }
+                Avoid::Placements { distance } | Avoid::Water { distance } => {
+                    check_positive_in(*distance, f32::MIN_POSITIVE, MAX_AVOID_DISTANCE)
+                        .map_err(|problem| (field("distance"), problem))?;
+                }
             }
         }
         let [low, high] = rule.scale;
@@ -524,6 +647,35 @@ impl FoliageDocument {
             }
         }
         Ok(cells.into_iter().collect())
+    }
+
+    /// Whether a rule places a kind with a trunk, so that a zone of it joins trunks to its colliders: what a cook
+    /// plans by, before anything is placed. Grass can't place one.
+    #[must_use]
+    pub fn has_trunks(&self) -> bool {
+        let trunked = |name: &str| self.kind_index(name).is_some_and(|kind| self.kinds[kind].trunk.is_some());
+        self.rules.iter().any(|rule| trunked(&rule.kind))
+    }
+
+    /// Whether a rule or grass keeps off what `picks` picks out of its `avoid`: what of the zone a cook must
+    /// hand placement ([`Surroundings`]).
+    #[must_use]
+    pub fn avoids(&self, picks: impl Fn(&Avoid) -> bool) -> bool {
+        (self.rules.iter().flat_map(|rule| &rule.avoid))
+            .chain(self.grass.iter().flat_map(|grass| &grass.avoid))
+            .any(picks)
+    }
+
+    /// Every spline a rule or grass names to keep off, each once, by name: what a cook holds to the zone's.
+    #[must_use]
+    pub fn avoided_splines(&self) -> BTreeSet<&str> {
+        let avoids = (self.rules.iter().flat_map(|rule| &rule.avoid))
+            .chain(self.grass.iter().flat_map(|grass| &grass.avoid));
+        let named = avoids.filter_map(|avoid| match avoid {
+            Avoid::Splines { names, .. } => Some(names.iter().map(String::as_str)),
+            _ => None,
+        });
+        named.flatten().collect()
     }
 
     /// Its kinds, cooked: what a renderer loads beside a zone's scatter sets.

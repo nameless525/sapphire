@@ -609,6 +609,16 @@ impl Recipe {
         }
     }
 
+    /// The recipe of a zone's colliders with its trees' trunks joined (M6 G1b).
+    fn zone_trunks() -> Self {
+        Self {
+            importer: colliders::IMPORTER,
+            cooker: zone::trunks::TRUNKS_COOKER,
+            format: ColliderSet::VERSION,
+            extension: COLLIDERS_EXTENSION,
+        }
+    }
+
     /// The recipe of a zone's navmesh.
     fn zone_navigation() -> Self {
         Self {
@@ -1058,6 +1068,10 @@ pub struct CookedAsset {
     /// Which texture it is or holds a level of, if any, and what that cooks as: what the cook audit
     /// counts a map's bytes by ([`crate::audit`]).
     pub texture: Option<TextureOf>,
+    /// What goes in its pack with it though it reads none of it: a zone's trunks' document colliders (M6 G1b),
+    /// which they're joined from and which its `.szone` no longer names, so they ship with their zone and not
+    /// in the shared pack ([`crate::pack`]).
+    pub ships_with: Vec<AssetId>,
 }
 
 /// The texture a cooked asset is, or holds a level of (M5 M3), and its class.
@@ -1088,6 +1102,7 @@ impl TextureOf {
             | Part::Reflections
             | Part::Ambient
             | Part::Scatter(_)
+            | Part::Trunks
             | Part::MergedMaterial { .. } => None,
         }
     }
@@ -1347,6 +1362,7 @@ fn cook_dir_through(
                 Part::Cell(place) => zone::part_path(&source_relative, *place, recipe.extension),
                 Part::Shape(shape) => zone::shape_path(&source_relative, shape, recipe.extension),
                 Part::Scatter(cell) => zone::scatter_path(&source_relative, *cell, recipe.extension),
+                Part::Trunks => zone::trunks_path(&source_relative, recipe.extension),
                 Part::FontSubset { pack, .. } => {
                     let file = format!("{}.{pack}.{}", file_stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
@@ -1408,12 +1424,17 @@ fn cook_dir_through(
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
     // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
     // move sets read clips' keys, so those go before move sets; probe grids and a zone's reflection
-    // probes read cooked meshes and their materials, a navmesh and a zone's scatter sets read cooked colliders, and a zone's `.szone` reads its meshes and holds
-    // its navmesh's key, so those cook last. `others` read none of what those cook.
+    // probes read cooked meshes and their materials, a zone's scatter sets read cooked colliders, its colliders
+    // with trunks joined read its sets, its navmesh reads those or its document's, and a zone's `.szone` reads its
+    // meshes and holds its navmesh's key, so those cook last, in that order. `others` read none of what those cook.
     let (own_zones, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_own_zone());
+    let (scatter, rest): (Vec<usize>, Vec<usize>) =
+        rest.into_iter().partition(|&index| matches!(plan[index].part, Part::Scatter(_)));
+    let (trunks, rest): (Vec<usize>, Vec<usize>) =
+        rest.into_iter().partition(|&index| plan[index].part == Part::Trunks);
     let (navigation, rest): (Vec<usize>, Vec<usize>) =
-        rest.into_iter().partition(|&index| matches!(plan[index].part, Part::Navigation | Part::Scatter(_)));
+        rest.into_iter().partition(|&index| plan[index].part == Part::Navigation);
     let (probe_grids, rest): (Vec<usize>, Vec<usize>) = rest
         .into_iter()
         .partition(|&index| plan[index].is_probe_grid() || plan[index].part == Part::Reflections);
@@ -1469,7 +1490,7 @@ fn cook_dir_through(
     in_turn(vec![shared_meshes, clips])?;
     reached(CookStage::ClipsCooked);
     timings.ended(Phase::Clips, &mut watch);
-    in_turn(vec![move_sets, materials, probe_grids, navigation, own_zones])?;
+    in_turn(vec![move_sets, materials, probe_grids, scatter, trunks, navigation, own_zones])?;
     timings.ended(Phase::Dependent, &mut watch);
     let assets: Vec<CookedAsset> =
         cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
@@ -1761,6 +1782,8 @@ enum Part {
     Ambient,
     /// A zone's scatter set for one cell (M6 G1a).
     Scatter(CellCoord),
+    /// A zone's colliders with its trees' trunks joined (M6 G1b).
+    Trunks,
     /// A texture's level above its tail (M5 M3): the texture, the source's own asset, and which level,
     /// from its base.
     Level { texture: AssetId, level: u32 },
@@ -1997,7 +2020,15 @@ fn sub_assets(
                     recipe: Recipe::zone_scatter(),
                 })
                 .collect();
-            let parts = parts.chain(navigation).chain(reflections).chain(ambient).chain(scatter).collect();
+            let colliders = plan.trunks_id().map(|id| PlannedPart {
+                id,
+                part: Part::Trunks,
+                recipe: Recipe::zone_trunks(),
+            });
+            let parts = (parts.chain(navigation).chain(reflections).chain(ambient))
+                .chain(scatter)
+                .chain(colliders)
+                .collect();
             zones.insert(path.clone(), plan);
             Ok(parts)
         }
@@ -2779,13 +2810,14 @@ fn asset_key(
         Part::Reflections => assets.zones[path].reflections_recipe(),
         Part::Ambient => assets.zones[path].ambient_recipe(),
         Part::Scatter(cell) => assets.zones[path].scatter_recipe(*cell),
+        Part::Trunks => assets.zones[path].foliage_recipe().expect("only a zone with foliage joins trunks"),
         _ => source.hash,
     };
     // A navmesh and ambient characters read nothing of how a zone's meshes cook (its cells' levels and
     // outlines, M5 D6), so a save to those leaves them alone.
     let unread = ImportSettings::Zone(zone::ZoneSettings::default());
     let settings = match part {
-        Part::Navigation | Part::Ambient | Part::Scatter(_) => &unread,
+        Part::Navigation | Part::Ambient | Part::Scatter(_) | Part::Trunks => &unread,
         _ => &meta.importer,
     };
     Ok(CacheKey::new(&KeyInputs {
@@ -2815,6 +2847,10 @@ fn finish_asset(
     cook: Cook,
 ) -> Result<CookedAsset, CookError> {
     let Planned { asset: SourceAsset { path, meta }, id, part, skeleton, output, .. } = planned;
+    let ships_with: Vec<AssetId> = match part {
+        Part::Trunks => assets.zones[path].document().colliders.into_iter().collect(),
+        _ => Vec::new(),
+    };
     let done = |status, output_hash| CookedAsset {
         id: *id,
         source: path.clone(),
@@ -2824,6 +2860,7 @@ fn finish_asset(
         status,
         name: asset_name(path, part),
         texture: TextureOf::of(*id, &meta.importer, part),
+        ships_with: ships_with.clone(),
     };
 
     let mut cached = None;
@@ -2962,6 +2999,7 @@ fn cook_source(
         }
         Part::Navigation => return cook_navigation(path, assets),
         Part::Scatter(cell) => return cook_scatter(path, *cell, assets),
+        Part::Trunks => return cook_trunks(path, assets),
         Part::Ambient => return cook_ambient(path, assets),
         Part::Reflections => {
             let plan = &assets.zones[path];
@@ -3188,11 +3226,42 @@ fn cook_ambient(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> 
     Ok(ambient.to_cooked().map_err(error)?.into_vec())
 }
 
-/// A zone's navmesh, from the cooked colliders it names.
+/// A zone's navmesh, from the cooked colliders its simulation reads: its trunks' with them, if it has any.
 fn cook_navigation(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
     let plan = &assets.zones[path];
-    let bytes = zone_colliders(path, assets)?;
+    let bytes = match plan.trunks_id() {
+        Some(id) => cooked_part(path, id, "colliders", "the zone's colliders with its trunks", assets)?,
+        None => zone_colliders(path, assets)?,
+    };
     zone::cook_navigation(plan, &bytes, assets.cache).map_err(zone_error(path))
+}
+
+/// A zone's colliders with its trees' trunks joined, from its document's and its cooked scatter sets (M6 G1b).
+fn cook_trunks(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
+    let plan = &assets.zones[path];
+    let colliders = zone_colliders(path, assets)?;
+    let sets = (plan.scatter_cells().iter())
+        .map(|&cell| cooked_part(path, plan.scatter_id(cell), "foliage", "a scatter set", assets))
+        .collect::<Result<Vec<_>, CookError>>()?;
+    let sets: Vec<&[u8]> = sets.iter().map(|set| set.as_slice()).collect();
+    plan.cook_trunks(&colliders, &sets).map_err(zone_error(path))
+}
+
+/// The cooked bytes of the zone at `path`'s own part `id`, which cooked before what asks.
+fn cooked_part(
+    path: &Path,
+    id: AssetId,
+    field: &str,
+    what: &'static str,
+    assets: &Assets<'_>,
+) -> Result<sapphire_serialize::cooked::AlignedVec<16>, CookError> {
+    let cooked = assets.cooked(id).ok_or_else(|| CookError::ZoneReference {
+        path: path.to_owned(),
+        field: field.to_owned(),
+        what,
+        id,
+    })?;
+    read_cooked(cooked).map_err(|source| CookError::Read { path: cooked.output.clone(), source })
 }
 
 /// A zone's scatter set for `cell`, on its cooked colliders (M6 G1a).
@@ -4183,8 +4252,25 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
         let cooked = cooked.ok_or(CookError::ZoneReference { path: path.to_owned(), field, what, id })?;
         Ok::<Dependency, CookError>(Dependency::Asset { id, key: cooked.key })
     };
-    // Its colliders are all it reads: the rest of the document isn't its business.
+    // What reads only a part's bytes holds those, not its key, so a part cooked again to the same bytes leaves it
+    // alone (M6 G1b): a moved placement recooks every set that keeps off placements, and moves no tree.
+    let cooked_bytes = |id: AssetId, field: String, what| {
+        let cooked = assets.cooked(id);
+        let cooked = cooked.ok_or(CookError::ZoneReference { path: path.to_owned(), field, what, id })?;
+        Ok::<Dependency, CookError>(Dependency::File {
+            path: format!("#cooked {id}"),
+            hash: cooked.output_hash,
+        })
+    };
+    // Its colliders are all it reads, its trunks' if it has any: the rest of the document isn't its business.
     if *part == Part::Navigation {
+        if let Some(id) = plan.trunks_id() {
+            return Ok(vec![cooked_bytes(
+                id,
+                "colliders".to_owned(),
+                "the zone's colliders with its trunks",
+            )?]);
+        }
         let id = document.colliders.expect("a document with `navigation` names `colliders`");
         return Ok(vec![cooked_key(id, "colliders".to_owned(), "a collider document")?]);
     }
@@ -4204,7 +4290,29 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     if let Part::Scatter(_) = part {
         let id = document.colliders.expect("a document with `foliage` names `colliders`");
         let colliders = cooked_key(id, "colliders".to_owned(), "a collider document")?;
-        return Ok([colliders].into_iter().chain(foliage).collect());
+        let mut dependencies: Vec<Dependency> = [colliders].into_iter().chain(foliage).collect();
+        // The footprints it keeps off are its prefabs' (M6 G1b).
+        if plan.scatter_reads_prefabs() {
+            for (id, prefab, hash) in plan.prefab_files() {
+                let bytes =
+                    fs::read(prefab).map_err(|source| CookError::Read { path: prefab.to_owned(), source })?;
+                if blake3::hash(&bytes) != hash {
+                    return Err(CookError::SourceChanged { path: prefab.to_owned() });
+                }
+                dependencies.push(Dependency::File { path: format!("#prefab {id}"), hash });
+                dependencies.extend(assembly_dependencies(prefab, &bytes)?);
+            }
+        }
+        return Ok(dependencies);
+    }
+    // Its document's colliders, its sets' bytes and the foliage document (M6 G1b).
+    if *part == Part::Trunks {
+        let id = document.colliders.expect("a document with `foliage` names `colliders`");
+        let mut dependencies = vec![cooked_key(id, "colliders".to_owned(), "a collider document")?];
+        for &cell in plan.scatter_cells() {
+            dependencies.push(cooked_bytes(plan.scatter_id(cell), "foliage".to_owned(), "a scatter set")?);
+        }
+        return Ok(dependencies.into_iter().chain(foliage).collect());
     }
     // What the probes see and the day they're baked under: their recipe holds the rest.
     if *part == Part::Reflections {
@@ -4215,8 +4323,11 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     if let Some(id) = plan.navigation_id() {
         dependencies.push(cooked_key(id, "navigation".to_owned(), "a navmesh")?);
     }
-    // Which cells have a set is the foliage document's to say.
-    dependencies.extend(foliage);
+    // Which cells have a set, and whether it names its own colliders, is the foliage document's to say: that and
+    // its ID are what its key holds of it, not the document's bytes (M6 G1b).
+    if let Some(hash) = plan.foliage_recipe() {
+        dependencies.push(Dependency::File { path: "#foliage plan".to_owned(), hash });
+    }
     // What names a collider is held to it as the `.szone` cooks, so a collider moved cooks it again.
     if plan.has_claims() {
         let id = document.colliders.expect("a document that names a collider names `colliders`");

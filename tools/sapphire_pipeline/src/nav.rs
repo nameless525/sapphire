@@ -51,7 +51,7 @@ pub use bake::{
     TilePolygon, bake, bake_cached, bake_tile, tile_range,
 };
 pub use contours::merge_holes;
-pub use geometry::{Triangle, colliders_to_triangles, is_walkable};
+pub use geometry::{TRIANGULATION, Triangle, colliders_to_triangles, is_walkable};
 pub use islands::{IslandStats, Seed, keep_seeded};
 pub use stitch::{SeamReport, stitch};
 

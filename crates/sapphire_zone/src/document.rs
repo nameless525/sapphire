@@ -487,6 +487,9 @@ pub struct ZoneGeometry {
     pub foliage: Option<CookedZoneFoliage>,
     /// The text of each look its atmosphere volumes name, in [`ZoneDocument::volume_looks`]' order.
     pub volume_looks: Vec<String>,
+    /// The zone's own collider set, its `colliders` with its foliage's trunks joined (M6 G1b), if it has one:
+    /// what its simulation reads in place of `colliders`.
+    pub joined_colliders: Option<AssetId>,
 }
 
 impl ZoneDocument {
@@ -891,6 +894,13 @@ impl ZoneDocument {
             let problem = "the cook's scatter sets aren't of the document's foliage";
             return Err(ZoneError::invalid("foliage", problem));
         }
+        // Its trunks join its colliders in a set of its own (M6 G1b), which needs a foliage document and colliders.
+        if geometry.joined_colliders.is_some() && (self.foliage.is_none() || self.colliders.is_none()) {
+            let problem =
+                "the cook joined trunks to colliders, and the document names no foliage or no colliders";
+            return Err(ZoneError::invalid("colliders", problem));
+        }
+        simulation.colliders = geometry.joined_colliders.or(self.colliders);
         if geometry.exit_packs.len() != self.exits.len() {
             let problem = format!("{} packs for {} exits", geometry.exit_packs.len(), self.exits.len());
             return Err(ZoneError::invalid("exits", problem));

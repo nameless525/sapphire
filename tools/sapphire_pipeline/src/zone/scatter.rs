@@ -16,17 +16,21 @@
 //!
 //! # Keys
 //!
-//! A set's key holds its cell and the zone's grid ([`super::ZonePlan::scatter_recipe`]), the foliage document's
-//! bytes and the colliders' key, and nothing else of the zone: a save to a placement, a light or a spawner
-//! leaves every set alone, and a save to the foliage document or a moved collider recooks every set. The
-//! zone's `.szone` holds the document's bytes too, since which cells have a set is the document's to say.
+//! A set's key holds its cell and the zone's grid ([`super::ZonePlan::scatter_recipe`]), the version of the
+//! colliders' triangles ([`crate::nav::TRIANGULATION`]), the foliage document's bytes and the colliders' key, and
+//! of the rest of the zone only what its rules keep off (M6 G1b): its splines if a rule keeps off splines, its
+//! water's shapes if one keeps off water, and each piece's prefab and transform, with the prefabs' documents, if
+//! one keeps off placements. So a save to a light or a spawner leaves every set alone, a save to the foliage
+//! document or a moved collider recooks every set, and a moved placement recooks them only if they keep off it.
+//! The zone's `.szone` holds the document's ID and its planned cells, since which cells have a set is the
+//! document's to say.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sapphire_colliders::{ColliderSet, Group};
 use sapphire_zone::FoliageDocument;
-use sapphire_zone::foliage::{Ground, GroundPoint, scatter_set};
+use sapphire_zone::foliage::{Ground, GroundPoint, Surroundings, scatter_set};
 use sapphire_zone::grid::{CellCoord, Grid};
 
 use super::ZoneCookError;
@@ -34,8 +38,8 @@ use crate::cache::Stage;
 use crate::nav::{self, Triangle};
 
 /// The `.sscatter` writer. Bump the version whenever it changes output for the same document and ground, as a
-/// change to placement in `sapphire_zone::foliage` does.
-pub const SCATTER_COOKER: Stage = Stage { name: "sscatter", version: 1 };
+/// change to placement in `sapphire_zone::foliage` does. 2: keeping off the zone (M6 G1b).
+pub const SCATTER_COOKER: Stage = Stage { name: "sscatter", version: 2 };
 
 /// A bucket's side, in metres: the ground finds a point's triangles among its bucket's.
 const BUCKET: f64 = 8.0;
@@ -145,15 +149,16 @@ impl SharedGround {
     }
 }
 
-/// Cooks the cell `cell`'s set of `foliage`, on `grid`, standing on `ground`: the `.sscatter`'s bytes, read back
-/// through the runtime's check.
+/// Cooks the cell `cell`'s set of `foliage`, on `grid`, standing on `ground` and kept off what of the zone
+/// `around` its rules say: the `.sscatter`'s bytes, read back through the runtime's check.
 pub fn cook(
     foliage: &FoliageDocument,
     ground: &impl Ground,
+    around: &Surroundings,
     grid: Grid,
     cell: CellCoord,
 ) -> Result<Vec<u8>, ZoneCookError> {
-    let set = scatter_set(foliage, ground, grid, cell)?;
+    let set = scatter_set(foliage, ground, around, grid, cell)?;
     let cooked = set.to_cooked()?;
     sapphire_zone::ScatterSet::read(&cooked)?;
     Ok(cooked.into_vec())

@@ -1230,6 +1230,7 @@ mod tests {
             reflections: Some(REFLECTIONS),
             foliage: None,
             volume_looks: Vec::new(),
+            joined_colliders: None,
         }
     }
 

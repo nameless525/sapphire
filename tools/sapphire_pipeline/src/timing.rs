@@ -266,6 +266,7 @@ mod tests {
             status,
             name: String::new(),
             texture: None,
+            ships_with: Vec::new(),
         };
         let time = |importer, cooker, key, cook| AssetTime {
             importer,
@@ -349,6 +350,7 @@ desktop: 3.900 s in all, 4 asset(s)
                 status: CookStatus::Cooked,
                 name: String::new(),
                 texture: None,
+                ships_with: Vec::new(),
             });
             report.timings.assets.push(AssetTime {
                 importer: "foliage document",

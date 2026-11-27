@@ -10,6 +10,10 @@ pub type Triangle = [[f32; 3]; 3];
 /// How many sides a round collider's prism has.
 const ROUND_SIDES: u32 = 12;
 
+/// [`colliders_to_triangles`]' version: bump it whenever it makes other triangles of the same set. A scatter set
+/// stands on them (`zone::scatter`), so its key holds this.
+pub const TRIANGULATION: u32 = 1;
+
 /// Whether a triangle's slope is walkable, for `slope_cos`, the cosine of the steepest walkable
 /// slope. In `f64` scalars with no root and no reciprocal, so every architecture reads it alike.
 pub fn is_walkable(triangle: &Triangle, slope_cos: f32) -> bool {

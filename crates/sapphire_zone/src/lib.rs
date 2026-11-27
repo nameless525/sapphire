@@ -36,7 +36,7 @@
 //! - **Foliage** ([`foliage`], M6 G1a): `.foliage.ron`, [`FoliageDocument`], its cooked kinds (`.sfoliage`)
 //!   and a cell's scatter set (`.sscatter`) of 16-byte instances with stable IDs, and the pure placement a cook
 //!   makes them by ([`foliage::place_rules`], [`foliage::place_grass`]). A zone names one by its `foliage`;
-//!   its sets are presentation alone.
+//!   its sets are presentation alone, but a tree's trunk joins the zone's colliders (G1b).
 //! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
 //!   (`.sencounter`), which a zone lists.
 //! - **Prefabs** ([`prefab`], M6 T4): `.assembly.ron`, [`Assembly`], as plain data: what a zone places as a

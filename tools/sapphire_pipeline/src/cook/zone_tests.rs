@@ -2005,7 +2005,7 @@ fn a_zones_foliage_cooks_to_a_set_a_cell_that_ships_with_it() {
         assert!(asset.output.ends_with(&name), "{}", asset.output.display());
         let bytes = read_aligned(&asset.output);
         assert_eq!(AssetKind::Scatter.references(&bytes).unwrap(), []);
-        let alone = zone::scatter::cook(&document, &ground, grid, cell).unwrap();
+        let alone = zone::scatter::cook(&document, &ground, &Default::default(), grid, cell).unwrap();
         assert_eq!(&bytes[..], &alone[..], "the cook is placement on the zone's colliders, and nothing else");
         let set = ScatterSet::read(&bytes).unwrap();
         for index in 0..set.len() {
@@ -2065,12 +2065,32 @@ fn only_the_foliage_or_the_colliders_recook_a_zones_sets() {
     let report = tree.cook();
     assert_eq!(by_id(&report, FOLIAGE).status, CookStatus::Cooked);
     assert_eq!(by_id(&report, set).status, CookStatus::Cooked, "a saved foliage document");
-    assert_eq!(by_id(&report, ZONE).status, CookStatus::Cooked, "which cells have a set is the document's");
+    assert_eq!(by_id(&report, ZONE).status, CookStatus::UpToDate, "it names the same cells' sets");
     assert_eq!(by_id(&report, cell_id(cell(0, 0))).status, CookStatus::UpToDate);
 
     tree.write_at(&colliders, NAV_COLLIDERS.replace("(8.0, 0.5, 8.0)", "(8.0, 0.5, 9.0)").as_bytes());
     let report = tree.cook();
     assert_eq!(by_id(&report, set).status, CookStatus::Cooked, "a moved collider");
+
+    // The `.szone` holds which cells have a set, not the document's bytes: a layer reaching a cell it didn't
+    // cooks it again, naming that cell's set (M6 G1b).
+    let wider = grove_text().replace("(40.0, -40.0), (40.0, 40.0)", "(56.0, -40.0), (56.0, 40.0)");
+    assert_ne!(wider, grove_text(), "the wood's outline is written as this test expects");
+    tree.write_at(&foliage, wider.as_bytes());
+    let report = tree.cook();
+    assert_eq!(by_id(&report, ZONE).status, CookStatus::Cooked, "a cell the foliage plans a set for");
+    let zone_bytes = read_zone(&report);
+    let zone = Zone::read(&zone_bytes).unwrap();
+    let named = zone
+        .presentation
+        .foliage
+        .as_ref()
+        .expect("named")
+        .cells
+        .iter()
+        .map(|cell| cell.scatter)
+        .collect::<Vec<_>>();
+    assert!(named.contains(&scatter_id(3, 0)), "and it names its set");
 }
 
 #[test]
@@ -2095,4 +2115,277 @@ fn what_a_zone_gets_wrong_about_foliage_is_named() {
     tree.write_at(&foliage, grove_text().replace("contrast: 0.6", "contrast: 1.6").as_bytes());
     let text = refused("a contrast past 1", &tree);
     assert!(text.contains("rules[0].cluster.contrast"), "{text}");
+}
+
+/// The grove with trunks on its oaks (M6 G1b).
+fn trunked_grove() -> String {
+    let oak = format!(r##"(name: "oak", model: Tree("{}"))"##, PLANTS[0]);
+    let trunked =
+        format!(r##"(name: "oak", model: Tree("{}"), trunk: Some((radius: 0.3, height: 4.0)))"##, PLANTS[0]);
+    assert!(grove_text().contains(&oak), "the grove's oak is written as this test expects");
+    grove_text().replace(&oak, &trunked)
+}
+
+fn trunks_id() -> AssetId {
+    ZONE.sub_asset(zone::trunks::TRUNKS_PART)
+}
+
+/// A navmesh over [`NAV_COLLIDERS`]' ground, with the placements.
+fn grove_navigation() -> String {
+    format!(
+        r##"navigation: Some((min: (-32.0, -32.0), max: (32.0, 32.0))), {NAV_SPAWNERS} {}"##,
+        placements()
+    )
+}
+
+/// The plants of `kind` a cooked scatter set holds, as their IDs and roots.
+fn plants_of(bytes: &[u8], kind: u32) -> Vec<(u64, [f32; 3])> {
+    let set = ScatterSet::read(bytes).unwrap();
+    let mut plants = Vec::new();
+    for run in set.runs.iter().filter(|run| run.kind.to_native() == kind) {
+        let first = run.first_chunk.to_native() as usize;
+        for chunk in &set.chunks[first..first + run.chunk_count.to_native() as usize] {
+            let start = chunk.first.to_native() as usize;
+            for index in start..start + chunk.count.to_native() as usize {
+                plants.push((set.ids[index].to_native(), set.instance(index).position));
+            }
+        }
+    }
+    plants
+}
+
+/// Each of the grove's cells' plants of `kind`.
+fn grove_plants(report: &CookReport, kind: u32) -> Vec<(u64, [f32; 3])> {
+    (grove_cells().into_iter())
+        .flat_map(|cell| plants_of(&read_aligned(&by_id(report, scatter_id(cell.x, cell.z)).output), kind))
+        .collect()
+}
+
+/// The trunks a collider set holds, as their names, roots and radii.
+fn trunks_of(set: &ColliderSet) -> Vec<(String, [f32; 3], f32)> {
+    (set.colliders.iter())
+        .filter(|collider| collider.name.starts_with("foliage "))
+        .map(|collider| {
+            let sapphire_colliders::CookedShape::Capsule { half_height, radius } = collider.shape else {
+                panic!("a trunk is a capsule: {collider:?}");
+            };
+            let [x, y, z] = collider.position;
+            (collider.name.clone(), [x, y - half_height, z], radius)
+        })
+        .collect()
+}
+
+/// A zone whose foliage has trunks names its own collider set, the document's and a capsule a tree, and moves
+/// its digest; a body walking at a trunk stops there, where it walks on through the document's colliders; and
+/// the navmesh is baked round it, where the same zone without trunks walks straight through.
+#[test]
+fn a_zones_trunks_join_its_colliders_stop_a_body_and_carve_its_navmesh() {
+    let (tree, _, foliage) = foliage_tree("zone-trunks", &grove_navigation());
+    let bare_report = tree.cook();
+    let bare_zone = read_zone(&bare_report);
+    assert_eq!(Zone::read(&bare_zone).unwrap().simulation.colliders.as_ref(), Some(&COLLIDERS), "no trunks");
+    let authored = read_aligned(&by_id(&bare_report, COLLIDERS).output);
+    let bare_navmesh = read_aligned(&by_id(&bare_report, navigation_id()).output);
+
+    tree.write_at(&foliage, trunked_grove().as_bytes());
+    let report = tree.cook();
+    let joined_asset = by_id(&report, trunks_id());
+    assert!(joined_asset.output.ends_with("town.trunks.scol"), "{}", joined_asset.output.display());
+    let joined = read_aligned(&joined_asset.output);
+    let zone_bytes = read_zone(&report);
+    let zone = Zone::read(&zone_bytes).unwrap();
+    assert_eq!(zone.simulation.colliders.as_ref(), Some(&trunks_id()), "the simulation reads the joined set");
+    let references: BTreeSet<AssetId> = zone.references().into_iter().collect();
+    assert_eq!(references, BTreeSet::from([trunks_id(), navigation_id()]), "and not the document's");
+    let navmesh = read_aligned(&by_id(&report, navigation_id()).output);
+
+    // The document's colliders, which its `.szone` no longer names, ship with the zone, not in the shared pack.
+    let packed = pack_cooked(&report, &tree.dir.path().join("packs"), None).unwrap();
+    let holding = |id: AssetId| -> Vec<String> {
+        (packed.packs.iter())
+            .filter(|pack| {
+                let bytes = fs::read(&pack.path).unwrap();
+                PackReader::new(&bytes).unwrap().toc().entries().iter().any(|entry| entry.id == id)
+            })
+            .map(|pack| pack.name.clone())
+            .collect()
+    };
+    assert_eq!(holding(COLLIDERS), ["zone_town"], "the trunks are joined from them");
+    assert_eq!(holding(trunks_id()), ["zone_town"]);
+
+    // The document's colliders, each as it was, and a capsule for each oak, standing at its root.
+    let set = ColliderSet::from_cooked(&joined).unwrap();
+    let own = ColliderSet::from_cooked(&authored).unwrap();
+    for collider in &own.colliders {
+        assert!(set.colliders.contains(collider), "{} is kept", collider.name);
+    }
+    let trunks = trunks_of(&set);
+    assert_eq!(set.colliders.len(), own.colliders.len() + trunks.len());
+    let oaks = grove_plants(&report, 0);
+    assert!(oaks.len() > 10, "{} oaks", oaks.len());
+    assert_eq!(trunks.len(), oaks.len(), "a trunk an oak, and none for the ferns or the grass");
+    for (id, root) in &oaks {
+        let name = sapphire_zone::foliage::trunk_name(*id);
+        let (_, at, _) = trunks.iter().find(|(held, _, _)| *held == name).expect("its trunk");
+        assert!(at.iter().zip(root).all(|(a, b)| (a - b).abs() < 1e-4), "{at:?} for {root:?}");
+    }
+
+    // Only the zone with trunks moves its digest.
+    let read = |id: AssetId| match id {
+        id if id == COLLIDERS => Some(&authored[..]),
+        id if id == trunks_id() => Some(&joined[..]),
+        _ => None,
+    };
+    let bare_digest = Zone::read(&bare_zone).unwrap().digest_without_navigation(read).unwrap();
+    assert_ne!(zone.digest_without_navigation(read).unwrap(), bare_digest);
+
+    // A trunk on the open ground, clear of the table and of the ground's edge.
+    let (name, [x, _, z], radius) = (trunks.iter())
+        .find(|(_, [x, y, z], _)| {
+            y.abs() < 1e-3
+                && x.abs() < 24.0
+                && z.abs() < 24.0
+                && (x - 8.0) * (x - 8.0) + (z - 8.0) * (z - 8.0) > 25.0
+        })
+        .cloned()
+        .expect("an oak on the ground");
+
+    // A body walking at it along +X in fixed steps stops at it among the joined colliders, and walks on
+    // through among the document's.
+    use sapphire_physics::{
+        BodyDesc, BodyId, CollisionGroups, HitTarget, MoveOptions, PhysicsWorld, Pose, Shape,
+    };
+    let (body, steps) = (0.3, 120);
+    let walk = |colliders: &[u8]| {
+        let set = ColliderSet::read(colliders).unwrap();
+        let mut world = PhysicsWorld::from_cooked(set, 1).unwrap();
+        world
+            .add_body(BodyDesc {
+                id: BodyId(1),
+                shape: Shape::Capsule { half_height: 0.6, radius: body },
+                pose: Pose::at(Vec3::new(x - 2.0, 1.2, z)),
+                groups: CollisionGroups::new(Group::Character.mask(), Group::World.mask()),
+            })
+            .unwrap();
+        let options = MoveOptions { max_sweeps: 1, ..MoveOptions::default() };
+        let mut hit = None;
+        for _ in 0..steps {
+            let outcome =
+                world.move_and_collide(BodyId(1), Vec3::new(4.0 / steps as f32, 0.0, 0.0), &options);
+            if let Some(first) = outcome.unwrap().hits().first() {
+                hit.get_or_insert(first.target);
+            }
+        }
+        (world.body_pose(BodyId(1)).unwrap().position, hit, set.id_of(&name))
+    };
+    let (stopped, hit, trunk) = walk(&joined);
+    assert_eq!(hit, Some(HitTarget::Static(sapphire_physics::ColliderId(trunk.expect("named")))));
+    let against = x - radius - body;
+    assert!(stopped.x < against && stopped.x > against - 0.05, "{stopped} against a trunk at {x}");
+    let (walked, hit, _) = walk(&authored);
+    assert_eq!(hit, None, "nothing stood there before");
+    assert!((walked.x - (x + 2.0)).abs() < 1e-3, "{walked}");
+
+    // The line through it walks straight on the bare navmesh, and not on the trunks', which routes round it.
+    use sapphire_nav::{NavGraph, PathSearch, Reach, RouteEnd};
+    let through = |bytes: &[u8]| {
+        let graph = NavGraph::new(NavMesh::read(bytes).unwrap());
+        let from = graph.locate(Vec3::new(x - 1.5, 0.0, z), Reach::CHARACTER).expect("west of it");
+        let to = graph.locate(Vec3::new(x + 1.5, 0.0, z), Reach::CHARACTER).expect("east of it");
+        let mut corridor = vec![0; graph.polygon_count()];
+        let route = PathSearch::new(&graph, u32::MAX).find(&graph, from, to, &mut corridor);
+        (graph.walks_straight(from, to), route.end)
+    };
+    assert_eq!(through(&bare_navmesh), (true, RouteEnd::Reached), "nothing stood there before");
+    assert_eq!(through(&navmesh), (false, RouteEnd::Reached), "round the trunk, not through it");
+}
+
+/// A rule's plants keep off the zone's spline, its placements' footprints and its water, through the cook, and
+/// a moved placement recooks the sets that keep off placements.
+#[test]
+fn a_zones_plants_keep_off_its_spline_placements_and_water() {
+    let ferns = "avoid: [\n                    Kinds(kinds: [\"oak\"], distance: 1.5),";
+    let keeping = "avoid: [Splines(names: [\"path\"], distance: 1.5), Placements(distance: 3.0), Water(distance: 1.0),\n                    Kinds(kinds: [\"oak\"], distance: 1.5),";
+    assert!(grove_text().contains(ferns), "the grove's ferns are written as this test expects");
+    let data = format!(
+        r##"splines: [(name: "path", points: [(-30.0, 0.0, -6.0), (30.0, 0.0, -6.0)])],
+            water: [(name: "pond", shape: Lake(outline: [(-20.0, -20.0), (-12.0, -20.0), (-12.0, -12.0), (-20.0, -12.0)], height: 0.2))],
+            {}"##,
+        placements()
+    );
+    let (tree, _, foliage) = foliage_tree("zone-foliage-keeps", &data);
+    let roots = |report: &CookReport| -> Vec<[f32; 2]> {
+        grove_plants(report, 1).into_iter().map(|(_, [x, _, z])| [x, z]).collect()
+    };
+    let free = roots(&tree.cook());
+    tree.write_at(&foliage, grove_text().replace(ferns, keeping).as_bytes());
+    let kept = roots(&tree.cook());
+    assert!(kept.len() < free.len() && kept.len() > free.len() / 2, "{} of {}", kept.len(), free.len());
+
+    let to_box = |[x, z]: [f32; 2], min: [f32; 2], max: [f32; 2]| {
+        let [dx, dz] = [(min[0] - x).max(x - max[0]).max(0.0), (min[1] - z).max(z - max[1]).max(0.0)];
+        (dx * dx + dz * dz).sqrt()
+    };
+    // The path is straight, so its curve is its chord; the crate at (2, 0, 2) is a unit square standing up
+    // along X, so its footprint is that edge.
+    let by_path = |root: [f32; 2]| to_box(root, [-30.0, -6.0], [30.0, -6.0]) < 1.5;
+    let by_crate = |root: [f32; 2]| to_box(root, [2.0, 2.0], [3.0, 2.0]) < 3.0;
+    let by_pond = |root: [f32; 2]| to_box(root, [-20.0, -20.0], [-12.0, -12.0]) < 1.0;
+    for (what, test) in [
+        ("the path", &by_path as &dyn Fn([f32; 2]) -> bool),
+        ("the crate", &by_crate),
+        ("the pond", &by_pond),
+    ] {
+        assert!(free.iter().any(|&root| test(root)), "ferns grew by {what} before");
+        let near: Vec<_> = kept.iter().filter(|&&root| test(root)).collect();
+        assert!(near.is_empty(), "and keep off it now: {near:?}");
+    }
+
+    // The sets keep off the placements, so moving one recooks them.
+    let moved = foliage_zone(&data.replace("(2.0, 0.0, 2.0)", "(3.0, 0.0, 2.0)"));
+    tree.write("town.zone.ron", moved.as_bytes());
+    let report = tree.cook();
+    assert_eq!(by_id(&report, scatter_id(0, 0)).status, CookStatus::Cooked, "a moved placement it keeps off");
+}
+
+/// The joined colliders, the navmesh baked from them and the zone are the same bytes cooked on one worker or
+/// eight, as the scatter sets are.
+#[test]
+fn trunks_and_their_navmesh_cook_alike_on_one_worker_or_eight() {
+    let (tree, _, foliage) = foliage_tree("zone-trunks-workers", &grove_navigation());
+    tree.write_at(&foliage, trunked_grove().as_bytes());
+    let cooked = |workers: usize| {
+        let out = tree.dir.path().join(format!("out-{workers}"));
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
+        let report = cook_dir_on(&tree.content(), &out, &options, workers).unwrap();
+        [trunks_id(), navigation_id(), ZONE].map(|id| fs::read(&by_id(&report, id).output).unwrap())
+    };
+    assert_eq!(cooked(1), cooked(8));
+}
+
+/// The trunks and the navmesh hold the sets' bytes, not their keys: a moved placement the ferns keep off recooks
+/// their sets, and as it moves no oak, the trunks cook to the same bytes and the navmesh isn't baked again.
+#[test]
+fn a_moved_placement_that_moves_no_tree_leaves_the_navmesh_alone() {
+    let ferns = "avoid: [\n                    Kinds(kinds: [\"oak\"], distance: 1.5),";
+    let keeping =
+        "avoid: [Placements(distance: 3.0),\n                    Kinds(kinds: [\"oak\"], distance: 1.5),";
+    let (tree, _, foliage) = foliage_tree("zone-trunks-placements", &grove_navigation());
+    tree.write_at(&foliage, trunked_grove().replace(ferns, keeping).as_bytes());
+    let before = tree.cook();
+    let moved = foliage_zone(&grove_navigation().replace("(2.0, 0.0, 2.0)", "(10.0, 0.0, 3.0)"));
+    tree.write("town.zone.ron", moved.as_bytes());
+    let after = tree.cook();
+    assert_eq!(by_id(&after, scatter_id(0, 0)).status, CookStatus::Cooked, "the ferns keep off the crate");
+    assert_ne!(by_id(&after, scatter_id(0, 0)).output_hash, by_id(&before, scatter_id(0, 0)).output_hash);
+    assert_eq!(
+        by_id(&after, trunks_id()).output_hash,
+        by_id(&before, trunks_id()).output_hash,
+        "no oak moved"
+    );
+    assert_eq!(
+        by_id(&after, navigation_id()).status,
+        CookStatus::UpToDate,
+        "so the navmesh isn't baked again"
+    );
 }

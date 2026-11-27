@@ -10,9 +10,10 @@
 //! **What's kept.** A rule keeps a candidate with the chance its density gives a square (`per_100m2` of a
 //! hundred square metres; grass keeps every one), times its cluster's noise if it has one; then only if it
 //! stands inside one of its layers, on ground the [`Ground`] finds under it, within the rule's slope and
-//! height, outside its clearings, and more than its distance from every plant of the kinds it avoids that an
-//! earlier rule kept. A rule that something avoids is placed over the region grown by as far as that reaches,
-//! so a plant near a region's edge is judged by the same neighbours as anywhere else.
+//! height, outside its clearings, more than its distance from every plant of the kinds it avoids that an
+//! earlier rule kept, and more than its distances from what of the zone it keeps off ([`Surroundings`]). A
+//! rule that something avoids is placed over the region grown by as far as that reaches, so a plant near a
+//! region's edge is judged by the same neighbours as anywhere else.
 //!
 //! **The maths.** Integer hashing for every choice, a value noise of hashed corners, and `f32` and `f64`
 //! arithmetic that's correctly rounded on every architecture, with `sapphire_math::det` for the one cosine
@@ -24,9 +25,10 @@ use std::collections::BTreeMap;
 use sapphire_core::Name;
 use sapphire_math::det;
 
+use super::keep::Keep;
 use super::{
-    Avoid, FoliageDocument, FoliageLayer, MAX_SCALE, MAX_SET_INSTANCES, MIN_SCALE, RuleView, ScatterInstance,
-    ScatterSet,
+    Avoid, FoliageDocument, MAX_SCALE, MAX_SET_INSTANCES, MIN_SCALE, RuleView, ScatterInstance, ScatterSet,
+    Surroundings,
 };
 use crate::document::ZoneError;
 use crate::grid::{CellCoord, Grid};
@@ -104,13 +106,18 @@ fn lattice(spacing: f32) -> f32 {
     spacing / (1.0 - JITTER)
 }
 
-/// Every plant `foliage`'s rules place in `region`, in no particular order. `foliage` must be
-/// [checked](FoliageDocument::check). See the [module docs](self).
-pub fn place_rules(foliage: &FoliageDocument, ground: &impl Ground, region: Region) -> Vec<Placed> {
+/// Every plant `foliage`'s rules place in `region` of a zone `around` it, in no particular order. `foliage` must
+/// be [checked](FoliageDocument::check). See the [module docs](self).
+pub fn place_rules(
+    foliage: &FoliageDocument,
+    ground: &impl Ground,
+    around: &Surroundings,
+    region: Region,
+) -> Vec<Placed> {
     let margins = margins(foliage);
     let mut placed: Vec<Placed> = Vec::new();
     for (index, rule) in foliage.rules.iter().enumerate() {
-        let judge = Judge::new(foliage, &rule.view(), &placed);
+        let judge = Judge::new(foliage, &rule.view(), &placed, around);
         let side = lattice(rule.spacing);
         let chance = rule.per_100m2 / 100.0 * side * side;
         let mut kept = Vec::new();
@@ -153,23 +160,25 @@ pub fn grass_reach(foliage: &FoliageDocument) -> f32 {
     distances
         .filter_map(|avoid| match avoid {
             Avoid::Kinds { distance, .. } => Some(*distance),
-            Avoid::Area { .. } => None,
+            _ => None,
         })
         .fold(0.0, f32::max)
 }
 
-/// Adds to `out` every clump `foliage`'s grass rule `rule` places in `region`. `near` holds what the rules
-/// placed over `region` grown by [`grass_reach`], from which it keeps its distance. See the [module docs](self).
+/// Adds to `out` every clump `foliage`'s grass rule `rule` places in `region` of a zone `around` it. `near` holds
+/// what the rules placed over `region` grown by [`grass_reach`], from which it keeps its distance. See the
+/// [module docs](self).
 pub fn place_grass(
     foliage: &FoliageDocument,
     rule: usize,
     ground: &impl Ground,
+    around: &Surroundings,
     region: Region,
     near: &[Placed],
     out: &mut Vec<Placed>,
 ) {
     let grass = &foliage.grass[rule];
-    let judge = Judge::new(foliage, &grass.view(), near);
+    let judge = Judge::new(foliage, &grass.view(), near, around);
     let side = 1.0 / grass.per_m2.sqrt();
     for_each_square(region, side, |x, z| {
         let draws = judge.draws(x, z);
@@ -183,20 +192,21 @@ pub fn place_grass(
     });
 }
 
-/// The cell `cell`'s scatter set: every plant `foliage` places whose root is in it on `grid`, grass included.
-/// `foliage` must be [checked](FoliageDocument::check).
+/// The cell `cell`'s scatter set: every plant `foliage` places whose root is in it on `grid` of a zone `around`
+/// it, grass included. `foliage` must be [checked](FoliageDocument::check).
 pub fn scatter_set(
     foliage: &FoliageDocument,
     ground: &impl Ground,
+    around: &Surroundings,
     grid: Grid,
     cell: CellCoord,
 ) -> Result<ScatterSet, ZoneError> {
     // A metre past the square, as what's in the cell is the grid's to say, not a float's comparison.
     let region = Region::cell(grid, cell).grown(1.0);
-    let mut placed = place_rules(foliage, ground, region.grown(grass_reach(foliage)));
+    let mut placed = place_rules(foliage, ground, around, region.grown(grass_reach(foliage)));
     let mut grass = Vec::new();
     for rule in 0..foliage.grass.len() {
-        place_grass(foliage, rule, ground, region, &placed, &mut grass);
+        place_grass(foliage, rule, ground, around, region, &placed, &mut grass);
     }
     placed.append(&mut grass);
     placed.retain(|plant| grid.cell_of(plant.instance.position) == cell);
@@ -231,7 +241,8 @@ struct Judge<'a> {
     stream: u64,
     /// That and its seed: where its plants stand and what they look like.
     seeded: u64,
-    layers: Vec<&'a FoliageLayer>,
+    /// Its layers, each outline with its bounds in X and Z.
+    layers: Vec<Vec<Bounded<'a>>>,
     /// The cosines of the steepest and the flattest slope it grows on.
     steepest: f64,
     flattest: f64,
@@ -240,12 +251,19 @@ struct Judge<'a> {
     cluster: Option<(u64, f32, f32)>,
     clearings: Vec<([f32; 3], crate::ZoneShape)>,
     avoided: Vec<Near>,
+    /// What of the zone it keeps off.
+    keeps: Vec<Keep<'a>>,
     /// The bytes its scales are chosen between.
     scales: [u8; 2],
 }
 
 impl<'a> Judge<'a> {
-    fn new(foliage: &'a FoliageDocument, rule: &RuleView<'_>, placed: &[Placed]) -> Self {
+    fn new(
+        foliage: &'a FoliageDocument,
+        rule: &RuleView<'_>,
+        placed: &[Placed],
+        around: &'a Surroundings,
+    ) -> Self {
         let stream = Name::new(rule.name).as_u64();
         let seeded = mix(stream ^ mix(u64::from(rule.seed) ^ 0x5eed));
         let cosine = |degrees: f32| f64::from(det::cos(degrees.to_radians()).max(0.0));
@@ -263,19 +281,27 @@ impl<'a> Judge<'a> {
                     avoided.push(Near::new(*distance, points.map(|plant| plant.instance.position)));
                 }
                 Avoid::Area { position, shape } => clearings.push((*position, *shape)),
+                Avoid::Splines { .. } | Avoid::Placements { .. } | Avoid::Water { .. } => {}
             }
         }
+        let keeps = rule.avoid.iter().filter_map(|avoid| Keep::new(avoid, around)).collect();
+        let layers = (foliage.layers.iter().filter(|layer| rule.on.contains(&layer.name)))
+            .map(|layer| {
+                layer.outlines.iter().map(|outline| (&outline[..], outline_bounds(outline))).collect()
+            })
+            .collect();
         Self {
             kind: foliage.kind_index(rule.kind).expect("a checked rule's kind is the document's") as u32,
             stream,
             seeded,
-            layers: foliage.layers.iter().filter(|layer| rule.on.contains(&layer.name)).collect(),
+            layers,
             steepest: cosine(rule.slope_degrees[1]),
             flattest: cosine(rule.slope_degrees[0]),
             height: rule.height,
             cluster: rule.cluster.map(|cluster| (mix(seeded ^ 0xc105_7e75), cluster.scale, cluster.contrast)),
             clearings,
             avoided,
+            keeps,
             scales: rule.scale.map(scale_byte),
         }
     }
@@ -313,7 +339,10 @@ impl<'a> Judge<'a> {
         let cleared = self.clearings.iter().any(|(centre, shape)| {
             shape.holds([position[0] - centre[0], position[1] - centre[1], position[2] - centre[2]])
         });
-        if cleared || self.avoided.iter().any(|near| near.within(position)) {
+        if cleared
+            || self.avoided.iter().any(|near| near.within(position))
+            || self.keeps.iter().any(|keep| keep.near(position, ground))
+        {
             return None;
         }
         let [yaw, scale, tint, _] = draws.look.to_le_bytes();
@@ -347,11 +376,26 @@ fn scale_byte(scale: f32) -> u8 {
     (det::log2(scale / MIN_SCALE) * (255.0 / 2.0)).round().clamp(0.0, 255.0) as u8
 }
 
-/// Whether `at` is inside `layer`: inside an odd number of its outlines, by crossings in `f64`.
-fn inside(layer: &FoliageLayer, at: [f32; 2]) -> bool {
+/// An outline with its [`outline_bounds`].
+type Bounded<'a> = (&'a [[f32; 2]], [f32; 4]);
+
+/// An outline's bounds: `[min x, min z, max x, max z]`.
+fn outline_bounds(outline: &[[f32; 2]]) -> [f32; 4] {
+    outline.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |[x0, z0, x1, z1], &[x, z]| {
+        [x0.min(x), z0.min(z), x1.max(x), z1.max(z)]
+    })
+}
+
+/// Whether `at` is inside a layer's `outlines`: inside an odd number of them, by crossings in `f64`. An
+/// outline whose bounds can't hold a crossing east of the point (one wholly north or south of it, or west of
+/// it) is passed over, which counts what counting its edges would.
+fn inside(outlines: &[Bounded<'_>], at: [f32; 2]) -> bool {
     let [px, pz] = at.map(f64::from);
     let mut crossings = 0u32;
-    for outline in &layer.outlines {
+    for &(outline, [_, low_z, high_x, high_z]) in outlines {
+        if !(low_z <= at[1] && at[1] < high_z) || at[0] > high_x {
+            continue;
+        }
         let mut previous = outline[outline.len() - 1].map(f64::from);
         for point in outline {
             let point = point.map(f64::from);

@@ -552,6 +552,10 @@ fn reach_map(report: &CookReport, cache: Option<&Cache>) -> Result<Reach, PackEr
             }
             reach.insert(asset.id, reached);
         }
+        // What ships with an asset goes where it goes: a zone's trunks take its document's colliders (M6 G1b).
+        if !asset.ships_with.is_empty() {
+            reach.entry(asset.id).or_default().extend(&asset.ships_with);
+        }
         // A texture's levels go where it goes: what reaches a texture reaches its levels (M5 M3).
         if kind(&asset.output) == Some(AssetKind::Texture) {
             let levels: Vec<AssetId> = (0..texture_level::MAX_LEVELS)

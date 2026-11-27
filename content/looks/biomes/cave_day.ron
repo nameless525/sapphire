@@ -1,0 +1,39 @@
+// A cave (M6 V1): a biome preset, a partial day an atmosphere volume of any zone names by its path
+// (`sapphire_zone::atmosphere`), the same at every hour, since no sky reaches inside. It is a `TodTimeline`
+// document keying four groups and leaving the rest (the sun and moon, the sky, bloom, the grade and the other
+// post layers, emission, the characters' key) to the day and the weather beneath it. A volume's look keys no
+// grade: post blends two, a day holds two between its keys, and a third would jump in at the volume's edge.
+//
+// The target is the reference games' caves: dark and readable, never black or grey. The probe grid already
+// darkens a cave by its baked sky visibility; this adds its colour and lifts the exposure so the dark reads.
+// With no grade, the colour is all in the air and the light.
+//
+// - Ambient: a cool teal sky over a deep blue floor, a little brighter than the night's, so the walls hold
+//   their shapes.
+// - Fog: a dense teal haze from 2 m, so a tunnel's far end melts into colour rather than going black, and a
+//   thin far layer tinting the horizon teal. No light scatters around the sun in here. Characters take a
+//   third of it, so they stay readable at the back of a chamber.
+// - Shadow tint: blue-teal, so cast shadows stay coloured under the cave's cool light.
+// - Exposure: 1.2 stops, over the day's -0.2 at noon and 0.85 at night: the cave is a step darker than the
+//   world outside, never a hole.
+//
+// Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::TodTimeline",
+    version: 1,
+    data: (
+        keys: [
+            (
+                time: 0.0,
+                ambient: (sky: (0.2, 0.42, 0.52), ground: (0.06, 0.09, 0.15), intensity: 0.22),
+                fog: (
+                    near: (color: (0.07, 0.2, 0.25), density: 0.03, start: 2.0),
+                    far: (color: (0.28, 0.5, 0.56), density: 0.004, start: 20.0),
+                    characters: 0.33,
+                ),
+                shadow_tint: (0.16, 0.3, 0.47),
+                exposure: 1.2,
+            ),
+        ],
+    ),
+)

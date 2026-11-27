@@ -60,6 +60,8 @@
 //!         rooms: [(name: "gatehouse", position: (3.2, 2.0, -20.0), volume: Box(half_extents: (3.0, 2.0, 2.0)), reverb: "shelter", fade: 0.4)],
 //!         // What grows on it (the `foliage` module): placed by its rules into a scatter set per cell.
 //!         foliage: Some("6c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5"),
+//!         // Places with a look of their own (the `atmosphere` module): a partial day over the zone's, by the camera.
+//!         volumes: [(name: "gate_hall", position: (3.2, 2.0, -20.0), shape: Box(half_extents: (3.0, 2.0, 2.0)), look: "../../looks/biomes/interior_warm_day.ron", blend: 1.5)],
 //!     ),
 //! )
 //! ```
@@ -79,8 +81,9 @@
 //! off it or cut off from the one before fails by its field: the pipeline's `zone` module has that.
 //!
 //! **Prefabs** are resolved at cook, so nothing about them reaches the runtime: the pipeline's `zone`
-//! module has what a prefab is. `day` and `rigs` are paths from this document's directory, since those
-//! documents are no asset kind: the cook checks them and holds their text in the zone.
+//! module has what a prefab is. `day`, `rigs` and each atmosphere volume's `look` are paths from this
+//! document's directory, since those documents are no asset kind: the cook checks them and holds their text in
+//! the zone.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -93,6 +96,7 @@ use sapphire_serialize::{AssetId, CookedError, DocumentError};
 use serde::{Deserialize, Serialize};
 
 use crate::ambient::{Ambient, ZoneAmbient};
+use crate::atmosphere::{self, AtmosphereVolume};
 use crate::cooked::{
     CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedPatrol, CookedSpawner,
     CookedSpline, CookedTrigger, CookedVolume, CookedZoneFoliage, PlaceContents, Zone, ZoneCell,
@@ -195,6 +199,10 @@ pub struct ZoneDocument {
     /// module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foliage: Option<AssetId>,
+    /// Its atmosphere volumes (M6 V1): places whose look, a partial day, lies over the zone's by the camera, as
+    /// presentation alone: the [`atmosphere`] module. At most [`atmosphere::MAX_VOLUMES`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<AtmosphereVolume>,
 }
 
 impl Versioned for ZoneDocument {
@@ -477,6 +485,8 @@ pub struct ZoneGeometry {
     pub reflections: Option<AssetId>,
     /// The scatter sets planned for the document's `foliage`, if it names one.
     pub foliage: Option<CookedZoneFoliage>,
+    /// The text of each look its atmosphere volumes name, in [`ZoneDocument::volume_looks`]' order.
+    pub volume_looks: Vec<String>,
 }
 
 impl ZoneDocument {
@@ -499,6 +509,13 @@ impl ZoneDocument {
     #[must_use]
     pub fn place_of(&self, at: [f32; 3], backdrop: bool) -> Place {
         if backdrop { Place::Backdrop } else { Place::Cell(self.grid.cell_of(at)) }
+    }
+
+    /// Every look its atmosphere volumes name, by path, each once in the order first named: the files a cook
+    /// reads for [`ZoneGeometry::volume_looks`].
+    #[must_use]
+    pub fn volume_looks(&self) -> Vec<&str> {
+        atmosphere::looks(&self.volumes)
     }
 
     /// What the cook warns of without refusing it: a fixed `weather` beside a `weather_plan`, whose
@@ -643,6 +660,7 @@ impl ZoneDocument {
             ambient.check()?;
         }
         rooms::check(&self.rooms)?;
+        atmosphere::check(&self.volumes)?;
         if self.foliage.is_some() && self.colliders.is_none() {
             let problem = "plants stand on the zone's colliders, and it names no `colliders`";
             return Err(ZoneError::invalid("foliage", problem));
@@ -933,6 +951,7 @@ impl ZoneDocument {
             rooms: rooms::cook(&self.rooms),
             weather_plan,
             foliage: geometry.foliage,
+            atmosphere: atmosphere::cook(&self.volumes, geometry.volume_looks)?,
         };
         // In `Place`'s order: the backdrop's entries, then each cell's.
         for place in places {
@@ -1203,7 +1222,7 @@ pub(crate) fn check_points(count: usize, point: impl Fn(usize) -> [f32; 3]) -> R
 
 /// Whether sorted entries' IDs differ: two names can hash to one, however unlikely, and an ID is an
 /// identity.
-fn check_distinct<'a, T>(
+pub(crate) fn check_distinct<'a, T>(
     list: &str,
     sorted: &'a [T],
     id_and_name: impl Fn(&'a T) -> (u64, &'a String),

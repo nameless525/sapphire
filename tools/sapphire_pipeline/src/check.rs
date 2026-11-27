@@ -45,6 +45,7 @@
 //! | `atlas-budget` | error | An effects library whose sheets' frames take more than its atlas holds on a cook: [`ATLAS_BUDGET_DESKTOP`] or [`ATLAS_BUDGET_MOBILE`], each layer at its whole chain. |
 //! | `stale-waiver`, `unexplained-waiver` | error | A waiver nothing needs, or one with no reason. |
 //! | `foliage-document` | error | A foliage document (M6 G1a) that doesn't read, a field of it that's wrong, named, or a kind's model that isn't a static mesh source of the tree. |
+//! | `zone-document` | error | A zone document that doesn't read, a field of it that's wrong, named (an atmosphere volume's shape, blend or strength among them), or an atmosphere volume's look (M6 V1) that's missing, doesn't read as a day or keys `grade`. |
 //!
 //! Warnings never fail a check; errors do, unless waived.
 //!
@@ -87,6 +88,7 @@ use crate::material;
 use crate::meta::{ImportSettings, Resolved, SourceAsset};
 use crate::procedural::ProceduralTexture;
 use crate::texture::{self, TextureSettings};
+use crate::zone;
 
 /// What a sidecar's `budget` says: see the [module docs](self).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +213,7 @@ pub enum Rule {
     StaleWaiver,
     UnexplainedWaiver,
     FoliageDocument,
+    ZoneDocument,
 }
 
 impl Rule {
@@ -234,6 +237,7 @@ impl Rule {
             Self::StaleWaiver => "stale-waiver",
             Self::UnexplainedWaiver => "unexplained-waiver",
             Self::FoliageDocument => "foliage-document",
+            Self::ZoneDocument => "zone-document",
         }
     }
 
@@ -255,7 +259,8 @@ impl Rule {
             | Self::AtlasBudget
             | Self::StaleWaiver
             | Self::UnexplainedWaiver
-            | Self::FoliageDocument => Severity::Error,
+            | Self::FoliageDocument
+            | Self::ZoneDocument => Severity::Error,
         }
     }
 }
@@ -460,6 +465,7 @@ pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckE
     check.duplicate_textures(&assets)?;
     check.sheets(&assets)?;
     check.foliage_documents(&assets)?;
+    check.zone_documents(&assets)?;
     let Checker { mut findings, .. } = check;
     waive(&assets, root, &mut findings);
     findings.sort_by(|a, b| {
@@ -877,6 +883,26 @@ impl Checker<'_> {
                     );
                     self.find(asset, Rule::FoliageDocument, None, message);
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// `zone-document`: each zone document read and checked as a cook would, and each look its atmosphere volumes
+    /// name (M6 V1) read from its directory as a day. A cook refuses the same; this says so before one, by the
+    /// field.
+    fn zone_documents(&mut self, assets: &[&SourceAsset]) -> Result<(), CheckError> {
+        for asset in assets.iter().filter(|asset| matches!(asset.meta.importer, ImportSettings::Zone(_))) {
+            let path = &asset.path;
+            let bytes = fs::read(path).map_err(|source| CheckError::Read { path: path.clone(), source })?;
+            let read = std::str::from_utf8(&bytes).map_err(|error| error.to_string()).and_then(|text| {
+                sapphire_zone::ZoneDocument::from_ron(text).map_err(|error| error.to_string())
+            });
+            let looks = read.and_then(|document| {
+                zone::volume_looks(path, &document).map(drop).map_err(|error| error.to_string())
+            });
+            if let Err(message) = looks {
+                self.find(asset, Rule::ZoneDocument, None, message);
             }
         }
         Ok(())

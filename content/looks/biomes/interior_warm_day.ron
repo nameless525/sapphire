@@ -1,0 +1,36 @@
+// A warm interior (M6 V1): a biome preset, a partial day an atmosphere volume of any zone names by its path
+// (`sapphire_zone::atmosphere`), for an inn, a shop or a lantern-lit hall, the same at every hour. It is a
+// `TodTimeline` document keying five groups and leaving the rest (the sun and moon, the sky, bloom, the grade
+// and the other post layers, the characters' key) to the day and the weather beneath it. A volume's look keys
+// no grade: post blends two, a day holds two between its keys, and a third would jump in at the volume's edge.
+//
+// The target is the reference games' lamp-lit rooms: amber light, mauve shadows, a soft haze of lamp smoke,
+// and the lamps on whatever the hour outside. With no grade, the warmth is all in the air and the light.
+//
+// - Ambient: amber from above, a warm rose-brown bounce from the floor.
+// - Fog: a faint warm haze from 4 m, so the room's far wall softens a little; no far layer, since there's no
+//   horizon indoors. Characters take a fifth of it.
+// - Shadow tint: mauve, so shadows under the warm light stay coloured rather than going brown.
+// - Exposure: 0.9 stops: a room lit by lamps reads as bright as the street at dusk.
+// - Emission: whole, so lamps and lit windows inside glow at noon as at night, where the day keys them down.
+//
+// Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::TodTimeline",
+    version: 1,
+    data: (
+        keys: [
+            (
+                time: 0.0,
+                ambient: (sky: (1.0, 0.7, 0.45), ground: (0.42, 0.26, 0.22), intensity: 0.3),
+                fog: (
+                    near: (color: (0.58, 0.38, 0.27), density: 0.006, start: 4.0),
+                    characters: 0.2,
+                ),
+                shadow_tint: (0.44, 0.27, 0.42),
+                exposure: 0.9,
+                emission: 1.0,
+            ),
+        ],
+    ),
+)

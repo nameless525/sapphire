@@ -140,8 +140,15 @@
 //! before anything cooks, and makes a `.sscatter` for each cell the foliage's layers reach, a sub-asset of the
 //! zone (`grove.scatter.2.-1.sscatter`), its plants on the zone's colliders ([`scatter`]). The `.szone` names the
 //! document and the sets outside its digest, and holds the document's bytes in its key. A zone without it cooks
-//! as it did but for the cooked version (`sapphire_zone::Zone::VERSION`, 12) and an empty `foliage`, and keeps
-//! its digest.
+//! as it did but for the cooked version and an empty `foliage`, and keeps its digest.
+//!
+//! # Atmosphere volumes
+//!
+//! A document's `volumes` (M6 V1) each name a look by its path, as `day` does: the cook reads each look once,
+//! checks it reads as a day, whole or partial ([`volume_looks`]), and holds its text in the `.szone`'s
+//! presentation, and the `.szone`'s key holds each look's bytes, so a save to a biome preset recooks every zone
+//! naming it. A zone without volumes cooks as it did but for the cooked version (`sapphire_zone::Zone::VERSION`,
+//! 13) and an empty `atmosphere`, and keeps its digest.
 //!
 //! # What it doesn't do
 //!
@@ -1154,6 +1161,61 @@ fn day_text(bytes: Vec<u8>) -> Result<String, ZoneCookError> {
     Ok(text)
 }
 
+/// The text of each look a zone's atmosphere volumes name (M6 V1), in [`ZoneDocument::volume_looks`]' order, each
+/// read from the document's directory once and checked as the runtime will read it, a refusal naming the first
+/// volume that names it.
+pub fn volume_looks(zone: &Path, document: &ZoneDocument) -> Result<Vec<String>, ZoneCookError> {
+    look_fields(document)
+        .into_iter()
+        .map(|(field, look)| read_look(zone, &field, look).and_then(|bytes| look_text(&field, bytes)))
+        .collect()
+}
+
+/// The bytes of the look `look` a zone's volume names at `field`, from the zone's directory: a look that isn't
+/// there is refused by the field, as a look that doesn't read is.
+pub fn read_look(zone: &Path, field: &str, look: &str) -> Result<Vec<u8>, ZoneCookError> {
+    match read_document(zone, field, look) {
+        Ok((_, bytes)) => Ok(bytes),
+        Err(ZoneCookError::Read { source, .. }) => {
+            Err(ZoneCookError::invalid(field, format!("{look:?} can't be read: {source}")))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Each look a zone's atmosphere volumes name, in [`ZoneDocument::volume_looks`]' order, with the field of the
+/// first volume naming it: what a refusal of the file names.
+pub fn look_fields(document: &ZoneDocument) -> Vec<(String, &str)> {
+    document
+        .volume_looks()
+        .into_iter()
+        .map(|look| {
+            let index =
+                document.volumes.iter().position(|volume| volume.look == look).expect("a volume names it");
+            (format!("volumes[{index}].look"), look)
+        })
+        .collect()
+}
+
+/// `bytes` as the text of an atmosphere volume's look, a day whole or partial, as the stage will read it, keying
+/// no `grade`: post blends two grades, which a day holds between two keys, so a volume's third would come and go
+/// with a jump at its blend's edge (`GradeMix` keeps the two heaviest).
+pub(crate) fn look_text(field: &str, bytes: Vec<u8>) -> Result<String, ZoneCookError> {
+    let text = String::from_utf8(bytes)
+        .map_err(|error| ZoneCookError::invalid(field, format!("it isn't UTF-8: {error}")))?;
+    let look = TodTimeline::from_ron(&text)
+        .map_err(|error| ZoneCookError::invalid(field, format!("it doesn't read as a day: {error}")))?;
+    if let Some(key) = look.keys().iter().find(|key| key.grade.is_some()) {
+        let problem = format!(
+            "its key at {} keys `grade`, which a volume's look can't: post blends two grades, a day holds two \
+             between its keys, and a third would jump in and out at the volume's edge",
+            key.time
+        );
+        return Err(ZoneCookError::invalid(field, problem));
+    }
+    Ok(text)
+}
+
 /// `bytes` as a `rigs` document's text, as far as a cook can check.
 fn rigs_text(bytes: Vec<u8>) -> Result<String, ZoneCookError> {
     let text = String::from_utf8(bytes)
@@ -1327,12 +1389,23 @@ pub fn cook(
                 .and_then(|(_, bytes)| weather_text(bytes, weather))
         })
         .transpose()?;
+    let volume_looks = volume_looks(zone, document)?;
     let meshes = places.into_iter().map(|place| (place.place, (place.id, place.bounds))).collect();
     let navigation = plan.navigation_id();
     let reflections = plan.reflections_id();
     let foliage = plan.cooked_foliage();
-    let geometry =
-        ZoneGeometry { meshes, instances, day, rigs, weather, navigation, exit_packs, reflections, foliage };
+    let geometry = ZoneGeometry {
+        meshes,
+        instances,
+        day,
+        rigs,
+        weather,
+        navigation,
+        exit_packs,
+        reflections,
+        foliage,
+        volume_looks,
+    };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;
     Ok(cooked.into_vec())

@@ -1,0 +1,75 @@
+// A forest's haze (M6 V1): a biome preset, a partial day an atmosphere volume of any zone names by its path
+// (`sapphire_zone::atmosphere`), for the air under a canopy. It is a `TodTimeline` document keying three
+// groups at four hours and leaving the rest (the sun and moon, the sky, exposure, bloom, the grade and the
+// other post layers, emission, the characters' key) to the day and the weather beneath it, so the forest
+// follows the day's light and only its air changes. A volume's look keys no grade: post blends two, a day
+// holds two between its keys, and a third would jump in at the volume's edge.
+//
+// The target is the reference games' woods: a soft green-gold haze between the trunks by day, gold at golden
+// hour, a deep teal at night; shadows teal, never grey.
+//
+// - Fog: a near haze from 5 to 8 m, coloured by the hour (pale gold at dawn, green-gold at noon, amber at golden
+//   hour, deep teal at night), a thin far layer tinting the horizon, and light scattered around the sun through
+//   the leaves by day. Characters take a quarter of it.
+// - Ambient: green from above, a mossy bounce from the floor; cool and dim at night.
+// - Shadow tint: teal by day, blue-violet at golden hour, blue at night.
+//
+// Its fog replaces the weather's under the canopy at full strength. Where rain or mist should show through
+// the trees, give the volume a strength below 1 (0.6 or so) so the weather's air stays under the haze.
+//
+// Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::TodTimeline",
+    version: 1,
+    data: (
+        keys: [
+            (
+                // Dawn: a pale gold haze, the low sun scattering through it.
+                time: 6.0,
+                ambient: (sky: (0.58, 0.74, 0.6), ground: (0.2, 0.25, 0.13), intensity: 0.18),
+                fog: (
+                    near: (color: (0.76, 0.72, 0.56), density: 0.012, start: 6.0),
+                    far: (color: (0.92, 0.95, 0.8), density: 0.003, start: 30.0),
+                    sun_inscatter: (0.35, 0.25, 0.12),
+                    characters: 0.25,
+                ),
+                shadow_tint: (0.22, 0.38, 0.42),
+            ),
+            (
+                // Noon: green-gold between the trunks.
+                time: 12.0,
+                ambient: (sky: (0.5, 0.78, 0.55), ground: (0.22, 0.3, 0.12), intensity: 0.17),
+                fog: (
+                    near: (color: (0.62, 0.78, 0.5), density: 0.008, start: 8.0),
+                    far: (color: (0.86, 1.0, 0.8), density: 0.0025, start: 35.0),
+                    sun_inscatter: (0.3, 0.32, 0.12),
+                    characters: 0.25,
+                ),
+                shadow_tint: (0.2, 0.4, 0.38),
+            ),
+            (
+                // Golden hour: amber haze, warm light through the leaves.
+                time: 18.5,
+                ambient: (sky: (0.85, 0.7, 0.5), ground: (0.24, 0.2, 0.12), intensity: 0.15),
+                fog: (
+                    near: (color: (0.9, 0.7, 0.4), density: 0.011, start: 6.0),
+                    far: (color: (1.0, 0.9, 0.74), density: 0.003, start: 30.0),
+                    sun_inscatter: (0.6, 0.35, 0.12),
+                    characters: 0.25,
+                ),
+                shadow_tint: (0.22, 0.32, 0.6),
+            ),
+            (
+                // Night: a deep teal haze, no sun to scatter.
+                time: 22.0,
+                ambient: (sky: (0.18, 0.32, 0.45), ground: (0.05, 0.08, 0.07), intensity: 0.2),
+                fog: (
+                    near: (color: (0.08, 0.16, 0.2), density: 0.01, start: 5.0),
+                    far: (color: (0.66, 0.84, 0.9), density: 0.002, start: 30.0),
+                    characters: 0.25,
+                ),
+                shadow_tint: (0.18, 0.3, 0.5),
+            ),
+        ],
+    ),
+)

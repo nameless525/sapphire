@@ -4238,6 +4238,11 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
             dependencies.push(Dependency::File { path: file.clone(), hash: blake3::hash(&bytes) });
         }
     }
+    // Each look its atmosphere volumes name (M6 V1), whose text the `.szone` holds.
+    for (field, look) in zone::look_fields(document) {
+        let bytes = zone::read_look(path, &field, look).map_err(zone_error(path))?;
+        dependencies.push(Dependency::File { path: look.to_owned(), hash: blake3::hash(&bytes) });
+    }
     for exit in &document.exits {
         let (other, _) = exit_target(path, exit, assets)?;
         let hash = blake3::hash(zone::stem(other).as_bytes());

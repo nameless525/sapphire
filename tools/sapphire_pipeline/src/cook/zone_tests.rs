@@ -12,6 +12,7 @@ use sapphire_assets::material::AnimeCharacterMaterial;
 use sapphire_assets::pack::PackReader;
 use sapphire_colliders::{ColliderDocument, ColliderEntry, ColliderShape, Group, Rotation};
 use sapphire_core::Name;
+use sapphire_tod::TodTimeline;
 use sapphire_zone::{CellCoord, ZoneDocument};
 use serde_json::json;
 
@@ -511,6 +512,89 @@ fn a_weather_plan_cooks_with_its_states_and_recooks_on_a_save() {
     );
 }
 
+/// A partial day keying only exposure, at `stops`.
+fn lift(stops: f32) -> String {
+    format!(
+        r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 0.0, exposure: {stops:?})]))"#
+    )
+}
+
+/// A zone's atmosphere volumes (M6 V1) cook each look they name once, its text in the zone, by ascending ID, and
+/// saving a look recooks the zone alone.
+#[test]
+fn atmosphere_volumes_cook_with_their_looks_and_recook_on_a_save() {
+    let tree = tree("zone-atmosphere");
+    tree.write("looks/cave_day.ron", lift(1.0).as_bytes());
+    tree.write("inn_day.ron", lift(0.5).as_bytes());
+    let volumes = r##"volumes: [
+        (name: "grotto", position: (4.0, 1.0, -6.0), shape: Ellipsoid(radii: (6.0, 3.0, 4.0), yaw: 30.0), look: "looks/cave_day.ron", blend: 4.0),
+        (name: "inn", position: (-4.0, 1.5, 2.0), shape: Box(half_extents: (3.0, 1.5, 2.0)), look: "inn_day.ron", blend: 1.0, priority: 1),
+        (name: "cellar", position: (0.0, -2.0, 0.0), shape: Sphere(radius: 2.0), look: "looks/cave_day.ron", blend: 0.5, strength: 0.6),
+    ],"##;
+    write_zone(&tree, &format!("{} {volumes}", placements()));
+    let report = tree.cook();
+    let bytes = read_zone(&report);
+    let read = Zone::read(&bytes).unwrap();
+    let atmosphere = read.presentation.atmosphere.to_native();
+    assert_eq!(atmosphere.looks, [lift(1.0), lift(0.5)], "each look once, in the order first named");
+    assert_eq!(atmosphere.volumes.len(), 3);
+    assert!(atmosphere.volumes.windows(2).all(|pair| pair[0].id < pair[1].id), "by ascending ID");
+    let cellar = atmosphere.volumes.iter().find(|volume| volume.name == "cellar").unwrap();
+    assert_eq!((cellar.look, cellar.strength, cellar.blend), (0, 0.6, 0.5));
+
+    tree.write("looks/cave_day.ron", lift(2.0).as_bytes());
+    let report = tree.cook();
+    assert_eq!(cooked_places(&report), [None], "only the zone recooks");
+    let bytes = read_zone(&report);
+    assert_eq!(Zone::read(&bytes).unwrap().presentation.atmosphere.looks[0].as_str(), lift(2.0));
+}
+
+/// Sapphire's biome presets (M6 V1) each read as a day, as a volume's look is read (so key no `grade`), key some
+/// groups and not every group a stage's day must, and are tinted: every fog layer's, ambient, shadow and
+/// inscattered colour they key has a hue, its channels at least an eighth of its brightest apart, so no near-white
+/// or near-grey passes.
+#[test]
+fn the_biome_presets_are_partial_days_in_colour() {
+    let biomes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/looks/biomes");
+    let mut names: Vec<String> = fs::read_dir(&biomes)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["cave_day.ron", "forest_haze_day.ron", "interior_warm_day.ron"]);
+    let hued = |color: [f32; 3]| {
+        let (low, high) =
+            color.iter().fold((f32::MAX, f32::MIN), |(low, high), &v| (low.min(v), high.max(v)));
+        high - low >= high / 8.0 && high - low > 0.02
+    };
+    for name in names {
+        let bytes = fs::read(biomes.join(&name)).unwrap();
+        let text = zone::look_text(&name, bytes).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let look = TodTimeline::from_ron(&text).unwrap();
+        assert!(
+            !look.is_complete(),
+            "{name}: a preset is a partial day, leaving the sky and the sun to the day"
+        );
+        for key in look.keys() {
+            let mut colors = Vec::new();
+            if let Some(fog) = key.fog {
+                colors.extend(
+                    [fog.near, fog.far].iter().filter(|layer| layer.density > 0.0).map(|layer| layer.color),
+                );
+                colors.extend(Some(fog.sun_inscatter).filter(|color| color.iter().any(|&v| v > 0.0)));
+            }
+            if let Some(ambient) = key.ambient {
+                colors.extend([ambient.sky, ambient.ground]);
+            }
+            colors.extend(key.shadow_tint);
+            assert!(!colors.is_empty(), "{name}: it keys its air");
+            for color in colors {
+                assert!(hued(color), "{name} at {}: {color:?} is grey", key.time);
+            }
+        }
+    }
+}
+
 /// A static mesh of its own, for a zone's instances.
 fn add_lamp(tree: &Tree) {
     let lamp = tree.write(
@@ -635,6 +719,16 @@ fn what_a_zone_gets_wrong_is_named() {
             r##"weather_plan: Some((states: "{states}", schedule: [(from: 0.0, states: [(state: "{state}")])])),"##
         )
     };
+    tree.write("day.ron", lift(1.0).as_bytes());
+    let graded = r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [
+        (time: 0.0, grade: (saturation: 1.2)),
+    ]))"#;
+    tree.write("graded_day.ron", graded.as_bytes());
+    let volume = |more: &str| {
+        format!(
+            r##"volumes: [(name: "grotto", position: (0.0, 1.0, 0.0), shape: Sphere(radius: 2.0), {more})],"##
+        )
+    };
     let cases: Vec<(String, &str)> = vec![
         (format!(r##"placements: [(prefab: "{ZONE}")],"##), "placements[0].prefab"),
         (format!(r##"placements: [(prefab: "{WOOD}")],"##), "isn't an assembly"),
@@ -670,6 +764,11 @@ fn what_a_zone_gets_wrong_is_named() {
         (r##"day: Some("not_a_day.ron"),"##.to_owned(), "`day`"),
         (r##"rigs: Some("not_rigs.ron"),"##.to_owned(), "not a `sapphire::world::LightRigLibrary`"),
         (plan("not_rigs.ron", "clear"), "`weather_plan.states`: it doesn't read"),
+        (volume(r#"look: "missing_day.ron", blend: 1.0"#), "`volumes[0].look`: \"missing_day.ron\" can't be read"),
+        (volume(r#"look: "not_a_day.ron", blend: 1.0"#), "`volumes[0].look`: it doesn't read as a day"),
+        (volume(r#"look: "graded_day.ron", blend: 1.0"#), "`volumes[0].look`: its key at 0 keys `grade`"),
+        (volume(r#"look: "day.ron", blend: -1.0"#), "`volumes[0].blend`"),
+        (volume(r#"look: "day.ron", blend: 1.0"#).replace("radius: 2.0", "radius: 0.0"), "`volumes[0].shape`"),
         (plan("weather.ron", "rain"), "names `rain`, which isn't one of its states"),
         // Two hours a hundredth apart that the runtime's schedule caps to one: refused at the cook, as a
         // trip would refuse them.

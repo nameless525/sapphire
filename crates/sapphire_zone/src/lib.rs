@@ -31,6 +31,8 @@
 //!   the hour (a seeded schedule) and by place (regions), in [`ZonePresentation`] alone.
 //! - **The volume shape** ([`shape`], M6 W8a): [`ZoneShape`], the one shape a zone places a volume of air by
 //!   (a sphere, or a box or an ellipsoid turned about +Y), which the world measures distances from.
+//! - **Atmosphere volumes** ([`atmosphere`], M6 V1): places with a look of their own, each a [`ZoneShape`]
+//!   naming a partial day (a biome preset or the zone's own) with a blend, in [`ZonePresentation`] alone.
 //! - **Foliage** ([`foliage`], M6 G1a): `.foliage.ron`, [`FoliageDocument`], its cooked kinds (`.sfoliage`)
 //!   and a cell's scatter set (`.sscatter`) of 16-byte instances with stable IDs, and the pure placement a cook
 //!   makes them by ([`foliage::place_rules`], [`foliage::place_grass`]). A zone names one by its `foliage`;
@@ -66,6 +68,7 @@
 //! `[simulation]` in `xtask/layers.toml` holds this crate to the simulation's `clippy.toml`.
 
 pub mod ambient;
+pub mod atmosphere;
 pub mod built;
 pub mod cooked;
 pub mod document;
@@ -83,6 +86,10 @@ pub mod weather;
 pub use ambient::{
     AMBIENT_EXTENSION, AMBIENT_PART, Ambient, ArchivedAmbient, ArchivedCookedCastMember, ArchivedCookedPost,
     ArchivedCookedWalk, CastMember, CookedCastMember, CookedPost, CookedWalk, Post, Walk, ZoneAmbient,
+};
+pub use atmosphere::{
+    ArchivedCookedAtmosphere, ArchivedCookedAtmosphereVolume, AtmosphereVolume, CookedAtmosphere,
+    CookedAtmosphereVolume,
 };
 pub use built::{BuildZone, BuiltZone};
 pub use cooked::{

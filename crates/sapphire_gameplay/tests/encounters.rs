@@ -84,6 +84,7 @@ impl Small {
                 rooms: Vec::new(),
                 weather_plan: None,
                 foliage: None,
+                atmosphere: Default::default(),
             },
         };
         let encounter = format!(

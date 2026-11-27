@@ -41,6 +41,7 @@ fn proving_ground_zone() -> sapphire_serialize::cooked::AlignedVec {
         exit_packs: Vec::new(),
         reflections: None,
         foliage: None,
+        volume_looks: Vec::new(),
     };
     document.cook(geometry).expect("it cooks").to_cooked().expect("it writes")
 }

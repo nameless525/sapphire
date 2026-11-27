@@ -472,3 +472,52 @@ fn a_malformed_foliage_document_is_refused_by_its_field() {
     assert!(foliage[2].1.contains("rules[0].slope_degrees"), "{}", foliage[2].1);
     assert!(report.failures().all(|finding| finding.rule == Rule::FoliageDocument), "{report}");
 }
+
+/// A zone's atmosphere volume (M6 V1) naming a look that's missing, isn't a day or keys `grade`, or with a
+/// negative blend, is refused by its field as the cook refuses it, and a zone whose volume names a day passes.
+#[test]
+fn a_zone_s_bad_atmosphere_volume_is_refused_by_its_field() {
+    let tree = Tree::new("zone_volumes");
+    let day = |group: &str| {
+        format!(r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 0.0, {group})]))"#)
+    };
+    fs::create_dir_all(tree.root().join("looks")).unwrap();
+    fs::write(tree.root().join("looks/cave_day.ron"), day("exposure: 1.0")).unwrap();
+    fs::write(tree.root().join("looks/graded_day.ron"), day("grade: (saturation: 1.2)")).unwrap();
+    fs::write(tree.root().join("looks/notes.ron"), "(not: \"a day\")").unwrap();
+    let text = |look: &str, blend: &str| {
+        format!(
+            r##"(type: "sapphire::zone::ZoneDocument", version: 1, data: (grid: (cell_size: 16.0), volumes: [
+                (name: "grotto", position: (0.0, 1.0, 0.0), shape: Sphere(radius: 2.0), look: "{look}", blend: {blend}),
+            ]))"##
+        )
+    };
+    let importer = || ImportSettings::Zone(zone::ZoneSettings::default());
+    for (name, look, blend) in [
+        ("cave", "../looks/cave_day.ron", "2.0"),
+        ("graded", "../looks/graded_day.ron", "2.0"),
+        ("missing", "../looks/gone_day.ron", "2.0"),
+        ("notes", "../looks/notes.ron", "2.0"),
+        ("steep", "../looks/cave_day.ron", "-1.0"),
+    ] {
+        tree.source(&format!("zones/{name}.zone.ron"), text(look, blend).as_bytes(), importer(), None);
+    }
+
+    let report = tree.check();
+    let zones: Vec<(&str, &str)> = (report.findings.iter())
+        .filter(|finding| finding.rule == Rule::ZoneDocument)
+        .map(|finding| (finding.source.as_str(), finding.message.as_str()))
+        .collect();
+    let expected = [
+        ("zones/graded.zone.ron", "volumes[0].look", "keys `grade`"),
+        ("zones/missing.zone.ron", "volumes[0].look", "can't be read"),
+        ("zones/notes.zone.ron", "volumes[0].look", "doesn't read as a day"),
+        ("zones/steep.zone.ron", "volumes[0].blend", ""),
+    ];
+    assert_eq!(zones.len(), expected.len(), "{report}");
+    for (&(source, message), (want, field, says)) in zones.iter().zip(expected) {
+        assert_eq!(source, want);
+        assert!(message.contains(field) && message.contains(says), "{source}: {message}");
+    }
+    assert!(report.failures().all(|finding| finding.rule == Rule::ZoneDocument), "{report}");
+}

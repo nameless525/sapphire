@@ -21,6 +21,7 @@ use sapphire_serialize::AssetId;
 use sapphire_serialize::cooked::AlignedVec;
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::atmosphere::CookedAtmosphere;
 use crate::document::{
     MAX_ENTRIES, MIN_EXTENT, ZoneError, check_color, check_finite, check_name, check_points, check_position,
     check_positive, check_scale, check_spot,
@@ -36,6 +37,7 @@ use crate::weather::CookedWeatherPlan;
 
 mod v10;
 mod v11;
+mod v12;
 mod v8;
 mod v9;
 
@@ -56,9 +58,9 @@ impl Versioned for Zone {
     /// patrols, and who walks them (P3). 6: a sky material, wind, weather and fog in the presentation (M5 M6).
     /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16). 9: water, in both
     /// halves (M6 W2). 10: rooms, in the presentation's (M6 U5). 11: a weather plan, in the presentation's
-    /// (M6 W8a). 12: foliage's scatter sets, in the presentation's (M6 G1a). Versions 8 to 11 are still read
-    /// ([`Zone::upgrade`]).
-    const VERSION: u32 = 12;
+    /// (M6 W8a). 12: foliage's scatter sets, in the presentation's (M6 G1a). 13: atmosphere volumes, in the
+    /// presentation's (M6 V1). Versions 8 to 12 are still read ([`Zone::upgrade`]).
+    const VERSION: u32 = 13;
 }
 
 impl Versioned for ZoneSimulation {
@@ -244,6 +246,8 @@ pub struct ZonePresentation {
     /// What grows on it (M6 G1a): its foliage's kinds and a scatter set for each cell its layers reach, the
     /// [`foliage`](crate::foliage) module.
     pub foliage: Option<CookedZoneFoliage>,
+    /// Its atmosphere volumes and the looks they name (M6 V1): the [`atmosphere`](crate::atmosphere) module.
+    pub atmosphere: CookedAtmosphere,
 }
 
 /// A zone's foliage, cooked: the assets a renderer draws its plants from.
@@ -362,8 +366,8 @@ impl Zone {
     /// Cooked zone bytes of an older version as this version's, checked by [`Self::read`]; `None` for bytes
     /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water,
     /// no rooms and no weather plan, version 9 as one with no rooms and no plan, version 10 as one with no plan,
-    /// version 11 as one with no foliage, each with the digest it had (cooker rule 2, for one release); none of
-    /// them has foliage. Any other version is [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
+    /// version 11 as one with no foliage, version 12 as one with no atmosphere volumes, each with the digest it
+    /// had (cooker rule 2, for one release); none of them has atmosphere volumes. Any other version is [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
     pub fn upgrade(bytes: &[u8]) -> Result<Option<AlignedVec>, ZoneError> {
         let found = sapphire_serialize::cooked::schema_version::<Self>(bytes)?;
         if found == Self::VERSION {
@@ -374,6 +378,7 @@ impl Zone {
             v9::VERSION => v9::read(bytes)?,
             v10::VERSION => v10::read(bytes)?,
             v11::VERSION => v11::read(bytes)?,
+            v12::VERSION => v12::read(bytes)?,
             _ => return Err(sapphire_serialize::CookedError::Stale { found, current: Self::VERSION }.into()),
         };
         let cooked = zone.to_cooked()?;
@@ -860,6 +865,7 @@ impl ArchivedZone {
         }
         crate::rooms::validate(presentation)?;
         crate::weather::validate(presentation)?;
+        crate::atmosphere::validate(presentation)?;
         self.validate_foliage()?;
         self.validate_water_surfaces()
     }
@@ -1080,6 +1086,7 @@ mod tests {
     use sapphire_colliders::ColliderDocument;
 
     use super::*;
+    use crate::atmosphere::AtmosphereVolume;
     use crate::document::{Volume, ZoneDocument, ZoneGeometry};
     use crate::grid::Place;
     use crate::rooms::{MAX_ROOMS, ZoneRoom};
@@ -1222,6 +1229,7 @@ mod tests {
             exit_packs: vec!["zone_market".to_owned(), "zone_market".to_owned()],
             reflections: Some(REFLECTIONS),
             foliage: None,
+            volume_looks: Vec::new(),
         }
     }
 
@@ -2087,5 +2095,114 @@ mod tests {
         assert_eq!(upgraded.as_slice(), current.to_cooked().expect("write").as_slice(), "today's very bytes");
         let dropped = Zone::upgrade(&v11::write(&foliage_zone())).expect("reads").expect("rewritten");
         assert!(Zone::read(&dropped).expect("read").presentation.foliage.is_none());
+    }
+
+    /// [`zone`] with three atmosphere volumes (M6 V1), two of them naming one preset.
+    fn atmosphere_zone() -> Zone {
+        let mut document = document();
+        let volume = |name: &str, shape, look: &str, priority| AtmosphereVolume {
+            name: name.to_owned(),
+            position: [4.0, 2.0, -12.0],
+            shape,
+            look: look.to_owned(),
+            blend: 3.0,
+            strength: 0.8,
+            priority,
+        };
+        document.volumes = vec![
+            volume("grotto", ZoneShape::Ellipsoid { radii: [8.0, 4.0, 6.0], yaw: 25.0 }, "cave_day.ron", 0),
+            volume("inn", ZoneShape::Box { half_extents: [4.0, 2.0, 3.0], yaw: -10.0 }, "inn_day.ron", 2),
+            volume("cellar", ZoneShape::Sphere { radius: 3.0 }, "cave_day.ron", 1),
+        ];
+        assert_eq!(document.volume_looks(), ["cave_day.ron", "inn_day.ron"]);
+        let geometry = |volume_looks| ZoneGeometry { volume_looks, ..geometry() };
+        assert!(document.cook(geometry(Vec::new())).is_err(), "volumes need their looks' text");
+        document.cook(geometry(vec!["(cave text)".to_owned(), "(inn text)".to_owned()])).expect("cooks")
+    }
+
+    /// Atmosphere volumes are presentation: they read back as written, by ascending ID with their looks once each,
+    /// name no asset, and the digest is [`digest_pins`'] for the same zone without them.
+    #[test]
+    fn atmosphere_volumes_read_back_and_leave_the_digest_alone() {
+        let zone = atmosphere_zone();
+        let bytes = zone.to_cooked().expect("write");
+        let read = Zone::read(&bytes).expect("read");
+        let atmosphere = read.presentation.atmosphere.to_native();
+        assert_eq!(atmosphere, zone.presentation.atmosphere);
+        assert_eq!(atmosphere.looks, ["(cave text)", "(inn text)"]);
+        let mut expected = ["grotto", "inn", "cellar"];
+        expected.sort_unstable_by_key(|name| Name::new(name).as_u64());
+        let names: Vec<&str> = atmosphere.volumes.iter().map(|volume| volume.name.as_str()).collect();
+        assert_eq!(names, expected);
+        let inn = atmosphere.volumes.iter().find(|volume| volume.name == "inn").expect("there");
+        assert_eq!(inn.shape, ZoneShape::Box { half_extents: [4.0, 2.0, 3.0], yaw: -10.0 });
+        assert_eq!((inn.look, inn.priority, inn.blend, inn.strength), (1, 2, 3.0, 0.8));
+        let orders: Vec<(&str, u32)> =
+            atmosphere.volumes.iter().map(|volume| (volume.name.as_str(), volume.order)).collect();
+        for (name, order) in [("grotto", 0), ("inn", 1), ("cellar", 2)] {
+            assert!(orders.contains(&(name, order)), "each keeps its place in the document: {orders:?}");
+        }
+        let colliders = colliders();
+        let digest = read.simulation_digest(|_| Some(&colliders[..])).expect("digests");
+        assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's: atmosphere isn't the simulation's");
+        let plain = zone_bytes();
+        let plain = Zone::read(&plain).expect("read");
+        assert_eq!(read.presentation_references(), plain.presentation_references(), "volumes name no asset");
+        assert_eq!(read.references(), plain.references());
+    }
+
+    fn zone_bytes() -> AlignedVec {
+        zone().to_cooked().expect("write")
+    }
+
+    #[test]
+    fn cooked_volumes_the_document_would_refuse_are_refused() {
+        type Tamper = fn(&mut CookedAtmosphere);
+        let cases: [(&str, &str, Tamper); 9] = [
+            ("an order", "out of order", |atmosphere| atmosphere.volumes.swap(0, 1)),
+            ("a shared place", "isn't a place of its own", |atmosphere| {
+                atmosphere.volumes[1].order = atmosphere.volumes[0].order;
+            }),
+            ("a place past the list", "isn't a place of its own", |atmosphere| {
+                atmosphere.volumes[0].order = 9
+            }),
+            ("a shape", "extents", |atmosphere| {
+                atmosphere.volumes[0].shape = ZoneShape::Sphere { radius: 0.0 }
+            }),
+            ("a blend", "isn't from 0", |atmosphere| atmosphere.volumes[0].blend = -1.0),
+            ("a strength", "isn't from 0 to 1", |atmosphere| atmosphere.volumes[0].strength = 2.0),
+            ("a look", "isn't one of the zone's", |atmosphere| atmosphere.volumes[0].look = 2),
+            ("no text", "empty", |atmosphere| atmosphere.looks[1].clear()),
+            ("an unnamed look", "no volume names it", |atmosphere| {
+                atmosphere.looks.push("(more)".to_owned())
+            }),
+        ];
+        for (what, expected, tamper) in cases {
+            let mut tampered = atmosphere_zone();
+            tamper(&mut tampered.presentation.atmosphere);
+            let bytes = tampered.to_cooked().expect("write");
+            let message = Zone::read(&bytes).expect_err(what).to_string();
+            assert!(message.contains(expected), "{what}: `{message}` must say `{expected}`");
+        }
+    }
+
+    /// Version 12 bytes, as M6 G1a cooked them, read for one release (cooker rule 2): `upgrade` makes them this
+    /// version's, a zone with no atmosphere volumes whose bytes are those it has at this version, its foliage kept.
+    #[test]
+    fn a_version_12_zone_upgrades_to_one_without_atmosphere_volumes() {
+        let current = foliage_zone();
+        let old = v12::write(&current);
+        let message = Zone::read(&old).expect_err("stale").to_string();
+        assert!(message.contains("schema version 12") && message.contains("recook"), "{message}");
+        let upgraded = Zone::upgrade(&old).expect("reads").expect("version 12 bytes are rewritten");
+        assert_eq!(upgraded.as_slice(), current.to_cooked().expect("write").as_slice(), "today's very bytes");
+        let dropped = Zone::upgrade(&v12::write(&atmosphere_zone())).expect("reads").expect("rewritten");
+        let read = Zone::read(&dropped).expect("read");
+        assert!(
+            read.presentation.atmosphere.volumes.is_empty() && read.presentation.atmosphere.looks.is_empty()
+        );
+        let colliders = colliders();
+        let digest = read.simulation_digest(|_| Some(&colliders[..])).expect("digests");
+        assert_eq!(digest, 0x15dc_b5da_8e03_1351, "digest_pins's");
     }
 }

@@ -9,6 +9,7 @@ use super::{
     CookedInstance, CookedLight, CookedSpline, PlaceContents, Zone, ZoneCell, ZoneError, ZonePresentation,
     ZoneSimulation,
 };
+use crate::atmosphere::CookedAtmosphere;
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 use crate::rooms::CookedRoom;
 use crate::water::CookedWaterSurface;
@@ -97,6 +98,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
             rooms,
             weather_plan,
             foliage: None,
+            atmosphere: CookedAtmosphere::default(),
         },
     })
 }

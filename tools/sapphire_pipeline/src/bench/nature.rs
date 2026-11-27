@@ -476,6 +476,7 @@ pub fn generate(dir: &Path, preset: Preset, _cook: Cook) -> Result<Vec<Source>, 
         rooms: Vec::new(),
         weather_plan: Some(ZoneWeatherPlan { states: WEATHER.to_owned(), ..nature.weather_plan.clone() }),
         foliage: None,
+        volumes: Vec::new(),
     };
     zone.check().map_err(|error| invalid(format!("{preset}: the zone it makes: {error}")))?;
     sources.push(Source::asset(

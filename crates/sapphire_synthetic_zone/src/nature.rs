@@ -273,6 +273,7 @@ fn document(kinds: &[&str]) -> ZoneDocument {
         rooms: Vec::new(),
         weather_plan: None,
         foliage: None,
+        volumes: Vec::new(),
     }
 }
 

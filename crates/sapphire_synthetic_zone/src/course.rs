@@ -222,6 +222,7 @@ pub fn document() -> ZoneDocument {
         rooms: Vec::new(),
         weather_plan: None,
         foliage: None,
+        volumes: Vec::new(),
     }
 }
 

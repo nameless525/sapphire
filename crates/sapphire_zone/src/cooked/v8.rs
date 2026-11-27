@@ -9,6 +9,7 @@ use super::{
     CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedPatrol, CookedSpawner, CookedSpline,
     CookedTrigger, PlaceContents, Zone, ZoneCell, ZoneError, ZonePresentation, ZoneSimulation,
 };
+use crate::atmosphere::CookedAtmosphere;
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 
 /// The version this reads.
@@ -112,6 +113,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Zone, ZoneError> {
             rooms: Vec::new(),
             weather_plan: None,
             foliage: None,
+            atmosphere: CookedAtmosphere::default(),
         },
     })
 }

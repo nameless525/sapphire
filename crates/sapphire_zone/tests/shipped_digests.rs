@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use sapphire_serialize::AssetId;
-use sapphire_zone::{Zone, ZoneDocument, ZonePresentation};
+use sapphire_zone::{CookedAtmosphere, Zone, ZoneDocument, ZonePresentation};
 
 /// Each shipped zone's stem and its digest.
 const SHIPPED: [(&str, u64); 6] = [
@@ -53,6 +53,7 @@ fn digest(stem: &str) -> u64 {
             rooms: Vec::new(),
             weather_plan: None,
             foliage: None,
+            atmosphere: CookedAtmosphere::default(),
         },
     };
     let bytes = zone.to_cooked().expect("writes");

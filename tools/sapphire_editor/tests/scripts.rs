@@ -76,6 +76,7 @@ fn editor(dir: &TestDir, file: Option<&Path>) -> Editor {
         content: Some(dir.0.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
         pipeline: None,
+        game: None,
     })
 }
 

@@ -54,6 +54,9 @@ impl Editor {
 
     /// Finds the document the cook refused among those open, once, so Properties compares IDs as it draws.
     fn cook_ended(&mut self, ended: &CookResult) {
+        if let Ok(cooked) = ended {
+            self.push_packs_to_game(cooked);
+        }
         let source = ended.as_ref().err().and_then(|refusal| refusal.source.as_deref()?.canonicalize().ok());
         self.refused = source.and_then(|source| {
             let documents = &self.documents;

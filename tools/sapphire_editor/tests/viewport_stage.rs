@@ -215,7 +215,8 @@ fn read_texture(gpu: &GpuContext, texture: &wgpu::Texture) -> Image {
 
 /// An editor on the player's moves, with the viewport's tab in front.
 fn editor_harness(painter: &Painter, size: (f32, f32), scale: f32) -> Harness<'static, Editor> {
-    let options = Options { file: Some(player_path()), content: Some(cook()), link: None, pipeline: None };
+    let options =
+        Options { file: Some(player_path()), content: Some(cook()), link: None, pipeline: None, game: None };
     let mut editor = Editor::new(options);
     editor.shell_mut().open(Pane::Viewport);
     harness_on(painter, editor, size, scale)
@@ -497,7 +498,8 @@ fn a_camera_from_outside_aims_it() {
 fn it_costs_nothing_until_it_shows() {
     let gpu = device();
     let painter = Painter::new(&gpu, PLAIN);
-    let options = Options { file: Some(player_path()), content: Some(cook()), link: None, pipeline: None };
+    let options =
+        Options { file: Some(player_path()), content: Some(cook()), link: None, pipeline: None, game: None };
     let mut harness = harness_on(&painter, Editor::new(options), (1200.0, 700.0), 1.0);
     let mut view = StageView::default();
     harness.step();
@@ -528,7 +530,7 @@ fn no_cook_says_so_in_the_pane() {
     let gpu = device();
     let painter = Painter::new(&gpu, PLAIN);
     let nowhere = root().join("target/no-cook-here");
-    let options = Options { file: None, content: Some(nowhere), link: None, pipeline: None };
+    let options = Options { file: None, content: Some(nowhere), link: None, pipeline: None, game: None };
     let mut editor = Editor::new(options);
     editor.shell_mut().open(Pane::Viewport);
     let mut harness = harness_on(&painter, editor, (1200.0, 700.0), 1.0);
@@ -810,7 +812,8 @@ fn a_snapshot_is_copies() {
     std::fs::create_dir_all(&dir).expect("a folder");
     let path = dir.join("slice.moves.ron");
     std::fs::write(&path, SLICE).expect("written");
-    let mut editor = Editor::new(Options { file: Some(path), content: None, link: None, pipeline: None });
+    let mut editor =
+        Editor::new(Options { file: Some(path), content: None, link: None, pipeline: None, game: None });
     let before = documents_as_they_are(&editor);
     editor.play_in_viewport(None);
     assert_eq!(documents_as_they_are(&editor), before, "taking it touched nothing");
@@ -851,8 +854,13 @@ fn a_run_starts_on_the_games_own_numbers() {
     let cook = a_games_documents("play_game_documents", Some(&own));
     let path = cook.parent().expect("its folder").join("slice.moves.ron");
     std::fs::write(&path, SLICE).expect("written");
-    let mut editor =
-        Editor::new(Options { file: Some(path), content: Some(cook), link: None, pipeline: None });
+    let mut editor = Editor::new(Options {
+        file: Some(path),
+        content: Some(cook),
+        link: None,
+        pipeline: None,
+        game: None,
+    });
     editor.play_in_viewport(None);
     let note = editor.viewport().note().map(str::to_owned);
     let request = editor.viewport().asked_for().unwrap_or_else(|| panic!("refused: {note:?}"));
@@ -875,8 +883,13 @@ fn a_cook_with_no_manifest_refuses_a_run() {
     let cook = a_games_documents("play_no_manifest", None);
     let path = cook.parent().expect("its folder").join("slice.moves.ron");
     std::fs::write(&path, SLICE).expect("written");
-    let mut editor =
-        Editor::new(Options { file: Some(path), content: Some(cook), link: None, pipeline: None });
+    let mut editor = Editor::new(Options {
+        file: Some(path),
+        content: Some(cook),
+        link: None,
+        pipeline: None,
+        game: None,
+    });
     editor.play_in_viewport(None);
     assert!(editor.viewport().asked_for().is_none());
     let note = editor.viewport().note().expect("why").to_owned();
@@ -890,7 +903,8 @@ fn moves_that_do_not_compile_refuse_a_run() {
     std::fs::create_dir_all(&dir).expect("a folder");
     let path = dir.join("broken.moves.ron");
     std::fs::write(&path, "(version: 1, moves: not this)").expect("written");
-    let mut editor = Editor::new(Options { file: Some(path), content: None, link: None, pipeline: None });
+    let mut editor =
+        Editor::new(Options { file: Some(path), content: None, link: None, pipeline: None, game: None });
     editor.play_in_viewport(None);
     assert!(editor.viewport().asked_for().is_none());
     let note = editor.viewport().note().expect("why").to_owned();
@@ -1227,8 +1241,13 @@ fn zone_harness(
     scale: f32,
 ) -> (Harness<'static, Editor>, PathBuf) {
     let path = proving_ground(name);
-    let options =
-        Options { file: Some(path.clone()), content: Some(editor_cook()), link: None, pipeline: None };
+    let options = Options {
+        file: Some(path.clone()),
+        content: Some(editor_cook()),
+        link: None,
+        pipeline: None,
+        game: None,
+    };
     let mut editor = Editor::new(options);
     editor.shell_mut().open(Pane::Viewport);
     (harness_on(painter, editor, size, scale), path)
@@ -1410,8 +1429,13 @@ fn a_fights_viewport_stands_again_when_a_cook_lands() {
     std::fs::write(path.with_extension("ron.meta"), meta).expect("its sidecar");
     let gpu = device();
     let painter = Painter::new(&gpu, PLAIN);
-    let mut editor =
-        Editor::new(Options { file: Some(path), content: Some(editor_cook()), link: None, pipeline: None });
+    let mut editor = Editor::new(Options {
+        file: Some(path),
+        content: Some(editor_cook()),
+        link: None,
+        pipeline: None,
+        game: None,
+    });
     editor.cook_with(Box::new(LandsAtOnce));
     editor.shell_mut().open(Pane::Viewport);
     let mut harness = harness_on(&painter, editor, (900.0, 600.0), 1.0);
@@ -1514,7 +1538,13 @@ fn a_prefab_never_cooked_draws_once_its_placement_is_saved() {
 
     let gpu = device();
     let painter = Painter::new(&gpu, PLAIN);
-    let options = Options { file: Some(zone), content: Some(plan.packs.clone()), link: None, pipeline: None };
+    let options = Options {
+        file: Some(zone),
+        content: Some(plan.packs.clone()),
+        link: None,
+        pipeline: None,
+        game: None,
+    };
     let mut editor = Editor::new(options);
     editor.cook_with(Box::new(Pipeline::new(plan.clone())));
     editor.shell_mut().open(Pane::Viewport);
@@ -1690,8 +1720,13 @@ fn square_look_path() -> PathBuf {
 
 /// An editor on the square's look, with the viewport's tab in front.
 fn timeline_harness(painter: &Painter, size: (f32, f32), scale: f32) -> Harness<'static, Editor> {
-    let options =
-        Options { file: Some(square_look_path()), content: Some(cook()), link: None, pipeline: None };
+    let options = Options {
+        file: Some(square_look_path()),
+        content: Some(cook()),
+        link: None,
+        pipeline: None,
+        game: None,
+    };
     let mut editor = Editor::new(options);
     editor.shell_mut().open(Pane::Viewport);
     harness_on(painter, editor, size, scale)
@@ -1829,7 +1864,7 @@ fn what_the_sequencer_costs() {
 /// the screen's sample model, which its goldens show.
 fn screen_harness(painter: &Painter, stem: &str, size: (f32, f32), scale: f32) -> Harness<'static, Editor> {
     let file = root().join(format!("content/ui/{stem}.ui.ron"));
-    let options = Options { file: Some(file), content: Some(cook()), link: None, pipeline: None };
+    let options = Options { file: Some(file), content: Some(cook()), link: None, pipeline: None, game: None };
     let mut editor = Editor::new(options);
     editor.shell_mut().open(Pane::Viewport);
     harness_on(painter, editor, size, scale)

@@ -62,6 +62,7 @@ fn editor(dir: &Path, file: Option<PathBuf>) -> Editor {
         content: Some(dir.join("no cook here")),
         link: Some("127.0.0.1:9".parse().expect("an address")),
         pipeline: None,
+        game: None,
     });
     editor.keep_journal_at(&dir.join("journal"));
     assert!(editor.journal().is_some(), "{:?}", editor.notice());

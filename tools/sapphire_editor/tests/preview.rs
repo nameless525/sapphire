@@ -52,6 +52,7 @@ fn editor_on(path: &Path) -> Editor {
         content: Some(cook_dir()),
         link: Some("127.0.0.1:9".parse().expect("an address")),
         pipeline: None,
+        game: None,
     })
 }
 

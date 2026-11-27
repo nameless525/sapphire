@@ -4,6 +4,7 @@ use super::*;
 
 impl Editor {
     pub(super) fn device_panel(&mut self, ui: &mut Ui) {
+        self.game_panel(ui);
         match self.link.device() {
             Some(status) => {
                 ui.label(format!("{}, cook `{}`", status.platform, status.cook));

@@ -20,6 +20,7 @@ mod cooking;
 mod cvars;
 mod device;
 mod dispatch;
+mod in_game;
 mod inspector;
 mod palette;
 mod properties;
@@ -31,6 +32,7 @@ mod top_bar;
 mod zone;
 
 pub use dispatch::ScriptError;
+pub use in_game::{GAME_ANSWER, GAME_STARTUP};
 pub use sequencer::RATE;
 pub use zone::SNAP;
 
@@ -54,6 +56,7 @@ use crate::cook::Cooker;
 use crate::cooked::{self, Cook};
 use crate::edits::{self, EditError, EntryRef, EntryValue, MovesDocument, Track};
 use crate::figure::{Casting, Figure, Figures};
+use crate::game::{Game, GameDied, Launcher};
 use crate::judge::judge;
 use crate::link::{Link, Pushed};
 use crate::play::{PlayRequest, Snapshot};
@@ -85,6 +88,9 @@ pub struct Options {
     /// The pipeline a save's cook runs: the one `cargo xtask content` builds beside the cook if not given
     /// ([`crate::cook::CookPlan::for_cook`]).
     pub pipeline: Option<PathBuf>,
+    /// The dev sandbox Play in game starts: the one beside the editor's own binary if not given
+    /// ([`crate::game::Sandbox::beside_editor`]).
+    pub game: Option<PathBuf>,
 }
 
 /// A note for the top of the window.
@@ -235,6 +241,20 @@ pub struct Editor {
     no_cooker: Option<String>,
     /// The open document the last cook refused, found once when it ended.
     refused: Option<AssetId>,
+    /// The dev sandbox a game plays in, if one was named.
+    game_binary: Option<PathBuf>,
+    /// What starts a game in place of that sandbox: a test's stand-in.
+    launcher: Option<Box<dyn Launcher>>,
+    /// The game playing, a child process on the link (M6 T19).
+    game: Option<Game>,
+    /// The last game that stopped by itself, and the end of its log, until another plays.
+    game_died: Option<GameDied>,
+    /// Where the link pointed before a game took it, to go back to when it's gone.
+    link_before_game: Option<Option<SocketAddr>>,
+    /// What a save or a cook had for a game still starting, sent once it says where it listens.
+    game_held: Vec<in_game::Held>,
+    /// The files pushed to a game since a script last waited for it, whose answers that wait reads.
+    game_pushes: Vec<String>,
     /// The text the latest diagnostics were made from.
     judged: Option<String>,
     issues: Vec<sapphire_moves::Issue>,
@@ -374,6 +394,13 @@ impl Editor {
             cooker: None,
             no_cooker: None,
             refused: None,
+            game_binary: options.game,
+            launcher: None,
+            game: None,
+            game_died: None,
+            link_before_game: None,
+            game_held: Vec::new(),
+            game_pushes: Vec::new(),
             judged: None,
             issues: Vec::new(),
             preview: None,
@@ -1168,7 +1195,11 @@ impl Editor {
                 let Some(file) = self.current() else { return };
                 let (name, text) = (file.file_name(), file.text().to_owned());
                 self.say(Notice { text: format!("saved {name}"), trouble: false });
-                self.link.push(name, text);
+                // A game playing has had it from the save if it takes it as text; any other kind reaches it as its
+                // cook's packs, and its text would only be refused.
+                if self.game.is_none() {
+                    self.link.push(name, text);
+                }
             }
             Err(text) => self.say(Notice { text, trouble: true }),
         }
@@ -1182,11 +1213,13 @@ impl Editor {
         let Some(id) = self.current else { return Ok(()) };
         self.documents.save(id).map_err(|error| save_trouble(&error))?;
         self.ask_cook(&[id]);
+        self.push_to_game(&[id]);
         // What a step of several documents did to the others goes too, or one file says what the other doesn't:
         // a placement saved without the colliders it moved is a zone the cook refuses.
         for joined in self.documents.joined(id) {
             if self.documents.is_dirty(joined) {
                 self.documents.save(joined).map_err(|error| save_trouble(&error))?;
+                self.push_to_game(&[joined]);
             }
         }
         Ok(())
@@ -1201,6 +1234,9 @@ impl Editor {
         let dirty: Vec<AssetId> = self.documents.ids().filter(|id| self.documents.is_dirty(*id)).collect();
         let mut failed = self.documents.save_all();
         self.ask_cook(&dirty);
+        let saved: Vec<AssetId> =
+            dirty.into_iter().filter(|id| !failed.iter().any(|(refused, _)| refused == id)).collect();
+        self.push_to_game(&saved);
         match failed.pop() {
             None => Ok(()),
             Some((_, error)) if failed.is_empty() => Err(save_trouble(&error)),
@@ -1596,6 +1632,7 @@ impl Editor {
     /// link has reported.
     pub fn poll(&mut self, now: f64) {
         self.link.poll();
+        self.poll_game();
         self.poll_cook(now);
         if now - self.last_poll < POLL_SECONDS {
             return;
@@ -1915,6 +1952,7 @@ mod tests {
             content: Some(dir.join("no cook")),
             link: Some("127.0.0.1:9".parse().expect("address")),
             pipeline: None,
+            game: None,
         });
         let ctx = egui::Context::default();
         let mut textures = crate::capture::Textures::default();

@@ -74,6 +74,9 @@ impl CookRefusal {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cooked {
     pub packs: Vec<String>,
+    /// The `.spack` files it wrote, each part of a pack in parts on its own: what a device is sent, each by its
+    /// file's stem, as `cargo xtask link push` sends them (M6 T19). A pack the cook took away has none.
+    pub files: Vec<PathBuf>,
 }
 
 /// What a cook came to.
@@ -459,7 +462,8 @@ impl Running for PipelineCook {
         };
         if status.success() {
             let after = cooked::pack_stamp(&self.plan.packs).unwrap_or_default();
-            return Some(Ok(Cooked { packs: rewritten(&self.before, &after) }));
+            let (packs, files) = (rewritten(&self.before, &after), written(&self.before, &after));
+            return Some(Ok(Cooked { packs, files }));
         }
         let refusal = fs::read_to_string(self.plan.refusal())
             .ok()
@@ -503,6 +507,11 @@ fn rewritten(before: &[PackStamp], after: &[PackStamp]) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// The pack files in `after` that weren't in `before` as they are now: each part on its own, none taken away.
+fn written(before: &[PackStamp], after: &[PackStamp]) -> Vec<PathBuf> {
+    after.iter().filter(|stamp| !before.contains(stamp)).map(|stamp| stamp.path().to_owned()).collect()
 }
 
 #[cfg(test)]
@@ -592,9 +601,9 @@ mod tests {
             assert!(cooker.poll(at + 1.0).is_none());
         }
         assert_eq!(started(&script), 1, "never two at once");
-        script.borrow_mut().end = Some(Ok(Cooked { packs: vec!["shared".to_owned()] }));
+        script.borrow_mut().end = Some(Ok(Cooked { packs: vec!["shared".to_owned()], ..Cooked::default() }));
         let ended = cooker.poll(2.6).expect("the first ended");
-        assert_eq!(ended, Ok(Cooked { packs: vec!["shared".to_owned()] }));
+        assert_eq!(ended, Ok(Cooked { packs: vec!["shared".to_owned()], ..Cooked::default() }));
         assert_eq!(started(&script), 2, "the newest request's cook starts as the first ends");
         script.borrow_mut().end = Some(Ok(Cooked::default()));
         cooker.poll(3.0);
@@ -819,6 +828,9 @@ mod tests {
         fs::write(dir.join("zone_b.spack"), "new").unwrap();
         let after = cooked::pack_stamp(&dir).unwrap();
         assert_eq!(rewritten(&before, &after), ["audio", "shared", "zone_b"]);
+        let files = written(&before, &after);
+        let names: Vec<_> = files.iter().map(|file| file.file_name().unwrap().to_str().unwrap()).collect();
+        assert_eq!(names, ["shared.1.spack", "zone_b.spack"], "each part written, none taken away");
         fs::remove_dir_all(dir).unwrap();
     }
 }

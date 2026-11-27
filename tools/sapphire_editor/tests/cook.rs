@@ -84,6 +84,7 @@ fn a_broken_material_shows_its_refusal_by_field() {
         content: Some(tree.packs()),
         link: Some("127.0.0.1:9".parse().expect("an address")),
         pipeline: Some(pipeline()),
+        game: None,
     });
     tree.run(
         &mut editor,

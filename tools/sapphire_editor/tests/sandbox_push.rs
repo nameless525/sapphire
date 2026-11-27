@@ -181,6 +181,7 @@ fn an_edit_pushed_from_the_editor_plays_on_a_real_fights_next_attempt() {
         content: Some(temp.0.join("no cook here")),
         link: Some(sandbox.address),
         pipeline: None,
+        game: None,
     });
 
     // What the status says about the file, and the fight as shipped.
@@ -276,6 +277,7 @@ fn an_edit_pushed_from_the_editor_plays_on_a_real_fights_next_attempt() {
         content: Some(temp.0.join("no cook here")),
         link: Some(sandbox.address),
         pipeline: None,
+        game: None,
     });
     sandbox.until(&mut second, PATIENCE, "the device, from the second editor", |editor| {
         editor.link().device().cloned()

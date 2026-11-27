@@ -5,7 +5,8 @@
 //! This opens a window, so it's for a person at the machine; agents use `--capture` and the crate's tests
 //! (`docs/development-iteration.md`, "The timeline editor"). The cook's lock goes before it starts, so a
 //! cook beside a running editor doesn't wait for it to close; the editor notices the new cook itself. A save in
-//! the editor cooks again with the pipeline this cook built (M6 T5), under the same lock.
+//! the editor cooks again with the pipeline this cook built (M6 T5), under the same lock. Its Play in game (M6 T19)
+//! starts the dev sandbox built here, in the same profile, offscreen on the same cook.
 
 use std::process::Command;
 
@@ -14,6 +15,8 @@ use crate::platforms;
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
 const TOOL: &str = "sapphire_editor";
+/// What Play in game starts.
+const GAME: &str = "sapphire_sandbox";
 
 pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let dir = content::cook(Cook::Editor)?.dir.clone();
@@ -24,7 +27,17 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
         &CargoBuild { package: TOOL, target: None, profile: BuildProfile::Tools, features: &[], env: &env },
         TOOL,
     )?;
+    let game = workspace::build_binary(
+        &CargoBuild {
+            package: GAME,
+            target: None,
+            profile: BuildProfile::Tools,
+            features: &["dev".to_owned()],
+            env: &env,
+        },
+        GAME,
+    )?;
     let mut command = Command::new(tool);
-    command.arg("--content").arg(dir).arg("--pipeline").arg(pipeline).args(args);
+    command.arg("--content").arg(dir).arg("--pipeline").arg(pipeline).arg("--game").arg(game).args(args);
     workspace::run(&mut command)
 }

@@ -29,6 +29,7 @@ pub mod cook;
 pub mod cooked;
 pub mod edits;
 pub mod figure;
+pub mod game;
 pub mod gizmo;
 pub mod input;
 pub mod judge;

@@ -58,14 +58,15 @@ impl Editor {
         Ok(())
     }
 
-    /// Runs a script's commands in order, stopping at the first refused.
+    /// Runs a script's commands in order, stopping at the first refused. While a game plays, each waits for it
+    /// (`settle_game`), up to [`GAME_STARTUP`](crate::app::GAME_STARTUP) for a Play and
+    /// [`GAME_ANSWER`](crate::app::GAME_ANSWER) otherwise: a script has no frames for its answers to come in
+    /// between.
     pub fn run_script(&mut self, script: &Script) -> Result<(), ScriptError> {
         for (index, command) in script.commands.iter().enumerate() {
-            self.run(command.clone()).map_err(|why| ScriptError {
-                index: index + 1,
-                command: command.to_text(),
-                why,
-            })?;
+            let error = |why| ScriptError { index: index + 1, command: command.to_text(), why };
+            self.run(command.clone()).map_err(error)?;
+            self.settle_game().map_err(error)?;
         }
         Ok(())
     }
@@ -266,12 +267,17 @@ impl Editor {
             }
             Command::PlayInViewport(script) => self.play_in_viewport(script.clone()),
             Command::StopViewport => self.viewport.stop_playing(),
+            Command::PlayInGame(target) => self.play_in_game(target),
+            Command::StopGame => self.stop_game(),
             Command::OpenPane(pane) => self.shell.open(*pane),
             Command::ClosePane(pane) => self.shell.close(*pane),
             Command::Split { pane, of, direction } => match self.shell.find(*of) {
                 Some(target) => self.shell.split(target, *pane, *direction),
                 None => self.refuse(format!("no {} pane to split", of.title())),
             },
+            Command::Link(_) if self.game.is_some() => {
+                self.refuse("the link is the game's while it plays: StopGame first");
+            }
             Command::Link(address) => match address.parse() {
                 Ok(address) => self.set_link_address(address),
                 Err(_) => self.refuse(format!("`{address}` isn't an address and port")),

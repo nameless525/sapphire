@@ -20,6 +20,7 @@ use egui_tiles::LinearDir;
 use serde::{Deserialize, Serialize};
 
 use crate::edits::{EntryRef, Track};
+use crate::game::GameTarget;
 use crate::screen::{Aspect, StandIn};
 use crate::shell::Pane;
 
@@ -182,6 +183,11 @@ pub enum Command {
     PlayInViewport(Option<String>),
     /// Stops what the viewport plays.
     StopViewport,
+    /// Starts the game on a zone or a scenario, as a child process with no window, in place of any playing: the link
+    /// goes to it, and every save goes to it while it plays (M6 T19).
+    PlayInGame(GameTarget),
+    /// Stops the game playing, and puts the link back where it was.
+    StopGame,
 
     /// Opens a pane, or shows it if it's a tab away.
     OpenPane(Pane),
@@ -283,6 +289,8 @@ impl Command {
             Self::StandIn { .. } => "StandIn",
             Self::PlayInViewport(_) => "PlayInViewport",
             Self::StopViewport => "StopViewport",
+            Self::PlayInGame(_) => "PlayInGame",
+            Self::StopGame => "StopGame",
             Self::OpenPane(_) => "OpenPane",
             Self::ClosePane(_) => "ClosePane",
             Self::Split { .. } => "Split",
@@ -388,6 +396,9 @@ const COMMANDS: &[Registered] = registry! {
     "StandIn", r#"StandIn(path: "", value: Number(0.0))"#, None, "Has a screen's path read a value";
     "PlayInViewport", "PlayInViewport(None)", None, "Plays the documents in the viewport";
     "StopViewport", "StopViewport", None, "Stops what the viewport plays";
+    "PlayInGame", r#"PlayInGame(Arena(script: "attempts"))"#, None,
+        "Plays a zone or a scenario in the game, which takes every save";
+    "StopGame", "StopGame", None, "Stops the game";
     "OpenPane", "OpenPane(Viewport)", None, "Opens a pane";
     "ClosePane", "ClosePane(Viewport)", None, "Closes a pane";
     "Split", "Split(pane: Device, of: Preview, direction: Vertical)", None, "Splits a pane's tile with another pane";

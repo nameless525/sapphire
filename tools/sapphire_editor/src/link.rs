@@ -15,13 +15,14 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use sapphire_livelink::protocol::{CvarStatus, DeviceStatus, MoveAttempt};
+use sapphire_livelink::protocol::{CvarStatus, DeviceStatus, MoveAttempt, PackOutcome};
 use sapphire_livelink::{Client, LinkError};
 use sapphire_time::Stopwatch;
 
@@ -105,12 +106,22 @@ pub struct EarlierPush {
     pub pushed: Pushed,
 }
 
+/// What a push sends.
+#[derive(Debug)]
+enum Payload {
+    /// A document's text.
+    Document(String),
+    /// A pack, read from its file when it goes, so the newest cook's is what crosses.
+    Pack(PathBuf),
+}
+
 /// A push the thread hasn't begun.
 #[derive(Debug)]
 struct WaitingPush {
     id: u64,
+    /// The file it's of, by name: a document's or a pack's.
     origin: String,
-    text: String,
+    payload: Payload,
 }
 
 /// What waits for the thread, and all that can.
@@ -320,6 +331,11 @@ pub struct Link {
     current_from: u64,
     last_push: Option<Pushed>,
     earlier_push: Option<EarlierPush>,
+    /// What the newest push of each file came to on this device, whatever the text in front of the person: what a
+    /// game the editor plays has taken (M6 T19).
+    answers: Vec<(String, Pushed)>,
+    /// Pushes from this one on went to the device there is now.
+    device_from: u64,
     /// Last attempts actually observed by poll; idle history is bounded to IDLE_ATTEMPT_HISTORY.
     attempts: Vec<MoveAttempt>,
     /// What the device last said it has, while a panel asks.
@@ -357,6 +373,8 @@ impl Link {
             current_from: 0,
             last_push: None,
             earlier_push: None,
+            answers: Vec::new(),
+            device_from: 0,
             attempts: Vec::new(),
             cvars: None,
             cvar_refusal: None,
@@ -385,6 +403,8 @@ impl Link {
         self.cvar_versions.clear();
         self.next_cvar = 1;
         self.clear_push();
+        self.answers.clear();
+        self.device_from = self.next_push;
         if !self.thread_runs() {
             return;
         }
@@ -398,13 +418,23 @@ impl Link {
     /// thread. [`Self::last_push`] says what became of it, as long as nothing has changed by the time it's
     /// known.
     pub fn push(&mut self, origin: String, text: String) {
+        self.send(origin, Payload::Document(text));
+    }
+
+    /// Pushes the pack in the file at `path` by its name, `name`, in place of any push of it still waiting: only
+    /// what the device lacks of it crosses, once the thread reads it. [`Self::answer`] says what it came to.
+    pub fn push_pack(&mut self, name: String, path: PathBuf) {
+        self.send(name, Payload::Pack(path));
+    }
+
+    fn send(&mut self, origin: String, payload: Payload) {
         let id = self.next_push;
         self.next_push += 1;
         if !self.thread_runs() {
             return;
         }
         self.waiting += 1;
-        if let Some(replaced) = self.mailbox.put_push(WaitingPush { id, origin, text }) {
+        if let Some(replaced) = self.mailbox.put_push(WaitingPush { id, origin, payload }) {
             self.waiting = self.waiting.saturating_sub(1);
             // The same text needs no word: this push answers for it.
             if replaced.id < self.current_from {
@@ -510,6 +540,12 @@ impl Link {
                 ) => {}
                 Some(Report::Pushed { id, origin, pushed }) => {
                     self.waiting = self.waiting.saturating_sub(1);
+                    if id >= self.device_from {
+                        match self.answers.iter_mut().find(|(file, _)| *file == origin) {
+                            Some((_, answer)) => answer.clone_from(&pushed),
+                            None => self.answers.push((origin.clone(), pushed.clone())),
+                        }
+                    }
                     if id >= self.current_from {
                         self.last_push = Some(pushed);
                         self.earlier_push = None;
@@ -576,6 +612,19 @@ impl Link {
         self.earlier_push.as_ref()
     }
 
+    /// What the newest push of the file `origin` (a document's name or a pack's) came to on this device, if one
+    /// has been answered.
+    #[must_use]
+    pub fn answer(&self, origin: &str) -> Option<&Pushed> {
+        self.answers.iter().find(|(file, _)| file == origin).map(|(_, pushed)| pushed)
+    }
+
+    /// What the newest push of each file came to on this device, in the order they were first answered.
+    #[must_use]
+    pub fn answers(&self) -> &[(String, Pushed)] {
+        &self.answers
+    }
+
     /// Last observed attempts: all current actors plus at most 64 idle actors. On overflow, idle actors
     /// first observed longest ago are omitted first. Target/reconnect/run restart clears the history.
     /// Intermediate snapshots while unpolled are intentionally omitted.
@@ -621,8 +670,8 @@ fn work(mut address: Option<SocketAddr>, mailbox: &Mailbox, reports: &Reports) {
                     reports.send(Report::Connection { target, status });
                 }
             }
-            Next::Push(WaitingPush { id, origin, text }) => {
-                let pushed = push(address, target, &mut client, reports, &origin, text);
+            Next::Push(WaitingPush { id, origin, payload }) => {
+                let pushed = push(address, target, &mut client, reports, &origin, payload);
                 reports.send(Report::Pushed { id, origin, pushed });
             }
             Next::SetCvar(version, name, value) => {
@@ -719,7 +768,7 @@ fn push(
     client: &mut Option<Client>,
     reports: &Reports,
     origin: &str,
-    text: String,
+    payload: Payload,
 ) -> Pushed {
     let Some(address) = address else {
         return Pushed::Failed("no device address to push to".to_owned());
@@ -729,7 +778,14 @@ fn push(
         Ok(connection) => connection,
         Err(why) => return Pushed::Failed(format!("no device at {address}: {why}")),
     };
-    match connection.push_document(origin, text) {
+    let took = match payload {
+        Payload::Document(text) => connection.push_document(origin, text),
+        Payload::Pack(path) => match std::fs::read(&path) {
+            Ok(bytes) => connection.push_pack(origin, &bytes).map(|outcome| pack_took(&outcome)),
+            Err(error) => return Pushed::Failed(format!("{}: {error}", path.display())),
+        },
+    };
+    match took {
         Ok(owner) => Pushed::Took { owner, milliseconds: stopwatch.elapsed().as_millis() as u32 },
         Err(LinkError::Refused(why)) => Pushed::Refused(refusals_of(&why)),
         Err(error) => {
@@ -737,6 +793,22 @@ fn push(
             Pushed::Failed(error_chain(&error))
         }
     }
+}
+
+/// What a device did with a pushed pack, in the words a document's answer has.
+fn pack_took(outcome: &PackOutcome) -> String {
+    let what = if outcome.mounted { "remounted" } else { "served to what mounts it later" };
+    let failed = match outcome.failed.len() {
+        0 => String::new(),
+        failed => format!(", {failed} failed and keep what they were"),
+    };
+    format!(
+        "the pack, {what}: {} of {} bytes sent, {} assets changed, {} reloaded{failed}",
+        outcome.received,
+        outcome.len,
+        outcome.changed,
+        outcome.reloaded.len()
+    )
 }
 
 #[cfg(test)]

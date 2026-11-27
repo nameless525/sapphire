@@ -1,7 +1,8 @@
 //! Graph v2 (M6 A5a, spec §5.13's "Graph v2"): the `.animgraph.ron` document at version 2, a node graph
 //! an animator can grow, and its [compiler](compile) to a flat [program] with a static
-//! worst-case cost. Nothing at run time reads either yet: the runtime is A5b's and the switch A5c's, so
-//! today's [`super::AnimGraph`] is still what cooks to `.sgraph` and plays.
+//! worst-case cost. `sapphire_body_pose` binds and plays a program on either of its maths (M6 A5b), but
+//! nothing the game runs reads one yet: the switch is A5c's, so today's [`super::AnimGraph`] is still
+//! what cooks to `.sgraph` and plays.
 //!
 //! ```ron
 //! (
@@ -88,7 +89,7 @@ use super::{BlendSample, GraphError};
 pub use super::{Blink, EntrySample, GraphClip, GraphMask, MaskBone};
 use crate::AssetId;
 pub use compile::{CompileError, GraphIssue};
-pub use program::GraphProgram;
+pub use program::{GraphProgram, Target};
 
 /// An animation graph document at version 2. See the [module docs](self).
 #[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -488,7 +489,7 @@ pub struct Transition {
 
 /// The runtime's rules for a transition, each said in the document. v1 keyed these on its condition's
 /// variant; a converted transition says which it had ([`convert`]), and a hand-written one has those
-/// it names. Spec §5.13's "As built (M6 A5a)" lists them for A5b's runtime.
+/// it names. Spec §5.13's "As built (M6 A5a)" lists them, and the runtime keeps them (M6 A5b).
 #[derive(
     Reflect,
     Clone,
@@ -840,6 +841,12 @@ impl AnimGraph {
     /// [`Self::resolve`].
     pub fn compile(&self) -> Result<GraphProgram, CompileError> {
         compile::compile(self)
+    }
+
+    /// Compiles it to run where `target` says: [`Target::Simulation`] for a graph bound to a
+    /// `FixedBody` (`Target::Simulation`), refusing by path what only presentation may run.
+    pub fn compile_for(&self, target: Target) -> Result<GraphProgram, CompileError> {
+        compile::compile_for(self, target)
     }
 
     /// The path of every node an editor may place: each machine, each state, each layer. A layout

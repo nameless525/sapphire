@@ -304,6 +304,78 @@ fn a_cooked_program_reads_back_the_same_and_damage_is_refused() {
     // A state or a transition that belongs to another machine.
     assert!(damaged(&|bad| bad.states[0].machine = 1));
     assert!(damaged(&|bad| bad.transitions[0].to = 4));
+    // The runtime's game slots are an array, and a line's weights divide by its samples' gaps.
+    assert!(damaged(&|bad| {
+        let slot = bad.parameters.iter().find(|parameter| matches!(parameter.from, ParameterSource::Game(_)));
+        let slot = slot.expect("a game slot").clone();
+        // One past the limit, and still well inside the registers'.
+        bad.parameters.extend(std::iter::repeat_n(slot, MAX_GAME_SLOTS));
+        assert!(bad.parameters.len() <= MAX_PARAMETERS);
+    }));
+    assert!(damaged(&|bad| {
+        let line =
+            bad.blends.iter().find(|blend| matches!(blend.axes, BlendAxes::One(_))).expect("a 1D blend");
+        let first = line.samples.range().start;
+        bad.samples[first + 1].at[0] = bad.samples[first].at[0];
+    }));
+    // Places that aren't finite, or a plane's place twice.
+    let line_at = |bad: &mut GraphProgram, sample: usize, at: f32| {
+        let line =
+            bad.blends.iter().find(|blend| matches!(blend.axes, BlendAxes::One(_))).expect("a 1D blend");
+        let first = line.samples.range().start;
+        bad.samples[first + sample].at[0] = at;
+    };
+    assert!(damaged(&|bad| line_at(bad, 0, f32::NEG_INFINITY)));
+    assert!(damaged(&|bad| line_at(bad, 1, f32::NAN)));
+    let plane = |bad: &GraphProgram| {
+        let plane =
+            bad.blends.iter().find(|blend| matches!(blend.axes, BlendAxes::Two(..))).expect("a 2D blend");
+        plane.samples.range().start
+    };
+    assert!(damaged(&|bad| {
+        let first = plane(bad);
+        bad.samples[first + 1].at[1] = f32::INFINITY;
+    }));
+    assert!(damaged(&|bad| {
+        let first = plane(bad);
+        bad.samples[first + 1].at = bad.samples[first].at;
+    }));
+}
+
+/// The runtime keeps one footwork for the graph: a second blend's that differs is refused at its path.
+#[test]
+fn a_second_blend_with_other_footwork_is_refused() {
+    let footwork = |launch: &str| {
+        format!(
+            r#"footwork: Some((brake: ("idle", "idle"), launch: ("{launch}", "{launch}"), gaits: [(clip: "walk", contact: 0.5)]))"#
+        )
+    };
+    let ground = format!("rate: (0.75, 1.5), {})))", footwork("walk"));
+    let fall = |launch: &str| {
+        format!(
+            r#"(name: "fall", plays: Blend2D((x: "velocity_x", y: "velocity_z", samples: [(clip: "fall", at: (0.0, 0.0))], {})))"#,
+            footwork(launch)
+        )
+    };
+    let text = |launch: &str| {
+        document().replacen("rate: (0.75, 1.5))))", &ground, 1).replacen(
+            r#"(name: "fall", plays: Clip(clip: "fall", looping: true))"#,
+            &fall(launch),
+            1,
+        )
+    };
+    let compile = |launch: &str| {
+        let mut graph = AnimGraph::from_document(&text(launch)).unwrap_or_else(|error| panic!("{error}"));
+        graph.resolve(|clip| AssetId::from_bytes([clip.name.len() as u8; 16]));
+        graph.compile()
+    };
+    compile("walk").unwrap_or_else(|error| panic!("the same footwork twice is one: {error}"));
+    let Err(CompileError { issues }) = compile("run") else { panic!("another footwork compiled") };
+    assert!(
+        issues.iter().any(|issue| issue.path == r#"machines["air"].states["fall"].plays.footwork"#
+            && issue.to_string().contains("an earlier blend's footwork")),
+        "{issues:?}"
+    );
 }
 
 #[test]
@@ -510,6 +582,25 @@ fn refusals_name_the_path_of_what_they_refuse() {
         ),
         ("min_weight: 0.8", "min_weight: 1.8", r#"events["swish"].min_weight"#, "1.8"),
         ("every: (150, 360)", "every: (360, 150)", "blink.every", "range"),
+        // A takeoff or a landing reads the base's flight, and a seek in the air starts at the one takeoff.
+        (
+            r#"(name: "fall", plays: Clip(clip: "fall", looping: true))"#,
+            r#"(name: "fall", plays: Takeoff((standing: "fall", moving: [(clip: "rise_run", fade: (0.6, 3.8))])))"#,
+            r#"machines["air"].states["fall"].plays"#,
+            "a second takeoff",
+        ),
+        (
+            r#"(name: "aim", plays: Blend1D((parameter: "aim", samples: [(clip: "aim_low", at: -1.0), (clip: "aim_high", at: 1.0)])))"#,
+            r#"(name: "aim", plays: Landing((standing: "land", moving: [(clip: "land_run", fade: (0.6, 3.8))])))"#,
+            r#"machines["upper"].states["aim"].plays"#,
+            "a landing plays only in the first layer's",
+        ),
+        (
+            r#"(name: "aim", plays: Blend1D((parameter: "aim", samples: [(clip: "aim_low", at: -1.0), (clip: "aim_high", at: 1.0)])))"#,
+            r#"(name: "aim", plays: Takeoff((standing: "rise", moving: [(clip: "rise_run", fade: (0.6, 3.8))])))"#,
+            r#"machines["upper"].states["aim"].plays"#,
+            "a takeoff plays only in the first layer's",
+        ),
     ];
     for (from, to, path, word) in rows {
         let issues = issues_with(from, to);
@@ -716,6 +807,8 @@ fn a_v1_landed_without_a_landing_reads_landed_alone() {
         .replace("(from: \"air\", to: \"land\", when: LandedMoving(4.5), decay: 3),", "");
     let graph = AnimGraph::from_document(&text).expect("reads");
     assert_eq!(graph.machines[0].transitions[2].when, "landed");
+    // v1 started a landing only in a graph with one; this `Landed` is a plain change of state.
+    assert_eq!(graph.machines[0].transitions[2].rules, TransitionRules::default());
 }
 
 #[test]
@@ -845,17 +938,57 @@ fn v1s_condition_keyed_rules_are_said_and_a_hand_written_transition_has_none() {
     assert_eq!(program.transitions[1].rules, TransitionRules { lands: true, ..none });
 }
 
+/// Each clip of an additive machine layer has its own reference, its first tick, blended as the pose is:
+/// the layer samples its clips twice.
 #[test]
-fn an_additive_machine_layer_that_samples_more_than_one_clip_is_refused() {
-    let issues = issues_with(
+fn an_additive_machine_layer_of_several_clips_compiles_at_twice_their_cost() {
+    let text = document().replacen(
         "mask: Some(\"upper\"), weight: 0.5)))",
         "mask: Some(\"upper\"), blend: Additive, weight: 0.5)))",
+        1,
     );
-    assert!(
-        issues.iter().any(|issue| issue.path == r#"layers["upper"].plays.blend"#
-            && issue.message.contains("up to 2 clips at once")),
-        "{issues:?}"
+    let mut graph = AnimGraph::from_document(&text).expect("reads");
+    graph.resolve(|clip| AssetId::from_bytes([clip.name.len() as u8; 16]));
+    let added = graph.compile().unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(added.cost.clips_sampled, program().cost.clips_sampled + 2);
+}
+
+/// Compiling for `Target::Simulation` refuses, by path, every node only presentation may run, and nothing else.
+#[test]
+fn a_simulation_compile_refuses_what_only_presentation_runs() {
+    let graph = graph();
+    let Err(CompileError { issues }) = graph.compile_for(Target::Simulation) else {
+        panic!("it holds presentation's nodes")
+    };
+    let paths: Vec<&str> = issues.iter().map(|issue| issue.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            r#"parameters["mode"].from"#,
+            r#"parameters["aim"].from"#,
+            r#"layers["combat"].plays.moves["jab"].variants[0]"#,
+            r#"events["footstep"]"#,
+            r#"events["swish"]"#,
+        ]
     );
+    assert_eq!(graph.compile().expect("presentation runs them").target, Target::Presentation);
+    // Without them, it compiles for the fixed step, and says so.
+    let text = document()
+        .replacen(r#"(name: "mode", from: Traversal(Mode)),"#, "", 1)
+        .replacen("grounded && mode != Swimming", "grounded", 1)
+        .replacen(r#"(name: "aim", from: Game("aim")),"#, r#"(name: "aim", from: Locomotion(Speed)),"#, 1)
+        .replacen(r#", variants: [(from: Behind, clip: "jab_behind")]"#, "", 1)
+        .replacen(
+            r#"(name: "footstep", from: Foot((foot: Left, contact: Down))),
+            (name: "swish", from: Clip("swish"), min_weight: 0.8),"#,
+            "",
+            1,
+        );
+    let mut plain = AnimGraph::from_document(&text).expect("reads");
+    plain.resolve(|clip| AssetId::from_bytes([clip.name.len() as u8; 16]));
+    let program = plain.compile_for(Target::Simulation).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(program.target, Target::Simulation);
+    assert_eq!(GraphProgram::read(&program.to_cooked().expect("cooks")).expect("reads"), program);
 }
 
 #[test]

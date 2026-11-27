@@ -11,7 +11,7 @@ use super::program::{
     BlendAxes, GraphCost, GraphProgram, MAX_CLIPS_SAMPLED, MAX_REGISTERS, PoseOp, ProgramAdditive,
     ProgramBlend, ProgramClip, ProgramCombat, ProgramEntry, ProgramEntrySample, ProgramEvent,
     ProgramEventSource, ProgramFootwork, ProgramMachine, ProgramMove, ProgramParameter, ProgramReaction,
-    ProgramSample, ProgramState, ProgramSync, ProgramTransition, Span,
+    ProgramSample, ProgramState, ProgramSync, ProgramTransition, Span, Target,
 };
 use super::{
     ANY_STATE, AnimGraph, Blend1D, Blend2D, EntrySample, EventSource, LayerBlend, LayerMotion,
@@ -159,10 +159,16 @@ struct Placement {
     depth: u8,
 }
 
-/// Compiles `graph`, or names everything wrong with it.
+/// Compiles `graph` for presentation, or names everything wrong with it.
 pub fn compile(graph: &AnimGraph) -> Result<GraphProgram, CompileError> {
+    compile_for(graph, Target::Presentation)
+}
+
+/// Compiles `graph` to run where `target` says, or names everything wrong with it: for
+/// [`Target::Simulation`], every node only presentation may run too.
+pub fn compile_for(graph: &AnimGraph, target: Target) -> Result<GraphProgram, CompileError> {
     let mut issues = Issues::default();
-    let parameters = check_parameters(graph, &mut issues);
+    let parameters = check_parameters(graph, target, &mut issues);
     if !(graph.smoothing.is_finite() && graph.smoothing >= 0.0) {
         issues.push("smoothing", format!("{} isn't a half-life", graph.smoothing));
     }
@@ -215,6 +221,7 @@ pub fn compile(graph: &AnimGraph) -> Result<GraphProgram, CompileError> {
         events: Vec::new(),
         blink: graph.blink.clone(),
         cost: GraphCost::default(),
+        target,
     };
     // Every machine's states first, so a transition can name a state of its machine by index.
     let mut first_state = Vec::with_capacity(graph.machines.len());
@@ -275,9 +282,10 @@ pub fn compile(graph: &AnimGraph) -> Result<GraphProgram, CompileError> {
         }
     }
     let layers_start = program.ops.len() as u16;
-    let clips_sampled = compile_layers(graph, &names, &placements, &mut program, &state_cost, &mut issues);
+    let clips_sampled =
+        compile_layers(graph, target, &names, &placements, &mut program, &state_cost, &mut issues);
     program.layers = Span { start: layers_start, len: program.ops.len() as u16 - layers_start };
-    compile_events(graph, &mut program, &mut issues);
+    compile_events(graph, target, &mut program, &mut issues);
     if let Some(blink) = &graph.blink {
         check_blink(blink, &mut issues);
     }
@@ -308,7 +316,11 @@ pub fn compile(graph: &AnimGraph) -> Result<GraphProgram, CompileError> {
     if issues.0.is_empty() { Ok(program) } else { Err(CompileError { issues: issues.0 }) }
 }
 
-fn check_parameters<'a>(graph: &'a AnimGraph, issues: &mut Issues) -> Vec<(&'a str, ParameterKind)> {
+fn check_parameters<'a>(
+    graph: &'a AnimGraph,
+    target: Target,
+    issues: &mut Issues,
+) -> Vec<(&'a str, ParameterKind)> {
     issues.limit("parameters", graph.parameters.len(), MAX_PARAMETERS);
     issues.names("parameters", graph.parameters.iter().map(|parameter| parameter.name.as_str()));
     let mut sources: Vec<&ParameterSource> = Vec::new();
@@ -329,6 +341,17 @@ fn check_parameters<'a>(graph: &'a AnimGraph, issues: &mut Issues) -> Vec<(&'a s
             if slot.is_empty() {
                 issues.push(format!("{at}.from"), "a game slot with no name");
             }
+            if target == Target::Simulation {
+                issues.push(
+                    format!("{at}.from"),
+                    "a game slot is presentation's to fill, and the fixed step reads nothing it wrote",
+                );
+            }
+        }
+        // Nothing binds traversal's mode until A14 adds the modes and A15 and A16 play them: it reads
+        // none, so a condition on it would be dead in the checksum's step.
+        if target == Target::Simulation && matches!(parameter.from, ParameterSource::Traversal(_)) {
+            issues.push(format!("{at}.from"), "traversal's mode isn't bound for the fixed step yet");
         }
         if sources.contains(&&parameter.from) {
             issues.push(format!("{at}.from"), "another parameter is bound to this already");
@@ -486,6 +509,14 @@ fn compile_machine_states<'a>(
             Motion::Blend1D(blend) => blend_1d(blend, &path, into, names, program, issues),
             Motion::Blend2D(blend) => blend_2d(blend, &path, into, names, program, issues),
             Motion::Takeoff(takeoff) => {
+                // A seek in the air starts the base at the graph's one takeoff, which reads the body's
+                // flight.
+                if into != 0 {
+                    issues.push(&path, "a takeoff plays only in the first layer's machines");
+                }
+                if program.entries.iter().any(|entry| !entry.landing) {
+                    issues.push(&path, "a second takeoff: a graph has one");
+                }
                 let entry = entry(&takeoff.standing, &takeoff.moving, 1, &path, names, issues);
                 let cost = 1 + entry.len() as u16;
                 program.entries.push(ProgramEntry {
@@ -498,6 +529,10 @@ fn compile_machine_states<'a>(
                 (PoseOp::Entry { entry: program.entries.len() as u16 - 1, into }, cost)
             }
             Motion::Landing(landing) => {
+                // It reads the base's landing, which only the first layer's machines keep.
+                if into != 0 {
+                    issues.push(&path, "a landing plays only in the first layer's machines");
+                }
                 let entry = entry(&landing.standing, &landing.moving, 3, &path, names, issues);
                 // The pose, and the catch's contact pose again where the weights have moved since.
                 let cost = 2 * (1 + entry.len() as u16);
@@ -626,7 +661,12 @@ fn blend_2d(
                 (names.clip(issues, format!("{gait_at}.clip"), &gait.clip), gait.contact)
             })
             .collect();
-        program.footwork.push(ProgramFootwork { brake, launch, gaits });
+        let own = ProgramFootwork { brake, launch, gaits };
+        // The runtime keeps one footwork for the graph, which each blend that has it turns on.
+        if program.footwork.first().is_some_and(|first| *first != own) {
+            issues.push(&at, "differs from an earlier blend's footwork: a graph's blends share one");
+        }
+        program.footwork.push(own);
         program.footwork.len() as u16 - 1
     });
     program.blends.push(ProgramBlend {
@@ -752,6 +792,7 @@ fn compile_transitions(
 /// The layers' ops, and the most clips one evaluation of them samples.
 fn compile_layers(
     graph: &AnimGraph,
+    target: Target,
     names: &Names<'_>,
     placements: &BTreeMap<usize, Placement>,
     program: &mut GraphProgram,
@@ -797,16 +838,9 @@ fn compile_layers(
                 let sampled = machine_cost(program, state_cost, machine);
                 if played.blend == LayerBlend::Additive {
                     additive += 1;
-                    // One reference pose a layer: a blend's clips would each need their own (A5b).
-                    if sampled > 1 {
-                        issues.push(
-                            format!("{path}.blend"),
-                            format!(
-                                "adds a machine that samples up to {sampled} clips at once; an additive machine \
-                                 layer samples one at a time until A5b gives each clip its reference"
-                            ),
-                        );
-                    }
+                    // Its reference is the same machine with each clip at its own first tick, blended as
+                    // the pose is: each clip sampled twice.
+                    cost += sampled;
                 }
                 cost += sampled;
             }
@@ -828,6 +862,13 @@ fn compile_layers(
                     let mut variants = [None; 4];
                     for (index, variant) in row.variants.iter().enumerate() {
                         let variant_at = indexed(&format!("{row_at}.variants"), index);
+                        if target == Target::Simulation {
+                            issues.push(
+                                &variant_at,
+                                "a side's clip is presentation's choice, from a hit's direction, and the \
+                                 move's tables are baked from its row's clip",
+                            );
+                        }
                         let side = &mut variants[variant.from as usize];
                         if side.is_some() {
                             issues.push(
@@ -908,9 +949,17 @@ fn compile_layers(
     cost
 }
 
-fn compile_events(graph: &AnimGraph, program: &mut GraphProgram, issues: &mut Issues) {
+fn compile_events(graph: &AnimGraph, target: Target, program: &mut GraphProgram, issues: &mut Issues) {
     issues.limit("events", graph.events.len(), MAX_EVENTS);
     issues.names("events", graph.events.iter().map(|event| event.name.as_str()));
+    if target == Target::Simulation {
+        for event in &graph.events {
+            issues.push(
+                named("events", &event.name),
+                "an event goes to presentation's notifies, never the simulation",
+            );
+        }
+    }
     let printable = |name: &str| {
         !name.is_empty() && name.len() <= MAX_EVENT_NAME && name.bytes().all(|byte| byte.is_ascii_graphic())
     };

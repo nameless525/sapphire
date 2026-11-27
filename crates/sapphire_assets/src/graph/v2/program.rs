@@ -32,8 +32,9 @@
 //!
 //! The heroine's converted graph is 10 an evaluation; her worst frame by v1's code is a landing's
 //! hand-off, which starts a decay: 3 × 10 + 23 × 7 (her 7-clip ground) = 191, and 345 should a turn's
-//! hand-off fall on the same frame (11 × 2 × 7 more), plus one a new reference. A5b's runtime decides
-//! whether v2 keeps phase matching by whole evaluations; no field counts the multipliers until it does.
+//! hand-off fall on the same frame (11 × 2 × 7 more), plus one a new reference. The runtime (M6 A5b) keeps
+//! v1's phase matching by whole evaluations, so a converted graph plays v1's poses bit for bit, and no
+//! field counts the multipliers.
 
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
@@ -41,9 +42,9 @@ use sapphire_serialize::cooked::{AlignedVec, CookedError};
 
 use super::condition::{MAX_CONDITION_DEPTH, MAX_CONDITION_OPS, depth};
 use super::{
-    Contact, Foot, LayerBlend, MAX_ADDITIVE_LAYERS, MAX_BLEND_1D_SAMPLES, MAX_EVENTS, MAX_LAYERS,
-    MAX_MACHINE_DEPTH, MAX_MACHINES, MAX_PARAMETERS, MAX_STATES, MAX_SYNC_GROUPS, MAX_TRANSITIONS,
-    ParameterSource, Side, TransitionRules, TraversalMode,
+    Contact, Foot, LayerBlend, MAX_ADDITIVE_LAYERS, MAX_BLEND_1D_SAMPLES, MAX_EVENTS, MAX_GAME_SLOTS,
+    MAX_LAYERS, MAX_MACHINE_DEPTH, MAX_MACHINES, MAX_PARAMETERS, MAX_STATES, MAX_SYNC_GROUPS,
+    MAX_TRANSITIONS, ParameterSource, Side, TransitionRules, TraversalMode,
 };
 use crate::AssetId;
 use crate::graph::{
@@ -99,11 +100,28 @@ pub struct GraphProgram {
     pub events: Vec<ProgramEvent>,
     pub blink: Option<Blink>,
     pub cost: GraphCost,
+    /// Where it was compiled to run.
+    pub target: Target,
 }
 
 impl Versioned for GraphProgram {
     /// 1: M6 A5a.
-    const VERSION: u32 = 1;
+    /// 2: [`GraphProgram::target`] (M6 A5b).
+    const VERSION: u32 = 2;
+}
+
+/// Where a program runs, which says what its compile refuses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum Target {
+    /// Presentation, on host maths (`PoseMath`'s presentation arm): anything the document can say.
+    #[default]
+    Presentation,
+    /// The fixed step, for a graph bound to a `FixedBody`, on the deterministic maths. What
+    /// only presentation may run is refused, by path: an event (it goes to presentation's notifies,
+    /// never the simulation), a parameter bound to a game slot (presentation fills those, and the fixed
+    /// step reads nothing presentation wrote) and a move's side variant (presentation chooses it from a
+    /// hit's direction, and the move's tables are baked from its row's clip).
+    Simulation,
 }
 
 /// A run of a table: `start..start + len`.
@@ -251,6 +269,41 @@ impl Comparison {
             Self::NotEqual => left != right,
         }
     }
+}
+
+/// Whether a condition's `ops`, as a program holds them (balanced, at most [`MAX_CONDITION_DEPTH`]
+/// deep: [`GraphProgram::read`] checks both), hold over value registers `values` (a missing one reads
+/// 0) and whether the state has `finished`. Allocates nothing.
+#[must_use]
+pub fn evaluate(ops: &[ConditionOp], values: &[f32], finished: bool) -> bool {
+    let value = |index: u8| values.get(usize::from(index)).copied().unwrap_or(0.0);
+    let mut stack = [false; MAX_CONDITION_DEPTH];
+    let mut top = 0;
+    for op in ops {
+        let pushed = match *op {
+            ConditionOp::Constant(truth) => truth,
+            ConditionOp::Truth(parameter) => value(parameter) != 0.0,
+            ConditionOp::Compare { parameter, comparison, value: against } => {
+                comparison.holds(value(parameter), against)
+            }
+            ConditionOp::Between { left, comparison, right } => comparison.holds(value(left), value(right)),
+            ConditionOp::Mode { parameter, mode } => value(parameter) == f32::from(mode),
+            ConditionOp::Finished => finished,
+            ConditionOp::Not => {
+                stack[top - 1] = !stack[top - 1];
+                continue;
+            }
+            ConditionOp::And | ConditionOp::Or => {
+                top -= 1;
+                let (a, b) = (stack[top - 1], stack[top]);
+                stack[top - 1] = if *op == ConditionOp::And { a && b } else { a || b };
+                continue;
+            }
+        };
+        stack[top] = pushed;
+        top += 1;
+    }
+    stack[0]
 }
 
 /// A step of a frame's pose work.
@@ -454,36 +507,7 @@ impl GraphProgram {
     /// and whether the state has `finished`. Allocates nothing.
     #[must_use]
     pub fn holds(&self, transition: &ProgramTransition, values: &[f32], finished: bool) -> bool {
-        let value = |index: u8| values.get(usize::from(index)).copied().unwrap_or(0.0);
-        let mut stack = [false; MAX_CONDITION_DEPTH];
-        let mut top = 0;
-        for op in &self.conditions[transition.condition.range()] {
-            let pushed = match *op {
-                ConditionOp::Constant(truth) => truth,
-                ConditionOp::Truth(parameter) => value(parameter) != 0.0,
-                ConditionOp::Compare { parameter, comparison, value: against } => {
-                    comparison.holds(value(parameter), against)
-                }
-                ConditionOp::Between { left, comparison, right } => {
-                    comparison.holds(value(left), value(right))
-                }
-                ConditionOp::Mode { parameter, mode } => value(parameter) == f32::from(mode),
-                ConditionOp::Finished => finished,
-                ConditionOp::Not => {
-                    stack[top - 1] = !stack[top - 1];
-                    continue;
-                }
-                ConditionOp::And | ConditionOp::Or => {
-                    top -= 1;
-                    let (a, b) = (stack[top - 1], stack[top]);
-                    stack[top - 1] = if *op == ConditionOp::And { a && b } else { a || b };
-                    continue;
-                }
-            };
-            stack[top] = pushed;
-            top += 1;
-        }
-        stack[0]
+        evaluate(&self.conditions[transition.condition.range()], values, finished)
     }
 
     /// The row for the move named `name`.
@@ -527,7 +551,7 @@ impl GraphProgram {
     /// and transition in the machine that holds it, every nested machine one depth below the machine
     /// that plays it, and every condition balanced: what no compile can get wrong, and damaged bytes can.
     /// A runtime sized by the limits can then run whatever reads.
-    fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), &'static str> {
         let fits = |ok: bool, what: &'static str| if ok { Ok(()) } else { Err(what) };
         let clip = |index: u16| usize::from(index) < self.clips.len();
         let mask = |index: Option<u16>| index.is_none_or(|index| usize::from(index) < self.masks.len());
@@ -535,6 +559,15 @@ impl GraphProgram {
         let value = |index: u8| usize::from(index) < self.parameters.len();
         let registers = usize::from(self.cost.registers);
         fits(self.parameters.len() <= MAX_PARAMETERS && registers <= MAX_REGISTERS, "too many registers")?;
+        // The runtime keeps the game's slots in an array of this size.
+        fits(
+            self.parameters
+                .iter()
+                .filter(|parameter| matches!(parameter.from, ParameterSource::Game(_)))
+                .count()
+                <= MAX_GAME_SLOTS,
+            "too many game slots",
+        )?;
         let cost = &self.cost;
         fits(
             usize::from(cost.clips_sampled) <= MAX_CLIPS_SAMPLED
@@ -661,8 +694,27 @@ impl GraphProgram {
                 BlendAxes::One(axis) => (value(axis), MAX_BLEND_1D_SAMPLES),
                 BlendAxes::Two(x, y) => (value(x) && value(y), MAX_BLEND_SAMPLES),
             };
+            let fit = blend.samples.fits(self.samples.len());
+            // The weights divide by the samples' gaps: a line's places are finite and strictly increase,
+            // and a plane's are finite and each its own, as the compiler holds them.
+            let placed = !fit || {
+                let samples = &self.samples[blend.samples.range()];
+                match blend.axes {
+                    BlendAxes::One(_) => {
+                        samples.iter().all(|sample| sample.at[0].is_finite())
+                            && samples.windows(2).all(|pair| pair[0].at[0] < pair[1].at[0])
+                    }
+                    BlendAxes::Two(..) => {
+                        samples.iter().all(|sample| sample.at.iter().all(|at| at.is_finite()))
+                            && samples.iter().enumerate().all(|(index, sample)| {
+                                samples[..index].iter().all(|earlier| earlier.at != sample.at)
+                            })
+                    }
+                }
+            };
             fits(
-                axes && blend.samples.fits(self.samples.len())
+                fit && placed
+                    && axes
                     && (1..=most).contains(&usize::from(blend.samples.len))
                     && sync(blend.sync)
                     && blend.footwork.is_none_or(|index| usize::from(index) < self.footwork.len()),

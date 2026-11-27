@@ -9,8 +9,8 @@
 //! **Graph v2 (M6 A5a).** Every graph also converts to version 2 and compiles ([`compile`]), so a
 //! version 1 graph that graph v2 can't hold is refused now, by the path in the converted document,
 //! rather than when the shipped graphs switch (A5c). The cooked `.sgraph` is the same bytes: nothing
-//! reads the program until its runtime does (A5b), so the cook writes none, and a version 2 document
-//! doesn't cook yet. An editor's layout sidecar (`<name>.animgraph.layout.ron`) is no source.
+//! the game runs reads a program until A5c switches it to v2's runtime (A5b, in `sapphire_body_pose`),
+//! so the cook writes none, and a version 2 document doesn't cook yet. An editor's layout sidecar (`<name>.animgraph.layout.ron`) is no source.
 
 use std::path::{Path, PathBuf};
 

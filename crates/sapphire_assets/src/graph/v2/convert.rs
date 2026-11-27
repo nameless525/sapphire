@@ -1,7 +1,7 @@
 //! Version 1 documents to version 2, mechanically, saying in the document what v1's runtime did by
 //! name, by asset ID or by a condition's variant (a transition's [`TransitionRules`]). What it did
 //! for every graph alike, such as the smoothed velocity's resets, is the locomotion parameters' own
-//! rule, listed in spec §5.13's "As built (M6 A5a)" for A5b's runtime to keep.
+//! rule, listed in spec §5.13's "As built (M6 A5a)", which the runtime keeps (M6 A5b).
 //!
 //! - The locomotion layer becomes a machine named [`LOCOMOTION`], played by the first layer, and its
 //!   blend spaces 2D blends over the smoothed velocity (`velocity_x`, `velocity_z`).
@@ -9,7 +9,8 @@
 //!   [`LocomotionValue`]'s order: `Airborne` is `!grounded`, `Moving(s)` `smoothed_speed >= s`,
 //!   `ForwardBelow(s)` `velocity_z < s`, `FinishedAtPhase(p)` `finished_at(p)`. v1's runtime refused a
 //!   `Landed` while airborne in a graph with a landing (a touchdown state or a `LandedMoving`
-//!   condition); that's `landed && grounded` there now.
+//!   condition); that's `landed && grounded` there now. Only such a graph's `Landed` started a landing
+//!   (its `lands` rule): elsewhere it was a plain change of state.
 //! - The combat table, the additive layers and the reactions become layers in v1's order, under the
 //!   names `combat`, each additive layer's own, and `reactions`. The converter's own layers
 //!   (`locomotion`, `combat`, `reactions`) take a `_2`, `_3`, … where an additive layer has the name.
@@ -111,9 +112,9 @@ pub fn convert(old: &graph::AnimGraph) -> AnimGraph {
         .iter()
         .map(|change| Transition {
             rules: if never_finishes(&change.from) {
-                rules(change.when, false).filter_finished()
+                rules(change.when, false, landing_aware).filter_finished()
             } else {
-                rules(change.when, touchdown(&change.from))
+                rules(change.when, touchdown(&change.from), landing_aware)
             },
             from: change.from.clone(),
             to: change.to.clone(),
@@ -260,14 +261,18 @@ pub fn convert(old: &graph::AnimGraph) -> AnimGraph {
     }
 }
 
-/// The rules v1's runtime keyed on a condition's variant; `touchdown` when it leaves a landing.
-fn rules(when: Condition, touchdown: bool) -> TransitionRules {
+/// The rules v1's runtime keyed on a condition's variant: `touchdown` when it leaves a landing, and
+/// `landing_aware` in a graph with a landing (a touchdown state or a `LandedMoving` condition), the only
+/// kind whose `Landed` started one. v1's own binding takes its rules from here too, so the two runtimes
+/// key on the same thing.
+#[must_use]
+pub fn rules(when: Condition, touchdown: bool, landing_aware: bool) -> TransitionRules {
     TransitionRules {
         waits_for_landing: matches!(
             when,
             Condition::Moving(_) | Condition::Stopped(_) | Condition::ForwardBelow(_)
         ),
-        lands: matches!(when, Condition::Landed | Condition::LandedMoving(_)),
+        lands: landing_aware && matches!(when, Condition::Landed | Condition::LandedMoving(_)),
         rebound: matches!(when, Condition::JumpPreparation(true)),
         hands_off: matches!(when, Condition::AirborneMoving(_)),
         at_drawn: matches!(when, Condition::FinishedAtPhase(_))
@@ -278,7 +283,8 @@ fn rules(when: Condition, touchdown: bool) -> TransitionRules {
 
 impl TransitionRules {
     /// Without the rules of a finish, for a finish that converts to `false`.
-    fn filter_finished(self) -> Self {
+    #[must_use]
+    pub fn filter_finished(self) -> Self {
         Self { at_drawn: false, catch: false, ..self }
     }
 }

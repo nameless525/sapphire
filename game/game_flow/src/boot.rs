@@ -498,7 +498,7 @@ impl Boot {
     /// waited for (exit test 1's counts), so a lane can name the step a hitch came in.
     #[must_use]
     pub fn renderer(&self) -> Option<&Renderer> {
-        self.renderer.as_deref().or(self.stage.as_ref().map(|stage| &stage.renderer))
+        self.renderer.as_deref().or(self.stage.as_ref().map(|stage| &*stage.renderer))
     }
 
     /// A frame of the boot, `dt` real seconds after the last: moves it on, then draws its screen into `view`,
@@ -729,7 +729,7 @@ impl Boot {
                 self.stand_screens()?;
                 self.report.stood = self.started.elapsed();
                 let stage = self.stage.as_deref_mut().expect("a stood stage");
-                let mut declared = stage.scene.declared_pipelines(&stage.show);
+                let mut declared = stage.scene.declared_pipelines(&*stage.show);
                 // A fighter's fade warms on the title instead, with play held until it's built (M4 C7), so this
                 // screen needn't wait for it: the title's camera is still, so nothing there comes near enough to
                 // fade, and one that did would build its fade on its frame, a first use exit test 1 counts.
@@ -886,7 +886,8 @@ impl Boot {
         else {
             unreachable!("a boot makes its stage once, with everything it was started with");
         };
-        let stage = Stage::new_with_renderer(self.gpu.clone(), desc, *content, *renderer)?.with_show(*show);
+        let stage =
+            Stage::new_with_renderer(self.gpu.clone(), desc, content, renderer)?.with_boxed_show(show);
         self.stage = Some(Box::new(stage));
         tracing::info!(
             target: LOG_TARGET,
@@ -994,7 +995,7 @@ impl Boot {
             Step::Screens => (RENDERER_SHARE + PACKS_SHARE + STAND_SHARE * 2.0 / 3.0, 0.0),
             Step::Declared(_) => (
                 RENDERER_SHARE + PACKS_SHARE + STAND_SHARE,
-                warmed(self.stage.as_ref().map(|stage| &stage.renderer)),
+                warmed(self.stage.as_ref().map(|stage| &*stage.renderer)),
             ),
             Step::Done => return 1.0,
         };

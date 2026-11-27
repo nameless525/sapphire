@@ -228,7 +228,6 @@ pub fn gpu_failure(gpu: &GpuContext) -> Result<(), String> {
     Ok(())
 }
 
-/// The GPU, renderer, content and scene a frame draws with, and what plays on them.
 /// How a stage's textures reach its frames ([`Stage::capture_textures`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CaptureTextures {
@@ -250,17 +249,24 @@ pub enum CaptureTextures {
 /// How far ahead the cull pose's outline cuts its frustum, meters ([`Stage::cull_pose`], M5 X1).
 pub const CULL_POSE_OUTLINE: f32 = 60.0;
 
+/// The GPU, renderer, content and scene a frame draws with, and what plays on them.
+///
+/// The renderer, the content, the scene, the show and the hooks are boxed, so a stage is about 2 KiB wherever it
+/// moves, whatever its show: it is made and moved through `Result`s deep in an app's start, where every frame on
+/// the way holds copies of what moves, on threads with 1 MiB (iOS's main thread and Android's SDL thread). With
+/// them by value, the sandbox's stage was 73 KiB, and a bench's start held 1 MiB of frames before its first
+/// shader and overflowed the Android emulator's SDL thread. A size test holds it.
 pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     // Drop order: everything on the device before the context.
     /// What the caller adds to its frames.
-    pub hooks: H,
-    pub renderer: Renderer,
+    pub hooks: Box<H>,
+    pub renderer: Box<Renderer>,
     /// What plays on the scene, which is the caller's.
-    pub show: S,
+    pub show: Box<S>,
     /// The asset server and what it uploaded, driven every frame.
-    pub content: Content,
+    pub content: Box<Content>,
     pub graph: GraphExecutor,
-    pub scene: Scene,
+    pub scene: Box<Scene>,
     /// The quality tier the renderer was made for, and each frame's render scale.
     pub quality: Quality,
     /// The character's mesh on the renderer.
@@ -319,18 +325,19 @@ impl Stage {
         content: Content,
     ) -> Result<Self, AppInitError> {
         let gpu = gpu.into();
-        let renderer = Renderer::new(&gpu, desc.format, desc.settings)?;
-        Self::new_with_renderer(gpu, desc, content, renderer)
+        let renderer = Box::new(Renderer::new(&gpu, desc.format, desc.settings)?);
+        Self::new_with_renderer(gpu, desc, Box::new(content), renderer)
     }
 
     /// As [`Self::new_with_content`], on `renderer`, made for `desc`'s format and settings elsewhere, as [`Self::new_with_content`] makes it: a game's
     /// boot makes it on the warm-up pool while its screen draws, and warms the packs on it first (M4 H2), so
-    /// that [`StageDesc::prewarm_packs`] finds them built.
+    /// that [`StageDesc::prewarm_packs`] finds them built. Both come boxed, as the stage holds them, so a caller that
+    /// keeps them boxed hands them over without their bytes passing through this frame.
     pub fn new_with_renderer(
         gpu: impl Into<Arc<GpuContext>>,
         desc: StageDesc,
-        mut content: Content,
-        mut renderer: Renderer,
+        mut content: Box<Content>,
+        mut renderer: Box<Renderer>,
     ) -> Result<Self, AppInitError> {
         if content.selection() != (desc.character, desc.sky) {
             return Err(AppInitError::msg("preloaded content differs from the stage character or sky"));
@@ -380,12 +387,12 @@ impl Stage {
         }
         content.override_materials(material_overrides);
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
-        let mut scene = Scene::with_character(character, bounds, skinned);
+        let mut scene = Box::new(Scene::with_character(character, bounds, skinned));
         scene.set_sky_material(content.sky_material(&mut renderer, &gpu)?);
         Ok(Self {
-            hooks: (),
+            hooks: Box::new(()),
             renderer,
-            show: (),
+            show: Box::new(()),
             content,
             graph: GraphExecutor::new(),
             scene,
@@ -409,10 +416,15 @@ impl Stage {
 
     /// The same stage, with `show` playing on it.
     pub fn with_show<S: SceneShow>(self, show: S) -> Stage<S> {
+        self.with_boxed_show(Box::new(show))
+    }
+
+    /// As [`Self::with_show`], for a caller that holds its show boxed, as the stage does.
+    pub fn with_boxed_show<S: SceneShow>(self, show: Box<S>) -> Stage<S> {
         let Self {
-            hooks: (),
+            hooks,
             renderer,
-            show: (),
+            show: _,
             content,
             graph,
             scene,
@@ -433,7 +445,7 @@ impl Stage {
             cull_pose,
         } = self;
         Stage {
-            hooks: (),
+            hooks,
             renderer,
             show,
             content,
@@ -476,7 +488,7 @@ impl<S: SceneShow> Stage<S> {
     /// The same stage, with `hooks` on its frames.
     pub fn with_hooks<H: FrameHooks<S>>(self, hooks: H) -> Stage<S, H> {
         let Self {
-            hooks: (),
+            hooks: _,
             renderer,
             show,
             content,
@@ -499,7 +511,7 @@ impl<S: SceneShow> Stage<S> {
             cull_pose,
         } = self;
         Stage {
-            hooks,
+            hooks: Box::new(hooks),
             renderer,
             show,
             content,
@@ -743,10 +755,10 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.load_warmup = None;
         self.follow_whole_textures();
         self.content.update(&mut self.renderer, &self.gpu);
-        self.scene.follow_content(&mut self.content, &mut self.show);
-        self.scene.animate(&self.content, alpha, &mut self.show);
+        self.scene.follow_content(&mut self.content, &mut *self.show);
+        self.scene.animate(&self.content, alpha, &mut *self.show);
         self.scene.follow_render_settings(self.renderer.settings());
-        let packet = self.scene.frame_packet(alpha, None, &mut self.show);
+        let packet = self.scene.frame_packet(alpha, None, &mut *self.show);
         self.renderer.prepare(&self.gpu, packet);
     }
 
@@ -778,11 +790,11 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
             renderer: &mut self.renderer,
             gpu: &self.gpu,
             scene: &mut self.scene,
-            show: &mut self.show,
+            show: &mut *self.show,
         });
         self.follow_whole_textures();
         self.content.update(&mut self.renderer, &self.gpu);
-        self.scene.follow_content(&mut self.content, &mut self.show);
+        self.scene.follow_content(&mut self.content, &mut *self.show);
         self.laps.content += laps.lap();
         // Reload/live link can change debug CVars, so inspect them after applying it.
         let discard_output = discard_output
@@ -812,16 +824,16 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         // While something draws over the frame, it gets the extract and render stages' times (a bench
         // measures its own way, and fixed steps are run outside this).
         let mut stopwatch = (H::TOOLS && self.hooks.overlay_visible()).then(Stopwatch::start);
-        self.hooks.after_steps(&self.show, &self.scene);
+        self.hooks.after_steps(&*self.show, &self.scene);
         laps.lap();
         let mut scope = AllocScope::begin();
-        self.scene.animate(&self.content, alpha, &mut self.show);
+        self.scene.animate(&self.content, alpha, &mut *self.show);
         self.laps.animation += laps.lap();
         self.laps.animation_allocations = next_scope(&mut scope);
         self.show.begin_interface(self.renderer.ui_page_state());
         self.outline_cull_pose((width, height));
         self.scene.follow_render_settings(self.renderer.settings());
-        let packet = self.scene.frame_packet(alpha, Some((width, height)), &mut self.show);
+        let packet = self.scene.frame_packet(alpha, Some((width, height)), &mut *self.show);
         self.laps.packet += laps.lap();
         self.laps.packet_allocations = next_scope(&mut scope);
         let extract = stopwatch.as_mut().map(Stopwatch::lap).unwrap_or_default();
@@ -864,7 +876,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
             gpu: &self.gpu,
             scene: &self.scene,
             content: &self.content,
-            show: &self.show,
+            show: &*self.show,
         };
         self.hooks.tools(frame, &mut self.graph);
         let tools = started.map(|started| started.elapsed()).unwrap_or_default();
@@ -921,6 +933,33 @@ impl LadderClock {
         let interval = rate.map_or(FRAME, |rate| Duration::from_secs(1) / rate.get());
         self.now += self.handed.take().unwrap_or(interval);
         self.now
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::{FrameHooks, SceneShow, Stage};
+
+    /// A show as large as an app's might be.
+    struct Wide(#[expect(dead_code, reason = "only its size matters")] [u8; 64 * 1024]);
+
+    impl SceneShow for Wide {}
+
+    /// Hooks as large as an app's tools might be.
+    struct WideHooks(#[expect(dead_code, reason = "only its size matters")] [u8; 64 * 1024]);
+
+    impl FrameHooks<Wide> for WideHooks {}
+
+    /// A stage is made and moved through `Result`s from an app's start down to its renderer's first shader, and
+    /// every frame on the way holds copies of it, on threads that have 1 MiB: by value it was 73 KiB with the
+    /// sandbox's show and hooks, and a bench's start overflowed the Android emulator's SDL thread. What it
+    /// holds that is large is boxed, whatever the show: box the next one rather than raise this.
+    #[test]
+    fn a_stage_is_small_enough_to_move_on_the_main_thread() {
+        let size = size_of::<Stage>();
+        assert!(size <= 4 * 1024, "a stage takes {size} bytes");
+        assert_eq!(size_of::<Stage<Wide>>(), size, "a show is boxed");
+        assert_eq!(size_of::<Stage<Wide, WideHooks>>(), size, "hooks are boxed");
     }
 }
 

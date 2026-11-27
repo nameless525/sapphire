@@ -355,7 +355,7 @@ pub fn stand_fight(
     let mut stage = Stage::new_with_content(Arc::clone(gpu), desc, content)?.with_show(show);
     let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
     show.fight.stand_prepared(combat, scene, content, renderer, gpu, quality.active().id)?;
-    scene.prewarm(&*show, renderer);
+    scene.prewarm(&**show, renderer);
     Ok(stage)
 }
 
@@ -367,7 +367,7 @@ pub fn stand_zone_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<View
     let content = Content::new(host, desc.character, desc.sky)?;
     let mut stage = Stage::new_with_content(Arc::clone(gpu), desc, content)?.with_show(ViewShow::default());
     let Stage { show, scene, renderer, .. } = &mut stage;
-    scene.prewarm(&*show, renderer);
+    scene.prewarm(&**show, renderer);
     // The gizmo is debug lines, whose pass is built here rather than on the frame the first one shows.
     renderer.prewarm(&PipelineInventory { debug_draw: true, ..PipelineInventory::default() });
     sapphire_core::debug_draw::set_enabled(true);
@@ -396,7 +396,7 @@ pub fn stand_screen_stage(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<Vi
     scene.set_plain_sky(true);
     scene.set_fog(false);
     scene.set_plain_post(true);
-    scene.prewarm(&*show, renderer);
+    scene.prewarm(&**show, renderer);
     renderer.prewarm(&PipelineInventory { ui: true, insets: true, ..PipelineInventory::default() });
     Ok(with_whole_textures(stage))
 }
@@ -470,6 +470,7 @@ pub fn play_timeline(stage: &mut Stage<ViewShow>, timeline: Arc<Timeline>) {
 pub fn play_frames(stage: &mut Stage<ViewShow>, frames: u32, size: (u32, u32)) {
     let dt = 1.0 / crate::app::RATE;
     let Stage { show, scene, content, renderer, gpu, .. } = stage;
+    let show = &mut **show;
     for _ in 0..frames {
         show.fight.show.drive_camera(dt, Vec2::ZERO, 0.0);
         content.update(renderer, gpu);

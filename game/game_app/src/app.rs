@@ -404,7 +404,7 @@ impl GameApp {
     /// The stood game's show: none while booting.
     fn show_mut(&mut self) -> Option<&mut GameShow> {
         match &mut self.on_device {
-            Some(OnDevice { game: Game::Stood(stage), .. }) => Some(&mut stage.show),
+            Some(OnDevice { game: Game::Stood(stage), .. }) => Some(&mut *stage.show),
             _ => None,
         }
     }
@@ -514,7 +514,7 @@ impl GameApp {
                     #[cfg(feature = "playtest")]
                     if let Some(playtest) = &mut self.playtest {
                         let show = match &mut self.on_device {
-                            Some(OnDevice { game: Game::Stood(stage), .. }) => Some(&mut stage.show),
+                            Some(OnDevice { game: Game::Stood(stage), .. }) => Some(&mut *stage.show),
                             _ => None,
                         };
                         if event == LifecycleEvent::WillEnterBackground {

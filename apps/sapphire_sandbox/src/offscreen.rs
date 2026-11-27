@@ -266,6 +266,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
     let sapphire_stage::Stage { scene, content, renderer, gpu, quality, show, .. } = &mut stage;
+    let show = &mut **show;
     let ShownFight { fight: Fight { show: fight, .. }, hud: shown_hud, screen: shown_screen, .. } =
         &mut *show;
     if let Some(scale) = options.effect_scale {

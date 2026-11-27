@@ -107,7 +107,7 @@ impl App for OutsideCaller {
         let drawn = frame(&mut shown)?;
         assert_eq!(drawn.len(), first.len());
         let pages = shown.renderer.ui_page_state();
-        let Counting { steps, ends, animations, presentations, interfaces, pages: told } = shown.show;
+        let Counting { steps, ends, animations, presentations, interfaces, pages: told } = *shown.show;
         assert_eq!((steps, ends), (60, 60));
         assert_eq!((animations, presentations, interfaces), (1, 1, 1));
         assert_eq!(told, Some(pages), "a show hears what the renderer's glyph pages hold");

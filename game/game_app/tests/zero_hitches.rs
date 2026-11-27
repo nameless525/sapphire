@@ -667,7 +667,7 @@ fn boot(
         let began = Stopwatch::start();
         let step = boot.step().name();
         let stood = boot.frame(Some(target), dt)?;
-        let renderer = stood.as_ref().map(|stage| &stage.renderer).or(boot.renderer());
+        let renderer = stood.as_ref().map(|stage| &*stage.renderer).or(boot.renderer());
         let recorded = began.elapsed();
         let (mut own_wait, mut rest_wait) = (Duration::ZERO, Duration::ZERO);
         match boot.last_frame().filter(|_| trace.is_some()).and_then(|laps| laps.submission.clone()) {

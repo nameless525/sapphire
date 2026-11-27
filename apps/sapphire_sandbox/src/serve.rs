@@ -32,7 +32,10 @@
 //! whether anything held a frame (a shader push builds off the frame thread, M1 A8 follow-up 2), with what
 //! they allocated and what the heap holds, so a long run can say whether anything grows.
 
+use std::io::Read;
 use std::num::NonZero;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use sapphire_platform::{AppControl, AppInitError};
@@ -70,6 +73,28 @@ pub(crate) struct Serving {
     /// more, which at 30 frames a second came to 25 when each frame slept for what was left of its own.
     clock: Stopwatch,
     due: Duration,
+    /// Set once standard input ends, with `--quit-on-stdin-eof`.
+    input_ended: Option<Arc<AtomicBool>>,
+}
+
+/// Watches `input` on a thread of its own until it ends, and sets the flag returned then: the end of a parent's
+/// pipe, when the parent goes (`--quit-on-stdin-eof`, M6 T19). What's read is thrown away. `None` if the thread
+/// can't start, which leaves the run to its other ends.
+fn watch_until_ended(mut input: impl Read + Send + 'static) -> Option<Arc<AtomicBool>> {
+    let ended = Arc::new(AtomicBool::new(false));
+    let set = Arc::clone(&ended);
+    let spawned = std::thread::Builder::new().name("stdin watch".to_owned()).spawn(move || {
+        let mut buffer = [0_u8; 256];
+        while matches!(input.read(&mut buffer), Ok(read) if read > 0) {}
+        set.store(true, Ordering::Release);
+    });
+    match spawned {
+        Ok(_) => Some(ended),
+        Err(error) => {
+            tracing::warn!(target: LOG_TARGET, %error, "can't watch standard input: --quit-on-stdin-eof does nothing");
+            None
+        }
+    }
 }
 
 /// Frames drawn over a window of about [`REPORT_INTERVAL`], for the frame stats line.
@@ -135,6 +160,7 @@ impl Serving {
         let frame_limit = options.frame_limit;
         tracing::info!(target: LOG_TARGET, width, height, ?frame_limit, "drawing offscreen until told to quit");
         let lengths = FrameLengths::new();
+        let input_ended = if options.quit_on_stdin_eof { watch_until_ended(std::io::stdin()) } else { None };
         Ok(Self {
             view,
             _target: target,
@@ -147,6 +173,7 @@ impl Serving {
             audio,
             clock: Stopwatch::start(),
             due: Duration::ZERO,
+            input_ended,
         })
     }
 
@@ -168,6 +195,10 @@ impl Serving {
     /// Draws the next frame, then sleeps out the rest of its time.
     pub fn frame(&mut self) -> AppControl {
         if self.remaining == Some(0) {
+            return self.finish();
+        }
+        if self.input_ended.as_ref().is_some_and(|ended| ended.load(Ordering::Acquire)) {
+            tracing::info!(target: LOG_TARGET, "standard input ended: quitting");
             return self.finish();
         }
         let stopwatch = Stopwatch::start();
@@ -265,5 +296,22 @@ impl Serving {
         stage.scene.end_frame();
         self.frames += 1;
         stage.check_gpu()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The end of a parent's pipe is seen: what ends the run with `--quit-on-stdin-eof`.
+    #[test]
+    fn input_that_ends_is_seen_to_end() {
+        let ended =
+            watch_until_ended(std::io::Cursor::new(b"anything a parent wrote".to_vec())).expect("watching");
+        let waited = Stopwatch::start();
+        while !ended.load(Ordering::Acquire) {
+            assert!(waited.elapsed() < Duration::from_secs(10), "the end wasn't seen");
+            std::thread::yield_now();
+        }
     }
 }

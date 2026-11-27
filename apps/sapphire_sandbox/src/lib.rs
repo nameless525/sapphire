@@ -463,6 +463,12 @@
 //!   connections instead of listening on 127.0.0.1:7811: listening at another address (one
 //!   beyond loopback, such as `0.0.0.0:7811`, takes pushes from the network: an opt-in, logged as
 //!   a warning), dialing a tool listening at `<addr>` (behind `adb reverse`), or not at all.
+//! - `--live-link-address <file>` (`dev` builds): once live link listens, write its address, with
+//!   the port it bound, to `<file>`: with `--live-link listen=127.0.0.1:0` the OS picks a free port,
+//!   and whoever started the app reads which (the editor's Play in game, M6 T19). If the link can't
+//!   start there or the file can't be written, the app doesn't start.
+//! - `--quit-on-stdin-eof` (`dev` builds): `--offscreen` quits, as Ctrl-C quits it, once its standard
+//!   input ends, so a child goes when its parent does, however the parent goes (M6 T19).
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
 //!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `effects`,
 //!   `combat`, `console`, `cvars`, `all`). Offscreen captures draw it too.

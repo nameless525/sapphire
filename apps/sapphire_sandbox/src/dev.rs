@@ -147,7 +147,13 @@ impl DevTools {
                 &crate::reload::light_rigs_source(options),
                 tuning.watched(&options.watch_documents),
             ),
-            link: Link::start(options.live_link, content.live_packs(), platform.system_info()),
+            link: Link::start(
+                options.live_link,
+                options.live_link_address.as_deref(),
+                content.live_packs(),
+                platform.system_info(),
+            )
+            .map_err(AppInitError::msg)?,
             tuning,
             shaders: ShaderEdits::default(),
             frames: 0,

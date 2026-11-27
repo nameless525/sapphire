@@ -657,6 +657,13 @@ pub(crate) struct Options {
     /// `--live-link <mode>`: how live link takes connections, instead of listening on the
     /// loopback interface. Only `dev` builds have it.
     pub live_link: Option<LiveLinkOption>,
+    /// `--live-link-address <file>`: writes the address live link listens at, its port as bound, to this file
+    /// once it listens (M6 T19), so a link on `listen=127.0.0.1:0` takes a port the OS hands it and whoever
+    /// started the app learns which. Only `dev` builds have it.
+    pub live_link_address: Option<PathBuf>,
+    /// `--quit-on-stdin-eof`: `--offscreen` quits, as a quit request does, once its standard input ends (M6 T19),
+    /// so a game the editor started goes when the editor does, however it goes. Only `dev` builds have it.
+    pub quit_on_stdin_eof: bool,
 }
 
 /// How live link takes connections (`--live-link`), in `dev` builds.
@@ -1834,6 +1841,26 @@ impl Options {
                 "--bench-overlap" => options.bench_overlap = true,
                 "--bench-ticks" => options.bench_ticks = Some(parse_ticks(&value("--bench-ticks")?)?),
                 "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
+                "--quit-on-stdin-eof" => {
+                    if cfg!(not(feature = "dev")) {
+                        return Err(
+                            "--quit-on-stdin-eof ends `--offscreen`'s serving, which only `dev` builds have \
+                                    (`--features dev`)"
+                                .to_owned(),
+                        );
+                    }
+                    options.quit_on_stdin_eof = true;
+                }
+                "--live-link-address" => {
+                    if cfg!(not(feature = "dev")) {
+                        return Err(
+                            "--live-link-address says where live link listens, which only `dev` builds have \
+                                    (`--features dev`)"
+                                .to_owned(),
+                        );
+                    }
+                    options.live_link_address = Some(PathBuf::from(value("--live-link-address")?));
+                }
                 "--spin" => {
                     let speed: f32 = number(&value("--spin")?, "--spin")?;
                     if !speed.is_finite() {
@@ -2241,6 +2268,13 @@ impl Options {
         }
         if options.party && options.combat.is_none() {
             return Err("--party needs --replay, --record or --fight: it draws a fight's party".to_owned());
+        }
+        if options.live_link_address.is_some()
+            && matches!(options.live_link, Some(LiveLinkOption::Off | LiveLinkOption::Connect(_)))
+        {
+            return Err(
+                "--live-link-address writes where live link listens: it needs a link that listens".to_owned()
+            );
         }
         if options.cues && options.combat.is_none() {
             return Err("--cues needs --replay or --record: it fires a fight's cues".to_owned());
@@ -4083,6 +4117,19 @@ mod tests {
             "an address, not a name"
         );
         assert!(live_link("connect=7811").is_err());
+        if cfg!(feature = "dev") {
+            let (options, _) =
+                parse(&["--live-link", "listen=127.0.0.1:0", "--live-link-address", "link.txt"]).unwrap();
+            assert_eq!(options.live_link_address, Some(PathBuf::from("link.txt")));
+            for dials in ["off", "connect=127.0.0.1:7811"] {
+                let refused = parse(&["--live-link", dials, "--live-link-address", "link.txt"]).unwrap_err();
+                assert!(refused.contains("listens"), "{refused}");
+            }
+            assert!(parse(&["--quit-on-stdin-eof"]).unwrap().0.quit_on_stdin_eof);
+        } else {
+            assert!(parse(&["--live-link-address", "link.txt"]).unwrap_err().contains("dev"));
+            assert!(parse(&["--quit-on-stdin-eof"]).unwrap_err().contains("dev"));
+        }
         assert!(live_link("dial=127.0.0.1:7811").is_err());
     }
 

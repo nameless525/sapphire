@@ -28,6 +28,8 @@
 //! desktop, the iOS Simulator and USB forwards reach; `--live-link` listens elsewhere, dials a
 //! tool (`connect=<addr>`, behind `adb reverse`) or turns it off.
 
+use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -107,9 +109,16 @@ pub(crate) struct LinkFrame<'a> {
 
 impl Link {
     /// Starts taking connections as `option` says (listening on the loopback interface by
-    /// default), serving pushed packs through `packs`. If it can't listen, it says why and stays
-    /// off: the app runs on.
-    pub fn start(option: Option<LiveLinkOption>, packs: Arc<LivePacks>, info: &SystemInfo) -> Self {
+    /// default), serving pushed packs through `packs`, and writes where it listens to `address`
+    /// once it does (`--live-link-address`). If it can't listen, it says why and stays off: the
+    /// app runs on. `Err` only when it was asked for its address and can't listen or say where: whoever
+    /// asked is waiting for it, and sees an app that didn't start, with its log, rather than waiting on.
+    pub fn start(
+        option: Option<LiveLinkOption>,
+        address: Option<&Path>,
+        packs: Arc<LivePacks>,
+        info: &SystemInfo,
+    ) -> Result<Self, String> {
         let metadata = SandboxApp::METADATA;
         let platform = match info.os {
             Os::Windows => "Windows",
@@ -138,7 +147,7 @@ impl Link {
         let mode = match option {
             Some(LiveLinkOption::Off) => {
                 link.state = "off (--live-link off)".to_owned();
-                return link;
+                return Ok(link);
             }
             Some(LiveLinkOption::Listen(address)) => LinkMode::Listen(address),
             Some(LiveLinkOption::Connect(address)) => LinkMode::Connect(address),
@@ -150,14 +159,20 @@ impl Link {
                     LinkMode::Listen(_) => format!("listening on {}", started.address()),
                     LinkMode::Connect(address) => format!("dialing {address}"),
                 };
+                if let Some(file) = address {
+                    write_address(file, started.address())?;
+                }
                 link.link = Some(started);
+            }
+            Err(error) if address.is_some() => {
+                return Err(format!("live link can't listen ({mode:?}): {error}"));
             }
             Err(error) => {
                 tracing::warn!(target: LOG_TARGET, ?mode, %error, "live link off");
                 link.state = format!("off: {error}");
             }
         }
-        link
+        Ok(link)
     }
 
     /// Applies what was pushed since the last frame, and answers pushed packs whose reloads
@@ -552,6 +567,16 @@ impl FrameCapture {
     }
 }
 
+/// Writes the address live link listens at to `file`, through a temporary beside it and a rename, so whoever
+/// waits for it reads the whole address or nothing: the editor's Play in game (M6 T19), which starts the app on
+/// a port the OS picks.
+fn write_address(file: &Path, address: SocketAddr) -> Result<(), String> {
+    let temporary = file.with_extension("partial");
+    std::fs::write(&temporary, address.to_string())
+        .and_then(|()| std::fs::rename(&temporary, file))
+        .map_err(|error| format!("--live-link-address {}: {error}", file.display()))
+}
+
 /// They need a GPU: run them with
 /// `cargo test -p sapphire_sandbox --features dev --lib -- --ignored link::`.
 #[cfg(test)]
@@ -610,6 +635,20 @@ mod tests {
     use sapphire_livelink::Client;
 
     use super::*;
+
+    /// Whoever asked where the link listens hears why it can't say, as the app's start failing.
+    #[test]
+    fn an_address_that_cant_be_written_is_an_error() {
+        let address = SocketAddr::from(([127, 0, 0, 1], 7811));
+        let why = write_address(Path::new("no/such/folder/link.address"), address).expect_err("no folder");
+        assert!(why.contains("--live-link-address"), "{why}");
+        let folder = std::env::temp_dir().join(format!("sapphire_sandbox_address_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        let file = folder.join("link.address");
+        write_address(&file, address).expect("written");
+        assert_eq!(std::fs::read_to_string(&file).expect("there"), "127.0.0.1:7811");
+        std::fs::remove_dir_all(folder).expect("cleaned up");
+    }
 
     #[test]
     fn capture_capacity_includes_work_until_completion() {

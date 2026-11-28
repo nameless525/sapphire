@@ -78,6 +78,7 @@
 //! a player exists (`tests/allocations.rs`).
 
 pub(crate) mod canonical;
+mod debug;
 mod fixed;
 mod fixed_body;
 pub(crate) mod ground_footwork;
@@ -88,6 +89,7 @@ pub use fixed_body::{
     FixedBodyPolicy,
 };
 
+pub use debug::{GraphSnapshot, LayerTrace, OverrideError, ParameterTrace};
 pub use fixed::{FixedGraphHistory, GraphHistoryError, GraphStepStamp};
 
 use std::sync::Arc;
@@ -110,6 +112,7 @@ use crate::character::CharacterPose;
 use crate::inertia::{Inertia, PoseRef, Transition};
 use crate::pose_math::PoseMath;
 use crate::sample::{self, overlay_weights};
+use debug::Overrides;
 use ground_footwork::{FootworkClips, GroundFootwork};
 
 /// A tick of the owner's clock, in the units [`ArchivedClip::rate`] counts in.
@@ -530,6 +533,11 @@ pub struct GraphBinding {
     conditions: Vec<ConditionOp>,
     /// A program's value registers.
     parameters: Vec<Value>,
+    /// Their names, in the same order: what a snapshot shows and an override names.
+    parameter_names: Vec<Name>,
+    /// The text of each name a snapshot shows (machines, states, moves, parameters): a name prints as text
+    /// only in a debug build, and live link's trace is read from any (M6 A9).
+    labels: Vec<(Name, Box<str>)>,
     /// A program's game slots, by name, in their registers' order.
     slots: Vec<Name>,
     /// A program's sync groups: a foot and the marker its phase counts from.
@@ -886,6 +894,8 @@ struct Key {
     revision: u32,
     /// The game slots' values.
     slots: [f32; MAX_GAME_SLOTS],
+    /// The live overrides of its parameters.
+    overrides: Overrides,
 }
 
 /// What a player has done, all told (rule R9).
@@ -925,6 +935,9 @@ pub struct GraphPlayer {
     registers: [Frame; 2],
     /// The game slots' values, by [`GraphBinding`]'s slot order.
     slots: [f32; MAX_GAME_SLOTS],
+    /// Parameters a person has set by hand over live link (M6 A9): presentation only, see
+    /// [`Self::set_override`].
+    overrides: Overrides,
     /// The events this frame sent, and how many didn't fit.
     fired: [Name; MAX_FIRED_EVENTS],
     fired_count: usize,
@@ -1001,6 +1014,7 @@ impl GraphPlayer {
             later: frame.clone(),
             registers: [frame.clone(), frame],
             slots: [0.0; MAX_GAME_SLOTS],
+            overrides: Overrides::NONE,
             fired: [Name::new(""); MAX_FIRED_EVENTS],
             fired_count: 0,
             dropped_events: 0,
@@ -1067,8 +1081,14 @@ impl GraphPlayer {
         turn_support: Option<usize>,
         ground_support: Option<usize>,
     ) -> bool {
-        let input = input.sanitized(self.drawn.unwrap_or(0.0));
-        let key = Key { input, clips: clips_version, revision: self.revision, slots: self.slots };
+        let input = self.overrides.onto_input(&self.graph, *input).sanitized(self.drawn.unwrap_or(0.0));
+        let key = Key {
+            input,
+            clips: clips_version,
+            revision: self.revision,
+            slots: self.slots,
+            overrides: self.overrides,
+        };
         // What a frame sent is that frame's: a frame with nothing to do sends nothing.
         self.fired_count = 0;
         if self.key == Some(key) {
@@ -1131,7 +1151,7 @@ impl GraphPlayer {
             self.layers.velocity_rate = Vec2::ZERO;
         }
         let launch_catch = self.launch_phase(&input, drawn);
-        self.layers.update_blend(&self.graph, &input, &self.slots);
+        self.layers.update_blend(&self.graph, &input, &self.slots, &self.overrides);
         let speed = self.layers.velocity.length();
         let rate = if self.gather_started.is_some()
             || self.footwork.is_some_and(|step| step.waiting_for_heel(now))
@@ -1364,7 +1384,7 @@ impl GraphPlayer {
             })
             .or(lying);
         self.layers.defeated = input.defeated;
-        self.layers.update_blend(&self.graph, input, &self.slots);
+        self.layers.update_blend(&self.graph, input, &self.slots, &self.overrides);
         let combat = self.layers.combat.map_or(0.0, |playing| playing.position);
         let moment = Moment::at(now, self.layers.phase, combat);
         self.layers.write_target(
@@ -1487,7 +1507,7 @@ impl GraphPlayer {
             }
         }
         // Locomotion, whether it shows or not, so it's where it should be when a move ends.
-        self.layers.refresh_values(&self.graph, input, &self.slots);
+        self.layers.refresh_values(&self.graph, input, &self.slots, &self.overrides);
         let change = self.next_change(self.layers.state, self.layers.started, true, input, drawn, clips);
         if let Some((index, change)) = change {
             self.note(Reached::change(index));
@@ -2143,6 +2163,8 @@ impl GraphPlayer {
         self.adopt_replacement();
         self.teleports = other.teleports;
         self.stats = other.stats;
+        // What a person pinned holds for the new version, by name, as through a replacement (M6 A9).
+        self.overrides = other.overrides;
         self.key = None;
         let same = self.pose.compatible_with(&other.pose);
         if same {
@@ -2372,8 +2394,14 @@ impl Layers {
     }
 
     /// Each blend sample's weight at the position, if the state's a blend.
-    fn update_blend(&mut self, graph: &GraphBinding, input: &GraphInput, slots: &[f32; MAX_GAME_SLOTS]) {
-        self.refresh_values(graph, input, slots);
+    fn update_blend(
+        &mut self,
+        graph: &GraphBinding,
+        input: &GraphInput,
+        slots: &[f32; MAX_GAME_SLOTS],
+        overrides: &Overrides,
+    ) {
+        self.refresh_values(graph, input, slots, overrides);
         let mut blend = self.blend;
         self.blend_weights(graph, self.state, &mut blend);
         self.blend = blend;
@@ -2400,8 +2428,15 @@ impl Layers {
         }
     }
 
-    /// The value registers from this frame's input, the smoothed velocity and the game's slots.
-    fn refresh_values(&mut self, graph: &GraphBinding, input: &GraphInput, slots: &[f32; MAX_GAME_SLOTS]) {
+    /// The value registers from this frame's input, the smoothed velocity, the game's slots and what's
+    /// overridden ([`GraphPlayer::set_override`]).
+    fn refresh_values(
+        &mut self,
+        graph: &GraphBinding,
+        input: &GraphInput,
+        slots: &[f32; MAX_GAME_SLOTS],
+        overrides: &Overrides,
+    ) {
         use v2::LocomotionValue as L;
         let locomotion = &input.locomotion;
         let truth = |value: bool| if value { 1.0 } else { 0.0 };
@@ -2420,6 +2455,7 @@ impl Layers {
                 Value::Slot(slot) => slots[usize::from(slot)],
             };
         }
+        overrides.onto_registers(graph, &mut self.values);
     }
 
     /// How fast the shared phase moves at this speed, in cycles a tick: a blend's synced clips' at the

@@ -27,7 +27,8 @@ pub use graph::{
 };
 pub use graph::{
     ClipSource, CombatInput, FixedGraphHistory, GraphBindError, GraphBinding, GraphHistoryError, GraphInput,
-    GraphPlayer, GraphStats, GraphStepStamp, LocomotionInput, ReactionInput,
+    GraphPlayer, GraphSnapshot, GraphStats, GraphStepStamp, LayerTrace, LocomotionInput, OverrideError,
+    ParameterTrace, ReactionInput,
 };
 pub use ik::{
     AimGoal, ArmBones, AuthoredFootMotion, CharacterIk, EyeDrive, EyeRig, FeetInput, FootContact, FootGround,

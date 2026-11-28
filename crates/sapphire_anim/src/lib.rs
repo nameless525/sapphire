@@ -29,6 +29,7 @@ pub use sapphire_body_pose::{
 pub use sapphire_body_pose::{AuthoredHeadLook, GroundTurn, SolvedBody, graph_foot_contact};
 pub use sapphire_body_pose::{BodyRoot, BodySample, BodyStep, BodyStepError, FixedBody, FixedBodyPolicy};
 pub use sapphire_body_pose::{BodyTuning, BodyTuningError};
+pub use sapphire_body_pose::{GraphSnapshot, LayerTrace, OverrideError, ParameterTrace};
 pub use springs::{
     CLOTH_EASE_SECONDS, ClearanceQuality, ClothError, ClothQuality, ClothSheet, HeroineClearance,
     LONGEST_STRIDE, MAX_CLOTH_ITERATIONS, SPRING_TICK_HZ, SpringBones, SpringCollider, SpringFloor,

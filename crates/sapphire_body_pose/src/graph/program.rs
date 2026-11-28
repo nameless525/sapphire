@@ -63,6 +63,14 @@ impl GraphBinding {
                 })
             })
             .collect();
+        let parameter_names =
+            program.parameters.iter().map(|parameter| Name::intern(&parameter.name)).collect();
+        let labels = super::debug::labels(
+            (program.machines.iter().map(|machine| machine.name.as_str()))
+                .chain(program.states.iter().map(|state| state.name.as_str()))
+                .chain(program.moves.iter().map(|row| row.name.as_str()))
+                .chain(program.parameters.iter().map(|parameter| parameter.name.as_str())),
+        );
         let slots = program
             .parameters
             .iter()
@@ -286,6 +294,8 @@ impl GraphBinding {
             changes,
             conditions: program.conditions.clone(),
             parameters,
+            parameter_names,
+            labels,
             slots,
             sync,
             events,

@@ -152,7 +152,12 @@
 //! colliders' triangulation ([`crate::nav::TRIANGULATION`]) and the colliders' key, so a moved placement recooks none. Each that names no reflection probe has one placed for
 //! it, baked with the document's ([`sapphire_zone::WaterBody::placed_probe`]). The `.szone` names each surface's
 //! mesh outside its digest; a zone without water cooks as it did but for the cooked version
-//! (`sapphire_zone::Zone::VERSION`, 14).
+//! (`sapphire_zone::Zone::VERSION`, 15).
+//!
+//! Each river is also read along its own points (M6 H3a, [`river`]): its stretches' current and slope, its falls
+//! and its effect sites, its rapids on the zone's colliders when it names any, into the `.szone`'s presentation
+//! outside its digest. Such a zone's `.szone` holds the colliders' key and the reading's version
+//! ([`river::RIVER_READING`]) in its own.
 //!
 //! A foliage document whose rules place a tree with a trunk (M6 G1b) also makes the zone's own collider set,
 //! `grove.trunks.scol`, its colliders with every trunk joined ([`trunks`]), which the `.szone`'s simulation half
@@ -210,6 +215,7 @@ use crate::optimize::{self, LodSettings};
 pub mod claims;
 #[cfg(test)]
 mod levels_tests;
+pub mod river;
 pub mod scatter;
 pub mod trunks;
 pub mod water;
@@ -988,6 +994,29 @@ impl ZonePlan {
             .map(|body| sapphire_core::Name::new(&body.name).as_u64())
     }
 
+    /// Whether the document has a river, which its `.szone` reads along its points ([`river`]).
+    pub fn has_rivers(&self) -> bool {
+        self.document.water.iter().any(|body| body.shape.kind() == sapphire_zone::WaterKind::River)
+    }
+
+    /// Each river's reading (M6 H3a, [`river`]), by its body's name, its rapids on the zone's cooked `colliders`
+    /// if it names any; or what's wrong with one, by its field.
+    pub fn cook_rivers(
+        &self,
+        colliders: Option<&[u8]>,
+    ) -> Result<BTreeMap<String, sapphire_zone::CookedRiver>, ZoneCookError> {
+        let ground = colliders.map(|colliders| self.water_ground.of(colliders)).transpose()?;
+        let mut rivers = BTreeMap::new();
+        for (index, body) in self.document.water.iter().enumerate() {
+            let sapphire_zone::WaterShape::River { points } = &body.shape else { continue };
+            let reading = river::cook(points, ground.as_deref()).map_err(|(field, problem)| {
+                ZoneCookError::invalid(format!("water[{index}].{field}"), problem)
+            })?;
+            rivers.insert(body.name.clone(), reading);
+        }
+        Ok(rivers)
+    }
+
     /// The ID of a body's drawn surface.
     pub fn water_id(&self, body: u64) -> AssetId {
         self.id.sub_asset(&sapphire_zone::water::water_part(body))
@@ -1670,14 +1699,15 @@ pub struct CookedPlace {
     pub bounds: Bounds,
 }
 
-/// Cooks a zone document, from what its places' and its instances' meshes turned out to be: the bytes
-/// of its `.szone`, read back through the runtime's checks.
+/// Cooks a zone document, from what its places' and its instances' meshes turned out to be and its rivers'
+/// readings ([`ZonePlan::cook_rivers`]): the bytes of its `.szone`, read back through the runtime's checks.
 pub fn cook(
     plan: &ZonePlan,
     zone: &Path,
     places: Vec<CookedPlace>,
     instance_bounds: Vec<Bounds>,
     exit_packs: Vec<String>,
+    rivers: BTreeMap<String, sapphire_zone::CookedRiver>,
 ) -> Result<Vec<u8>, ZoneCookError> {
     let document = plan.document();
     for warning in document.warnings() {
@@ -1726,7 +1756,7 @@ pub fn cook(
         volume_looks,
         joined_colliders,
         water: plan.cooked_water(),
-        rivers: BTreeMap::new(),
+        rivers,
     };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;

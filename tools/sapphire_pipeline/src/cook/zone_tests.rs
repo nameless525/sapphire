@@ -13,7 +13,7 @@ use sapphire_assets::pack::PackReader;
 use sapphire_colliders::{ColliderDocument, ColliderEntry, ColliderShape, Group, Rotation};
 use sapphire_core::Name;
 use sapphire_tod::TodTimeline;
-use sapphire_zone::{CellCoord, ZoneDocument};
+use sapphire_zone::{CellCoord, WaterSite, WaterSiteKind, ZoneDocument};
 use serde_json::json;
 
 use super::clip_tests::{Tree, by_id};
@@ -2623,4 +2623,141 @@ fn what_a_zone_cant_draw_of_its_water_is_named() {
         assert!(text.contains("town.zone.ron"), "the zone's named in `{text}`");
         assert!(text.contains(expected), "`{text}` must say `{expected}`");
     }
+}
+
+/// The arena's ground, its top at 0, and a rock standing from 2 m under it to 2 m over it at (10, −20).
+const RIVER_COLLIDERS: &str = r##"(type: "sapphire::colliders::ColliderDocument", version: 1, data: (colliders: [
+    (name: "ground", shape: Box(half_extents: (32.0, 0.5, 32.0)), position: (0.0, -0.5, 0.0)),
+    (name: "rock", shape: Box(half_extents: (1.0, 2.0, 1.0)), position: (10.0, 0.0, -20.0)),
+]))"##;
+
+/// A race over [`RIVER_COLLIDERS`]' ground: level, then a fall at 60° (a 3.46 m drop over 2 m), then fast and
+/// shallow past the rock; a gentle brook; and a pond, which has no reading.
+const RIVERS: &str = r#"water: [
+    (name: "race", shape: River(points: [(at: (-28.0, 4.5, -20.0), width: 6.0, speed: 2.0), (at: (-10.0, 4.5, -20.0), width: 6.0, speed: 2.0), (at: (-8.0, 1.0358984, -20.0), width: 6.0, speed: 5.0), (at: (28.0, 0.4, -20.0), width: 6.0, speed: 5.0)]), swim: false),
+    (name: "brook", shape: River(points: [(at: (-28.0, 1.0, 20.0), width: 3.0, speed: 0.5), (at: (28.0, 0.8, 20.0), width: 3.0, speed: 0.5)])),
+    (name: "pond", shape: Lake(outline: [(-4.0, -4.0), (12.0, -4.0), (12.0, 12.0), (-4.0, 12.0)], height: 1.5)),
+],"#;
+
+/// [`RIVER_COLLIDERS`] with `water` and [`placements`].
+fn river_tree(name: &str, water: &str) -> (Tree, PathBuf) {
+    let tree = tree(name);
+    let colliders = tree.write("arena.colliders.ron", RIVER_COLLIDERS.as_bytes());
+    tree.sidecar(&colliders, COLLIDERS, ImportSettings::Colliders(Default::default()));
+    write_zone(&tree, &format!(r##"colliders: Some("{COLLIDERS}"), {} {water}"##, placements()));
+    (tree, colliders)
+}
+
+/// Each river's reading in a cooked zone, by its body's name: none for a lake or the sea.
+fn readings(bytes: &[u8]) -> Vec<(String, Option<sapphire_zone::CookedRiver>)> {
+    let zone = Zone::read(bytes).unwrap();
+    (zone.simulation.water.iter().zip(zone.presentation.water.iter()))
+        .map(|(volume, surface)| {
+            (volume.name.to_string(), surface.river.as_ref().map(|river| river.to_native()))
+        })
+        .collect()
+}
+
+/// A zone's rivers are read into its presentation (M6 H3a), each the reading the river cook makes alone of its
+/// points on the zone's colliders: the race's fall at its 60° drop and rapids by the rock, the brook's single
+/// stretch with no site, no reading for the pond; `cook --report` has a line for each river. From nothing, on
+/// one thread or eight, every byte the same.
+#[test]
+fn a_zones_rivers_are_read_into_its_presentation_and_the_same_on_any_threads() {
+    let (tree, _) = river_tree("zone-rivers", RIVERS);
+    let report = tree.cook();
+    let zone_bytes = read_zone(&report);
+    let colliders = read_aligned(&by_id(&report, COLLIDERS).output);
+    let ground = zone::scatter::ColliderGround::from_cooked(&colliders).unwrap();
+    let text = fs::read_to_string(tree.content().join("town.zone.ron")).unwrap();
+    let document = ZoneDocument::from_ron(&text).unwrap();
+    let read: BTreeMap<String, Option<sapphire_zone::CookedRiver>> =
+        readings(&zone_bytes).into_iter().collect();
+    for body in &document.water {
+        let sapphire_zone::WaterShape::River { points } = &body.shape else {
+            assert_eq!(read[&body.name], None, "a lake has no reading");
+            continue;
+        };
+        let alone = zone::river::cook(points, Some(&ground)).unwrap();
+        assert_eq!(
+            read[&body.name],
+            Some(alone),
+            "{}: the river on the zone's colliders, and nothing else",
+            body.name
+        );
+    }
+    let race = read["race"].clone().unwrap();
+    let flags: Vec<bool> = race.stretches.iter().map(|stretch| stretch.fall).collect();
+    assert_eq!(flags, [false, true, false]);
+    let [fall] = race.falls.as_slice() else { panic!("one fall: {:?}", race.falls) };
+    assert_eq!((fall.lip, fall.foot), ([-10.0, 4.5, -20.0], [-8.0, 1.035_898_4, -20.0]));
+    assert_eq!(race.sites[0].kind, WaterSiteKind::FallFoot, "the foot first, downstream: {:?}", race.sites);
+    let rapids: Vec<&WaterSite> =
+        race.sites.iter().filter(|site| site.kind == WaterSiteKind::Rapids).collect();
+    assert!(
+        !rapids.is_empty() && rapids.iter().all(|site| (6.0..=14.0).contains(&site.position[0])),
+        "{rapids:?}"
+    );
+    let brook = read["brook"].clone().unwrap();
+    assert_eq!(
+        (brook.stretches.len(), brook.falls.len(), brook.sites.len()),
+        (1, 0, 0),
+        "a gentle stretch has none"
+    );
+    let lines: Vec<(&str, usize, usize, usize, usize)> = (report.rivers.iter())
+        .map(|line| (line.name.as_str(), line.stretches, line.falls, line.rapids, line.feet))
+        .collect();
+    assert_eq!(
+        lines,
+        [("brook", 1, 0, 0, 0), ("race", 3, 1, rapids.len(), 1)],
+        "in the cooked water's order, by ID"
+    );
+
+    let cook_with = |name: &str, workers: usize| {
+        let (tree, _) = river_tree(name, RIVERS);
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false, editor: false };
+        let report = cook_dir_on(&tree.content(), &tree.out(), &options, workers).unwrap();
+        report.assets.iter().map(|asset| (asset.id, fs::read(&asset.output).unwrap())).collect::<Vec<_>>()
+    };
+    let serial = cook_with("zone-rivers-serial", 1);
+    let own = serial.iter().find(|(id, _)| *id == ZONE).expect("cooked");
+    assert_eq!(&own.1[..], &zone_bytes[..], "the same `.szone` as a cook with a cache");
+    assert_eq!(serial, cook_with("zone-rivers-workers", 8));
+}
+
+/// A zone with a river holds its colliders' key, so a moved rock reads its rapids again.
+#[test]
+fn a_moved_rock_reads_a_zones_rivers_again() {
+    let (tree, colliders) = river_tree("zone-rivers-keys", RIVERS);
+    let rapids = |report: &CookReport| -> Vec<[f32; 3]> {
+        let read = readings(&read_zone(report));
+        let race =
+            read.into_iter().find(|(name, _)| name == "race").and_then(|(_, river)| river).expect("read");
+        race.sites
+            .iter()
+            .filter(|site| site.kind == WaterSiteKind::Rapids)
+            .map(|site| site.position)
+            .collect()
+    };
+    let before = rapids(&tree.cook());
+    let moved = RIVER_COLLIDERS.replace("(10.0, 0.0, -20.0)", "(20.0, 0.0, -20.0)");
+    tree.write_at(&colliders, moved.as_bytes());
+    let report = tree.cook();
+    assert_eq!(by_id(&report, ZONE).status, CookStatus::Cooked, "the rock moved");
+    let after = rapids(&report);
+    assert_ne!(after, before);
+    assert!(
+        !after.is_empty() && after.iter().all(|[x, ..]| (16.0..=24.0).contains(x)),
+        "by the rock: {after:?}"
+    );
+}
+
+/// A river climbing more steeply than a fall falls fails the cook naming the zone and the point.
+#[test]
+fn a_river_that_climbs_like_a_fall_is_named() {
+    let water = r#"water: [(name: "up", shape: River(points: [(at: (-28.0, 1.0, 0.0), width: 4.0), (at: (-20.0, 1.0, 0.0), width: 4.0), (at: (-19.0, 4.0, 0.0), width: 4.0)]))],"#;
+    let (tree, _) = river_tree("zone-rivers-refused", water);
+    let text = chain(&tree.try_cook(false).expect_err("climbs"));
+    assert!(text.contains("town.zone.ron"), "the zone's named in `{text}`");
+    assert!(text.contains("water[0].shape.points[2].at"), "`{text}` names the point");
 }

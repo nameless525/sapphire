@@ -165,6 +165,19 @@ fn every_key_a_screen_or_a_cutscene_names_is_in_both_languages() {
     }
 }
 
+/// The Voice language row names a voice language as the Language row names a text's (M6 U13a): every language the
+/// install voices has its name in both tables, so a voice-only language can't show its key.
+#[test]
+fn every_voice_language_has_a_name_in_both_languages() {
+    for locale in LOCALES {
+        let table = table(locale);
+        for tag in sapphire_stage::content::VOICE_LANGUAGES {
+            let key = format!("settings-language-{tag}");
+            assert!(table.entry(&key).is_some(), "{locale} lacks {key}");
+        }
+    }
+}
+
 /// A screen added by documents alone (M3 U9, `menus.rs`'s `a_new_screen_is_documents`) has its keys held as
 /// the game's own are, with nothing here naming it: the fixture's are all in both languages, and the same
 /// fixture with a key no table has is caught by name.

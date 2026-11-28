@@ -55,11 +55,13 @@ const SEED: u64 = 0x5EED;
 pub const CAPTION_PREFIX: &str = "subtitle-";
 /// How long a caption stays up past the end of its line, in real seconds (M6 U14): a heard line's caption is up
 /// while it plays, as long as the audio says its sound plays (`sapphire_audio::HeardLine`), in the voice
-/// language, and this long after, to finish reading.
+/// language or, where that lacks the line, the base language's take that stands in (M6 U13a), and this long
+/// after, to finish reading.
 pub const CAPTION_TAIL: f32 = 0.5;
 /// How long the caption of a line nobody hears stays up, in real seconds: long enough to read the fight's
 /// short lines twice over. A line isn't heard with no audio (a capture, a bench, a device still opening), with
-/// none in the voice language, or with its cue refused; its caption still shows, for this long.
+/// none in the voice language or the base language, or with its cue refused; its caption still shows, for this
+/// long.
 pub const UNHEARD_CAPTION_SECONDS: f32 = 2.5;
 /// How many of a fight's lines are captioned at once (M4 A8): lines said together, in one step or close by,
 /// stack, the earlier above, each up for its own time; one more takes the oldest's place.
@@ -1384,9 +1386,19 @@ mod tests {
     }
 
     /// The committed `perfect-dodge` and `swap-in` lines in English and Japanese, each a cue as `vo` writes it,
-    /// on a system that speaks `language`: what each line's sound is long, by key.
+    /// on a system that speaks `language` with English as the base, as a game's: what each line's sound is long,
+    /// by key.
     fn speaking_in(
         language: &str,
+    ) -> (sapphire_audio::AudioSystem<sapphire_audio::MockBackend>, Vec<(&'static str, f32)>) {
+        speaking_without(language, None)
+    }
+
+    /// As [`speaking_in`], with `lacking`'s take, a language's and a key, left out of its table: its line's
+    /// length is the base's take's.
+    fn speaking_without(
+        language: &str,
+        lacking: Option<(&str, &str)>,
     ) -> (sapphire_audio::AudioSystem<sapphire_audio::MockBackend>, Vec<(&'static str, f32)>) {
         use sapphire_assets::cue::{Bus, Cue, CueNode, HitstopResponse};
         use sapphire_assets::sound::Sound;
@@ -1417,25 +1429,30 @@ mod tests {
                 };
                 system.add_cue(cue, played);
                 system.add_sound(sound, &decoded);
-                lines.push(VoiceLine { key: key.to_owned(), cue });
-                if locale == language {
+                let left_out = lacking == Some((language, key));
+                if lacking != Some((locale, key)) {
+                    lines.push(VoiceLine { key: key.to_owned(), cue });
+                }
+                if (locale == language && !left_out) || (locale == "en" && left_out) {
                     lengths.push((key, decoded.frames() as f32 / decoded.sample_rate as f32));
                 }
             }
             system.add_voice_lines(&VoiceLines { locale: locale.to_owned(), lines }).unwrap();
         }
+        assert!(system.set_voice_base_language("en"));
         assert!(system.set_voice_language(language));
         (system, lengths)
     }
 
     /// M6 U14: each fight line's caption is up for as long as its line plays in the voice language, and
-    /// [`CAPTION_TAIL`] more; a line the language hasn't is captioned for [`UNHEARD_CAPTION_SECONDS`]. Frames as
-    /// a game's: the steps say the lines, the audio's update starts them, the captions hear it, the frame ends.
-    fn captions_last_their_lines(language: &str) {
+    /// [`CAPTION_TAIL`] more, or as long as the base's take that stands in for one `lacking` (M6 U13a); a line
+    /// neither language has is captioned for [`UNHEARD_CAPTION_SECONDS`]. Frames as a game's: the steps say the
+    /// lines, the audio's update starts them, the captions hear it, the frame ends.
+    fn captions_last_their_lines(language: &str, lacking: Option<(&str, &str)>) {
         use sapphire_audio::{AudioFrame, CueRng, CueTarget, LineRequest, Listener, Rooms};
 
         const DT: f32 = 1.0 / 60.0;
-        let (mut system, lengths) = speaking_in(language);
+        let (mut system, lengths) = speaking_without(language, lacking);
         for (key, seconds) in lengths.iter().copied().chain([("court-gate-answer", f32::NAN)]) {
             let mut captions = Captions::default();
             let mut shown = 0;
@@ -1480,15 +1497,27 @@ mod tests {
 
     #[test]
     fn captions_last_their_lines_in_english() {
-        captions_last_their_lines("en");
+        captions_last_their_lines("en", None);
     }
 
     #[test]
     fn captions_last_their_lines_in_japanese() {
-        captions_last_their_lines("ja");
+        captions_last_their_lines("ja", None);
         // The languages' takes aren't the same length, so neither is what their captions last.
         let lengths = |language| speaking_in(language).1;
         assert_ne!(lengths("en"), lengths("ja"));
+    }
+
+    /// M6 U13a: a line Japanese hasn't recorded is said in English, and its caption, still in the text language,
+    /// lasts the English take.
+    #[test]
+    fn a_line_the_voice_language_lacks_is_captioned_for_the_base_take() {
+        captions_last_their_lines("ja", Some(("ja", "swap-in")));
+        let (_, lengths) = speaking_without("ja", Some(("ja", "swap-in")));
+        let english = speaking_in("en").1;
+        let swap_in = |lengths: &[(&str, f32)]| lengths.iter().find(|(key, _)| *key == "swap-in").unwrap().1;
+        assert_eq!(swap_in(&lengths), swap_in(&english));
+        assert_ne!(swap_in(&lengths), swap_in(&speaking_in("ja").1), "and not the Japanese take's");
     }
 
     /// M6 U14: a caption takes the length of the line heard in the frame it was said, and only then: a line heard

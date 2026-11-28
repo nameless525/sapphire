@@ -16,6 +16,11 @@
 //! ([`PlayerSettings::bindings_over`]): only what differs from it, so a game's change to a default reaches
 //! every player who never moved that binding.
 //!
+//! M6 U13a's voice language joined version 4 with no bump too: empty, as a file without it reads, is "as the
+//! text", which is what the one Language row gave every player before it, and what a file the settings file's
+//! repair salvaged keeps (it lays fields over [`PlayerSettings::default`], whose voices are as the text too). The
+//! settings page's Voice language row steps it through the languages the install voices.
+//!
 //! A value that parses but makes no sense, a volume of 900, is read as the nearest that does. A name this
 //! build doesn't have fails its field alone, which the settings file's repair gives its default.
 
@@ -31,6 +36,7 @@ use sapphire_loc::LocaleSettings;
 use sapphire_look::EffectScale;
 use sapphire_reflect::{Decoder, VersionError, Versioned, decode_versioned};
 use sapphire_render::quality::TierId;
+use sapphire_stage::content::{BASE_VOICE_LANGUAGE, VOICE_LANGUAGES};
 use serde::{Deserialize, Serialize};
 
 /// The languages the game ships, in the order the setting steps through them.
@@ -336,15 +342,20 @@ impl Holds {
     }
 }
 
-/// What the player has chosen, which the app keeps between runs. Version 4 (M4 A4, and A6's timing assist); version 3 (M4 T3)
-/// had all but the remapped bindings and the assist, version 2 (M4 A1) all but the graphics page's too, and version 1 (M3 U7) the
+/// What the player has chosen, which the app keeps between runs. Version 4 (M4 A4, and A6's timing assist, U10's
+/// dynamic range and U13a's voice language); version 3 (M4 T3) had all but the remapped bindings, the assist, the
+/// range and the voices' language, version 2 (M4 A1) all but the graphics page's too, and version 1 (M3 U7) the
 /// language, the size, one volume and the rumble. Each upgrades with everything it lacks at its default.
 #[derive(Clone, Debug, PartialEq, TypePath, Serialize, Deserialize)]
 #[type_path = "sapphire::game_ui"]
 #[serde(default)]
 pub struct PlayerSettings {
-    /// Of [`LANGUAGES`].
+    /// What menus and subtitles read in, of [`LANGUAGES`].
     pub language: String,
+    /// What voices speak in (M6 U13a), of the voice languages the install holds (`sapphire_stage`'s
+    /// `VOICE_LANGUAGES`), apart from [`Self::language`]; empty until the player chooses, which is as the text
+    /// ([`Self::known_voice_language`]).
+    pub voice_language: String,
     /// The interface's size, by name, of [`SIZES`].
     pub size: String,
     pub text_size: TextSize,
@@ -396,6 +407,8 @@ impl Versioned for PlayerSettings {
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
         decode_versioned::<PlayerSettingsV3, D>(version, data).map(|old| Self {
             language: old.language,
+            // As the text, as its one Language row had it.
+            voice_language: String::new(),
             size: old.size,
             text_size: old.text_size,
             shake: old.shake,
@@ -583,6 +596,8 @@ impl Default for PlayerSettings {
     fn default() -> Self {
         Self {
             language: "en".to_owned(),
+            // As the text until the player chooses.
+            voice_language: String::new(),
             size: "normal".to_owned(),
             text_size: TextSize::default(),
             shake: 100,
@@ -613,6 +628,8 @@ impl Default for PlayerSettings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Setting {
     Language,
+    /// What voices speak in (M6 U13a).
+    VoiceLanguage,
     Size,
     TextSize,
     Shake,
@@ -652,6 +669,15 @@ impl PlayerSettings {
         if LANGUAGES.contains(&self.language.as_str()) { &self.language } else { LANGUAGES[0] }
     }
 
+    /// The voice language: the one chosen, or with none chosen the text's ([`Self::known_language`]), if the
+    /// install voices it; else the base install's, which every install voices.
+    #[must_use]
+    pub fn known_voice_language(&self) -> &str {
+        let wanted =
+            if self.voice_language.is_empty() { self.known_language() } else { &self.voice_language };
+        VOICE_LANGUAGES.into_iter().find(|tag| *tag == wanted).unwrap_or(BASE_VOICE_LANGUAGE)
+    }
+
     /// `base`, a game's bindings document, with the player's over it: what they remapped, and the held actions
     /// they toggle. What the document can't take is dropped with a log line (`sapphire_controls::layered`).
     #[must_use]
@@ -685,12 +711,13 @@ impl PlayerSettings {
         Self::share(self.shake)
     }
 
-    /// The languages the game reads and speaks in. Voices follow the chosen language: the engine keeps the
-    /// two apart (M3 A1), but the settings screen has one control for both until a game wants a second.
+    /// The languages the game reads and speaks in, each its own row (M6 U13a; one row set both before).
     #[must_use]
     pub fn locale(&self) -> LocaleSettings {
-        let language = self.known_language().to_owned();
-        LocaleSettings { text: language.clone(), voice: language }
+        LocaleSettings {
+            text: self.known_language().to_owned(),
+            voice: self.known_voice_language().to_owned(),
+        }
     }
 
     /// Steps `setting` on to its next value, round past its last.
@@ -699,6 +726,11 @@ impl PlayerSettings {
             Setting::Language => {
                 let at = LANGUAGES.iter().position(|tag| *tag == self.known_language()).unwrap_or(0);
                 self.language = LANGUAGES[(at + 1) % LANGUAGES.len()].to_owned();
+            }
+            Setting::VoiceLanguage => {
+                let at =
+                    VOICE_LANGUAGES.iter().position(|tag| *tag == self.known_voice_language()).unwrap_or(0);
+                self.voice_language = VOICE_LANGUAGES[(at + 1) % VOICE_LANGUAGES.len()].to_owned();
             }
             Setting::Size => {
                 let at = SIZES.iter().position(|(name, _)| *name == self.size).unwrap_or(1);
@@ -791,6 +823,7 @@ mod tests {
     fn each_setting_comes_round_and_moves_only_itself() {
         let mut every = vec![
             Setting::Language,
+            Setting::VoiceLanguage,
             Setting::Size,
             Setting::TextSize,
             Setting::Shake,
@@ -815,7 +848,10 @@ mod tests {
             Setting::TimingAssist,
         ];
         every.extend(HeldAction::ALL.iter().map(|action| Setting::Hold(*action)));
-        let start = PlayerSettings::default();
+        // The voices chosen, so their row comes round: none chosen is "as the text", which no step goes back to
+        // (`the_voices_are_as_the_text_until_chosen`).
+        let start =
+            PlayerSettings { voice_language: BASE_VOICE_LANGUAGE.to_owned(), ..PlayerSettings::default() };
         for setting in every {
             let mut settings = start.clone();
             let mut seen = Vec::new();
@@ -833,6 +869,7 @@ mod tests {
             again.step(setting);
             let changed = [
                 again.language != start.language,
+                again.voice_language != start.voice_language,
                 again.size != start.size,
                 again.text_size != start.text_size,
                 again.shake != start.shake,
@@ -857,6 +894,25 @@ mod tests {
             ];
             assert_eq!(changed.iter().filter(|changed| **changed).count(), 1, "{setting:?}");
         }
+    }
+
+    /// M6 U13a: with no voice language chosen, the voices follow the text's language, as the one Language row had
+    /// them; once the row is pressed they're the player's, and a language the install doesn't voice is the base's.
+    #[test]
+    fn the_voices_are_as_the_text_until_chosen() {
+        let mut settings = PlayerSettings { language: "ja".to_owned(), ..PlayerSettings::default() };
+        assert_eq!(settings.voice_language, "", "nobody has chosen");
+        assert_eq!(settings.known_voice_language(), "ja");
+        settings.step(Setting::Language);
+        assert_eq!(settings.locale(), LocaleSettings { text: "en".to_owned(), voice: "en".to_owned() });
+        settings.step(Setting::VoiceLanguage);
+        assert_eq!(settings.voice_language, "ja", "steps on from what was heard");
+        settings.step(Setting::Language);
+        assert_eq!(settings.locale(), LocaleSettings { text: "ja".to_owned(), voice: "ja".to_owned() });
+        settings.step(Setting::Language);
+        assert_eq!(settings.locale().voice, "ja", "chosen, the voices stay as the text moves");
+        let unvoiced = PlayerSettings { voice_language: "fr".to_owned(), ..PlayerSettings::default() };
+        assert_eq!(unvoiced.known_voice_language(), BASE_VOICE_LANGUAGE);
     }
 
     #[test]

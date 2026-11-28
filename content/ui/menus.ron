@@ -40,6 +40,7 @@
                 document: "cf52ef55-199e-426f-adea-52940c953a9f",
                 rows: [
                     (node: "language", does: Step(Language)),
+                    (node: "voice-language", does: Step(VoiceLanguage)),
                     (node: "display", does: Open("display")),
                     (node: "graphics", does: Open("graphics")),
                     (node: "sound", does: Open("sound")),

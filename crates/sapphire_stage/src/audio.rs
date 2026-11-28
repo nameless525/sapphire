@@ -19,7 +19,9 @@
 //! fight's phase ([`CueSounds::music_phase`]), or a boss's named phase where the score has one of that name
 //! (M3 Z5a, [`CueSounds::boss_phase`]), and the lines are spoken in the voice language
 //! ([`DeviceAudio::set_voice_language`]), which starts as `LocaleSettings`' default and is the
-//! player's to change, apart from the text's.
+//! player's to change, apart from the text's. A line that language lacks is spoken in
+//! [`BASE_VOICE_LANGUAGE`], and one neither has is its caption alone (M6 U13a): `AudioStats`' `lines_in_base`
+//! and `lines_missing` count each, in the stats line and the overlay.
 //!
 //! A conversation's line with a voice (M5 C6) comes as [`CueSounds::speech`]: the mixer starts it, holds it
 //! through a pause and cuts it at the next line, and [`DeviceAudio::said`] reads the sound's cooked mouth
@@ -63,7 +65,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
-use crate::content::Content;
+use crate::content::{BASE_VOICE_LANGUAGE, Content};
 
 /// The cues `--cue` can name, by their sidecars' IDs in `content/audio/`. A game names cues in its
 /// own data; a test holds this table to the sidecars.
@@ -431,9 +433,15 @@ impl DeviceAudio {
     }
 
     /// Chooses the language voice lines are spoken in, a BCP 47 tag, apart from the text's: whether the
-    /// fight's lines are in it.
+    /// fight's lines are in it. The next line is routed by it; one playing plays on in its own.
     pub fn set_voice_language(&mut self, locale: &str) -> bool {
         self.system.set_voice_language(locale)
+    }
+
+    /// The language that speaks a line the chosen one lacks (M6 U13a), if the fight has lines in it.
+    #[must_use]
+    pub fn voice_base_language(&self) -> Option<&str> {
+        self.system.voice_route().base_language()
     }
 
     /// The app went to the background, or came back, where it asks the OS for audio again first.
@@ -476,6 +484,7 @@ impl DeviceAudio {
             dropped_voice_limit = stats.dropped_voice_limit,
             dropped_unknown = stats.dropped_unknown,
             lines = stats.lines_asked,
+            lines_in_base = stats.lines_in_base,
             lines_missing = stats.lines_missing,
             phase_changes = stats.music_phase_changes,
             decoded_bytes = stats.decoded_bytes,
@@ -717,6 +726,14 @@ fn add_loaded<B: AudioBackend>(system: &mut AudioSystem<B>, loaded: Loaded) -> R
     }
     for (id, mouth) in loaded.mouths {
         system.add_mouth(id, mouth);
+    }
+    // A line the chosen language lacks is the base install's to speak (M6 U13a).
+    if !system.set_voice_base_language(BASE_VOICE_LANGUAGE) && !loaded.voices.is_empty() {
+        tracing::warn!(
+            target: LOG_TARGET,
+            base = BASE_VOICE_LANGUAGE,
+            "no voice lines in the base language: a line the chosen language lacks is its caption alone"
+        );
     }
     system.set_voice_language(&LocaleSettings::default().voice);
     Ok(())
@@ -995,6 +1012,11 @@ mod tests {
         };
         add_loaded(&mut system, fight).unwrap();
         assert_eq!(system.voice_route().language(), Some("en"), "the default until the player's is read");
+        assert_eq!(
+            system.voice_route().base_language(),
+            Some(BASE_VOICE_LANGUAGE),
+            "a missing line's stand-in"
+        );
 
         assert!(system.set_voice_language(&loaded.value.locale.voice));
         let dodge = [LineRequest { line: LineKey::of("perfect-dodge"), target: CueTarget::Flat }];

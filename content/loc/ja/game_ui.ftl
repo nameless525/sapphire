@@ -26,6 +26,7 @@ settings-title = 設定
 settings-language = 言語
 settings-language-en = English
 settings-language-ja = 日本語
+settings-voice-language = 音声言語
 settings-display = 画面
 settings-graphics = グラフィック
 settings-sound = サウンド

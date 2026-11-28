@@ -66,6 +66,7 @@
             (path: "timing_assist", kind: Text),
             (path: "version", kind: Text),
             (path: "voice", kind: Number),
+            (path: "voice_language", kind: Text),
         ],
     ),
 )

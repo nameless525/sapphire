@@ -928,8 +928,6 @@ fn volumes_of(chosen: &PlayerSettings) -> Volumes {
     }
 }
 
-/// Speaks the fight's lines in `language`, the player's: a language the fight has no lines in speaks none,
-/// and says so once here.
 /// `audio`, made: at the volumes, the mix and in the voice language the player has chosen.
 fn heard_as(mut audio: DeviceAudio, chosen: &PlayerSettings) -> DeviceAudio {
     audio.set_volumes(volumes_of(chosen));
@@ -939,9 +937,23 @@ fn heard_as(mut audio: DeviceAudio, chosen: &PlayerSettings) -> DeviceAudio {
     audio
 }
 
+/// Speaks the fight's lines in `language`, the player's, from the next line on: a line it lacks is the base
+/// language's (M6 U13a), and a language the fight has no lines in is said so here, with what speaks instead.
 fn speak_in(audio: &mut DeviceAudio, language: &str) {
     if !audio.set_voice_language(language) {
-        tracing::info!(target: LOG_TARGET, language, "the fight has no voice lines in the chosen language");
+        match audio.voice_base_language() {
+            Some(base) => tracing::info!(
+                target: LOG_TARGET,
+                language,
+                base,
+                "no voice lines in the chosen language: the base language speaks them"
+            ),
+            None => tracing::info!(
+                target: LOG_TARGET,
+                language,
+                "no voice lines in the chosen language, nor in a base: lines are their captions alone"
+            ),
+        }
     }
 }
 

@@ -279,14 +279,32 @@ fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     assert_eq!(walk.menus.window_title(), "サファイア", "the window's title follows the language");
     assert_eq!(walk.menus.settings().language, "ja");
     let locale = walk.menus.settings().locale();
-    assert_eq!((locale.text.as_str(), locale.voice.as_str()), ("ja", "ja"), "and the voices with it");
+    assert_eq!(
+        (locale.text.as_str(), locale.voice.as_str()),
+        ("ja", "ja"),
+        "and the voices, which nobody has chosen (M6 U13a)"
+    );
     assert_eq!(string_of(&walk, SETTINGS, "language-value"), "日本語");
     assert_eq!(string_of(&walk, MenuScreen::TITLE, "new-text"), "はじめから", "under it too");
     assert!(walk.commands.contains(&MenuCommand::SettingsChanged));
 
+    // The Voice language row steps the voices alone, and says them in the text's language.
+    assert_eq!(string_of(&walk, SETTINGS, "voice-language-text"), "音声言語");
+    assert_eq!(string_of(&walk, SETTINGS, "voice-language-value"), "日本語");
+    walk.commands.clear();
+    walk.choose(SETTINGS, "voice-language");
+    let locale = walk.menus.settings().locale();
+    assert_eq!((locale.text.as_str(), locale.voice.as_str()), ("ja", "en"), "Japanese menus, English voices");
+    assert_eq!(string_of(&walk, SETTINGS, "voice-language-value"), "English");
+    assert_eq!(walk.menus.window_title(), "サファイア", "the text's language stays");
+    assert!(walk.commands.contains(&MenuCommand::SettingsChanged), "and the app is told to keep it");
+    walk.choose(SETTINGS, "voice-language");
+    assert_eq!(walk.menus.settings().voice_language, "ja");
+
     assert_eq!(string_of(&walk, SETTINGS, "sound-value"), "›", "a page's row says it goes on");
     walk.choose(SETTINGS, "language");
     assert_eq!(walk.menus.settings().language, "en");
+    assert_eq!(walk.menus.settings().locale().voice, "ja", "chosen, the voices stay as the text moves");
 
     walk.choose(SETTINGS, "sound");
     assert!(string_of(&walk, SOUND, "volume-value").starts_with("100"));

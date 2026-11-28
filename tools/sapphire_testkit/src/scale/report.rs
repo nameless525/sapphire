@@ -95,7 +95,7 @@ const SPANS: [(&str, &str); 3] =
 
 /// The memory line's fields the report shows, in MiB, and the names it gives them: the memory ledger's rows
 /// (`sapphire_render::LEDGER_ROWS`), those since M6 X2 last, and the heap.
-const MEMORY: [(&str, &str); 11] = [
+const MEMORY: [(&str, &str); 12] = [
     ("process_mib", "Process"),
     ("textures_mib", "Textures"),
     ("resident_textures_mib", "Textures resident in the asset server"),
@@ -107,6 +107,7 @@ const MEMORY: [(&str, &str); 11] = [
     ("retiring_mib", "Textures retiring"),
     ("staging_mib", "Raises' staging"),
     ("decoded_waiting_mib", "Decoded, waiting for the GPU"),
+    ("audio_decoded_mib", "Decoded audio the mixer holds"),
 ];
 
 /// What the report reads: the manifest, the commit's folder of logs and statuses, and the baseline's folder,

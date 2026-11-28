@@ -1,12 +1,13 @@
 //! The real mixer, rendered with no device: what the backend is asked for really happens to the
 //! samples. `AudioSystem`'s own decisions are tested against the mock, next to it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cpal::Sample;
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, CueNode, HitstopResponse};
 use sapphire_assets::mix::{Mix, OutputProfile};
+use sapphire_assets::score::Score;
 use sapphire_assets::sound::{DecodedSound, Sound, decode_vorbis};
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioSystem, BusId, BusParams, CueRequest, CueRng, CueTarget, DeviceState,
@@ -379,37 +380,62 @@ fn a_voices_own_low_pass_takes_out_the_high_frequencies() {
     assert!(low_drop < 2.0, "300 Hz fell {low_drop} dB under a 500 Hz low-pass");
 }
 
+/// Every file under `folder` whose name ends with `suffix`, sorted.
+fn files_under(folder: &Path, suffix: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![folder.to_owned()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).expect("a folder of the tree") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.to_string_lossy().ends_with(suffix) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Every sound the shipped cue documents (the game's and each voice language's) and scores play, by its file:
+/// each cue's tree and each score's stems, found by the sounds' sidecars' IDs. The set the M6 U1 note's
+/// numbers are of (fixed after its review: they were of a hand-kept list of 20).
+fn shipped_sounds(content: &Path) -> Vec<PathBuf> {
+    let read = |path: &Path| std::fs::read_to_string(path).expect("reads");
+    let mut by_id = std::collections::HashMap::new();
+    for sidecar in files_under(content, ".ogg.meta") {
+        let text = read(&sidecar);
+        let id = text.split("id: \"").nth(1).and_then(|rest| rest.split('"').next()).expect("a sidecar's ID");
+        let id: AssetId = id.parse().expect("an ID");
+        by_id.insert(id, sidecar.with_extension(""));
+    }
+    let mut played = std::collections::BTreeSet::new();
+    for cue in files_under(content, ".cue.ron") {
+        let cue =
+            Cue::from_document(&read(&cue)).unwrap_or_else(|error| panic!("{}: {error}", cue.display()));
+        played.extend(cue.sounds());
+    }
+    for score in files_under(content, ".score.ron") {
+        let score = Score::from_document(&read(&score)).expect("a shipped score");
+        played.extend(score.stems.iter().map(|stem| stem.sound));
+    }
+    played
+        .iter()
+        .map(|id| by_id.get(id).unwrap_or_else(|| panic!("{id} has no sound's sidecar")).clone())
+        .collect()
+}
+
 /// Decoded PCM (M6 U1): the sounds the shipped cues, score and voice lines play, held in their authored
 /// channels, take at most half of what kira's two `f32`s a frame took, by the backend's own counter.
 #[test]
 fn the_shipped_sounds_take_half_the_memory_or_less() {
-    const SOUNDS: [&str; 20] = [
-        "third_party/kenney_impact_sounds/Audio/footstep_concrete_000.ogg",
-        "third_party/kenney_impact_sounds/Audio/impactBell_heavy_000.ogg",
-        "third_party/kenney_impact_sounds/Audio/impactGlass_light_000.ogg",
-        "third_party/kenney_impact_sounds/Audio/impactMetal_heavy_000.ogg",
-        "third_party/kenney_impact_sounds/Audio/impactPunch_heavy_000.ogg",
-        "third_party/kenney_impact_sounds/Audio/impactPunch_medium_000.ogg",
-        "third_party/kenney_impact_sounds/Audio/impactSoft_heavy_000.ogg",
-        "third_party/kenney_interface_sounds/Audio/click_001.ogg",
-        "third_party/kenney_rpg_audio/Audio/knifeSlice.ogg",
-        "audio/generated/music/lantern_bells.ogg",
-        "audio/generated/music/lantern_drums.ogg",
-        "audio/generated/music/lantern_pad.ogg",
-        "audio/generated/music/lantern_pulse.ogg",
-        "audio/generated/music/lantern_toll.ogg",
-        "vo/en/guide_greet.ogg",
-        "vo/en/perfect-dodge.ogg",
-        "vo/en/swap-in.ogg",
-        "vo/ja/guide_greet.ogg",
-        "vo/ja/perfect-dodge.ogg",
-        "vo/ja/swap-in.ogg",
-    ];
     let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let sounds = shipped_sounds(&content);
     let mut backend = KiraBackend::<OfflineOutput>::new(RATE).expect("an offline mixer");
     let mut as_kira_frames = 0_u64;
-    for (n, name) in SOUNDS.iter().enumerate() {
-        let vorbis = std::fs::read(content.join(name)).expect("the sound is in the tree");
+    for (n, path) in sounds.iter().enumerate() {
+        let vorbis = std::fs::read(path).expect("the sound is in the tree");
         let sound = decode_vorbis(&vorbis).expect("it decodes");
         as_kira_frames += sound.frames() as u64 * 8;
         backend.add_sound(format!("5c0e0000-0000-4000-8000-{n:012x}").parse().unwrap(), &sound);
@@ -417,13 +443,17 @@ fn the_shipped_sounds_take_half_the_memory_or_less() {
     let held = backend.decoded_bytes();
     #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
     {
-        println!("the shipped sounds: {held} bytes decoded, {as_kira_frames} as kira's frames");
+        let count = sounds.len();
+        println!(
+            "the shipped sounds: {count} of them, {held} bytes decoded, {as_kira_frames} as kira's frames"
+        );
     }
+    assert!(sounds.len() > 40, "{} sounds: the walk missed the shipped cues", sounds.len());
     assert!(held * 2 <= as_kira_frames, "{held} bytes against {as_kira_frames}");
     // Replacing a sound counts it once, and removing it takes it away.
     let first: AssetId = "5c0e0000-0000-4000-8000-000000000000".parse().unwrap();
-    let footstep = decode_vorbis(&std::fs::read(content.join(SOUNDS[0])).unwrap()).unwrap();
-    backend.add_sound(first, &footstep);
+    let again = decode_vorbis(&std::fs::read(&sounds[0]).unwrap()).unwrap();
+    backend.add_sound(first, &again);
     assert_eq!(backend.decoded_bytes(), held);
     backend.remove_sound(first);
     assert!(backend.decoded_bytes() < held);

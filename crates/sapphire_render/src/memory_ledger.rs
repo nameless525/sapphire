@@ -5,7 +5,9 @@
 //!   textures), the renderer's mesh pool and uploaded textures, the frame graph's transient pool, and, since
 //!   M6 X2, the bytes on their way in or out that no pool counts: textures a raise replaced still waiting for
 //!   the last frame that may read them, the raises' staging the GPU may not have copied yet, and what the
-//!   asset server decoded and holds for the GPU. The process's footprint comes last.
+//!   asset server decoded and holds for the GPU. Since the M6 backfill, the decoded sound the mixer holds
+//!   (M6 U1's counter, given to the ledger as a number: the renderer knows nothing of audio). The process's
+//!   footprint comes last.
 //! - **Memoryless attachments count as nothing** where the adapter says they save memory (the transient
 //!   pool's `TransientStats::bytes`), and their estimate stands in a row of its own.
 //! - **Estimates, not the GPU's figures:** textures and transients are their payloads (alignment, padding and
@@ -41,18 +43,22 @@ pub struct MemoryLedger {
     /// Bytes the asset server read and decoded and holds for the GPU, waiting for their dependencies or in
     /// the upload queue (M5 B4).
     pub decoded_waiting: u64,
+    /// The decoded samples the mixer holds (M6 U1, `sapphire_audio::AudioStats::decoded_bytes`): 0 where nothing
+    /// plays sound. The asset server's resident bytes hold the same sounds again, cooked.
+    pub audio_decoded: u64,
     /// The process, as its OS counts it (`sapphire_platform::process_memory`): 0 where it isn't read.
     pub process: u64,
 }
 
 impl MemoryLedger {
     /// The ledger from the counters that keep it: the renderer's, the transient pool's, the asset
-    /// server's, the textures the app uploaded and the process's footprint.
+    /// server's, the textures the app uploaded, the decoded sound its mixer holds and the process's footprint.
     pub fn of(
         render: &RenderStats,
         transients: &TransientStats,
         assets: &AssetStats,
         textures: u64,
+        audio_decoded: u64,
         process: u64,
     ) -> Self {
         Self {
@@ -67,6 +73,7 @@ impl MemoryLedger {
             retiring: render.mip_streaming.retiring_bytes,
             staging: render.mip_streaming.staging_bytes,
             decoded_waiting: assets.decoded_waiting,
+            audio_decoded,
             process,
         }
     }
@@ -82,7 +89,7 @@ pub struct LedgerRow {
 }
 
 /// Every row, in the order both readers show them.
-pub const LEDGER_ROWS: [LedgerRow; 11] = [
+pub const LEDGER_ROWS: [LedgerRow; 12] = [
     LedgerRow { field: "resident_mib", name: "Asset server, all", read: |ledger| ledger.resident },
     LedgerRow { field: "resident_meshes_mib", name: "  meshes", read: |ledger| ledger.resident_meshes },
     LedgerRow { field: "resident_textures_mib", name: "  textures", read: |ledger| ledger.resident_textures },
@@ -101,6 +108,7 @@ pub const LEDGER_ROWS: [LedgerRow; 11] = [
         name: "Decoded, waiting",
         read: |ledger| ledger.decoded_waiting,
     },
+    LedgerRow { field: "audio_decoded_mib", name: "Decoded audio", read: |ledger| ledger.audio_decoded },
     LedgerRow { field: "process_mib", name: "Process", read: |ledger| ledger.process },
 ];
 
@@ -109,8 +117,9 @@ mod tests {
     use super::*;
     use crate::MipStreamingStats;
 
-    /// Each row reads its own counter, the asset server's sums add the right kinds, and the new rows (M6 X2)
-    /// come from the streamer, the transient pool and the asset server.
+    /// Each row reads its own counter, the asset server's sums add the right kinds, the new rows (M6 X2)
+    /// come from the streamer, the transient pool and the asset server, and decoded audio (the M6 backfill)
+    /// from the number the app gives.
     #[test]
     fn rows_read_their_counters_and_sum_their_kinds() {
         let mut assets = AssetStats::default();
@@ -128,7 +137,7 @@ mod tests {
             ..RenderStats::default()
         };
         let transients = TransientStats { bytes: 19_000, memoryless_bytes: 23_000, ..Default::default() };
-        let ledger = MemoryLedger::of(&render, &transients, &assets, 29_000, 31_000);
+        let ledger = MemoryLedger::of(&render, &transients, &assets, 29_000, 37_000, 31_000);
 
         let every_kind: u64 = (0..AssetKind::ALL.len()).map(|index| 1u64 << index).sum();
         let textures = (1 << AssetKind::Texture.index()) + (1 << AssetKind::TextureLevel.index());
@@ -146,6 +155,7 @@ mod tests {
                 ("retiring_mib", 13_000),
                 ("staging_mib", 17_000),
                 ("decoded_waiting_mib", 7_000),
+                ("audio_decoded_mib", 37_000),
                 ("process_mib", 31_000),
             ]
         );

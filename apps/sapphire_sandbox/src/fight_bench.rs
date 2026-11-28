@@ -949,7 +949,8 @@ impl Run<'_> {
         let layers = stage.scene.with_screen_effects(|stack, _| stack.len()) as u32;
         let script = stage.show.fight.combat.as_ref().and_then(Combat::script_time);
         let script = script.map(|after| after.saturating_sub(script_before.unwrap_or(Duration::ZERO)));
-        let memory = zone::Held::of(stage, after.live_bytes);
+        let audio = self.audio.as_ref().map(OfflineAudio::stats);
+        let memory = zone::Held::of(stage, audio.as_ref(), after.live_bytes);
         let assets = stage.content.stats();
         let streaming = stage.content.texture_streaming_stats();
         // Under `--draw-every` only drawn frames' counts are logged ([`counts::report_drawn`]): one takes the loads

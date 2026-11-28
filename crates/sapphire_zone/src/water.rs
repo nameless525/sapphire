@@ -35,8 +35,11 @@
 //! current there and how deep the water stands over the floor. The floor is the first thing a ray straight down
 //! from the surface meets, which the caller's [`Floor`] casts (`sapphire_physics`' `PhysicsWorld::floor_below`
 //! against the zone's statics), so the bed is the colliders' and needs no data of its own: a point under that
-//! floor, as a sea's column under a hill is, isn't in water. The query is plain arithmetic over the cooked
-//! values, with no transcendental and no allocation, so a fixed step may ask it.
+//! floor, as a sea's column under a hill of solid colliders is, isn't in that water, though it may be in a
+//! lower body's, as a lake's under an aqueduct is. A ray cast from inside open mesh ground meets nothing, so
+//! there a point deep under a raised lake's floor can read as in a sea below it (owed: a physics test, the
+//! next water package's). A point that isn't a number is in no water. The query is plain arithmetic over the
+//! cooked values, with no transcendental and no allocation, so a fixed step may ask it.
 
 use bevy_reflect::Reflect;
 use sapphire_serialize::AssetId;
@@ -622,34 +625,58 @@ impl<'a, F: Floor> WaterVolumes<'a, F> {
     }
 
     /// The water at a point, if it's in any: at or under a body's surface over its shape, and not under the
-    /// floor a ray down from that surface meets. Where bodies overlap, the one whose surface is highest over the
-    /// point answers, the first in the zone's order on a tie. One floor ray at most, whatever the bodies.
+    /// floor a ray down from that surface meets. Where bodies overlap, they're tried from the highest surface
+    /// over the point down, the first in the zone's order on a tie, and the first whose floor doesn't stand over
+    /// the point answers: a lake under an aqueduct holds a swimmer under the aqueduct's channel, whose ray stops
+    /// at its bed. One floor ray where the highest body's floor holds the point, as it does wherever bodies don't
+    /// overlap, and at most one for each height over it, so never more than [`MAX_BODIES`].
     #[must_use]
     pub fn at(&self, x: f32, y: f32, z: f32) -> Option<WaterSample> {
-        let mut best: Option<(usize, f32, [f32; 2])> = None;
-        for (index, body) in self.bodies.iter().enumerate() {
+        // The bodies whose surface is over the point, highest first: a zone holds at most `MAX_BODIES`, which
+        // `Zone::read` holds it to, so they fit with no allocation.
+        let mut over = [(0usize, 0.0f32, [0.0f32; 2]); MAX_BODIES];
+        let mut count = 0;
+        for (index, body) in self.bodies.iter().enumerate().take(MAX_BODIES) {
             let Some((surface_y, flow)) = body.column(x, z) else {
                 continue;
             };
-            if y <= surface_y && best.is_none_or(|(_, highest, _)| surface_y > highest) {
-                best = Some((index, surface_y, flow));
+            // Not under its surface, or not a point at all: a NaN height is in no water, as before the bodies
+            // were tried in turn.
+            if y.is_nan() || y > surface_y {
+                continue;
             }
+            // After every one at or over it, so a tie keeps the zone's order.
+            let mut at = count;
+            while at > 0 && over[at - 1].1 < surface_y {
+                over[at] = over[at - 1];
+                at -= 1;
+            }
+            over[at] = (index, surface_y, flow);
+            count += 1;
         }
-        let (index, surface_y, flow) = best?;
-        let floor = self.floor.below(x, surface_y, z, FLOOR_REACH);
-        if floor.is_some_and(|floor| y < floor) {
-            return None;
+        let mut cast: Option<(f32, Option<f32>)> = None;
+        for &(index, surface_y, flow) in &over[..count] {
+            // A ray from the height the last one started at meets what it met.
+            let floor = match cast {
+                Some((from, floor)) if from == surface_y => floor,
+                _ => self.floor.below(x, surface_y, z, FLOOR_REACH),
+            };
+            cast = Some((surface_y, floor));
+            if floor.is_some_and(|floor| y < floor) {
+                continue;
+            }
+            let body = &self.bodies[index];
+            return Some(WaterSample {
+                surface_y,
+                flow,
+                body: index as u16,
+                kind: body.kind(),
+                surface: body.surface(),
+                swim: body.swim,
+                depth: floor.map(|floor| surface_y - floor),
+            });
         }
-        let body = &self.bodies[index];
-        Some(WaterSample {
-            surface_y,
-            flow,
-            body: index as u16,
-            kind: body.kind(),
-            surface: body.surface(),
-            swim: body.swim,
-            depth: floor.map(|floor| surface_y - floor),
-        })
+        None
     }
 }
 

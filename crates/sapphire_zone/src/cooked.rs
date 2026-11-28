@@ -28,6 +28,7 @@ use crate::document::{
 };
 use crate::grid::{Bounds, CellCoord, Grid, MAX_COORDINATE};
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
+use crate::reflections::MAX_PROBES;
 use crate::rooms::CookedRoom;
 use crate::water::{
     ArchivedCookedWaterVolume, ArchivedWaterShape, CookedWaterSurface, CookedWaterVolume, MAX_BODIES,
@@ -902,8 +903,8 @@ impl ArchivedZone {
     }
 
     /// Whether each body has one surface, in the simulation's order, with a margin a cook would write and a
-    /// probe only where the zone has reflections, no mesh for the sea, and a reading only for a river, one its
-    /// points can have ([`crate::water::river`]).
+    /// probe only where the zone has reflections, at a place a zone's probes can have, no mesh for the sea, and a
+    /// reading only for a river, one its points can have ([`crate::water::river`]).
     fn validate_water_surfaces(&self) -> Result<(), ZoneError> {
         let (volumes, surfaces) = (&self.simulation.water, &self.presentation.water);
         if volumes.len() != surfaces.len() {
@@ -917,8 +918,17 @@ impl ArchivedZone {
                 return Err(invalid("its surface is another body's".to_owned()));
             }
             check_shore_margin(surface.shore_margin.to_native()).map_err(invalid)?;
-            if surface.probe.is_some() && self.presentation.reflections.is_none() {
-                return Err(invalid("it reflects a probe, and the zone has none".to_owned()));
+            if let Some(probe) = surface.probe.as_ref().map(|probe| probe.to_native()) {
+                if self.presentation.reflections.is_none() {
+                    return Err(invalid("it reflects a probe, and the zone has none".to_owned()));
+                }
+                // A place among the baked probes, held under the most a zone may hold. The zone can't see
+                // how many its reflections asset baked, so a reader checks the place against that count.
+                if !usize::try_from(probe).is_ok_and(|place| place < MAX_PROBES) {
+                    return Err(invalid(format!(
+                        "it reflects probe {probe}, past the {MAX_PROBES} a zone may hold"
+                    )));
+                }
             }
             if surface.mesh.is_some() && volume.kind() == WaterKind::Ocean {
                 return Err(invalid("the sea has a mesh, which a cook never draws".to_owned()));
@@ -1790,7 +1800,7 @@ mod tests {
     #[test]
     fn cooked_water_the_document_would_refuse_is_refused() {
         type Tamper = fn(&mut Zone);
-        let cases: [(&str, &str, Tamper); 10] = [
+        let cases: [(&str, &str, Tamper); 12] = [
             ("order", "out of order", |z| z.simulation.water.reverse()),
             ("id", "isn't its name's hash", |z| z.simulation.water[0].id ^= 1),
             ("bounds", "aren't its shape's", |z| z.simulation.water[0].bounds_max[0] += 1.0),
@@ -1818,6 +1828,10 @@ mod tests {
                 z.presentation.reflections = None;
                 z.presentation.water.iter_mut().for_each(|surface| surface.probe = Some(0));
             }),
+            ("a probe's place", "probe 4294967295, past the 42", |z| {
+                z.presentation.water[0].probe = Some(u32::MAX)
+            }),
+            ("the place past the last", "probe 42, past", |z| z.presentation.water[0].probe = Some(42)),
         ];
         for (what, expected, tamper) in cases {
             let mut tampered = water_zone();

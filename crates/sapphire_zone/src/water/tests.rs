@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use sapphire_serialize::cooked::AlignedVec;
 
 use super::*;
@@ -167,7 +169,7 @@ fn with_no_floor_the_water_is_bottomless() {
 }
 
 /// Where two bodies hold a point, the higher surface answers, the first in the zone's order on a tie; and the
-/// floor is asked from that surface, once.
+/// floor is asked from that surface, once, where its floor holds the point.
 #[test]
 fn where_bodies_overlap_the_higher_surface_answers() {
     let square = |x: f32| format!("[({x}, 0.0), ({}, 0.0), ({}, 10.0), ({x}, 10.0)]", x + 10.0, x + 10.0);
@@ -182,7 +184,7 @@ fn where_bodies_overlap_the_higher_surface_answers() {
         square(8.0),
     ));
     let zone = Zone::read(&bytes).expect("reads");
-    let asked = std::cell::Cell::new(0);
+    let asked = Cell::new(0);
     let floor = |_: f32, from_y: f32, _: f32, _: f32| {
         asked.set(asked.get() + 1);
         Some(from_y - 3.0)
@@ -198,9 +200,168 @@ fn where_bodies_overlap_the_higher_surface_answers() {
     assert_eq!(volumes.at(6.0, 0.5, 5.0).expect("high").depth, Some(3.0), "from the higher surface");
     asked.set(0);
     let _ = volumes.at(9.0, 0.5, 5.0);
-    assert_eq!(asked.get(), 1, "one ray, however many bodies hold the point");
+    assert_eq!(asked.get(), 1, "one ray where the highest's floor holds the point, however many bodies do");
     let _ = volumes.at(30.0, 0.5, 5.0);
     assert_eq!(asked.get(), 1, "none where no body does");
+    // Under the floor "high" and "level" share at 2.0, but over the floor of "low" at 1.0: one ray for the
+    // two at one height, cached, and one for the lower, whose water answers.
+    let low = |depth: f32| Some(("low".to_owned(), 1.0, Some(depth)));
+    assert_eq!(answers(&volumes, &asked, [9.0, -1.5, 5.0]), (low(3.0), 2));
+    assert_eq!(answers(&volumes, &asked, [9.0, -2.5, 5.0]), (None, 2), "under every floor: no water");
+    assert_eq!(answers(&volumes, &asked, [6.0, -1.5, 5.0]), (low(3.0), 2), "two heights, two rays");
+}
+
+/// The floor is asked once for each distinct surface height over a point, however many bodies stand there:
+/// at most [`MAX_BODIES`] rays where every body has its own height and every floor refuses the point, and one
+/// where they all share a height.
+#[test]
+fn the_floor_is_asked_once_for_each_height_over_a_point() {
+    let outline = "[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]";
+    let lakes = |height: &dyn Fn(usize) -> f32| {
+        let lakes: String = (0..MAX_BODIES)
+            .map(|index| {
+                let height = height(index);
+                format!(r#"(name: "lake_{index}", shape: Lake(outline: {outline}, height: {height:.1})),"#)
+            })
+            .collect();
+        cooked(&format!("water: [{lakes}],"))
+    };
+    let all = MAX_BODIES as u32;
+    let asked = Cell::new(0);
+    let floor = |_: f32, from_y: f32, _: f32, _: f32| {
+        asked.set(asked.get() + 1);
+        Some(from_y - 1.0)
+    };
+    let apart = lakes(&|index| index as f32);
+    let zone = Zone::read(&apart).expect("reads");
+    let volumes = WaterVolumes::new(&zone.simulation, &floor);
+    assert_eq!(answers(&volumes, &asked, [5.0, -10.0, 5.0]), (None, all), "one ray a height");
+    let lowest = Some(("lake_0".to_owned(), 0.0, Some(1.0)));
+    assert_eq!(answers(&volumes, &asked, [5.0, -0.5, 5.0]), (lowest, all), "the lowest answers last");
+    let level = lakes(&|_| 2.0);
+    let zone = Zone::read(&level).expect("reads");
+    let volumes = WaterVolumes::new(&zone.simulation, &floor);
+    assert_eq!(answers(&volumes, &asked, [5.0, -10.0, 5.0]), (None, 1), "one ray for one height");
+    assert_eq!(answers(&volumes, &asked, [5.0, 1.5, 5.0]).1, 1);
+}
+
+/// A point that isn't a number is in no water, and asks no floor, wherever the bodies are.
+#[test]
+fn a_point_that_isnt_a_number_is_in_no_water() {
+    let bytes = cooked(WATER);
+    let zone = Zone::read(&bytes).expect("reads");
+    let asked = Cell::new(0);
+    let counted = |x: f32, from_y: f32, z: f32, reach: f32| {
+        asked.set(asked.get() + 1);
+        floor(x, from_y, z, reach)
+    };
+    let volumes = WaterVolumes::new(&zone.simulation, &counted);
+    assert!(volumes.at(5.0, 0.5, 5.0).is_some(), "the pond holds a number");
+    for at in [[5.0, f32::NAN, 5.0], [-25.0, f32::NAN, 0.0], [60.0, f32::NAN, 60.0]] {
+        assert_eq!(answers(&volumes, &asked, at), (None, 0), "{at:?}");
+    }
+}
+
+/// The body that answers at a point, its surface and its depth, if any does, and how many floor rays it cast.
+type Answer = (Option<(String, f32, Option<f32>)>, u32);
+
+/// Asks `volumes` at a point, counting the rays its floor cast in `asked`.
+fn answers(volumes: &WaterVolumes<'_, impl Floor>, asked: &Cell<u32>, at: [f32; 3]) -> Answer {
+    asked.set(0);
+    let [x, y, z] = at;
+    let found =
+        volumes.at(x, y, z).map(|sample| (body_named(volumes, &sample), sample.surface_y, sample.depth));
+    (found, asked.get())
+}
+
+/// In the body named, under its surface at `surface_y`, `depth` over its floor, by `rays` floor rays.
+fn in_body(name: &str, surface_y: f32, depth: f32, rays: u32) -> Answer {
+    (Some((name.to_owned(), surface_y, Some(depth))), rays)
+}
+
+/// A solid block over the ground plane, from x0 to x1 and z0 to z1, standing from under everything to `top`.
+type Solid = ([f32; 2], [f32; 2], f32);
+
+/// What a ray from `from_y` down meets first: the top of a solid it starts over, its start if it starts inside
+/// one, or else the bed at `bed`.
+fn ground(solids: &[Solid], bed: f32, x: f32, from_y: f32, z: f32, reach: f32) -> Option<f32> {
+    let mut hit = bed;
+    for &([x0, x1], [z0, z1], top) in solids {
+        if (x0..=x1).contains(&x) && (z0..=z1).contains(&z) && hit < top {
+            hit = top.min(from_y);
+        }
+    }
+    (from_y - hit <= reach).then_some(hit)
+}
+
+/// A river on an aqueduct over a lake: a swimmer in the lake under the aqueduct is in the lake, though the
+/// aqueduct's channel is the higher surface over them, since the channel's ray stops at its deck. Between the
+/// deck and the lake they're in no water, and in the channel the channel answers by one ray.
+#[test]
+fn a_lake_under_an_aqueduct_holds_a_swimmer_under_it() {
+    let bytes = cooked(
+        r#"water: [
+            (name: "lake", shape: Lake(outline: [(-30.0, -30.0), (30.0, -30.0), (30.0, 30.0), (-30.0, 30.0)], height: 0.0)),
+            (name: "aqueduct", shape: River(points: [
+                (at: (-40.0, 10.0, 0.0), width: 4.0, speed: 1.0),
+                (at: (40.0, 10.0, 0.0), width: 4.0, speed: 1.0),
+            ]), swim: false),
+        ],"#,
+    );
+    let zone = Zone::read(&bytes).expect("reads");
+    let asked = Cell::new(0);
+    // The channel's bed is a deck 6 m across with its top at 8 m, open underneath: a ray from under it misses
+    // it. The lake's bed is at −5 m.
+    let deck = [([-40.0, 40.0], [-3.0, 3.0], 8.0)];
+    let floor = |x: f32, from_y: f32, z: f32, reach: f32| {
+        asked.set(asked.get() + 1);
+        let solids: &[Solid] = if from_y >= 8.0 { &deck } else { &[] };
+        ground(solids, -5.0, x, from_y, z, reach)
+    };
+    let volumes = WaterVolumes::new(&zone.simulation, floor);
+    let at = |point| answers(&volumes, &asked, point);
+    assert_eq!(at([0.0, -1.0, 0.0]), in_body("lake", 0.0, 5.0, 2), "in the lake under the aqueduct");
+    assert_eq!(at([0.0, -1.0, 10.0]), in_body("lake", 0.0, 5.0, 1), "in the lake beside it");
+    assert_eq!(at([0.0, 9.0, 0.0]), in_body("aqueduct", 10.0, 2.0, 1), "in the aqueduct's channel");
+    assert_eq!(at([0.0, 4.0, 0.0]), (None, 1), "in the air under the deck");
+    assert_eq!(at([35.0, 9.0, 0.0]), in_body("aqueduct", 10.0, 2.0, 1), "in the channel past the lake");
+}
+
+/// A river running off a ledge that overhangs its pool, then falling into it: a swimmer in the pool under the
+/// ledge is in the pool, though the river's surface is the higher over them. Under the fall itself, where
+/// nothing stands between its surface and the pool's bed, the fall's surface is the higher and answers.
+#[test]
+fn a_pool_under_a_fall_holds_a_swimmer_under_its_ledge() {
+    let bytes = cooked(
+        r#"water: [
+            (name: "pool", shape: Lake(outline: [(-4.0, -6.0), (12.0, -6.0), (12.0, 6.0), (-4.0, 6.0)], height: 0.0)),
+            (name: "falls", shape: River(points: [
+                (at: (-20.0, 5.0, 0.0), width: 4.0, speed: 1.0),
+                (at: (0.0, 5.0, 0.0), width: 4.0, speed: 2.0),
+                (at: (1.0, 0.0, 0.0), width: 4.0, speed: 4.0),
+            ])),
+        ],"#,
+    );
+    let zone = Zone::read(&bytes).expect("reads");
+    let asked = Cell::new(0);
+    // The cliff is solid to 4.5 m west of x = −4, and its ledge reaches over the pool to the lip at x = 0.2,
+    // open underneath. The pool's bed is at −3 m.
+    let (cliff, ledge) = (([-100.0, -4.0], [-100.0, 100.0], 4.5), ([-4.0, 0.2], [-100.0, 100.0], 4.5));
+    let (over, under) = ([cliff, ledge], [cliff]);
+    let floor = |x: f32, from_y: f32, z: f32, reach: f32| {
+        asked.set(asked.get() + 1);
+        let solids: &[Solid] = if from_y >= 4.5 { &over } else { &under };
+        ground(solids, -3.0, x, from_y, z, reach)
+    };
+    let volumes = WaterVolumes::new(&zone.simulation, floor);
+    let at = |point| answers(&volumes, &asked, point);
+    assert_eq!(at([-2.0, -0.5, 0.0]), in_body("pool", 0.0, 3.0, 2), "in the pool under the ledge");
+    assert_eq!(at([-2.0, 4.75, 0.0]), in_body("falls", 5.0, 0.5, 1), "in the river on the ledge");
+    assert_eq!(at([-2.0, 2.0, 0.0]), (None, 1), "in the air under the ledge, over the pool");
+    assert_eq!(at([6.0, -0.5, 0.0]), in_body("pool", 0.0, 3.0, 1), "in the pool past the fall");
+    let (foot, rays) = at([0.9, -0.5, 0.0]);
+    assert_eq!(foot.map(|(name, ..)| name), Some("falls".to_owned()), "under the fall's foot");
+    assert_eq!(rays, 1);
 }
 
 #[test]

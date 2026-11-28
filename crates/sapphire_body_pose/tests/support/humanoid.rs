@@ -227,7 +227,7 @@ pub fn frozen() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Every shipped graph's document, by its path in the content folder.
+/// Every shipped graph's document, by its path in the content folder, written with `/`.
 pub fn shipped() -> Vec<(String, String)> {
     let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let mut found = Vec::new();
@@ -239,7 +239,14 @@ pub fn shipped() -> Vec<(String, String)> {
                 folders.push(path);
             } else if path.to_string_lossy().ends_with(".animgraph.ron") {
                 let text = std::fs::read_to_string(&path).expect("a graph");
-                let name = path.strip_prefix(&content).expect("in content").to_string_lossy().into_owned();
+                // Written with `/` on every OS, as a test names them.
+                let name = path
+                    .strip_prefix(&content)
+                    .expect("in content")
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
                 found.push((name, text));
             }
         }

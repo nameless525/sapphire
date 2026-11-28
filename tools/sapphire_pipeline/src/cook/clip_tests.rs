@@ -577,8 +577,9 @@ fn a_humanoid_clip_cooks_with_contacts_a_report_and_its_events() {
     assert!(measured.radius.to_native() > 1.0, "the head reaches over a meter: {measured:?}");
 }
 
-/// A sidecar's events and mirrors must name clips it cooks and ticks they have, and a mirror needs a
-/// humanoid map to mirror by; each is an error saying what's wrong.
+/// A sidecar's events and mirrors must name clips it cooks (not only ones the file has) and ticks they
+/// have, an event comes once, and a mirror needs a humanoid map to mirror by; each is an error saying
+/// what's wrong, by the sidecar's field.
 #[test]
 fn events_and_mirrors_that_cant_cook_are_errors() {
     let chain = |error: &CookError| {
@@ -599,6 +600,35 @@ fn events_and_mirrors_that_cant_cook_are_errors() {
             "unknown_clip",
             ClipSettings { events: events("Run", 0, "step"), ..ClipSettings::default() },
             "doesn't cook",
+        ),
+        (
+            "events_on_an_uncooked_clip",
+            ClipSettings {
+                names: Some(vec!["Walk".into()]),
+                events: events("Hit", 0, "step"),
+                ..ClipSettings::default()
+            },
+            "`events` places events on \"Hit\", which the source doesn't cook",
+        ),
+        (
+            "an_event_twice",
+            ClipSettings {
+                events: BTreeMap::from([(
+                    "Hit".to_owned(),
+                    vec![EventSettings { tick: 5, name: "step".into() }; 2],
+                )]),
+                ..ClipSettings::default()
+            },
+            "`events` places \"step\" on \"Hit\" at tick 5 twice",
+        ),
+        (
+            "an_uncooked_mirror",
+            ClipSettings {
+                names: Some(vec!["Walk".into()]),
+                mirror: mirror("Back", "Walk"),
+                ..ClipSettings::default()
+            },
+            "`mirror` makes \"Back\", which it doesn't cook",
         ),
         (
             "past_the_end",

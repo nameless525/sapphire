@@ -56,21 +56,32 @@
 //!
 //! # Contacts, events and the report (version 2, M6 A1)
 //!
-//! None of these changes a pose: they are what presentation and tools read beside it, and the
-//! simulation reads none of them.
+//! None of these changes a track. Events and the report are what presentation and tools read beside
+//! the pose, and the simulation reads neither. **Contacts are a simulation input, two ways.** At run
+//! time, through a graph's sync group: a synced clip's cycle counts from the first tick its group's
+//! foot makes the group's marker, and the fixed step plays the graph a fixed body binds, which every
+//! graph compiles for since M6 A5c. No shipped graph's fixed step joins a group yet
+//! (`sapphire_body_pose`'s `no_shipped_graphs_fixed_step_joins_a_sync_group_unless_listed`). At cook
+//! time, through M6 A4's foot lock, which plants every retarget's feet by the same detector and turns
+//! its legs to match, synced or not. So a change to how the cook finds contacts changes retargeted
+//! clips' bytes, and bumps the clip cooker's stage. The committed replays bind no fixed body, and a
+//! fixed body's `tables_hash` takes its clips' bytes, so a recording made before such a change is
+//! refused rather than played differently.
 //!
 //! - **Contacts** ([`Clip::contacts`]): for a clip on a rig whose humanoid map names its feet, one
 //!   [`ContactTrack`] a foot, left before right, saying whether the foot is planted at tick 0 and
 //!   the ticks it lands ([`Marker::Down`]) and lifts ([`Marker::Up`]) on. The cook detects them
 //!   from the clip's own motion (`sapphire_pipeline::clip::contacts`). A marker at a tick means the
 //!   state from that tick on, so a foot is planted on tick `t` exactly when
-//!   [`ArchivedContactTrack::is_planted`] says so. Graph sync and footsteps read these.
+//!   [`ArchivedContactTrack::is_planted`] says so. Graph sync groups and footsteps read these.
 //! - **Events** ([`Clip::events`]): notifies a sidecar places on ticks, by name, for presentation
 //!   to act on (a swish, a small effect). They are never a simulation cue.
 //! - **The report** ([`Clip::report`] and each contact track's `slide`): what the cook measured,
 //!   for the content checks and the clip inspector: how far a planted foot slides, how far the last
 //!   tick's pose is from the first (a loop's seam) and how far any joint reaches from the model's
-//!   origin.
+//!   origin. The slide misses a fast skate: in a clip whose root travels, a sole sliding past the
+//!   lift's speed (0.45 m/s by default) counts as lifted, so its ticks count as no slide at all
+//!   (`sapphire_pipeline::clip::contacts`' "What it misses").
 //!
 //! # Reading
 //!
@@ -187,7 +198,8 @@ pub struct ContactTrack {
     /// one before: the first a lift if it starts planted, a landing if not.
     pub markers: Vec<FootMarker>,
     /// The furthest the foot strays across the ground while it is planted, in meters, in the clip's
-    /// own travel (`sapphire_pipeline::clip::contacts` says how it's measured).
+    /// own travel (`sapphire_pipeline::clip::contacts` says how it's measured, and what it misses: in a
+    /// clip whose root travels, a sole skating past 0.45 m/s by default counts as lifted, not sliding).
     pub slide: f32,
 }
 
@@ -1039,6 +1051,8 @@ mod tests {
     /// A clip with one of every track: a joint turning and moving, one scaling, one morph
     /// target, and root motion.
     fn sample() -> Clip {
+        // Its tracks and keys are `v1::fixture`'s, which v0.2.0 wrote from them: change them and that
+        // fixture no longer matches.
         let translation = VectorRange::enclosing([[0.0, 1.0, 0.0], [0.0, 1.5, 2.0]]);
         let scale = VectorRange::enclosing([[2.0, 2.0, 2.0]]);
         let weight = WeightRange::enclosing([0.0, 1.0]);
@@ -1124,10 +1138,12 @@ mod tests {
     }
 
     /// A clip version 1 wrote reads as version 2 with no contacts, events or report, and plays the
-    /// same: its tracks and keys come across as they were.
+    /// same: its tracks and keys come across as they were. The bytes are [`sample`] as v0.2.0's own
+    /// code wrote it (`v1::fixture`), so they hold the layout a 0.2.0 pack has.
     #[test]
     fn a_version_1_clip_is_still_read() {
-        let old = v1::write(&sample());
+        let old = v1::fixture();
+        assert_eq!(sapphire_serialize::cooked::schema_version::<Clip>(&old).ok(), Some(1));
         assert!(matches!(
             Clip::read(&old),
             Err(ClipError::Cooked(CookedError::Stale { found: 1, current: 2 }))

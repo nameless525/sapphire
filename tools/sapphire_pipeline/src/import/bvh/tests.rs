@@ -139,6 +139,20 @@ fn tiny_with(from: &str, to: &str) -> String {
     TINY.replacen(from, to, 1)
 }
 
+/// An end site on one line reads as it does on three: a `}` may follow an `OFFSET`'s three numbers on
+/// their line, and a short one there is still refused at it (M6 A3's backfill).
+#[test]
+fn an_end_site_on_one_line_reads_as_on_three() {
+    let three = "    End Site\n    {\n      OFFSET 0 -5 0\n    }\n";
+    let settings = BvhSettings::default();
+    let one = import(&tiny_with(three, "    End Site { OFFSET 0 -5 0 }\n"), &settings).unwrap();
+    assert_eq!(format!("{one:?}"), format!("{:?}", import(TINY, &settings).unwrap()));
+    let short = import(&tiny_with(three, "    End Site { OFFSET 0 -5 }\n"), &settings).unwrap_err();
+    let message = short.to_string();
+    assert!(matches!(short, BvhError::Line { line: 10, .. }), "{message}");
+    assert!(message.contains("OFFSET needs 3 numbers on its line, and has 2"), "{message}");
+}
+
 #[test]
 fn a_malformed_file_is_refused_naming_its_line() {
     let cases = [
@@ -197,6 +211,24 @@ fn a_malformed_file_is_refused_naming_its_line() {
             tiny_with("Zrotation Xrotation Yrotation\n    End", "Zrotation Xrotation Zrotation\n    End"),
             9,
             "names channel Zrotation twice",
+        ),
+        (
+            "a short offset, before a CHANNELS line",
+            tiny_with("    OFFSET 0 -90 0\n", "    OFFSET 0 -90\n"),
+            8,
+            "OFFSET needs 3 numbers on its line, and has 2",
+        ),
+        (
+            "a short end site offset, before its brace",
+            tiny_with("      OFFSET 0 -5 0", "      OFFSET 0 -5"),
+            12,
+            "OFFSET needs 3 numbers on its line, and has 2",
+        ),
+        (
+            "a long offset",
+            tiny_with("  OFFSET 1 2 3", "  OFFSET 1 2 3 4"),
+            4,
+            "OFFSET needs 3 numbers on its line, and has 4",
         ),
         (
             "a joint without its offset",

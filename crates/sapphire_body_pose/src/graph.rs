@@ -663,7 +663,9 @@ impl GraphBinding {
     }
 
     /// A synced clip's position at `phase` of a cycle: counted from the first tick its sync group's
-    /// foot makes the group's marker, or from its start with no group or no such marker.
+    /// foot makes the group's marker, or from its start with no group or no such marker. The one place
+    /// the fixed step reads a clip's contacts, which a sync group makes a simulation input
+    /// (`sapphire_assets::clip`'s docs).
     fn synced_position(&self, clip: &ArchivedClip, group: Option<u8>, phase: f32) -> f32 {
         let ticks = f32::from(clip.ticks.to_native());
         let position = phase * ticks;

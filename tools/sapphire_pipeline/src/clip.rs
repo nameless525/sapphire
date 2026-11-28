@@ -82,7 +82,9 @@
 //! ([`contacts`]), found from its samples by height and speed; a sidecar may place events on its ticks
 //! ([`EventSettings`]) and cook one clip as another's mirror image ([`mirror`]); and every clip with a
 //! skeleton carries its [`report`]. None of these changes a track, so a clip's poses, and every table
-//! a move bakes from its samples, stay as they were.
+//! a move bakes from its samples, stay as they were. Contacts still reach the simulation, two ways: a
+//! graph's sync group reads their markers in the fixed step, and the foot lock below plants every
+//! retarget by them ([`contacts`]' docs).
 //!
 //! A retarget's planted feet are then held still ([`foot_lock`], M6 A4), which turns its legs and
 //! nothing else, so root motion and every table read from the root, the arms or the hands stay too.
@@ -119,7 +121,9 @@ use crate::import::gltf::clips as gltf_clips;
 use crate::keypose;
 
 /// Key reduction and the `.sclip` writer. Bump its version whenever they change output for the
-/// same samples.
+/// same samples. A change to the contacts they find is a simulation change too: it moves every
+/// retarget's legs through the foot lock, and any fixed body's whose graph syncs by them ([`contacts`]'
+/// docs).
 ///
 /// 2: normalizes and walks a skeleton in scalars, for one set of bytes on every architecture (M2 N1).
 /// 3: a shared rig's repeated joint name is an error, where its tracks landed on one joint (the review's
@@ -259,7 +263,7 @@ impl ClipSettings {
     }
 }
 
-/// An event a sidecar places on a clip's tick: `(tick: 12, name: "swish")`.
+/// An event a sidecar or a key-pose document places on a clip's tick: `(tick: 12, name: "swish")`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventSettings {
@@ -388,10 +392,16 @@ pub enum ClipCookError {
     },
     #[error("the sidecar mirrors {name:?} from {from:?}, which is a mirror itself or not in the file")]
     MirrorSource { name: String, from: String },
-    #[error("the sidecar places events on {name:?}, which it doesn't cook")]
+    #[error(
+        "the sidecar's `mirror` makes {name:?}, which it doesn't cook: name it in `names` or a `retarget`"
+    )]
+    UncookedMirror { name: String },
+    #[error("`events` places events on {name:?}, which the source doesn't cook")]
     UnknownEventClip { name: String },
-    #[error("the sidecar places event {event:?} at tick {tick}, past {name:?}'s end at {ticks}")]
+    #[error("`events` places {event:?} at tick {tick}, past {name:?}'s end at {ticks}")]
     EventPastEnd { name: String, event: String, tick: u16, ticks: u16 },
+    #[error("`events` places {event:?} on {name:?} at tick {tick} twice")]
+    RepeatedEvent { name: String, event: String, tick: u16 },
 }
 
 /// What a clip's tracks index: the skeleton (and its ID), for a clip that animates joints, and the
@@ -825,15 +835,24 @@ impl Carries {
     }
 }
 
-/// Every event of `events` at or before `sampled`'s end, or the first that isn't.
+/// Every event of `events` at or before `sampled`'s end and none twice, or the first that isn't.
 pub fn check_events(sampled: &SampledClip, events: &[EventSettings]) -> Result<(), ClipCookError> {
-    match events.iter().find(|event| event.tick > sampled.ticks) {
-        None => Ok(()),
-        Some(event) => Err(ClipCookError::EventPastEnd {
+    if let Some(event) = events.iter().find(|event| event.tick > sampled.ticks) {
+        return Err(ClipCookError::EventPastEnd {
             name: sampled.name.clone(),
             event: event.name.clone(),
             tick: event.tick,
             ticks: sampled.ticks,
+        });
+    }
+    let mut sorted: Vec<&EventSettings> = events.iter().collect();
+    sorted.sort();
+    match sorted.windows(2).find(|pair| pair[0] == pair[1]) {
+        None => Ok(()),
+        Some(pair) => Err(ClipCookError::RepeatedEvent {
+            name: sampled.name.clone(),
+            event: pair[0].name.clone(),
+            tick: pair[0].tick,
         }),
     }
 }

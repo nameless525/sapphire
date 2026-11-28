@@ -257,6 +257,13 @@ jobs:
       # The content and the benchmark's `ci` district beside it, which three scenes draw (M5 X4).
       - name: Cook the desktop content and the district
         run: cargo --locked xtask --locked bench-content --with-content
+      # Every shipped clip at the clip's version, measured, with both feet's contacts (M6 A1), read from the
+      # cook just made: the test skips with no cook, so this job, the one that cooks on Linux, says it must
+      # find one.
+      - name: Every shipped clip cooks with its contacts
+        env:
+          SAPPHIRE_REQUIRE_COOK: "1"
+        run: cargo test --package sapphire_pipeline --locked --test shipped_clips -- --nocapture
       - name: Package exact-commit golden inputs
         shell: bash
         env:

@@ -1,8 +1,10 @@
 //! Every clip `content/` ships, as the desktop cook wrote it (M6 A1): each at the clip's current
 //! version, each with a skeleton measured, and any with contacts carrying both feet's, left then right;
-//! the clips on a skeleton without feet are listed.
+//! the clips on a skeleton without feet are listed, and counted.
 //! Reads `target/content/loose/desktop`, so it says nothing until `cargo xtask content` has cooked it, and
-//! skips a cook made at an older clip version.
+//! skips a cook made at an older clip version. **CI proves it** (M6 A1's backfill): the Linux golden
+//! inputs' job runs it right after its cook with `SAPPHIRE_REQUIRE_COOK=1`, which makes a missing or older
+//! cook a failure.
 //!
 //! `cargo test -p sapphire_pipeline --test shipped_clips -- --nocapture` prints every clip's contacts and
 //! report: the table the clip inspector and the content checks read.
@@ -41,12 +43,21 @@ fn aligned(path: &Path) -> AlignedVec {
     bytes
 }
 
+/// Says why the cook can't be read: a failure where a job promised one (`SAPPHIRE_REQUIRE_COOK`), and
+/// otherwise a skip.
+fn skipped(why: &str) {
+    if std::env::var_os("SAPPHIRE_REQUIRE_COOK").is_some() {
+        panic!("SAPPHIRE_REQUIRE_COOK is set, and {why}");
+    }
+    println!("skipped: {why}");
+}
+
 #[test]
 fn every_shipped_clip_cooks_at_this_version_with_its_contacts() {
     let mut paths = Vec::new();
     clips(&cooked(), &mut paths);
     if paths.is_empty() {
-        println!("skipped: no cooked clips under target/content; run `cargo xtask content` first");
+        skipped("there are no cooked clips under target/content; run `cargo xtask content` first");
         return;
     }
     let read: Vec<(PathBuf, AlignedVec)> = paths
@@ -57,7 +68,7 @@ fn every_shipped_clip_cooks_at_this_version_with_its_contacts() {
         })
         .collect();
     if read.iter().any(|(_, bytes)| schema_version::<Clip>(bytes).ok() != Some(Clip::VERSION)) {
-        println!("skipped: target/content holds clips of an older version; run `cargo xtask content` again");
+        skipped("target/content holds clips of an older version; run `cargo xtask content` again");
         return;
     }
 
@@ -98,6 +109,16 @@ fn every_shipped_clip_cooks_at_this_version_with_its_contacts() {
             report.radius.to_native()
         );
     }
-    // A rig with no humanoid map (a prop's, a creature's) has no feet to find: listed, not refused.
+    // A rig with no humanoid map (a prop's, a creature's) has no feet to find: listed, not refused, and
+    // counted, so a humanoid whose feet stop being found can't hide among them.
     println!("{} clips on a skeleton without feet in its map: {without_feet:#?}", without_feet.len());
+    assert_eq!(
+        without_feet.len(),
+        WITHOUT_FEET,
+        "clips on a skeleton without feet: {without_feet:#?}; a new one changes WITHOUT_FEET on purpose"
+    );
 }
+
+/// How many shipped clips play on a skeleton whose map has no feet: none yet, since every shipped rig is
+/// a humanoid's.
+const WITHOUT_FEET: usize = 0;

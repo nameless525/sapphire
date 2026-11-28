@@ -1019,26 +1019,19 @@ fn skeletons_and_clips_load_with_what_names_them() {
 }
 
 /// A clip cooked at version 1 and packed before version 2 still loads, read as version 2 with no
-/// contacts, events or report (M6 A1, cooker rule 2).
+/// contacts, events or report (M6 A1, cooker rule 2): the bytes v0.2.0 wrote (`clip::v1::fixture`), on
+/// the three joints of the skeleton they name.
 #[test]
 fn a_version_1_clip_in_a_pack_loads_as_version_2() {
-    use crate::clip::{Clip, DEFAULT_RATE, PackedRotation, RotationTrack};
+    use crate::clip::Clip;
     use crate::skeleton::{Joint, JointTransform, Skeleton};
 
-    let (skeleton_id, clip_id) = (id(40), id(41));
-    let old = crate::clip::v1::write(&Clip {
-        name: "held".into(),
-        skeleton: Some(skeleton_id),
-        joint_count: 1,
-        rate: DEFAULT_RATE,
-        rotations: vec![RotationTrack { joint: 0, count: 1, first: 0 }],
-        rotation_ticks: vec![0],
-        rotation_keys: vec![PackedRotation::encode([0.0, 0.0, 0.0, 1.0])],
-        ..Clip::default()
-    });
+    let (skeleton_id, clip_id) = (AssetId::from_bytes([1; 16]), id(41));
+    let old = crate::clip::v1::fixture();
     assert!(Clip::read(&old).is_err(), "the reader in place takes only today's version");
-    let joint = Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY };
-    let skeleton = packed(skeleton_id, AssetKind::Skeleton, &Skeleton::new(&[joint]).to_cooked().unwrap());
+    let joint = |name: &str, parent| Joint { name: name.into(), parent, rest: JointTransform::IDENTITY };
+    let joints = [joint("root", None), joint("body", Some(0)), joint("head", Some(1))];
+    let skeleton = packed(skeleton_id, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().unwrap());
     let clip = PackAsset::encode(clip_id, AssetKind::Clip, Codec::Lz4, &old, vec![skeleton_id], 3).unwrap();
     let (mut server, _) = serve(vec![skeleton, clip], unlimited());
     let clip: Handle<Clip> = server.load(clip_id).unwrap();
@@ -1046,7 +1039,9 @@ fn a_version_1_clip_in_a_pack_loads_as_version_2() {
     let view = server.get(&clip).expect("it loaded");
     assert_eq!(view.skeleton.as_ref().copied(), Some(skeleton_id));
     assert!(view.contacts.is_empty() && view.events.is_empty() && view.report.is_none());
-    assert_eq!(view.rotations.len(), 1);
+    assert_eq!((view.rotations.len(), view.translations.len(), view.scales.len()), (2, 1, 1));
+    assert_eq!((view.weights.len(), view.ticks.to_native()), (1, 30));
+    assert!(view.root.is_some());
 }
 
 #[test]

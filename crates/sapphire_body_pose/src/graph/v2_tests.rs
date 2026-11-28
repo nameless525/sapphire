@@ -329,6 +329,11 @@ const LEFT_DOWN: u16 = 5;
 /// The feature graph's humanoid: synthetic clips, a walk whose left foot lands on tick 5, and a run
 /// with a `swish` on tick 10.
 fn feature_humanoid() -> Humanoid {
+    feature_humanoid_landing(LEFT_DOWN)
+}
+
+/// The feature graph's humanoid with the walk's and the run's left foot landing on `left_down`.
+fn feature_humanoid_landing(left_down: u16) -> Humanoid {
     use sapphire_assets::clip::{ClipEvent, ContactTrack, FootMarker, Marker};
     let ids: Vec<AssetId> =
         (0..FEATURE_CLIPS.len()).map(|index| AssetId::from_text(&source(index))).collect();
@@ -341,7 +346,7 @@ fn feature_humanoid() -> Humanoid {
             foot: HumanBone::LeftFoot,
             joint: foot(HumanBone::LeftFoot),
             planted: false,
-            markers: vec![marker(LEFT_DOWN, Marker::Down), marker(20, Marker::Up)],
+            markers: vec![marker(left_down, Marker::Down), marker(20, Marker::Up)],
             slide: 0.0,
         },
         ContactTrack {
@@ -686,6 +691,81 @@ fn the_feature_graph_runs_the_fixed_step_the_same_every_time() {
         [0xf556_f4a5_4984_1228, 0x6b97_5473_f503_897e],
         "the fixed step's checksum over the session moved: {hashes:#018x?}"
     );
+}
+
+/// The fixed step's checksum bytes through the feature graph's session, as `text` compiles for it.
+fn fixed_session(humanoid: &Humanoid, text: &str) -> u64 {
+    let source = humanoid.source();
+    let binding = humanoid.bind(&feature_program(text, Target::Simulation));
+    let mut history =
+        FixedGraphHistory::try_new(binding, humanoid.pose(), 11, source.as_slice()).expect("it runs fixed");
+    let (mut digest, mut generation) = (Digest::new(), 0);
+    for frame in 0..240_u32 {
+        let input = feature_input(frame, frame == 200);
+        generation += u32::from(input.cut);
+        history.advance(feature_stamp(frame, generation), input, None).expect("a step forward");
+        history.write_canonical(&mut |chunk: &[u8]| digest.write(chunk));
+    }
+    digest.0
+}
+
+/// The runtime reads a cooked clip's markers through a sync group alone (M6 A1's backfill): moving the
+/// walk's and the run's left landing three ticks moves the feature graph's fixed step, whose ground blend
+/// joins the group by that foot's landing, and moves nothing once the blend joins no group. So a change
+/// to how the cook finds contacts changes, at run time, the simulation of a fixed body whose graph syncs
+/// by them; at cook time it reaches every retarget's legs through the foot lock, which this can't see
+/// (`sapphire_assets::clip`'s docs).
+#[test]
+fn the_runtime_reads_cooked_markers_through_a_sync_group_alone() {
+    let synced = feature_text(OVER, Target::Simulation);
+    let unsynced = synced.replacen(r#"sync: Some("feet"), "#, "", 1);
+    assert_ne!(unsynced, synced, "the ground blend joined the group");
+    let (early, late) = (feature_humanoid_landing(LEFT_DOWN), feature_humanoid_landing(LEFT_DOWN + 3));
+    assert_ne!(fixed_session(&early, &synced), fixed_session(&late, &synced), "a synced blend reads them");
+    assert_eq!(fixed_session(&early, &unsynced), fixed_session(&late, &unsynced), "an unsynced one doesn't");
+    assert!(joins_a_sync_group(&feature_program(&synced, Target::Simulation)), "the check sees the group");
+    assert!(!joins_a_sync_group(&feature_program(&unsynced, Target::Simulation)), "and its absence");
+}
+
+/// The shipped graphs whose fixed step joins a sync group, by their path in the content folder, written
+/// with `/` on every OS: none yet. A group is the one way the runtime reads a cooked clip's markers
+/// (`synced_position`; no event reaches the fixed step), so a graph here makes every change to how the
+/// cook finds contacts a change to the simulation of a fixed body that binds it, which no committed
+/// replay plays (`sapphire_assets::clip`'s docs). A graph goes here on purpose; an entry whose graph
+/// joins no group, or that names no shipped graph, fails.
+const READS_CONTACTS: [&str; 0] = [];
+
+/// Whether `program` plays a clip state or a blend that joins a sync group: the two ops that hand
+/// `synced_position` a group.
+fn joins_a_sync_group(program: &GraphProgram) -> bool {
+    use sapphire_assets::graph::v2::program::PoseOp;
+    program.ops.iter().any(|op| matches!(op, PoseOp::Clip { sync: Some(_), .. }))
+        || program.blends.iter().any(|blend| blend.sync.is_some())
+}
+
+/// No shipped graph, compiled for the fixed step as the cook compiles it, has a clip state or a blend
+/// that joins a sync group, but those [`READS_CONTACTS`] lists, so the runtime reads no cooked marker in
+/// a shipped graph's fixed step. A check of the compiled program, so it holds whatever a session would
+/// reach. Contacts still reach the simulation at cook time, through the foot lock on every retarget's
+/// legs, and the clips' bytes say so (`sapphire_assets::clip`'s docs).
+#[test]
+fn no_shipped_graphs_fixed_step_joins_a_sync_group_unless_listed() {
+    let shipped = shipped();
+    for listed in READS_CONTACTS {
+        assert!(shipped.iter().any(|(name, _)| name == listed), "READS_CONTACTS names {listed}, not shipped");
+    }
+    for (name, text) in &shipped {
+        let program =
+            read(text).compile_for(Target::COOKED).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let joins = joins_a_sync_group(&program);
+        let listed = READS_CONTACTS.contains(&name.as_str());
+        assert!(
+            !joins || listed,
+            "{name}'s fixed step joins a sync group, so it reads its clips' contacts: a change to how the \
+             cook finds them then changes a fixed body's simulation, so list it in READS_CONTACTS on purpose"
+        );
+        assert!(joins || !listed, "{name} is in READS_CONTACTS, and its fixed step joins no sync group");
+    }
 }
 
 /// The feature graph allocates nothing once its players are made: override and additive layers, a

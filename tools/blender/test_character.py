@@ -10,24 +10,34 @@ Run it headless; it starts from an empty scene, saves no .blend and writes only 
 It enables the add-on installed in Blender if there is one (`--installed` requires it), else imports it
 from this checkout. With `--check`, it then runs the add-on's Check on the folder (the pipeline binary from
 `--pipeline` or `$SAPPHIRE_PIPELINE`); with `--bake <dir>`, it bakes the face's masks into that folder and
-draws their sheet; with `--hull`, it shows the body's hull preview and confirms it doubles the body. With
+draws their sheet; with `--hull`, it shows the body's hull preview and confirms it doubles the body; with
+`--refusals`, it confirms what the export refuses and warns of (`confirm_refusals`). With
 `--send <content tree>` it exports with Send (M6 C4) into a content tree that holds `--out`, where a running
 `cargo xtask content --watch` cooks it; `--skin-shade r,g,b` changes the skin's shade color first, so a
 re-export changes something to see.
 
 The character is made here from numbers, so it is the project's own (MIT): a figure about 1.6 m tall, facing
--Y, on a 17-joint armature, in four objects and four materials, each set with what the importer reads:
+-Y, on a 17-joint armature, in four objects and four materials, each set with what the importer reads. Its
+rig arrives as an FBX's does (`RIG`): the armature turned 90° about X and scaled by 0.01, its bones and meshes
+in Y-up centimetres, so the export must turn every normal it writes into the armature's world. The figure is
+built in world meters and moved into each object's space (`mesh_object`), so its world is the same at any
+rig transform. The rig is keyed at frame 0, where the exporter gathers, and turned and scaled otherwise at
+frame 1, where the scene stands when it exports (`key_the_rig`), so a transform read at the scene's frame
+is the wrong one:
 
 - **Body** (Skin and Cloth): a torso, a skirt, a neck, arms and legs, open tubes blended across their bones.
   The skirt's hem band is material ID 1 and its hem ring's data color is (153, 204, 0) / 255; every other
-  body vertex is (255, 255, 0) / 255. Its outline normals are its own, welded.
+  body vertex is (255, 255, 0) / 255. Its outline normals are its own, welded, and its object is turned
+  and scaled unevenly under the rig (`BODY_LOCAL`), so they take the inverse transpose of that: the
+  pipeline's test holds them to the exported normals within the exporter's rounding.
 - **Head** (Skin) and **Face** (Face): the back and front halves of a sphere, rigid to `head`, outline
   normals transferred from a sphere on them. The face's UVs project it from the front, mirrored about
   u = 0.5, for the mask bake; its data color is (255, 128, 64) / 255, the head's (255, 255, 0) / 255; it
   has one shape key, `smile`, raising the mouth by 5 mm.
 - **Hair** (Hair): a faceted cap, rigid to `head`, its band below 1.58 m material ID 2, data color
   (230, 255, 102) / 255, outline normals transferred from an ellipsoid inside it, so they differ from its
-  flat shading normals.
+  flat shading normals. Its object is turned and scaled unevenly under the rig (`HAIR_LOCAL`), so its
+  normals take the inverse transpose of that too.
 - Each material sets its base color, back-face culling and extras (`MATERIALS`).
 
 Every face is a triangle, split the same way each run, so the exporter never picks a diagonal.
@@ -40,9 +50,11 @@ import argparse
 import math
 import os
 import sys
+import tempfile
 
 import bmesh
 import bpy
+from mathutils import Euler, Matrix, Vector
 
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 
@@ -91,6 +103,15 @@ MATERIALS = {
     ),
 }
 
+# The armature's transform: an FBX rig's, Y-up centimetres turned into Blender's Z-up meters.
+RIG = Matrix.LocRotScale(None, Euler((math.pi / 2, 0.0, 0.0)), (0.01, 0.01, 0.01))
+# The body's and the hair's objects' own transforms under the rig: turned about the rig's up and scaled
+# unevenly.
+BODY_LOCAL = Matrix.LocRotScale(None, Euler((0.0, 0.3, 0.0)), (1.4, 1.0, 0.7))
+HAIR_LOCAL = Matrix.LocRotScale(None, Euler((0.0, 0.4, 0.0)), (1.0, 0.8, 1.25))
+# The rig's transform at frame 1, away from the exporter's frame 0.
+RIG_AT_ONE = Matrix.LocRotScale((0.0, 0.0, 0.2), Euler((math.pi / 3, 0.0, 0.5)), (0.02, 0.02, 0.015))
+
 SIDES = 12
 HEAD_CENTER = (0.0, 0.0, 1.56)
 HEAD_RADIUS = 0.11
@@ -112,6 +133,11 @@ def parse_arguments():
     parser.add_argument("--pipeline", default="", help="the sapphire_pipeline binary (default: $SAPPHIRE_PIPELINE)")
     parser.add_argument("--bake", default="", help="bake the face's masks into this folder and draw their sheet")
     parser.add_argument("--hull", action="store_true", help="show the body's hull preview and confirm it")
+    parser.add_argument(
+        "--refusals",
+        action="store_true",
+        help="after the export, confirm what the export refuses and warns of (writing only a temporary file)",
+    )
     parser.add_argument(
         "--send",
         default="",
@@ -153,17 +179,21 @@ def empty_scene():
 
 
 def armature(collection):
+    """The rig, at `RIG`, its bones placed at `BONES`' world positions."""
     data = bpy.data.armatures.new("Armature")
     obj = bpy.data.objects.new("Armature", data)
     collection.objects.link(obj)
+    obj.matrix_world = RIG
+    bpy.context.view_layer.update()
+    to_rig = obj.matrix_world.inverted()
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.mode_set(mode="EDIT")
     for name, parent, head, tail in BONES:
         bone = data.edit_bones.new(name)
-        bone.head, bone.tail = head, tail
+        bone.head, bone.tail = to_rig @ Vector(head), to_rig @ Vector(tail)
         if parent is not None:
             bone.parent = data.edit_bones[parent]
-            bone.use_connect = tuple(data.edit_bones[parent].tail) == head
+            bone.use_connect = BONES[BONE_INDEX[parent]][3] == head
     bpy.ops.object.mode_set(mode="OBJECT")
     return obj
 
@@ -271,9 +301,12 @@ def triangulate(bm, marked=frozenset()):
     return [face for face in bm.faces if by_vertices(face) in keys]
 
 
-def mesh_object(name, bm, materials, collection, rig):
-    """A mesh object from `bm`, smooth-shaded, a vertex group a bone (in `BONES`' order, which the
-    deform layer's indices follow), parented to `rig` with an armature modifier."""
+def mesh_object(name, bm, materials, collection, rig, local=None):
+    """A mesh object from `bm`, built in world meters, smooth-shaded, a vertex group a bone (in `BONES`'
+    order, which the deform layer's indices follow), parented to `rig` at `local` (the identity, as an FBX's
+    meshes are, by default) with an armature modifier. `bm` is moved into the object's space."""
+    local = Matrix.Identity(4) if local is None else local
+    bmesh.ops.transform(bm, matrix=(rig.matrix_world @ local).inverted(), verts=bm.verts)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
@@ -285,7 +318,9 @@ def mesh_object(name, bm, materials, collection, rig):
     for bone, *_rest in BONES:
         obj.vertex_groups.new(name=bone)
     obj.parent = rig
+    obj.matrix_basis = local
     obj.modifiers.new("Armature", "ARMATURE").object = rig
+    bpy.context.view_layer.update()
     return obj
 
 
@@ -319,7 +354,7 @@ def body(sapphire, collection, rig):
     bm.faces.index_update()
     hem = [vertex.index for vertex in skirt_rings[-1]]
     band = [face.index for face in hem_band]
-    obj = mesh_object("Body", bm, [material(sapphire, "Skin"), material(sapphire, "Cloth")], collection, rig)
+    obj = mesh_object("Body", bm, [material(sapphire, "Skin"), material(sapphire, "Cloth")], collection, rig, BODY_LOCAL)
     mesh = obj.data
     sapphire.mesh_data.assign_material_id(mesh, 0)
     sapphire.mesh_data.assign_material_id(mesh, 1, band)
@@ -361,10 +396,12 @@ def head_parts(sapphire, collection, rig, proxy):
     face = objects[1]
     face.shape_key_add(name="Basis", from_mix=False)
     smile = face.shape_key_add(name="smile", from_mix=False)
+    to_world = face.matrix_world
+    to_local = to_world.inverted()
     for index, vertex in enumerate(face.data.vertices):
-        co = vertex.co
+        co = to_world @ vertex.co
         if co.z < HEAD_CENTER[2] - 0.03 and abs(co.x) < 0.06 and co.y < -0.07:
-            smile.data[index].co = (co.x, co.y, co.z + SMILE)
+            smile.data[index].co = to_local @ Vector((co.x, co.y, co.z + SMILE))
     smile.value = 0.0
     return objects
 
@@ -385,7 +422,7 @@ def hair(sapphire, collection, rig, proxy):
     bm.faces.index_update()
     band = [face.index for face in bm.faces if face.calc_center_median().z < HAIR_BAND]
     rigid(bm, "head")
-    obj = mesh_object("Hair", bm, [material(sapphire, "Hair")], collection, rig)
+    obj = mesh_object("Hair", bm, [material(sapphire, "Hair")], collection, rig, HAIR_LOCAL)
     obj.data.shade_flat()
     mesh = obj.data
     sapphire.mesh_data.assign_material_id(mesh, 0)
@@ -424,6 +461,18 @@ def build(sapphire):
         mesh = removed.data
         bpy.data.objects.remove(removed)
         bpy.data.meshes.remove(mesh)
+    key_the_rig(rig)
+
+
+def key_the_rig(rig):
+    """Keys the rig at `RIG` on frame 0 and at `RIG_AT_ONE` on frame 1, and leaves the scene on frame 1."""
+    scene = bpy.context.scene
+    for frame, matrix in ((0, RIG), (1, RIG_AT_ONE)):
+        scene.frame_set(frame)
+        rig.matrix_world = matrix
+        for path in ("location", "rotation_euler", "scale"):
+            rig.keyframe_insert(path, frame=frame)
+    scene.frame_set(1)
 
 
 def confirm_hull(sapphire):
@@ -435,13 +484,115 @@ def confirm_hull(sapphire):
     if count != 2 * body_count:
         raise SystemExit(f"the hull preview drew {count} vertices for a body of {body_count}")
     # The body comes first, then the hull. Its widest push is the cloth's width (5.5 px, the default) at
-    # a data color G of 1, along a unit outline normal.
+    # a data color G of 1, along a unit outline normal, in the object's own units: the preview doesn't undo the
+    # object's scale, so under this rig's 0.01 it is a hundredth as wide in the world.
     pixel = bpy.context.scene.sapphire.hull_pixel
     pushed = max((evaluated.data.vertices[body_count + i].co - obj.data.vertices[i].co).length for i in range(body_count))
     expected = sapphire.mesh_data.DEFAULT_OUTLINE_WIDTH * pixel
     if abs(pushed - expected) > 1e-5:
-        raise SystemExit(f"the hull preview pushed {pushed} m at most, not {expected}")
-    print(f"hull preview: {count} vertices, the body's {body_count} twice, pushed {pushed * 1000:.2f} mm at most")
+        raise SystemExit(f"the hull preview pushed {pushed} object units at most, not {expected}")
+    print(
+        f"hull preview: {count} vertices, the body's {body_count} twice, pushed {pushed:.5f} of the object's units "
+        "at most (its width isn't scaled to the world)"
+    )
+
+
+def confirm_refusals(sapphire):
+    """Confirms, writing only into a temporary folder, that the export refuses a mesh two objects share at
+    different transforms, naming them, and takes one they share at the same; that it refuses a skinned object
+    mirrored by its transform; that it turns the outline normals of a mesh reached only through a collection
+    instance; that it warns, naming the body, on a Blender whose glTF exporter lacks the private method the
+    data color's patch replaces, or its class; and that the scene keeps no mark of its own after an export."""
+    export = sapphire.export
+    body = bpy.data.objects["Body"]
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "twins.glb")
+        twin = bpy.data.objects.new("BodyTwin", body.data)
+        bpy.context.scene.collection.objects.link(twin)
+        twin.parent = body.parent
+        twin.modifiers.new("Armature", "ARMATURE").object = body.parent
+        try:
+            twin.matrix_basis = body.matrix_basis.copy()
+            bpy.context.view_layer.update()
+            export.export_glb(path)
+            twin.matrix_basis = Matrix.Rotation(0.5, 4, "Z")
+            bpy.context.view_layer.update()
+            try:
+                export.export_glb(path)
+            except sapphire.mesh_data.MeshDataError as error:
+                if "Body" not in str(error) or "BodyTwin" not in str(error):
+                    raise SystemExit(f"the refusal doesn't name both objects: {error}")
+                print(f"refused: {error}")
+            else:
+                raise SystemExit("the export took a mesh two objects share at different transforms")
+        finally:
+            bpy.data.objects.remove(twin)
+
+        # A skinned object mirrored by its transform would export inside out.
+        mirrored = body.matrix_basis.copy()
+        body.matrix_basis = Matrix.Scale(-1.0, 4, (1.0, 0.0, 0.0)) @ mirrored
+        bpy.context.view_layer.update()
+        try:
+            export.export_glb(path)
+        except sapphire.mesh_data.MeshDataError as error:
+            if "Body" not in str(error):
+                raise SystemExit(f"the mirror's refusal doesn't name the body: {error}")
+            print(f"refused: {error}")
+        else:
+            raise SystemExit("the export took a mirrored skinned object")
+        finally:
+            body.matrix_basis = mirrored
+            bpy.context.view_layer.update()
+
+        # A mesh reached only through a collection instance is among the exported, and its outline normals
+        # are turned (Y-up, as it isn't skinned).
+        library = bpy.data.collections.new("Prop")
+        prop = bpy.data.objects.new("Prop", bpy.data.meshes.new("Prop"))
+        library.objects.link(prop)
+        bmesh_prop = bmesh.new()
+        bmesh.ops.create_cube(bmesh_prop, size=0.1)
+        bmesh_prop.to_mesh(prop.data)
+        bmesh_prop.free()
+        sapphire.mesh_data.set_outline_normals(prop)
+        instance = bpy.data.objects.new("PropInstance", None)
+        instance.instance_type = "COLLECTION"
+        instance.instance_collection = library
+        bpy.context.scene.collection.objects.link(instance)
+        try:
+            objects = export.exported_objects(False)
+            turned = [mesh for mesh, _ in export.outline_transforms(objects) if mesh == prop.data]
+            if prop not in objects or not turned:
+                raise SystemExit("the export missed a mesh reached through a collection instance")
+            export.export_glb(path)
+            print("instanced: the export turns a mesh reached through a collection instance")
+        finally:
+            bpy.data.objects.remove(instance)
+            mesh = prop.data
+            bpy.data.objects.remove(prop)
+            bpy.data.meshes.remove(mesh)
+            bpy.data.collections.remove(library)
+    if export.MARK in bpy.context.scene:
+        raise SystemExit(f"the scene kept {export.MARK} after the export")
+
+    from io_scene_gltf2.blender.exp import primitive_extract
+
+    creator = primitive_extract.PrimitiveCreator
+    # A stand-in exporter without the method, then without the class, for the patch's check alone: the
+    # export itself would call them.
+    for stand_in in (type("PrimitiveCreator", (), {}), None):
+        if stand_in is None:
+            del primitive_extract.PrimitiveCreator
+        else:
+            primitive_extract.PrimitiveCreator = stand_in
+        warnings = []
+        try:
+            with export.every_materials_data_color(export.exported_objects(False), warnings):
+                pass
+        finally:
+            primitive_extract.PrimitiveCreator = creator
+        if len(warnings) != 1 or "Body" not in warnings[0]:
+            raise SystemExit(f"no warning naming the body without the patched method: {warnings}")
+    print(f"warned: {warnings[0]}")
 
 
 def main():
@@ -465,6 +616,8 @@ def main():
     if result != {"FINISHED"}:
         raise SystemExit(f"the export didn't finish: {result}")
     print(f"{'sent' if args.send else 'exported'} {os.path.join(out, 'test_character.glb')}")
+    if args.refusals:
+        confirm_refusals(sapphire)
     if args.bake:
         bpy.context.view_layer.objects.active = bpy.data.objects["Face"]
         bake = os.path.abspath(args.bake)

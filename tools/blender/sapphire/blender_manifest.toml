@@ -1,13 +1,15 @@
 schema_version = "1.0.0"
 
 id = "sapphire"
-version = "0.3.0"
+version = "0.3.1"
 name = "Sapphire"
 tagline = "Author and export anime characters for the Sapphire engine"
 maintainer = "nameless525"
 type = "add-on"
 
 blender_version_min = "5.2.0"
+# The first version it isn't for: it's tested on 5.2 LTS, and patches a private method of 5.2's glTF exporter.
+blender_version_max = "5.3.0"
 
 license = ["SPDX:MIT"]
 copyright = ["2026 nameless525"]

@@ -8,9 +8,10 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::{env, fs, process};
 
 use sapphire_pipeline::check::{self, Role, Rule, Severity};
-use sapphire_pipeline::import::gltf;
+use sapphire_pipeline::import::gltf::{self, GltfImportError};
 use sapphire_pipeline::mesh::ImportedMesh;
 
 fn folder() -> PathBuf {
@@ -154,18 +155,26 @@ fn outline_normals_are_the_authored_ones() {
         assert!((dot(vertex.outline_normal, vertex.outline_normal) - 1.0).abs() < 1e-4);
     }
 
-    // The face and the back of the head: transferred from a sphere on them, so radial from its center.
+    // The face and the back of the head: transferred from a sphere on them, so radial from its center, within
+    // 0.3° (0.146° measured: the transfer interpolates a 48 × 24 sphere's normals).
+    // A dot product over these is within 0.3° or 3°.
+    let (cos_0_3_degrees, cos_3_degrees) = (0.999_986_3, 0.998_629_5);
     let head = [0.0, 1.56, 0.0];
     let radial =
         |position: [f32; 3]| unit([position[0] - head[0], position[1] - head[1], position[2] - head[2]]);
     let face = vertices(&triangles(&mesh, "Face"));
     for &vertex in &face {
         let vertex = &mesh.vertices[vertex];
-        assert!(dot(vertex.outline_normal, radial(vertex.position)) > 0.999, "{:?}", vertex.position);
+        assert!(
+            dot(vertex.outline_normal, radial(vertex.position)) > cos_0_3_degrees,
+            "{:?}",
+            vertex.position
+        );
     }
 
-    // The hair: transferred from an ellipsoid inside the cap, so near its outward direction there, and unlike
-    // the cap's flat shading normals.
+    // The hair: transferred from an ellipsoid inside the cap, so near its outward direction there, within 3°
+    // (1.87° measured; its object's uneven scale turns them as its normals, and an export that kept that
+    // turn's rotation but dropped its scale put them 13.3° off), and unlike the cap's flat shading normals.
     let (center, radii) = ([0.0, 1.58, -0.01], [0.1, 0.09, 0.11]);
     let mut unlike_shading = 0;
     for vertex in vertices(&triangles(&mesh, "Hair")) {
@@ -173,7 +182,7 @@ fn outline_normals_are_the_authored_ones() {
         let gradient = unit(std::array::from_fn(|axis| {
             (vertex.position[axis] - center[axis]) / (radii[axis] * radii[axis])
         }));
-        assert!(dot(vertex.outline_normal, gradient) > 0.95, "{:?}", vertex.position);
+        assert!(dot(vertex.outline_normal, gradient) > cos_3_degrees, "{:?}", vertex.position);
         unlike_shading += usize::from(dot(vertex.outline_normal, vertex.normal) < 0.99);
     }
     assert!(unlike_shading > 0, "the hair's outline normals are its shading normals");
@@ -196,6 +205,145 @@ fn outline_normals_are_the_authored_ones() {
             }
         }
     }
+}
+
+/// The rig is turned and scaled as an FBX's arrives (90° about X, 0.01), keyed otherwise away from the
+/// exporter's frame 0, and the body's and the hair's objects are turned and scaled unevenly under it, so the
+/// exporter writes every normal in the armature's world: the outline normals must be there too (M6 C3, fixed
+/// after its review). The body's are its own welded normals, which are its smooth shading normals but for the
+/// exporter's rounding: it rounds each normal to four decimals before it turns it, at most 5e-5 a component
+/// or √3 · 5e-5 ≈ 8.7e-5 radians, and the body's uneven scale (1.4 against 0.7) stretches that by up to 2, so
+/// the two lie within 2e-4 radians (1.14e-4 measured on Blender 5.2.0). Exports with each fix undone, measured
+/// the same way: in the mesh's own space, as before 0.3.1, 90° off; with the rotation of the body's transform
+/// but not its scale, 0.34 radians; read at the scene's frame rather than the exporter's, 0.85.
+/// The head, the face and the hair transfer theirs, so `outline_normals_are_the_authored_ones` holds those
+/// against the shapes they were transferred from.
+#[test]
+fn outline_normals_are_in_the_normals_space_on_a_turned_and_scaled_rig() {
+    let mesh = character();
+    let skin = mesh.skin.as_ref().unwrap();
+    let rig = &skin.joints.iter().find(|joint| joint.name == "Armature").unwrap().rest;
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(close(&rig.scale, &[0.01; 3]) && close(&rig.rotation, &[half, 0.0, 0.0, half]), "{rig:?}");
+
+    let head = [0.0, 1.56, 0.0];
+    let on_head = |position: [f32; 3]| {
+        let offset: [f32; 3] = std::array::from_fn(|axis| position[axis] - head[axis]);
+        (dot(offset, offset).sqrt() - 0.11).abs() < 1e-3
+    };
+    let mut body = vertices(&triangles(&mesh, "Cloth"));
+    body.extend(
+        vertices(&triangles(&mesh, "Skin"))
+            .into_iter()
+            .filter(|&vertex| !on_head(mesh.vertices[vertex].position)),
+    );
+    assert!(body.len() > 400, "{}", body.len());
+    let worst = body
+        .iter()
+        .map(|&vertex| {
+            let (a, b) = (
+                mesh.vertices[vertex].outline_normal.map(f64::from),
+                mesh.vertices[vertex].normal.map(f64::from),
+            );
+            let cross = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+            // The sine of the angle between them, which is the angle at this size, on the same side.
+            let along = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let sine = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+            if along > 0.0 { sine } else { f64::INFINITY }
+        })
+        .fold(0.0, f64::max);
+    assert!(worst < 2e-4, "the body's outline normals lie up to {worst} radians from its normals");
+}
+
+#[test]
+fn the_export_carries_the_addons_version() {
+    let manifest = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../blender/sapphire/blender_manifest.toml"),
+    )
+    .unwrap();
+    let version =
+        manifest.lines().find_map(|line| line.strip_prefix("version = ")).unwrap().trim_matches('"');
+    let json = gltf::read_json(&folder().join("test_character.glb")).unwrap();
+    let export = gltf::addon_export(&json).unwrap();
+    assert_eq!(export, gltf::AddonExport { version: Some(version.to_owned()), outline_normals: true });
+}
+
+/// A GLB's JSON chunk.
+fn json_of(glb: &[u8]) -> &[u8] {
+    let length = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+    &glb[20..20 + length]
+}
+
+/// The GLB `bytes` with its scene's extras set to `extras`, or with none.
+fn with_scene_extras(bytes: &[u8], extras: Option<serde_json::Value>) -> Vec<u8> {
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+    let length = word(12);
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + length]).unwrap();
+    let scene = json["scenes"][0].as_object_mut().unwrap();
+    match extras {
+        Some(extras) => scene.insert("extras".to_owned(), extras),
+        None => scene.remove("extras"),
+    };
+    let mut chunk = serde_json::to_vec(&json).unwrap();
+    chunk.resize(chunk.len().next_multiple_of(4), b' ');
+    let rest = &bytes[20 + length..];
+    let mut glb = Vec::new();
+    glb.extend_from_slice(&bytes[..8]);
+    glb.extend_from_slice(&u32::try_from(20 + chunk.len() + rest.len()).unwrap().to_le_bytes());
+    glb.extend_from_slice(&u32::try_from(chunk.len()).unwrap().to_le_bytes());
+    glb.extend_from_slice(b"JSON");
+    glb.extend_from_slice(&chunk);
+    glb.extend_from_slice(rest);
+    glb
+}
+
+/// A file the add-on didn't mark, as Blender's exporter alone or the add-on before 0.3.1 writes it, imports
+/// as it is and check warns of it; one marked with a version known to export wrong, or with a mark that's no
+/// version, is refused. A glTF whose JSON doesn't read is a finding by path, not the end of the check.
+#[test]
+fn an_unmarked_export_is_warned_of_and_a_bad_versions_refused() {
+    let bytes = fs::read(folder().join("test_character.glb")).unwrap();
+    let unmarked = with_scene_extras(&bytes, None);
+    assert_eq!(gltf::addon_export(json_of(&unmarked)).unwrap().version, None);
+    assert_eq!(gltf::import_slice(&unmarked, None).unwrap().vertices, character().vertices);
+
+    let tree = env::temp_dir().join(format!("sapphire_blender_character_unmarked_{}", process::id()));
+    let _ = fs::remove_dir_all(&tree);
+    fs::create_dir_all(&tree).unwrap();
+    fs::write(tree.join("test_character.glb"), &unmarked).unwrap();
+    let meta = fs::read_to_string(folder().join("test_character.glb.meta")).unwrap();
+    fs::write(tree.join("test_character.glb.meta"), &meta).unwrap();
+    // The same sidecar without its role, under another ID, for a file that isn't glTF.
+    let unread = meta
+        .replace("427a54bb-7a15-465e-ba2a-c583c1e57380", "6c1f3f0e-2d0b-4d39-9a49-6b1c1f0a5e21")
+        .replace("        budget: (\n            role: Hero,\n        ),\n", "");
+    assert!(!unread.contains("budget"));
+    fs::write(tree.join("unread.glb"), b"glTF\x02\0\0\0\x18\0\0\0\x04\0\0\0JSON{no}").unwrap();
+    fs::write(tree.join("unread.glb.meta"), unread).unwrap();
+    let report = check::check(&tree);
+    let _ = fs::remove_dir_all(&tree);
+    let report = report.unwrap();
+    assert!(report.passes(), "{report}");
+    for source in ["test_character.glb", "unread.glb"] {
+        let found: Vec<_> = report.of(source, Rule::UnmarkedExport).collect();
+        assert_eq!(found.len(), 1, "{report}");
+        assert_eq!(found[0].severity, Severity::Warning);
+    }
+
+    for &(version, _) in gltf::BAD_ADDON_VERSIONS {
+        let bad =
+            with_scene_extras(&bytes, Some(serde_json::json!({ (gltf::ADDON_MARK): version, "other": 1 })));
+        let error = gltf::import_slice(&bad, None).unwrap_err();
+        assert!(
+            matches!(&error, GltfImportError::BadAddon { version: found, .. } if found == version),
+            "{error}"
+        );
+    }
+    let no_version = with_scene_extras(&bytes, Some(serde_json::json!({ (gltf::ADDON_MARK): 3 })));
+    assert!(matches!(gltf::import_slice(&no_version, None), Err(GltfImportError::AddonMark { .. })));
+    // Extras that aren't an object carry no mark.
+    let listed = with_scene_extras(&bytes, Some(serde_json::json!([gltf::ADDON_MARK])));
+    assert_eq!(gltf::addon_export(json_of(&listed)).unwrap().version, None);
 }
 
 #[test]

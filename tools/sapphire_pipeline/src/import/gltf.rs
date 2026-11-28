@@ -41,8 +41,13 @@
 //!   outline normal, in the same space as `NORMAL`. It wins over the welded bake
 //!   ([`bake::outline_normals`](crate::bake::outline_normals)), which fills in every other
 //!   vertex. Without either, a vertex's outline normal is its shading normal. Blender's exporter
-//!   writes custom vectors as Blender stores them, Z-up, so the add-on's export turns it to
-//!   glTF's Y-up as it writes it.
+//!   writes custom vectors as Blender stores them, in the object's Z-up space, where it moves a
+//!   skinned mesh's normals into its armature's world and turns them Y-up, so the add-on's export
+//!   gives `_OUTLINE_NORMAL` the same transform as it writes it.
+//! - **The add-on's mark:** the add-on writes its version into the scene's extras
+//!   ([`ADDON_MARK`], since 0.3.1). A file marked with a version known to export wrong
+//!   ([`BAD_ADDON_VERSIONS`]) is refused; an unmarked one imports as it is, and `check` warns
+//!   when it authors outline normals ([`addon_export`]).
 //!
 //! # Skins
 //!
@@ -164,6 +169,24 @@ pub const MORPH_NORMAL_EPSILON: f32 = 1e-4;
 /// Joints and palette entries are addressed by u16.
 const MAX_JOINTS: usize = 1 << 16;
 
+/// The key of the glTF scene's extras that Sapphire's Blender add-on (`tools/blender/sapphire`, M6 C3) writes
+/// its version under, on every export since 0.3.1: the add-on's mark.
+pub const ADDON_MARK: &str = "sapphire_addon";
+
+/// The add-on's versions whose exports the importer refuses, each with what is wrong with their files. 0.3.0
+/// wrote a skinned mesh's `_OUTLINE_NORMAL` in its object's space where `NORMAL` is in its armature's world,
+/// so on a rig away from the identity (an FBX's, turned 90° and scaled by 0.01) the outline grew along the
+/// wrong directions. It wrote no mark, so its files arrive unmarked: `check`'s `unmarked-export` warns of
+/// those, and this refuses a file marked with it.
+///
+/// **Adding a version bumps [`IMPORTER`]** (which moves every glTF mesh's key): a file's key is its bytes and
+/// the importer's version, so without the bump a warm cache keeps serving the files it already cooked from a
+/// version newly refused. `the_bad_addon_list_moves_the_importer` holds the two together.
+pub const BAD_ADDON_VERSIONS: &[(&str, &str)] = &[(
+    "0.3.0",
+    "its outline normals on a rig that isn't at the identity are in another space than its normals",
+)];
+
 /// How much of a mesh one source may bring into a cook, checked from accessors' counts before
 /// their data is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,6 +299,19 @@ pub enum GltfImportError {
     DuplicateMorphTarget { at: PrimitiveRef, name: String },
     #[error("joint node {node}'s rest transform has no inverse")]
     DegenerateJoint { node: usize },
+    #[error("the scene's extras aren't JSON")]
+    SceneExtras(#[source] serde_json::Error),
+    #[error("the document isn't JSON")]
+    Json(#[source] serde_json::Error),
+    #[error(
+        "the scene's extras hold {ADDON_MARK} {found}, where the Blender add-on writes its version as a string"
+    )]
+    AddonMark { found: String },
+    #[error(
+        "exported by the Blender add-on {version}, whose exports are refused: {why}; re-export it with the \
+         current add-on"
+    )]
+    BadAddon { version: String, why: &'static str },
     #[error("the scene contains no triangles")]
     NoGeometry,
     #[error("the scene has more than u32::MAX vertices or indices")]
@@ -316,6 +352,81 @@ pub fn has_skeleton(bytes: &[u8], clips: bool) -> Result<bool, GltfImportError> 
         nodes.iter().any(|visit| animated.binary_search(&visit.node).is_ok())
     };
     Ok(skinned || (clips && moved()))
+}
+
+/// What a glTF file says of the Blender add-on that exported it, for `check`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddonExport {
+    /// The add-on's version its scene's extras carry ([`ADDON_MARK`]), or `None` for a file it didn't mark:
+    /// Blender's exporter alone, another tool, or the add-on before 0.3.1.
+    pub version: Option<String>,
+    /// Whether any of its primitives authors outline normals (`_OUTLINE_NORMAL`).
+    pub outline_normals: bool,
+}
+
+/// [`AddonExport`] of a glTF's JSON document ([`read_json`]), read as JSON alone: the default scene's mark
+/// (the first scene's, as on import) and every primitive's attributes. A mark that isn't a string is an
+/// error, as on import.
+pub fn addon_export(json: &[u8]) -> Result<AddonExport, GltfImportError> {
+    let root: serde_json::Value = serde_json::from_slice(json).map_err(GltfImportError::Json)?;
+    let scene = root.get("scene").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let extras = usize::try_from(scene).ok().and_then(|scene| root.get("scenes")?.get(scene)?.get("extras"));
+    let outline = format!("_{OUTLINE_NORMAL}");
+    let outline_normals = root
+        .get("meshes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|mesh| mesh.get("primitives")?.as_array())
+        .flatten()
+        .any(|primitive| {
+            primitive.get("attributes").and_then(|attributes| attributes.get(&outline)).is_some()
+        });
+    Ok(AddonExport { version: mark(extras)?, outline_normals })
+}
+
+/// The JSON document of the glTF or GLB at `path`, read alone: a GLB's JSON chunk, without its binary one.
+pub fn read_json(path: &Path) -> Result<Vec<u8>, GltfImportError> {
+    use std::io::Read as _;
+
+    let io = |source| GltfImportError::Io { path: path.to_owned(), source };
+    let mut file = std::fs::File::open(path).map_err(io)?;
+    let mut header = [0; 20];
+    let mut read = 0;
+    while read < header.len() {
+        match file.read(&mut header[read..]).map_err(io)? {
+            0 => break,
+            n => read += n,
+        }
+    }
+    if read < header.len() || &header[..4] != b"glTF" || &header[16..20] != b"JSON" {
+        let mut json = header[..read].to_vec();
+        file.read_to_end(&mut json).map_err(io)?;
+        return Ok(json);
+    }
+    let length = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+    let mut json = Vec::new();
+    file.take(u64::from(length)).read_to_end(&mut json).map_err(io)?;
+    Ok(json)
+}
+
+/// The add-on's version `scene`'s extras carry, if it marked the file.
+fn addon_version(scene: &Scene<'_>) -> Result<Option<String>, GltfImportError> {
+    let Some(raw) = scene.extras() else {
+        return Ok(None);
+    };
+    let value: serde_json::Value = serde_json::from_str(raw.get()).map_err(GltfImportError::SceneExtras)?;
+    mark(Some(&value))
+}
+
+/// The add-on's version a scene's `extras` carry, if any. Extras that aren't an object carry no mark (glTF
+/// recommends an object but doesn't require one).
+fn mark(extras: Option<&serde_json::Value>) -> Result<Option<String>, GltfImportError> {
+    match extras.and_then(|extras| extras.get(ADDON_MARK)) {
+        None => Ok(None),
+        Some(serde_json::Value::String(version)) => Ok(Some(version.clone())),
+        Some(found) => Err(GltfImportError::AddonMark { found: found.to_string() }),
+    }
 }
 
 /// Parses and validates a document as [`Gltf::from_slice`] does: every importer's way in. The
@@ -398,6 +509,11 @@ fn import_scene_within(
     // Blender always writes `scene`; fall back to the first scene for files that don't.
     let scene =
         document.default_scene().or_else(|| document.scenes().next()).ok_or(GltfImportError::NoScene)?;
+    if let Some(version) = addon_version(&scene)?
+        && let Some(&(_, why)) = BAD_ADDON_VERSIONS.iter().find(|(bad, _)| *bad == version)
+    {
+        return Err(GltfImportError::BadAddon { version, why });
+    }
     // No axis conversion, deliberately: glTF 2.0 (§3.4) is +Y up, meters, with assets
     // facing +Z, and so is engine object space (as is VRM 1.0). Blender's exporter already
     // converts from its +Z-up space, so source coordinates pass through unchanged.

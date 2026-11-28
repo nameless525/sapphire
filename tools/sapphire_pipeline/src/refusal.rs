@@ -124,6 +124,7 @@ fn source_of(error: &CookError) -> Option<&Path> {
         | E::FoliageReference { path, .. }
         | E::Locale { path, .. }
         | E::Timeline { path, .. }
+        | E::TimelineKey { path, .. }
         | E::Dialogue { path, .. }
         | E::Ui { path, .. }
         | E::Audio { path, .. }
@@ -225,6 +226,20 @@ mod tests {
             source: io::Error::other("`placements[0].scale`: is zero"),
         };
         assert_eq!(Refusal::of_cook(&chain).field.as_deref(), Some("placements[0].scale"));
+
+        // M6 T16a: a subtitle no table holds is its timeline's, on its field.
+        let timeline = PathBuf::from("content/zones/a/gate.timeline.ron");
+        let missing = crate::timeline::MissingString {
+            field: "subtitles[1].key".into(),
+            key: "unwritten".into(),
+            locale: "en".into(),
+        };
+        let subtitle = CookError::TimelineKey { path: timeline.clone(), source: Box::new(missing) };
+        let refusal = Refusal::of_cook(&subtitle);
+        assert_eq!(
+            (refusal.source.as_deref(), refusal.field.as_deref()),
+            (Some(&*timeline), Some("subtitles[1].key"))
+        );
 
         let broken = fixture("unknown_field.zone.ron");
         let own = CookError::Read { path: broken, source: io::Error::other("it stopped") };

@@ -296,6 +296,9 @@ impl Editor {
             Command::Scrub(frame) => self.scrub_to(*frame),
             Command::PlayTimeline => self.play_timeline(),
             Command::PauseTimeline => self.pause_timeline(),
+            Command::MoveKey { key, to } => self.move_key(key, *to),
+            Command::AddKey { lane, name, at } => self.add_key(lane, name.as_deref(), *at),
+            Command::RemoveKey(key) => self.remove_key(key),
             Command::Aspect(aspect) => self.preview_at(*aspect),
             Command::Language(language) => {
                 if !self.preview_in(language) {

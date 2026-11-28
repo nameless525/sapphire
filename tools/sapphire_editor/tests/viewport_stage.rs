@@ -1919,6 +1919,63 @@ fn scrubbing_shows_what_a_capture_at_that_time_does() {
     assert_eq!((seen.position, seen.view, seen.proj), (drew.position, drew.view, drew.proj));
 }
 
+/// M6 T16a: keys dragged (the exposure's last but one, to lift sooner), added at the playhead (the camera's, the
+/// vignette's and a focus) and saved, and the pane
+/// at the playhead, which the edits stood again on a fresh stage and played to it, is the frame a capture of the
+/// saved timeline draws there: 0 pixels apart. Nothing's built on first use.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn an_edited_timeline_shows_what_a_capture_of_it_saved_does() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let dir = std::env::temp_dir().join(format!("sapphire_editor_keys_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a folder");
+    let path = dir.join("square_look.timeline.ron");
+    std::fs::copy(square_look_path(), &path).expect("a copy of the square's look");
+    let options =
+        Options { file: Some(path.clone()), content: Some(cook()), link: None, pipeline: None, game: None };
+    let mut editor = Editor::new(options);
+    editor.shell_mut().open(Pane::Viewport);
+    let mut harness = harness_on(&painter, editor, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    harness.state_mut().scrub_to(150);
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let before = painter.paint(&gpu, &harness);
+
+    let script = Script::parse(
+        r#"(version: 1, commands: [
+            Begin("move a key"), MoveKey(key: (lane: Post(Exposure), index: 2), to: 120), End,
+            AddKey(lane: Camera, name: None, at: 150), AddKey(lane: Post(Vignette), name: None, at: 150),
+            AddKey(lane: Focus, name: None, at: 150),
+            MoveKey(key: (lane: Camera, index: 2), to: 220), Save,
+        ])"#,
+    )
+    .expect("a script");
+    harness.state_mut().run_script(&script).expect("the edits land");
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let shell = painter.paint(&gpu, &harness);
+    let rect = harness.state_mut().viewport().rect().expect("shown");
+    let (_, pixels) = on_pixels(rect, 1.0);
+    let (_, moved, _) = differences(&before.cropped(rect), &shell, rect, 1.0, 0);
+    assert!(moved > 10_000, "the exposure lifting sooner shows: {moved} pixels differ");
+
+    let saved = std::fs::read_to_string(&path).expect("saved");
+    let _ = std::fs::remove_dir_all(&dir);
+    let timeline = Arc::new(
+        sapphire_timeline::TimelineDocument::from_ron(&saved).expect("reads").cook().expect("cooks"),
+    );
+    let (capture_stage, frame) = capture_timeline(&gpu, &timeline, pixels, &[150]);
+    is_a_picture(&frame, "timeline_keys_150");
+    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    println!(
+        "edited, at frame 150: {count} of {all} pixels differ from a capture of the saved timeline, by at most {most}"
+    );
+    assert_eq!(count, 0, "the pane is the capture's frame, by up to {most}");
+    assert_eq!(capture_stage.renderer.stats().pipelines.first_use_builds, 0);
+    let stage = view.stage().expect("stood");
+    assert_eq!(stage.renderer.stats().pipelines.first_use_builds, 0, "{}", stage.renderer.first_use_report());
+}
+
 /// What the sequencer costs against the editor's frame: a pass with its pane in front, Play's frames, and a scrub
 /// back, which stands a fresh stage and plays to the playhead.
 #[test]

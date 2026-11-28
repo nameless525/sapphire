@@ -48,6 +48,30 @@ fn table(tag: &str) -> StringTable {
     compile(tag, &document, &[(path, text)]).unwrap()
 }
 
+/// M6 T16a: the cook's check holds a subtitle's key and its speaker's to the tables: the gate's resolve in both
+/// languages, and a key or speaker no table holds is refused by its field and the locale that lacks it.
+#[test]
+fn a_subtitle_names_a_string_the_tables_hold() {
+    let tables = [table("en"), table("ja")];
+    let cooked = |text: &str| {
+        let path = PathBuf::from("court_gate.timeline.ron");
+        vec![(path, TimelineDocument::from_ron(text).unwrap().cook().unwrap())]
+    };
+    sapphire_pipeline::timeline::check_keys(&cooked(GATE), &tables).expect("the gate's lines resolve");
+    let refused = |text: String| {
+        let (path, missing) = sapphire_pipeline::timeline::check_keys(&cooked(&text), &tables).unwrap_err();
+        assert_eq!(path, PathBuf::from("court_gate.timeline.ron"));
+        (missing.field, missing.key, missing.locale)
+    };
+    let unknown = GATE.replacen("\"subtitle-court-gate-warning\"", "\"subtitle-court-gate-unwritten\"", 1);
+    assert_eq!(
+        refused(unknown),
+        ("subtitles[1].key".to_owned(), "subtitle-court-gate-unwritten".to_owned(), "en".to_owned())
+    );
+    let nobody = GATE.replacen("Some(\"speaker-warden\")", "Some(\"speaker-nobody\")", 1);
+    assert_eq!(refused(nobody).0, "subtitles[1].speaker");
+}
+
 #[test]
 fn the_gates_subtitles_follow_the_chosen_language() {
     let mut loc = Localizer::new(LocaleSettings::default());

@@ -5,7 +5,8 @@
 //! and changes on disk. This crate owns the timeline ([`edits`], [`timeline`]), the preview ([`run`],
 //! [`figure`], [`preview`]), an asset browser, a reflection inspector and a cvar panel (all in [`app`]),
 //! talking to a device ([`link`]), the real renderer in a pane ([`viewport`]), a screen's preview on values typed
-//! in ([`screen`]) and a run from a snapshot of the documents ([`play`]). [`app::Editor`] holds them
+//! in ([`screen`]), a cutscene's keys as the sequencer edits them ([`sequence`]) and a run from a snapshot of the
+//! documents ([`play`]). [`app::Editor`] holds them
 //! together, and [`app::Editor::ui`] is the whole interface. Everything the interface does is a named command
 //! ([`commands`]) run by [`app::Editor::run`]: a button, a shortcut, a drag's end and a script alike.
 //!
@@ -43,6 +44,7 @@ pub mod preview;
 pub mod recovery;
 pub mod run;
 pub mod screen;
+pub mod sequence;
 pub mod shell;
 pub mod timeline;
 pub mod viewport;

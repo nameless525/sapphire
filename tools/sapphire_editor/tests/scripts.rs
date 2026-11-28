@@ -1462,6 +1462,97 @@ mod panes {
     }
 
     #[test]
+    fn a_key_dragged_in_the_sequencer_writes_its_time_alone() {
+        let dir = TestDir::new("sequencer_drag");
+        let path = dir.write("s/square_look.timeline.ron", SQUARE_LOOK);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            r#"Begin("move a key"), MoveKey(key: (lane: Post(Exposure), index: 1), to: 80), MoveKey(key: (lane: Post(Exposure), index: 1), to: 90), End"#,
+        );
+        let moved = SQUARE_LOOK.replacen("(at: 1.0, value: -0.35)", "(at: 1.5, value: -0.35)", 1);
+        assert_same(&text_of(&editor), &moved, "the exposure's second key, at frame 90");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), SQUARE_LOOK, "one undo for the drag");
+    }
+
+    #[test]
+    fn a_key_is_added_at_the_playhead_and_removed() {
+        let dir = TestDir::new("sequencer_add");
+        let path = dir.write("s/square_look.timeline.ron", SQUARE_LOOK);
+        let mut editor = editor(&dir, Some(&path));
+        run(&mut editor, &dir, "Scrub(150), AddKey(lane: Post(Exposure), name: None, at: 150)");
+        let added = SQUARE_LOOK.replacen(
+            "(at: 1.0, value: -0.35), ",
+            "(at: 1.0, value: -0.35), (at: 2.5, value: -0.35, ease: Linear), ",
+            1,
+        );
+        assert_same(&text_of(&editor), &added, "the exposure it holds at 2.5 s");
+        run(&mut editor, &dir, "RemoveKey((lane: Post(Exposure), index: 2))");
+        assert_same(&text_of(&editor), SQUARE_LOOK, "and gone again");
+    }
+
+    #[test]
+    fn a_drag_held_through_an_undo_or_a_save_keeps_one_step_for_the_rest() {
+        let dir = TestDir::new("sequencer_drag_undo");
+        let path = dir.write("s/square_look.timeline.ron", SQUARE_LOOK);
+        let mut editor = editor(&dir, Some(&path));
+        let moved = SQUARE_LOOK.replacen("(at: 1.0, value: -0.35)", "(at: 1.5, value: -0.35)", 1);
+        let key = "(lane: Post(Exposure), index: 1)";
+        let drag = |between: &str| {
+            format!(
+                r#"Begin("move a key"), MoveKey(key: {key}, to: 70), {between}, Begin("move a key"), MoveKey(key: {key}, to: 80), MoveKey(key: {key}, to: 90), End"#
+            )
+        };
+        run(&mut editor, &dir, &drag("Undo"));
+        assert_same(&text_of(&editor), &moved, "the key where it was let go");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), SQUARE_LOOK, "one undo for the drag after the undo");
+        run(&mut editor, &dir, &drag("Save"));
+        run(&mut editor, &dir, "Undo");
+        assert_same(
+            &text_of(&editor),
+            &SQUARE_LOOK.replacen("(at: 1.0, value: -0.35)", "(at: 1.1666666, value: -0.35)", 1),
+            "saved at frame 70",
+        );
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), SQUARE_LOOK, "one undo for the drag up to the save");
+    }
+
+    #[test]
+    fn a_key_added_after_play_and_pause_is_recorded_at_its_frame() {
+        let dir = TestDir::new("sequencer_add_recorded");
+        let path = dir.write("s/square_look.timeline.ron", SQUARE_LOOK);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            "PlayTimeline, PauseTimeline, AddKey(lane: Post(Exposure), name: None, at: 150)",
+        );
+        let added = SQUARE_LOOK.replacen(
+            "(at: 1.0, value: -0.35), ",
+            "(at: 1.0, value: -0.35), (at: 2.5, value: -0.35, ease: Linear), ",
+            1,
+        );
+        assert_same(&text_of(&editor), &added, "at the frame it carries, wherever the playhead is");
+    }
+
+    #[test]
+    fn a_key_held_as_its_timeline_goes_ends_its_drag() {
+        let dir = TestDir::new("sequencer_drag_away");
+        dir.write("a/hit_heavy.cue.ron", CUE);
+        let path = dir.write("s/square_look.timeline.ron", SQUARE_LOOK);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            r#"Begin("move a key"), MoveKey(key: (lane: Post(Exposure), index: 1), to: 75), End, Open("a/hit_heavy.cue.ron"), Open("s/square_look.timeline.ron"), Undo"#,
+        );
+        assert_same(&text_of(&editor), SQUARE_LOOK, "one undo for what it moved");
+    }
+
+    #[test]
     fn the_screen_pane_lists_its_paths_and_picks_an_aspect() {
         let dir = TestDir::new("screen");
         let path = dir.write("u/character.ui.ron", CHARACTER_SCREEN);
@@ -2378,5 +2469,198 @@ mod zone_picks {
         assert!(Arc::ptr_eq(&moved, &editor.zone_objects().expect("reads")), "once");
         run(&mut editor, &dir, "Undo");
         assert_eq!(*editor.zone_objects().expect("reads"), *first, "the undo's are the first's");
+    }
+}
+
+/// M6 T16a: the sequencer's keys by script, a test a lane kind: a drag writes the key's time alone (a span's two
+/// ends), with one undo; onto or past a neighbour it's refused; adding at the playhead holds the lane's value or
+/// takes a name, and a face takes a VRM 1.0 preset.
+mod sequencer_keys {
+    use sapphire_timeline::TimelineDocument;
+
+    use super::*;
+
+    const CUTSCENE: &str =
+        include_str!("../../../crates/sapphire_timeline/test_content/cutscene.timeline.ron");
+
+    /// The cutscene with its second camera key focused on the hero, for the focus lane.
+    fn focused() -> String {
+        CUTSCENE.replacen(
+            "fov_degrees: 30.0, ease: Smooth)",
+            r#"fov_degrees: 30.0, ease: Smooth, focus: Some((on: Role("hero"), near: 1.0, far: 6.0, blur: 0.01)))"#,
+            1,
+        )
+    }
+
+    /// The part of each text that differs, widened to whole numbers.
+    fn differing<'a>(old: &'a str, new: &'a str) -> (&'a str, &'a str) {
+        let number = |byte: u8| byte.is_ascii_digit() || byte == b'.' || byte == b'-';
+        let mut start = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+        while start > 0 && number(old.as_bytes()[start - 1]) {
+            start -= 1;
+        }
+        let mut end =
+            old[start..].bytes().rev().zip(new[start..].bytes().rev()).take_while(|(a, b)| a == b).count();
+        while end > 0 && number(old.as_bytes()[old.len() - end]) {
+            end -= 1;
+        }
+        (&old[start..old.len() - end], &new[start..new.len() - end])
+    }
+
+    /// Drags `key` of `text`'s timeline to `to` by a script's gesture, as the pane does a frame at a time, and holds
+    /// the text to differing only in the key's time, `old` before and `new` after, and one undo to taking it back.
+    #[track_caller]
+    fn drags(text: &str, key: &str, to: u32, old: &str, new: &str) {
+        let dir = TestDir::new("sequencer_lane");
+        let path = dir.write("s/cutscene.timeline.ron", text);
+        let mut editor = editor(&dir, Some(&path));
+        let step = |to: u32| format!("MoveKey(key: {key}, to: {to})");
+        let commands = format!(r#"Begin("move a key"), {}, {}, End, Save"#, step(to + 1), step(to));
+        run(&mut editor, &dir, &commands);
+        let saved = file(&path);
+        assert_eq!(differing(text, &saved), (old, new), "{key}");
+        TimelineDocument::from_ron(&saved).expect("it reads").cook().expect("it cooks");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), text, "one undo for the drag");
+    }
+
+    #[test]
+    fn a_camera_key() {
+        drags(CUTSCENE, "(lane: Camera, index: 1)", 120, "2.5", "2.0");
+    }
+
+    /// A frame whose time has no short decimal, two in three: the time is the nearest f32 to the frame's, spelled
+    /// shortest, and it reads back as that frame.
+    #[test]
+    fn a_camera_key_on_a_frame_with_a_long_decimal() {
+        drags(CUTSCENE, "(lane: Camera, index: 1)", 122, "2.5", "2.0333333");
+        let written: f32 = "2.0333333".parse().expect("a number");
+        assert_eq!(sapphire_editor::sequence::frame_of(written), 122);
+    }
+
+    /// The lanes whose adds and removes go through the document's text as well as its value: a cue, a play and a
+    /// look added, and a focus taken off its camera key. Each reads back as worked out (the editor's own check),
+    /// cooks, and one undo takes it back to the bytes.
+    #[test]
+    fn a_cue_a_play_and_a_look_go_in_and_a_focus_comes_out_through_the_text() {
+        let text = focused();
+        let dir = TestDir::new("sequencer_add_text");
+        let path = dir.write("s/cutscene.timeline.ron", &text);
+        let mut editor = editor(&dir, Some(&path));
+        for (command, what) in [
+            (r#"AddKey(lane: Cues, name: Some("bell"), at: 150)"#, "a cue"),
+            (r#"AddKey(lane: Plays("hero"), name: Some("bow"), at: 260)"#, "a play"),
+            (r#"AddKey(lane: Looks("hero"), name: None, at: 120)"#, "a look"),
+            ("RemoveKey((lane: Focus, index: 1))", "a focus"),
+        ] {
+            run(&mut editor, &dir, &format!("{command}, Save"));
+            let saved = file(&path);
+            assert_ne!(saved, text, "{what}");
+            TimelineDocument::from_ron(&saved).expect("it reads").cook().expect("it cooks");
+            run(&mut editor, &dir, "Undo");
+            assert_same(&text_of(&editor), &text, &format!("one undo for {what}"));
+        }
+    }
+
+    #[test]
+    fn a_focus_key_is_its_camera_key() {
+        drags(&focused(), "(lane: Focus, index: 1)", 135, "2.5", "2.25");
+    }
+
+    #[test]
+    fn a_post_key() {
+        drags(CUTSCENE, "(lane: Post(Exposure), index: 1)", 90, "1.0", "1.5");
+    }
+
+    #[test]
+    fn a_place() {
+        drags(CUTSCENE, r#"(lane: Places("hero"), index: 1)"#, 180, "4.0", "3.0");
+    }
+
+    #[test]
+    fn a_play_moves_both_its_ends() {
+        drags(CUTSCENE, r#"(lane: Plays("hero"), index: 0)"#, 36, "0.5, to: 2.0", "0.6, to: 2.1");
+    }
+
+    #[test]
+    fn a_face() {
+        drags(CUTSCENE, r#"(lane: Faces("hero"), index: 0)"#, 90, "1.0", "1.5");
+    }
+
+    #[test]
+    fn a_look() {
+        drags(CUTSCENE, r#"(lane: Looks("hero"), index: 2)"#, 240, "4.5", "4.0");
+    }
+
+    #[test]
+    fn a_cue_may_land_on_its_neighbours_time() {
+        drags(CUTSCENE, "(lane: Cues, index: 1)", 60, "3.0", "1.0");
+    }
+
+    #[test]
+    fn a_subtitle_moves_both_its_ends() {
+        drags(CUTSCENE, "(lane: Subtitles, index: 1)", 210, "3.0, to: 5.0", "3.5, to: 5.5");
+    }
+
+    /// Onto or past a neighbour, past the end or with no such key: refused, and the text is as it was.
+    #[test]
+    fn a_drag_onto_or_past_a_neighbour_is_refused() {
+        let dir = TestDir::new("sequencer_neighbour");
+        let path = dir.write("s/cutscene.timeline.ron", CUTSCENE);
+        let mut editor = editor(&dir, Some(&path));
+        for (command, why) in [
+            ("MoveKey(key: (lane: Camera, index: 1), to: 180)", "on or past the key after it, at frame 180"),
+            ("MoveKey(key: (lane: Camera, index: 1), to: 0)", "on or past the key before it, at frame 0"),
+            ("MoveKey(key: (lane: Cues, index: 1), to: 59)", "past the key before it"),
+            ("MoveKey(key: (lane: Subtitles, index: 0), to: 61)", "the key after it"),
+            ("MoveKey(key: (lane: Subtitles, index: 1), to: 241)", "past the timeline's end"),
+            (r#"MoveKey(key: (lane: Faces("villain"), index: 0), to: 10)"#, "has no key 0"),
+            (r#"MoveKey(key: (lane: Faces("nobody"), index: 0), to: 10)"#, "no character `nobody`"),
+        ] {
+            let refusal = refused(&mut editor, command);
+            assert!(refusal.contains(why), "{command}: {refusal}");
+        }
+        assert_same(&text_of(&editor), CUTSCENE, "a refused drag moves nothing");
+    }
+
+    /// Adding at the playhead: a held lane's value, one undo; a face by any preset, which cooks clean, and none by
+    /// another name; and removing takes a key away.
+    #[test]
+    fn a_key_added_at_the_playhead_holds_its_lane_or_takes_its_name() {
+        let dir = TestDir::new("sequencer_add_lanes");
+        let path = dir.write("s/cutscene.timeline.ron", CUTSCENE);
+        let mut editor = editor(&dir, Some(&path));
+        let value = |editor: &Editor| TimelineDocument::from_ron(&text_of(editor)).expect("it reads");
+        run(&mut editor, &dir, r#"Scrub(150), AddKey(lane: Places("hero"), name: None, at: 150)"#);
+        let place = value(&editor).characters[0].places[1];
+        assert_eq!(place.at, 2.5);
+        // 2.5 s of the stretch from 0 to 4 s, eased smooth: 0.625 of the way, eased to 0.68359375.
+        assert!((place.position[0] - 0.683_593_75).abs() < 1e-6, "along its smooth stretch: {place:?}");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), CUTSCENE, "one undo for the add");
+
+        run(
+            &mut editor,
+            &dir,
+            r#"Scrub(120), AddKey(lane: Faces("hero"), name: Some("relaxed"), at: 120), Save"#,
+        );
+        let face = &value(&editor).characters[0].faces[1];
+        assert_eq!((face.at, face.expression.as_str(), face.weight), (2.0, "relaxed", 1.0));
+        TimelineDocument::from_ron(&file(&path)).expect("it reads").cook().expect("it cooks");
+        assert!(
+            refused(&mut editor, r#"AddKey(lane: Faces("hero"), name: Some("sad"), at: 120)"#)
+                .contains("has a key at frame 120")
+        );
+        run(&mut editor, &dir, "Scrub(150)");
+        let grin = refused(&mut editor, r#"AddKey(lane: Faces("hero"), name: Some("grin"), at: 150)"#);
+        assert!(grin.contains("no VRM 1.0 expression preset"), "{grin}");
+        assert!(
+            refused(&mut editor, r#"AddKey(lane: Faces("hero"), name: None, at: 150)"#)
+                .contains("takes a VRM 1.0")
+        );
+
+        run(&mut editor, &dir, r#"RemoveKey((lane: Faces("hero"), index: 1)), Save"#);
+        assert_eq!(value(&editor), TimelineDocument::from_ron(CUTSCENE).expect("it reads"), "gone again");
+        assert!(refused(&mut editor, "RemoveKey((lane: Camera, index: 7))").contains("has no key 7"));
     }
 }

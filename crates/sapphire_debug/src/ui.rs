@@ -763,8 +763,12 @@ fn audio(ui: &mut Ui, stats: &sapphire_audio::AudioStats) {
             ui,
             "  Music, lines",
             format!(
-                "{} phase changes, {} to unknown phases; {} lines, {} missing",
-                stats.music_phase_changes, stats.music_unknown_phases, stats.lines_asked, stats.lines_missing
+                "{} phase changes, {} to unknown phases; {} lines, {} in the base language, {} unvoiced",
+                stats.music_phase_changes,
+                stats.music_unknown_phases,
+                stats.lines_asked,
+                stats.lines_in_base,
+                stats.lines_missing
             ),
         );
         row(

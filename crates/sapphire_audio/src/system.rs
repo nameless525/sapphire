@@ -25,7 +25,7 @@ use crate::mix::MixState;
 use crate::music::{Music, MusicRequest};
 use crate::rng::CueRandom;
 use crate::rooms::{Rooms, Space};
-use crate::voice::{LineKey, VoiceRoute, VoiceRouteError};
+use crate::voice::{LineKey, Spoken, VoiceRoute, VoiceRouteError};
 
 /// The most voices mixed at once (M6 U3, Desktop-High's real voices): [`VoiceCaps::real`] at most. Past it,
 /// what ranks lowest goes virtual or ends.
@@ -269,7 +269,11 @@ pub struct AudioStats {
     pub voices_revived: u64,
     /// Lines asked for that the voice language has, all told: each plays as a cue does.
     pub lines_asked: u64,
-    /// Lines the voice language lacks, or asked for with no language chosen.
+    /// Lines the voice language lacks (or asked for with no table speaking the language chosen) that the base
+    /// language speaks instead (M6 U13a), all told: the first fallback.
+    pub lines_in_base: u64,
+    /// Lines neither the voice language nor the base language has, all told: the last fallback, the subtitle
+    /// alone.
     pub lines_missing: u64,
     /// Changes to a phase the score has, all told.
     pub music_phase_changes: u64,
@@ -676,12 +680,19 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.voice.add(lines)
     }
 
-    /// Chooses the voice language, apart from the text's; whether any lines are in it.
+    /// Chooses the voice language, apart from the text's; whether any lines are in it. The next line asked for
+    /// is routed by it, and a line already playing plays on to its end in the language it started in.
     pub fn set_voice_language(&mut self, locale: &str) -> bool {
         self.voice.set_language(locale)
     }
 
-    /// The lines by language, and the one chosen.
+    /// Names the base language (M6 U13a), which speaks a line the voice language lacks; whether any lines are
+    /// in it. None is named until this is called, and then a missing line is the subtitle's alone.
+    pub fn set_voice_base_language(&mut self, locale: &str) -> bool {
+        self.voice.set_base_language(locale)
+    }
+
+    /// The lines by language, the one chosen and the base.
     pub fn voice_route(&self) -> &VoiceRoute {
         &self.voice
     }
@@ -837,11 +848,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
         self.heard.clear();
         for request in frame.lines {
-            let Some(cue) = self.voice.line(request.line) else {
-                self.stats.lines_missing += 1;
-                continue;
-            };
-            self.stats.lines_asked += 1;
+            let Some(cue) = self.route_line(request.line) else { continue };
             if state.plays() {
                 let started =
                     self.start_cue(&CueRequest::new(cue, request.target), &frame.listener, random, None);
@@ -866,6 +873,19 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.stats.virtual_voices = (self.voices.len() - real) as u32;
         self.stats.update = timer.elapsed();
         self.stats.update_peak = self.stats.update_peak.max(self.stats.update);
+    }
+
+    /// The cue that speaks `line` by the voice route's fallback, the chosen language's or the base's, counted by
+    /// which answered; none, counted too, if neither has it.
+    fn route_line(&mut self, line: LineKey) -> Option<AssetId> {
+        let spoken = self.voice.line(line);
+        let counter = match spoken {
+            Spoken::Chosen(_) => &mut self.stats.lines_asked,
+            Spoken::Base(_) => &mut self.stats.lines_in_base,
+            Spoken::Unvoiced => &mut self.stats.lines_missing,
+        };
+        *counter += 1;
+        spoken.cue()
     }
 
     /// Keeps the line `line`, whose voice `id` just started, among [`Self::heard_lines`]: its sound's length over
@@ -1085,16 +1105,12 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
         let Some(asked) = asked else { return };
         let mut speech = Speech { serial: asked.serial, voice: None };
-        match self.voice.line(asked.line) {
-            None => self.stats.lines_missing += 1,
-            Some(cue) => {
-                self.stats.lines_asked += 1;
-                if state.plays() {
-                    let request = CueRequest::new(cue, asked.target);
-                    speech.voice = self.start_cue(&request, listener, random, Some(asked.held));
-                } else {
-                    self.stats.dropped_no_output += 1;
-                }
+        if let Some(cue) = self.route_line(asked.line) {
+            if state.plays() {
+                let request = CueRequest::new(cue, asked.target);
+                speech.voice = self.start_cue(&request, listener, random, Some(asked.held));
+            } else {
+                self.stats.dropped_no_output += 1;
             }
         }
         self.speech = Some(speech);
@@ -2439,6 +2455,92 @@ mod tests {
         say(&mut system, missing, &mut rng);
         say(&mut system, missing, &mut rng);
         assert_eq!((system.speaking(), system.stats().lines_missing), (None, 1));
+    }
+
+    /// English's `won`: 20 ms of sound, twice `greet`'s.
+    const WON: AssetId = AssetId::from_text("77777777-2222-4333-8444-555555555555");
+    const JA_GREET: AssetId = AssetId::from_text("88888888-2222-4333-8444-555555555555");
+
+    /// English, the base, says `greet` with [`SOUND_A`] and `won` with [`WON`]; Japanese says `greet` alone, with
+    /// [`SOUND_B`]. English is chosen.
+    fn bilingual() -> AudioSystem<MockBackend> {
+        let voiced = |sound| Cue { play: CueNode::one_of(vec![sound]), bus: Bus::Voice, ..plain_cue() };
+        let mut system = system_with(voiced(SOUND_A));
+        system.add_sound(WON, &DecodedSound { samples: vec![0.5; 960], ..decoded() });
+        system.add_cue(WON, voiced(WON));
+        system.add_cue(JA_GREET, voiced(SOUND_B));
+        let line = |key: &str, cue| sapphire_assets::voice::VoiceLine { key: key.to_owned(), cue };
+        let english =
+            VoiceLines { locale: "en".to_owned(), lines: vec![line("greet", CUE), line("won", WON)] };
+        let japanese = VoiceLines { locale: "ja".to_owned(), lines: vec![line("greet", JA_GREET)] };
+        system.add_voice_lines(&english).unwrap();
+        system.add_voice_lines(&japanese).unwrap();
+        assert!(system.set_voice_base_language("en"));
+        assert!(system.set_voice_language("en"));
+        system.backend_mut().take_calls();
+        system
+    }
+
+    fn line_counts(system: &AudioSystem<MockBackend>) -> (u64, u64, u64) {
+        let stats = system.stats();
+        (stats.lines_asked, stats.lines_in_base, stats.lines_missing)
+    }
+
+    /// M6 U13a: switching English to Japanese speaks Japanese from the next line. A line Japanese lacks speaks
+    /// English's take, heard for that take's length, and one neither has speaks nothing; each fallback has its
+    /// own counter.
+    #[test]
+    fn a_switched_language_speaks_from_the_next_line_and_each_fallback_is_counted() {
+        let mut system = bilingual();
+        let mut rng = CueRng::new(1);
+        let asked = |keys: &[&str]| -> Vec<LineRequest> {
+            keys.iter().map(|key| LineRequest { line: LineKey::of(key), target: CueTarget::Flat }).collect()
+        };
+        let greet = asked(&["greet"]);
+        system.update(&AudioFrame { lines: &greet, ..frame(&[], &[]) }, &mut rng);
+        assert_eq!(started_sounds(&system.backend_mut().take_calls()), [SOUND_A], "English, as chosen");
+        assert_eq!(line_counts(&system), (1, 0, 0));
+
+        assert!(system.set_voice_language("ja"));
+        let three = asked(&["greet", "won", "farewell"]);
+        system.update(&AudioFrame { lines: &three, ..frame(&[], &[]) }, &mut rng);
+        assert_eq!(started_sounds(&system.backend_mut().take_calls()), [SOUND_B, WON]);
+        assert_eq!(line_counts(&system), (2, 1, 1), "greet in Japanese, won in English, farewell in neither");
+        let heard: Vec<_> = system.heard_lines().iter().map(|heard| (heard.line, heard.seconds)).collect();
+        assert_eq!(heard.len(), 2, "{heard:?}");
+        assert_eq!(heard[0].0, LineKey::of("greet"));
+        assert_eq!(heard[1].0, LineKey::of("won"));
+        assert!((heard[0].1 - 0.01).abs() < 1e-6 && (heard[1].1 - 0.02).abs() < 1e-6, "{heard:?}");
+
+        // A language nothing speaks: the base has every line it has.
+        assert!(!system.set_voice_language("fr"));
+        system.update(&AudioFrame { lines: &greet, ..frame(&[], &[]) }, &mut rng);
+        assert_eq!(started_sounds(&system.backend_mut().take_calls()), [SOUND_A]);
+        assert_eq!(line_counts(&system), (2, 2, 1));
+    }
+
+    /// M6 U13a: a conversation's line playing when the language changes plays on in the language it started in;
+    /// the next line speaks the new one, and a line it lacks the base's.
+    #[test]
+    fn a_line_playing_when_the_language_changes_plays_on() {
+        let mut system = bilingual();
+        let mut rng = CueRng::new(1);
+        say(&mut system, greet(1, false), &mut rng);
+        assert_eq!(started_sounds(&system.backend_mut().take_calls()), [SOUND_A]);
+        assert!(system.set_voice_language("ja"));
+        for _ in 0..3 {
+            say(&mut system, greet(1, false), &mut rng);
+        }
+        let calls = system.backend_mut().take_calls();
+        assert!(stopped(&calls).is_empty() && started_sounds(&calls).is_empty(), "{calls:?}");
+        assert_eq!(system.speaking().map(|speaking| speaking.sound), Some(SOUND_A));
+
+        say(&mut system, greet(2, false), &mut rng);
+        assert_eq!(started_sounds(&system.backend_mut().take_calls()), [SOUND_B]);
+        let won = Some(SpeechRequest { line: LineKey::of("won"), ..greet(3, false).unwrap() });
+        say(&mut system, won, &mut rng);
+        assert_eq!(started_sounds(&system.backend_mut().take_calls()), [WON]);
+        assert_eq!(line_counts(&system), (2, 1, 0));
     }
 
     /// Three seconds of sound: long enough to wait virtual.

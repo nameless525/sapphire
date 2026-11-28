@@ -172,10 +172,15 @@ pub const LOCALES: [AssetId; 2] = [
     AssetId::from_text("ef0a6207-aa10-4499-8e64-2e089c4f8b3c"),
 ];
 
-/// The languages the content voices (M6 U11): each one's lines, cues and sounds are its own pack,
-/// `vo_<locale>` ([`voice::pack_name`]), which [`Content::load_voice_lines`] mounts. U13 mounts only the one a
-/// player chose.
+/// The languages the content voices (M6 U11), in the order the settings' Voice language row steps them: each
+/// one's lines, cues and sounds are its own pack, `vo_<locale>` ([`voice::pack_name`]), which
+/// [`Content::load_voice_lines`] mounts. The install holds every one today; U13b makes all but
+/// [`BASE_VOICE_LANGUAGE`] optional downloads, mounted only when chosen.
 pub const VOICE_LANGUAGES: [&str; 2] = ["en", "ja"];
+
+/// The voice language the base install always holds (M6 U13a, m6-plan §3's "Voice languages"), which speaks a
+/// line the chosen voice language lacks: English, the language every line is written and recorded in first.
+pub const BASE_VOICE_LANGUAGE: &str = VOICE_LANGUAGES[0];
 
 /// What loading screens hands back, as plain data ([`Content::load_screens`]).
 pub struct ScreenAssets {

@@ -810,7 +810,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [walk-desktop-low, walk-mobile-low, walk-mobile-high, wave-bench, district-play, the-rest]
+        lane: [walk-desktop-low, walk-mobile-low, walk-mobile-high, wave-bench, district-play, app-replays, the-rest]
     runs-on: ubuntu-24.04
     # Each lane's tests took 12 to 23 minutes on M3's last runs, and a lane adds about 2 to set up. On M4's
     # line the Desktop-Low walk began 21 minutes in and needs about 17 more.
@@ -948,9 +948,11 @@ jobs:
         run: python3 .github/scripts/app_tests_bundle.py run draws_a_marked_tick -- --ignored
       # The simulation beside the renderer must reach what it reaches alone (m2-plan D2). The app
       # compares, tick by tick, with what a headless run in the test wrote. The wave's bench and the district's
-      # play have their lanes.
+      # play have their lanes. The rest have one too (M6, 2026-11-28): they took 37 minutes of `the-rest`'s 59
+      # on main at bfdb355eb, 48 of a slower runner's 75, where that lane met its limit with every test passed,
+      # and each traversal package adds a replay.
       - name: Replays in the app (dev sandbox, offscreen)
-        if: matrix.lane == 'the-rest'
+        if: matrix.lane == 'app-replays'
         run: python3 .github/scripts/app_tests_bundle.py run replays -- --ignored --test-threads=1 --skip "$WAVE_BENCH" --skip "$DISTRICT_PLAY"
       # An edit of a move reaches a running fight's next attempt, over live link and through hot
       # reload, and a bad one changes nothing (m2-plan T2, exit test 2).

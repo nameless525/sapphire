@@ -221,10 +221,18 @@ impl ResolvedProfile {
         self.turn_rate
     }
 
-    /// How long this character climbs before it must let go, on its own clock, or `None` if it never tires
-    /// (M6 A16a). Worked out once from the authored seconds.
+    /// How long this character climbs and glides before it must let go or fall, on its own clock, or `None` if it
+    /// never tires (M6 A16a, A17). Worked out once from the authored seconds.
     #[must_use]
     pub const fn stamina(&self) -> Option<SimDuration> {
         self.stamina
+    }
+
+    /// How fast a glide sinks, in m/s (M6 A17): the lower of [`ControllerProfile::glide_sink_speed`] and
+    /// [`ControllerProfile::max_fall_speed`], so a document whose fastest fall is slower than its glide's sink
+    /// glides at that fall, and neither number refuses the other.
+    #[must_use]
+    pub const fn glide_sink_speed(&self) -> f32 {
+        self.authored.glide_sink_speed.min(self.authored.max_fall_speed)
     }
 }

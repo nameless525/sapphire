@@ -83,6 +83,11 @@ pub struct SimStats {
     pub climbs_started: u64,
     /// Climbs that topped out over a face's lip, by a mantle, so far.
     pub climb_top_outs: u64,
+    /// Casts gliding made so far (M6 A17, [`crate::traversal`]): one on a press of jump in the air looking for the
+    /// ground under a glide. A gliding tick casts nothing of its own, only what any tick in the air casts.
+    pub glide_casts: u64,
+    /// Glides opened so far.
+    pub glides_started: u64,
     /// Wall time of the latest step's character controllers, physics included, to hold against
     /// [`PHYSICS_BUDGET_DESKTOP_LOW`] or [`PHYSICS_BUDGET_MOBILE_LOW`].
     pub controllers_last: Duration,

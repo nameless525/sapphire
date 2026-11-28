@@ -1,6 +1,7 @@
 //! Traversal moves (M6 A15): a ledge in front of a fighter, found by a few casts on the tick it presses jump,
-//! starts a mantle onto it or a vault over it, in place of the jump. And climbing's presses (M6 A16a): a
-//! climbable face in front of it grabbed, let go of, and topped out over by a mantle.
+//! starts a mantle onto it or a vault over it, in place of the jump. Climbing's presses (M6 A16a): a climbable
+//! face in front of it grabbed, let go of, and topped out over by a mantle. And gliding's (M6 A17): a glide opened
+//! in the air high enough, and dropped.
 //!
 //! # What finds a ledge
 //!
@@ -41,7 +42,7 @@
 //!
 //! # Climbing (M6 A16a)
 //!
-//! `grab_faces` runs after `find_ledges`, for the same fighters (a set that names mantles, since a climb's top
+//! `climb_and_glide` runs after `find_ledges`, for the same fighters (a set that names mantles, since a climb's top
 //! is a mantle's), on the field, standing or defeated not, no move running or forced, clock moving:
 //!
 //! - **A grab:** a press of jump that no ledge took, standing or in the air, casts one ray from the hands (the
@@ -65,12 +66,35 @@
 //!
 //! So a grab's press costs one cast more than a ledge's probe, a let-go none, and a top-out the probe's four.
 //! [`crate::SimStats::climb_casts`] counts them with the controller's.
+//!
+//! # Gliding (M6 A17)
+//!
+//! `climb_and_glide` reads a press of jump in the air too, for a fighter whose set names traversal moves (a set
+//! with none never glides, so no enemy opens one by a press), once the press has grabbed no face:
+//!
+//! - **Opening a glide:** a press in the air, with the coyote time after a ledge spent (in it, the press jumps),
+//!   rising or falling, casts one ray down from the feet, the profile's `glide_min_height` long, against static
+//!   scenery in [`Group::World`]. If it meets nothing, the ground is further down than that, or there is none in
+//!   reach, and the fighter enters [`crate::TraversalMode::Gliding`]: the controller sinks it and steers it from
+//!   this tick's move on. Ground within the height refuses it, and the press does what it did before (nothing, in
+//!   the air). Why a press, not a held button: it's the reference games' feel, where a press in the air opens the
+//!   glider and another folds it, and a press is what every other traversal reads, so a tick with no press costs
+//!   nothing. A spent stamina opens none until the feet stand on the ground again.
+//! - **Dropping it:** a press while gliding, unless it grabs a climbable face in front of the glider (the same
+//!   ray from the hands as any grab, so a glide meets a climbable wall by a press, and only for a set that
+//!   climbs): the fighter falls from there, with the speed it had. A fallen glider drops at once, as a fallen
+//!   climber lets go.
+//!
+//! So an opening press costs one cast (two for a set that climbs, whose press first looks for a face), a drop
+//! none of its own (a set that climbs first looks for a face, A16a's one ray, counted in `climb_casts`), and a
+//! gliding tick none of its own: [`crate::SimStats::glide_casts`] counts the opening rays. The
+//! controller ends a glide on landing, when a move takes the stick and when stamina runs out.
 
 use std::f32::consts::FRAC_1_SQRT_2;
 
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Vec3, det};
-use sapphire_moves::Move;
+use sapphire_moves::{Move, MoveSet};
 use sapphire_physics::{BodyId, Group, PhysicsWorld, QueryFilter};
 use sapphire_time::SimDuration;
 
@@ -78,8 +102,8 @@ use crate::TraversalMode;
 use crate::actions::{Buttons, Controls};
 use crate::actors::ActorTable;
 use crate::controller::{
-    CharacterController, CharacterWorld, GroundMode, Lip, ResolvedProfile, actor_body, climbable_face, grab,
-    hands, into_face, let_go, wants_up,
+    CharacterController, CharacterWorld, GroundMode, Lip, ResolvedProfile, actor_body, climbable_face,
+    drop_glide, grab, hands, into_face, let_go, open_glide, wants_up,
 };
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveRunner};
@@ -142,6 +166,8 @@ pub(crate) struct TraversalStats {
     pub(crate) climb_casts: u64,
     pub(crate) climbs_started: u64,
     pub(crate) climb_top_outs: u64,
+    pub(crate) glide_casts: u64,
+    pub(crate) glides_started: u64,
 }
 
 /// Static scenery is a ledge; characters and blockers aren't.
@@ -333,10 +359,10 @@ pub(crate) fn find_ledges(
 }
 
 /// [`crate::CombatSet::Intents`], after [`find_ledges`]: a press of jump grabs a climbable face in front of a
-/// fighter or lets go of the one it holds, and a climber at a face's top tops out. See the [module
-/// docs](self).
+/// fighter or lets go of the one it holds, and a climber at a face's top tops out; a press in the air that grabs
+/// nothing opens a glide or drops it. See the [module docs](self).
 #[allow(clippy::type_complexity, reason = "a system's query reads as what it touches")]
-pub(crate) fn grab_faces(
+pub(crate) fn climb_and_glide(
     table: Res<'_, ActorTable>,
     party: Res<'_, Party>,
     library: Res<'_, MoveLibrary>,
@@ -358,6 +384,11 @@ pub(crate) fn grab_faces(
             let_go(&mut controller.state);
             continue;
         }
+        if fighter.is_defeated() && controller.state.traversal == TraversalMode::Gliding {
+            // A fallen glider drops, as a fallen climber lets go.
+            drop_glide(&mut controller.state);
+            continue;
+        }
         if party.is_off_field(id)
             || fighter.is_defeated()
             || runner.is_running()
@@ -368,8 +399,12 @@ pub(crate) fn grab_faces(
         }
         let pressed = controls.pressed().contains(Buttons::JUMP);
         let Some(hold) = controller.state.climb else {
-            if pressed && controller.state.traversal == TraversalMode::None {
-                grab_ahead(&characters, &library, &runner, &mut controller, transform, &mut stats);
+            let free = matches!(controller.state.traversal, TraversalMode::None | TraversalMode::Gliding);
+            if pressed
+                && free
+                && !grab_ahead(&characters, &library, &runner, &mut controller, transform, &mut stats)
+            {
+                glide_press(&characters, &library, &runner, &mut controller, transform, &mut stats);
             }
             continue;
         };
@@ -420,7 +455,7 @@ fn climber<'a>(
     library: &'a MoveLibrary,
     runner: &MoveRunner,
     controller: &CharacterController,
-) -> Option<(&'a ResolvedProfile, &'a sapphire_moves::TraversalMoves, &'a sapphire_moves::MoveSet)> {
+) -> Option<(&'a ResolvedProfile, &'a sapphire_moves::TraversalMoves, &'a MoveSet)> {
     let set = runner.set()?;
     let current = library.current(set)?;
     let traversal = current.traversal().filter(|traversal| !traversal.mantles.is_empty())?;
@@ -428,7 +463,8 @@ fn climber<'a>(
     Some((library.movement(set).unwrap_or(spawned), traversal, current))
 }
 
-/// A press's grab: the face along the facing, from the hands. Counts its cast, grabbed or not.
+/// A press's grab: the face along the facing, from the hands. Counts its cast, grabbed or not, and says whether it
+/// grabbed.
 fn grab_ahead(
     characters: &CharacterWorld,
     library: &MoveLibrary,
@@ -436,10 +472,10 @@ fn grab_ahead(
     controller: &mut CharacterController,
     transform: &ActorTransform,
     stats: &mut TraversalStats,
-) {
-    let Some((profile, ..)) = climber(characters, library, runner, controller) else { return };
-    if profile.stamina().is_some_and(|stamina| controller.state.stamina_spent >= stamina) {
-        return;
+) -> bool {
+    let Some((profile, ..)) = climber(characters, library, runner, controller) else { return false };
+    if spent(profile, controller) {
+        return false;
     }
     let forward = det::direction_from_yaw(transform.yaw);
     let center = transform.position + profile.feet_to_center();
@@ -447,11 +483,53 @@ fn grab_ahead(
     stats.climb_casts += 1;
     let Some(face) = climbable_face(characters.physics(), profile, hands(profile, center), forward, reach)
     else {
-        return;
+        return false;
     };
     if forward.dot(into_face(face.normal)) < APPROACH_COS {
-        return;
+        return false;
     }
     grab(&mut controller.state, face.normal);
     stats.climbs_started += 1;
+    true
+}
+
+/// Whether a fighter's stamina is spent, so it can neither grab a face nor open a glide.
+fn spent(profile: &ResolvedProfile, controller: &CharacterController) -> bool {
+    profile.stamina().is_some_and(|stamina| controller.state.stamina_spent >= stamina)
+}
+
+/// A press that grabbed nothing: in a glide it drops it, and in the air high enough, for a set that names
+/// traversal moves, it opens one. Counts the opening's ray.
+fn glide_press(
+    characters: &CharacterWorld,
+    library: &MoveLibrary,
+    runner: &MoveRunner,
+    controller: &mut CharacterController,
+    transform: &ActorTransform,
+    stats: &mut TraversalStats,
+) {
+    let state = &controller.state;
+    if state.traversal == TraversalMode::Gliding {
+        drop_glide(&mut controller.state);
+        return;
+    }
+    if state.mode != GroundMode::Airborne || state.coyote > SimDuration::ZERO {
+        return;
+    }
+    let Some(set) = runner.set() else { return };
+    if library.current(set).and_then(MoveSet::traversal).is_none() {
+        return;
+    }
+    let Some(spawned) = controller.profile().and_then(|profile| characters.profile(profile)) else { return };
+    let profile = library.movement(set).unwrap_or(spawned);
+    if spent(profile, controller) {
+        return;
+    }
+    stats.glide_casts += 1;
+    let height = profile.authored().glide_min_height;
+    if characters.physics().cast_ray(transform.position, Vec3::NEG_Y, height, &ledge_filter()).is_some() {
+        return;
+    }
+    open_glide(&mut controller.state, profile);
+    stats.glides_started += 1;
 }

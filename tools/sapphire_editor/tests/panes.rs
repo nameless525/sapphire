@@ -880,6 +880,37 @@ fn the_zone_pane_lists_placements_and_a_row_selects_one() {
     assert!(harness.query(By::new().label_contains("(backdrop)")).is_some(), "the ground says what it is");
 }
 
+/// A zone of `count` instances in a row and a spawner (M6 T9a).
+fn crowded_zone(count: usize) -> String {
+    let instances: Vec<String> = (0..count)
+        .map(|at| format!(r#"(id: "instance-{at}", mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: ({at}.0, 0.0, 0.0))"#))
+        .collect();
+    format!(
+        r#"(type: "sapphire::zone::ZoneDocument", version: 2, data: (grid: (cell_size: 16.0), instances: [{}], spawners: [(name: "guard", position: (0.0, 0.0, 8.0), spawns: "warrior")]))"#,
+        instances.join(", ")
+    )
+}
+
+/// The pane lists every object by kind under its count, but builds only the rows that show: of three thousand
+/// instances, a screen's worth. A row of another kind than a placement selects it by its keyed path.
+#[test]
+fn the_zone_pane_builds_only_the_rows_that_show() {
+    let dir = TestDir::new("crowded_zone");
+    let path = dir.write("z/crowded.zone.ron", &crowded_zone(3000));
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    let _ = harness.get(By::new().label_contains("Instances  3000"));
+    let built = harness.query_all(By::new().label_contains("  instance-")).count();
+    assert!((1..100).contains(&built), "{built} rows built of 3000");
+    assert!(harness.query(By::new().label_contains("  instance-2999  ")).is_none(), "the last isn't built");
+    harness.get(By::new().label_contains("1  instance-1  (1.00, 0.00, 0.00)")).click();
+    harness.run_steps(2);
+    let selected: Vec<String> =
+        harness.state().selection().iter().map(|object| object.path.to_string()).collect();
+    assert_eq!(selected, [r#"instances["instance-1"]"#]);
+    assert_eq!(harness.state().selected_placement(), None, "an instance takes no gizmo");
+}
+
 const YARD_COLLIDERS: &str = r#"(
     type: "sapphire::colliders::ColliderDocument",
     version: 1,

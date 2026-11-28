@@ -266,6 +266,10 @@ impl Editor {
             Command::SelectPlacement(id) => self.select_placement(id.as_deref()),
             Command::MigrateZone => self.migrate_zone(),
             Command::SelectObjects(picked) => self.select_objects(picked),
+            Command::PickInZone { from, toward, reach, adding } => {
+                self.pick_in_zone(*from, *toward, *reach, *adding);
+            }
+            Command::SelectInBox { view, from, to, adding } => self.select_in_box(view, *from, *to, *adding),
             Command::SelectField(picked) => self.select_field(picked),
             Command::SetShared { path, value } => match path.parse::<PropertyPath>() {
                 Ok(path) => {

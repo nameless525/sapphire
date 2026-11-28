@@ -41,10 +41,13 @@
 //! Version 2 (M6 C7) writes each ramp as `Stops((…))` or `Image((…))`. A version 1 document
 //! (M1 A7), whose ramps are all stops written as `(stops: […])`, reads as it did and bakes the
 //! same rows. Every committed document is at version 2 since M6 T4, which moved their keys and
-//! none of their rows: this importer's stage didn't move. It doesn't carry the image importer's
-//! version as the stages that always decode masks do ([`super::with_image_importer`]), which would
-//! have moved every stop ramp's key; a change to the image importer's output bumps this stage with
-//! it.
+//! none of their rows. This importer's stage carries the image importer's version, as the stages
+//! that decode masks do ([`super::with_image_importer`]), so a change to the decoder recooks every
+//! image ramp; folding it in (after C7's review) moved every ramp's key once, and none of its rows.
+//!
+//! An image ramp has no interpolation of its own: its texels blend in the document's, so a
+//! hard-banded strip narrower than the bake softens at each band edge in a smooth document. Paint
+//! it at the bake's width, or set the document to `Step`.
 //!
 //! # Where the types live
 //!
@@ -63,17 +66,18 @@ pub use sapphire_assets::ramp::{
 use sapphire_assets::texture::MAX_TEXTURE_DIMENSION;
 use serde::{Deserialize, Serialize};
 
-use super::{GeneratedMap, Inputs, MapError};
+use super::{GeneratedMap, Inputs, MapError, with_image_importer};
 use crate::cache::Stage;
 use crate::color::{linear_srgb_to_oklab, linear_to_srgb, oklab_to_linear_srgb, srgb_to_linear};
 use crate::import::image::{ChannelLayout, SourceImage, Transfer};
 use crate::texture::{RampSettings, TextureClass};
 
-/// This importer, as cache keys know it: reading the document and baking its rows. Bump the
-/// version whenever the rows change for the same document, or the image importer's output
-/// changes (an image ramp's rows are decoded by it).
-/// 2: colors decode and encode through `sapphire_math::det` (M4 C3).
-pub const IMPORTER: Stage = Stage { name: "ramp", version: 2 };
+/// This importer, as cache keys know it: reading the document and baking its rows, with the image
+/// importer's version folded in ([`with_image_importer`]), as the face SDF's is: an image ramp's rows
+/// are decoded by it. Bump the version whenever the rows change for the same document.
+/// 3: the image importer's version folded in (M6 C7, fixed after its review), which moved every
+/// ramp's key and none of its rows. 2: colors decode and encode through `sapphire_math::det` (M4 C3).
+pub const IMPORTER: Stage = Stage { name: "ramp", version: with_image_importer(3) };
 
 /// A color in linear light, with its alpha, by the cook's deterministic decode.
 pub trait Linear {

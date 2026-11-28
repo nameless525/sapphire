@@ -41,6 +41,7 @@
 //! | `vroid-region-light` | warning | A VRM's unbound slot named as VRoid names hair or skin but without its group (`Hair_00_hair`): it fell back to no region light ([`vroid_region_gi`]). |
 //! | `duplicate-spring-name` | warning | A VRM whose spring chains share a name: a cloth sheet names chains, so it can't name these. |
 //! | `duplicate-texture` | warning | A texture source with the same bytes as another, under its own ID. |
+//! | `unmarked-export` | warning | A glTF source that authors outline normals (`_OUTLINE_NORMAL`) with no mark of the Sapphire Blender add-on ([`gltf::addon_export`]): if Blender's exporter wrote it without the add-on, or the add-on before 0.3.1, its outline normals on a turned or scaled rig may be in another space than its normals, so re-export it with the add-on. Also a glTF whose JSON doesn't read, so its mark can't be (the cook refuses it with the reason). Only the JSON is read, a GLB's JSON chunk without its buffers ([`gltf::read_json`]). |
 //! | `sheet` | error | An effect sheet whose document names a wrong field ([`EffectSheetDocument::problem`]) or doesn't read, whose painting is missing or isn't its grid's size, an effects library that doesn't read (so its sheets can't be checked), or one whose emitter names an ID that's no sheet of the tree (M6 N4a). |
 //! | `atlas-budget` | error | An effects library whose sheets' frames take more than its atlas holds on a cook: [`ATLAS_BUDGET_DESKTOP`] or [`ATLAS_BUDGET_MOBILE`], each layer at its whole chain. |
 //! | `stale-waiver`, `unexplained-waiver` | error | A waiver nothing needs, or one with no reason. |
@@ -84,6 +85,7 @@ use crate::cook::{self, Cook, CookError};
 use crate::effect_sheet::EffectSheetDocument;
 use crate::effects;
 use crate::foliage;
+use crate::import::gltf;
 use crate::import::image::{SourceFormat, header_size};
 use crate::import::vrm::{self, vroid_eye_layer, vroid_region_gi};
 use crate::material;
@@ -210,6 +212,7 @@ pub enum Rule {
     VroidRegionLight,
     DuplicateSpringName,
     DuplicateTexture,
+    UnmarkedExport,
     Sheet,
     AtlasBudget,
     StaleWaiver,
@@ -235,6 +238,7 @@ impl Rule {
             Self::VroidRegionLight => "vroid-region-light",
             Self::DuplicateSpringName => "duplicate-spring-name",
             Self::DuplicateTexture => "duplicate-texture",
+            Self::UnmarkedExport => "unmarked-export",
             Self::Sheet => "sheet",
             Self::AtlasBudget => "atlas-budget",
             Self::StaleWaiver => "stale-waiver",
@@ -251,7 +255,8 @@ impl Rule {
             | Self::VroidEyeLayer
             | Self::VroidRegionLight
             | Self::DuplicateSpringName
-            | Self::DuplicateTexture => Severity::Warning,
+            | Self::DuplicateTexture
+            | Self::UnmarkedExport => Severity::Warning,
             Self::Triangles
             | Self::Joints
             | Self::Slots
@@ -453,6 +458,9 @@ pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckE
             ImportSettings::Vrm(settings) => Some(settings.version),
             _ => None,
         };
+        if matches!(asset.meta.importer, ImportSettings::Gltf(_)) {
+            check.addon_mark(asset);
+        }
         if role.is_none() && vrm.is_none() {
             continue;
         }
@@ -761,6 +769,25 @@ impl Checker<'_> {
                 );
             }
         }
+    }
+
+    /// `unmarked-export`, on a glTF source, from its JSON document alone (a GLB's JSON chunk, not its
+    /// buffers). A document that doesn't read is a finding of its own, by path: the cook refuses the file
+    /// with the reason.
+    fn addon_mark(&mut self, asset: &SourceAsset) {
+        let export = gltf::read_json(&asset.path).and_then(|json| gltf::addon_export(&json));
+        let message = match export {
+            Ok(export) if export.outline_normals && export.version.is_none() => {
+                "it authors `_OUTLINE_NORMAL` but carries no mark of the Sapphire Blender add-on (0.3.1 or later). \
+                 If Blender's exporter wrote it without the add-on, or with the add-on before 0.3.1, its outline \
+                 normals on a turned or scaled rig may be in another space than its normals: re-export it with \
+                 the add-on"
+                    .to_owned()
+            }
+            Ok(_) => return,
+            Err(error) => format!("its mark can't be read: {}", crate::refusal::chain(&error).replace('\n', ": ")),
+        };
+        self.find(asset, Rule::UnmarkedExport, None, message);
     }
 
     /// `vroid-eye-layer` and `vroid-region-light`, over a VRM's unbound slots: a bound one draws its document.

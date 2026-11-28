@@ -7,7 +7,7 @@ The whole way from Blender to the screen, with the steps after the export (`new-
 ## Install
 
 1. Build the pipeline once: `cargo build -p sapphire_pipeline --profile tools` writes `target/tools/sapphire_pipeline`.
-2. Build the extension: `blender --factory-startup --command extension build --source-dir tools/blender/sapphire --output-dir <folder>` writes `sapphire-0.3.0.zip` there. In Blender: Edit > Preferences > Get Extensions > Install from Disk, and pick the zip.
+2. Build the extension: `blender --factory-startup --command extension build --source-dir tools/blender/sapphire --output-dir <folder>` writes `sapphire-0.3.1.zip` there. In Blender: Edit > Preferences > Get Extensions > Install from Disk, and pick the zip.
 3. In the add-on's preferences, set **Pipeline** to the binary (or set `$SAPPHIRE_PIPELINE`, or put `sapphire_pipeline` on the PATH).
 
 The panels are in the 3D view's sidebar (N) under **Sapphire**, in the order you work: Export, Material IDs, Data Color and Hull, Outline Normals, Masks, Check. The material settings are in the material properties, in a **Sapphire** panel.
@@ -18,7 +18,7 @@ The panels are in the 3D view's sidebar (N) under **Sapphire**, in the order you
 |---|---|---|---|
 | Material ID (0 to 7): which of its material's regions a face shades with, when the material has no control map | An integer attribute on faces, `_MATERIAL_ID` | Material IDs: select faces in Edit Mode and press an ID; Select picks the faces of one | `_MATERIAL_ID`, the same on all three corners of a triangle |
 | The data color: R ambient occlusion, G outline width scale, B outline Z offset scale | A float color attribute, `sapphire_data` (missing: 1 for each) | Data Color and Hull: set a channel on the selected vertices; paint more in Vertex Paint | `COLOR_0` |
-| Outline normals: the direction the inverted hull grows along, so hard edges don't split the line | A vector attribute on points, `_OUTLINE_NORMAL` (missing: the cook welds the shading normals) | Outline Normals: transfer from a smooth source mesh, or weld the mesh's own | `_OUTLINE_NORMAL`, turned to glTF's Y-up |
+| Outline normals: the direction the inverted hull grows along, so hard edges don't split the line | A vector attribute on points, `_OUTLINE_NORMAL` (missing: the cook welds the shading normals) | Outline Normals: transfer from a smooth source mesh, or weld the mesh's own | `_OUTLINE_NORMAL`, in the space of `NORMAL` (a skinned mesh's armature's world), Y-up |
 | The material's look: shade and outline colors, the light split, the rim, each region's rim | Custom properties on the material | Material properties > Sapphire | The material's extras |
 | One-sided or two-sided | The material's Back-face Culling (off: two-sided) | Material properties > Sapphire | `doubleSided` |
 
@@ -48,7 +48,11 @@ Pick a **Source** and press **Transfer Outline Normals** to give each vertex the
 
 Choose the **File** (a `.glb` inside your content tree, beside its `.meta` sidecar) and press **Export for Sapphire**. It runs Blender's glTF exporter with the engine's settings: a binary file, Y-up, normals and UVs, the data color as `COLOR_0`, the `_` attributes, material extras, skins and shape keys, no cameras or lights, no images (the engine binds maps through material documents; **Images** embeds them anyway). **Animations** writes the scene's actions as glTF animations, the mesh's clips; **Apply modifiers** applies everything but the armature, and Blender's exporter then drops shape keys.
 
-It also works around what Blender 5.2's exporter gets wrong for this data: it writes custom vectors without turning them to Y-up, and it writes a mesh's vertex colors into its first material only, every other material's white.
+It also works around what Blender 5.2's exporter gets wrong for this data: it writes custom vectors as they are, where it writes a skinned mesh's normals in its armature's world and turns every normal Y-up, so the export gives `_OUTLINE_NORMAL` the same transform; and it writes a mesh's vertex colors into its first material only, every other material's white. The second is a patch of the exporter's own private code, which is why the add-on installs on Blender 5.2 only: run from a script on another Blender whose exporter lacks it, the export warns, naming each mesh whose data color it may write white.
+
+A rig may be turned and scaled any way, as an FBX's arrives (turned 90° about X, scaled by 0.01), and a mesh object may sit at any transform under it but a mirror: a skinned object with a negative scale is refused, naming it, since the exporter would write it inside out (apply its scale). The transforms are read at frame 0, where Blender's exporter gathers, so a rig keyed elsewhere exports as it stands at frame 0. A mesh shared by two objects at different transforms is refused, naming both: its outline normals can't follow both. Give each object its own mesh (Object > Relations > Make Single User > Object & Data). A mesh reached through a collection instance is exported like any other; one linked from another file is refused, naming it, since its outline normals can't be written: make it local, or export it from its own file. The hull preview's width is in the object's own units, so under a scaled rig (an FBX's 0.01) it is that much thinner in the world than the engine draws it.
+
+Every export writes the add-on's version into the glTF scene's extras (`sapphire_addon`). **Re-export any character exported with the add-on before 0.3.1:** on a rig that isn't at the identity its outline normals were written in another space than its normals, so its outline grows the wrong way. Such a file carries no mark, and Check warns of it (`unmarked-export`); a file marked with a version known to export wrong is refused by the cook.
 
 The file is written under a hidden name beside it and renamed into place, so whatever watches the folder sees it whole.
 
@@ -87,7 +91,7 @@ The roles are `Hero`, `Enemy`, `Boss`, `Ambient`, `Tree` and `Cover`; spec §3.4
 
 ## The test character
 
-[`tools/blender/test_character.py`](../tools/blender/test_character.py) builds the project's own test character with the add-on, headless, and exports it through **Export for Sapphire**: a 1.6 m figure on 17 bones, in four materials, with every piece of data above. The pipeline's tests read the committed file back (`tools/sapphire_pipeline/tests/blender_character.rs`) and check it at the hero role.
+[`tools/blender/test_character.py`](../tools/blender/test_character.py) builds the project's own test character with the add-on, headless, and exports it through **Export for Sapphire**: a 1.6 m figure on 17 bones of a rig turned and scaled as an FBX's, in four materials, with every piece of data above. The pipeline's tests read the committed file back (`tools/sapphire_pipeline/tests/blender_character.rs`) and check it at the hero role.
 
 ```bash
 blender -b --factory-startup --python tools/blender/test_character.py -- \
@@ -95,4 +99,4 @@ blender -b --factory-startup --python tools/blender/test_character.py -- \
     --check --pipeline target/tools/sapphire_pipeline
 ```
 
-`--hull` also confirms the hull preview, and `--bake <folder>` bakes the face's masks there and draws their sheet. `--send <content tree>` exports with Send into a tree that holds `--out`, and `--skin-shade r,g,b` changes the skin's shade color first, so a re-export into a running loop has something to show. It uses the add-on installed in Blender if there is one (`--installed` requires it), else the checkout's. Each run writes the same bytes on Blender 5.2.0 LTS.
+`--hull` also confirms the hull preview, `--refusals` what the export refuses and warns of (into a temporary file), and `--bake <folder>` bakes the face's masks there and draws their sheet. `--send <content tree>` exports with Send into a tree that holds `--out`, and `--skin-shade r,g,b` changes the skin's shade color first, so a re-export into a running loop has something to show. It uses the add-on installed in Blender if there is one (`--installed` requires it), else the checkout's. Each run writes the same bytes on Blender 5.2.0 LTS.

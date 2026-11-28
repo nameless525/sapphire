@@ -791,3 +791,14 @@ fn a_generated_instance_name_cannot_take_a_later_authored_target() {
         imported.morph_targets.iter().map(|t| (t.name.as_str(), t.default_weight, t.deltas.len())).collect();
     assert_eq!(targets, [("raise", 0.0, 3), ("raise@Right#2", 1.0, 3), ("raise@Right", 0.5, 3)]);
 }
+
+/// A version added to [`BAD_ADDON_VERSIONS`] must refuse files a warm cache already cooked, so the list and
+/// the importer's version move together: when this fails, bump [`IMPORTER`] and set both numbers here.
+#[test]
+fn the_bad_addon_list_moves_the_importer() {
+    assert_eq!(
+        (BAD_ADDON_VERSIONS.len(), IMPORTER.version),
+        (1, 12),
+        "a version was added to BAD_ADDON_VERSIONS without bumping IMPORTER"
+    );
+}

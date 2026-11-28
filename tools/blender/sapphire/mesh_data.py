@@ -10,8 +10,9 @@ gltf.rs`), as mesh attributes the export writes:
   export), R ambient occlusion, G outline width scale, B outline Z offset scale. Without it the importer
   takes 1 for every channel. It exports as `COLOR_0`.
 - `_OUTLINE_NORMAL`: a vector attribute on points, the direction the inverted hull extrudes along, in the
-  object's space. Blender's exporter writes custom vectors as they are, so the export turns it into
-  glTF's Y-up space as it writes it (`export.outline_normals_in_gltf_space`). Without it the cook bakes one
+  object's space. Blender's exporter writes custom vectors as they are, so the export turns it into the
+  space it writes the mesh's normals in (a skinned mesh's armature's world, Y-up) as it writes it
+  (`export.outline_normals_in_gltf_space`). Without it the cook bakes one
   by welding the shading normals of each position.
 
 The functions here work on a mesh in object mode and are what scripts call; the operators wrap them for

@@ -331,12 +331,14 @@ fn document_kinds_go_by_their_compound_extensions() {
         );
         assert_eq!(kind.default_settings().kind(), kind);
     }
-    // Importers that decode masks carry the image importer's version.
-    for kind in [MapKind::FaceSdf, MapKind::Ilm, MapKind::LayerMask] {
-        assert_eq!(kind.importer().version & 0xffff, image_import::IMPORTER.version);
-        assert_eq!(kind.importer().version >> 16, 1);
+    // Importers that decode images carry the image importer's version: the masks', and the ramp's for
+    // its painted strips (since C7's review), so a change to the decoder recooks them all.
+    for (kind, version) in
+        [(MapKind::FaceSdf, 1), (MapKind::Ilm, 1), (MapKind::LayerMask, 1), (MapKind::Ramp, 3)]
+    {
+        assert_eq!(kind.importer().version & 0xffff, image_import::IMPORTER.version, "{kind:?}");
+        assert_eq!(kind.importer().version >> 16, version, "{kind:?}");
     }
-    assert_eq!(MapKind::Ramp.importer().version, 2);
 }
 
 #[test]

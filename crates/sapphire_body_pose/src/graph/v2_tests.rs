@@ -779,3 +779,190 @@ fn an_override_layer_or_a_masked_move_hides_the_feet_below_it_from_events() {
     assert_eq!(footsteps(&binding, &humanoid, None), shown, "no move, the walk's feet");
     assert_eq!(footsteps(&binding, &humanoid, Some("kick")), 0, "a move over the legs hides them");
 }
+
+/// A snapshot (M6 A9) says each machine layer's state, how long it has played and its blend's weights, every
+/// parameter by name and value, and the move playing, as of the frame drawn.
+#[test]
+fn a_snapshot_says_each_layers_state_and_weights_and_every_parameter() {
+    let humanoid = feature_humanoid();
+    let source = humanoid.source();
+    let mut player = GraphPlayer::new(feature_binding(&humanoid, OVER), humanoid.pose(), 1);
+    let mut snapshot = GraphSnapshot::new();
+    player.debug_snapshot(&mut snapshot);
+    assert_eq!(snapshot.drawn, None, "nothing drawn yet");
+    player.set_game_slot(Name::new("aim"), 0.3);
+    for frame in 0..20 {
+        let input = GraphInput {
+            combat: (frame >= 12).then_some(CombatInput {
+                name: Name::new("kick"),
+                serial: 1,
+                position: f64::from(frame - 12),
+            }),
+            ..walking(f64::from(frame), 1.5)
+        };
+        player.evaluate(&input, source.as_slice(), 0);
+    }
+    player.debug_snapshot(&mut snapshot);
+    assert_eq!(snapshot.drawn, Some(19.0));
+    assert_eq!(snapshot.combat, None, "the graph has no row for the move");
+    let layers = snapshot.layers();
+    assert_eq!(layers.len(), 2, "{layers:?}");
+    assert_eq!((layers[0].machine, layers[0].state), (Name::new("locomotion"), Name::new("ground")));
+    assert_eq!(layers[0].time, 19.0);
+    assert_eq!(layers[0].weights().len(), 3);
+    assert!((layers[0].weights().iter().sum::<f32>() - 1.0).abs() < 1e-5, "{layers:?}");
+    assert!(layers[0].weights()[1] > layers[0].weights()[2], "walking at 1.5 m/s is mostly the walk");
+    assert_eq!((layers[1].machine, layers[1].state), (Name::new("upper"), Name::new("aim")));
+    let [low, high] = layers[1].weights() else { panic!("{layers:?}") };
+    assert!((low - 0.35).abs() < 1e-5 && (high - 0.65).abs() < 1e-5, "{layers:?}");
+    let names: Vec<Name> = snapshot.parameters().iter().map(|parameter| parameter.name).collect();
+    // The graph's own, then the controller's inputs it doesn't name.
+    let own = ["velocity_x", "velocity_z", "grounded", "aim"];
+    let fed = ["speed", "direction", "landed", "preparing_jump"];
+    assert_eq!(names, own.into_iter().chain(fed).map(Name::new).collect::<Vec<_>>());
+    let value = |name: &str| snapshot.parameter(Name::new(name)).map(|parameter| parameter.value);
+    assert_eq!((value("grounded"), value("aim"), value("speed")), (Some(1.0), Some(0.3), Some(1.5)));
+    assert!(snapshot.parameters().iter().all(|parameter| !parameter.overridden));
+    // Every name it shows has its text, in any build.
+    let label = |name: Name| player.label(name);
+    assert_eq!((label(layers[1].machine), label(layers[1].state)), (Some("upper"), Some("aim")));
+    assert_eq!((label(Name::new("aim")), label(Name::new("speed"))), (Some("aim"), Some("speed")));
+    assert_eq!(label(Name::new("height")), None);
+}
+
+/// An override (M6 A9) is what the graph reads, from the next frame and on a frozen clock too, until it's
+/// cleared: one read from the controller in the input, a game slot in its register. A parameter the graph
+/// doesn't have, or a value that isn't a number, is refused and pins nothing.
+#[test]
+fn an_override_is_what_the_graph_reads_until_its_cleared() {
+    let humanoid = feature_humanoid();
+    let source = humanoid.source();
+    let mut player = GraphPlayer::new(feature_binding(&humanoid, OVER), humanoid.pose(), 1);
+    let mut snapshot = GraphSnapshot::new();
+    let mut frame = 0.0;
+    let mut play = |player: &mut GraphPlayer, frames: u32| {
+        for _ in 0..frames {
+            player.evaluate(&walking(frame, 1.5), source.as_slice(), 0);
+            frame += 1.0;
+        }
+        frame - 1.0
+    };
+    let last = play(&mut player, 10);
+    assert_eq!(player.state(), Name::new("ground"));
+    assert_eq!(
+        player.set_override(Name::new("height"), 1.0),
+        Err(OverrideError::NoSuchParameter(Name::new("height")))
+    );
+    assert_eq!(player.set_override(Name::new("grounded"), f32::NAN), Err(OverrideError::NotANumber));
+    assert_eq!(player.overrides().count(), 0);
+
+    // On a frozen clock the graph takes it at once, since the key covers the overrides; the pose keeps
+    // its bits and decays toward the new state when the clock moves.
+    player.set_override(Name::new("grounded"), 0.0).expect("the graph has it");
+    player.set_override(Name::new("aim"), -1.0).expect("a game slot");
+    player.evaluate(&walking(last, 1.5), source.as_slice(), 0);
+    assert_eq!(
+        player.state(),
+        Name::new("rise"),
+        "in the air for the graph, on the ground for the controller"
+    );
+    play(&mut player, 70);
+    assert_eq!(player.state(), Name::new("fall"));
+    player.debug_snapshot(&mut snapshot);
+    let grounded = snapshot.parameter(Name::new("grounded")).expect("there");
+    assert_eq!((grounded.value, grounded.overridden), (0.0, true));
+    assert_eq!(snapshot.layers()[1].weights(), [1.0, 0.0], "the aim pinned low");
+    // Setting it again replaces it; a truth is 1 for anything but 0.
+    player.set_override(Name::new("grounded"), 0.25).expect("again");
+    assert_eq!(
+        player.overrides().collect::<Vec<_>>(),
+        [(Name::new("grounded"), 1.0), (Name::new("aim"), -1.0)]
+    );
+    play(&mut player, 2);
+    assert_eq!(player.state(), Name::new("ground"));
+
+    player.set_override(Name::new("grounded"), 0.0).expect("again");
+    play(&mut player, 2);
+    assert_eq!(player.state(), Name::new("rise"));
+    player.clear_overrides();
+    play(&mut player, 2);
+    assert_eq!(player.state(), Name::new("ground"), "what the controller says, again");
+    // The controller's speed, which the graph doesn't name, is the input the smoothed velocity follows.
+    player.set_override(Name::new("speed"), 0.0).expect("every graph is fed it");
+    play(&mut player, 60);
+    player.debug_snapshot(&mut snapshot);
+    let speed = snapshot.parameter(Name::new("speed")).expect("there");
+    assert_eq!((speed.value, speed.overridden), (0.0, true));
+    let forward = snapshot.parameter(Name::new("velocity_z")).expect("there").value;
+    assert!(forward.abs() < 0.05, "the smoothed velocity settled at the overridden speed: {forward}");
+    player.clear_overrides();
+    play(&mut player, 2);
+    player.debug_snapshot(&mut snapshot);
+    assert!(snapshot.parameters().iter().all(|parameter| !parameter.overridden));
+    assert_eq!(snapshot.parameter(Name::new("aim")).map(|parameter| parameter.value), Some(0.0));
+    // A held frame has no time to smooth over, so the smoothed velocity takes an overridden speed at once.
+    let held = play(&mut player, 60);
+    player.debug_snapshot(&mut snapshot);
+    let walking_at = snapshot.parameter(Name::new("velocity_z")).expect("there").value;
+    assert!(walking_at.abs() > 0.5, "walking again: {walking_at}");
+    player.set_override(Name::new("speed"), 0.0).expect("every graph is fed it");
+    player.evaluate(&walking(held, 1.5), source.as_slice(), 0);
+    player.debug_snapshot(&mut snapshot);
+    let forward = snapshot.parameter(Name::new("velocity_z")).expect("there").value;
+    assert!(forward.abs() < 1e-6, "the held frame took the overridden speed: {forward}");
+}
+
+/// What a person pinned holds for a new version of the character (`continue_from`, for a new mesh, rig or
+/// skeleton), as through a replacement, and `check_override` says what `set_override` would, changing nothing.
+#[test]
+fn an_override_holds_for_a_new_version_of_the_character() {
+    let humanoid = feature_humanoid();
+    let source = humanoid.source();
+    let mut old = GraphPlayer::new(feature_binding(&humanoid, OVER), humanoid.pose(), 1);
+    assert_eq!(
+        old.check_override(Name::new("height"), 1.0),
+        Err(OverrideError::NoSuchParameter(Name::new("height")))
+    );
+    assert_eq!(old.check_override(Name::new("speed"), f32::INFINITY), Err(OverrideError::NotANumber));
+    assert_eq!(old.check_override(Name::new("speed"), 0.0), Ok(()));
+    assert_eq!(old.overrides().count(), 0, "a check pins nothing");
+    old.set_override(Name::new("aim"), 1.0).expect("a game slot");
+    old.set_override(Name::new("speed"), 0.0).expect("the controller's");
+    old.evaluate(&walking(0.0, 1.5), source.as_slice(), 0);
+    let mut new = GraphPlayer::new(feature_binding(&humanoid, ADDED), humanoid.pose(), 1);
+    new.continue_from(&old);
+    assert_eq!(new.overrides().collect::<Vec<_>>(), [(Name::new("aim"), 1.0), (Name::new("speed"), 0.0)]);
+    new.evaluate(&walking(1.0, 1.5), source.as_slice(), 0);
+    let mut snapshot = GraphSnapshot::new();
+    new.debug_snapshot(&mut snapshot);
+    let aim = snapshot.parameter(Name::new("aim")).expect("there");
+    assert_eq!((aim.value, aim.overridden), (1.0, true));
+}
+
+/// An override holds through a replacement graph by name: once the new graph is adopted, it pins the same
+/// parameter there.
+#[test]
+fn an_override_holds_through_a_replacement_by_name() {
+    let humanoid = feature_humanoid();
+    let source = humanoid.source();
+    let binding = feature_binding(&humanoid, OVER);
+    let mut player = GraphPlayer::new(Arc::clone(&binding), humanoid.pose(), 1);
+    player.set_override(Name::new("aim"), 1.0).expect("a game slot");
+    player.replace(feature_binding(&humanoid, ADDED));
+    for frame in 0..40 {
+        // In the air and down again: a state's start adopts the replacement.
+        let grounded = !(10..20).contains(&frame);
+        let input = GraphInput {
+            ticks: f64::from(frame),
+            locomotion: LocomotionInput { grounded, ..LocomotionInput::default() },
+            ..GraphInput::default()
+        };
+        player.evaluate(&input, source.as_slice(), 0);
+    }
+    assert!(!player.has_replacement(), "adopted");
+    let mut snapshot = GraphSnapshot::new();
+    player.debug_snapshot(&mut snapshot);
+    assert_eq!(snapshot.revision, 1);
+    let aim = snapshot.parameter(Name::new("aim")).expect("there");
+    assert_eq!((aim.value, aim.overridden), (1.0, true));
+}

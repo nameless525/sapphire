@@ -308,6 +308,11 @@ impl Editor {
                 Err(_) => self.refuse(format!("`{address}` isn't an address and port")),
             },
             Command::Cvar { name, value } => self.link.set_cvar(name, value.clone()),
+            Command::WatchGraph(graph) => self.link.watch_graph(graph.as_deref()),
+            Command::OverrideGraph { graph, parameter, value } => {
+                self.link.override_graph(graph, Some((parameter, *value)));
+            }
+            Command::ClearOverrides(graph) => self.link.override_graph(graph, None),
         }
     }
 

@@ -93,6 +93,12 @@ pub enum Push {
     /// A frame to capture: the app reads back the next frame it draws and answers with
     /// [`ReplyBody::Captured`], or refuses a frame with no pixels ([`capture_refusal`]).
     Capture { reply: Responder },
+    /// What the character playing the graph of this file name is doing: answer with
+    /// [`ReplyBody::GraphTrace`].
+    GraphTrace { graph: String, reply: Responder },
+    /// A parameter of a graph pinned to `value` (`Some`), or every one of its parameters let go (`None`):
+    /// answer with [`ReplyBody::GraphOverridden`].
+    GraphOverride { graph: String, set: Option<(String, f32)>, reply: Responder },
 }
 
 /// Answers one request, on the connection it came from. Replying never blocks: the
@@ -712,6 +718,13 @@ impl Session<'_> {
                 None => reply.refuse("a pack end came with no pack being pushed"),
             },
             RequestBody::Capture => self.forward(Push::Capture { reply }),
+            RequestBody::GraphTrace { graph } => self.forward(Push::GraphTrace { graph, reply }),
+            RequestBody::GraphOverride { graph, parameter, value } => {
+                self.forward(Push::GraphOverride { graph, set: Some((parameter, value)), reply });
+            }
+            RequestBody::GraphClear { graph } => {
+                self.forward(Push::GraphOverride { graph, set: None, reply })
+            }
         }
     }
 }
@@ -728,6 +741,9 @@ fn overlong(body: &RequestBody) -> Option<String> {
             ("shader file name", files.iter().map(|file| file.name.len()).max()?)
         }
         RequestBody::PackBegin { name, .. } => ("pack name", name.len()),
+        RequestBody::GraphOverride { graph, .. } if graph.len() > MAX_NAME => ("graph name", graph.len()),
+        RequestBody::GraphOverride { parameter, .. } => ("parameter name", parameter.len()),
+        RequestBody::GraphTrace { graph } | RequestBody::GraphClear { graph } => ("graph name", graph.len()),
         RequestBody::Status
         | RequestBody::ListCvars
         | RequestBody::PackChunk { .. }
@@ -1013,6 +1029,24 @@ mod tests {
             (RequestBody::Shaders { files: Vec::new() }, false),
             (RequestBody::PackBegin { name: named(MAX_NAME + 1), len: 0, head: Vec::new() }, true),
             (RequestBody::PackChunk { offset: 0, bytes: vec![0; MAX_NAME + 1] }, false),
+            (RequestBody::GraphTrace { graph: named(MAX_NAME + 1) }, true),
+            (RequestBody::GraphClear { graph: named(MAX_NAME + 1) }, true),
+            (
+                RequestBody::GraphOverride {
+                    graph: named(MAX_NAME + 1),
+                    parameter: "speed".into(),
+                    value: 1.0,
+                },
+                true,
+            ),
+            (
+                RequestBody::GraphOverride { graph: named(4), parameter: named(MAX_NAME + 1), value: 1.0 },
+                true,
+            ),
+            (
+                RequestBody::GraphOverride { graph: named(MAX_NAME), parameter: named(MAX_NAME), value: 1.0 },
+                false,
+            ),
         ] {
             assert_eq!(overlong(&body).is_some(), refused, "{body:?}");
         }

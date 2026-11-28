@@ -12,6 +12,10 @@
 //! deadline: the thread holds one push of each file at most, the newest save, and a new address sends back
 //! what was waiting for the old one. So the newest text waits for what's already out and no more, and what
 //! never went says so in [`Link::earlier_push`].
+//!
+//! It also follows one animation graph while asked ([`Link::watch_graph`], M6 A9): what the first character
+//! playing it is doing, a few times a second, which is the trace a graph pane reads, and the parameters set by
+//! hand on it ([`Link::override_graph`]), each the newest of its name, in order with the clears.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -22,7 +26,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use sapphire_livelink::protocol::{CvarStatus, DeviceStatus, MoveAttempt, PackOutcome};
+use sapphire_livelink::protocol::{CvarStatus, DeviceStatus, GraphTrace, MoveAttempt, PackOutcome};
 use sapphire_livelink::{Client, LinkError};
 use sapphire_time::Stopwatch;
 
@@ -36,6 +40,8 @@ const IDLE_ATTEMPT_HISTORY: usize = 64;
 const STATUS_EVERY: Duration = Duration::from_millis(250);
 /// How often a panel that's showing cvars has them looked at again: values change on the device too.
 const CVARS_EVERY: Duration = Duration::from_secs(1);
+/// How often a watched graph is asked what it's doing: as often as a person can follow a state change.
+const TRACE_EVERY: Duration = Duration::from_millis(100);
 /// How often to try for a device that isn't there.
 const RECONNECT_EVERY: Duration = Duration::from_secs(1);
 /// What a save that never went came to, when a newer save of its file took its place.
@@ -137,6 +143,11 @@ struct Waiting {
     list_cvars: bool,
     /// A panel is showing cvars, so they're worth asking for.
     wants_cvars: bool,
+    /// The graph, by file name, whose trace is worth asking for.
+    graph: Option<String>,
+    /// Overrides to send, oldest first: one of each graph and parameter, and a clear in place of what waited
+    /// of its graph.
+    overrides: Vec<GraphOverride>,
     /// The link has gone.
     closed: bool,
 }
@@ -148,7 +159,15 @@ impl Waiting {
             || !self.pushes.is_empty()
             || !self.cvars.is_empty()
             || self.list_cvars
+            || !self.overrides.is_empty()
     }
+}
+
+/// A parameter of a graph set by hand (`Some`), or all of its let go (`None`).
+#[derive(Clone, Debug, PartialEq)]
+struct GraphOverride {
+    graph: String,
+    set: Option<(String, f32)>,
 }
 
 /// What the thread does next.
@@ -160,6 +179,7 @@ enum Next {
     Push(WaitingPush),
     SetCvar(u64, String, String),
     ListCvars,
+    Override(GraphOverride),
     /// Nothing came in time.
     Quiet,
     Stop,
@@ -196,6 +216,8 @@ impl Mailbox {
         let mut waiting = self.lock();
         waiting.address = Some((target, address));
         waiting.cvars.clear();
+        // An override was meant for the device it was made against (M6 A9).
+        waiting.overrides.clear();
         waiting.list_cvars = waiting.wants_cvars;
         self.wake.notify_one();
         std::mem::take(&mut waiting.pushes)
@@ -217,6 +239,24 @@ impl Mailbox {
             self.wake.notify_one();
         }
         waiting.wants_cvars = wanted;
+    }
+
+    /// Leaves an override, in place of any of its graph and parameter still waiting; a clear takes the place of
+    /// all of its graph's.
+    fn put_override(&self, change: GraphOverride) {
+        let mut waiting = self.lock();
+        waiting.overrides.retain(|other| {
+            other.graph != change.graph
+                || (change.set.is_some()
+                    && other.set.as_ref().map(|(name, _)| name) != change.set.as_ref().map(|(name, _)| name))
+        });
+        waiting.overrides.push(change);
+        self.wake.notify_one();
+    }
+
+    fn watch_graph(&self, graph: Option<String>) {
+        self.lock().graph = graph;
+        self.wake.notify_one();
     }
 
     fn close(&self) {
@@ -242,6 +282,8 @@ impl Mailbox {
             Next::SetCvar(version, name, value)
         } else if std::mem::take(&mut waiting.list_cvars) {
             Next::ListCvars
+        } else if !waiting.overrides.is_empty() {
+            Next::Override(waiting.overrides.remove(0))
         } else {
             Next::Quiet
         }
@@ -275,6 +317,17 @@ enum Report {
         version: u64,
         list: Result<Vec<CvarStatus>, String>,
     },
+    /// What the watched graph is doing, or why the device can't say.
+    Trace {
+        target: u64,
+        graph: String,
+        trace: Result<Box<GraphTrace>, String>,
+    },
+    /// An override the device wouldn't take, and why.
+    OverrideRefused {
+        target: u64,
+        why: String,
+    },
 }
 
 /// Only the newest periodic snapshot of each kind survives an unpolled interval. Push and cvar command
@@ -290,6 +343,7 @@ impl Reports {
                 (previous, &report),
                 (Report::Connection { .. }, Report::Connection { .. })
                     | (Report::Cvars { .. }, Report::Cvars { .. })
+                    | (Report::Trace { .. }, Report::Trace { .. })
                     | (Report::Connected { .. }, Report::Connected { .. })
             )
         };
@@ -344,6 +398,12 @@ pub struct Link {
     cvar_refusal: Option<(String, String)>,
     next_cvar: u64,
     cvar_versions: HashMap<String, u64>,
+    /// The graph followed, by file name, and the device's last word on it.
+    graph: Option<String>,
+    trace: Option<GraphTrace>,
+    trace_trouble: Option<String>,
+    /// The last override the device wouldn't take, and why.
+    override_refusal: Option<String>,
 }
 
 impl Link {
@@ -380,6 +440,10 @@ impl Link {
             cvar_refusal: None,
             next_cvar: 1,
             cvar_versions: HashMap::new(),
+            graph: None,
+            trace: None,
+            trace_trouble: None,
+            override_refusal: None,
         }
     }
 
@@ -402,6 +466,9 @@ impl Link {
         self.cvar_refusal = None;
         self.cvar_versions.clear();
         self.next_cvar = 1;
+        self.trace = None;
+        self.trace_trouble = None;
+        self.override_refusal = None;
         self.clear_push();
         self.answers.clear();
         self.device_from = self.next_push;
@@ -477,6 +544,47 @@ impl Link {
         self.cvar_refusal.as_ref()
     }
 
+    /// Follows the graph of this file name (`character.animgraph.ron`) on the device, or none: its trace is
+    /// asked for a few times a second, only while one is followed.
+    pub fn watch_graph(&mut self, graph: Option<&str>) {
+        if self.graph.as_deref() == graph {
+            return;
+        }
+        self.graph = graph.map(str::to_owned);
+        self.trace = None;
+        self.trace_trouble = None;
+        self.mailbox.watch_graph(self.graph.clone());
+    }
+
+    /// What the followed graph's first character was doing when last asked.
+    #[must_use]
+    pub fn graph_trace(&self) -> Option<&GraphTrace> {
+        self.trace.as_ref()
+    }
+
+    /// Why the device couldn't say what the followed graph is doing, if it couldn't.
+    #[must_use]
+    pub fn trace_trouble(&self) -> Option<&str> {
+        self.trace_trouble.as_deref()
+    }
+
+    /// Pins `parameter` of the graph of this file name to `value` on the device (`Some`), or lets every one of its
+    /// parameters go (`None`): presentation only, so the device's simulation steps as it would have.
+    /// [`Self::override_refusal`] says if the device wouldn't.
+    pub fn override_graph(&mut self, graph: &str, set: Option<(&str, f32)>) {
+        self.override_refusal = None;
+        if self.thread_runs() {
+            let set = set.map(|(parameter, value)| (parameter.to_owned(), value));
+            self.mailbox.put_override(GraphOverride { graph: graph.to_owned(), set });
+        }
+    }
+
+    /// The last override the device wouldn't take, and why.
+    #[must_use]
+    pub fn override_refusal(&self) -> Option<&str> {
+        self.override_refusal.as_deref()
+    }
+
     fn never_went(&mut self, origin: String, why: &str) {
         self.earlier_push = Some(EarlierPush { origin, pushed: Pushed::Failed(why.to_owned()) });
     }
@@ -532,11 +640,30 @@ impl Link {
                         Err(_) => self.cvars = None,
                     }
                 }
+                Some(Report::Trace { target, graph, trace })
+                    if target == self.target && self.graph.as_ref() == Some(&graph) =>
+                {
+                    match trace {
+                        Ok(trace) => {
+                            self.trace = Some(*trace);
+                            self.trace_trouble = None;
+                        }
+                        Err(why) => {
+                            self.trace = None;
+                            self.trace_trouble = Some(why);
+                        }
+                    }
+                }
+                Some(Report::OverrideRefused { target, why }) if target == self.target => {
+                    self.override_refusal = Some(why);
+                }
                 Some(
                     Report::Connected { .. }
                     | Report::Connection { .. }
                     | Report::CvarSet { .. }
-                    | Report::Cvars { .. },
+                    | Report::Cvars { .. }
+                    | Report::Trace { .. }
+                    | Report::OverrideRefused { .. },
                 ) => {}
                 Some(Report::Pushed { id, origin, pushed }) => {
                     self.waiting = self.waiting.saturating_sub(1);
@@ -655,8 +782,10 @@ fn work(mut address: Option<SocketAddr>, mailbox: &Mailbox, reports: &Reports) {
     let mut cvar_version = 0;
     let mut since_try = Stopwatch::start();
     let mut since_cvars = Stopwatch::start();
+    let mut since_trace = Stopwatch::start();
     loop {
-        let next = mailbox.next(STATUS_EVERY);
+        let watched = mailbox.lock().graph.clone();
+        let next = mailbox.next(if watched.is_some() { TRACE_EVERY } else { STATUS_EVERY });
         let quiet = matches!(&next, Next::Quiet);
         match next {
             Next::Move { target: next_target, address: next } => {
@@ -684,6 +813,11 @@ fn work(mut address: Option<SocketAddr>, mailbox: &Mailbox, reports: &Reports) {
                 let list = list_cvars(address, target, &mut client, reports);
                 reports.send(Report::Cvars { target, version: cvar_version, list });
             }
+            Next::Override(change) => {
+                if let Err(why) = override_graph(address, target, &mut client, reports, &change) {
+                    reports.send(Report::OverrideRefused { target, why });
+                }
+            }
             Next::Quiet => {}
             Next::Stop => return,
         }
@@ -692,6 +826,11 @@ fn work(mut address: Option<SocketAddr>, mailbox: &Mailbox, reports: &Reports) {
             since_cvars = Stopwatch::start();
             let list = list_cvars(address, target, &mut client, reports);
             reports.send(Report::Cvars { target, version: cvar_version, list });
+        }
+        if let Some(graph) = watched.filter(|_| client.is_some() && since_trace.elapsed() >= TRACE_EVERY) {
+            since_trace = Stopwatch::start();
+            let trace = graph_trace(address, target, &mut client, reports, &graph);
+            reports.send(Report::Trace { target, graph, trace });
         }
         if client.is_none() {
             if !quiet || since_try.elapsed() < RECONNECT_EVERY {
@@ -754,6 +893,45 @@ fn list_cvars(
     let connection = connected(address, target, client, reports)?;
     match connection.cvars() {
         Ok(list) => Ok(list),
+        Err(LinkError::Refused(why)) => Err(why),
+        Err(error) => {
+            *client = None;
+            Err(error_chain(&error))
+        }
+    }
+}
+
+fn graph_trace(
+    address: Option<SocketAddr>,
+    target: u64,
+    client: &mut Option<Client>,
+    reports: &Reports,
+    graph: &str,
+) -> Result<Box<GraphTrace>, String> {
+    let address = address.ok_or_else(|| "no device address".to_owned())?;
+    let connection = connected(address, target, client, reports)?;
+    match connection.graph_trace(graph) {
+        Ok(trace) => Ok(Box::new(trace)),
+        Err(LinkError::Refused(why)) => Err(why),
+        Err(error) => {
+            *client = None;
+            Err(error_chain(&error))
+        }
+    }
+}
+
+fn override_graph(
+    address: Option<SocketAddr>,
+    target: u64,
+    client: &mut Option<Client>,
+    reports: &Reports,
+    change: &GraphOverride,
+) -> Result<u32, String> {
+    let address = address.ok_or_else(|| "no device address".to_owned())?;
+    let connection = connected(address, target, client, reports)?;
+    let set = change.set.as_ref().map(|(parameter, value)| (parameter.as_str(), *value));
+    match connection.override_graph(&change.graph, set) {
+        Ok(characters) => Ok(characters),
         Err(LinkError::Refused(why)) => Err(why),
         Err(error) => {
             *client = None;
@@ -832,6 +1010,16 @@ mod tests {
         assert!(matches!(mailbox.next(Duration::ZERO), Next::Move { target: 1, .. }));
         assert!(matches!(mailbox.next(Duration::ZERO), Next::ListCvars));
         assert!(matches!(mailbox.next(Duration::ZERO), Next::Quiet));
+    }
+
+    #[test]
+    fn graph_overrides_waiting_for_an_old_device_are_discarded_on_switch() {
+        let mailbox = Mailbox::default();
+        let set = Some(("speed".to_owned(), 5.0));
+        mailbox.put_override(GraphOverride { graph: "character.animgraph.ron".to_owned(), set });
+        mailbox.put_address(1, Some("127.0.0.1:9".parse().expect("an address")));
+        assert!(matches!(mailbox.next(Duration::ZERO), Next::Move { target: 1, .. }));
+        assert!(matches!(mailbox.next(Duration::ZERO), Next::Quiet), "the override was the old device's");
     }
 
     #[test]

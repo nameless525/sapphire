@@ -1699,6 +1699,14 @@ impl Scene {
         self.graph_show.as_mut()?.tune(document, set)
     }
 
+    /// The character, if it plays a graph here (`--look-dev <shot> --graph <script>`, or a fight's player):
+    /// whose graph live link's graph trace reads and its overrides set (M6 A9).
+    #[must_use]
+    pub fn graph_character(&self) -> Option<Entity> {
+        let posed = self.graph_show.is_some() || self.character_plays_graph;
+        (posed && self.ecs.world().get::<GraphDriver>(self.character).is_some()).then_some(self.character)
+    }
+
     /// Takes an edited graph (M2 T2), compiled as the cook compiles it
     /// ([`Target::COOKED`](sapphire_anim::Target::COOKED)): its clips loaded, bound against the character, and from then on what
     /// binds it, until a pack brings another. It takes effect at the next state's start

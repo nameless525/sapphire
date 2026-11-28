@@ -39,6 +39,8 @@ use std::io::{self, Read, Write};
 use std::time::Duration;
 
 use sapphire_assets::{AssetId, AssetKind};
+use sapphire_body_pose::{GraphPlayer, GraphSnapshot};
+use sapphire_core::Name;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -48,8 +50,10 @@ use serde::{Deserialize, Serialize};
 /// ([`ReplyBody::ShadersApplied`]); version 4 (M2 T2) what live tuning reads in the status: the packs
 /// served from pushes, the documents the app takes and what its fighters are playing
 /// ([`DeviceStatus`]); version 5 (M3 E2) [`RequestBody::ListCvars`], for the editor's cvar panel; version 6
-/// (M3 L3) [`RequestBody::Script`], a script's source for a running fight.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// (M3 L3) [`RequestBody::Script`], a script's source for a running fight; version 7 (M6 A9) a fighter's
+/// animation graph as it plays ([`RequestBody::GraphTrace`]) and its parameters set by hand
+/// ([`RequestBody::GraphOverride`], [`RequestBody::GraphClear`]).
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The port a device listens on and the tool connects to by default.
 pub const DEFAULT_PORT: u16 = 7811;
@@ -204,13 +208,13 @@ mod whole_bytes {
 
 /// A request from the tool. The device answers it with a [`Reply`] of the same `id`, except a
 /// [`RequestBody::PackChunk`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub id: u32,
     pub body: RequestBody,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum RequestBody {
     /// The device's state: [`ReplyBody::Status`].
     Status,
@@ -253,6 +257,16 @@ pub enum RequestBody {
     Capture,
     /// Every cvar the device has, for a tool's panel: [`ReplyBody::Cvars`].
     ListCvars,
+    /// What the character playing the animation graph of this file name (`character.animgraph.ron`, as a
+    /// push names it) is doing as of the last frame: [`ReplyBody::GraphTrace`].
+    GraphTrace { graph: String },
+    /// Pins a parameter of the graph of this file name to `value` on every character playing it, from the
+    /// next frame until [`RequestBody::GraphClear`]: presentation only, so no checksum moves, and refused
+    /// for a character the fixed step poses. [`ReplyBody::GraphOverridden`].
+    GraphOverride { graph: String, parameter: String, value: f32 },
+    /// Lets every parameter of the graph of this file name read what it reads again.
+    /// [`ReplyBody::GraphOverridden`].
+    GraphClear { graph: String },
 }
 
 impl RequestBody {
@@ -269,6 +283,9 @@ impl RequestBody {
             Self::PackEnd => "pack end",
             Self::Capture => "capture",
             Self::ListCvars => "list cvars",
+            Self::GraphTrace { .. } => "graph trace",
+            Self::GraphOverride { .. } => "graph override",
+            Self::GraphClear { .. } => "graph clear",
         }
     }
 }
@@ -303,6 +320,14 @@ impl fmt::Debug for RequestBody {
             Self::PackEnd => f.write_str("PackEnd"),
             Self::Capture => f.write_str("Capture"),
             Self::ListCvars => f.write_str("ListCvars"),
+            Self::GraphTrace { graph } => f.debug_struct("GraphTrace").field("graph", graph).finish(),
+            Self::GraphOverride { graph, parameter, value } => f
+                .debug_struct("GraphOverride")
+                .field("graph", graph)
+                .field("parameter", parameter)
+                .field("value", value)
+                .finish(),
+            Self::GraphClear { graph } => f.debug_struct("GraphClear").field("graph", graph).finish(),
         }
     }
 }
@@ -379,6 +404,12 @@ pub enum ReplyBody {
     Captured(Capture),
     /// Every cvar, in name order.
     Cvars(Vec<CvarStatus>),
+    /// What a [`RequestBody::GraphTrace`] asked for.
+    GraphTrace(GraphTrace),
+    /// How many characters took a [`RequestBody::GraphOverride`] or a [`RequestBody::GraphClear`].
+    GraphOverridden {
+        characters: u32,
+    },
 }
 
 impl ReplyBody {
@@ -395,6 +426,8 @@ impl ReplyBody {
             Self::Error(_) => "error",
             Self::Captured(_) => "captured",
             Self::Cvars(_) => "cvars",
+            Self::GraphTrace(_) => "graph trace",
+            Self::GraphOverridden { .. } => "graph overridden",
         }
     }
 }
@@ -429,6 +462,95 @@ impl fmt::Debug for Capture {
             .field("png", &self.png.len())
             .finish()
     }
+}
+
+/// An animation graph as a character plays it, as of the device's last frame (M6 A9), every name as text
+/// ([`GraphTrace::of`]). Its lists are bounded by the graph's own limits (8 machine layers, 16 samples a
+/// blend, 37 parameters: the graph's 32 and the controller's 5 inputs it doesn't name), so a trace is a few
+/// kilobytes at most. The editor's link asks for one at 10 Hz and keeps the newest, so it's a person's view
+/// of a device; the graph pane (T17b) reads the in-process viewport's `GraphSnapshot`, which a scripted run
+/// follows tick for tick.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GraphTrace {
+    /// The graph's file name, as asked.
+    pub graph: String,
+    /// Whose it is, in messages: the playable kind or the kind of enemy.
+    pub owner: String,
+    /// How many characters play it here; the trace is the first's.
+    pub characters: u32,
+    /// When the pose was last drawn, in the owner clock's ticks: `None` before its first frame.
+    pub drawn: Option<f64>,
+    /// How many replacements it has adopted since it was made (live tuning's, or a cook's).
+    pub revision: u32,
+    /// Whether a transition's offset is still decaying out.
+    pub decaying: bool,
+    /// The move playing, and how far into it, in ticks.
+    pub combat: Option<(String, f64)>,
+    /// Each machine layer, bottom first.
+    pub layers: Vec<TracedLayer>,
+    /// Every parameter, in the program's order.
+    pub parameters: Vec<TracedParameter>,
+}
+
+impl GraphTrace {
+    /// `player`'s snapshot as live link carries it, every name as its text: `characters` play the graph of
+    /// file name `graph`, `owner`'s.
+    #[must_use]
+    pub fn of(player: &GraphPlayer, graph: &str, owner: &str, characters: usize) -> Self {
+        let mut snapshot = GraphSnapshot::new();
+        player.debug_snapshot(&mut snapshot);
+        let label = |name: Name| player.label(name).map_or_else(|| name.to_string(), str::to_owned);
+        Self {
+            graph: graph.to_owned(),
+            owner: owner.to_owned(),
+            characters: u32::try_from(characters).unwrap_or(u32::MAX),
+            drawn: snapshot.drawn,
+            revision: snapshot.revision,
+            decaying: snapshot.decaying,
+            combat: snapshot.combat.map(|(name, position)| (label(name), position)),
+            layers: snapshot
+                .layers()
+                .iter()
+                .map(|layer| TracedLayer {
+                    machine: label(layer.machine),
+                    state: label(layer.state),
+                    time: layer.time,
+                    weights: layer.weights().to_vec(),
+                })
+                .collect(),
+            parameters: snapshot
+                .parameters()
+                .iter()
+                .map(|parameter| TracedParameter {
+                    name: label(parameter.name),
+                    value: parameter.value,
+                    overridden: parameter.overridden,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One machine layer of a [`GraphTrace`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TracedLayer {
+    /// The machine of the state playing: the layer's, or one nested in it.
+    pub machine: String,
+    /// The state playing, entered to its leaf.
+    pub state: String,
+    /// How long it has played, in ticks.
+    pub time: f64,
+    /// Each blend sample's weight, in the document's order: none for a state that isn't a blend.
+    pub weights: Vec<f32>,
+}
+
+/// One parameter of a [`GraphTrace`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TracedParameter {
+    pub name: String,
+    /// What the graph read: the override's value, if it has one.
+    pub value: f32,
+    pub overridden: bool,
 }
 
 /// Bytes `offset..offset + len` of a pack.
@@ -619,6 +741,13 @@ mod tests {
             RequestBody::PackEnd,
             RequestBody::Capture,
             RequestBody::ListCvars,
+            RequestBody::GraphTrace { graph: "character.animgraph.ron".into() },
+            RequestBody::GraphOverride {
+                graph: "character.animgraph.ron".into(),
+                parameter: "speed".into(),
+                value: 3.5,
+            },
+            RequestBody::GraphClear { graph: "warrior.animgraph.ron".into() },
         ];
         for (id, body) in requests.into_iter().enumerate() {
             let request = Request { id: id as u32, body };
@@ -670,6 +799,23 @@ mod tests {
                 ..DeviceStatus::default()
             }),
             ReplyBody::CvarSet { name: "a.b".into(), value: "1".into() },
+            ReplyBody::GraphTrace(GraphTrace {
+                graph: "character.animgraph.ron".into(),
+                owner: "heroine".into(),
+                characters: 1,
+                drawn: Some(120.5),
+                revision: 2,
+                decaying: true,
+                combat: Some(("light_1".into(), 4.25)),
+                layers: vec![TracedLayer {
+                    machine: "locomotion".into(),
+                    state: "move".into(),
+                    time: 30.0,
+                    weights: vec![0.82, 0.18],
+                }],
+                parameters: vec![TracedParameter { name: "speed".into(), value: 2.0, overridden: true }],
+            }),
+            ReplyBody::GraphOverridden { characters: 3 },
             ReplyBody::ScriptApplied { changed: true },
             ReplyBody::PackNeed { ranges: vec![ByteRange { offset: 512, len: 64 }] },
             ReplyBody::PackApplied(outcome),

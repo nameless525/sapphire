@@ -35,9 +35,12 @@
 //!
 //! **Determinism:** sources and outputs are named relative to the cook's roots, with `/` between their parts,
 //! every map and list is sorted, and nothing holds a time, so a second cook, or a cook of the same tree checked
-//! out elsewhere, writes it byte for byte. The whole index is kept in the content cache under a key over every
-//! asset's cook key and cooked bytes and every sidecar (whose `budget` no cook key holds), so a cook that
-//! changed nothing reads one entry.
+//! out elsewhere, writes it byte for byte. The whole index is kept in the content cache under a key over the
+//! stages whose output it holds ([`INDEXER`], [`audit::AUDITOR`], [`check::CHECKER`], [`pack::PACKER`] and
+//! packing's reach), the check's rows ([`check::ROWS`]), every asset's cook key and cooked bytes and every
+//! sidecar (whose `budget` no cook key holds), so a cook that changed nothing
+//! reads one entry. A cook that changed something checks its tree again, beside the cook ([`check::Kept`]): a
+//! source's measurements are kept under its cook key, so only what changed is measured again.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -59,11 +62,18 @@ use crate::pack::{self, PackError};
 /// The index's file name, beside a cook's loose cooked files.
 pub const FILE_NAME: &str = "index.json";
 
-/// The index's format, which [`AssetIndex::version`] holds: bump it whenever a field changes.
+/// The index's format, which [`AssetIndex::version`] holds: bump it whenever a field changes, a field of the
+/// audit's records it embeds included ([`MaterialAudit`], [`ChainAudit`], [`SlotAudit`], [`CookedLevel`]).
 pub const VERSION: u32 = 1;
 
-/// The indexer, as cache keys know it. Bump its version whenever the index changes for the same cook.
+/// The indexer, as cache keys know it. Bump its version whenever the index changes for the same cook. What
+/// it holds of the audit's, the check's and packing's is keyed by theirs ([`audit::AUDITOR`];
+/// [`check::CHECKER`] and the check's [`check::ROWS`]; [`pack::PACKER`] for each entry's pack, and packing's
+/// reach for what an entry uses and what uses it).
 pub const INDEXER: Stage = Stage { name: "asset index", version: 2 };
+
+/// The stages whose output an index holds, as its key has them.
+const STAGES: [Stage; 5] = [INDEXER, audit::AUDITOR, check::CHECKER, pack::PACKER, pack::REACH];
 
 /// What `index.json` holds: see the [module docs](self).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -304,9 +314,18 @@ pub fn tiers(cook: Cook) -> [&'static str; 2] {
     }
 }
 
+/// What [`write()`] did: the index's path, whether it wrote it, and, unless the whole index came from the
+/// cache, what its check measured anew and what it took from the cache.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Indexed {
+    pub path: PathBuf,
+    pub written: audit::Written,
+    pub checked: Option<check::Work>,
+}
+
 /// Indexes the cook `report` describes, of the sources under `source_root` into `out_root`, given its
 /// `audit`, and writes [`FILE_NAME`] into `out_root` unless it already holds those bytes. With a `cache`, the
-/// whole index is kept there.
+/// whole index is kept there, and so is what its check measures of each source.
 pub fn write(
     source_root: &Path,
     out_root: &Path,
@@ -314,18 +333,30 @@ pub fn write(
     cache: Option<&Path>,
     report: &CookReport,
     audit: &CookAudit,
-) -> Result<(PathBuf, audit::Written), IndexError> {
-    let text = index_text(source_root, out_root, cook, cache, report, audit)?;
+) -> Result<Indexed, IndexError> {
+    let (text, checked) = index_text(source_root, out_root, cook, cache, report, audit)?;
     let path = out_root.join(FILE_NAME);
     if fs::read(&path).is_ok_and(|bytes| bytes == text.as_bytes()) {
-        return Ok((path, audit::Written::UpToDate));
+        return Ok(Indexed { path, written: audit::Written::UpToDate, checked });
     }
     cook::write_atomically(&path, text.as_bytes())
         .map_err(|source| IndexError::Write { path: path.clone(), source: Box::new(source) })?;
-    Ok((path, audit::Written::Written))
+    Ok(Indexed { path, written: audit::Written::Written, checked })
 }
 
-/// The index's text, from the cache where it has it.
+/// The key the whole index is kept under: the `stages` whose output it holds, the check's rows of limits
+/// (so that a changed row misses it with no bump to forget), and what it reads.
+fn key<A: Serialize, S: Serialize>(
+    stages: &[Stage],
+    rows: &[[check::Limits; 2]],
+    cook: Cook,
+    assets: &A,
+    sidecars: &S,
+) -> CacheKey {
+    CacheKey::index(stages, &(cook.name(), rows, assets, sidecars))
+}
+
+/// The index's text, from the cache where it has it, and what its check measured if it ran.
 fn index_text(
     source_root: &Path,
     out_root: &Path,
@@ -333,7 +364,7 @@ fn index_text(
     cache: Option<&Path>,
     report: &CookReport,
     audit: &CookAudit,
-) -> Result<String, IndexError> {
+) -> Result<(String, Option<check::Work>), IndexError> {
     let resolved = cook::resolve_tree(source_root)
         .map_err(|source| IndexError::Cook { path: source_root.to_owned(), source: Box::new(source) })?;
     let cache_dir = cache;
@@ -362,22 +393,23 @@ fn index_text(
             (audit::relative(&asset.path, source_root), meta)
         })
         .collect();
-    let key = CacheKey::index(INDEXER, &(cook.name(), assets, sidecars));
+    let key = key(&STAGES, &check::ROWS, cook, &assets, &sidecars);
     if let Some(cache) = &cache
         && let Some(bytes) = cache.get(&key)?
         && let Ok(text) = String::from_utf8(bytes)
     {
-        return Ok(text);
+        return Ok((text, None));
     }
-    let index = index(source_root, out_root, cook, cache_dir, report, audit, &resolved)?;
+    let (index, work) = index(source_root, out_root, cook, cache_dir, report, audit, &resolved)?;
     let text = index.to_json(&out_root.join(FILE_NAME))?;
     if let Some(cache) = &cache {
         cache.put(&key, text.as_bytes())?;
     }
-    Ok(text)
+    Ok((text, Some(work)))
 }
 
-/// The index of the cook `report` describes: see the [module docs](self).
+/// The index of the cook `report` describes, and what its check measured anew and took from the `cache`:
+/// see the [module docs](self).
 pub fn index(
     source_root: &Path,
     out_root: &Path,
@@ -386,10 +418,13 @@ pub fn index(
     report: &CookReport,
     audit: &CookAudit,
     resolved: &crate::meta::Resolved,
-) -> Result<AssetIndex, IndexError> {
+) -> Result<(AssetIndex, check::Work), IndexError> {
     let layout = pack::layout(report, cache).map_err(|error| IndexError::Pack(Box::new(error)))?;
-    let checked =
-        check::check_resolved(source_root, resolved).map_err(|error| IndexError::Check(Box::new(error)))?;
+    let store = cache.map(Cache::new);
+    let keys: HashMap<AssetId, CacheKey> = report.assets.iter().map(|asset| (asset.id, asset.key)).collect();
+    let kept = store.as_ref().map(|cache| check::Kept { cache, cook, keys: &keys });
+    let (checked, work) = check::check_resolved(source_root, resolved, kept)
+        .map_err(|error| IndexError::Check(Box::new(error)))?;
     let own: HashMap<AssetId, &crate::meta::SourceAsset> =
         resolved.assets.iter().map(|asset| (asset.meta.id, asset)).collect();
 
@@ -490,7 +525,7 @@ pub fn index(
         waived: count(|finding| finding.waived.is_some()) as u32,
         roles: checked.meshes.len() as u32,
     };
-    Ok(AssetIndex {
+    let index = AssetIndex {
         version: VERSION,
         cook: cook.name().to_owned(),
         tiers: tiers(cook).map(str::to_owned).to_vec(),
@@ -498,7 +533,8 @@ pub fn index(
         packs,
         check: summary,
         assets: entries,
-    })
+    };
+    Ok((index, work))
 }
 
 /// A texture's entry, from its tail's cooked file and the audit's record of its bytes.

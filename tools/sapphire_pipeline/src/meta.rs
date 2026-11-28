@@ -195,8 +195,9 @@ pub struct AssetMeta {
     pub cook: bool,
     /// What `sapphire_pipeline check` holds the source to (M6 C1): a mesh's role, whose row of spec §3.4 it
     /// must meet, and the rules it waives, each with its reason (`budget: (role: Hero, waive: [(rule: Slots,
-    /// why: "…")])`, [`crate::check`]). Only the check reads it, and a cook lists its waivers: no cache
-    /// key holds it, so setting it recooks nothing. Written out only when set.
+    /// why: "…")])`, [`crate::check`]). Only the check reads it, and a cook lists its waivers: no cook
+    /// key holds it, so setting it recooks nothing, and the asset index, which records the check, keys it
+    /// with every sidecar. Written out only when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<Budget>,
 }

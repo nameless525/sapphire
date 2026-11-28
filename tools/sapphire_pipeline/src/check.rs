@@ -33,7 +33,7 @@
 //! | Rule | Severity | What it finds |
 //! |---|---|---|
 //! | `triangles`, `joints`, `slots`, `map-size` | error | A role mesh over its row on a cook. |
-//! | `uncapped-map` | error | A map an anime character material names that stores over 1024 a side on mobile: a map over 1K with no mobile cap. |
+//! | `uncapped-map` | error | A map an anime character material names that stores over 1024 a side on mobile: a map over 1K with no mobile cap. The mobile cook alone: on desktop, only a role mesh's maps are held, by `map-size`. |
 //! | `non-ascii-path` | error | A source whose path under the root isn't ASCII: file systems store such names in different forms (macOS decomposes them), so a tree checked out elsewhere can name another file. |
 //! | `misplaced-role` | error | A role on a sidecar that isn't a mesh's. |
 //! | `unbound-slot` | warning | A role mesh's slot no material document is bound to: it draws the material its importer made. |
@@ -62,11 +62,36 @@
 //! ),
 //! ```
 //!
-//! A waived finding is still reported, with its reason. A waiver that finds nothing to waive is an error, so
-//! one outlives its cause only until the next check, and so is one whose `why` is empty. Every cook lists every
-//! waiver in its report ([`CookReport::waivers`](crate::cook::CookReport::waivers)); no cook judges a source by
-//! these rules or stops on them. The `budget` section is read by the check alone: it's in no cache key, so
-//! adding one to a sidecar recooks nothing.
+//! A waiver covers every cook unless it names one, so a rule broken on the phones alone is waived there alone,
+//! and the same rule broken on desktop still fails:
+//!
+//! ```ron
+//! waive: [(rule: Joints, cook: Some(Mobile), why: "…")],
+//! ```
+//!
+//! A waived finding is still reported, with its reason. A waiver that finds nothing to waive on its cooks is an
+//! error, so one outlives its cause only until the next check, and so is one whose `why` is empty. Every cook
+//! lists the waivers that cover it in its report ([`CookReport::waivers`](crate::cook::CookReport::waivers)); no
+//! cook judges a source by these rules or stops on them. The `budget` section is read by the check alone: it's
+//! in no cook key, so adding one to a sidecar recooks nothing (the asset index, which records the check, keys
+//! by every sidecar's bytes: [`crate::index`]).
+//!
+//! **The sidecar's version:** a waiver's `cook` is written only when set, so every sidecar written before it
+//! reads and writes the same bytes, and `AssetMeta` stays at version 1, as it did when `budget` came; a sidecar
+//! whose waiver names a cook doesn't read in a pipeline from before it, which refuses the field by name.
+//!
+//! # What a cook keeps of the check
+//!
+//! [`CHECKER`] is the check as cache keys know it: bump its version with any change to a rule or a message,
+//! since the asset index that records the check's findings ([`crate::index`]) keys by it, and with any change
+//! to what it keeps of a source (the records `MeshFacts` and `Generated`, a VRM's spring names) or how it
+//! measures them, since what it keeps is keyed by it too. A row of [`ROWS`] needs no bump: the index's key
+//! holds the rows themselves. Beside a cook ([`check_resolved`] given [`Kept`]), the check keeps
+//! what it measures of a source in the content cache, under that source's cook key: a mesh on each cook (its
+//! LOD0's triangles, its joints and its slots, cooked to memory, keyed too by its merge groups' inputs on that
+//! cook, which the other cook's key may not hold), a VRM's spring chains, and a generated map's size. So a
+//! cook with one source changed measures that one again and takes the rest from the cache, as [`Work`]
+//! counts. A check of its own ([`check()`]) keeps nothing.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -77,10 +102,11 @@ use sapphire_assets::AssetId;
 use sapphire_assets::effect_sheet::{ATLAS_BUDGET_DESKTOP, ATLAS_BUDGET_MOBILE, LAYER_SIZE, atlas_bytes};
 use sapphire_assets::material::{AnyMaterialDocument, RegionGi};
 use sapphire_assets::mesh::{Mesh, SlotMaterial};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::audio;
-use crate::character_maps;
+use crate::cache::{Cache, CacheError, CacheKey, Dependency, Stage};
 use crate::cook::{self, Cook, CookError};
 use crate::effect_sheet::EffectSheetDocument;
 use crate::effects;
@@ -90,9 +116,56 @@ use crate::import::image::{SourceFormat, header_size};
 use crate::import::vrm::{self, vroid_eye_layer, vroid_region_gi};
 use crate::material;
 use crate::meta::{ImportSettings, Resolved, SourceAsset};
-use crate::procedural::ProceduralTexture;
-use crate::texture::{self, TextureSettings};
+use crate::texture::{self, TextureClass, TextureSettings};
 use crate::zone;
+use crate::{audit, character_maps, merge, procedural};
+
+/// The check, as cache keys know it: bump the version with any change to a rule or a message, or to what it
+/// keeps of a source (`MeshFacts`, `Generated`, a VRM's spring names) or how it measures it, or the asset
+/// index and what the check keeps serve the old one. A row of [`ROWS`] is in the index's key and needs no
+/// bump ([module docs](self)).
+pub const CHECKER: Stage = Stage { name: "content check", version: 1 };
+
+/// The cook a check runs beside, under whose keys it keeps what it measures of each source
+/// ([`check_resolved`]).
+#[derive(Clone, Copy)]
+pub struct Kept<'a> {
+    pub cache: &'a Cache,
+    /// The cook whose keys these are.
+    pub cook: Cook,
+    /// Each cooked asset's cook key by its ID: a source's own asset's is under the source's ID.
+    pub keys: &'a HashMap<AssetId, CacheKey>,
+}
+
+/// What a check measured anew and what it took from the content cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Work {
+    /// Meshes cooked to memory, a cook of a mesh each.
+    pub meshes: Counted,
+    /// VRMs' rigs read for their spring chains.
+    pub rigs: Counted,
+    /// Generated maps generated for their size.
+    pub maps: Counted,
+}
+
+/// How many measurements a check made anew, and how many it took from the cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counted {
+    pub anew: u32,
+    pub kept: u32,
+}
+
+impl fmt::Display for Work {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { meshes, rigs, maps } = self;
+        write!(
+            f,
+            "{} mesh cook(s) to memory and {} from the cache, {} rig(s) read and {} from the cache, {} map(s) \
+             generated and {} from the cache",
+            meshes.anew, meshes.kept, rigs.anew, rigs.kept, maps.anew, maps.kept
+        )
+    }
+}
 
 /// What a sidecar's `budget` says: see the [module docs](self).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +248,9 @@ const fn limits(triangles: u32, joints: u32, slots: u32, map: u32) -> Limits {
 /// boss's desktop triangles are its proposals, and their mobile ones the same, since spec §3.4's phone draws
 /// the desktop's LOD1 (a level the mobile cook keeps by skipping LOD0, so under the same number); the ambient
 /// row is proposed here (M6 C1), the tree's (M6 G6a) and ground cover's (M6 G6b), for the maintainer.
+///
+/// The asset index's key holds these rows, so a changed row judges every source again with no bump to
+/// [`CHECKER`]; what the check keeps of a source (`MeshFacts`, `Generated`) reads no row, so it is kept.
 pub const ROWS: [[Limits; 2]; 6] = [
     [limits(80_000, 200, 6, 2048), limits(30_000, 140, 4, 1024)],
     [limits(8_000, 200, 6, 2048), limits(8_000, 140, 4, 1024)],
@@ -193,11 +269,24 @@ pub const MOBILE_MAP: u32 = 1024;
 #[serde(deny_unknown_fields)]
 pub struct Waiver {
     pub rule: Rule,
+    /// The cook it waives the rule on: every cook when `None`. Written only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cook: Option<Cook>,
     /// Why the source may break the rule: a sentence a reviewer can judge.
     pub why: String,
 }
 
-/// A rule of the check: see the table in the [module docs](self).
+impl Waiver {
+    /// Whether it covers a finding on `cook` (`None` for a rule that depends on no cook): one that names a
+    /// cook covers that cook's findings alone.
+    pub fn covers(&self, cook: Option<Cook>) -> bool {
+        self.cook.is_none_or(|waived| cook == Some(waived))
+    }
+}
+
+/// A rule of the check: see the table in the [module docs](self). Adding one, or changing what one finds or
+/// says, bumps [`CHECKER`], since the asset index keeps the findings under it; a rule that reads more of a
+/// source than `MeshFacts` or `Generated` keep changes those records, which the bump covers too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Rule {
     Triangles,
@@ -289,7 +378,8 @@ pub enum Severity {
     Warning,
 }
 
-/// A waiver a cooked source's sidecar holds, as a cook lists it ([`CookReport::waivers`](crate::cook::CookReport::waivers)).
+/// A waiver a cooked source's sidecar holds that covers a cook, as that cook lists it
+/// ([`CookReport::waivers`](crate::cook::CookReport::waivers)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Waived {
     pub source: PathBuf,
@@ -297,13 +387,13 @@ pub struct Waived {
     pub why: String,
 }
 
-/// Every waiver `assets`' sidecars hold, in their order.
-pub fn waivers(assets: &[SourceAsset]) -> Vec<Waived> {
+/// Every waiver `assets`' sidecars hold that covers `cook`, in their order.
+pub fn waivers(assets: &[SourceAsset], cook: Cook) -> Vec<Waived> {
     assets
         .iter()
         .flat_map(|asset| {
             let waive = asset.meta.budget.as_ref().map_or(&[][..], |budget| &budget.waive);
-            waive.iter().map(|waiver| Waived {
+            waive.iter().filter(|waiver| waiver.covers(Some(cook))).map(|waiver| Waived {
                 source: asset.path.clone(),
                 rule: waiver.rule,
                 why: waiver.why.clone(),
@@ -422,6 +512,8 @@ pub enum CheckError {
     },
     #[error("checking {}: {why}", path.display())]
     Invalid { path: PathBuf, why: String },
+    #[error(transparent)]
+    Cache(#[from] CacheError),
 }
 
 /// Checks the source tree under `root`, as a locked cook resolves it, by every rule: see the
@@ -429,15 +521,27 @@ pub enum CheckError {
 pub fn check(root: &Path) -> Result<Report, CheckError> {
     let resolved = cook::resolve_tree(root)
         .map_err(|source| CheckError::Cook { path: root.to_owned(), source: Box::new(source) })?;
-    check_resolved(root, &resolved)
+    check_resolved(root, &resolved, None).map(|(report, _)| report)
 }
 
 /// [`check()`], of the tree under `root` as `resolved` already says it resolves: what a cook's asset index
-/// records ([`crate::index`]).
-pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckError> {
+/// records ([`crate::index`]). Beside a cook (`kept`), what it measures of each source is kept in the cache
+/// under that source's cook key, and taken from it ([module docs](self)); [`Work`] says which.
+pub fn check_resolved(
+    root: &Path,
+    resolved: &Resolved,
+    kept: Option<Kept<'_>>,
+) -> Result<(Report, Work), CheckError> {
     let assets: Vec<&SourceAsset> = resolved.assets.iter().filter(|asset| asset.meta.cook).collect();
     let by_id: HashMap<AssetId, &SourceAsset> = assets.iter().map(|asset| (asset.meta.id, *asset)).collect();
-    let mut check = Checker { root, by_id: &by_id, maps: HashMap::new(), findings: Vec::new() };
+    let mut check = Checker {
+        root,
+        by_id: &by_id,
+        kept,
+        maps: HashMap::new(),
+        findings: Vec::new(),
+        work: Work::default(),
+    };
 
     for asset in &assets {
         check.path(asset);
@@ -480,7 +584,7 @@ pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckE
     check.foliage_documents(&assets)?;
     check.zone_documents(&assets)?;
     check.cue_groups(&assets)?;
-    let Checker { mut findings, .. } = check;
+    let Checker { mut findings, work, .. } = check;
     waive(&assets, root, &mut findings);
     findings.sort_by(|a, b| {
         (&a.source, a.rule, a.cook.map(|cook| cook as u8)).cmp(&(
@@ -490,42 +594,134 @@ pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckE
         ))
     });
     meshes.sort_by(|a, b| a.source.cmp(&b.source));
-    Ok(Report { meshes, character_maps, findings })
+    Ok((Report { meshes, character_maps, findings }, work))
 }
 
-/// A source's path under `root`, with `/` between its parts on every host.
-fn relative(path: &Path, root: &Path) -> String {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    relative.components().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
+/// What the check reads of a mesh's cook, as the cache keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct MeshFacts {
+    /// LOD0's, as the cook stores it.
+    triangles: u32,
+    /// The skin's, secondary joints included; 0 without one.
+    joints: u32,
+    /// Each material slot after merges, by name, and whether a material document is bound to it.
+    slots: Vec<(String, bool)>,
 }
 
-/// A map's size, before any cook's cap, and the settings it cooks with.
-#[derive(Clone, Copy)]
-struct MapShape {
-    width: u32,
-    height: u32,
-    settings: TextureSettings,
-}
+impl MeshFacts {
+    fn of(mesh: &Mesh) -> Self {
+        Self {
+            triangles: mesh
+                .lods
+                .first()
+                .map_or(0, |lod| lod.submeshes.iter().map(|submesh| submesh.index_count / 3).sum()),
+            joints: mesh.skin.as_ref().map_or(0, |skin| skin.joint_count),
+            slots: mesh
+                .materials
+                .iter()
+                .map(|slot| (slot.name.to_string(), !matches!(slot.material, SlotMaterial::Embedded(_))))
+                .collect(),
+        }
+    }
 
-impl MapShape {
-    /// The size `cook` stores, as the texture cooker plans it.
-    fn cooked(&self, cook: Cook, path: &Path) -> Result<(u32, u32), CheckError> {
-        texture::cooked_size(&self.settings, cook, self.width, self.height)
-            .map_err(|error| CheckError::Invalid { path: path.to_owned(), why: error.to_string() })
+    /// The slots no material document is bound to, which draw what their importer made.
+    fn unbound(&self) -> impl Iterator<Item = &str> {
+        self.slots.iter().filter(|(_, bound)| !bound).map(|(name, _)| name.as_str())
     }
 }
 
-/// A check under way: the tree's cooked sources by ID, each map's shape once read, and what's been found.
+/// A generated map's size and class, as the cache keeps it.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct Generated {
+    width: u32,
+    height: u32,
+    class: TextureClass,
+}
+
+/// A key's input that is another file or asset, as the check's keys encode a [`Dependency`].
+#[derive(Serialize)]
+enum Input<'a> {
+    File(&'a str, [u8; blake3::OUT_LEN]),
+    Asset(AssetId, CacheKey),
+}
+
+impl<'a> From<&'a Dependency> for Input<'a> {
+    fn from(dependency: &'a Dependency) -> Self {
+        match dependency {
+            Dependency::File { path, hash } => Self::File(path, *hash.as_bytes()),
+            Dependency::Asset { id, key } => Self::Asset(*id, *key),
+        }
+    }
+}
+
+/// The record `key` holds in `cache`, or `make`'s, kept there; `counted` counts which. With no key, `make`'s.
+fn kept<R: Serialize + DeserializeOwned>(
+    kept: Option<(&Cache, CacheKey)>,
+    counted: &mut Counted,
+    make: impl FnOnce() -> Result<R, CheckError>,
+) -> Result<R, CheckError> {
+    if let Some((cache, key)) = kept
+        && let Some(bytes) = cache.get(&key)?
+        && let Ok(record) = sapphire_serialize::postcard::from_bytes(&bytes)
+    {
+        counted.kept += 1;
+        return Ok(record);
+    }
+    let record = make()?;
+    counted.anew += 1;
+    if let Some((cache, key)) = kept {
+        let bytes =
+            sapphire_serialize::postcard::to_allocvec(&record).expect("a check's record always encodes");
+        cache.put(&key, &bytes)?;
+    }
+    Ok(record)
+}
+
+/// The size a map stores on each cook, under its sidecar's cap, as the texture cooker plans it: desktop, then
+/// mobile ([`Cook::ALL`]'s order).
+#[derive(Clone, Copy)]
+struct MapShape([(u32, u32); 2]);
+
+impl MapShape {
+    /// Each cook's size, as `plan` gives it.
+    fn planned<E: fmt::Display>(plan: impl Fn(Cook) -> Result<(u32, u32), E>) -> Result<Self, String> {
+        let size = |cook| plan(cook).map_err(|error| error.to_string());
+        Ok(Self([size(Cook::Desktop)?, size(Cook::Mobile)?]))
+    }
+
+    /// The size `cook` stores.
+    fn cooked(&self, cook: Cook) -> (u32, u32) {
+        self.0[cook as usize]
+    }
+}
+
+/// A check under way: the tree's cooked sources by ID, the cook it keeps its measurements beside, each map's
+/// shape once read, what's been found and what it measured.
 struct Checker<'a> {
     root: &'a Path,
     by_id: &'a HashMap<AssetId, &'a SourceAsset>,
+    kept: Option<Kept<'a>>,
     maps: HashMap<AssetId, Option<MapShape>>,
     findings: Vec<Finding>,
+    work: Work,
 }
 
-impl Checker<'_> {
+impl<'a> Checker<'a> {
     fn name(&self, path: &Path) -> String {
-        relative(path, self.root)
+        audit::relative(path, self.root)
+    }
+
+    /// Where what the check measures of `source` as `part` is kept, keyed by `inputs` besides its cook key:
+    /// nowhere beside no cook, or for a source the cook made no asset of.
+    fn key(
+        &self,
+        source: &SourceAsset,
+        part: &str,
+        inputs: &impl Serialize,
+    ) -> Option<(&'a Cache, CacheKey)> {
+        let kept = self.kept?;
+        let own = kept.keys.get(&source.meta.id)?;
+        Some((kept.cache, CacheKey::check(CHECKER, part, &(kept.cook.name(), own, inputs))))
     }
 
     fn find(&mut self, asset: &SourceAsset, rule: Rule, cook: Option<Cook>, message: String) {
@@ -556,11 +752,46 @@ impl Checker<'_> {
             return Ok(*shape);
         }
         let shape = match self.by_id.get(&id) {
-            Some(source) => map_shape(source)?,
+            Some(source) => self.map_shape(source)?,
             None => None,
         };
         self.maps.insert(id, shape);
         Ok(shape)
+    }
+
+    /// The shape of the map `source` cooks to, or `None` for a source that isn't a map: a generated map's
+    /// size is kept beside a cook.
+    fn map_shape(&mut self, source: &SourceAsset) -> Result<Option<MapShape>, CheckError> {
+        let path = &source.path;
+        let invalid = |why: String| CheckError::Invalid { path: path.clone(), why };
+        let read = || fs::read(path).map_err(|error| CheckError::Read { path: path.clone(), source: error });
+        let shape = match &source.meta.importer {
+            ImportSettings::Texture(settings) => {
+                let format =
+                    SourceFormat::from_path(path).ok_or_else(|| invalid("not an image".to_owned()))?;
+                let (width, height) = header_size(&read()?, format)
+                    .ok_or_else(|| invalid("its header doesn't read".to_owned()))?;
+                MapShape::planned(|cook| texture::cooked_size(settings, cook, width, height))
+            }
+            ImportSettings::ProceduralTexture(settings) => {
+                let bytes = read()?;
+                MapShape::planned(|cook| procedural::cooked_size(&bytes, settings, cook))
+            }
+            // A generated map is the size of what it's generated from.
+            ImportSettings::CharacterMap(map, max_size) => {
+                let key = self.key(source, "map", &());
+                let Generated { width, height, class } = kept(key, &mut self.work.maps, || {
+                    let generated = character_maps::generate(path, &read()?, map)
+                        .map_err(|error| invalid(error.to_string()))?;
+                    let image = &generated.image;
+                    Ok(Generated { width: image.width, height: image.height, class: generated.class })
+                })?;
+                let settings = TextureSettings { class, max_size: *max_size };
+                MapShape::planned(|cook| texture::cooked_size(&settings, cook, width, height))
+            }
+            _ => return Ok(None),
+        };
+        shape.map(Some).map_err(invalid)
     }
 
     /// `uncapped-map`, over every map an anime character material names; returns how many there are.
@@ -582,7 +813,7 @@ impl Checker<'_> {
             let Some(shape) = self.shape(id)? else { continue };
             count += 1;
             let map = self.by_id[&id];
-            let (width, height) = shape.cooked(Cook::Mobile, &map.path)?;
+            let (width, height) = shape.cooked(Cook::Mobile);
             if width.max(height) > MOBILE_MAP {
                 self.find(
                     map,
@@ -677,11 +908,28 @@ impl Checker<'_> {
         Ok(())
     }
 
-    /// `asset`'s mesh as `cook` would cook it in this tree.
-    fn cook(&self, asset: &SourceAsset, cook: Cook) -> Result<Mesh, CheckError> {
+    /// What the check reads of `asset`'s mesh as `cook` would cook it in this tree, kept beside a cook under
+    /// its cook key and its merge groups' inputs on `cook`: the one input of `cook`'s mesh that another cook's
+    /// key may not hold, since a group may merge on one cook alone.
+    fn cook(&mut self, asset: &SourceAsset, cook: Cook) -> Result<MeshFacts, CheckError> {
         let by_id = self.by_id;
-        cook::cook_mesh_of(asset, &|id| by_id.get(&id).copied(), cook)
-            .map_err(|source| CheckError::Cook { path: asset.path.clone(), source: Box::new(source) })
+        let lookup = |id| by_id.get(&id).copied();
+        let cook_error = |source| CheckError::Cook { path: asset.path.clone(), source: Box::new(source) };
+        let settings = asset.meta.importer.mesh().expect("the check cooks mesh sources alone");
+        let mut merged = Vec::new();
+        if self.kept.is_some() && merge::merges(settings, cook) {
+            let merge_error =
+                |source| cook_error(CookError::Merge { path: asset.path.clone(), source: Box::new(source) });
+            for plan in merge::plan(settings, cook, &lookup).map_err(merge_error)? {
+                merged.extend(plan.dependencies(&lookup).map_err(merge_error)?);
+            }
+        }
+        let merged: Vec<Input<'_>> = merged.iter().map(Input::from).collect();
+        let key = self.key(asset, "mesh", &(cook.name(), merged));
+        kept(key, &mut self.work.meshes, || {
+            let mesh = cook::cook_mesh_of(asset, &lookup, cook).map_err(cook_error)?;
+            Ok(MeshFacts::of(&mesh))
+        })
     }
 
     /// `triangles`, `joints`, `slots` and `map-size`: the mesh against its role's row on each cook.
@@ -690,7 +938,7 @@ impl Checker<'_> {
         asset: &SourceAsset,
         role: Role,
         bindings: &BTreeMap<String, AssetId>,
-        meshes: [&Mesh; 2],
+        meshes: [&MeshFacts; 2],
     ) -> Result<Judged, CheckError> {
         // Every map the bound materials name, each once, in binding order.
         let mut maps: Vec<AssetId> = Vec::new();
@@ -709,20 +957,15 @@ impl Checker<'_> {
         for (cook, mesh) in Cook::ALL.into_iter().zip(meshes) {
             let limits = role.limits(cook);
             let role_name = role.name();
-            let triangles: u32 = mesh
-                .lods
-                .first()
-                .map_or(0, |lod| lod.submeshes.iter().map(|submesh| submesh.index_count / 3).sum());
-            let joints = mesh.skin.as_ref().map_or(0, |skin| skin.joint_count);
-            let slots = mesh.materials.len() as u32;
+            let MeshFacts { triangles, joints, .. } = *mesh;
+            let slots = mesh.slots.len() as u32;
             let mut largest = 0;
             for &id in &maps {
                 let Some(shape) = self.shape(id)? else { continue };
-                let path = &self.by_id[&id].path;
-                let (width, height) = shape.cooked(cook, path)?;
+                let (width, height) = shape.cooked(cook);
                 largest = largest.max(width.max(height));
                 if width.max(height) > limits.map {
-                    let map = self.name(path);
+                    let map = self.name(&self.by_id[&id].path);
                     self.find(
                         asset,
                         Rule::MapSize,
@@ -754,20 +997,17 @@ impl Checker<'_> {
     }
 
     /// `unbound-slot`, on a role mesh's desktop cook.
-    fn unbound_slots(&mut self, asset: &SourceAsset, mesh: &Mesh) {
-        for slot in &mesh.materials {
-            if let SlotMaterial::Embedded(_) = slot.material {
-                self.find(
-                    asset,
-                    Rule::UnboundSlot,
-                    None,
-                    format!(
-                        "slot \"{}\" draws the material its importer made: bind a material document to it in \
-                         the sidecar's `materials`",
-                        slot.name
-                    ),
-                );
-            }
+    fn unbound_slots(&mut self, asset: &SourceAsset, mesh: &MeshFacts) {
+        for slot in mesh.unbound() {
+            self.find(
+                asset,
+                Rule::UnboundSlot,
+                None,
+                format!(
+                    "slot \"{slot}\" draws the material its importer made: bind a material document to it in the \
+                     sidecar's `materials`"
+                ),
+            );
         }
     }
 
@@ -791,12 +1031,8 @@ impl Checker<'_> {
     }
 
     /// `vroid-eye-layer` and `vroid-region-light`, over a VRM's unbound slots: a bound one draws its document.
-    fn vroid_names(&mut self, asset: &SourceAsset, mesh: &Mesh) {
-        for slot in &mesh.materials {
-            if !matches!(slot.material, SlotMaterial::Embedded(_)) {
-                continue;
-            }
-            let name = slot.name.as_str();
+    fn vroid_names(&mut self, asset: &SourceAsset, mesh: &MeshFacts) {
+        for name in mesh.unbound() {
             let parts: Vec<String> =
                 name.split(|c: char| c == '_' || c.is_whitespace()).map(str::to_ascii_lowercase).collect();
             // VRoid Studio numbers a part (`<Part>_<nn>_<GROUP>`): a name without a number isn't its.
@@ -841,14 +1077,18 @@ impl Checker<'_> {
         version: Option<vrm::VrmVersion>,
     ) -> Result<(), CheckError> {
         let path = &asset.path;
-        let bytes = fs::read(path).map_err(|source| CheckError::Read { path: path.clone(), source })?;
-        let rig = vrm::import_rig(&bytes, version)
-            .map_err(|error| CheckError::Invalid { path: path.clone(), why: error.to_string() })?;
-        let mut chains: BTreeMap<&str, u32> = BTreeMap::new();
-        for spring in &rig.springs {
-            *chains.entry(spring.name.as_str()).or_default() += 1;
-        }
-        for (name, count) in chains.into_iter().filter(|&(_, count)| count > 1) {
+        // Each name more than one chain has, with how many have it.
+        let shared: Vec<(String, u32)> = kept(self.key(asset, "springs", &()), &mut self.work.rigs, || {
+            let bytes = fs::read(path).map_err(|source| CheckError::Read { path: path.clone(), source })?;
+            let rig = vrm::import_rig(&bytes, version)
+                .map_err(|error| CheckError::Invalid { path: path.clone(), why: error.to_string() })?;
+            let mut chains: BTreeMap<String, u32> = BTreeMap::new();
+            for spring in &rig.springs {
+                *chains.entry(spring.name.clone()).or_default() += 1;
+            }
+            Ok(chains.into_iter().filter(|&(_, count)| count > 1).collect())
+        })?;
+        for (name, count) in shared {
             self.find(
                 asset,
                 Rule::DuplicateSpringName,
@@ -978,63 +1218,51 @@ fn read_material(asset: &SourceAsset) -> Result<AnyMaterialDocument, CheckError>
     material::read(&bytes).map_err(|error| CheckError::Invalid { path: path.clone(), why: error.to_string() })
 }
 
-/// The shape of the map `source` cooks to, or `None` for a source that isn't a map.
-fn map_shape(source: &SourceAsset) -> Result<Option<MapShape>, CheckError> {
-    let path = &source.path;
-    let invalid = |why: String| CheckError::Invalid { path: path.clone(), why };
-    let read = || fs::read(path).map_err(|error| CheckError::Read { path: path.clone(), source: error });
-    Ok(match &source.meta.importer {
-        ImportSettings::Texture(settings) => {
-            let format = SourceFormat::from_path(path).ok_or_else(|| invalid("not an image".to_owned()))?;
-            let (width, height) =
-                header_size(&read()?, format).ok_or_else(|| invalid("its header doesn't read".to_owned()))?;
-            Some(MapShape { width, height, settings: *settings })
-        }
-        ImportSettings::ProceduralTexture(settings) => {
-            let document = ProceduralTexture::read(&read()?).map_err(|error| invalid(error.to_string()))?;
-            Some(MapShape { width: document.size, height: document.size, settings: settings.texture() })
-        }
-        // A generated map is the size of what it's generated from.
-        ImportSettings::CharacterMap(settings, max_size) => {
-            let map = character_maps::generate(path, &read()?, settings)
-                .map_err(|error| invalid(error.to_string()))?;
-            let settings = TextureSettings { class: map.class, max_size: *max_size };
-            Some(MapShape { width: map.image.width, height: map.image.height, settings })
-        }
-        _ => None,
-    })
-}
-
-/// Marks each finding its source's sidecar waives with the waiver's reason, and adds `stale-waiver` for each
-/// waiver that waived nothing and `unexplained-waiver` for each with no reason.
+/// Marks each finding its source's sidecar waives on the finding's cook with the waiver's reason, and adds
+/// `stale-waiver` for each waiver that waived nothing on its cooks and `unexplained-waiver` for each with no
+/// reason.
 fn waive(assets: &[&SourceAsset], root: &Path, findings: &mut Vec<Finding>) {
     let mut added = Vec::new();
     for asset in assets {
         let Some(budget) = &asset.meta.budget else { continue };
-        let source = relative(&asset.path, root);
+        let source = audit::relative(&asset.path, root);
         for waiver in &budget.waive {
             let mut used = false;
+            let mut on_no_cook = false;
             for finding in
                 findings.iter_mut().filter(|finding| finding.source == source && finding.rule == waiver.rule)
             {
-                finding.waived = Some(waiver.why.clone());
-                used = true;
+                if waiver.covers(finding.cook) {
+                    finding.waived = Some(waiver.why.clone());
+                    used = true;
+                }
+                on_no_cook |= finding.cook.is_none();
             }
             let mut add = |rule: Rule, message: String| {
                 added.push(Finding {
                     source: source.clone(),
                     rule,
                     severity: rule.severity(),
-                    cook: None,
+                    cook: waiver.cook,
                     message,
                     waived: None,
                 });
             };
             if !used {
-                add(
-                    Rule::StaleWaiver,
-                    format!("waives `{}`, which finds nothing here: remove the waiver", waiver.rule),
-                );
+                let rule = waiver.rule;
+                let message = match waiver.cook {
+                    None => format!("waives `{rule}`, which finds nothing here: remove the waiver"),
+                    Some(cook) if on_no_cook => format!(
+                        "waives `{rule}` on the {cook} cook, and `{rule}` finds this on no cook in particular: \
+                         remove the waiver's `cook`"
+                    ),
+                    Some(cook) => {
+                        format!(
+                            "waives `{rule}` on the {cook} cook, which finds nothing there: remove the waiver"
+                        )
+                    }
+                };
+                add(Rule::StaleWaiver, message);
             }
             if waiver.why.trim().is_empty() {
                 add(

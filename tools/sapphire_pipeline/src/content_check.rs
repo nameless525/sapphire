@@ -135,8 +135,10 @@ pub fn content_check(options: &Options<'_>, touched: &[PathBuf]) -> Result<Check
 fn could_not_check(error: &CheckError, root: &Path) -> Problem {
     let document = match error {
         CheckError::Cook { path, .. } | CheckError::Read { path, .. } | CheckError::Invalid { path, .. } => {
-            path
+            path.as_path()
         }
+        // The content check keeps nothing, so this is the cache of a cook's check.
+        CheckError::Cache(_) => root,
     };
     let document = if document.as_os_str().is_empty() { root } else { document };
     Problem::cook(document, None, &refusal::chain(error))

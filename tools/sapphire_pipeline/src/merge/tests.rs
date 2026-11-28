@@ -140,6 +140,64 @@ fn equal_documents_merge_and_the_member_with_most_regions_stands() {
     assert!(!merges(&mobile, Cook::Mobile) && merges(&mobile, Cook::Desktop));
 }
 
+/// A group's key names its members by ID, never by path: the same tree at another root keys the same, so a
+/// copy of it cooks from the cache, and so does a member map whose sidecar the check's `budget` is added to,
+/// which no cook key holds.
+#[test]
+fn a_group_s_key_holds_no_path_and_no_budget() {
+    let mut tree = Tree::new("merge_key");
+    let maps: Vec<AssetId> =
+        (0..2).map(|seed| tree.color(&format!("map{seed}"), 64, seed, color_settings())).collect();
+    let ids: Vec<AssetId> = maps
+        .iter()
+        .enumerate()
+        .map(|(index, &map)| tree.material(&format!("m{index}"), &body(map, 1)))
+        .collect();
+    let settings = settings(&[("a", ids[0]), ("b", ids[1])], &["a", "b"]);
+    // Each source's sidecar on disk beside it, as a tree has them.
+    let write_sidecars = |sources: &HashMap<AssetId, SourceAsset>| {
+        for source in sources.values() {
+            fs::write(meta::sidecar_path(&source.path), sapphire_serialize::to_ron(&source.meta).unwrap())
+                .unwrap();
+        }
+    };
+    let key = |sources: &HashMap<AssetId, SourceAsset>| {
+        write_sidecars(sources);
+        let lookup = |id| sources.get(&id);
+        let plans = plan(&settings, Cook::Desktop, &lookup).unwrap();
+        plans[0].dependencies(&lookup).unwrap()
+    };
+    let here = key(&tree.sources);
+    let root = tree.dir.path().to_string_lossy().into_owned();
+    for dependency in &here {
+        let Dependency::File { path, .. } = dependency else { continue };
+        assert!(!path.contains(&root), "{path} names the tree's root");
+    }
+
+    let elsewhere = TempDir::new("merge_key_elsewhere");
+    let moved: HashMap<AssetId, SourceAsset> = tree
+        .sources
+        .iter()
+        .map(|(&id, source)| {
+            let path = elsewhere.path().join("checkout/content").join(source.path.file_name().unwrap());
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::copy(&source.path, &path).unwrap();
+            (id, SourceAsset { path, meta: source.meta.clone() })
+        })
+        .collect();
+    assert_eq!(key(&moved), here, "a copy at another root keys the same");
+
+    let mut budgeted = tree.sources.clone();
+    let waiver = crate::check::Waiver {
+        rule: crate::check::Rule::DuplicateTexture,
+        cook: None,
+        why: "a reason".to_owned(),
+    };
+    budgeted.get_mut(&maps[0]).unwrap().meta.budget =
+        Some(crate::check::Budget { role: None, waive: vec![waiver] });
+    assert_eq!(key(&budgeted), here, "a map's budget is in no cook key");
+}
+
 /// Every reason a document keeps its slot out, each named.
 #[test]
 fn each_reason_refuses_its_slot() {

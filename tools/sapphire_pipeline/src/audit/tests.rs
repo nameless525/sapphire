@@ -120,13 +120,78 @@ fn triangles_disagree_where_they_cover_another_regions_texels_or_split_and_strad
     // Only the third covers both regions' texels: the second disagrees with its vertices' ID alone.
     assert_eq!(
         agreement(&mesh, &triangles, Some(&regions)),
-        Agreement { split: 1, disagreeing: 3, straddling: 1 }
+        Agreement { split: 1, disagreeing: 3, straddling: 1, held: true, tiling: None }
     );
     assert_eq!(
         agreement(&mesh, &triangles, None),
-        Agreement { split: 1, disagreeing: 1, straddling: 0 },
+        Agreement { split: 1, disagreeing: 1, straddling: 0, held: false, tiling: None },
         "split alone"
     );
+}
+
+#[test]
+fn a_slot_tiling_past_its_wraps_isnt_held_to_its_control_map() {
+    // One triangle over eight repeats of a 2048² map: some 2.7e8 texel centres to test, were it held.
+    let wide =
+        SourceImage::new(2048, 2048, ChannelLayout::Rgba, vec![[0.0, 0.0, 0.0, encoded(0)]; 2048 * 2048])
+            .unwrap();
+    let regions = Regions::of(&wide);
+    let tiling = mesh(&[[([0.0, 0.0], 0), ([8.0, 0.0], 0), ([0.0, 8.0], 3)]]);
+    let triangles: Vec<[u32; 3]> = tiling.indices.as_chunks::<3>().0.to_vec();
+    assert_eq!(
+        agreement(&tiling, &triangles, Some(&regions)),
+        Agreement { split: 1, disagreeing: 1, straddling: 0, held: false, tiling: Some([8.0, 8.0]) },
+        "split still counts; the map's regions aren't read, and its span is said"
+    );
+    assert_eq!(agreement(&tiling, &triangles, None).tiling, None, "without a map, nothing to tile");
+    // Two repeats exactly is held: a slot spans at most `MAX_WRAPS` on each axis.
+    let small = Regions::of(&control());
+    let within = mesh(&[[([0.0, 0.0], 0), ([MAX_WRAPS, 0.0], 0), ([0.0, 0.5], 0)]]);
+    let triangles: Vec<[u32; 3]> = within.indices.as_chunks::<3>().0.to_vec();
+    let held = agreement(&within, &triangles, Some(&small));
+    assert!(held.held && held.tiling.is_none());
+    let past = mesh(&[[([0.0, 0.0], 0), ([0.0, 0.25 + MAX_WRAPS], 0), ([0.5, 0.0], 0)]]);
+    let triangles: Vec<[u32; 3]> = past.indices.as_chunks::<3>().0.to_vec();
+    let past = agreement(&past, &triangles, Some(&small));
+    assert!(!past.held, "past it on v alone");
+    assert_eq!(past.tiling, Some([0.5, 0.25 + MAX_WRAPS]));
+    let slot = TilingSlot { source: "a/body.glb".to_owned(), slot: "skin".to_owned(), span: [0.5, 2.25] };
+    assert_eq!(slot.to_string(), "a/body.glb#skin spans 0.50 x 2.25 repeats");
+}
+
+/// The cooked levels are held to the audit's chain by triangles, vertices and error to the bit, on each
+/// cook's levels: the mobile cook's skip drops LOD0 but never the last level.
+#[test]
+fn cooked_levels_are_held_to_the_chain_to_the_bit() {
+    let level =
+        |setting, triangles, vertices, error| optimize::ChainLevel { setting, triangles, vertices, error };
+    let chain = ChainAudit {
+        vertices: 40,
+        seam: 0,
+        morph: 0,
+        border: 0,
+        pinned: 0,
+        locked: 0,
+        cooked: vec![level(1, 50, 30, 0.002), level(2, 20, 14, 0.01)],
+        relaxed: Vec::new(),
+    };
+    let cooked = |levels: &[(u32, u32, f32)]| -> Vec<CookedLevel> {
+        levels
+            .iter()
+            .map(|&(triangles, vertices, error)| CookedLevel { triangles, vertices, error })
+            .collect()
+    };
+    let desktop = cooked(&[(100, 40, 0.0), (50, 30, 0.002), (20, 14, 0.01)]);
+    assert_eq!(chain_levels(100, &chain, 1, Cook::Desktop), desktop);
+    assert!(same_levels(&desktop, &chain_levels(100, &chain, 1, Cook::Desktop)));
+    assert_eq!(chain_levels(100, &chain, 1, Cook::Mobile), desktop[1..]);
+    assert_eq!(chain_levels(100, &chain, 9, Cook::Mobile), desktop[2..], "never the last level");
+    // The same triangles with a vertex more, or an error one step off, aren't the chain.
+    let built = chain_levels(100, &chain, 0, Cook::Desktop);
+    let more = cooked(&[(100, 40, 0.0), (50, 31, 0.002), (20, 14, 0.01)]);
+    let off = cooked(&[(100, 40, 0.0), (50, 30, f32::from_bits(0.002_f32.to_bits() + 1)), (20, 14, 0.01)]);
+    assert!(!same_levels(&more, &built) && !same_levels(&off, &built));
+    assert!(!same_levels(&desktop[1..], &built), "a level fewer");
 }
 
 #[test]
@@ -157,10 +222,23 @@ fn the_report_reads_back_as_written() {
             chain: None,
             slots: Vec::new(),
         }],
+        tiling: Vec::new(),
     };
     let text = audit.to_ron().unwrap();
     assert!(text.starts_with("(\n    type: \"sapphire::pipeline::CookAudit\",\n    version: 1,"), "{text}");
+    assert!(!text.contains("tiling"), "written only when a slot tiles: {text}");
     assert_eq!(CookAudit::from_ron(&text).unwrap(), audit);
+    let tiling = CookAudit {
+        tiling: vec![TilingSlot {
+            source: "a/body.glb".to_owned(),
+            slot: "skin".to_owned(),
+            span: [0.5, 2.25],
+        }],
+        ..audit
+    };
+    let text = tiling.to_ron().unwrap();
+    assert!(text.contains("tiling:"), "{text}");
+    assert_eq!(CookAudit::from_ron(&text).unwrap(), tiling);
 }
 
 #[test]

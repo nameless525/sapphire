@@ -2763,3 +2763,25 @@ fn a_river_that_climbs_like_a_fall_is_named() {
     assert!(text.contains("town.zone.ron"), "the zone's named in `{text}`");
     assert!(text.contains("water[0].shape.points[2].at"), "`{text}` names the point");
 }
+
+/// An assembly's slots never merge: planning refuses its `merge:` by the field, so its cook key need hold no
+/// merge's inputs (M6 C1).
+#[test]
+fn an_assemblys_merge_is_refused() {
+    let tree = tree("assembly-merge-refused");
+    let path = tree.content().join("prefabs/crate.assembly.ron");
+    let group = merge::MergeGroup {
+        name: "all".to_owned(),
+        slots: vec!["wood".to_owned(), "stone".to_owned()],
+        cooks: merge::Cooks::default(),
+    };
+    let materials = [("wood".to_owned(), WOOD)].into_iter().collect();
+    let settings = MeshSettings { materials, merge: vec![group], ..MeshSettings::default() };
+    tree.sidecar(&path, CRATE, ImportSettings::Assembly(settings));
+    let error = tree.try_cook(false).expect_err("an assembly's merge");
+    assert!(
+        matches!(&error, CookError::Merge { source, .. } if matches!(**source, MergeError::Assembly)),
+        "{}",
+        chain(&error)
+    );
+}

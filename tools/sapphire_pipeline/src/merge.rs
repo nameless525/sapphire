@@ -956,7 +956,11 @@ impl GroupPlan {
     }
 
     /// What its parts' keys hold besides the mesh's source and sidecar: its documents' hashes, and every
-    /// map, ramp and matcap a member reads, by its source, sidecar and inputs, and its importer.
+    /// map, ramp and matcap a member reads, by its source's bytes, its import settings and its inputs, and
+    /// its importer. Each is named by the ID the documents give it and an input by the name its own document
+    /// gives it, never by a path, so a copy of the tree at another root keys the same, as a moved source
+    /// does (`cache`'s rule); and a map's sidecar counts by its import settings alone, since the rest of it
+    /// (the check's `budget`) is in no cook key.
     pub fn dependencies(&self, lookup: &Lookup<'_>) -> Result<Vec<Dependency>, MergeError> {
         let marker = |path: String| Dependency::File { path, hash: blake3::hash(b"") };
         let mut dependencies = vec![marker(format!("#merge {} {}", ATLAS_IMPORTER.version, self.name))];
@@ -977,18 +981,17 @@ impl GroupPlan {
                     continue;
                 }
                 let Some(source) = lookup(id) else { continue };
-                let file = |path: &Path| -> Result<Dependency, MergeError> {
+                let file = |name: String, path: &Path| -> Result<Dependency, MergeError> {
                     let bytes = read_file(&self.name, path)?;
-                    Ok(Dependency::File {
-                        path: format!("#merge {id} {}", path.display()),
-                        hash: blake3::hash(&bytes),
-                    })
+                    Ok(Dependency::File { path: name, hash: blake3::hash(&bytes) })
                 };
-                dependencies.push(file(&source.path)?);
-                let sidecar = meta::sidecar_path(&source.path);
-                if sidecar.is_file() {
-                    dependencies.push(file(&sidecar)?);
-                }
+                dependencies.push(file(format!("#merge source {id}"), &source.path)?);
+                let settings = sapphire_serialize::postcard::to_allocvec(&source.meta.importer)
+                    .expect("import settings always encode");
+                dependencies.push(Dependency::File {
+                    path: format!("#merge settings {id}"),
+                    hash: blake3::hash(&settings),
+                });
                 if let ImportSettings::CharacterMap(settings, _) = &source.meta.importer {
                     let kind = settings.kind();
                     let importer = kind.importer();
@@ -1002,7 +1005,7 @@ impl GroupPlan {
                     };
                     for input in character_maps::inputs(kind, &bytes).map_err(map_error)? {
                         let path = character_maps::resolve_input(&source.path, &input).map_err(map_error)?;
-                        dependencies.push(file(&path)?);
+                        dependencies.push(file(format!("#merge input {id} {input}"), &path)?);
                     }
                 }
             }

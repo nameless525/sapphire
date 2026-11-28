@@ -1,6 +1,7 @@
 //! Version 1 of the cooked clip (M2 N1), frozen, read for one release after version 2 (cooker rule
 //! 2): the same tracks and keys, with no contacts, events or report. Its parts kept their layouts,
-//! so it shares them.
+//! so it shares them; nothing writes it, and its tests read bytes v0.2.0 wrote
+//! (`tests/fixtures/clip_v1.sclip`), so a part that changes its layout fails them.
 
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
@@ -14,7 +15,7 @@ use crate::AssetId;
 pub(super) const VERSION: u32 = 1;
 
 /// [`Clip`] as version 1 wrote it, under its name.
-#[derive(Clone, Debug, Default, PartialEq, TypePath, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, TypePath, rkyv::Archive, rkyv::Deserialize)]
 #[type_path = "sapphire::assets"]
 #[type_name = "Clip"]
 pub(super) struct ClipV1 {
@@ -71,27 +72,13 @@ pub(super) fn read(bytes: &[u8]) -> Result<Clip, ClipError> {
     })
 }
 
-/// `clip` written as version 1 would have, for tests: its contacts, events and report dropped.
+/// A clip as version 1 wrote it, for tests: `tests/fixtures/clip_v1.sclip`, the clip tests' sample
+/// written by v0.2.0's own `to_cooked`, from a checkout of that tag (M6 A1's backfill). It is what a
+/// 0.2.0 pack holds, laid out by the code that wrote one, not by today's part types, so a change to one
+/// of those or to [`ClipV1`]'s fields fails the tests that read it. Never rewritten.
 #[cfg(test)]
-pub(crate) fn write(clip: &Clip) -> sapphire_serialize::cooked::AlignedVec {
-    let old = ClipV1 {
-        name: clip.name.clone(),
-        skeleton: clip.skeleton,
-        joint_count: clip.joint_count,
-        morph_target_count: clip.morph_target_count,
-        rate: clip.rate,
-        ticks: clip.ticks,
-        rotations: clip.rotations.clone(),
-        translations: clip.translations.clone(),
-        scales: clip.scales.clone(),
-        weights: clip.weights.clone(),
-        root: clip.root,
-        rotation_ticks: clip.rotation_ticks.clone(),
-        rotation_keys: clip.rotation_keys.clone(),
-        vector_ticks: clip.vector_ticks.clone(),
-        vector_keys: clip.vector_keys.clone(),
-        weight_ticks: clip.weight_ticks.clone(),
-        weight_keys: clip.weight_keys.clone(),
-    };
-    sapphire_serialize::to_cooked(&old).expect("a version 1 clip writes")
+pub(crate) fn fixture() -> sapphire_serialize::cooked::AlignedVec {
+    let mut bytes = sapphire_serialize::cooked::AlignedVec::new();
+    bytes.extend_from_slice(include_bytes!("../../tests/fixtures/clip_v1.sclip"));
+    bytes
 }

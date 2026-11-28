@@ -262,7 +262,9 @@ impl ParameterSource {
 
 /// Clips that share one phase: the time since one foot last landed (or lifted), as a fraction of the
 /// time to the next, from A1's contact markers. A blend's synced clips, or two states' clips across a
-/// transition, keep their feet together this way however long each clip is.
+/// transition, keep their feet together this way however long each clip is. The fixed step plays
+/// groups too, so a graph that joins one makes its clips' contacts a simulation input
+/// ([`clip`](crate::clip)'s docs).
 #[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

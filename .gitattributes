@@ -35,6 +35,7 @@
 *.dds binary
 *.astc binary
 *.smesh binary
+*.sclip binary
 *.sreplay binary
 *.sav binary
 *.bank binary

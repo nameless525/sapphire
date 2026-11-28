@@ -2225,7 +2225,15 @@ fn clip_parts(
             return Err(ClipCookError::MirrorSource { name: name.clone(), from: from.clone() });
         }
     }
-    if let Some(name) = settings.events.keys().find(|name| !all_names.contains(name)) {
+    // What it cooks, for any rig: a mirror or events for anything else would be dropped unseen.
+    let own: Vec<String> = settings.names.clone().unwrap_or_else(|| all_names.clone());
+    let cooks = |name: &String| {
+        own.contains(name) || settings.retarget.iter().any(|retarget| retarget.names.contains(name))
+    };
+    if let Some(name) = settings.mirror.keys().find(|name| !cooks(name)) {
+        return Err(ClipCookError::UncookedMirror { name: name.clone() });
+    }
+    if let Some(name) = settings.events.keys().find(|name| !cooks(name)) {
         return Err(ClipCookError::UnknownEventClip { name: name.clone() });
     }
     // Where a clip's file is among `all_names`, and which of the file's animations it samples: a
@@ -2240,7 +2248,6 @@ fn clip_parts(
     };
     let mut seen = HashSet::new();
     let mut parts = Vec::new();
-    let own: Vec<String> = settings.names.clone().unwrap_or_else(|| all_names.clone());
     for name in own {
         let (file, index) = place_of(&name)?;
         if !seen.insert((name.clone(), None)) {

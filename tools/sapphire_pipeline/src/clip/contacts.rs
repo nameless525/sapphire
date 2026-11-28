@@ -1,5 +1,5 @@
 //! Foot contacts, found at cook (M6 A1): where each foot of a clip is planted, as the
-//! [`ContactTrack`]s graph sync and footsteps read, and how far it slides while it is.
+//! [`ContactTrack`]s graph sync groups and footsteps read, and how far it slides while it is.
 //!
 //! # The travel
 //!
@@ -35,6 +35,29 @@
 //! (horizontally, after the ground's own travel) from where the run began. A foot's slide is the worst
 //! of its soles' runs. A planted foot that stays put slides 0; a retarget whose stride doesn't match its
 //! hips' travel shows here.
+//!
+//! **What it misses: a fast skate reads as a lift.** In a clip whose root travels, a sole is planted
+//! only while its whole speed stays under [`ContactSettings::speed`] (to land) and [`RELEASE`] times it
+//! (to stay): 0.3 and 0.45 m/s by default. A planted foot skating faster near the ground has no run, so
+//! no slide, and nothing that plants by these contacts holds it (the content check, the clip inspector,
+//! M6 A4's foot lock). A clip that runs in place judges its soles by vertical speed alone, so its slides
+//! are all counted, against the ground's travel.
+//!
+//! # Contacts are a simulation input, two ways
+//!
+//! - **At run time, through a sync group:** a graph's sync group counts its synced clips' cycles from a
+//!   foot's marker, and the fixed step plays the graph of a fixed body, so a change here that moves a
+//!   marker changes that body's simulation if its graph syncs (`sapphire_assets::clip`'s docs say
+//!   which do, and what holds it).
+//! - **At cook time, through the foot lock:** M6 A4's [`foot_lock`](super::foot_lock) plants every
+//!   retarget's feet by `planting` and turns its legs to match, so a change to how this judges a sole
+//!   (the settings' defaults, [`RELEASE`], `planting` itself) moves every retarget's leg tracks, synced
+//!   or not. A fixed body that plays a retarget then samples other legs, as a move table baked from a
+//!   retarget's legs would (none is, A4's As built).
+//!
+//! Either way a change here changes cooked clips' bytes, so it is a simulation change and bumps the clip
+//! cooker's stage ([`COOKER`](super::COOKER), which the retarget's carries); a fixed body's fingerprint
+//! takes its clips' bytes, so a recording made before it is refused rather than played differently.
 //!
 //! In scalars and `det`, as everything on a clip's path is, and deterministic: the same samples give
 //! the same tracks on every architecture.

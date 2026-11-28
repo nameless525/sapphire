@@ -209,6 +209,61 @@ pub fn joint_remap(joints: &[Joint], shared: &Skeleton) -> Result<Vec<u16>, RigM
         .collect()
 }
 
+/// [`joint_remap`] onto a skeleton its cook cut (M6 C8, [`crate::skeleton`]): a joint named in `cut`,
+/// the joints that cook's cut dropped from the owner, maps to `None` and its keys are ignored
+/// ([`remap_cut_tracks`]). Everything else is held as [`joint_remap`] holds it, so a joint of the source
+/// missing for any other reason is still an error, and with nothing cut this is [`joint_remap`].
+pub fn joint_remap_cut(
+    joints: &[Joint],
+    shared: &Skeleton,
+    cut: &[String],
+) -> Result<Vec<Option<u16>>, RigMismatch> {
+    let dropped: Vec<bool> = joints.iter().map(|joint| cut.contains(&joint.name)).collect();
+    // The rest, as a skeleton of their own: a kept joint under a dropped one keeps that parent's name, so
+    // its parent is wrong in the shared skeleton, as it would be anyway.
+    let mut index_of = vec![None; joints.len()];
+    let mut kept = Vec::with_capacity(joints.len());
+    for (index, joint) in joints.iter().enumerate().filter(|&(index, _)| !dropped[index]) {
+        let parent = match joint.parent.map(usize::from) {
+            Some(parent) if dropped[parent] => {
+                let Some(at) = shared.names.iter().position(|name| *name == joint.name) else {
+                    return Err(RigMismatch::MissingJoint { joint: joint.name.clone() });
+                };
+                let expected = (shared.parents[at] != sapphire_assets::skeleton::NO_PARENT)
+                    .then(|| shared.names[usize::from(shared.parents[at])].clone());
+                let found = Some(joints[parent].name.clone());
+                return Err(RigMismatch::Parent { joint: joint.name.clone(), found, expected });
+            }
+            parent => parent.map(|parent| index_of[parent].expect("parents come first")),
+        };
+        index_of[index] = Some(kept.len() as u16);
+        kept.push(Joint { parent, ..joint.clone() });
+    }
+    let remap = joint_remap(&kept, shared)?;
+    Ok(index_of.into_iter().map(|index| index.map(|index| remap[usize::from(index)])).collect())
+}
+
+/// `sampled` with the keys of the joints `remap` maps to `None` left out, and the rest renumbered as
+/// [`remap_tracks`] does. A root on a joint the cut dropped is refused by that joint, one of `joints`:
+/// root motion needs the joint it moves.
+pub fn remap_cut_tracks(
+    mut sampled: SampledClip,
+    remap: &[Option<u16>],
+    joints: &[Joint],
+) -> Result<SampledClip, RigMismatch> {
+    if let Some(root) = &sampled.root
+        && remap[usize::from(root.joint)].is_none()
+    {
+        return Err(RigMismatch::MissingJoint { joint: joints[usize::from(root.joint)].name.clone() });
+    }
+    let kept = |joint: &u16| remap[usize::from(*joint)].is_some();
+    sampled.rotations.retain(|(joint, _)| kept(joint));
+    sampled.translations.retain(|(joint, _)| kept(joint));
+    sampled.scales.retain(|(joint, _)| kept(joint));
+    let dense: Vec<u16> = remap.iter().map(|joint| joint.unwrap_or(u16::MAX)).collect();
+    Ok(remap_tracks(sampled, &dense))
+}
+
 /// `sampled`, with its joints renumbered by `remap`, each list back in joint order.
 pub fn remap_tracks(mut sampled: SampledClip, remap: &[u16]) -> SampledClip {
     fn renumber<T>(tracks: &mut [(u16, T)], remap: &[u16]) {

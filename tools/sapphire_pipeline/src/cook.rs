@@ -203,7 +203,9 @@ use crate::character_maps::{self, MapError, MapKind};
 use crate::check::{self, Waived};
 use crate::clip::contacts::ContactSettings;
 use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
-use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
+use crate::clip::source::{
+    ClipSource, ClipSources, joint_remap, joint_remap_cut, remap_cut_tracks, remap_tracks,
+};
 use crate::clip::{
     self, ClipCookError, ClipOptions, ClipSettings, ClipTarget, EventSettings, ReductionError, SampledClip,
     foot_lock, mirror,
@@ -237,6 +239,7 @@ use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::procedural::{self, ProceduralError};
 use crate::reflections::{self, ReflectionCookError};
 use crate::script::{self, ScriptCookError};
+use crate::skeleton::{self, JointCap};
 use crate::texture::{self, CookedTexture, TextureError};
 use crate::timeline::{self, TimelineCookError};
 use crate::timing::{AssetClocks, AssetTime, CookTimings, Phase, Step};
@@ -761,6 +764,12 @@ pub enum CookError {
         #[source]
         source: Box<VrmImportError>,
     },
+    #[error("can't cut the skeleton of {} to its cap", path.display())]
+    Skeleton {
+        path: PathBuf,
+        #[source]
+        source: skeleton::CutError,
+    },
     #[error("failed to cook clip or skeleton from {}", path.display())]
     Clip {
         path: PathBuf,
@@ -865,6 +874,12 @@ pub enum CookError {
     },
     #[error("playable kind {} names {id} in `{field}`, which is not {what} of this content tree that cooks", path.display())]
     PlayableReference { path: PathBuf, field: &'static str, what: &'static str, id: AssetId },
+    #[error(
+        "{} holds its mesh on joint {joint:?} in `look.held.joint`, which this cook's skeleton cut drops from \
+         `look.mesh` (its sidecar's `joints.{cook}`): hold it on a joint that isn't a spring joint",
+        path.display()
+    )]
+    HeldJointCut { path: PathBuf, joint: String, cook: Cook },
     #[error("failed to cook character motion {}", path.display())]
     Motion {
         path: PathBuf,
@@ -2571,6 +2586,26 @@ impl<'a> Assets<'a> {
         self.rig_source(id).filter(|rig| rig.owner == id).ok_or(ClipCookError::UnknownRig { id })
     }
 
+    /// Refuses a held mesh on `joint` of `mesh` when this cook's skeleton cut (M6 C8) drops that joint,
+    /// which the runtime finds by name: it would cook clean and fail at load on that cook alone.
+    fn held_joint_stays(&self, path: &Path, mesh: AssetId, joint: &str) -> Result<(), CookError> {
+        held_joint_kept(path, joint, &self.dropped_joints(mesh)?, self.cook)
+    }
+
+    /// The joints this cook's skeleton cut (M6 C8) drops from source `id`, by name: none for a source
+    /// whose sidecar caps no joints on this cook, or whose skeleton fits its cap.
+    fn dropped_joints(&self, id: AssetId) -> Result<Vec<String>, CookError> {
+        let Some(source) = self.sources.get(&id) else { return Ok(Vec::new()) };
+        let ImportSettings::Vrm(settings) = &source.meta.importer else { return Ok(Vec::new()) };
+        let Some(cap) = settings.joints.of(self.cook) else { return Ok(Vec::new()) };
+        let path = &source.path;
+        let bytes = fs::read(path).map_err(|e| CookError::Read { path: path.clone(), source: e })?;
+        let vrm::RigImport { rig, joints, .. } =
+            vrm::import_rig_with_slots(&bytes, settings.version).map_err(vrm_error(path))?;
+        let cut = skeleton::plan(&joints, &rig, cap.get(), self.cook).map_err(skeleton_error(path))?;
+        Ok(cut.map(|cut| cut.dropped(&joints).into_iter().map(str::to_owned).collect()).unwrap_or_default())
+    }
+
     /// The rig a key-pose document cooks for: `id`, which the sidecar must name, must have a map. Its
     /// mesh has cooked if it has one: a rig with none skips a document's morph weights, and a mesh yet
     /// to cook must never read as that, or the order of file names would decide what a clip holds.
@@ -3101,19 +3136,28 @@ fn cook_source(
             if *part == Part::Own =>
         {
             let shared = shared_skeleton(settings, assets).map_err(clip_error)?;
+            // The joints the owner's cut dropped on this cook (M6 C8), which this mesh's skin folds too.
+            let cut = match settings.shared_rig() {
+                Some(owner) => assets.dropped_joints(owner)?,
+                None => Vec::new(),
+            };
             let mesh_settings = settings.mesh().expect("mesh importers have mesh settings");
             let lookup = |id| assets.sources.get(&id).copied();
             let merge = mesh_merge(path, id, mesh_settings, cook, &lookup)?;
             let _held = assets.memory.hold(mesh_memory(path, bytes, settings));
-            let mesh = import_mesh(path, bytes, settings, cook, shared.as_ref(), skeleton, merge.as_ref())?;
+            let shared = shared.as_ref().map(|shared| (shared, cut.as_slice()));
+            let mesh = import_mesh(path, bytes, settings, cook, shared, skeleton, merge.as_ref())?;
             Ok(cooked_bytes(path, &mesh)?.into_vec())
         }
         ImportSettings::Vrm(vrm_settings) => {
             debug_assert_eq!(*part, Part::Rig, "a VRM's other sub-asset is its rig");
             // Reading a rig imports the file's whole scene.
             let _held = assets.memory.hold(mesh_memory(path, bytes, settings));
-            let (mut rig, slots) =
+            let vrm::RigImport { mut rig, slots, mut joints } =
                 vrm::import_rig_with_slots(bytes, vrm_settings.version).map_err(vrm_error(path))?;
+            // The mobile cook's skeleton cut (M6 C8), as the mesh's and the skeleton's import makes it.
+            skeleton::cut(&mut joints, None, &mut rig, vrm_settings.joints, cook)
+                .map_err(skeleton_error(path))?;
             // A merge renumbers the slots its expressions bind, by name (M5 L15).
             if merge::merges(&vrm_settings.mesh, cook) {
                 let lookup = |id| assets.sources.get(&id).copied();
@@ -3572,10 +3616,18 @@ fn source_samples(
             Some(id) => {
                 let shared = assets.shared_rig_source(id)?;
                 let skeleton = shared.read_skeleton()?;
-                let remap = joint_remap(&source.joints, &skeleton)?;
+                // On a cook that cuts the owner's skeleton (M6 C8), keys on the joints it dropped are ignored.
+                // An owner whose cut fails names nothing here: its own cook refuses it.
+                let cut = assets.dropped_joints(shared.owner).unwrap_or_default();
+                let sampled = if !cut.is_empty() {
+                    let remap = joint_remap_cut(&source.joints, &skeleton, &cut)?;
+                    remap_cut_tracks(sampled, &remap, &source.joints)?
+                } else {
+                    remap_tracks(sampled, &joint_remap(&source.joints, &skeleton)?)
+                };
                 let map = shared.map(&skeleton)?;
                 Ok(ClipSamples {
-                    sampled: remap_tracks(sampled, &remap),
+                    sampled,
                     skeleton: Some(skeleton),
                     skeleton_id: Some(shared.skeleton_id),
                     morph_defaults: source.morph_defaults.clone(),
@@ -3692,6 +3744,11 @@ fn probe_error(path: &Path) -> impl Fn(ProbeCookError) -> CookError + '_ {
 /// Wraps a VRM import error as the cook error for the source at `path`.
 fn vrm_error(path: &Path) -> impl Fn(VrmImportError) -> CookError + '_ {
     move |source| CookError::Vrm { path: path.to_owned(), source: Box::new(source) }
+}
+
+/// Wraps a skeleton cut's refusal as the cook error for the source at `path` (M6 C8).
+fn skeleton_error(path: &Path) -> impl Fn(skeleton::CutError) -> CookError + '_ {
+    move |source| CookError::Skeleton { path: path.to_owned(), source }
 }
 
 /// Wraps a map error as the cook error for the document at `path`.
@@ -4221,10 +4278,25 @@ fn enemy_moves(path: &Path, bytes: &[u8], assets: &Assets<'_>) -> Result<(PathBu
     reference("look.graph", "an animation graph", document.look.graph, Planned::is_anim_graph)?;
     if let Some(held) = &document.look.held {
         reference("look.held.mesh", "a mesh", held.mesh, Planned::is_mesh)?;
+        assets.held_joint_stays(path, document.look.mesh, &held.joint)?;
     }
     let source = assets.get(document.moves).expect("just checked").asset.path.clone();
     let moves = fs::read(&source).map_err(|error| CookError::Read { path: source.clone(), source: error })?;
     Ok((source, moves))
+}
+
+/// Refuses `look.held.joint` when it is one of `dropped`, the joints `cook`'s skeleton cut (M6 C8) drops
+/// from the document's `look.mesh` ([`Assets::held_joint_stays`]).
+pub(crate) fn held_joint_kept(
+    path: &Path,
+    joint: &str,
+    dropped: &[String],
+    cook: Cook,
+) -> Result<(), CookError> {
+    if dropped.iter().any(|name| name == joint) {
+        return Err(CookError::HeldJointCut { path: path.to_owned(), joint: joint.to_owned(), cook });
+    }
+    Ok(())
 }
 
 /// Holds what a playable kind names to the kinds of asset it must be, on every cook, as an enemy's are.
@@ -4245,6 +4317,7 @@ fn playable_references(path: &Path, bytes: &[u8], assets: &Assets<'_>) -> Result
     reference("look.graph", "an animation graph", look.graph, Planned::is_anim_graph)?;
     if let Some(held) = &look.held {
         reference("look.held.mesh", "a mesh", held.mesh, Planned::is_mesh)?;
+        assets.held_joint_stays(path, look.mesh, &held.joint)?;
     }
     if let Some(motion) = look.motion {
         reference("look.motion", "a character motion document", motion, Planned::is_motion)?;
@@ -4557,13 +4630,14 @@ fn assembly_detail(cook: Cook) -> assembly::Detail {
 /// FBX, VRM or an assembly), for `cook`.
 ///
 /// With a `shared` skeleton the mesh is built on its own joints, and its palette then follows the
-/// same joints in `shared`'s order.
+/// same joints in `shared`'s order, after its skin folds the joints the owner's cut dropped (M6 C8),
+/// the names beside it.
 fn import_mesh(
     path: &Path,
     bytes: &[u8],
     importer: &ImportSettings,
     cook: Cook,
-    shared: Option<&Skeleton>,
+    shared: Option<(&Skeleton, &[String])>,
     skeleton_id: Option<AssetId>,
     merge: Option<&MeshMerge>,
 ) -> Result<Mesh, CookError> {
@@ -4571,11 +4645,13 @@ fn import_mesh(
     let clip_error =
         |source: ClipCookError| CookError::Clip { path: path.to_owned(), source: Box::new(source) };
     let remap = shared
-        .map(|shared| {
-            let skin = mesh.skin.as_ref().ok_or_else(|| clip_error(ClipCookError::NoSkeleton))?;
+        .map(|(shared, cut)| {
+            let skin = mesh.skin.as_mut().ok_or_else(|| clip_error(ClipCookError::NoSkeleton))?;
+            skeleton::cut_shared(skin, cut);
             joint_remap(&skin.joints, shared).map_err(|source| clip_error(source.into()))
         })
         .transpose()?;
+    let shared = shared.map(|(shared, _)| shared);
     let settings = importer.mesh().expect("only mesh importers import a mesh");
     // Packing would quantize a NaN to a corner of the bounds. glTF's importer says which primitive;
     // this holds for the others.
@@ -4655,7 +4731,17 @@ pub(crate) fn imported_mesh(
         ImportSettings::Fbx(_) => fbx::import_slice(bytes)
             .map_err(|source| CookError::Fbx { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Vrm(settings) => {
-            Ok(vrm::import(bytes, settings.version).map_err(vrm_error(path))?.mesh)
+            let vrm::VrmImport { mut mesh, mut rig, .. } =
+                vrm::import(bytes, settings.version).map_err(vrm_error(path))?;
+            // A sidecar's cap cuts the skeleton (M6 C8): the mesh's and the skeleton's parts both read it
+            // here, and the rig's part cuts its own import alike.
+            if let Some(skin) = &mut mesh.skin {
+                let mut joints = std::mem::take(&mut skin.joints);
+                skeleton::cut(&mut joints, Some(skin), &mut rig, settings.joints, cook)
+                    .map_err(skeleton_error(path))?;
+                skin.joints = joints;
+            }
+            Ok(mesh)
         }
         ImportSettings::Assembly(_) => assembly::import(path, bytes, assembly_detail(cook))
             .map_err(|source| CookError::Assembly { path: path.to_owned(), source: Box::new(source) }),
@@ -4733,7 +4819,7 @@ fn cook_mesh_with_bytes(
         Some(ImportSettings::Gltf(_)) => ImportSettings::Gltf(settings.clone()),
         Some(ImportSettings::Fbx(_)) => ImportSettings::Fbx(settings.clone()),
         Some(ImportSettings::Vrm(_)) => {
-            ImportSettings::Vrm(VrmSettings { mesh: settings.clone(), version: None })
+            ImportSettings::Vrm(VrmSettings { mesh: settings.clone(), version: None, joints: JointCap::NONE })
         }
         Some(ImportSettings::Assembly(_)) => ImportSettings::Assembly(settings.clone()),
         _ => return Err(CookError::UnsupportedSource { path: source.to_owned() }),

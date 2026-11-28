@@ -214,7 +214,7 @@ fn a_vrm_s_unrecognized_vroid_names_and_shared_chain_names_warn() {
     second["joints"] = json!([{ "node": samples::node::HAIR_SIDE }]);
     springs.as_array_mut().unwrap().push(second);
     let importer =
-        ImportSettings::Vrm(VrmSettings { mesh: MeshSettings::default(), version: Some(VrmVersion::V1) });
+        ImportSettings::Vrm(VrmSettings { version: Some(VrmVersion::V1), ..VrmSettings::default() });
     tree.source("character/a.vrm", &vrm.to_glb(), importer, None);
 
     let report = tree.check();

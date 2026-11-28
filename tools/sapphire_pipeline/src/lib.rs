@@ -27,6 +27,8 @@
 //!   and re-materialed in slots of the project's own, cooked as meshes (M1 X1's town).
 //! - [`mesh`]: the mesh intermediate, and packing it into the cooked
 //!   [`Mesh`](sapphire_assets::mesh::Mesh) (quantized streams).
+//! - [`skeleton`]: a character's skeleton cut to a cook's cap (M6 C8): its deepest spring-chain joints
+//!   dropped from the skeleton, the mesh and the rig, their weights folded into the joints above.
 //! - [`bake`]: derived data computed offline: smoothed outline normals where none are authored.
 //! - [`optimize`]: meshoptimizer's vertex-cache, overdraw and vertex-fetch orders, and the LOD
 //!   chain each cook keeps.
@@ -189,6 +191,7 @@ pub mod release;
 pub mod samples;
 pub mod scaffold;
 pub mod script;
+pub mod skeleton;
 #[cfg(test)]
 mod test_util;
 pub mod texture;

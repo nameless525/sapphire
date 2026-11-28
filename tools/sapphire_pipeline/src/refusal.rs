@@ -99,6 +99,7 @@ fn source_of(error: &CookError) -> Option<&Path> {
         | E::Vrm { path, .. }
         | E::Clip { path, .. }
         | E::InvalidRig { path, .. }
+        | E::Skeleton { path, .. }
         | E::Texture { path, .. }
         | E::Map { path, .. }
         | E::Procedural { path, .. }
@@ -114,6 +115,7 @@ fn source_of(error: &CookError) -> Option<&Path> {
         | E::EnemyReference { path, .. }
         | E::Playable { path, .. }
         | E::PlayableReference { path, .. }
+        | E::HeldJointCut { path, .. }
         | E::Motion { path, .. }
         | E::Effects { path, .. }
         | E::EffectSheet { path, .. }

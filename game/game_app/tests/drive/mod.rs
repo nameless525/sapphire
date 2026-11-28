@@ -283,9 +283,14 @@ impl<D: Draw> Driver<D> {
     }
 
     /// Presses `node` on `screen`, which steps `setting`, until it's back where it began: a frame each value.
+    /// The voice row comes back round to the language heard ([`as_heard`]), every other row to the settings.
     pub fn step_round(&mut self, screen: &str, node: &str, setting: Setting) -> Result<(), AppInitError> {
         self.focus(screen, node)?;
-        let began = self.settings().clone();
+        let round = |settings: &PlayerSettings| match setting {
+            Setting::VoiceLanguage => as_heard(settings),
+            _ => settings.clone(),
+        };
+        let began = round(self.settings());
         let mut values = 0;
         loop {
             assert!(values < MOST_VALUES, "{setting:?} never came back round");
@@ -297,7 +302,7 @@ impl<D: Draw> Driver<D> {
             self.what = format!("{setting:?} at {}", value_of(self.settings(), setting));
             self.held()?;
             values += 1;
-            if *self.settings() == began {
+            if round(self.settings()) == began {
                 break;
             }
         }
@@ -373,10 +378,20 @@ pub fn walked_every_row(
     }
 }
 
+/// `settings` as the player hears them: a voice language nobody chose, which follows the text's, as the
+/// one it follows. A round of the voice row steps through the voiced languages and never back to none
+/// chosen, so it comes back round to the language heard.
+fn as_heard(settings: &PlayerSettings) -> PlayerSettings {
+    let mut heard = settings.clone();
+    heard.voice_language = settings.known_voice_language().to_owned();
+    heard
+}
+
 /// What `setting` is set to, as a failure names it.
 pub fn value_of(settings: &PlayerSettings, setting: Setting) -> String {
     match setting {
         Setting::Language => settings.language.clone(),
+        Setting::VoiceLanguage => settings.known_voice_language().to_owned(),
         Setting::Size => settings.size.clone(),
         Setting::TextSize => settings.text_size.name().to_owned(),
         Setting::Shake => format!("{}%", settings.shake),

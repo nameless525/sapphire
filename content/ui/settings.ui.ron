@@ -1,5 +1,6 @@
-// The settings (M3 U7, M4 A1, M4 T3's graphics): the language, and a row for each page of the rest, each its own screen
-// that `menus.rs`'s rows open, then the privacy policy's page (M4 Z3b). Back goes to whoever opened it.
+// The settings (M3 U7, M4 A1, M4 T3's graphics): the language, the voices' language (M6 U13a), and a row for each page
+// of the rest, each its own screen that `menus.rs`'s rows open, then the privacy policy's page (M4 Z3b). Back goes to
+// whoever opened it.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,
@@ -55,7 +56,7 @@
                 ),
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
-                    down: "display",
+                    down: "voice-language",
                     focused: (
                         shape: Slice(sprite: Button, corner: 8),
                         fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
@@ -87,7 +88,7 @@
                 ),
             ),
             (
-                name: "display",
+                name: "voice-language",
                 parent: "list",
                 layout: (
                     direction: Row,
@@ -101,6 +102,52 @@
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
                 focus: (
                     up: "language",
+                    down: "display",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "voice-language-text",
+                parent: "voice-language",
+                text: (
+                    key: "settings-voice-language",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "voice-language-value",
+                parent: "voice-language",
+                text: (
+                    key: "settings-language-en",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "voice_language", prefix: "settings-language-"),
+                ),
+            ),
+            (
+                name: "display",
+                parent: "list",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "voice-language",
                     down: "graphics",
                     focused: (
                         shape: Slice(sprite: Button, corner: 8),
@@ -416,6 +463,10 @@
             (
                 name: "focus-language",
                 tracks: [(node: "language", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-voice-language",
+                tracks: [(node: "voice-language", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
             ),
             (
                 name: "focus-display",

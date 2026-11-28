@@ -38,10 +38,12 @@ const LARGE: f32 = 3.0;
 /// Every text short of its bar today: its screen, its node, and its worst ratio as measured (held within 0.1).
 /// Each is a look call, reported in M4 A8's hand-back: the title's tagline, every row's amber value on its
 /// focused gradient, and the HUD's texts, drawn over the world with no plate (1:1 at worst, their shadows not
-/// counting), its banner and the subtitle band at its default.
+/// counting), its banner and the subtitle band at its default. A row added since in the rows' own look joins them
+/// (M6 U10's range, M6 U13a's voice language): the amber is the rows' look call, not a row's.
 const KNOWN_SHORT: &[(&str, &str, f32)] = &[
     ("title", "tagline", 3.20),
     ("settings", "language-value", 3.78),
+    ("settings", "voice-language-value", 3.78),
     ("settings", "display-value", 3.87),
     ("settings", "graphics-value", 3.87),
     ("settings", "sound-value", 3.87),

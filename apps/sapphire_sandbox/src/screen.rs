@@ -409,7 +409,11 @@ mod tests {
             let top = stack.top().unwrap();
             assert!(top.problems().is_empty(), "{:#?}", top.problems());
             assert_eq!(top.state(), Some("open"));
-            assert_eq!(top.focus_name(), Some("sound"), "down three from the language");
+            assert_eq!(
+                top.focus_name(),
+                Some("graphics"),
+                "down three from the language: the voices', the display's, the graphics'"
+            );
             assert_eq!(top.unreachable(), Vec::<&str>::new());
         }
     }

@@ -1599,7 +1599,9 @@ mod tests {
         let menus = show.menus.as_mut().unwrap();
         menus.open(MenuScreen::named("settings"));
         frame(&mut show, &mut clock);
-        // The hub's first row's the language, the next opens the display's page, whose first is the size.
+        // The hub's first rows are the language and the voices' (M6 U13a), the next opens the display's page,
+        // whose first is the size.
+        press(&mut show, &mut clock, Scancode::DOWN);
         press(&mut show, &mut clock, Scancode::DOWN);
         press(&mut show, &mut clock, Scancode::RETURN);
         assert_eq!(show.take_changed_settings(), None, "a page opened");

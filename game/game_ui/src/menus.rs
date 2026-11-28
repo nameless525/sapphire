@@ -241,6 +241,8 @@ pub struct MenuModel {
     pub can_continue: bool,
     /// The key of the language's name.
     pub language: String,
+    /// The key of the voice language's name (M6 U13a), a language's as [`Self::language`]'s is.
+    pub voice_language: String,
     /// The key of the interface's size's name.
     pub size: String,
     pub text_size: String,
@@ -314,6 +316,7 @@ impl MenuModel {
         let switch = |on: bool| format!("settings-switch-{}", if on { "on" } else { "off" });
         let held = |action| format!("controls-held-{}", settings.holds.mode(action).name());
         self.language = format!("settings-language-{}", settings.known_language());
+        self.voice_language = format!("settings-language-{}", settings.known_voice_language());
         self.size = format!("display-size-{}", settings.size);
         self.text_size = format!("display-text-{}", settings.text_size.name());
         self.shake = i32::from(settings.shake);

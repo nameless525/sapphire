@@ -84,10 +84,27 @@ pub struct Problem {
 }
 
 impl Problem {
-    /// The text `text` of `document` doesn't read: its parser said `failure`.
+    /// The text `text` of `document` doesn't read: its parser said `failure`. A merge's conflict left in it is
+    /// named first, at the path its marker's label gives ([`crate::merge::unresolved`]), since that's why.
     #[must_use]
     pub fn parse(document: &Path, text: &str, failure: &str) -> Self {
-        Self::found(document, Origin::Parse, failure, Some(text))
+        let Some(unresolved) = crate::merge::unresolved(text) else {
+            return Self::found(document, Origin::Parse, failure, Some(text));
+        };
+        let line = unresolved.line;
+        let (at, message) = match unresolved.at {
+            Some(path) => (
+                At::Field(path.to_string()),
+                format!(
+                    "an unresolved merge conflict (line {line}, `{path}`): resolve its markers\n{failure}"
+                ),
+            ),
+            None => (
+                At::Document(format!("its merge conflict's marker, at line {line}, names no field")),
+                format!("an unresolved merge conflict (line {line}): resolve its markers\n{failure}"),
+            ),
+        };
+        Self { document: document.to_owned(), at, origin: Origin::Parse, message }
     }
 
     /// A rule of `document`'s kind says `issue` of it.

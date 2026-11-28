@@ -14,6 +14,9 @@
 //! from the last save or take.
 //!
 //! It owns no rules. What a document may say is its parser's and its `check`'s ([`Schema`]).
+//!
+//! Its one binary, `sapphire_document merge`, is git's merge driver for the documents it knows ([`merge`]): the
+//! two sides' changes by property path, laid on ours through the same edits, with a marker at a clash.
 
 pub mod blank;
 pub mod disk;
@@ -23,6 +26,7 @@ pub mod identity;
 pub mod journal;
 pub mod kinds;
 pub mod layout;
+pub mod merge;
 pub mod patch;
 pub mod path;
 pub mod problem;

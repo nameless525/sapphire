@@ -103,6 +103,7 @@ fn full_apply_keeps_relief_across_frozen_lod_and_releases_at_fractional_time() {
     };
     let strands = [Strand {
         joints: vec![1, 2, 3, 4],
+        tip: None,
         samples: Vec::new(),
         side: 1.0,
         front: 1.0,

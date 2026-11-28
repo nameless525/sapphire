@@ -146,6 +146,9 @@ impl SkinWeights {
 impl ImportedMesh {
     /// Identifies the imported contact geometry at the mesh's packing precision, before any LOD
     /// is derived. Rendering attributes, optimization order and LOD choice are outside this identity.
+    /// It names the skeleton and palette the vertices are bound to, so a cook that cuts the skeleton
+    /// (M6 C8) has its own: what a calibration binds to on that cook is the cut skin, not the authored
+    /// one, and an identity shared across cooks would let it bind joints the cook doesn't have.
     pub(crate) fn authored_geometry(
         &self,
         format: PositionFormat,

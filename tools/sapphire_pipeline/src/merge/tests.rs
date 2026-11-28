@@ -15,6 +15,7 @@ use sapphire_assets::rig::{
 };
 
 use super::*;
+use crate::import::vrm::VrmSettings;
 use crate::meta::AssetMeta;
 use crate::test_util::{TempDir, material as imported_material};
 use crate::texture::{ColorSettings, IlmSettings};
@@ -669,9 +670,11 @@ fn aster_merges_six_slots_to_four() {
     let settings = sidecar.importer.mesh().unwrap();
     for cook in [Cook::Desktop, Cook::Mobile] {
         let merged = crate::cook::cook_mesh_in(&root, &source, cook).unwrap();
-        let plain =
-            crate::cook::cook_mesh(&source, &MeshSettings { merge: Vec::new(), ..settings.clone() }, cook)
-                .unwrap();
+        // Unmerged, with the rest of her sidecar: her mobile joints' cut (M6 C8) changes that cook's LODs.
+        let ImportSettings::Vrm(vrm) = &sidecar.importer else { panic!("Aster is a VRM") };
+        let mesh = MeshSettings { merge: Vec::new(), ..settings.clone() };
+        let unmerged = ImportSettings::Vrm(VrmSettings { mesh, ..vrm.clone() });
+        let (plain, _) = crate::cook::cook_mesh_as(&source, &unmerged, cook).unwrap();
         let names: Vec<&str> = merged.materials.iter().map(|slot| slot.name.as_str()).collect();
         let before: Vec<&str> = plain.materials.iter().map(|slot| slot.name.as_str()).collect();
         assert_eq!(before.len(), 6, "{cook}: {before:?}");

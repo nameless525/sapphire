@@ -285,9 +285,11 @@ fn figure_sources(
     let mut masks: Vec<Vec<(f32, String)>> = vec![Vec::new(); groups.len()];
     for file in files {
         let importer = match file.kind {
-            FileKind::Model if figure.character.is_some() => {
-                Some(ImportSettings::Vrm(VrmSettings { mesh: mesh.clone(), version: Some(VrmVersion::V1) }))
-            }
+            FileKind::Model if figure.character.is_some() => Some(ImportSettings::Vrm(VrmSettings {
+                mesh: mesh.clone(),
+                version: Some(VrmVersion::V1),
+                ..VrmSettings::default()
+            })),
             FileKind::Model => Some(ImportSettings::Gltf(mesh.clone())),
             FileKind::Palette(_) => Some(color.clone()),
             // The matcap is the warrior's small painted one, whatever the figure's maps.

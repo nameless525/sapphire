@@ -63,8 +63,9 @@ pub struct CharacterRig {
 }
 
 impl Versioned for CharacterRig {
-    /// 1: M1 A6.
-    const VERSION: u32 = 1;
+    /// 1: M1 A6. 2: M6 C8, [`SpringTip::Point`], whose three floats grew the archived tip from 8 bytes
+    /// to 16 and so every spring's layout (`archived_springs_are_the_size_they_were_cut_to` holds it).
+    const VERSION: u32 = 2;
 }
 
 /// Declares [`HumanBone`] with VRM 1.0's names, in the specification's order.
@@ -426,6 +427,10 @@ pub enum SpringTip {
     /// The last joint swings too, toward a virtual tail this many meters past it along the
     /// bone from its parent (VRM 0.x, whose leaves swing toward a 7 cm tail).
     Extended { length: f32 },
+    /// The last joint swings too, toward this point in its own space: where the tail stood that a
+    /// mobile skeleton cut dropped (M6 C8), so the joint swings as it did with that tail. Only a cut
+    /// writes it; its offset made the archived tip 16 bytes, so the rig's version is 2.
+    Point { offset: [f32; 3] },
 }
 
 /// A collider on a joint.
@@ -658,10 +663,20 @@ impl ArchivedCharacterRig {
                     return Err(invalid(field("drag force"), "must be between 0 and 1"));
                 }
             }
-            if let ArchivedSpringTip::Extended { length } = &spring.tip
-                && !(length.to_native().is_finite() && length.to_native() > 0.0)
-            {
-                return Err(invalid(what("tip length"), "must be finite and positive"));
+            match &spring.tip {
+                ArchivedSpringTip::Joint => {}
+                ArchivedSpringTip::Extended { length } => {
+                    if !(length.to_native().is_finite() && length.to_native() > 0.0) {
+                        return Err(invalid(what("tip length"), "must be finite and positive"));
+                    }
+                }
+                ArchivedSpringTip::Point { offset } => {
+                    let offset = offset.map(|v| v.to_native());
+                    finite_all(|| what("tip offset"), &offset)?;
+                    if offset == [0.0; 3] {
+                        return Err(invalid(what("tip offset"), "must leave the joint"));
+                    }
+                }
             }
             for &group in spring.collider_groups.iter() {
                 let group = group.to_native();

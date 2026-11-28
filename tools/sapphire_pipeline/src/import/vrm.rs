@@ -42,6 +42,10 @@
 //! anyone reading the sidecar knows its materials and coordinates are converted. The note is
 //! checked: a file that no longer matches it (a 0.x file re-exported as 1.0) fails to import
 //! until the note is corrected, because its materials and rig then come out differently.
+//!
+//! `joints: (desktop: None, mobile: Some(140))`, written only when set, caps the joints a cook keeps
+//! (M6 C8): the cook cuts the deepest spring-chain joints from the mesh, the skeleton and the rig alike
+//! ([`crate::skeleton`]), so a character over the phones' row of spec §3.4 meets it on their cook.
 
 pub mod mtoon;
 
@@ -62,6 +66,7 @@ use gltf::{Document, Gltf};
 use sapphire_assets::material::{EyeLayer, EyeShading, HighlightMotion, IrisShape, RegionGi, ThroughHair};
 use sapphire_assets::mesh::VERTEX_COLOR_NEUTRAL;
 use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION};
+use sapphire_assets::skeleton::Joint;
 use sapphire_reflect::Versioned;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -78,6 +83,7 @@ use crate::import::gltf::{self as gltf_import, GltfImportError, SceneImport};
 use crate::import::image::{self as image_import, ImageImportError};
 use crate::mesh::ImportedMesh;
 use crate::meta::MeshSettings;
+use crate::skeleton::JointCap;
 
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:
 /// the mesh is that importer's, so a bump there must recook VRM files too. Bump the high bits
@@ -146,6 +152,11 @@ pub struct VrmSettings {
     /// Which VRM the file was when the sidecar was written; see the [module docs](self).
     /// `None` notes nothing and checks nothing.
     pub version: Option<VrmVersion>,
+    /// The most joints each cook keeps (M6 C8, [`crate::skeleton`]): `joints: (desktop: None, mobile:
+    /// Some(140))` cuts the deepest spring-chain joints from the mobile cook's skeleton, mesh and rig until
+    /// the count fits. Written out only when a cook has one, so other sidecars key as they did.
+    #[serde(skip_serializing_if = "JointCap::is_none")]
+    pub joints: JointCap,
 }
 
 /// Errors from importing a VRM file.
@@ -346,18 +357,30 @@ fn vroid_eye(mesh: &ImportedMesh, slot: u32) -> Option<EyeShading> {
 
 /// Imports only a VRM file's rig: [`import`] without its materials and vertex work.
 pub fn import_rig(bytes: &[u8], version: Option<VrmVersion>) -> Result<CharacterRig, VrmImportError> {
-    import_rig_with_slots(bytes, version).map(|(rig, _)| rig)
+    import_rig_with_slots(bytes, version).map(|import| import.rig)
 }
 
-/// [`import_rig`], with the names of the mesh's material slots its expressions bind by index, in
-/// order: what a merge (M5 L15) renumbers them by.
-pub fn import_rig_with_slots(
-    bytes: &[u8],
-    version: Option<VrmVersion>,
-) -> Result<(CharacterRig, Vec<String>), VrmImportError> {
-    let Read { document, data, scene, .. } = read(bytes, version)?;
+/// A VRM file's rig, with what a cook of it reads besides ([`import_rig_with_slots`]).
+#[derive(Debug)]
+pub struct RigImport {
+    pub rig: CharacterRig,
+    /// The names of the mesh's material slots its expressions bind by index, in order: what a merge
+    /// (M5 L15) renumbers them by.
+    pub slots: Vec<String>,
+    /// The skeleton's joints, as [`import`]'s mesh has them: what a skeleton cut (M6 C8) cuts by.
+    pub joints: Vec<Joint>,
+}
+
+/// [`import_rig`], with its mesh's slot names and its skeleton's joints.
+pub fn import_rig_with_slots(bytes: &[u8], version: Option<VrmVersion>) -> Result<RigImport, VrmImportError> {
+    let Read { document, data, scene, version, .. } = read(bytes, version)?;
     let rig = rig::build(&document, &data, &scene)?;
-    Ok((rig, scene.mesh.materials.iter().map(|material| material.name.clone()).collect()))
+    let slots = scene.mesh.materials.iter().map(|material| material.name.clone()).collect();
+    let mut joints = scene.mesh.skin.map(|skin| skin.joints).unwrap_or_default();
+    if version == VrmVersion::V0 {
+        turn_joints(&mut joints);
+    }
+    Ok(RigImport { rig, slots, joints })
 }
 
 /// What both imports start from.
@@ -698,6 +721,17 @@ impl Mask {
 /// [`v0`]): positions, normals and morph deltas turn, and joints' rest transforms and inverse
 /// bind matrices are conjugated by the turn, so every joint's space turns with the model and
 /// skinning gives the turned pose.
+/// [`turn_to_face_forward`]'s turn of a skeleton's rest poses.
+fn turn_joints(joints: &mut [Joint]) {
+    for joint in joints {
+        let [x, y, z] = joint.rest.translation;
+        joint.rest.translation = [-x, y, -z];
+        // The turn is the quaternion (0, 1, 0, 0); conjugating by it negates x and z.
+        let [x, y, z, w] = joint.rest.rotation;
+        joint.rest.rotation = [-x, y, -z, w];
+    }
+}
+
 fn turn_to_face_forward(mesh: &mut ImportedMesh) {
     let turn = |[x, y, z]: [f32; 3]| [-x, y, -z];
     for vertex in &mut mesh.vertices {
@@ -712,12 +746,7 @@ fn turn_to_face_forward(mesh: &mut ImportedMesh) {
         }
     }
     if let Some(skin) = &mut mesh.skin {
-        for joint in &mut skin.joints {
-            joint.rest.translation = turn(joint.rest.translation);
-            // The turn is the quaternion (0, 1, 0, 0); conjugating by it negates x and z.
-            let [x, y, z, w] = joint.rest.rotation;
-            joint.rest.rotation = [-x, y, -z, w];
-        }
+        turn_joints(&mut skin.joints);
         // R · M · R with R = diag(−1, 1, −1, 1), column-major: entry (row, column) scales by
         // the sign of its row and of its column.
         const SIGN: [f32; 4] = [-1.0, 1.0, -1.0, 1.0];

@@ -82,7 +82,7 @@ fn shipped() -> Mix {
 
 fn mixer(sound: &DecodedSound) -> KiraBackend<OfflineOutput> {
     let mut backend = KiraBackend::<OfflineOutput>::new(RATE).expect("an offline mixer");
-    backend.set_mix(&shipped());
+    backend.set_mix(&shipped()).expect("room for the shipped mix");
     backend.add_sound(SOUND, sound);
     backend
 }

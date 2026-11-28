@@ -8,8 +8,8 @@ use sapphire_assets::mix::{Mix, OutputProfile, Reverb};
 use sapphire_assets::sound::DecodedSound;
 
 use crate::backend::{
-    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, StartError, StemStart, VoiceParams, VoiceSlot,
-    VoiceStart,
+    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, MixRefused, StartError, StemStart,
+    VoiceParams, VoiceSlot, VoiceStart,
 };
 use crate::master::DynamicRange;
 
@@ -100,6 +100,7 @@ pub struct MockBackend {
     state: DeviceState,
     stems: Vec<StemStart>,
     music_beats: Option<f64>,
+    refuse_mixes: bool,
 }
 
 impl MockBackend {
@@ -141,6 +142,11 @@ impl MockBackend {
     pub fn set_music_beats(&mut self, beats: Option<f64>) {
         self.music_beats = beats;
     }
+
+    /// Makes every mix from now on refused, as a mixer with no room for its tracks refuses one, or taken again.
+    pub fn refuse_mixes(&mut self, refuse: bool) {
+        self.refuse_mixes = refuse;
+    }
 }
 
 impl AudioBackend for MockBackend {
@@ -154,8 +160,9 @@ impl AudioBackend for MockBackend {
         self.calls.push(MockCall::RemoveSound(id));
     }
 
-    fn set_mix(&mut self, mix: &Mix) {
+    fn set_mix(&mut self, mix: &Mix) -> Result<(), MixRefused> {
         self.calls.push(MockCall::SetMix { buses: mix.buses.len() });
+        if self.refuse_mixes { Err(MixRefused) } else { Ok(()) }
     }
 
     fn start_voice(

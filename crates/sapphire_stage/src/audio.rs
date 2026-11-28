@@ -1146,20 +1146,30 @@ mod tests {
             "the mouth peaks at frame {mouth_peak}, the mix at {mix_peak}"
         );
 
-        // Again, held by a pause partway: the mouth stays where it was, the mix falls silent, and both go on
-        // from there.
+        // Again, held by a pause partway: the mouth stays where the voice stopped, the mix falls silent, and
+        // both go on from there. The voice plays on through its freeze's fade, and so does the mouth (M6 U2,
+        // fixed after its review), so it stops `STOP_FADE` past where the pause found it.
         const HELD: std::ops::Range<usize> = ASKED + 30..ASKED + 50;
         let paused = play(HELD);
-        let at_pause = paused[HELD.start].0.unwrap().mouth;
-        assert_eq!(at_pause, heard[HELD.start].0.unwrap().mouth);
-        for frame in HELD {
-            assert_eq!(paused[frame].0.unwrap().mouth, at_pause, "frame {frame}");
+        assert_eq!(paused[HELD.start].0.unwrap().mouth, heard[HELD.start].0.unwrap().mouth);
+        let faded = sapphire_audio::STOP_FADE.as_secs_f32();
+        let near = |said: MouthSample, at: f32| {
+            let expected = curve.at(at);
+            let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+            near(said.open, expected.open)
+                && said.visemes.iter().zip(expected.visemes).all(|(&a, b)| near(a, b))
+        };
+        let at_pause = paused[HELD.start + 1].0.unwrap().mouth;
+        assert!(near(at_pause, (HELD.start - ASKED) as f32 * DT + faded), "{at_pause:?}");
+        for (frame, (said, _)) in paused.iter().enumerate().take(HELD.end).skip(HELD.start + 1) {
+            assert_eq!(said.unwrap().mouth, at_pause, "frame {frame}");
         }
         assert!(
             paused[HELD.start + 5..HELD.end].iter().all(|&(_, power)| power == 0.0),
             "a held voice is silent"
         );
         let after = HELD.end + 1;
-        assert_eq!(paused[after].0.unwrap().mouth, heard[after - HELD.len()].0.unwrap().mouth);
+        let resumed = paused[after].0.unwrap().mouth;
+        assert!(near(resumed, (after - HELD.len() - ASKED) as f32 * DT + faded), "{resumed:?}");
     }
 }

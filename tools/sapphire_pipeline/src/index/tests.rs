@@ -101,3 +101,28 @@ fn an_index_reads_back_as_written_and_another_version_is_refused() {
     fs::write(&path, format!("{{\"version\": {VERSION}, \"cook\": 3}}")).unwrap();
     assert!(matches!(AssetIndex::read(&path), Err(IndexError::Unreadable { .. })));
 }
+
+#[test]
+fn bumping_a_stage_the_index_holds_or_changing_a_row_misses_the_kept_index() {
+    let assets = vec![(id(1), "body/albedo.png".to_owned())];
+    let sidecars = vec![("body/albedo.png".to_owned(), vec![1_u8, 2, 3])];
+    let rows = check::ROWS;
+    let kept = key(&STAGES, &rows, Cook::Desktop, &assets, &sidecars);
+    assert!(
+        kept == key(&STAGES, &rows, Cook::Desktop, &assets, &sidecars),
+        "the same inputs keep the same key"
+    );
+    assert_eq!(
+        STAGES.map(|stage| stage.name),
+        [INDEXER.name, audit::AUDITOR.name, check::CHECKER.name, pack::PACKER.name, pack::REACH.name]
+    );
+    for at in 0..STAGES.len() {
+        let mut bumped = STAGES;
+        bumped[at].version += 1;
+        assert!(key(&bumped, &rows, Cook::Desktop, &assets, &sidecars) != kept, "{} bumped", STAGES[at].name);
+    }
+    let mut changed = rows;
+    changed[0][1].triangles += 1;
+    assert!(key(&STAGES, &changed, Cook::Desktop, &assets, &sidecars) != kept, "a changed row");
+    assert!(key(&STAGES, &rows, Cook::Mobile, &assets, &sidecars) != kept, "each cook its own index");
+}

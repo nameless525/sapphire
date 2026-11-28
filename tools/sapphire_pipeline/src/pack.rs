@@ -152,7 +152,7 @@ pub const PART_CAP: u64 = 128 << 20;
 
 /// What a cooked asset reaches, as cache keys know it. Bump the version whenever that changes for the
 /// same bytes ([`AssetKind::reach`]).
-const REACH: Stage = Stage { name: "pack reach", version: 1 };
+pub(crate) const REACH: Stage = Stage { name: "pack reach", version: 1 };
 
 /// What reads a mesh's pipeline keys, as cache keys know it. Bump the version whenever they change for the
 /// same bytes ([`PipelineKey::of_mesh`]).

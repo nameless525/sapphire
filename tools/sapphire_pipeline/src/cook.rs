@@ -6172,11 +6172,11 @@ mod tests {
         };
         let report = scratch.cook_with(cook, true);
         let out = scratch.out_for(cook);
-        let (path, written) = index_of(&scratch.source(), &out, Some(&cache), &report);
+        let index::Indexed { path, written, .. } = index_of(&scratch.source(), &out, Some(&cache), &report);
         assert_eq!((&path, written), (&out.join(index::FILE_NAME), audit::Written::Written));
         let first = fs::read_to_string(&path).unwrap();
         let again = scratch.cook_with(cook, true);
-        let (_, written) = index_of(&scratch.source(), &out, Some(&cache), &again);
+        let written = index_of(&scratch.source(), &out, Some(&cache), &again).written;
         assert_eq!(written, audit::Written::UpToDate, "the cache's index is the one written");
 
         // The same tree at another root, cooked with no cache, indexes to the same bytes.
@@ -6185,7 +6185,7 @@ mod tests {
         copy_tree(&scratch.source(), &source);
         let options = CookOptions { cook, cache: None, locked: true, editor: false };
         let report = cook_dir(&source, &loose, &options).unwrap();
-        let (moved, _) = index_of(&source, &loose, None, &report);
+        let moved = index_of(&source, &loose, None, &report).path;
         assert!(fs::read_to_string(&moved).unwrap() == first, "another root's index has the same bytes");
 
         let index = AssetIndex::read(&path).unwrap();
@@ -6238,6 +6238,68 @@ mod tests {
         let shared = index.packs["shared"];
         assert_eq!(shared.assets as usize, index.assets.len());
         assert_eq!(shared.bytes, index.assets.values().map(|asset| asset.bytes).sum::<u64>());
+    }
+
+    #[test]
+    fn a_warm_index_measures_again_only_the_role_mesh_whose_sidecar_changed() {
+        use crate::check::{Budget, Role};
+        use crate::index;
+
+        let scratch = Scratch::new("cook_warm_check");
+        let mannequins: Vec<PathBuf> = ["a/mannequin.glb", "b/mannequin.glb"]
+            .into_iter()
+            .map(|relative| {
+                let path = scratch.add_mannequin(relative);
+                let mut meta =
+                    AssetMeta::new(meta::new_id().unwrap(), ImportSettings::Gltf(MeshSettings::default()));
+                meta.budget = Some(Budget { role: Some(Role::Ambient), waive: Vec::new() });
+                fs::write(sidecar_path(&path), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+                path
+            })
+            .collect();
+        // One source's bytes and settings are one cook key, so a copy's measures would be the first's.
+        set_weld_tolerance(&mannequins[1], 0.002);
+        let cache = scratch.dir.path().join("cache");
+        let cook = Cook::Desktop;
+        let index_of = |cache: Option<&Path>| {
+            let (report, out) = (scratch.cook_with(cook, cache.is_some()), scratch.out_for(cook));
+            let audited = audit::write(&scratch.source(), &out, cook, cache, &report).unwrap();
+            let indexed =
+                index::write(&scratch.source(), &out, cook, cache, &report, &audited.audit).unwrap();
+            (indexed.checked, fs::read_to_string(&indexed.path).unwrap())
+        };
+        let counted = |anew, kept| check::Counted { anew, kept };
+
+        // Cold, each role mesh is cooked to memory once for each cook it's judged on.
+        let (cold, _) = index_of(Some(&cache));
+        assert_eq!(cold.map(|work| work.meshes), Some(counted(4, 0)));
+        assert_eq!(index_of(Some(&cache)).0, None, "nothing changed, so the whole index is the cache's");
+
+        // One sidecar changed: that mesh is measured again, and the other's measures are the cache's.
+        set_weld_tolerance(&mannequins[0], 0.004);
+        let (warm, kept_text) = index_of(Some(&cache));
+        assert_eq!(warm.map(|work| work.meshes), Some(counted(2, 2)));
+        // A budget alone is in no cook key, so it's the index's key that misses, and every measure is kept.
+        let mut meta = meta::read(&sidecar_path(&mannequins[1])).unwrap();
+        meta.budget = Some(Budget { role: Some(Role::Hero), waive: Vec::new() });
+        fs::write(sidecar_path(&mannequins[1]), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+        let (rejudged, text) = index_of(Some(&cache));
+        assert_eq!(rejudged.map(|work| work.meshes), Some(counted(0, 4)));
+        // And the index judged it by its new role.
+        let rejudged: index::AssetIndex = serde_json::from_str(&text).unwrap();
+        let roles = ["a/mannequin.glb", "b/mannequin.glb"].map(|source| {
+            let id = rejudged.find(source).unwrap_or_else(|| panic!("{source} is indexed"));
+            rejudged.assets[&id].check.as_ref().and_then(|check| check.role.as_deref())
+        });
+        assert_eq!(roles, [Some(Role::Ambient.name()), Some(Role::Hero.name())]);
+        let mut meta = meta::read(&sidecar_path(&mannequins[1])).unwrap();
+        meta.budget = Some(Budget { role: Some(Role::Ambient), waive: Vec::new() });
+        fs::write(sidecar_path(&mannequins[1]), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+
+        // What the cache kept is what measuring it anew finds: the index is the same bytes without one.
+        let (uncached, text) = index_of(None);
+        assert_eq!(uncached.map(|work| work.meshes), Some(counted(4, 0)));
+        assert!(text == kept_text, "an index from kept measures is the one measured anew");
     }
 
     /// Every file under `root`, by its path under it, with its bytes.

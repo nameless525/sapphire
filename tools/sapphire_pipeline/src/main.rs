@@ -769,9 +769,12 @@ fn cook_all(
         eprintln!("{cook}: wrote the cook audit {}", audited.path.display());
     }
     report.timings.ended(Phase::Audit, &mut watch);
-    let (path, written) = index::write(source, out, cook, cache, &report, &audited.audit)?;
-    if written == audit::Written::Written {
-        eprintln!("{cook}: wrote the asset index {}", path.display());
+    let indexed = index::write(source, out, cook, cache, &report, &audited.audit)?;
+    if indexed.written == audit::Written::Written {
+        eprintln!("{cook}: wrote the asset index {}", indexed.path.display());
+    }
+    if show && let Some(work) = indexed.checked {
+        eprintln!("{cook}: the check made {work}");
     }
     report.timings.ended(Phase::Index, &mut watch);
     if let Some(packs) = packs {

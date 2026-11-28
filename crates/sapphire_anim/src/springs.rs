@@ -1018,6 +1018,10 @@ impl SpringBones {
                                 .map(|bone| Vec3::from(own.translation) + bone * length.to_native())
                         })
                     }
+                    // Where a cut tail stood (M6 C8): the same point its joint's rest pose put it at.
+                    (None, ArchivedSpringTip::Point { offset }) => {
+                        Some(own.transform_point3(Vec3::from(offset.map(|c| c.to_native()))))
+                    }
                 };
                 let Some(tail) = tail else { continue };
                 // In its own space, so the length carries its scale. A joint in two chains swings for

@@ -5,7 +5,7 @@ mod underarm;
 
 use residual::{Residual, short_face::LOCKS, short_face::ShortFace};
 use sapphire_assets::mesh::Mesh;
-use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedColliderShape, HumanBone};
+use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedColliderShape, ArchivedSpringTip, HumanBone};
 use sapphire_assets::skeleton::ArchivedSkeleton;
 use sapphire_math::{Affine3A, Quat, Vec3};
 use underarm::Underarm;
@@ -117,6 +117,9 @@ impl Relief {
 #[derive(Clone, Debug, PartialEq)]
 struct Strand {
     joints: Vec<usize>,
+    /// Where its tail stands in its last joint's space when a mobile skeleton cut dropped the tail joint
+    /// (M6 C8, `SpringTip::Point`): the strand ends there, as it ended at that joint.
+    tip: Option<Vec3>,
     samples: Vec<Point>,
     side: f32,
     front: f32,
@@ -622,7 +625,11 @@ impl Clearance {
         let mut strands = Vec::new();
         for spring in rig.springs.iter().filter(|spring| spring.name.as_str() == "Hair") {
             let joints: Vec<_> = spring.joints.iter().map(|j| usize::from(j.joint.to_native())).collect();
-            if joints.len() < 2 {
+            let tip = match &spring.tip {
+                ArchivedSpringTip::Point { offset } => Some(Vec3::from_array(offset.map(|c| c.to_native()))),
+                ArchivedSpringTip::Joint | ArchivedSpringTip::Extended { .. } => None,
+            };
+            if joints.len() + usize::from(tip.is_some()) < 2 {
                 return None;
             }
             let name = skeleton.names[joints[0]].as_str();
@@ -642,9 +649,10 @@ impl Clearance {
                 _ => None,
             };
             let samples = spread(&candidates);
-            let probe_count = samples.len() + (joints.len() - 1) * 6;
+            let probe_count = samples.len() + (joints.len() + usize::from(tip.is_some()) - 1) * 6;
             strands.push(Strand {
                 joints,
+                tip,
                 samples,
                 side,
                 front,
@@ -896,7 +904,10 @@ impl Clearance {
             && self.limbs == old.limbs
             && self.strands.len() == old.strands.len()
             && self.strands.iter().zip(&old.strands).all(|(a, b)| {
-                a.joints == b.joints && a.samples == b.samples && a.shoulder_route == b.shoulder_route
+                a.joints == b.joints
+                    && a.tip == b.tip
+                    && a.samples == b.samples
+                    && a.shoulder_route == b.shoulder_route
             });
         if !same {
             self.reset();
@@ -983,8 +994,14 @@ impl Clearance {
             if let Some(elapsed) = take(&mut self.pending, due, Self::strand_part(index), &elapsed) {
                 let pivot =
                     |joint: usize| chest_from_model.transform_point3(pose.model()[joint].translation.into());
+                let last = *strand.joints.last().expect("has a joint");
+                // Its pivots, root to tail: the joints, then a cut tail's point.
+                let tip = strand
+                    .tip
+                    .map(|tip| chest_from_model.transform_point3(pose.model()[last].transform_point3(tip)));
+                let pivots = || strand.joints.iter().map(|&joint| pivot(joint)).chain(tip);
                 let root = pivot(joint);
-                let end = pivot(*strand.joints.last().expect("has a tail joint"));
+                let end = tip.unwrap_or_else(|| pivot(last));
                 let Some(along) = (end - root).try_normalize() else { continue };
                 self.probes.clear();
                 self.probes.extend(
@@ -993,9 +1010,7 @@ impl Clearance {
                         .iter()
                         .map(|p| p.split(pose.model(), chest_from_model, root, &strand.joints)),
                 );
-                for link in strand.joints.windows(2) {
-                    let a = pivot(link[0]);
-                    let b = pivot(link[1]);
+                for (a, b) in pivots().zip(pivots().skip(1)) {
                     for sample in 1..=6 {
                         let at = a.lerp(b, sample as f32 / 6.0);
                         self.probes.push(Probe { fixed: root, rotating: at - root, radius: 0.002 });
@@ -1027,7 +1042,9 @@ impl Clearance {
                 // Take the outer locks around the sleeve as it moves from back to front.
                 // The forward edge of the upper arm is about 4 cm ahead of its pivot.
                 let route = strand.shoulder_route.map(|arm| {
-                    let middle = pivot(strand.joints[strand.joints.len() / 2 - 1]);
+                    let middle = pivots()
+                        .nth((strand.joints.len() + usize::from(strand.tip.is_some())) / 2 - 1)
+                        .expect("a strand has two pivots");
                     let fore = ((middle.z - pivot(arm).z - 0.04) / 0.06).clamp(-0.8, 0.8);
                     Vec3::new(strand.side, 0.3, fore)
                 });
@@ -1585,6 +1602,7 @@ mod tests {
             limbs: Vec::new(),
             strands: vec![Strand {
                 joints: vec![1, 2],
+                tip: None,
                 samples: Vec::new(),
                 side: 1.0,
                 front: 1.0,

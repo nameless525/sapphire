@@ -421,6 +421,7 @@ mod tests {
         };
         let strands = std::array::from_fn(|i| Strand {
             joints: vec![i + 1],
+            tip: None,
             samples: Vec::new(),
             side: 1.0,
             front: 1.0,

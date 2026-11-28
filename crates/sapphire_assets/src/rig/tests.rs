@@ -132,6 +132,10 @@ fn rigs_round_trip_through_cooked_bytes() {
     assert_eq!(rig.human_joint(HumanBone::Hips), Some(0));
     assert_eq!(rig.human_joint(HumanBone::Jaw), None);
     assert_eq!(rig.expression("blink").and_then(|e| e.preset), Some(ExpressionPreset::Blink));
+    // A cut chain's tail point (M6 C8) reads back as it was written.
+    let mut cut = rig.clone();
+    cut.springs[1].tip = SpringTip::Point { offset: [0.0, 0.04, 0.01] };
+    assert_eq!(CharacterRig::from_cooked(&cook(&cut)).unwrap(), cut);
     // An empty rig (a mesh without VRM data) is valid too.
     CharacterRig::read(&cook(&CharacterRig::default())).unwrap();
 }
@@ -203,6 +207,10 @@ fn numbers_are_finite_and_in_range() {
     assert!(error.to_string().contains("unit vector"), "{error}");
     let error = error_after(|r| r.springs[1].tip = SpringTip::Extended { length: 0.0 });
     assert!(error.to_string().contains("tip length"), "{error}");
+    let error = error_after(|r| r.springs[1].tip = SpringTip::Point { offset: [0.0, f32::NAN, 0.0] });
+    assert!(error.to_string().contains("tip offset"), "{error}");
+    let error = error_after(|r| r.springs[1].tip = SpringTip::Point { offset: [0.0; 3] });
+    assert!(error.to_string().contains("tip offset"), "{error}");
     let error = error_after(|r| r.springs[1].joints.clear());
     assert!(error.to_string().contains("no joints"), "{error}");
     let error = error_after(|r| {
@@ -316,4 +324,12 @@ fn cycle_errors_name_the_earliest_member_not_a_tail() {
     let bytes = rig.to_cooked().unwrap();
     let error = CharacterRig::read(&bytes).unwrap_err();
     assert_eq!(error.to_string(), "constraint 2 is part of a cycle of constraints");
+}
+
+/// The archived layouts M6 C8's `SpringTip::Point` set (rig version 2): a tip holds its tag and three
+/// floats, so a change to either size is a format change that bumps [`CharacterRig::VERSION`].
+#[test]
+fn archived_springs_are_the_size_they_were_cut_to() {
+    assert_eq!(size_of::<ArchivedSpringTip>(), 16);
+    assert_eq!(size_of::<ArchivedSpring>(), 44);
 }

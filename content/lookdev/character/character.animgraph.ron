@@ -575,5 +575,15 @@
             hold: 1,
             open: 7,
         )),
+        // Saccades (M6 A22): the gaze holds 0.5 to 2.5 seconds, then jumps elsewhere within 40° either way
+        // and 20° up or down, as her look-at reads a gaze (10° of eye at 90°, so 4.4° and 2.2° of eye), 12°
+        // of gaze a tick, so most jumps land in a tick or two; one as far as the reach's corner blinks
+        // three times in ten.
+        eyes: Some((
+            reach: (40.0, 20.0),
+            hold: (30, 150),
+            speed: 12.0,
+            blink_chance: 0.3,
+        )),
     ),
 )

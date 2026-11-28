@@ -444,3 +444,40 @@ fn eyes_need_a_look_at() {
             .expect_err("no look-at");
     assert!(matches!(error, GraphBindError::NoLookAt), "{error}");
 }
+
+/// The close-up goldens' two ticks (`lookdev-face-eyes-held` and `-jumped` in `tests/golden/scenes.ron`) are
+/// each inside a hold of the heroine's gaze, on her seed, with no blink showing (her own or a jump's) and a
+/// jump between them that a close-up shows.
+#[test]
+fn the_close_ups_two_ticks_are_a_saccade_apart() {
+    const TICKS: [f64; 2] = [8.0, 60.0];
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/lookdev/character/character.animgraph.ron");
+    let graph = humanoid::read(&std::fs::read_to_string(path).expect("the heroine's graph"));
+    let humanoid = Humanoid::new(graph.clips.iter().map(|clip| clip.id));
+    let binding = humanoid.bind(&graph.compile_for(Target::COOKED).expect("it compiles"));
+    let eyes = binding.eyes.as_ref().expect("her graph has eyes");
+    let degrees = |tick: f64| eyes.gaze(tick, 1).map(f32::to_degrees);
+    let blink = binding.blink.as_ref().expect("her graph blinks");
+    let shut = |tick: f64| {
+        let jumps = eyes.blinks(tick, 1).into_iter().flatten();
+        jumps.map(|start| blink.shape((tick - start) as f32)).fold(blink.amount(tick, 1), f32::max)
+    };
+    let schedule: Vec<String> = (0..12)
+        .map(|cell| {
+            let jump = eyes.jump_of(cell, 1);
+            format!("{:.1}+{:.1}: {:?}", jump.start, jump.length, jump.to.map(f32::to_degrees))
+        })
+        .collect();
+    for tick in TICKS {
+        assert!(
+            degrees(tick - 3.0) == degrees(tick) && degrees(tick + 3.0) == degrees(tick),
+            "{tick} isn't inside a hold: {schedule:?}"
+        );
+        let shown = [-3.0, 0.0, 3.0].map(|near| shut(tick + near));
+        assert_eq!(shown, [0.0; 3], "{tick} shows a blink");
+    }
+    let [held, jumped] = TICKS.map(degrees);
+    let apart = eyes::distance(held, jumped);
+    assert!(apart > 30.0, "{held:?} to {jumped:?}: {schedule:?}");
+}

@@ -179,8 +179,9 @@ Usage:
       Ogg Vorbis, with their sidecars and a cue each for a new line, and write each language's voice
       lines, its recording script (script.csv) and its import report (import.csv), all to commit. A
       master the script (vo/script.ron) doesn't list is an error; a line with no master fails the run
-      once the rest is written, naming it. With --check, nothing is written, and any file an import
-      would change is an error.
+      once the rest is written, naming it. A take's phoneme timings (<key>.phonemes.ron, M6 U14) need a
+      master beside them, in their folder's language. With --check, nothing is written, and any file an
+      import would change is an error.
   sapphire_pipeline release-key public <FILE>
       Print the public half of the release key in FILE, as platform/patch.toml's release-keys
       takes it; --next-keys takes the quoted digits. The seed is never printed.

@@ -20,6 +20,10 @@ workspace.
 - `script.ron`, written by hand: every voiced line, its text and speaker as Fluent messages, its context and
   direction, and which languages' takes are approved.
 - `<language>/<key>.wav`: each line's master, which a studio's take replaces.
+- `<language>/<key>.phonemes.ron`, for some lines: when each phoneme of the take is said (M6 U14), which the
+  cook maps into the sound's mouth curve. A studio's aligner writes them from its takes; the two here,
+  `perfect-dodge`'s in each language, were written by hand from the generated lines' syllable layout in
+  `tools/sounds/`, so a new master needs its timings again.
 - Written by `sapphire_pipeline vo`, never by hand: each master's `<key>.ogg` and its line's
   `<key>.cue.ron`, with sidecars; `<language>.voice.ron`, the language's voice lines; `<language>/script.csv`,
   the recording script; `<language>/import.csv`, the import report, which records each master's and Ogg's

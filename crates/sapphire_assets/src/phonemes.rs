@@ -370,6 +370,9 @@ pub const JAPANESE: &[(&str, Shape)] = &[
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+
     use super::*;
     use crate::mouth::{MouthCurve, MouthFrame};
 
@@ -526,5 +529,25 @@ mod tests {
         silent.mouth = None;
         let timings = PhonemeTimings::from_document(&document("en", &phoneme("AA", 0, 100))).unwrap();
         assert!(matches!(silent.with_phonemes(&timings, &table), Err(PhonemeError::NoMouth)));
+    }
+
+    /// The committed sidecars read, in their folder's language, and each has a master beside it.
+    #[test]
+    fn the_committed_sidecars_read() {
+        let voices = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/vo");
+        let mut read = 0;
+        for language in ["en", "ja"] {
+            for entry in fs::read_dir(voices.join(language)).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+                let Some(key) = name.strip_suffix(PHONEMES_SUFFIX) else { continue };
+                let timings = PhonemeTimings::from_document(&fs::read_to_string(&path).unwrap())
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                assert_eq!(timings.locale, language, "{}", path.display());
+                assert!(path.with_file_name(format!("{key}.wav")).exists(), "{}", path.display());
+                read += 1;
+            }
+        }
+        assert!(read >= 2, "the generated lines' sidecars");
     }
 }

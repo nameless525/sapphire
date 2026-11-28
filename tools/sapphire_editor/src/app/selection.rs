@@ -274,10 +274,10 @@ impl Editor {
         });
     }
 
-    /// Selects or lets go of the placement called `id` of the current zone beside what's selected: a Cmd or Shift
-    /// click.
-    pub(super) fn toggle_placement(&mut self, zone: AssetId, id: &str) {
-        let object = ObjectId { document: zone, path: placement_path(id) };
+    /// Selects or lets go of the object at `path` of the zone `zone` beside what's selected: a Cmd or Shift click on
+    /// its row.
+    pub(super) fn toggle_object(&mut self, zone: AssetId, path: PropertyPath) {
+        let object = ObjectId { document: zone, path };
         let mut selection = self.selection.clone();
         match selection.iter().position(|selected| *selected == object) {
             Some(at) => {

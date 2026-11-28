@@ -170,6 +170,14 @@ pub enum Command {
     MigrateZone,
     /// Selects these objects, in any documents open, in place of what was selected: none selects nothing.
     SelectObjects(Vec<Picked>),
+    /// Selects the object of the current zone a ray from `from` toward `toward` picks (M6 T9a), reaching `reach`
+    /// of how far along it about it, in place of what was selected, or beside it if `adding` (taking it out if it
+    /// was in): what a click on the viewport runs. Picking nothing selects nothing, unless `adding`.
+    PickInZone { from: [f32; 3], toward: [f32; 3], reach: f32, adding: bool },
+    /// Selects the objects of the current zone a box holds (M6 T9a): every handle of each showing between `from`
+    /// and `to`, in normalized device coordinates, of the view `view` projects by (a column-major matrix), in
+    /// place of what was selected, or beside it if `adding`. What a Shift-drag on the viewport runs.
+    SelectInBox { view: [f32; 16], from: [f32; 2], to: [f32; 2], adding: bool },
     /// Goes to a field of a document, as the document's RON spells its path, opening the document if it isn't
     /// open: Properties marks the field's row. What a problem's row runs (M6 T6).
     SelectField(Picked),
@@ -298,6 +306,8 @@ impl Command {
             Self::SelectPlacement(_) => "SelectPlacement",
             Self::MigrateZone => "MigrateZone",
             Self::SelectObjects(_) => "SelectObjects",
+            Self::PickInZone { .. } => "PickInZone",
+            Self::SelectInBox { .. } => "SelectInBox",
             Self::SelectField(_) => "SelectField",
             Self::SetShared { .. } => "SetShared",
             Self::Scrub(_) => "Scrub",
@@ -411,6 +421,11 @@ const COMMANDS: &[Registered] = registry! {
     "MigrateZone", "MigrateZone", None, "Writes the zone at its newest version, with its IDs, and saves it";
     "SelectObjects", r#"SelectObjects([(document: "content/", path: "")])"#, None,
         "Selects objects by document and path, in any documents open";
+    "PickInZone", "PickInZone(from: (0.0, 10.0, 0.0), toward: (0.0, -1.0, 0.0), reach: 0.02, adding: false)", None,
+        "Selects the zone's object a ray picks, as a click on the viewport does";
+    "SelectInBox",
+        "SelectInBox(view: (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0), from: (-1.0, -1.0), to: (1.0, 1.0), adding: false)",
+        None, "Selects the zone's objects a box on the view holds, as a Shift-drag on the viewport does";
     "SelectField", r#"SelectField((document: "content/", path: ""))"#, None,
         "Goes to a field of a document, opening it if it isn't, as a problem's row does";
     "SetShared", r#"SetShared(path: "", value: "")"#, None,

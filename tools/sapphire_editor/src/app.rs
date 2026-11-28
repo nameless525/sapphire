@@ -874,10 +874,12 @@ impl Editor {
 
     /// What a viewport's engine half takes from a pass that's just run, before egui paints it.
     pub fn viewport_frame(&mut self) -> ViewportFrame<'_> {
+        self.follow_zone();
         let moves = self.moves.and_then(|id| self.documents.path(id)).and_then(Path::file_name);
         let current = self.current;
         let selected = self.selected_placement();
-        let zone = zone::zone_shown(&self.documents, &self.zone, current, selected, self.viewport.camera());
+        let camera = self.viewport.camera();
+        let zone = zone::zone_shown(&self.documents, &self.zone, current, selected, &self.selection, camera);
         let timeline = sequencer::timeline_shown(&self.documents, &mut self.sequencer, current);
         self.screen.follow(&self.documents, current);
         let screen = screen::screen_shown(&self.documents, &self.screen, current);

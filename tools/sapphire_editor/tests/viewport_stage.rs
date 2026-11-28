@@ -31,8 +31,8 @@ use sapphire_editor::recovery::Recovery;
 use sapphire_editor::screen::{Aspect, StandIn};
 use sapphire_editor::shell::Pane;
 use sapphire_editor::viewport::{
-    OutsideView, SETTLING_FRAMES, StageView, TimelineShown, ViewShow, on_pixels, play_frames, play_timeline,
-    stand, stand_zone_stage,
+    OutsideView, SETTLING_FRAMES, StageView, TimelineShown, ViewShow, ZoneMarks, on_pixels, play_frames,
+    play_timeline, stand, stand_zone_stage,
 };
 use sapphire_editor::{Editor, Options};
 use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, find_scenario};
@@ -1297,26 +1297,30 @@ fn capture_zone(
     cook: &Path,
     size: (u32, u32),
     outside: Option<OutsideView>,
-    rounds: &[(Vec<sapphire_stage::scene::LaidOut>, Option<Gizmo>)],
+    rounds: &[ZoneRound],
 ) -> (Stage<ViewShow>, Image) {
     let mut stage = stand_zone_stage(&Host::with_content_at(cook), gpu).expect("stands");
     stage.show.outside = outside;
     let pack = sapphire_zone::pack_name("proving_ground");
     let frame = capture(&mut stage, &vec![size; rounds.len()], |stage, round| {
-        let (laid, gizmo) = &rounds[round];
+        let (laid, gizmo, marks) = &rounds[round];
         let Stage { scene, content, renderer, gpu, show, .. } = stage;
         let layout = scene.lay_out_zone(content, &pack, laid, renderer, gpu).expect("laid out");
         assert!(layout.missing.is_empty(), "{layout:?}");
         show.gizmo = *gizmo;
+        show.marks.clone_from(marks);
     });
     (stage, frame)
 }
 
-/// What the viewport has laid out and the gizmo it draws, from the editor's documents as they are.
-fn zone_as_shown(harness: &mut Harness<'_, Editor>) -> (Vec<sapphire_stage::scene::LaidOut>, Option<Gizmo>) {
+/// What a viewport shows of a zone: what it's laid out, the gizmo and the objects' marks (M6 T9a).
+type ZoneRound = (Vec<sapphire_stage::scene::LaidOut>, Option<Gizmo>, Option<ZoneMarks>);
+
+/// What the viewport has laid out, the gizmo it draws and the marks, from the editor's documents as they are.
+fn zone_as_shown(harness: &mut Harness<'_, Editor>) -> ZoneRound {
     let frame = harness.state_mut().viewport_frame();
     let zone = frame.zone.expect("a zone shown");
-    (zone.laid_out(), zone.gizmo)
+    (zone.laid_out(), zone.gizmo, zone.marks)
 }
 
 /// A drag of the gizmo moves the selected placement in the zone document by exactly the bytes of that one number,
@@ -1390,6 +1394,107 @@ fn a_drag_of_the_gizmo_moves_one_number() {
     let current = harness.state().current().expect("open");
     assert_eq!(current.text().as_bytes(), file.as_bytes(), "undo is the file's bytes");
     assert!(!current.is_dirty());
+}
+
+/// Every object of a zone is marked through the stage's debug draws (M6 T9a): the pane is 0 pixels from a capture
+/// with the same marks (a stage of its own, stood as the viewport stands one, laying out the same placements with the
+/// same marks, through the same rounds, read back at the pane's size), before a click and after it, which picks the
+/// spawner under it; and marking builds no pipeline, the warm-up's count the same as a capture with no marks.
+#[test]
+#[ignore = "needs a GPU and an editor's cook"]
+fn every_object_is_marked_and_a_click_picks_one() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let (mut harness, _path) = zone_harness(&painter, "marks", (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(harness.state_mut().viewport().note(), None, "every placement's shape is in the cook");
+    let opened = zone_as_shown(&mut harness);
+    let marks = opened.2.clone().expect("the zone's marks");
+    let kinds: std::collections::BTreeSet<_> =
+        marks.objects.objects.iter().map(|object| object.kind).collect();
+    println!(
+        "{} objects of {} kinds, {} marks",
+        marks.objects.objects.len(),
+        kinds.len(),
+        marks.objects.shapes()
+    );
+    assert!(marks.selected.is_empty());
+    let outside = view.stage().expect("stood").show.outside;
+
+    // A click where the yard's north spawner shows.
+    let rect = harness.state_mut().viewport().rect().expect("shown");
+    let camera = *harness.state_mut().viewport().camera().expect("a frame's camera");
+    let at = camera.to_screen(sapphire_math::Vec3::new(9.0, 0.0, 17.0), rect).expect("in front");
+    assert!(rect.contains(at), "{at:?} in {rect:?}");
+    harness.hover_at(at);
+    harness.step();
+    harness.drag_at(at);
+    harness.step();
+    harness.drop_at(at);
+    harness.step();
+    let selected: Vec<String> =
+        harness.state().selection().iter().map(|object| object.path.to_string()).collect();
+    assert_eq!(selected, [r#"spawners["yard_north"]"#]);
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let picked = zone_as_shown(&mut harness);
+    assert_eq!(picked.2.as_ref().expect("marks").selected.len(), 1, "drawn as selected");
+    assert!(Arc::ptr_eq(&marks.objects, &picked.2.as_ref().expect("marks").objects), "made once");
+
+    let shell = painter.paint(&gpu, &harness);
+    let (_, pixels) = on_pixels(rect, 1.0);
+    let (capture_stage, frame) =
+        capture_zone(&gpu, &editor_cook(), pixels, outside, &[opened.clone(), picked.clone()]);
+    is_a_picture(&frame, "zone_marked");
+    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    println!("marked, a spawner picked: {count} of {all} pixels differ from a capture, by at most {most}");
+    assert_eq!((most, count), (0, 0), "the pane is the capture");
+
+    // The same rounds with no marks: the marks built nothing, and show.
+    let bare: Vec<ZoneRound> =
+        [opened, picked].into_iter().map(|(laid, gizmo, _)| (laid, gizmo, None)).collect();
+    let (bare_stage, bare_frame) = capture_zone(&gpu, &editor_cook(), pixels, outside, &bare);
+    let (marked, bare) = (capture_stage.renderer.stats().pipelines, bare_stage.renderer.stats().pipelines);
+    println!("pipelines marked {marked:?}, bare {bare:?}");
+    assert_eq!(marked.first_use_builds, 0);
+    assert_eq!(marked, bare, "the warm-up built every pipeline the marks draw with");
+    let (_, shown, _) = differences(&bare_frame, &shell, rect, 1.0, 0);
+    assert!(shown > 200, "the marks show: {shown} pixels");
+
+    // A Shift-drag across the middle of the view selects what shows inside it, every handle of each.
+    let (from, to) = (rect.center() - egui::vec2(150.0, 100.0), rect.center() + egui::vec2(150.0, 100.0));
+    let inside = egui::Rect::from_two_pos(from, to);
+    let expected: Vec<String> = (marks.objects.objects.iter())
+        .filter(|object| {
+            // An object with no place (its exit, which has no door) shows nowhere, so no box holds it.
+            !object.handles.is_empty()
+                && object
+                    .handles
+                    .iter()
+                    .all(|at| camera.to_screen(*at, rect).is_some_and(|shown| inside.contains(shown)))
+        })
+        .map(|object| object.path.to_string())
+        .collect();
+    assert!(expected.len() > 1, "{expected:?}");
+    harness.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    harness.hover_at(from);
+    harness.step();
+    harness.drag_at(from);
+    harness.step();
+    for step in 1..=10 {
+        harness.hover_at(from.lerp(to, step as f32 / 10.0));
+        harness.step();
+    }
+    harness.drop_at(to);
+    harness.step();
+    harness.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    harness.step();
+    let mut selected: Vec<String> =
+        harness.state().selection().iter().map(|object| object.path.to_string()).collect();
+    selected.sort();
+    let mut expected = expected;
+    expected.sort();
+    assert_eq!(selected, expected, "what the box holds");
 }
 
 /// A cook that lands as soon as it's asked for, writing nothing: what a fight's viewport does when one lands.

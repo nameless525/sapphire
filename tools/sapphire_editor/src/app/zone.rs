@@ -1,27 +1,41 @@
-//! The zone pane (M3 E5): the current zone document's placements, those selected, and the gizmo that moves the
-//! last one selected in the viewport. A Cmd or Shift click adds a row to the selection or takes it out (M6 T2),
-//! and the Properties pane edits what the placements selected share. A placement is selected by its ID (M6 T8a),
-//! which each row shows, so a selection and a drag stay on it however the list shifts; a version 1 zone has its
-//! places' IDs until `MigrateZone` writes them.
+//! The zone pane (M3 E5): the current zone document's objects, those selected, and the gizmo that moves the last
+//! placement selected in the viewport. A Cmd or Shift click adds a row to the selection or takes it out (M6 T2),
+//! and the Properties pane edits what the objects selected share. An object is selected by its keyed path (M6
+//! T8a): a placement, an instance, a light or a volume by its ID, which each row shows, anything else by its name,
+//! so a selection and a drag stay on it however its list shifts; a version 1 zone has its places' IDs until
+//! `MigrateZone` writes them.
+//!
+//! Every object of the zone (M6 T9a, [`crate::markers`]) is listed by kind, in the order the document has it, as
+//! many rows as show and no more built, however many it holds. The viewport marks each through the stage's debug
+//! draws, and picks one by a click ([`Command::PickInZone`]) or a box drawn with Shift held
+//! ([`Command::SelectInBox`]), through a [`PickIndex`] on the zone's grid. The objects and their index are made
+//! from the document once a revision of it ([`ZoneCache`]), and a revision is unique in the process, so a zone
+//! closed and opened again, or recovered, is made anew. A selection, a pick or a box makes nothing; but each frame of
+//! a drag that moves something sets the document, which is a revision, so a drag makes them once a frame it moves
+//! the placement, of the same order as the document's own read of each set (T12 prices both).
 //!
 //! The viewport draws a zone as an editor needs it, each placement on its own ([`crate::viewport`]), and the
-//! gizmo on the one selected. A drag of an arrow is one gesture on the document: each frame of it sets the one
-//! number of the placement's `at` that the arrow moves, snapped to [`SNAP`] so the file reads as a person would
-//! write it, and undo takes the whole drag back to the bytes it started from. What the zone's checks refuse
+//! gizmo on the placement selected last. A drag of an arrow is one gesture on the document: each frame of it sets
+//! the one number of the placement's `at` that the arrow moves, snapped to [`SNAP`] so the file reads as a person
+//! would write it, and undo takes the whole drag back to the bytes it started from. What the zone's checks refuse
 //! stays as it was. A placement that names colliders takes them with it, so the drag is one step of the zone and
-//! its colliders' document, which undo takes back whole. Everything else about a placement is the Properties
-//! pane's.
+//! its colliders' document, which undo takes back whole. Everything else about an object is the Properties pane's.
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use egui::{RichText, Ui};
 use sapphire_assets::AssetId;
 use sapphire_document::{Document, DocumentSet, ObjectId, PropertyPath, Step, write};
-use sapphire_math::Vec3;
+use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_zone::{IdList, ZoneDocument};
 
 use super::{Editor, Notice, selection};
 use crate::commands::Command;
-use crate::gizmo::{Axis, Gizmo, ViewCamera, along};
-use crate::viewport::ZoneShown;
+use crate::gizmo::{Axis, Gizmo, Ray, ViewCamera, along};
+use crate::markers::{ObjectKind, ZoneObjects};
+use crate::pick::{Pick, PickIndex, Visits};
+use crate::viewport::{ZoneMarks, ZoneShown};
 
 /// What a drag rounds a placement's position to, in metres.
 pub const SNAP: f32 = 0.05;
@@ -29,12 +43,60 @@ pub const SNAP: f32 = 0.05;
 /// What a drag of the gizmo is called in the history.
 const MOVE_LABEL: &str = "move a placement";
 
-/// The pane's state: what the pointer's doing to the gizmo. What's selected is the editor's selection.
+/// How far about the pointer a click picks, in points.
+const CLICK_REACH: f32 = 16.0;
+
+/// How far the pointer must go with Shift held before it's a box rather than a click, in points.
+const BOX_START: f32 = 4.0;
+
+/// What's made of a zone document once a revision: its objects, the index they're picked by and where each is by
+/// its path.
+#[derive(Debug)]
+pub(super) struct ZoneCache {
+    document: AssetId,
+    revision: u64,
+    objects: Arc<ZoneObjects>,
+    index: PickIndex,
+    by_path: HashMap<PropertyPath, usize>,
+    /// The pane's rows.
+    rows: Vec<Row>,
+    /// What making the index visited.
+    built: Visits,
+}
+
+impl ZoneCache {
+    fn of(document: AssetId, revision: u64, zone: &ZoneDocument) -> Self {
+        let objects = ZoneObjects::of(zone);
+        let (index, built) = PickIndex::build(&objects);
+        let by_path =
+            objects.objects.iter().enumerate().map(|(at, object)| (object.path.clone(), at)).collect();
+        let rows = rows(&objects);
+        Self { document, revision, objects: Arc::new(objects), index, by_path, rows, built }
+    }
+
+    /// Where the objects of `selection` in this zone are among its objects, sorted.
+    fn selected(&self, selection: &[ObjectId]) -> Vec<usize> {
+        let mut selected: Vec<usize> = selection
+            .iter()
+            .filter(|object| object.document == self.document)
+            .filter_map(|object| self.by_path.get(&object.path).copied())
+            .collect();
+        selected.sort_unstable();
+        selected.dedup();
+        selected
+    }
+}
+
+/// The pane's state: what the pointer's doing to the gizmo, and what's made of the zone. What's selected is the
+/// editor's selection.
 #[derive(Debug, Default)]
 pub(super) struct ZonePanel {
     drag: Option<GizmoDrag>,
     /// The arrow under the pointer.
     hot: Option<Axis>,
+    /// Where a box being drawn started, and where the pointer is now, in the pane.
+    boxing: Option<(egui::Pos2, egui::Pos2)>,
+    cache: Option<ZoneCache>,
 }
 
 /// A drag of an arrow.
@@ -52,13 +114,24 @@ struct GizmoDrag {
     set: Option<f32>,
 }
 
-/// How near a placement's place a click must be to select it, in points.
-const CLICK_REACH: f32 = 16.0;
-
 impl ZonePanel {
+    /// Makes the objects and their index again if `zone`'s document has another revision since, or is another.
+    fn follow(&mut self, documents: &DocumentSet, zone: Option<AssetId>) {
+        let Some((id, document)) = zone.and_then(|id| Some((id, documents.get::<ZoneDocument>(id)?))) else {
+            self.cache = None;
+            return;
+        };
+        let fresh = |cache: &ZoneCache| cache.document == id && cache.revision == document.revision();
+        if self.cache.as_ref().is_some_and(fresh) {
+            return;
+        }
+        self.cache = document.last_good().map(|value| ZoneCache::of(id, document.revision(), value));
+    }
+
     /// The pointer's share of the viewport, before the view takes what's left: a press on an arrow starts a drag
-    /// of it, which moves the placement until the press ends. What it does is commands, in `asked`, for the editor
-    /// to run once the viewport has drawn. Says whether it took the pointer.
+    /// of it, which moves the placement until the press ends; a Shift-drag draws a box, which selects what it holds;
+    /// a click elsewhere picks what's under it. What it does is commands, in `asked`, for the editor to run once the
+    /// viewport has drawn. Says whether it took the pointer.
     #[allow(
         clippy::too_many_arguments,
         reason = "the viewport's pointer and camera, and what the editor holds"
@@ -76,13 +149,18 @@ impl ZonePanel {
         self.hot = None;
         let (Some(zone), Some(camera)) = (zone, camera) else {
             self.drag = None;
+            self.boxing = None;
             return false;
         };
         let Some(document) = documents.get::<ZoneDocument>(zone) else { return false };
         let pointer = response.ctx.input(|input| input.pointer.clone());
+        let modifiers = response.ctx.input(|input| input.modifiers);
+        if let Some(taken) = self.draw_box(&pointer, modifiers, camera, rect, asked) {
+            return taken;
+        }
         let Some(gizmo) = self.gizmo_on(document, selected, camera) else {
             self.drag = None;
-            self.click_to_select(document, response, camera, rect, asked);
+            click_to_pick(response, modifiers, camera, rect, asked);
             return false;
         };
         if pointer.primary_pressed()
@@ -98,7 +176,7 @@ impl ZonePanel {
         let Some(mut drag) = self.drag.clone().filter(|drag| drag.zone == zone) else {
             self.hot = pointer.hover_pos().and_then(|at| gizmo.pick(camera, rect, at));
             if self.hot.is_none() {
-                self.click_to_select(document, response, camera, rect, asked);
+                click_to_pick(response, modifiers, camera, rect, asked);
             }
             return false;
         };
@@ -133,31 +211,50 @@ impl ZonePanel {
         true
     }
 
-    /// A click off the gizmo selects the placement whose place shows nearest it, within [`CLICK_REACH`], or
-    /// nothing.
-    fn click_to_select(
-        &self,
-        document: &Document<ZoneDocument>,
-        response: &egui::Response,
+    /// A box drawn with Shift held from a press in the pane, until its release selects what it holds (beside what's
+    /// selected with Cmd held too): `Some` whether it took the pointer while one's under way, `None` otherwise. A
+    /// release before the pointer's gone [`BOX_START`] leaves it to the click.
+    fn draw_box(
+        &mut self,
+        pointer: &egui::PointerState,
+        modifiers: egui::Modifiers,
         camera: &ViewCamera,
         rect: egui::Rect,
         asked: &mut Vec<Command>,
-    ) {
-        let (true, Some(at), Some(value)) =
-            (response.clicked(), response.interact_pointer_pos(), document.value())
-        else {
-            return;
-        };
-        let nearest = value
-            .placements
-            .iter()
-            .filter_map(|placement| {
-                let shown = camera.to_screen(Vec3::from(placement.at), rect)?;
-                Some((shown.distance(at), &placement.id))
-            })
-            .filter(|(distance, _)| *distance <= CLICK_REACH)
-            .min_by(|a, b| a.0.total_cmp(&b.0));
-        asked.push(Command::SelectPlacement(nearest.map(|(_, id)| id.clone())));
+    ) -> Option<bool> {
+        if self.drag.is_none()
+            && self.boxing.is_none()
+            && pointer.primary_pressed()
+            && modifiers.shift
+            && let Some(at) = pointer.press_origin().filter(|at| rect.contains(*at))
+        {
+            self.boxing = Some((at, at));
+        }
+        let (from, _) = self.boxing?;
+        let now = pointer.interact_pos().or_else(|| pointer.hover_pos()).unwrap_or(from);
+        let drawn = from.distance(now) >= BOX_START;
+        if pointer.primary_down() {
+            self.boxing = Some((from, now));
+            return Some(drawn);
+        }
+        self.boxing = None;
+        if !drawn {
+            return None;
+        }
+        let (from, to) = (ViewCamera::ndc(from, rect), ViewCamera::ndc(now, rect));
+        asked.push(Command::SelectInBox {
+            view: camera.view_projection().to_cols_array(),
+            from: from.to_array(),
+            to: to.to_array(),
+            adding: modifiers.command,
+        });
+        Some(true)
+    }
+
+    /// The box being drawn, if one's far enough along to be one.
+    pub(super) fn drawn_box(&self) -> Option<egui::Rect> {
+        let (from, to) = self.boxing?;
+        (from.distance(to) >= BOX_START).then(|| egui::Rect::from_two_pos(from, to))
     }
 
     /// The gizmo on placement `selected` of `document`, as `camera` sees it.
@@ -173,6 +270,25 @@ impl ZonePanel {
     }
 }
 
+/// A click off the gizmo and not a box's end picks what's under it, beside what's selected with Cmd or Shift
+/// held.
+fn click_to_pick(
+    response: &egui::Response,
+    modifiers: egui::Modifiers,
+    camera: &ViewCamera,
+    rect: egui::Rect,
+    asked: &mut Vec<Command>,
+) {
+    let (true, Some(at)) = (response.clicked(), response.interact_pointer_pos()) else { return };
+    let ray = camera.ray(at, rect);
+    asked.push(Command::PickInZone {
+        from: ray.origin.to_array(),
+        toward: ray.direction.to_array(),
+        reach: camera.reach(at, rect, CLICK_REACH),
+        adding: modifiers.command || modifiers.shift,
+    });
+}
+
 /// The path of a zone's placements.
 fn placements() -> PropertyPath {
     PropertyPath::root().join(Step::Field("placements".to_owned()))
@@ -183,19 +299,24 @@ fn placement_at(placement: &PropertyPath, axis: Axis) -> PropertyPath {
     placement.join(Step::Field("at".to_owned())).join(Step::Index(axis.index()))
 }
 
-/// What the viewport shows of `current`, if it's a zone that's read, with the gizmo on placement `selected`.
+/// What the viewport shows of `current`, if it's a zone that's read, with the gizmo on placement `selected` and
+/// its objects marked, those in `selection` as selected.
 pub(super) fn zone_shown<'a>(
     documents: &'a DocumentSet,
     panel: &ZonePanel,
     current: Option<AssetId>,
     selected: Option<usize>,
+    selection: &[ObjectId],
     camera: Option<&ViewCamera>,
 ) -> Option<ZoneShown<'a>> {
     let id = current?;
     let file = documents.get::<ZoneDocument>(id)?;
     let stem = documents.path(id)?.file_name()?.to_str()?.strip_suffix(".zone.ron")?;
     let gizmo = camera.and_then(|camera| panel.gizmo_on(file, selected, camera));
-    Some(ZoneShown { id, stem, document: file.last_good()?, gizmo })
+    let marks = (panel.cache.as_ref())
+        .filter(|cache| cache.document == id)
+        .map(|cache| ZoneMarks { objects: Arc::clone(&cache.objects), selected: cache.selected(selection) });
+    Some(ZoneShown { id, stem, document: file.last_good()?, gizmo, marks })
 }
 
 impl Editor {
@@ -205,13 +326,44 @@ impl Editor {
         self.documents.get::<ZoneDocument>(id).map(|_| id)
     }
 
-    /// The viewport's pointer, for the gizmo first.
+    /// Makes the current zone's objects and their index again if its document has changed since.
+    pub(super) fn follow_zone(&mut self) {
+        let zone = self.current_zone();
+        self.zone.follow(&self.documents, zone);
+    }
+
+    /// The current zone's objects, as the viewport marks them and a pick finds them, made again only when its
+    /// document changes.
+    pub fn zone_objects(&mut self) -> Option<Arc<ZoneObjects>> {
+        self.follow_zone();
+        self.zone.cache.as_ref().map(|cache| Arc::clone(&cache.objects))
+    }
+
+    /// What making the current zone's pick index put in it: its cells and handles.
+    pub fn zone_index_built(&mut self) -> Option<Visits> {
+        self.follow_zone();
+        self.zone.cache.as_ref().map(|cache| cache.built)
+    }
+
+    /// How many rows the zone pane lists for the current zone, a heading for each kind it holds among them: what it
+    /// scrolls through, building only those that show.
+    pub fn zone_rows(&mut self) -> Option<usize> {
+        self.follow_zone();
+        self.zone.cache.as_ref().map(|cache| cache.rows.len())
+    }
+
+    /// The viewport's pointer, for the gizmo first, and the box being drawn over it.
     pub(super) fn viewport_pane(&mut self, ui: &mut Ui) {
+        self.follow_zone();
         let (zone, selected) = (self.current_zone(), self.selected_placement());
         let (documents, panel, asked) = (&self.documents, &mut self.zone, &mut self.asked);
         self.viewport.ui(ui, |response, camera, rect| {
             panel.gizmo(documents, zone, selected, response, camera, rect, asked)
         });
+        if let Some(drawn) = self.zone.drawn_box() {
+            let stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+            ui.painter().rect_stroke(drawn, 0.0, stroke, egui::StrokeKind::Middle);
+        }
         if self.viewport.take_asked_to_play() {
             self.asked.push(Command::PlayInViewport(None));
         }
@@ -230,6 +382,70 @@ impl Editor {
                 self.selection = vec![ObjectId { document, path: selection::placement_path(id) }];
             }
             _ => self.refuse(format!("the zone has no placement `{id}`")),
+        }
+    }
+
+    /// Selects what a ray from `from` toward `toward` picks in the current zone: what [`Command::PickInZone`] does.
+    /// Refused for a ray or a reach that isn't a number; a reach is at most [`crate::pick::MAX_REACH`].
+    pub(super) fn pick_in_zone(&mut self, from: [f32; 3], toward: [f32; 3], reach: f32, adding: bool) {
+        let Some(zone) = self.current_zone() else {
+            self.refuse("the current document isn't a zone");
+            return;
+        };
+        if !from.iter().chain(&toward).all(|value| value.is_finite()) || !reach.is_finite() {
+            self.refuse("a pick's ray and reach must be numbers");
+            return;
+        }
+        self.follow_zone();
+        let Some(cache) = &self.zone.cache else {
+            self.refuse("the zone doesn't read, so nothing in it can be picked");
+            return;
+        };
+        let pick = Pick { ray: Ray { origin: Vec3::from(from), direction: Vec3::from(toward) }, reach };
+        let (picked, _) = cache.index.pick(&pick);
+        let picked: Vec<ObjectId> = picked
+            .map(|at| ObjectId { document: zone, path: cache.objects.objects[at].path.clone() })
+            .into_iter()
+            .collect();
+        self.choose(picked, adding);
+    }
+
+    /// Selects what a box holds in the current zone: what [`Command::SelectInBox`] does.
+    pub(super) fn select_in_box(&mut self, view: &[f32; 16], from: [f32; 2], to: [f32; 2], adding: bool) {
+        let Some(zone) = self.current_zone() else {
+            self.refuse("the current document isn't a zone");
+            return;
+        };
+        if !view.iter().chain(&from).chain(&to).all(|value| value.is_finite()) {
+            self.refuse("a box's view and corners must be numbers");
+            return;
+        }
+        self.follow_zone();
+        let Some(cache) = &self.zone.cache else {
+            self.refuse("the zone doesn't read, so nothing in it can be picked");
+            return;
+        };
+        let (held, _) = cache.index.in_box(Mat4::from_cols_array(view), Vec2::from(from), Vec2::from(to));
+        let held: Vec<ObjectId> = held
+            .into_iter()
+            .map(|at| ObjectId { document: zone, path: cache.objects.objects[at].path.clone() })
+            .collect();
+        self.choose(held, adding);
+    }
+
+    /// `picked` in place of what's selected, or, `adding`, each beside it, or taken out if it was in.
+    fn choose(&mut self, picked: Vec<ObjectId>, adding: bool) {
+        if !adding {
+            self.selection = picked;
+            return;
+        }
+        for object in picked {
+            match self.selection.iter().position(|selected| *selected == object) {
+                Some(at) => {
+                    self.selection.remove(at);
+                }
+                None => self.selection.push(object),
+            }
         }
     }
 
@@ -295,59 +511,104 @@ impl Editor {
         self.selection.iter().filter_map(|object| selection::placement_of(object, zone, value)).collect()
     }
 
+    /// The pane: each kind of the zone's objects under its name and count, a row an object, of which only the rows
+    /// that show are built.
     pub(super) fn zone_panel(&mut self, ui: &mut Ui) {
         let Some(id) = self.current_zone() else {
             ui.label("Open a zone to place what's in it.");
             return;
         };
+        self.follow_zone();
         let Some(document) = self.documents.get::<ZoneDocument>(id).and_then(Document::value) else {
             ui.label("The zone doesn't read, so nothing here moves until it does.");
             return;
         };
-        let name_of = |prefab: AssetId| {
-            let source = self.documents.sidecars().source_of(prefab);
-            let name = source.as_deref().and_then(|path| path.file_name()).and_then(|name| name.to_str());
-            name.map_or_else(|| prefab.to_string(), |name| name.trim_end_matches(".assembly.ron").to_owned())
-        };
-        let rows: Vec<(String, String, [f32; 3])> = document
-            .placements
-            .iter()
-            .map(|placement| {
-                let mut name = name_of(placement.prefab);
-                if placement.backdrop {
-                    name.push_str(" (backdrop)");
-                }
-                (placement.id.clone(), name, placement.at)
-            })
-            .collect();
-        let split = document.has_split();
-        let selected = self.selected_placements();
-        if split {
+        let Some(cache) = self.zone.cache.as_ref().filter(|cache| cache.document == id) else { return };
+        if document.has_split() {
             ui.label(
                 RichText::new("A split placement cooks into the cells alone: the viewport draws this zone once it's cooked without one.")
                     .weak(),
             );
         }
+        let rows = &cache.rows;
+        let selected = cache.selected(&self.selection);
+        let name_of = |prefab: AssetId| {
+            let source = self.documents.sidecars().source_of(prefab);
+            let name = source.as_deref().and_then(|path| path.file_name()).and_then(|name| name.to_str());
+            name.map_or_else(|| prefab.to_string(), |name| name.trim_end_matches(".assembly.ron").to_owned())
+        };
+        let height = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
         let mut choose = None;
-        egui::ScrollArea::vertical().id_salt("zone").auto_shrink([false, false]).show(ui, |ui| {
-            for (index, (id, name, at)) in rows.into_iter().enumerate() {
-                let text = format!("{index}  {id}  {name}  ({:.2}, {:.2}, {:.2})", at[0], at[1], at[2]);
-                if ui.selectable_label(selected.contains(&index), text).clicked() {
-                    // By the release's own modifiers, which a click has whatever the keys' state says by then.
-                    let adding = ui.input(|input| {
-                        input.events.iter().any(|event| {
-                            matches!(event, egui::Event::PointerButton { pressed: false, modifiers, .. }
-                                if modifiers.command || modifiers.shift)
-                        })
-                    });
-                    choose = Some((id, adding));
+        egui::ScrollArea::vertical().id_salt("zone").auto_shrink([false, false]).show_rows(
+            ui,
+            height,
+            rows.len(),
+            |ui, shown| {
+                for row in &rows[shown] {
+                    let at = match *row {
+                        Row::Kind(kind, count) => {
+                            ui.label(RichText::new(format!("{}  {count}", kind.plural())).strong());
+                            continue;
+                        }
+                        Row::Object(at) => at,
+                    };
+                    let object = &cache.objects.objects[at];
+                    let what = match object.kind {
+                        ObjectKind::Placement => document.placements.get(object.index).map(|placement| {
+                            let name = name_of(placement.prefab);
+                            if placement.backdrop { format!("{name} (backdrop)") } else { name }
+                        }),
+                        _ => None,
+                    };
+                    let place = object.at().map_or_else(
+                        || "(no place)".to_owned(),
+                        |at| format!("({:.2}, {:.2}, {:.2})", at.x, at.y, at.z),
+                    );
+                    let text = match what {
+                        Some(what) => format!("{}  {}  {what}  {place}", object.index, object.key),
+                        None => format!("{}  {}  {place}", object.index, object.key),
+                    };
+                    if ui.selectable_label(selected.binary_search(&at).is_ok(), text).clicked() {
+                        // By the release's own modifiers, which a click has whatever the keys' state says by then.
+                        let adding = ui.input(|input| {
+                            input.events.iter().any(|event| {
+                                matches!(event, egui::Event::PointerButton { pressed: false, modifiers, .. }
+                                    if modifiers.command || modifiers.shift)
+                            })
+                        });
+                        choose = Some((object.kind, object.key.clone(), object.path.clone(), adding));
+                    }
                 }
-            }
-        });
+            },
+        );
         match choose {
-            Some((placement, true)) => self.toggle_placement(id, &placement),
-            Some((placement, false)) => self.act(Command::SelectPlacement(Some(placement))),
+            Some((_, _, path, true)) => self.toggle_object(id, path),
+            Some((ObjectKind::Placement, key, _, false)) => self.act(Command::SelectPlacement(Some(key))),
+            Some((_, _, path, false)) => {
+                let picked = self.picked(&[ObjectId { document: id, path }]);
+                self.act(Command::SelectObjects(picked));
+            }
             None => {}
         }
     }
+}
+
+/// A row of the pane: a kind's heading, with how many of it there are, or an object, by its place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Row {
+    Kind(ObjectKind, usize),
+    Object(usize),
+}
+
+/// The pane's rows for `objects`: each kind there's one of, and its objects under it.
+fn rows(objects: &ZoneObjects) -> Vec<Row> {
+    let mut rows = Vec::with_capacity(objects.objects.len() + ObjectKind::ALL.len());
+    let mut at = 0;
+    while let Some(first) = objects.objects.get(at) {
+        let count = objects.objects[at..].iter().take_while(|object| object.kind == first.kind).count();
+        rows.push(Row::Kind(first.kind, count));
+        rows.extend((at..at + count).map(Row::Object));
+        at += count;
+    }
+    rows
 }

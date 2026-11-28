@@ -34,6 +34,8 @@ pub mod gizmo;
 pub mod input;
 pub mod judge;
 pub mod link;
+pub mod markers;
+pub mod pick;
 pub mod play;
 pub mod preview;
 pub mod recovery;

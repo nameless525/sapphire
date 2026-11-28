@@ -11,9 +11,10 @@
 //! nothing a game does can reach a document.
 //!
 //! A zone (M3 E5) stands another stage, with no fight: each placement drawn on its own as its shape's mesh from an
-//! editor's cook ([`sapphire_stage::scene::Scene::lay_out_zone`]), where the document has it now, and the gizmo on
-//! the one selected, drawn by the stage's debug draws. An edit moves an instance: nothing is cooked, loaded or
-//! built. The character stands at the zone's origin, for a measure of size.
+//! editor's cook ([`sapphire_stage::scene::Scene::lay_out_zone`]), where the document has it now, the gizmo on
+//! the one selected and every object's marks ([`ZoneMarks`], M6 T9a), drawn by the stage's debug draws. An edit
+//! moves an instance: nothing is cooked, loaded or built. The character stands at the zone's origin, for a measure
+//! of size.
 //!
 //! A screen (M3 E5) stands a stage with no fight, and draws over it as the game does, through `game_ui`'s
 //! [`ScreenStack`], loaded from the cook and then shown as its document reads now, with the stand-in values the
@@ -64,6 +65,7 @@ use sapphire_ui::Atlas;
 use sapphire_zone::ZoneDocument;
 
 use crate::gizmo::{Gizmo, ViewCamera};
+use crate::markers::ZoneObjects;
 use crate::play::{PlayRequest, Snapshot};
 use crate::screen::{ScreenShown, StandIn, model_of};
 
@@ -244,6 +246,8 @@ pub struct ViewShow {
     camera_yaw: f32,
     /// The gizmo, on a zone's placement.
     pub gizmo: Option<Gizmo>,
+    /// A zone's objects' marks.
+    pub marks: Option<ZoneMarks>,
     /// A screen over it all.
     pub screen: Option<ScreenStack>,
 }
@@ -311,10 +315,20 @@ impl SceneShow for ViewShow {
     }
 
     fn draw_debug(&mut self) {
+        draw_zone(self.marks.as_ref(), self.gizmo.as_ref());
         self.fight.draw_debug();
-        if let Some(gizmo) = &self.gizmo {
-            gizmo.draw();
-        }
+    }
+}
+
+/// The gizmo, then a zone's marks, those selected first (M6 T9a): in that order because debug draw keeps so many
+/// calls a thread a frame and drops the rest, counted, so a zone with more marks than that loses the last of those
+/// not selected, never the gizmo or what it moves.
+pub fn draw_zone(marks: Option<&ZoneMarks>, gizmo: Option<&Gizmo>) {
+    if let Some(gizmo) = gizmo {
+        gizmo.draw();
+    }
+    if let Some(marks) = marks {
+        marks.objects.draw(&marks.selected);
     }
 }
 
@@ -424,7 +438,7 @@ pub fn screen_stack(stage: &mut Stage<ViewShow>, shown: &ScreenShown<'_>) -> Res
 const SCREEN_CLOCK_NANOS: u64 = 60_000_000_000;
 
 /// What a viewport shows of a zone being edited.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ZoneShown<'a> {
     /// The zone's ID, which names its shapes' meshes.
     pub id: AssetId,
@@ -433,6 +447,23 @@ pub struct ZoneShown<'a> {
     /// As it last read.
     pub document: &'a ZoneDocument,
     pub gizmo: Option<Gizmo>,
+    /// Its objects' marks (M6 T9a).
+    pub marks: Option<ZoneMarks>,
+}
+
+/// A zone's objects as the viewport marks them, through the stage's debug draws (M6 T9a): made once a revision of
+/// the document, so two are the same marks when they hold the same objects and the same are selected.
+#[derive(Clone, Debug)]
+pub struct ZoneMarks {
+    pub objects: Arc<ZoneObjects>,
+    /// Which are selected, by their places among `objects`, sorted.
+    pub selected: Vec<usize>,
+}
+
+impl PartialEq for ZoneMarks {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.objects, &other.objects) && self.selected == other.selected
+    }
 }
 
 impl ZoneShown<'_> {
@@ -1072,6 +1103,10 @@ impl StageView {
             stage.show.gizmo = zone.gizmo;
             self.settling = SETTLING_FRAMES;
         }
+        if stage.show.marks != zone.marks {
+            stage.show.marks = zone.marks.clone();
+            self.settling = SETTLING_FRAMES;
+        }
         let laid = zone.laid_out();
         let first = self.zone.as_ref().is_none_or(|(id, _)| *id != zone.id);
         if !first && self.zone.as_ref().is_some_and(|(_, was)| *was == laid) {
@@ -1268,9 +1303,48 @@ impl StageView {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_core::debug_draw::{self as dd, Collector, Color, DebugDrawList, Depth, Shape};
     use sapphire_stage::orbit::OrbitCamera;
 
     use super::*;
+    use crate::markers::{ObjectKind, SELECTED, ZoneObject, keyed};
+
+    /// A zone with more marks than debug draw keeps a thread a frame still draws the gizmo, and what's selected,
+    /// whole: they go first, and what's dropped is the last of the rest.
+    #[test]
+    fn a_zone_past_debug_draws_limit_still_draws_the_gizmo() {
+        let objects: Vec<ZoneObject> = (0..dd::THREAD_BUFFER + 1000)
+            .map(|index| {
+                let at = Vec3::new(index as f32, 0.0, 0.0);
+                let key = format!("instance-{index}");
+                ZoneObject {
+                    kind: ObjectKind::Instance,
+                    path: keyed(ObjectKind::Instance, &key),
+                    key,
+                    index,
+                    handles: vec![at],
+                    shapes: vec![Shape::Aabb { min: at, max: at + Vec3::ONE }],
+                }
+            })
+            .collect();
+        let last = objects.len() - 1;
+        let marks =
+            ZoneMarks { objects: Arc::new(ZoneObjects { objects, cell_size: 32.0 }), selected: vec![last] };
+        let gizmo = Gizmo { origin: Vec3::ZERO, length: 1.0, hot: None };
+        dd::set_enabled(true);
+        let (mut collector, mut list) = (Collector::new(), DebugDrawList::default());
+        collector.collect(0.0, &mut list);
+        draw_zone(Some(&marks), Some(&gizmo));
+        collector.collect(0.0, &mut list);
+        assert!(list.stats.dropped >= 1000, "past the limit: {:?}", list.stats);
+        let on_top = |color: Color| {
+            list.lines.iter().filter(|line| line.depth == Depth::OnTop && line.color == color).count()
+        };
+        assert_eq!(on_top(SELECTED), 12, "the selected box, whole");
+        for color in [Color::RED, Color::GREEN, Color::BLUE] {
+            assert_eq!(on_top(color), 5, "each of the gizmo's arrows, whole");
+        }
+    }
 
     /// A camera's view and the view made from it are the same view, so taking over moves nothing.
     #[test]

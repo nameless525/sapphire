@@ -86,6 +86,31 @@ impl ViewCamera {
         Ray { origin: self.eye, direction }
     }
 
+    /// What it projects by: the view, then the projection.
+    #[must_use]
+    pub const fn view_projection(&self) -> Mat4 {
+        self.view_projection
+    }
+
+    /// Where `at`, in a frame shown in `rect`, is in normalized device coordinates.
+    #[must_use]
+    pub fn ndc(at: egui::Pos2, rect: egui::Rect) -> sapphire_math::Vec2 {
+        sapphire_math::Vec2::new(
+            (at.x - rect.min.x) / rect.width() * 2.0 - 1.0,
+            1.0 - (at.y - rect.min.y) / rect.height() * 2.0,
+        )
+    }
+
+    /// How far `points` of the view about `at` reach from the ray through it, as a share of how far along the ray:
+    /// what a pick reaches ([`crate::pick::Pick::reach`]).
+    #[must_use]
+    pub fn reach(&self, at: egui::Pos2, rect: egui::Rect, points: f32) -> f32 {
+        let (middle, aside) =
+            (self.ray(at, rect).direction, self.ray(at + egui::vec2(points, 0.0), rect).direction);
+        let cos = middle.dot(aside).clamp(-1.0, 1.0);
+        (1.0 - cos * cos).max(0.0).sqrt() / cos.max(1e-3)
+    }
+
     /// Where `point` shows in a frame shown in `rect`, if it's in front of the eye.
     #[must_use]
     pub fn to_screen(&self, point: Vec3, rect: egui::Rect) -> Option<egui::Pos2> {

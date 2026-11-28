@@ -1346,6 +1346,32 @@ mod panes {
         assert_eq!(editor.selected_placement(), None);
     }
 
+    /// The twin of the kittest, which counts the rows built: the pane lists a heading and 3,000 rows to scroll
+    /// through, and one selects by its keyed path.
+    #[test]
+    fn the_zone_pane_builds_only_the_rows_that_show() {
+        let dir = TestDir::new("crowded_zone");
+        let instances: Vec<String> = (0..3000)
+            .map(|at| format!(r#"(id: "instance-{at}", mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: ({at}.0, 0.0, 0.0))"#))
+            .collect();
+        let text = format!(
+            r#"(type: "sapphire::zone::ZoneDocument", version: 2, data: (grid: (cell_size: 16.0), instances: [{}]))"#,
+            instances.join(", ")
+        );
+        let path = dir.write("z/crowded.zone.ron", &text);
+        let mut editor = editor(&dir, Some(&path));
+        assert_eq!(editor.zone_objects().expect("reads").objects.len(), 3000);
+        assert_eq!(editor.zone_rows(), Some(3001), "a heading and a row each");
+        run(
+            &mut editor,
+            &dir,
+            r#"SelectObjects([(document: "z/crowded.zone.ron", path: "instances[\"instance-1\"]")])"#,
+        );
+        let selected: Vec<String> = editor.selection().iter().map(|object| object.path.to_string()).collect();
+        assert_eq!(selected, [r#"instances["instance-1"]"#]);
+        assert_eq!(editor.selected_placement(), None, "an instance takes no gizmo");
+    }
+
     const YARD_COLLIDERS: &str = r#"(
     type: "sapphire::colliders::ColliderDocument",
     version: 1,
@@ -2045,5 +2071,312 @@ mod zone_ids {
         let text = text_of(&editor);
         assert!(said.contains("`0d17e6b2` in `placements`") && said.contains("didn't"), "{said}");
         assert_eq!(text.matches("0d17e6b2").count(), 1, "never renumbered, and not put in twice: {text}");
+    }
+}
+
+// Every zone object drawn and picked (M6 T9a): a scripted click at each kind's projected place, and a box.
+mod zone_picks {
+    use std::sync::Arc;
+
+    use sapphire_document::walk;
+    use sapphire_editor::gizmo::ViewCamera;
+    use sapphire_editor::markers::{ObjectKind, keyed};
+    use sapphire_math::Vec3;
+    use sapphire_render::CameraData;
+    use sapphire_zone::ZoneDocument;
+
+    use super::*;
+
+    const EVERY_KIND: &str = include_str!("zones/every_kind.zone.ron");
+
+    /// The view a test clicks in: from above and aside of everything the zone holds.
+    fn view() -> (ViewCamera, egui::Rect) {
+        let camera = CameraData::look_at(
+            Vec3::new(11.0, 30.0, -14.0),
+            Vec3::new(11.0, 0.0, 9.0),
+            Vec3::Y,
+            0.8,
+            1.6,
+            0.1,
+        );
+        (ViewCamera::of(&camera), egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1120.0, 700.0)))
+    }
+
+    /// The command a click at `at` in the view runs, as the viewport makes it.
+    fn click_at(at: Pos2, adding: bool) -> String {
+        let (camera, rect) = view();
+        let ray = camera.ray(at, rect);
+        let reach = camera.reach(at, rect, 16.0);
+        let [x, y, z] = ray.origin.to_array();
+        let [dx, dy, dz] = ray.direction.to_array();
+        format!(
+            "PickInZone(from: ({x:?}, {y:?}, {z:?}), toward: ({dx:?}, {dy:?}, {dz:?}), reach: {reach:?}, adding: {adding})"
+        )
+    }
+
+    /// An editor on the zone with one of each kind.
+    fn every_kind() -> (TestDir, Editor) {
+        let dir = TestDir::new("every_kind");
+        let path = dir.write("z/every_kind.zone.ron", EVERY_KIND);
+        let editor = editor(&dir, Some(&path));
+        (dir, editor)
+    }
+
+    /// The selection's paths.
+    fn selected(editor: &Editor) -> Vec<String> {
+        editor.selection().iter().map(|object| object.path.to_string()).collect()
+    }
+
+    /// A click at where `kind`'s object called `key` shows selects it alone, by a path that reads in the zone, and
+    /// edits nothing.
+    #[track_caller]
+    fn a_click_picks(kind: ObjectKind, key: &str) {
+        let (dir, mut editor) = every_kind();
+        let objects = editor.zone_objects().expect("the zone reads");
+        let path = keyed(kind, key);
+        let object = &objects.objects[objects.find(&path).expect("an object of the kind")];
+        let zone = ZoneDocument::from_ron(EVERY_KIND).expect("reads");
+        assert!(walk::get(&zone, &path).is_ok(), "{path} reads in the zone");
+        let (camera, rect) = view();
+        let at = camera.to_screen(object.at().expect("a place"), rect).expect("in view");
+        assert!(rect.contains(at), "{kind:?} shows at {at:?}");
+        run(&mut editor, &dir, r#"SelectPlacement(Some("post"))"#);
+        run(&mut editor, &dir, &click_at(at, false));
+        assert_eq!(selected(&editor), [path.to_string()], "{kind:?}");
+        assert_same(&text_of(&editor), EVERY_KIND, "picking edits nothing");
+    }
+
+    #[test]
+    fn a_click_picks_a_placement() {
+        a_click_picks(ObjectKind::Placement, "post");
+    }
+
+    #[test]
+    fn a_click_picks_an_instance() {
+        a_click_picks(ObjectKind::Instance, "crate");
+    }
+
+    #[test]
+    fn a_click_picks_a_light() {
+        a_click_picks(ObjectKind::Light, "lamp");
+    }
+
+    #[test]
+    fn a_click_picks_a_reflection_probe() {
+        a_click_picks(ObjectKind::ReflectionProbe, "hall");
+    }
+
+    #[test]
+    fn a_click_picks_a_reflection_box() {
+        a_click_picks(ObjectKind::ReflectionBox, "hall");
+    }
+
+    #[test]
+    fn a_click_picks_a_trigger() {
+        a_click_picks(ObjectKind::Trigger, "door");
+    }
+
+    #[test]
+    fn a_click_picks_a_checkpoint() {
+        a_click_picks(ObjectKind::Checkpoint, "start");
+    }
+
+    #[test]
+    fn a_click_picks_a_spawner() {
+        a_click_picks(ObjectKind::Spawner, "player_start");
+    }
+
+    #[test]
+    fn a_click_picks_a_spline() {
+        a_click_picks(ObjectKind::Spline, "rail");
+    }
+
+    #[test]
+    fn a_click_picks_an_exit() {
+        a_click_picks(ObjectKind::Exit, "door");
+    }
+
+    #[test]
+    fn a_click_picks_an_atmosphere_volume() {
+        a_click_picks(ObjectKind::AtmosphereVolume, "haze");
+    }
+
+    #[test]
+    fn a_click_picks_a_weather_region() {
+        a_click_picks(ObjectKind::WeatherRegion, "drizzle");
+    }
+
+    #[test]
+    fn a_click_picks_a_water_body() {
+        a_click_picks(ObjectKind::WaterBody, "pond");
+    }
+
+    #[test]
+    fn a_click_picks_a_water_probe() {
+        a_click_picks(ObjectKind::WaterProbe, "pond");
+    }
+
+    #[test]
+    fn a_click_picks_a_room() {
+        a_click_picks(ObjectKind::Room, "cellar");
+    }
+
+    #[test]
+    fn a_click_picks_an_ambient_post() {
+        a_click_picks(ObjectKind::AmbientPost, "well");
+    }
+
+    #[test]
+    fn a_click_picks_an_ambient_walk() {
+        a_click_picks(ObjectKind::AmbientWalk, "lap");
+    }
+
+    /// A pick a script asks for with a ray or a reach that isn't a number, or a box with a corner that isn't, is
+    /// refused; a reach as wide as can be picks as the widest does, and the pick ends.
+    #[test]
+    fn a_pick_or_a_box_that_isnt_numbers_is_refused() {
+        let (dir, mut editor) = every_kind();
+        refused(
+            &mut editor,
+            "PickInZone(from: (0.0, 30.0, 0.0), toward: (0.0, -1.0, 0.0), reach: inf, adding: false)",
+        );
+        refused(
+            &mut editor,
+            "PickInZone(from: (NaN, 30.0, 0.0), toward: (0.0, -1.0, 0.0), reach: 0.1, adding: false)",
+        );
+        let identity = "1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0";
+        refused(
+            &mut editor,
+            &format!("SelectInBox(view: ({identity}), from: (NaN, 0.0), to: (1.0, 1.0), adding: false)"),
+        );
+        run(
+            &mut editor,
+            &dir,
+            "PickInZone(from: (12.0, 30.0, 8.0), toward: (0.0, -1.0, 0.0), reach: 1e30, adding: false)",
+        );
+        assert_eq!(editor.selection().len(), 1, "the widest reach picks one");
+        assert_same(&text_of(&editor), EVERY_KIND, "picking edits nothing");
+    }
+
+    /// A zone recovered in place of the one open, with an unsaved move of its spawner, is picked by the recovered
+    /// text: what was made of the one it replaced is made again, though both are a document's first revision.
+    #[test]
+    fn a_recovered_zone_is_picked_by_its_own_text() {
+        let dir = TestDir::new("every_kind_recovered");
+        let path = dir.write("z/every_kind.zone.ron", EVERY_KIND);
+        let journal = dir.0.join("journal");
+        let keeping = |dir: &TestDir| {
+            let mut editor = editor(dir, Some(&path));
+            editor.keep_journal_at(&journal);
+            editor
+        };
+        let mut first = keeping(&dir);
+        run(&mut first, &dir, r#"SetProperty(path: "spawners[\"player_start\"].position[2]", value: "4.0")"#);
+        drop(first);
+
+        let mut next = keeping(&dir);
+        let before = next.zone_objects().expect("reads");
+        let spawner = keyed(ObjectKind::Spawner, "player_start");
+        assert_eq!(
+            before.objects[before.find(&spawner).expect("there")].at(),
+            Some(Vec3::new(12.0, 0.0, 8.0))
+        );
+        run(&mut next, &dir, r#"Recover("z/every_kind.zone.ron")"#);
+        let after = next.zone_objects().expect("reads");
+        assert_eq!(after.objects[after.find(&spawner).expect("there")].at(), Some(Vec3::new(12.0, 0.0, 4.0)));
+        let (camera, rect) = view();
+        let at = camera.to_screen(Vec3::new(12.0, 0.0, 4.0), rect).expect("in view");
+        run(&mut next, &dir, &click_at(at, false));
+        assert_eq!(selected(&next), [spawner.to_string()], "picked where it was moved to");
+    }
+
+    /// Every kind has its test above.
+    #[test]
+    fn every_kind_has_a_click() {
+        let here = include_str!("scripts.rs");
+        for kind in ObjectKind::ALL {
+            let call = format!("a_click_picks(ObjectKind::{kind:?},");
+            assert!(here.contains(&call), "{kind:?} has no test of its own");
+        }
+    }
+
+    /// A click on nothing selects nothing, a Cmd-click adds what it picks and takes it out again, and a picked
+    /// placement takes the gizmo.
+    #[test]
+    fn a_click_on_nothing_selects_nothing_and_cmd_adds() {
+        let (dir, mut editor) = every_kind();
+        let objects = editor.zone_objects().expect("the zone reads");
+        let (camera, rect) = view();
+        let shown = |kind, key| {
+            let object = &objects.objects[objects.find(&keyed(kind, key)).expect("there")];
+            camera.to_screen(object.at().expect("a place"), rect).expect("in view")
+        };
+        run(&mut editor, &dir, &click_at(shown(ObjectKind::Placement, "post"), false));
+        assert_eq!(editor.selected_placement(), Some(0), "the gizmo's on it");
+        run(&mut editor, &dir, &click_at(shown(ObjectKind::Spawner, "player_start"), true));
+        assert_eq!(selected(&editor), [r#"placements["post"]"#, r#"spawners["player_start"]"#]);
+        run(&mut editor, &dir, &click_at(shown(ObjectKind::Placement, "post"), true));
+        assert_eq!(selected(&editor), [r#"spawners["player_start"]"#], "taken out");
+        run(&mut editor, &dir, &click_at(rect.left_top() + egui::vec2(2.0, 2.0), false));
+        assert!(editor.selection().is_empty());
+    }
+
+    /// A box just around where the post, the crate and the lamp show holds them and nothing else.
+    #[test]
+    fn a_box_selects_exactly_what_it_holds() {
+        let (dir, mut editor) = every_kind();
+        let (camera, rect) = view();
+        let shown: Vec<Pos2> = [Vec3::ZERO, Vec3::new(6.0, 0.0, 0.0), Vec3::new(12.0, 2.0, 0.0)]
+            .into_iter()
+            .map(|at| camera.to_screen(at, rect).expect("in view"))
+            .collect();
+        let around = egui::Rect::from_points(&shown).expand(4.0);
+        let (from, to) = (ViewCamera::ndc(around.min, rect), ViewCamera::ndc(around.max, rect));
+        let view = camera.view_projection().to_cols_array().map(|value| format!("{value:?}")).join(", ");
+        let command = |adding: bool| {
+            format!(
+                "SelectInBox(view: ({view}), from: ({:?}, {:?}), to: ({:?}, {:?}), adding: {adding})",
+                from.x, from.y, to.x, to.y
+            )
+        };
+        run(&mut editor, &dir, &command(false));
+        let held = selected(&editor);
+        assert_eq!(
+            held,
+            [r#"placements["post"]"#, r#"instances["crate"]"#, r#"lights["lamp"]"#],
+            "exactly those inside"
+        );
+        run(
+            &mut editor,
+            &dir,
+            r#"SelectObjects([(document: "z/every_kind.zone.ron", path: "rooms[\"cellar\"]")])"#,
+        );
+        run(&mut editor, &dir, &command(true));
+        assert_eq!(selected(&editor).len(), 4, "beside what was");
+        assert_same(&text_of(&editor), EVERY_KIND, "selecting edits nothing");
+    }
+
+    /// The objects and their index are made once a revision of the document: a selection or a pick makes none, an
+    /// edit one, and its undo another.
+    #[test]
+    fn the_index_is_made_once_a_revision() {
+        let (dir, mut editor) = every_kind();
+        let first = editor.zone_objects().expect("the zone reads");
+        let built = editor.zone_index_built().expect("built");
+        assert_eq!((built.handles, first.objects.len()), (23, 17), "every handle of every object");
+        let (camera, rect) = view();
+        let at = camera.to_screen(Vec3::new(12.0, 0.0, 8.0), rect).expect("in view");
+        run(&mut editor, &dir, &click_at(at, false));
+        assert!(Arc::ptr_eq(&first, &editor.zone_objects().expect("reads")), "a pick made nothing");
+        run(
+            &mut editor,
+            &dir,
+            r#"SetProperty(path: "spawners[\"player_start\"].position[0]", value: "13.0")"#,
+        );
+        let moved = editor.zone_objects().expect("reads");
+        assert!(!Arc::ptr_eq(&first, &moved), "an edit made them again");
+        assert!(Arc::ptr_eq(&moved, &editor.zone_objects().expect("reads")), "once");
+        run(&mut editor, &dir, "Undo");
+        assert_eq!(*editor.zone_objects().expect("reads"), *first, "the undo's are the first's");
     }
 }

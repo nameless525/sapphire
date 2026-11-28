@@ -528,7 +528,8 @@ fn the_kinds_are_told_apart_and_a_panel_needs_none() {
     assert_ne!(a, b);
     assert!(set.get::<EffectLibrary>(a).is_none());
     assert!(set.get::<MoveSetDocument>(a).is_some());
-    assert!(fs::read_to_string(sidecar_path(&effects)).expect("reads").contains(identity::DOCUMENT_TYPE));
+    let sidecar = fs::read_to_string(sidecar_path(&effects)).expect("reads");
+    assert!(sidecar.contains(identity::ASSET_TYPE) && sidecar.contains("importer: Effects(())"), "{sidecar}");
     for id in [a, b] {
         let any = set.any(id).expect("open");
         assert!(!any.properties().is_empty());

@@ -632,22 +632,32 @@ fn the_attributes_name_the_driver_for_every_kind() {
     }
     assert!(wrong.is_empty(), "files the attributes give the driver:\n{}", wrong.join("\n"));
 
+    // A pattern is a suffix (`*.moves.ron`), or with no `*` one file's whole name at any depth
+    // (`default_effects.ron`).
     let attributes = support::read(".gitattributes");
-    let suffixes: Vec<&str> = attributes
-        .lines()
-        .filter_map(|line| line.strip_suffix(" merge=sapphire-document")?.strip_prefix('*'))
-        .collect();
+    let patterns: Vec<&str> =
+        attributes.lines().filter_map(|line| line.strip_suffix(" merge=sapphire-document")).collect();
+    let matches = |pattern: &str, document: &str| match pattern.strip_prefix('*') {
+        Some(suffix) => document.ends_with(suffix),
+        None => document.rsplit('/').next() == Some(pattern),
+    };
     for kind in Kind::ALL {
         let documents = documents_of(kind);
         assert!(!documents.is_empty(), "{kind:?}");
         for document in documents {
-            assert!(suffixes.iter().any(|suffix| document.ends_with(suffix)), "{document}: no driver");
+            assert!(patterns.iter().any(|pattern| matches(pattern, &document)), "{document}: no driver");
         }
     }
     let material = support::read(&documents_of(Kind::Material)[0]);
-    for suffix in suffixes {
-        let named = format!("content/any{suffix}");
-        assert!(Kind::of_text(Path::new(&named), || Some(material.clone())).is_some(), "{suffix}: no kind's");
+    for pattern in patterns {
+        let named = format!(
+            "content/{}",
+            pattern.strip_prefix('*').map_or(pattern.to_owned(), |suffix| format!("any{suffix}"))
+        );
+        assert!(
+            Kind::of_text(Path::new(&named), || Some(material.clone())).is_some(),
+            "{pattern}: no kind's"
+        );
     }
 }
 

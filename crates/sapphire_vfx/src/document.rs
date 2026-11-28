@@ -27,6 +27,26 @@ use crate::mesh::{MAX_MESH_LAYERS, MeshLayerDesc};
 /// The shipped effects (see [`EffectLibrary::default_effects`]).
 const DEFAULT_EFFECTS: &str = include_str!("../default_effects.ron");
 
+/// What a game's effects library's file name ends with (M6 N1): `combat.effects.ron`, which cooks to
+/// `combat.seffects`.
+pub const LIBRARY_SUFFIX: &str = ".effects.ron";
+
+/// The compiled-in library's file name, beside this crate's manifest ([`EffectLibrary::default_effects`]): a
+/// library by its whole name, which predates [`LIBRARY_SUFFIX`].
+pub const DEFAULT_LIBRARY_FILE: &str = "default_effects.ron";
+
+/// Whether a file is an effects library, by its name, in any case: one ending in [`LIBRARY_SUFFIX`], or the
+/// compiled-in [`DEFAULT_LIBRARY_FILE`]. The one rule the cook, the editor and live tuning read, so a library
+/// that opens as one cooks as one; a name that merely ends `_effects.ron`, as the world's
+/// `default_screen_effects.ron` does, is none. Git's attribute patterns are case-sensitive unless
+/// `core.ignorecase` is set, as it isn't by default on Linux, so name a library in lower case: one named
+/// `COMBAT.EFFECTS.RON` cooks and opens, but merges by lines there rather than through the merge driver.
+#[must_use]
+pub fn is_library_file(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.ends_with(LIBRARY_SUFFIX) || name == DEFAULT_LIBRARY_FILE
+}
+
 /// The most emitters an effect has: each playing effect keeps this many emission states inline, so
 /// a spawn never allocates.
 pub const MAX_EMITTERS: usize = 8;
@@ -1596,6 +1616,20 @@ mod tests {
         (3, include_str!("../testdata/v3.effects.ron")),
         (4, include_str!("../testdata/v4.effects.ron")),
     ];
+
+    /// A library is one by its name: the compiled-in one, the fixtures and a game's in any case, never a file
+    /// that only ends `_effects.ron`, as the world's screen effects do.
+    #[test]
+    fn a_library_is_one_by_its_name() {
+        for name in [DEFAULT_LIBRARY_FILE, "v1.effects.ron", "combat.effects.ron", "COMBAT.EFFECTS.RON"] {
+            assert!(is_library_file(name), "{name}");
+        }
+        for name in
+            ["default_screen_effects.ron", "my_effects.ron", "effects.ron", "default_effects.ron.meta"]
+        {
+            assert!(!is_library_file(name), "{name}");
+        }
+    }
 
     /// A library at 1 to 4 reads under 5 and writes back exactly as it was but for its version. A float is
     /// written as the shortest text that reads back to its bits, `-0.0` included, so matching text holds every

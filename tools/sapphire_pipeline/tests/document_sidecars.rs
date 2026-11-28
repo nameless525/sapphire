@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::{env, fs, process};
 
 use sapphire_document::identity::{self, sidecar_path};
-use sapphire_document::{DocumentSet, IdentityError, SetError, kinds, registry_of};
+use sapphire_document::{DocumentSet, IdentityError, Kind, SetError, kinds, registry_of};
 use sapphire_moves::MoveSetDocument;
+use sapphire_pipeline::effects::{self, EffectsSettings};
 use sapphire_pipeline::meta::{self, AssetMeta, ImportSettings, MetaError, SourceTree};
 use sapphire_serialize::to_ron;
 
@@ -74,6 +75,7 @@ fn the_kinds_say_the_importer_a_cook_would_give_them() {
         ("a.dialogue.ron", kinds::dialogue().importer),
         ("a.colliders.ron", kinds::colliders().importer),
         ("a.foliage.ron", kinds::foliage().importer),
+        ("a.effects.ron", kinds::effects().importer),
     ] {
         let id = meta::new_id().expect("an ID");
         let settings = ImportSettings::for_new_sidecar(Path::new(name)).expect("a source");
@@ -141,6 +143,35 @@ fn both_refuse_two_claims_on_one_id_and_a_move_without_its_sidecar() {
     assert!(matches!(resolve(&dir.0, false), Err(MetaError::Moved { .. })));
     let refused = set.open(&b, kinds::moves(), registry).expect_err("a move");
     assert!(matches!(refused, SetError::Identity(IdentityError::Moved { .. })), "{refused}");
+}
+
+/// An effects library opens as one exactly where it cooks as one (M6 N1, one rule both read): the compiled-in
+/// library and the fixtures at every older version open as `Effects`, read, get an `Effects` sidecar from
+/// either side and cook; the world's screen effects, whose name only ends `_effects.ron`, do neither.
+#[test]
+fn an_effects_library_opens_as_one_where_it_cooks_as_one() {
+    let libraries = [
+        "crates/sapphire_vfx/default_effects.ron",
+        "crates/sapphire_vfx/testdata/v1.effects.ron",
+        "crates/sapphire_vfx/testdata/v2.effects.ron",
+        "crates/sapphire_vfx/testdata/v3.effects.ron",
+        "crates/sapphire_vfx/testdata/v4.effects.ron",
+    ];
+    for relative in libraries {
+        let path = repository(relative);
+        let text = fs::read_to_string(&path).expect("reads");
+        assert_eq!(Kind::of(&path), Some(Kind::Effects), "{relative} opens");
+        Kind::Effects.read(&text).unwrap_or_else(|error| panic!("{relative} reads as its kind: {error}"));
+        let settings = ImportSettings::for_new_sidecar(&path);
+        assert_eq!(settings, Some(ImportSettings::Effects(EffectsSettings::default())), "{relative} cooks");
+        let id = meta::new_id().expect("an ID");
+        let cooker = to_ron(&AssetMeta::new(id, settings.expect("a source"))).expect("writes");
+        assert_eq!(identity::sidecar_text(id, kinds::effects().importer), cooker, "{relative}'s sidecar");
+        effects::cook(text.as_bytes()).unwrap_or_else(|error| panic!("{relative} cooks: {error}"));
+    }
+    let screen = repository("crates/sapphire_world/default_screen_effects.ron");
+    assert_eq!(Kind::of(&screen), None, "the screen effects open as no kind");
+    assert_eq!(ImportSettings::for_new_sidecar(&screen), None, "and no cook takes them");
 }
 
 #[test]

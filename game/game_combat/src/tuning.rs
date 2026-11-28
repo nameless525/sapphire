@@ -1012,8 +1012,9 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
         Some(Document::Camera)
     } else if name == document_file_name(CUES_PATH) {
         Some(Document::Cues)
-    } else if name == document_file_name(EFFECTS_PATH) || name.ends_with(".effects.ron") {
-        // The compiled-in library, or a game's that cooks (M6 N1): either is what a fight's cues play.
+    } else if sapphire_vfx::is_library_file(name) {
+        // The compiled-in library, or a game's that cooks (M6 N1): either is what a fight's cues play, by the
+        // rule the cook and the editor read.
         Some(Document::Effects)
     } else if name == document_file_name(BINDINGS_PATH) {
         Some(Document::Bindings)

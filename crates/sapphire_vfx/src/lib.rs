@@ -91,8 +91,9 @@ pub use budget::VfxBudget;
 pub use curve::{Curve, CurveValue, MAX_KEYS};
 pub use decal::{DecalBlend, DecalLayerDesc, DecalShape, MAX_DECAL_LAYERS, MAX_DECAL_SIZE, on_ground};
 pub use document::{
-    Effect, EffectId, EffectLibrary, EffectLibraryError, EmitterDesc, Facing, Light, MAX_EMITTERS,
-    MAX_TRAIL_SAMPLES, Motion, Range, Shape, Sim, Source, Spawn, TrailCore, TrailDesc,
+    DEFAULT_LIBRARY_FILE, Effect, EffectId, EffectLibrary, EffectLibraryError, EmitterDesc, Facing,
+    LIBRARY_SUFFIX, Light, MAX_EMITTERS, MAX_TRAIL_SAMPLES, Motion, Range, Shape, Sim, Source, Spawn,
+    TrailCore, TrailDesc, is_library_file,
 };
 pub use events::{EventTrigger, MAX_EVENT_DEPTH, MAX_EVENTS, ParticleEvent};
 pub use forces::{Force, Ground, MAX_FORCES, MAX_NOISE_OCTAVES};

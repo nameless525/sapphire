@@ -24,7 +24,9 @@
 //! A conversation's line with a voice (M5 C6) comes as [`CueSounds::speech`]: the mixer starts it, holds it
 //! through a pause and cuts it at the next line, and [`DeviceAudio::said`] reads the sound's cooked mouth
 //! curve at the voice's playhead, which the mixer's caller counts in real seconds. With no device there's no
-//! voice, and so no mouth: a face never moves to a line nobody can hear played.
+//! voice, and so no mouth: a face never moves to a line nobody can hear played. Both say what they heard in a frame
+//! as one [`Heard`]: that mouth, and the fight's lines the update started with how long each plays (M6 U14),
+//! which a caption lasts.
 //!
 //! Everything plays through the game's mix (M6 U2, [`ShowSounds::mix`]; `--cue` the shipped one): its slow
 //! motion follows the world's clock, its ducking rules follow the voice lines' mouth curves, and a paused game
@@ -46,8 +48,8 @@ use sapphire_assets::sound::{DecodedSound, Sound};
 use sapphire_assets::voice::VoiceLines;
 use sapphire_audio::{
     AudioBackend, AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter,
-    EmitterId, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT, Room, Rooms,
-    SpeechRequest, VoiceCaps,
+    EmitterId, HeardLine, KiraBackend, LineRequest, Listener, MusicRequest, OfflineOutput, PAUSE_SNAPSHOT,
+    Room, Rooms, SpeechRequest, VoiceCaps,
 };
 pub use sapphire_audio::{DynamicRange, Volumes};
 use sapphire_core::Name;
@@ -142,6 +144,20 @@ pub struct Said {
     /// The [`SpeechRequest::serial`] that asked for the line.
     pub serial: u64,
     pub mouth: MouthSample,
+}
+
+/// What a frame's audio heard (M6 U14): the conversation's line's mouth ([`Said`]), and the fight's voice lines its
+/// update started, each with how long it plays ([`HeardLine`]). [`Heard::NOTHING`] with no audio: every mouth
+/// shut, and every caption up for the time a line nobody hears is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Heard<'a> {
+    pub said: Option<Said>,
+    pub lines: &'a [HeardLine],
+}
+
+impl Heard<'_> {
+    /// No audio.
+    pub const NOTHING: Heard<'static> = Heard { said: None, lines: &[] };
 }
 
 /// What `system`'s conversation line says now, if it's saying one, by the mouth curves the system holds.
@@ -335,6 +351,12 @@ impl DeviceAudio {
     #[must_use]
     pub fn said(&self) -> Option<Said> {
         said(&self.system)
+    }
+
+    /// What the last [`Self::update`] heard (M6 U14): [`Self::said`], and the lines it started. Allocates nothing.
+    #[must_use]
+    pub fn heard(&self) -> Heard<'_> {
+        Heard { said: said(&self.system), lines: self.system.heard_lines() }
     }
 
     /// One frame, `dt` real seconds after the last: plays `--cue`'s cue when it's due and what a fight
@@ -765,6 +787,12 @@ impl OfflineAudio {
     #[must_use]
     pub fn said(&self) -> Option<Said> {
         said(&self.system)
+    }
+
+    /// As [`DeviceAudio::heard`].
+    #[must_use]
+    pub fn heard(&self) -> Heard<'_> {
+        Heard { said: said(&self.system), lines: self.system.heard_lines() }
     }
 
     /// One frame, `dt` seconds after the last, as [`DeviceAudio::update`] plays a fight's.

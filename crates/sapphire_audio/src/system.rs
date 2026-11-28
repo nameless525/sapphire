@@ -183,6 +183,21 @@ pub struct SpeechRequest {
     pub held: bool,
 }
 
+/// A voice line a frame's update started (M6 U14): which, and how long it plays, in real seconds, at the pitch
+/// it started at. What a caption lasts by: a line asked for and not heard (not in the voice language, refused
+/// by its cue's limit, or with no output playing) isn't one. The length is the sound's over the cue's pitch
+/// alone: it leaves out the voice bus's mix pitch and a hitstop's freeze, which is right while the mix bends
+/// only sfx and ambience and lines play flat, as the shipped mix does; a mix that bends voices, or a line
+/// frozen in hitstop, would end its caption before its line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeardLine {
+    pub line: LineKey,
+    pub seconds: f32,
+}
+
+/// The most [`HeardLine`]s an update keeps room for without allocating: far more lines than a frame asks for.
+const HEARD_LINES: usize = 16;
+
 /// What a conversation's line is saying (M5 C6): the sound its voice plays, and how far into it the voice
 /// is, by the system's own count of the real seconds it has played, never asked of the audio thread.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -476,6 +491,8 @@ pub struct AudioSystem<B: AudioBackend> {
     voice: VoiceRoute,
     /// The conversation's line (M5 C6).
     speech: Option<Speech>,
+    /// The lines the last update started, and their lengths (M6 U14).
+    heard: Vec<HeardLine>,
     background: bool,
     interrupted: bool,
     /// What the player's volume takes off every voice.
@@ -526,6 +543,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             music: Music::default(),
             voice: VoiceRoute::new(),
             speech: None,
+            heard: Vec::with_capacity(HEARD_LINES),
             background: false,
             interrupted: false,
             volume_db: 0.0,
@@ -765,6 +783,13 @@ impl<B: AudioBackend> AudioSystem<B> {
         Some(Speaking { serial: speech.serial, sound, seconds: voice.seconds as f32 })
     }
 
+    /// The voice lines the last [`Self::update`] started, in the order asked, each with how long it plays: what a
+    /// caption lasts by (M6 U14).
+    #[must_use]
+    pub fn heard_lines(&self) -> &[HeardLine] {
+        &self.heard
+    }
+
     /// The counters, as of the last [`Self::update`].
     pub fn stats(&self) -> AudioStats {
         self.stats
@@ -810,6 +835,7 @@ impl<B: AudioBackend> AudioSystem<B> {
                 }
             }
         }
+        self.heard.clear();
         for request in frame.lines {
             let Some(cue) = self.voice.line(request.line) else {
                 self.stats.lines_missing += 1;
@@ -817,7 +843,11 @@ impl<B: AudioBackend> AudioSystem<B> {
             };
             self.stats.lines_asked += 1;
             if state.plays() {
-                self.start_cue(&CueRequest::new(cue, request.target), &frame.listener, random, None);
+                let started =
+                    self.start_cue(&CueRequest::new(cue, request.target), &frame.listener, random, None);
+                if let Some((id, _)) = started {
+                    self.hear_line(request.line, id);
+                }
             } else {
                 self.stats.dropped_no_output += 1;
             }
@@ -836,6 +866,16 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.stats.virtual_voices = (self.voices.len() - real) as u32;
         self.stats.update = timer.elapsed();
         self.stats.update_peak = self.stats.update_peak.max(self.stats.update);
+    }
+
+    /// Keeps the line `line`, whose voice `id` just started, among [`Self::heard_lines`]: its sound's length over
+    /// the voice's pitch. Past [`HEARD_LINES`] in a frame, the rest go unheard rather than allocate.
+    fn hear_line(&mut self, line: LineKey, id: VoiceId) {
+        let Some(voice) = self.voices.iter().find(|voice| voice.id == id) else { return };
+        if self.heard.len() < HEARD_LINES {
+            let seconds = (voice.length / f64::from(voice.pitch.max(f32::MIN_POSITIVE))) as f32;
+            self.heard.push(HeardLine { line, seconds });
+        }
     }
 
     fn track_emitters(&mut self, emitters: &[Emitter]) {
@@ -2610,6 +2650,57 @@ mod tests {
         ends.sort_unstable();
         assert_eq!(ends, [2, 3]);
         assert_eq!(system.speaking(), None);
+    }
+
+    /// M6 U14: a frame's heard lines are the lines it started, each its sound's length over its cue's pitch; a
+    /// line its cue's limit refuses isn't one, and the next update, asking none, clears them.
+    #[test]
+    fn a_heard_line_plays_its_length_over_its_pitch_and_a_refused_one_isnt_heard() {
+        let mut system = speaker(2.0);
+        system.add_cue(
+            CUE,
+            Cue {
+                pitch: [2.0, 2.0],
+                bus: Bus::Voice,
+                limit: Some(Limit { max: 1, rule: LimitRule::RefuseNew }),
+                ..plain_cue()
+            },
+        );
+        let mut rng = CueRng::new(1);
+        let greet = [LineRequest { line: LineKey::of("greet"), target: CueTarget::Flat }];
+        system.update(&AudioFrame { lines: &greet, ..frame(&[], &[]) }, &mut rng);
+        // `decoded` is 480 samples at 48 kHz: 10 ms, said in 5 at twice the pitch.
+        let [heard] = system.heard_lines() else { panic!("{:?}", system.heard_lines()) };
+        assert_eq!(heard.line, LineKey::of("greet"));
+        assert!((heard.seconds - 0.005).abs() < 1e-6, "{heard:?}");
+        // The first still plays, so the limit refuses a second: asked for, not heard.
+        system.update(&AudioFrame { lines: &greet, ..frame(&[], &[]) }, &mut rng);
+        assert!(system.heard_lines().is_empty(), "{:?}", system.heard_lines());
+        assert_eq!((system.stats().lines_asked, system.stats().dropped_voice_limit), (2, 1));
+        system.update(&frame(&[], &[]), &mut rng);
+        assert!(system.heard_lines().is_empty());
+    }
+
+    /// M6 U14: with no output playing, a line asked for isn't heard; and a frame keeps the first
+    /// [`HEARD_LINES`] it starts, allocating for no more.
+    #[test]
+    fn no_output_hears_no_line_and_a_frame_hears_sixteen_at_most() {
+        let mut system = speaker(1.0);
+        let mut rng = CueRng::new(1);
+        let lines = [LineRequest { line: LineKey::of("greet"), target: CueTarget::Flat }; HEARD_LINES + 4];
+        system.update(&AudioFrame { lines: &lines, ..frame(&[], &[]) }, &mut rng);
+        assert_eq!(system.heard_lines().len(), HEARD_LINES);
+        assert!(
+            system.heard_lines().iter().all(|heard| (heard.seconds - 0.01).abs() < 1e-6),
+            "{:?}",
+            system.heard_lines()
+        );
+        assert_eq!(system.heard.capacity(), HEARD_LINES);
+        for state in [DeviceState::Suspended, DeviceState::NoDevice] {
+            system.backend_mut().set_state(state);
+            system.update(&AudioFrame { lines: &lines[..1], ..frame(&[], &[]) }, &mut rng);
+            assert!(system.heard_lines().is_empty(), "{state:?}: {:?}", system.heard_lines());
+        }
     }
 
     /// M6 U4a: a start is as loud as its loudest voice to a limit, so a blend near its second point, its quiet side

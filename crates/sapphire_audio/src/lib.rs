@@ -43,6 +43,8 @@
 //! - **Voice lines** (M3 A1): [`VoiceRoute`] holds each language's
 //!   [`VoiceLines`](sapphire_assets::voice::VoiceLines) and answers a [`LineKey`] in the voice
 //!   language the player chose, which is not the text's; the mix's ducking rules take the music down under it.
+//!   Each update says which lines it started and how long each plays ([`AudioSystem::heard_lines`], M6 U14),
+//!   which is what a caption lasts.
 //! - **A conversation's line** (M5 C6): one [`SpeechRequest`] at a time, started, held by a pause and cut
 //!   by the next or by none, with its playhead counted here in the real seconds its voice has played
 //!   ([`AudioSystem::speaking`]), so a face can read the sound's mouth curve at it without asking the
@@ -101,9 +103,9 @@ pub use output::{CpalOutput, OfflineOutput, Output, device_opens};
 pub use rng::{CueRandom, CueRng};
 pub use rooms::{Room, RoomShape, Rooms, Space};
 pub use system::{
-    AudioFrame, AudioStats, AudioSystem, CueRequest, CueTarget, Emitter, EmitterId, LineRequest, Listener,
-    MAX_VIRTUAL_VOICES, MAX_VOICES, PAUSE_SNAPSHOT, SHORTEST_VIRTUAL_SECONDS, Speaking, SpeechRequest,
-    VoiceCaps, Volumes,
+    AudioFrame, AudioStats, AudioSystem, CueRequest, CueTarget, Emitter, EmitterId, HeardLine, LineRequest,
+    Listener, MAX_VIRTUAL_VOICES, MAX_VOICES, PAUSE_SNAPSHOT, SHORTEST_VIRTUAL_SECONDS, Speaking,
+    SpeechRequest, VoiceCaps, Volumes,
 };
 pub use voice::{LineKey, VoiceRoute, VoiceRouteError};
 

@@ -23,10 +23,12 @@ use crate::{
     Rumble, ScreenCenter,
 };
 
-/// The most sounds a frame can start: a frame of two steps fills it only if every cue fires at once. Past it
-/// they're counted and dropped here, before the mixer's own ranking (M6 U3) sees them. Half of
-/// [`sapphire_audio::MAX_VOICES`], as it was before that rose to the desktop's real voices.
-pub const MAX_FRAME_SOUNDS: usize = 32;
+/// The most sounds a frame can ask for: as many voices as the mixer keeps live, real and virtual, so up to 320 a
+/// frame it's the mixer's ranking (M6 U3) that chooses which play, by each cue's priority, and not the order a
+/// frame's cues fired in (fixed after M6 U3's review: at 32, a boss's roar fired after 32 footsteps was dropped
+/// here unranked). Past 320 a frame, event order decides: what's past it is counted and dropped, unranked. The
+/// room is made once, so the table never allocates.
+pub const MAX_FRAME_SOUNDS: usize = sapphire_audio::MAX_VOICES + sapphire_audio::MAX_VIRTUAL_VOICES;
 
 /// The most voice lines a frame can start: more at once is a crowd, not a voice. Past it they're
 /// counted and dropped.

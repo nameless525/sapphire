@@ -293,6 +293,10 @@ pub struct AudioStats {
     pub room_changes: u64,
     /// Rooms entered naming a reverb the mix hasn't, which play none (M6 U5), all told.
     pub reverbs_unknown: u64,
+    /// Starts of a cue naming a voice group the mix hasn't, all told (fixed after M6 U3's review): it plays, and no
+    /// group limits it. A request refused before it plays (an emitter not in the frame, a limit) counts only as
+    /// that. The content check refuses such a cue against the tree's mixes.
+    pub groups_unknown: u64,
     /// The output's own counters.
     pub device: DeviceStatus,
     /// The bytes of decoded sound the mixer holds (M6 U1): [`AudioBackend::decoded_bytes`], kept with each
@@ -536,6 +540,8 @@ pub struct AudioSystem<B: AudioBackend> {
     stats: AudioStats,
     /// A dropped cue's reason has been logged once.
     warned_unknown: bool,
+    /// Said once that a cue names a voice group the mix hasn't ([`AudioStats::groups_unknown`]).
+    warned_group: bool,
     warned_no_output: bool,
 }
 
@@ -577,6 +583,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             profile: OutputProfile::Home,
             stats: AudioStats::default(),
             warned_unknown: false,
+            warned_group: false,
             warned_no_output: false,
         }
     }
@@ -1196,6 +1203,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         };
         let group =
             cue.group.as_deref().and_then(|name| self.groups.iter().position(|group| group.name == name));
+        let unknown_group = group.is_none() && cue.group.is_some();
         let [quiet, loud] = cue.volume_db;
         let [slow, fast] = cue.pitch;
         let gain_db = quiet + (loud - quiet) * volume;
@@ -1256,6 +1264,16 @@ impl<B: AudioBackend> AudioSystem<B> {
         if !let_in {
             self.stats.dropped_voice_limit += picks.as_slice().len() as u64;
             return None;
+        }
+        if unknown_group {
+            // A typo in a group's name is no limit at all: each start let in is counted, and it's said once
+            // (fixed after M6 U3's review, counted once it plays since its fix's review).
+            self.stats.groups_unknown += 1;
+            if !self.warned_group {
+                self.warned_group = true;
+                let name = self.cues.get(&request.cue).and_then(|(cue, _)| cue.group.as_deref());
+                tracing::warn!(target: LOG_TARGET, cue = %request.cue, group = ?name, "a cue names a voice group the mix hasn't: no group limits it");
+            }
         }
         for (index, &(sound, tree_db)) in picks.as_slice().iter().enumerate() {
             let mut voice = voice;
@@ -3024,12 +3042,16 @@ mod tests {
         ask(&mut system, CUE, CueTarget::Flat, &mut rng);
         let stats = system.stats();
         assert_eq!((stats.voices_stolen, stats.dropped_voice_limit, stats.cues_played), (1, 1, 2));
-        // A group the mix hasn't limits nothing.
+        assert_eq!(stats.groups_unknown, 0);
+        // A group the mix hasn't limits nothing, and each start naming it is counted (fixed after M6 U3's review).
         system.set_mix(&Mix::plain()).unwrap();
         for _ in 0..3 {
             ask(&mut system, CUE, CueTarget::Flat, &mut rng);
         }
-        assert_eq!(system.stats().cues_played, 5);
+        assert_eq!((system.stats().cues_played, system.stats().groups_unknown), (5, 3));
+        // One refused before it plays, at an emitter the frame hasn't, is counted as that and not as a start.
+        ask(&mut system, CUE, CueTarget::On(EmitterId(99)), &mut rng);
+        assert_eq!((system.stats().dropped_unknown, system.stats().groups_unknown), (1, 3));
     }
 
     /// M6 U3: past the real cap the lowest-ranked voice goes virtual, its playhead counted on, and comes back where

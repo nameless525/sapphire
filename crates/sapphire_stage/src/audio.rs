@@ -483,6 +483,7 @@ impl DeviceAudio {
             dropped_no_output = stats.dropped_no_output,
             dropped_voice_limit = stats.dropped_voice_limit,
             dropped_unknown = stats.dropped_unknown,
+            groups_unknown = stats.groups_unknown,
             lines = stats.lines_asked,
             lines_in_base = stats.lines_in_base,
             lines_missing = stats.lines_missing,

@@ -559,3 +559,42 @@ fn a_zone_s_shared_id_or_double_orientation_is_refused_by_its_field() {
         assert!(message.contains(field) && message.contains(says), "{source}: {message}");
     }
 }
+
+/// A cue naming a voice group no mix of the tree has (M6 U3, fixed after its review) is refused by its field; one
+/// naming a mix's group, or none, passes.
+#[test]
+fn a_cue_whose_group_no_mix_has_is_refused_by_its_field() {
+    let tree = Tree::new("cue_groups");
+    let importer = |path: &str| ImportSettings::for_source(Path::new(path)).unwrap();
+    let mix = include_str!("../../../../content/audio/game.mix.ron");
+    tree.source("audio/game.mix.ron", mix.as_bytes(), importer("game.mix.ron"), None);
+    let cue = |group: &str| {
+        format!(
+            "(type: \"sapphire::assets::Cue\", version: 3, data: (play: Sound(\"5c0e0000-0000-4000-8000-0000000000a1\"), \
+             bus: Sfx{group}))"
+        )
+    };
+    tree.source(
+        "audio/step.cue.ron",
+        cue(", group: Some(\"footsteps\")").as_bytes(),
+        importer("a.cue.ron"),
+        None,
+    );
+    tree.source(
+        "audio/stomp.cue.ron",
+        cue(", group: Some(\"footstep\")").as_bytes(),
+        importer("a.cue.ron"),
+        None,
+    );
+    tree.source("audio/bell.cue.ron", cue("").as_bytes(), importer("a.cue.ron"), None);
+
+    let report = tree.check();
+    let groups: Vec<(&str, &str)> = (report.findings.iter())
+        .filter(|finding| finding.rule == Rule::CueGroup)
+        .map(|finding| (finding.source.as_str(), finding.message.as_str()))
+        .collect();
+    assert_eq!(groups.len(), 1, "{report}");
+    assert_eq!(groups[0].0, "audio/stomp.cue.ron");
+    assert!(groups[0].1.contains("`group`") && groups[0].1.contains("footsteps"), "{}", groups[0].1);
+    assert!(report.failures().all(|finding| finding.rule == Rule::CueGroup), "{report}");
+}

@@ -40,8 +40,8 @@
 //! Some(1024)))`, written only when a cook has a cap). The inputs are file dependencies of the key, by the
 //! path the document names them with, so editing a mask recooks exactly the maps that read
 //! it, and moving a document together with its inputs keeps its key. Importers that always decode
-//! images embed the image importer's version in theirs ([`with_image_importer`]); the ramp's,
-//! whose stop documents decode none, is bumped with it instead ([`ramp`]'s "Versions").
+//! images embed the image importer's version in theirs ([`with_image_importer`]), the ramp's
+//! too, for its painted strips ([`ramp`]'s "Versions").
 //!
 //! `sapphire_pipeline bake-map` writes a document's generated map as a PNG before
 //! compression ([`to_png`]), for checking a map without cooking the tree; with `--sheet` and a

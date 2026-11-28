@@ -1726,6 +1726,7 @@ pub fn cook(
         volume_looks,
         joined_colliders,
         water: plan.cooked_water(),
+        rivers: BTreeMap::new(),
     };
     let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;

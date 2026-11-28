@@ -39,6 +39,7 @@ mod v10;
 mod v11;
 mod v12;
 mod v13;
+mod v14;
 mod v8;
 mod v9;
 
@@ -60,9 +61,10 @@ impl Versioned for Zone {
     /// 7: its reflection probes' asset (M5 L2). 8: a spot light's shadow flag (M5 L16). 9: water, in both
     /// halves (M6 W2). 10: rooms, in the presentation's (M6 U5). 11: a weather plan, in the presentation's
     /// (M6 W8a). 12: foliage's scatter sets, in the presentation's (M6 G1a). 13: atmosphere volumes, in the
-    /// presentation's (M6 V1). 14: each water surface's drawn mesh, in the presentation's (M6 W3a). Versions 8
-    /// to 13 are still read ([`Zone::upgrade`]).
-    const VERSION: u32 = 14;
+    /// presentation's (M6 V1). 14: each water surface's drawn mesh, in the presentation's (M6 W3a). 15: each
+    /// river's stretches, falls and effect sites, in the presentation's (M6 H3a). Versions 8 to 14 are still read
+    /// ([`Zone::upgrade`]).
+    const VERSION: u32 = 15;
 }
 
 impl Versioned for ZoneSimulation {
@@ -369,8 +371,9 @@ impl Zone {
     /// already at this version, which are left for the reader to check. Version 8 reads as a zone with no water,
     /// no rooms and no weather plan, version 9 as one with no rooms and no plan, version 10 as one with no plan,
     /// version 11 as one with no foliage, version 12 as one with no atmosphere volumes, version 13 as one with
-    /// no drawn water, each with the digest it had (cooker rule 2, for one release); none of them has a water
-    /// surface's mesh, and none before 13 atmosphere volumes. Any other version is
+    /// no drawn water, version 14 as one with no river readings, each with the digest it had (cooker rule 2, for
+    /// one release); none of them has a river's reading, none before 14 a water surface's mesh, and none before
+    /// 13 atmosphere volumes. Any other version is
     /// [`CookedError::Stale`](sapphire_serialize::CookedError::Stale).
     pub fn upgrade(bytes: &[u8]) -> Result<Option<AlignedVec>, ZoneError> {
         let found = sapphire_serialize::cooked::schema_version::<Self>(bytes)?;
@@ -384,6 +387,7 @@ impl Zone {
             v11::VERSION => v11::read(bytes)?,
             v12::VERSION => v12::read(bytes)?,
             v13::VERSION => v13::read(bytes)?,
+            v14::VERSION => v14::read(bytes)?,
             _ => return Err(sapphire_serialize::CookedError::Stale { found, current: Self::VERSION }.into()),
         };
         let cooked = zone.to_cooked()?;
@@ -898,7 +902,8 @@ impl ArchivedZone {
     }
 
     /// Whether each body has one surface, in the simulation's order, with a margin a cook would write and a
-    /// probe only where the zone has reflections.
+    /// probe only where the zone has reflections, no mesh for the sea, and a reading only for a river, one its
+    /// points can have ([`crate::water::river`]).
     fn validate_water_surfaces(&self) -> Result<(), ZoneError> {
         let (volumes, surfaces) = (&self.simulation.water, &self.presentation.water);
         if volumes.len() != surfaces.len() {
@@ -917,6 +922,14 @@ impl ArchivedZone {
             }
             if surface.mesh.is_some() && volume.kind() == WaterKind::Ocean {
                 return Err(invalid("the sea has a mesh, which a cook never draws".to_owned()));
+            }
+            if let Some(river) = surface.river.as_ref() {
+                let ArchivedWaterShape::River { points } = &volume.shape else {
+                    return Err(invalid("it has a river's reading, and isn't a river".to_owned()));
+                };
+                river
+                    .validate(points.len())
+                    .map_err(|problem| crate::water::river::invalid(&volume.name, problem))?;
             }
         }
         Ok(())
@@ -1248,6 +1261,7 @@ mod tests {
             volume_looks: Vec::new(),
             joined_colliders: None,
             water: std::collections::BTreeMap::new(),
+            rivers: std::collections::BTreeMap::new(),
         }
     }
 
@@ -2303,5 +2317,139 @@ mod tests {
         assert_eq!(kept, atmosphere.presentation.atmosphere, "atmosphere volumes come through");
         let foliage = Zone::upgrade(&v13::write(&foliage_zone())).expect("reads").expect("rewritten");
         assert!(Zone::read(&foliage).expect("read").presentation.foliage.is_some(), "foliage comes through");
+    }
+
+    /// The brook's reading as a cook gives it: its one stretch, no fall, and a rapids site halfway down.
+    fn brook_reading() -> crate::water::CookedRiver {
+        use crate::water::{CookedRiver, CookedStretch, WaterSite, WaterSiteKind};
+        CookedRiver {
+            stretches: vec![CookedStretch {
+                way: [0.196_116_14, 0.980_580_7],
+                speed: [1.0, 1.5],
+                slope: 0.024_514_517,
+                along: [0.0, 20.396_078],
+                fall: false,
+            }],
+            falls: Vec::new(),
+            sites: vec![WaterSite {
+                kind: WaterSiteKind::Rapids,
+                position: [22.0, 0.75, -30.0],
+                strength: 0.5,
+            }],
+        }
+    }
+
+    /// [`water_zone`] with the brook's reading.
+    fn river_zone() -> Zone {
+        let mut zone = water_zone();
+        let brook = zone.simulation.water.iter().position(|volume| volume.name == "brook").expect("there");
+        zone.presentation.water[brook].river = Some(brook_reading());
+        zone
+    }
+
+    /// A river's reading is presentation: never in the digest; a cook gives each river the one its geometry names,
+    /// by the body's name; and a reader refuses one that isn't a river's, one whose stretches aren't its points'
+    /// or run on from nothing, a steep stretch in no fall, a fall away from its stretches or of no width, and a site
+    /// with no strength.
+    #[test]
+    fn river_readings_leave_the_digest_alone_and_are_checked() {
+        use crate::water::{CookedFall, CookedRiver};
+        let colliders = colliders();
+        let digest_of = |zone: &Zone| {
+            let bytes = zone.to_cooked().expect("write");
+            Zone::read(&bytes).expect("read").simulation_digest(|_| Some(&colliders[..])).expect("digests")
+        };
+        let read = river_zone();
+        assert_eq!(digest_of(&read), digest_of(&water_zone()), "a reading isn't the simulation's");
+        let bytes = read.to_cooked().expect("write");
+        let back = Zone::read(&bytes).expect("read");
+        let brook =
+            back.presentation.water.iter().find_map(|surface| surface.river.as_ref()).expect("its reading");
+        assert_eq!(brook.sites[0].kind.to_native(), crate::water::WaterSiteKind::Rapids);
+
+        let mut document = document();
+        document.water = water_bodies();
+        let rivers = [("brook".to_owned(), brook_reading())].into();
+        let cooked = document.cook(ZoneGeometry { rivers, ..geometry() }).expect("cooks");
+        assert_eq!(cooked, read, "the cook gives the brook its reading");
+
+        let brook = read.simulation.water.iter().position(|volume| volume.name == "brook").expect("there");
+        let moat = read.simulation.water.iter().position(|volume| volume.name == "moat").expect("there");
+        let refused = |change: &dyn Fn(&mut Zone), expected: &str| {
+            let mut zone = read.clone();
+            change(&mut zone);
+            let message = Zone::read(&zone.to_cooked().expect("write")).expect_err(expected).to_string();
+            assert!(message.contains(expected), "`{message}` must say `{expected}`");
+        };
+        fn reading(zone: &mut Zone, brook: usize) -> &mut CookedRiver {
+            zone.presentation.water[brook].river.as_mut().expect("the brook's")
+        }
+        refused(&|zone| zone.presentation.water[moat].river = Some(brook_reading()), "isn't a river");
+        refused(
+            &|zone| reading(zone, brook).stretches.push(brook_reading().stretches[0]),
+            "2 stretches for 2 points",
+        );
+        refused(&|zone| reading(zone, brook).stretches[0].along[0] = 1.0, "run on");
+        refused(&|zone| reading(zone, brook).stretches[0].way = [1.0, 1.0], "unit vector");
+        refused(&|zone| reading(zone, brook).stretches[0].fall = true, "in no fall");
+        refused(
+            &|zone| {
+                reading(zone, brook).falls.push(CookedFall {
+                    stretches: [0, 0],
+                    lip: [20.0, 1.0, -40.0],
+                    foot: [24.0, 0.5, -20.0],
+                    along: [0.0, 20.4],
+                    width: [2.0, 3.0],
+                });
+            },
+            "whole run of steep stretches",
+        );
+        // The brook's one stretch as a fall: its band along the river is that stretch's, its widths a river's.
+        let falling = |zone: &mut Zone| {
+            let reading = reading(zone, brook);
+            reading.stretches[0].fall = true;
+            reading.falls.push(CookedFall {
+                stretches: [0, 0],
+                lip: [20.0, 1.0, -40.0],
+                foot: [24.0, 0.5, -20.0],
+                along: [0.0, 20.396_078],
+                width: [2.0, 3.0],
+            });
+        };
+        let mut fall = read.clone();
+        falling(&mut fall);
+        Zone::read(&fall.to_cooked().expect("write")).expect("a whole fall reads");
+        let elsewhere = |zone: &mut Zone| {
+            falling(zone);
+            reading(zone, brook).falls[0].along[1] = 30.0;
+        };
+        refused(&elsewhere, "its place along the river isn't its stretches'");
+        let narrow = |zone: &mut Zone| {
+            falling(zone);
+            reading(zone, brook).falls[0].width[0] = -1.0;
+        };
+        refused(&narrow, "its widths aren't a river's");
+        refused(&|zone| reading(zone, brook).sites[0].strength = 0.0, "strength");
+        refused(&|zone| reading(zone, brook).sites[0].position[1] = f32::NAN, "site 0");
+    }
+
+    /// Version 14 bytes, as M6 W3a cooked them, read for one release (cooker rule 2): `upgrade` makes them this
+    /// version's, a zone whose rivers have no readings and whose bytes are those it had at this version, its
+    /// surfaces' meshes kept.
+    #[test]
+    fn a_version_14_zone_upgrades_to_one_without_river_readings() {
+        let current = drawn_water_zone();
+        let old = v14::write(&current);
+        let message = Zone::read(&old).expect_err("stale").to_string();
+        assert!(message.contains("schema version 14") && message.contains("recook"), "{message}");
+        let upgraded = Zone::upgrade(&old).expect("reads").expect("version 14 bytes are rewritten");
+        assert_eq!(upgraded.as_slice(), current.to_cooked().expect("write").as_slice(), "today's very bytes");
+        let dropped = Zone::upgrade(&v14::write(&river_zone())).expect("reads").expect("rewritten");
+        let read = Zone::read(&dropped).expect("read");
+        assert!(read.presentation.water.iter().all(|surface| surface.river.is_none()), "no readings");
+        let atmosphere = atmosphere_zone();
+        let kept = Zone::upgrade(&v14::write(&atmosphere)).expect("reads").expect("rewritten");
+        let kept = Zone::read(&kept).expect("read").presentation.atmosphere.to_native();
+        assert_eq!(kept, atmosphere.presentation.atmosphere, "atmosphere volumes come through");
     }
 }

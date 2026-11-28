@@ -44,6 +44,7 @@ fn proving_ground_zone() -> sapphire_serialize::cooked::AlignedVec {
         volume_looks: Vec::new(),
         joined_colliders: None,
         water: BTreeMap::new(),
+        rivers: BTreeMap::new(),
     };
     document.cook(geometry).expect("it cooks").to_cooked().expect("it writes")
 }

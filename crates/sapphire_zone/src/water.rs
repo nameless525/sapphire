@@ -28,7 +28,8 @@
 //! its digest, so its digest is the one it had before water existed.
 //!
 //! **Drawn** (M6 W3a): each lake and river cooks with its zone into a mesh and an info texture of its own
-//! ([`drawn`]), and one that names no probe has one placed for it ([`WaterBody::placed_probe`]).
+//! ([`drawn`]), and one that names no probe has one placed for it ([`WaterBody::placed_probe`]). A river's
+//! stretches, falls and effect sites are read along its points with its zone (M6 H3a, [`river`]).
 //!
 //! **The query:** [`WaterVolumes::at`] says whether a point is in water and which, with the surface over it, the
 //! current there and how deep the water stands over the floor. The floor is the first thing a ray straight down
@@ -46,8 +47,10 @@ use crate::grid::MAX_COORDINATE;
 use crate::reflections::{ParallaxBox, ReflectionProbe};
 
 pub mod drawn;
+pub mod river;
 
 pub use drawn::{ArchivedWaterMesh, InfoTexture, WATER_MESH_EXTENSION, WaterMesh, WaterVertex, water_part};
+pub use river::{CookedFall, CookedRiver, CookedStretch, WaterSite, WaterSiteKind};
 
 /// The most water bodies a zone may hold (spec §3.4).
 pub const MAX_BODIES: usize = 16;
@@ -556,6 +559,9 @@ pub struct CookedWaterSurface {
     /// Its surface as drawn (`.swater`, M6 W3a): its mesh and its info texture, a sub-asset of the zone
     /// ([`drawn`]). None for the sea, whose grid isn't cooked (H1b), and in a zone cooked before version 14.
     pub mesh: Option<AssetId>,
+    /// A river's stretches, falls and effect sites (M6 H3a, [`river`]): none for a lake or the sea, in a zone
+    /// cooked before version 15, or where a zone's cook was given none.
+    pub river: Option<CookedRiver>,
 }
 
 /// What [`WaterVolumes::at`] found at a point in water.

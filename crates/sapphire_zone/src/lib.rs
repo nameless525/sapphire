@@ -26,7 +26,8 @@
 //! - **Ambient characters** ([`ambient`], M5 C10): who stands about a zone and walks it, as presentation
 //!   alone, cooked to an asset of the zone's own (`.sambient`) beside its cells, never into [`Zone`].
 //! - **Water** ([`water`], M6 W2): lakes, rivers and the sea, their volumes in [`ZoneSimulation`] and their
-//!   surfaces in [`ZonePresentation`], and [`WaterVolumes::at`], the query a fixed step may ask.
+//!   surfaces in [`ZonePresentation`], and [`WaterVolumes::at`], the query a fixed step may ask; a river's
+//!   stretches, falls and effect sites in its surface (M6 H3a, [`water::river`]).
 //! - **Rooms** ([`rooms`], M6 U5): where a zone's sound takes a reverb, each a volume with a priority, a reverb
 //!   of the mix's, an outdoor flag and a fade, in [`ZonePresentation`] alone.
 //! - **A weather plan** ([`weather`], M6 W8a): which of a weather document's states a zone's sky shows by
@@ -124,9 +125,9 @@ pub use reflections::{ParallaxBox, ReflectionProbe};
 pub use rooms::{ArchivedCookedRoom, CookedRoom, ZoneRoom};
 pub use shape::{ArchivedZoneShape, ZoneShape};
 pub use water::{
-    ArchivedCookedWaterSurface, ArchivedCookedWaterVolume, ArchivedWaterMesh, CookedWaterSurface,
-    CookedWaterVolume, Floor, RiverPoint, WATER_MESH_EXTENSION, WaterBody, WaterKind, WaterMesh, WaterSample,
-    WaterShape, WaterSurface, WaterVolumes,
+    ArchivedCookedWaterSurface, ArchivedCookedWaterVolume, ArchivedWaterMesh, CookedRiver,
+    CookedWaterSurface, CookedWaterVolume, Floor, RiverPoint, WATER_MESH_EXTENSION, WaterBody, WaterKind,
+    WaterMesh, WaterSample, WaterShape, WaterSite, WaterSiteKind, WaterSurface, WaterVolumes,
 };
 pub use weather::{
     ArchivedCookedWeatherPlan, ArchivedCookedWeatherRegion, CookedWeatherPlan, CookedWeatherRegion,

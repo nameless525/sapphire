@@ -3,8 +3,9 @@
 //! swim each have a station, and a scenario on the zone (`content/scenarios/course.scenario.ron`) stands the
 //! player at its start; [`built`] is what that scenario's simulation stands on.
 //!
-//! Nothing here enters a traversal mode: the course is the data the modes will be proved on, and today a
-//! character walks it, jumps on its low ledges and falls into its pool like any other ground.
+//! Nothing here enters a traversal mode: the course is only the data the modes are proved on. The
+//! simulation's traversal enters them: `course-walk` walks the course, and `course-mantle`, `course-climb`
+//! and `course-glide` prove A15's, A16a's and A17's stations on it.
 //!
 //! # Where things are
 //!

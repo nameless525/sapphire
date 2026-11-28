@@ -241,7 +241,7 @@ use crate::reflections::{self, ReflectionCookError};
 use crate::script::{self, ScriptCookError};
 use crate::skeleton::{self, JointCap};
 use crate::texture::{self, CookedTexture, TextureError};
-use crate::timeline::{self, TimelineCookError};
+use crate::timeline::{self, MissingString, TimelineCookError};
 use crate::timing::{AssetClocks, AssetTime, CookTimings, Phase, Step};
 use crate::ui::{self, ScreenCharacters, ScreenError, Screens, UiCookError};
 use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
@@ -932,6 +932,13 @@ pub enum CookError {
         #[source]
         source: Box<TimelineCookError>,
     },
+    #[error("timeline {} shows a string no table holds", path.display())]
+    TimelineKey {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<MissingString>,
+    },
     #[error("failed to cook dialogue {}", path.display())]
     Dialogue {
         path: PathBuf,
@@ -1529,6 +1536,7 @@ fn cook_dir_through(
     let localization = check_localization(&assets)?;
     let rivers = river_lines(&plan, &zones, &assets)?;
     check_dialogues(&assets)?;
+    check_timelines(&assets)?;
     check_screens(&screens, &assets)?;
     timings.ended(Phase::Checks, &mut watch);
     timings.assets = plan
@@ -1656,6 +1664,42 @@ fn check_dialogues(assets: &[CookedAsset]) -> Result<(), CookError> {
         })?);
     }
     Ok(dialogue::check_keys(&dialogues, &tables)?)
+}
+
+/// Checks every key the tree's timelines' subtitles show against every locale's table (M6 T16a), from the files as
+/// they now are, as [`check_dialogues`] does.
+fn check_timelines(assets: &[CookedAsset]) -> Result<(), CookError> {
+    let of = |extension: &'static str| {
+        assets.iter().filter(move |asset| asset.output.extension().is_some_and(|e| e == extension))
+    };
+    let mut timelines = Vec::new();
+    for asset in of(TIMELINE_EXTENSION) {
+        let bytes =
+            read_cooked(asset).map_err(|source| CookError::Read { path: asset.output.clone(), source })?;
+        let timeline = Timeline::read(&bytes).map_err(|error| CookError::Timeline {
+            path: asset.output.clone(),
+            source: Box::new(error.into()),
+        })?;
+        if !timeline.presentation.subtitles.is_empty() {
+            timelines.push((asset.source.clone(), timeline));
+        }
+    }
+    if timelines.is_empty() {
+        return Ok(());
+    }
+    let mut tables = Vec::new();
+    for asset in of(STRINGS_EXTENSION) {
+        let bytes = fs::read(&asset.output)
+            .map_err(|source| CookError::Read { path: asset.output.clone(), source })?;
+        tables.push(StringTable::read(&bytes).map_err(|error| {
+            CookError::Localization(Box::new(LocCheckError::Read {
+                path: asset.output.clone(),
+                source: Box::new(error),
+            }))
+        })?);
+    }
+    timeline::check_keys(&timelines, &tables)
+        .map_err(|(path, missing)| CookError::TimelineKey { path, source: Box::new(missing) })
 }
 
 /// The tree's screens and tables, from the files as they now are.

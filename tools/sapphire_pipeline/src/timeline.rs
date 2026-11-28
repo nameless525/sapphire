@@ -3,12 +3,14 @@
 //! The document, its checks and the cooked format all live in `sapphire_timeline`, a plain-data crate the
 //! simulation and the sequencer read too. This module only places them in the cook: a source with a sidecar
 //! like any asset (`importer: Timeline(())`) and no inputs besides itself, since what a timeline plays it
-//! names, for the stage to have loaded.
+//! names, for the stage to have loaded. After every asset has cooked, the keys its subtitles show are checked
+//! against every locale's table, as a dialogue's are ([`check_keys`], M6 T16a).
 
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::rig::ExpressionPreset;
-use sapphire_timeline::{TimelineDocument, TimelineError};
+use sapphire_strings::{StringTable, key_shows};
+use sapphire_timeline::{Timeline, TimelineDocument, TimelineError};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::Stage;
@@ -67,6 +69,46 @@ pub fn cook(bytes: &[u8]) -> Result<Vec<u8>, TimelineCookError> {
         }
     }
     Ok(document.cook()?.to_cooked()?.into_vec())
+}
+
+/// A key a timeline's subtitles show that a locale, with its fallbacks, has no string for.
+#[derive(Debug, thiserror::Error)]
+#[error("`{field}`: {key:?} is no string of locale `{locale}` or the locales it falls back to")]
+pub struct MissingString {
+    /// The subtitle's `key` or `speaker`, as `subtitles[2].key`.
+    pub field: String,
+    pub key: String,
+    pub locale: String,
+}
+
+/// Each key a timeline's subtitles show, by its field: a line's, then who says it.
+fn keys(timeline: &Timeline) -> impl Iterator<Item = (String, &str)> {
+    timeline.presentation.subtitles.iter().enumerate().flat_map(|(index, line)| {
+        let speaker = line.speaker.as_deref().map(|speaker| (format!("subtitles[{index}].speaker"), speaker));
+        std::iter::once((format!("subtitles[{index}].key"), line.key.as_str())).chain(speaker)
+    })
+}
+
+/// Refuses a key a timeline's subtitles show that a locale, with its fallbacks, has no string for (M6 T16a), as a
+/// dialogue's are ([`crate::dialogue::check_keys`]). `timelines` holds each cooked timeline by its source's path;
+/// what's refused is the first in their order, then the tables'.
+pub fn check_keys(
+    timelines: &[(PathBuf, Timeline)],
+    tables: &[StringTable],
+) -> Result<(), (PathBuf, MissingString)> {
+    for table in tables {
+        let mut chain = vec![table];
+        chain.extend(
+            table.fallback.iter().filter_map(|locale| tables.iter().find(|other| other.locale == *locale)),
+        );
+        for (path, timeline) in timelines {
+            if let Some((field, key)) = keys(timeline).find(|(_, key)| key_shows(&chain, key).is_none()) {
+                let missing = MissingString { field, key: key.to_owned(), locale: table.locale.clone() };
+                return Err((path.clone(), missing));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

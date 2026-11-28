@@ -33,7 +33,7 @@
 //! | Rule | Severity | What it finds |
 //! |---|---|---|
 //! | `triangles`, `joints`, `slots`, `map-size` | error | A role mesh over its row on a cook. |
-//! | `uncapped-map` | error | A map an anime character material names that stores over 1024 a side on mobile: a map over 1K with no mobile cap. |
+//! | `uncapped-map` | error | A map an anime character material names that stores over 1024 a side on mobile: a map over 1K with no mobile cap. The mobile cook alone: on desktop, only a role mesh's maps are held, by `map-size`. |
 //! | `non-ascii-path` | error | A source whose path under the root isn't ASCII: file systems store such names in different forms (macOS decomposes them), so a tree checked out elsewhere can name another file. |
 //! | `misplaced-role` | error | A role on a sidecar that isn't a mesh's. |
 //! | `unbound-slot` | warning | A role mesh's slot no material document is bound to: it draws the material its importer made. |
@@ -62,11 +62,23 @@
 //! ),
 //! ```
 //!
-//! A waived finding is still reported, with its reason. A waiver that finds nothing to waive is an error, so
-//! one outlives its cause only until the next check, and so is one whose `why` is empty. Every cook lists every
-//! waiver in its report ([`CookReport::waivers`](crate::cook::CookReport::waivers)); no cook judges a source by
-//! these rules or stops on them. The `budget` section is read by the check alone: it's in no cache key, so
-//! adding one to a sidecar recooks nothing.
+//! A waiver covers every cook unless it names one, so a rule broken on the phones alone is waived there alone,
+//! and the same rule broken on desktop still fails:
+//!
+//! ```ron
+//! waive: [(rule: Joints, cook: Some(Mobile), why: "…")],
+//! ```
+//!
+//! A waived finding is still reported, with its reason. A waiver that finds nothing to waive on its cooks is an
+//! error, so one outlives its cause only until the next check, and so is one whose `why` is empty. Every cook
+//! lists the waivers that cover it in its report ([`CookReport::waivers`](crate::cook::CookReport::waivers)); no
+//! cook judges a source by these rules or stops on them. The `budget` section is read by the check alone: it's
+//! in no cook key, so adding one to a sidecar recooks nothing (the asset index, which records the check, keys
+//! by every sidecar's bytes: [`crate::index`]).
+//!
+//! **The sidecar's version:** a waiver's `cook` is written only when set, so every sidecar written before it
+//! reads and writes the same bytes, and `AssetMeta` stays at version 1, as it did when `budget` came; a sidecar
+//! whose waiver names a cook doesn't read in a pipeline from before it, which refuses the field by name.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -80,8 +92,8 @@ use sapphire_assets::mesh::{Mesh, SlotMaterial};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::audio;
-use crate::character_maps;
 use crate::cook::{self, Cook, CookError};
+use crate::{audit, character_maps, procedural};
 use crate::effect_sheet::EffectSheetDocument;
 use crate::effects;
 use crate::foliage;
@@ -90,7 +102,6 @@ use crate::import::image::{SourceFormat, header_size};
 use crate::import::vrm::{self, vroid_eye_layer, vroid_region_gi};
 use crate::material;
 use crate::meta::{ImportSettings, Resolved, SourceAsset};
-use crate::procedural::ProceduralTexture;
 use crate::texture::{self, TextureSettings};
 use crate::zone;
 
@@ -193,8 +204,19 @@ pub const MOBILE_MAP: u32 = 1024;
 #[serde(deny_unknown_fields)]
 pub struct Waiver {
     pub rule: Rule,
+    /// The cook it waives the rule on: every cook when `None`. Written only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cook: Option<Cook>,
     /// Why the source may break the rule: a sentence a reviewer can judge.
     pub why: String,
+}
+
+impl Waiver {
+    /// Whether it covers a finding on `cook` (`None` for a rule that depends on no cook): one that names a
+    /// cook covers that cook's findings alone.
+    pub fn covers(&self, cook: Option<Cook>) -> bool {
+        self.cook.is_none_or(|waived| cook == Some(waived))
+    }
 }
 
 /// A rule of the check: see the table in the [module docs](self).
@@ -289,7 +311,8 @@ pub enum Severity {
     Warning,
 }
 
-/// A waiver a cooked source's sidecar holds, as a cook lists it ([`CookReport::waivers`](crate::cook::CookReport::waivers)).
+/// A waiver a cooked source's sidecar holds that covers a cook, as that cook lists it
+/// ([`CookReport::waivers`](crate::cook::CookReport::waivers)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Waived {
     pub source: PathBuf,
@@ -297,13 +320,13 @@ pub struct Waived {
     pub why: String,
 }
 
-/// Every waiver `assets`' sidecars hold, in their order.
-pub fn waivers(assets: &[SourceAsset]) -> Vec<Waived> {
+/// Every waiver `assets`' sidecars hold that covers `cook`, in their order.
+pub fn waivers(assets: &[SourceAsset], cook: Cook) -> Vec<Waived> {
     assets
         .iter()
         .flat_map(|asset| {
             let waive = asset.meta.budget.as_ref().map_or(&[][..], |budget| &budget.waive);
-            waive.iter().map(|waiver| Waived {
+            waive.iter().filter(|waiver| waiver.covers(Some(cook))).map(|waiver| Waived {
                 source: asset.path.clone(),
                 rule: waiver.rule,
                 why: waiver.why.clone(),
@@ -493,25 +516,21 @@ pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckE
     Ok(Report { meshes, character_maps, findings })
 }
 
-/// A source's path under `root`, with `/` between its parts on every host.
-fn relative(path: &Path, root: &Path) -> String {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    relative.components().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
-}
-
-/// A map's size, before any cook's cap, and the settings it cooks with.
+/// The size a map stores on each cook, under its sidecar's cap, as the texture cooker plans it: desktop, then
+/// mobile ([`Cook::ALL`]'s order).
 #[derive(Clone, Copy)]
-struct MapShape {
-    width: u32,
-    height: u32,
-    settings: TextureSettings,
-}
+struct MapShape([(u32, u32); 2]);
 
 impl MapShape {
-    /// The size `cook` stores, as the texture cooker plans it.
-    fn cooked(&self, cook: Cook, path: &Path) -> Result<(u32, u32), CheckError> {
-        texture::cooked_size(&self.settings, cook, self.width, self.height)
-            .map_err(|error| CheckError::Invalid { path: path.to_owned(), why: error.to_string() })
+    /// Each cook's size, as `plan` gives it.
+    fn planned<E: fmt::Display>(plan: impl Fn(Cook) -> Result<(u32, u32), E>) -> Result<Self, String> {
+        let size = |cook| plan(cook).map_err(|error| error.to_string());
+        Ok(Self([size(Cook::Desktop)?, size(Cook::Mobile)?]))
+    }
+
+    /// The size `cook` stores.
+    fn cooked(&self, cook: Cook) -> (u32, u32) {
+        self.0[cook as usize]
     }
 }
 
@@ -525,7 +544,7 @@ struct Checker<'a> {
 
 impl Checker<'_> {
     fn name(&self, path: &Path) -> String {
-        relative(path, self.root)
+        audit::relative(path, self.root)
     }
 
     fn find(&mut self, asset: &SourceAsset, rule: Rule, cook: Option<Cook>, message: String) {
@@ -582,7 +601,7 @@ impl Checker<'_> {
             let Some(shape) = self.shape(id)? else { continue };
             count += 1;
             let map = self.by_id[&id];
-            let (width, height) = shape.cooked(Cook::Mobile, &map.path)?;
+            let (width, height) = shape.cooked(Cook::Mobile);
             if width.max(height) > MOBILE_MAP {
                 self.find(
                     map,
@@ -718,11 +737,10 @@ impl Checker<'_> {
             let mut largest = 0;
             for &id in &maps {
                 let Some(shape) = self.shape(id)? else { continue };
-                let path = &self.by_id[&id].path;
-                let (width, height) = shape.cooked(cook, path)?;
+                let (width, height) = shape.cooked(cook);
                 largest = largest.max(width.max(height));
                 if width.max(height) > limits.map {
-                    let map = self.name(path);
+                    let map = self.name(&self.by_id[&id].path);
                     self.find(
                         asset,
                         Rule::MapSize,
@@ -983,58 +1001,73 @@ fn map_shape(source: &SourceAsset) -> Result<Option<MapShape>, CheckError> {
     let path = &source.path;
     let invalid = |why: String| CheckError::Invalid { path: path.clone(), why };
     let read = || fs::read(path).map_err(|error| CheckError::Read { path: path.clone(), source: error });
-    Ok(match &source.meta.importer {
+    let shape = match &source.meta.importer {
         ImportSettings::Texture(settings) => {
             let format = SourceFormat::from_path(path).ok_or_else(|| invalid("not an image".to_owned()))?;
             let (width, height) =
                 header_size(&read()?, format).ok_or_else(|| invalid("its header doesn't read".to_owned()))?;
-            Some(MapShape { width, height, settings: *settings })
+            MapShape::planned(|cook| texture::cooked_size(settings, cook, width, height))
         }
         ImportSettings::ProceduralTexture(settings) => {
-            let document = ProceduralTexture::read(&read()?).map_err(|error| invalid(error.to_string()))?;
-            Some(MapShape { width: document.size, height: document.size, settings: settings.texture() })
+            let bytes = read()?;
+            MapShape::planned(|cook| procedural::cooked_size(&bytes, settings, cook))
         }
         // A generated map is the size of what it's generated from.
         ImportSettings::CharacterMap(settings, max_size) => {
             let map = character_maps::generate(path, &read()?, settings)
                 .map_err(|error| invalid(error.to_string()))?;
             let settings = TextureSettings { class: map.class, max_size: *max_size };
-            Some(MapShape { width: map.image.width, height: map.image.height, settings })
+            let (width, height) = (map.image.width, map.image.height);
+            MapShape::planned(|cook| texture::cooked_size(&settings, cook, width, height))
         }
-        _ => None,
-    })
+        _ => return Ok(None),
+    };
+    shape.map(Some).map_err(invalid)
 }
 
-/// Marks each finding its source's sidecar waives with the waiver's reason, and adds `stale-waiver` for each
-/// waiver that waived nothing and `unexplained-waiver` for each with no reason.
+/// Marks each finding its source's sidecar waives on the finding's cook with the waiver's reason, and adds
+/// `stale-waiver` for each waiver that waived nothing on its cooks and `unexplained-waiver` for each with no
+/// reason.
 fn waive(assets: &[&SourceAsset], root: &Path, findings: &mut Vec<Finding>) {
     let mut added = Vec::new();
     for asset in assets {
         let Some(budget) = &asset.meta.budget else { continue };
-        let source = relative(&asset.path, root);
+        let source = audit::relative(&asset.path, root);
         for waiver in &budget.waive {
             let mut used = false;
+            let mut on_no_cook = false;
             for finding in
                 findings.iter_mut().filter(|finding| finding.source == source && finding.rule == waiver.rule)
             {
-                finding.waived = Some(waiver.why.clone());
-                used = true;
+                if waiver.covers(finding.cook) {
+                    finding.waived = Some(waiver.why.clone());
+                    used = true;
+                }
+                on_no_cook |= finding.cook.is_none();
             }
             let mut add = |rule: Rule, message: String| {
                 added.push(Finding {
                     source: source.clone(),
                     rule,
                     severity: rule.severity(),
-                    cook: None,
+                    cook: waiver.cook,
                     message,
                     waived: None,
                 });
             };
             if !used {
-                add(
-                    Rule::StaleWaiver,
-                    format!("waives `{}`, which finds nothing here: remove the waiver", waiver.rule),
-                );
+                let rule = waiver.rule;
+                let message = match waiver.cook {
+                    None => format!("waives `{rule}`, which finds nothing here: remove the waiver"),
+                    Some(cook) if on_no_cook => format!(
+                        "waives `{rule}` on the {cook} cook, and `{rule}` finds this on no cook in particular: \
+                         remove the waiver's `cook`"
+                    ),
+                    Some(cook) => {
+                        format!("waives `{rule}` on the {cook} cook, which finds nothing there: remove the waiver")
+                    }
+                };
+                add(Rule::StaleWaiver, message);
             }
             if waiver.why.trim().is_empty() {
                 add(

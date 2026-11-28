@@ -248,8 +248,8 @@ use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
 use crate::{bake, optimize};
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
-/// Android.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Android. A sidecar names one as `Desktop` or `Mobile` (a waiver's `cook`, [`check`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Cook {
     Desktop,
     Mobile,
@@ -1158,9 +1158,9 @@ pub struct CookReport {
     pub removed: Vec<PathBuf>,
     /// What's untranslated, and what's translated from nothing ([`loc::check()`]).
     pub localization: LocReport,
-    /// Every rule a cooked source's sidecar waives, with its reason, in source path order ([`check`], M6 C1).
-    /// A cook never judges a source by the rules: `sapphire_pipeline check` does, and fails on a finding no
-    /// sidecar waives.
+    /// Every rule a cooked source's sidecar waives on this cook, with its reason, in source path order
+    /// ([`check`], M6 C1): a waiver that names the other cook isn't this one's. A cook never judges a source by
+    /// the rules: `sapphire_pipeline check` does, and fails on a finding no sidecar waives.
     pub waivers: Vec<Waived>,
     /// How long each phase of the run and each asset took (M6 C12, [`crate::timing`]): for people only, so
     /// nothing a cook writes holds it.
@@ -1307,7 +1307,7 @@ fn cook_dir_through(
     let resolved = meta::resolve(&tree, options.locked)?;
     let (cooked_assets, uncooked): (Vec<SourceAsset>, Vec<SourceAsset>) =
         resolved.assets.into_iter().partition(|asset| asset.meta.cook);
-    let waivers = check::waivers(&cooked_assets);
+    let waivers = check::waivers(&cooked_assets, options.cook);
     let prefabs = zone::prefab_sources(cooked_assets.iter().chain(&uncooked));
     let mut zones: HashMap<PathBuf, ZonePlan> = HashMap::new();
     let cache = options.cache.map(Cache::new);
@@ -3944,6 +3944,9 @@ fn source_dependencies(
                 return Ok(merged);
             }
             if matches!(settings, ImportSettings::Assembly(_)) {
+                // An assembly never merges: planning refuses its `merge:` (`MergeError::Assembly`), so
+                // `merged` is empty and its key holds no merge's inputs.
+                debug_assert!(merged.is_empty(), "an assembly's merge is refused before its key");
                 return assembly_dependencies(path, bytes);
             }
             let files = gltf::external_files(bytes)

@@ -71,7 +71,7 @@ fn role(role: Role) -> Option<Budget> {
 }
 
 fn waiving(rule: Rule, why: &str) -> Option<Budget> {
-    Some(Budget { role: None, waive: vec![Waiver { rule, why: why.to_owned() }] })
+    Some(Budget { role: None, waive: vec![Waiver { rule, cook: None, why: why.to_owned() }] })
 }
 
 /// Each finding as (source, rule, cook, waived).
@@ -272,7 +272,7 @@ fn a_waived_row_passes_and_a_cook_lists_the_waiver() {
     let tree = Tree::new("waived");
     let budget = Budget {
         role: Some(Role::Ambient),
-        waive: vec![Waiver { rule: Rule::Joints, why: "a test of seventy".to_owned() }],
+        waive: vec![Waiver { rule: Rule::Joints, cook: None, why: "a test of seventy".to_owned() }],
     };
     tree.source("a/a.glb", &figure(4, 1, 70), ImportSettings::Gltf(MeshSettings::default()), Some(budget));
     let report = tree.check();
@@ -297,8 +297,67 @@ fn a_waived_row_passes_and_a_cook_lists_the_waiver() {
     );
 }
 
+/// A waiver that names a cook waives that cook's findings alone: the phones' waiver of a figure's joints leaves
+/// its desktop joints failing, and only the mobile cook lists it. One that finds nothing on its cook is stale,
+/// and so is one that names a cook for a rule that depends on none.
+#[test]
+fn a_mobile_waiver_leaves_the_desktop_finding_standing() {
+    let tree = Tree::new("waived_by_cook");
+    let on = |rule, cook| Waiver { rule, cook: Some(cook), why: "the phones' cut".to_owned() };
+    let budget = Budget {
+        role: Some(Role::Ambient),
+        waive: vec![on(Rule::Joints, Cook::Mobile), on(Rule::Triangles, Cook::Desktop)],
+    };
+    tree.source("a/a.glb", &figure(4, 1, 70), ImportSettings::Gltf(MeshSettings::default()), Some(budget));
+    tree.texture("maps/a.png", 4, MaxSize::NONE, None);
+    let copy = Some(Budget { role: None, waive: vec![on(Rule::DuplicateTexture, Cook::Mobile)] });
+    tree.texture("maps/b.png", 4, MaxSize::NONE, copy);
+
+    let report = tree.check();
+    let (desktop, mobile) = (Some(Cook::Desktop), Some(Cook::Mobile));
+    let joints: Vec<_> = report.of("a/a.glb", Rule::Joints).map(|f| (f.cook, f.waived.is_some())).collect();
+    assert_eq!(joints, [(desktop, false), (mobile, true)], "{report}");
+    let failing: Vec<_> =
+        report.failures().map(|finding| (finding.source.as_str(), finding.rule, finding.cook)).collect();
+    assert_eq!(
+        failing,
+        [
+            ("a/a.glb", Rule::Joints, desktop),
+            ("a/a.glb", Rule::StaleWaiver, desktop),
+            ("maps/b.png", Rule::StaleWaiver, mobile),
+        ],
+        "{report}"
+    );
+    let stale = |source| report.of(source, Rule::StaleWaiver).next().unwrap().message.clone();
+    assert_eq!(
+        stale("a/a.glb"),
+        "waives `triangles` on the desktop cook, which finds nothing there: remove the waiver"
+    );
+    assert!(stale("maps/b.png").contains("finds this on no cook in particular"), "{report}");
+    assert_eq!(report.of("maps/b.png", Rule::DuplicateTexture).next().unwrap().waived, None);
+
+    let listed = |cook| {
+        let out = TempDir::new(&format!("check_waived_by_cook_{cook}"));
+        let options = CookOptions { cook, cache: None, locked: true, editor: false };
+        let report = cook_dir(tree.root(), out.path(), &options).unwrap();
+        report.waivers.iter().map(|waived| (waived.rule, waived.source.clone())).collect::<Vec<_>>()
+    };
+    let (glb, png) = (tree.root().join("a/a.glb"), tree.root().join("maps/b.png"));
+    assert_eq!(listed(Cook::Desktop), [(Rule::Triangles, glb.clone())]);
+    assert_eq!(listed(Cook::Mobile), [(Rule::Joints, glb), (Rule::DuplicateTexture, png)]);
+
+    // Written only when set, as `cook: Some(Mobile)`, and read back.
+    let meta = AssetMeta {
+        budget: Some(Budget { role: None, waive: vec![on(Rule::Joints, Cook::Mobile)] }),
+        ..AssetMeta::new(meta::new_id().unwrap(), ImportSettings::Gltf(MeshSettings::default()))
+    };
+    let text = sapphire_serialize::to_ron(&meta).unwrap();
+    assert!(text.contains("cook: Some(Mobile)"), "{text}");
+    assert_eq!(sapphire_serialize::from_ron::<AssetMeta>(&text).unwrap(), meta);
+}
+
 /// A sidecar's `budget` is the check's alone: it's written only when set, reads back as it was written, and
-/// changes no cache key and no cooked byte, so committed sidecars key as they did before it existed.
+/// changes no cook key and no cooked byte, so committed sidecars key as they did before it existed.
 #[test]
 fn a_budget_changes_no_key_and_no_cooked_byte() {
     let id = meta::new_id().unwrap();
@@ -306,7 +365,7 @@ fn a_budget_changes_no_key_and_no_cooked_byte() {
     assert!(!sapphire_serialize::to_ron(&plain).unwrap().contains("budget"));
     let budget = Budget {
         role: Some(Role::Enemy),
-        waive: vec![Waiver { rule: Rule::Slots, why: "a reason".to_owned() }],
+        waive: vec![Waiver { rule: Rule::Slots, cook: None, why: "a reason".to_owned() }],
     };
     let with = AssetMeta { budget: Some(budget), ..plain.clone() };
     let text = sapphire_serialize::to_ron(&with).unwrap();
@@ -331,7 +390,9 @@ fn a_budget_changes_no_key_and_no_cooked_byte() {
         report.assets.iter().map(|asset| (asset.output.clone(), asset.key, asset.output_hash)).collect()
     };
     let first = cook();
-    let reason = |rule| Some(Budget { role: None, waive: vec![Waiver { rule, why: "a reason".to_owned() }] });
+    let reason = |rule| {
+        Some(Budget { role: None, waive: vec![Waiver { rule, cook: None, why: "a reason".to_owned() }] })
+    };
     tree.set_budget("a/a.glb", Some(Budget { role: Some(Role::Hero), waive: Vec::new() }));
     tree.set_budget("a/a.material.ron", reason(Rule::StaleWaiver));
     tree.set_budget("a/palette.png", reason(Rule::DuplicateTexture));

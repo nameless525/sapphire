@@ -23,6 +23,7 @@ use crate::edits::{EntryRef, Track};
 use crate::game::GameTarget;
 use crate::handles::{Axes, GizmoMode, Handle};
 use crate::screen::{Aspect, StandIn};
+use crate::sequence::{KeyRef, Lane};
 use crate::shell::Pane;
 
 /// What a script's `version` must say.
@@ -215,6 +216,14 @@ pub enum Command {
     PlayTimeline,
     /// Pauses the current timeline.
     PauseTimeline,
+    /// Moves a key of the current timeline to start at a frame of 60 a second (M6 T16a): its time alone, or a
+    /// span's two ends together. Refused onto or past a neighbour in its lane ([`crate::sequence`]).
+    MoveKey { key: KeyRef, to: u32 },
+    /// Adds a key to a lane of the current timeline at frame `at`, the pane's playhead: the value the lane holds
+    /// there, or for a lane of named things (a face's preset, a cue, a play's row, a subtitle's Fluent key), `name`.
+    AddKey { lane: Lane, name: Option<String>, at: u32 },
+    /// Removes a key of the current timeline: from the focus lane, its camera key's focus.
+    RemoveKey(KeyRef),
     /// Previews the current screen at an aspect.
     Aspect(Aspect),
     /// Previews the current screen in a language: `en` or `ja`.
@@ -347,6 +356,9 @@ impl Command {
             Self::Scrub(_) => "Scrub",
             Self::PlayTimeline => "PlayTimeline",
             Self::PauseTimeline => "PauseTimeline",
+            Self::MoveKey { .. } => "MoveKey",
+            Self::AddKey { .. } => "AddKey",
+            Self::RemoveKey(_) => "RemoveKey",
             Self::Aspect(_) => "Aspect",
             Self::Language(_) => "Language",
             Self::StandIn { .. } => "StandIn",
@@ -478,6 +490,10 @@ const COMMANDS: &[Registered] = registry! {
     "Scrub", "Scrub(0)", None, "Puts the timeline's playhead at a frame";
     "PlayTimeline", "PlayTimeline", None, "Plays the timeline";
     "PauseTimeline", "PauseTimeline", None, "Pauses the timeline";
+    "MoveKey", "MoveKey(key: (lane: Camera, index: 0), to: 0)", None,
+        "Moves a key of the timeline to a frame, as a drag in the sequencer does";
+    "AddKey", "AddKey(lane: Camera, name: None, at: 0)", None, "Adds a key to a lane of the timeline at a frame";
+    "RemoveKey", "RemoveKey((lane: Camera, index: 0))", None, "Removes a key of the timeline";
     "Aspect", "Aspect(Wide)", None, "Previews the screen at an aspect";
     "Language", r#"Language("en")"#, None, "Previews the screen in a language";
     "StandIn", r#"StandIn(path: "", value: Number(0.0))"#, None, "Has a screen's path read a value";

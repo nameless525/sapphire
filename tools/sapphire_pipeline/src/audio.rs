@@ -805,6 +805,52 @@ mod tests {
         assert_eq!((lines.locale.as_str(), lines.lines[0].cue), ("ja", cue));
     }
 
+    /// What two languages' lines share, and a sound a voice cue and a plain cue share, stay in `audio.spack`
+    /// (fixed after M6 U11's review, which found the split untested); what one language's lines alone reach goes
+    /// in its pack.
+    #[test]
+    fn shared_sounds_and_cues_stay_in_the_audio_pack() {
+        let tree = Tree::new("audio_voice_split");
+        let sounds = ["shared.ogg", "en_only.ogg", "ja_only.ogg"];
+        for sound in sounds {
+            fs::write(tree.content().join(sound), stem_ogg()).unwrap();
+        }
+        tree.cook().unwrap();
+        for sound in sounds {
+            set_mouth(&tree, sound, true);
+        }
+        let [shared, en_only, ja_only] = sounds.map(|sound| tree.id_of(sound));
+        let voiced = |sound: AssetId| cue_document(&[sound]).replace("bus: Ui", "bus: Voice");
+        fs::write(tree.content().join("both.cue.ron"), voiced(shared)).unwrap();
+        fs::write(tree.content().join("en.cue.ron"), voiced(en_only)).unwrap();
+        fs::write(tree.content().join("ja.cue.ron"), voiced(ja_only)).unwrap();
+        // A plain cue playing the Japanese line's sound: the sound can't leave for `vo_ja`.
+        fs::write(tree.content().join("bell.cue.ron"), cue_document(&[ja_only])).unwrap();
+        tree.cook().unwrap();
+        let [both, en, ja, bell] =
+            ["both", "en", "ja", "bell"].map(|cue| tree.id_of(&format!("{cue}.cue.ron")));
+        let lines = |locale: &str, own: AssetId| {
+            let text = voice_document("own", own).replace("locale: \"ja\"", &format!("locale: \"{locale}\""));
+            text.replace("lines: [", &format!("lines: [(key: \"both\", cue: \"{both}\"), "))
+        };
+        fs::write(tree.content().join("en.voice.ron"), lines("en", en)).unwrap();
+        fs::write(tree.content().join("ja.voice.ron"), lines("ja", ja)).unwrap();
+        let report = tree.cook().unwrap();
+
+        let packs = tree.dir.path().join("packs");
+        pack_cooked(&report, &packs, None).unwrap();
+        let ids = |name: &str| -> BTreeSet<AssetId> {
+            let bytes = read_aligned(&packs.join(format!("{name}.spack")));
+            let reader = sapphire_assets::pack::PackReader::new(&bytes).unwrap();
+            reader.toc().entries().iter().map(|entry| entry.id).collect()
+        };
+        let (en_lines, ja_lines) = (tree.id_of("en.voice.ron"), tree.id_of("ja.voice.ron"));
+        let source = tree.id_of("source.ogg");
+        assert_eq!(ids(pack::AUDIO), BTreeSet::from([source, shared, both, ja_only, bell]));
+        assert_eq!(ids("vo_en"), BTreeSet::from([en_lines, en, en_only]));
+        assert_eq!(ids("vo_ja"), BTreeSet::from([ja_lines, ja]));
+    }
+
     #[test]
     fn a_stem_that_isnt_whole_bars_fails_the_cook_naming_it() {
         let (tree, sound, _) = music_tree("audio_stem_length");

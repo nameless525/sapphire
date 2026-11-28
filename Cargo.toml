@@ -351,8 +351,6 @@ egui_tiles = "0.18.0"
 sapphire_document = { path = "tools/sapphire_document" }
 sapphire_testkit = { path = "tools/sapphire_testkit" }
 sapphire_pipeline = { path = "tools/sapphire_pipeline" }
-# WAV masters and their Ogg encode, which the pipeline's voice-over tool shares (M6 U11).
-sapphire_soundgen = { path = "tools/sapphire_soundgen" }
 # FLIP image comparison for golden images (NVIDIA's FLIP via C++), as wgpu's own tests use.
 nv-flip = "0.1.2"
 gltf = { version = "1.4.1", default-features = false }

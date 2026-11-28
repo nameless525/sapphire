@@ -60,6 +60,10 @@ pub enum WavError {
     Format { format: u16, bits: u16 },
     #[error("has no samples")]
     Empty,
+    /// A float master's sample that is NaN or infinite, which the encoder would turn into noise or silence
+    /// (fixed after M6 U11's review): `sample` counts from 0.
+    #[error("has {value} at sample {sample}: a float master's samples are finite")]
+    NotFinite { sample: usize, value: &'static str },
 }
 
 /// Reads a mono master.
@@ -121,6 +125,16 @@ pub fn read(bytes: &[u8]) -> Result<Master, WavError> {
     if samples.is_empty() {
         return Err(WavError::Empty);
     }
+    if let Some((sample, value)) = samples.iter().enumerate().find(|(_, value)| !value.is_finite()) {
+        let value = if value.is_nan() {
+            "NaN"
+        } else if *value > 0.0 {
+            "infinity"
+        } else {
+            "minus infinity"
+        };
+        return Err(WavError::NotFinite { sample, value });
+    }
     Ok(Master { sample_rate, format: sample_format, samples })
 }
 
@@ -180,5 +194,21 @@ mod tests {
         let mut no_data = wav(PCM, 16, 1, 48_000, &[]);
         no_data.truncate(no_data.len() - 8);
         assert_eq!(read(&no_data), Err(WavError::Missing("data")));
+    }
+
+    /// A float master's NaN or infinity is refused by its sample (fixed after M6 U11's review); the voice-over
+    /// tool's error names the file before it.
+    #[test]
+    fn a_float_masters_nan_or_infinity_is_refused_by_its_sample() {
+        let floats = |samples: &[f32]| {
+            let data: Vec<u8> = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+            read(&wav(FLOAT, 32, 1, 48_000, &data))
+        };
+        assert_eq!(floats(&[0.0, 0.5, f32::NAN]), Err(WavError::NotFinite { sample: 2, value: "NaN" }));
+        assert_eq!(floats(&[f32::INFINITY]), Err(WavError::NotFinite { sample: 0, value: "infinity" }));
+        let minus = Err(WavError::NotFinite { sample: 1, value: "minus infinity" });
+        assert_eq!(floats(&[0.1, f32::NEG_INFINITY]), minus);
+        let error = floats(&[0.0, f32::NAN]).unwrap_err().to_string();
+        assert_eq!(error, "has NaN at sample 1: a float master's samples are finite");
     }
 }

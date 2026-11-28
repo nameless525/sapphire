@@ -210,7 +210,7 @@ fn cooked_in(folder: &Path, model: &Path, cook: Cook) -> (u32, u32, usize) {
 /// spec §3.4's rows (M5 C12b): Wren and Aster within 5% of the hero row at desktop LOD0 (76,000 to 84,000)
 /// and of its 30,000 on mobile (Wren the one over both, by 4.8%), at most 200 joints and 6 materials (4 on
 /// mobile), 2K maps that store 1K on mobile by their cap; the Ember Lancer at 8,000 with 1K maps and no cap.
-/// What a kind has against mobile's 140 joints is printed, as the spec's §3.4 says it, and not held.
+/// Mobile keeps at most 140 joints: Aster's sidecar cuts her 200 to that (M6 C8), and Wren's 121 are within it.
 #[test]
 fn every_budget_kind_cooks_at_its_row() {
     let dir = TempDir::new("kinds_budget_rows");
@@ -248,7 +248,7 @@ fn every_budget_kind_cooks_at_its_row() {
                 // Her mobile LOD0 is the same 4.8% over the mobile row (31,428 of 30,000); Aster's is on it.
                 let mobile_row = if figure.name == "wren" { 31_500 } else { 30_000 };
                 assert!(mobile.0 <= mobile_row, "{row}");
-                assert!(desktop.1 <= 200 && mobile.1 == desktop.1, "{row}");
+                assert!(desktop.1 <= 200 && mobile.1 == desktop.1.min(140), "{row}");
                 assert!(desktop.2 <= 6 && mobile.2 <= 4, "{row}");
                 assert!(
                     !maps.is_empty() && maps.iter().all(|&map| map == ((2048, 2048), mobile_cap)),

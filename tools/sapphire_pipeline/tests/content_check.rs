@@ -44,8 +44,8 @@ fn the_content_passes_its_check() {
         "{report}"
     );
 
-    // What's waived, and only that: the look-dev character's 13 slots and its 155 joints on the phones, and
-    // Aster's 200 there, until M6 C8 cuts mobile skeletons.
+    // What's waived, and only that: the look-dev character's 13 slots. Its 155 joints and Aster's 200 meet
+    // the phones' 140, which their sidecars cut the mobile cook's skeletons to (M6 C8).
     let waived: Vec<(&str, Rule, Option<Cook>)> = report
         .findings
         .iter()
@@ -55,8 +55,6 @@ fn the_content_passes_its_check() {
     assert_eq!(
         waived,
         [
-            ("combat/hero/hero.vrm", Rule::Joints, Some(Cook::Mobile)),
-            ("lookdev/character/character.vrm", Rule::Joints, Some(Cook::Mobile)),
             ("lookdev/character/character.vrm", Rule::Slots, Some(Cook::Desktop)),
             ("lookdev/character/character.vrm", Rule::Slots, Some(Cook::Mobile)),
         ],

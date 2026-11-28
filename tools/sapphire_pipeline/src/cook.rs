@@ -4824,11 +4824,21 @@ fn cook_mesh_with_bytes(
         Some(ImportSettings::Assembly(_)) => ImportSettings::Assembly(settings.clone()),
         _ => return Err(CookError::UnsupportedSource { path: source.to_owned() }),
     };
+    cook_mesh_as(source, &importer, cook)
+}
+
+/// [`cook_mesh`] by a whole importer's settings, a VRM's joint cap (M6 C8) included.
+pub(crate) fn cook_mesh_as(
+    source: &Path,
+    importer: &ImportSettings,
+    cook: Cook,
+) -> Result<(Mesh, sapphire_serialize::cooked::AlignedVec), CookError> {
+    let settings = importer.mesh().ok_or_else(|| CookError::UnsupportedSource { path: source.to_owned() })?;
     if merge::merges(settings, cook) {
         return Err(merge_error(source)(MergeError::NeedsTree));
     }
     let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
-    let mesh = guarded(source, || import_mesh(source, &bytes, &importer, cook, None, None, None))?;
+    let mesh = guarded(source, || import_mesh(source, &bytes, importer, cook, None, None, None))?;
     let cooked = cooked_bytes(source, &mesh)?;
     Ok((mesh, cooked))
 }

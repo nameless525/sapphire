@@ -399,8 +399,13 @@ fn a_cut_tail_swings_as_it_did_and_a_second_round_moves_only_its_own_chains() {
                 map: None,
             };
             let clip = crate::clip::cook(&sampled, &target, &ClipOptions::default()).to_cooked().unwrap();
-            // The clearance fits the mesh as its cook writes it, which a later change makes by its sidecar.
-            let cooked: Option<sapphire_assets::mesh::Mesh> = None;
+            let cooked = clearance.then(|| {
+                let (_, _, path) = shipped(relative, cap, Cook::Mobile);
+                let sidecar = meta::read(&meta::sidecar_path(&path)).unwrap();
+                let ImportSettings::Vrm(settings) = sidecar.importer else { panic!("a VRM") };
+                let importer = ImportSettings::Vrm(VrmSettings { joints: cap, ..settings });
+                cook::cook_mesh_as(&path, &importer, Cook::Mobile).unwrap().0
+            });
             let posed = Posed::new(&mesh, &rig, &motion, cooked.as_ref());
             runs.push((mesh, posed, clip));
         }

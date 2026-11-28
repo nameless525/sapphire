@@ -2,11 +2,12 @@
 //! scripted session (locomotion with starts, stops and turns, jumps and every landing, a combo with
 //! hitstop and cancels, reactions, a cut, a defeat and a replacement), on presentation's maths and the
 //! fixed step's, with a debug snapshot taken every frame and `speed` overridden and let go along the way
-//! (M6 A9). Installs `CountingAllocator` as this test binary's global allocator.
+//! (M6 A9), and the eyes (M6 A22) jumping and blinking, their share turned down and back. Installs `CountingAllocator` as this test binary's global allocator.
 
 use std::alloc::System;
 use std::sync::Arc;
 
+use sapphire_assets::graph::Eyes;
 use sapphire_assets::graph::v2::program::Target;
 use sapphire_body_pose as body;
 use sapphire_body_pose::graph::{FixedGraphHistory, GraphStepStamp};
@@ -25,7 +26,8 @@ static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 fn the_heroines_graph_plays_a_session_with_no_allocation() {
     let (_, text) =
         humanoid::frozen().into_iter().find(|(name, _)| name == "heroine").expect("the heroine is frozen");
-    let graph = humanoid::read(&text);
+    let mut graph = humanoid::read(&text);
+    graph.eyes = Some(Eyes { reach: [30.0, 15.0], hold: [20, 40], speed: 6.0, blink_chance: 1.0 });
     let fixture = humanoid::Humanoid::new(graph.clips.iter().map(|clip| clip.id));
     let presentation = fixture.bind(&graph.compile().expect("it compiles"));
     let simulation =
@@ -46,6 +48,7 @@ fn the_heroines_graph_plays_a_session_with_no_allocation() {
             if step.replace {
                 player.replace(Arc::clone(&presentation));
             }
+            player.set_eyes_share((frame % 5) as f32 / 4.0);
             if let Some(released) = step.gather {
                 player.request_grounded_gather(released);
             }

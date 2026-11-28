@@ -18,6 +18,9 @@
 
 use std::f32::consts::PI;
 
+use sapphire_assets::rig::{
+    ArchivedCharacterRig, ArchivedLookAtRange, ExpressionPreset, HumanBone, LookAtKind,
+};
 use sapphire_math::{Quat, Vec2, Vec3};
 
 use crate::ik::solve::{SolvePose, weighted};
@@ -97,6 +100,80 @@ pub struct EyeRig {
     pub down: RangeMap,
     pub up: RangeMap,
     pub drive: EyeDrive,
+}
+
+impl EyeRig {
+    /// The eyes of `rig`'s look-at data, if it has any it can move: `eye` finds an eye bone's joint and
+    /// its parent's rest rotation in the model's space, for a look-at that turns bones.
+    #[must_use]
+    pub fn from_cooked(
+        rig: &ArchivedCharacterRig,
+        eye: impl Fn(HumanBone) -> Option<(u16, Quat)>,
+    ) -> Option<Self> {
+        let look = rig.look_at.as_ref()?;
+        let range = |range: &ArchivedLookAtRange, scale: f32| RangeMap {
+            input_max: range.input_max_degrees.to_native().to_radians(),
+            output: range.output_scale.to_native() * scale,
+        };
+        let drive = match look.kind {
+            LookAtKind::Bone => {
+                let (left, right) = (eye(HumanBone::LeftEye), eye(HumanBone::RightEye));
+                if left.is_none() && right.is_none() {
+                    return None;
+                }
+                EyeDrive::Bones { left, right }
+            }
+            LookAtKind::Expression => {
+                let targets = |preset: ExpressionPreset| -> Vec<(u32, f32)> {
+                    rig.expressions
+                        .iter()
+                        .find(|expression| expression.preset.as_ref() == Some(&preset))
+                        .map_or_else(Vec::new, |expression| {
+                            expression
+                                .morph_targets
+                                .iter()
+                                .map(|morph| (morph.target.to_native(), morph.weight.to_native()))
+                                .collect()
+                        })
+                };
+                EyeDrive::Expressions {
+                    up: targets(ExpressionPreset::LookUp),
+                    down: targets(ExpressionPreset::LookDown),
+                    left: targets(ExpressionPreset::LookLeft),
+                    right: targets(ExpressionPreset::LookRight),
+                }
+            }
+        };
+        // Degrees for a bone, and a plain weight for an expression.
+        let scale = if look.kind == LookAtKind::Bone { 1f32.to_radians() } else { 1.0 };
+        Some(Self {
+            inner: range(&look.horizontal_inner, scale),
+            outer: range(&look.horizontal_outer, scale),
+            down: range(&look.vertical_down, scale),
+            up: range(&look.vertical_up, scale),
+            drive,
+        })
+    }
+
+    /// A gaze `yaw` toward the character's left and `pitch` up, radians from the head's forward, as the
+    /// range maps take it: each eye's yaw, left then right, and their lift, in radians of turn for eye
+    /// bones and as weights for expressions.
+    #[must_use]
+    pub fn response(&self, yaw: f32, pitch: f32) -> [f32; 3] {
+        // A positive yaw is toward the character's left, which is outward for its left eye.
+        let (left_yaw, right_yaw) = if yaw >= 0.0 {
+            (self.outer.map(yaw), self.inner.map(yaw))
+        } else {
+            (-self.inner.map(-yaw), -self.outer.map(-yaw))
+        };
+        let lift = if pitch >= 0.0 { self.up.map(pitch) } else { -self.down.map(-pitch) };
+        [left_yaw, right_yaw, lift]
+    }
+
+    /// The turn an eye bone takes for its yaw and the eyes' lift, in rest model space.
+    pub(crate) fn bone_turn(yaw: f32, lift: f32, math: PoseMath) -> Quat {
+        math.multiply(math.rotation_y(yaw), math.rotation_x(-lift))
+    }
 }
 
 /// The joints a look-at turns.
@@ -301,19 +378,12 @@ impl LookAt {
                 )
             };
         }
-        let (yaw, pitch) = (self.eyes.x, self.eyes.y);
-        // A positive yaw is toward the character's left, which is outward for its left eye.
-        let (left_yaw, right_yaw) = if yaw >= 0.0 {
-            (eyes.outer.map(yaw), eyes.inner.map(yaw))
-        } else {
-            (-eyes.inner.map(-yaw), -eyes.outer.map(-yaw))
-        };
-        let lift = if pitch >= 0.0 { eyes.up.map(pitch) } else { -eyes.down.map(-pitch) };
+        let [left_yaw, right_yaw, lift] = eyes.response(self.eyes.x, self.eyes.y);
         match &eyes.drive {
             EyeDrive::Bones { left, right } => {
                 for (eye, yaw) in [(left, left_yaw), (right, right_yaw)] {
                     if let Some((joint, parent_rest)) = eye {
-                        let turn = math.multiply(math.rotation_y(yaw), math.rotation_x(-lift));
+                        let turn = EyeRig::bone_turn(yaw, lift, math);
                         pose.turn_at_rest(usize::from(*joint), *parent_rest, weighted(turn, self.fade, math));
                     }
                 }

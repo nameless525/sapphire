@@ -674,6 +674,8 @@ impl GraphDriver {
             }
         }
         let support = self.ik.as_ref().and_then(IkDriver::ground_support);
+        // What the face's look overrides leave of eyes the rig turns by bone (M6 A22).
+        self.player.set_eyes_share(self.face.as_ref().map_or(1.0, FaceLayer::look_kept));
         let evaluated = self.player.evaluate_with_support(input, clips, clips.version(), receiving, support);
         let teleports = self.player.teleports();
         let jumped = teleports != self.teleports;

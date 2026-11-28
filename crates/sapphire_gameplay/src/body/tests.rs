@@ -127,6 +127,42 @@ fn fixed_body_refuses_a_program_compiled_for_presentation() {
     ));
 }
 
+/// A graph's eyes are presentation's alone (M6 A22): a body binds a graph with eyes though its rig has
+/// no look-at, named or cooked, and they leave its fingerprint, which a change to what the fixed step
+/// plays still moves.
+#[test]
+fn the_eyes_bind_nothing_in_the_fixed_step_and_leave_the_fingerprint() {
+    let with = |change: &dyn Fn(&mut AnimGraph)| {
+        let mut graph = test_graph();
+        change(&mut graph);
+        let mut assets = test_assets();
+        assets.graph.graph =
+            CpuResident::from_cooked(graph.compile_for(Target::Simulation).unwrap().to_cooked().unwrap())
+                .unwrap();
+        assets
+    };
+    let eyes = |graph: &mut AnimGraph| {
+        graph.eyes = Some(sapphire_assets::graph::Eyes {
+            reach: [12.0, 6.0],
+            hold: [30, 150],
+            speed: 6.0,
+            blink_chance: 0.0,
+        });
+    };
+    let plain = BodyProfile::bind(with(&|_| {}), test_options(1.0)).unwrap();
+    let eyed = BodyProfile::bind(with(&eyes), test_options(1.0)).expect("no look-at, and it binds");
+    assert_eq!(plain.fingerprint(), eyed.fingerprint());
+    let options = BodyProfileOptions { grounded_gather: false, ..test_options(0.8) };
+    BodyProfile::bind_named(with(&eyes).graph, &[(HumanBone::Hips, 0)], Vec3::Y, options)
+        .expect("a named body binds a graph with eyes");
+    let held = |graph: &mut AnimGraph| {
+        graph.machines[0].states[0].plays =
+            sapphire_assets::graph::v2::Motion::Clip { clip: "idle".to_owned(), looping: false, sync: None };
+    };
+    let held = BodyProfile::bind(with(&held), test_options(1.0)).unwrap();
+    assert_ne!(plain.fingerprint(), held.fingerprint(), "a state that plays otherwise moves it");
+}
+
 /// A body with legs and a head, playing the same idle as [`test_assets`]: what the feet and the look act on.
 fn humanoid_assets() -> BodyGraphAssets {
     const JOINTS: [(&str, Option<u16>, [f32; 3]); 9] = [

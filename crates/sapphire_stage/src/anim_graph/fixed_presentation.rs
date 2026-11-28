@@ -20,6 +20,8 @@ pub struct FixedBodyRenderer {
     character_versions: Option<(u32, u32, u32)>,
     ready: bool,
     last_pose: Option<((u64, u64, f32), f32)>,
+    /// What the eyes showed over the last published pose (`GraphPlayer::published_eyes`).
+    last_eyes: Option<[u32; 3]>,
     impact_release: Option<(f32, f64)>,
     last_generation: Option<u32>,
     reset_springs: bool,
@@ -86,6 +88,7 @@ impl FixedBodyRenderer {
             character_versions,
             ready: false,
             last_pose: None,
+            last_eyes: None,
             impact_release: None,
             last_generation: None,
             reset_springs: false,
@@ -125,6 +128,7 @@ impl FixedBodyRenderer {
         self.ready = false;
         self.impact_release = None;
         self.last_pose = None;
+        self.last_eyes = None;
         self.last_generation = None;
         self.reset_springs = true;
     }
@@ -162,15 +166,20 @@ impl FixedBodyRenderer {
         let active = driver.springs_run(view, &RenderTransform(Mat4::from(root)), figure, key);
         let retained = self.impact_release.map_or(0.0, |(retained, _)| retained);
         let key = self.sample.pose_key().map(|key| (key, retained));
-        let pose_moved = key != self.last_pose;
+        // The eyes go over the published body on its owner's clock (M6 A22), as the face does.
+        let body_now = body_ticks(span);
+        let eyes = driver.player.published_eyes(body_now);
+        let pose_moved = key != self.last_pose || eyes != self.last_eyes;
         if pose_moved {
+            assert!(self.sample.publish_to(driver.player.pose_mut()), "fixed body rig binding changed");
+            driver.player.turn_published_eyes(body_now);
             let pose = driver.player.pose_mut();
-            assert!(self.sample.publish_to(pose), "fixed body rig binding changed");
             *figure = driver.joints.moving(pose);
             rig.head = figure.head;
         }
         self.last_pose = key;
-        let ticks = self.impact_release.map_or_else(|| body_ticks(span), |(_, ticks)| ticks);
+        self.last_eyes = eyes;
+        let ticks = self.impact_release.map_or_else(|| body_now, |(_, ticks)| ticks);
         let frame = SpringFrame {
             world_from_model: Affine3A::from_mat4(Mat4::from(root)),
             ticks,

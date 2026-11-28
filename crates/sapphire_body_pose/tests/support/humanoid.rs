@@ -17,7 +17,7 @@ use sapphire_assets::graph::v2::program::GraphProgram;
 use sapphire_assets::graph::{clip_id, v2};
 use sapphire_assets::rig::{
     ArchivedCharacterRig, CharacterRig, Expression, ExpressionOverride, ExpressionPreset, HumanBone,
-    HumanoidJoint, MorphTargetWeight,
+    HumanoidJoint, LookAt, LookAtKind, LookAtRange, MorphTargetWeight,
 };
 use sapphire_assets::skeleton::{ArchivedSkeleton, Joint, JointTransform, Skeleton};
 use sapphire_core::Name;
@@ -78,6 +78,8 @@ pub fn humanoid_joints() -> Vec<Joint> {
         .collect()
 }
 
+/// The humanoid's rig: every bone, a blink, and a look-at that turns its eye bones as the heroine's does,
+/// 10° of eye at 90° of gaze, so a shipped graph's eyes bind.
 pub fn humanoid_rig() -> CharacterRig {
     let mut humanoid: Vec<HumanoidJoint> = HumanBone::ALL
         .iter()
@@ -100,9 +102,20 @@ pub fn humanoid_rig() -> CharacterRig {
             material_colors: Vec::new(),
             texture_transforms: Vec::new(),
         }],
+        look_at: Some(LookAt {
+            offset_from_head: [0.0, 0.06, 0.08],
+            kind: LookAtKind::Bone,
+            horizontal_inner: HEROINE_RANGE,
+            horizontal_outer: HEROINE_RANGE,
+            vertical_down: HEROINE_RANGE,
+            vertical_up: HEROINE_RANGE,
+        }),
         ..CharacterRig::default()
     }
 }
+
+/// The heroine's range maps, each way.
+pub const HEROINE_RANGE: LookAtRange = LookAtRange { input_max_degrees: 90.0, output_scale: 10.0 };
 
 /// A clip of its own for `id`: three joints turning on keys its bytes choose, and on some a morph.
 pub fn synthetic(id: AssetId) -> Clip {

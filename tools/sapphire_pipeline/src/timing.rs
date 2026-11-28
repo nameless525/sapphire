@@ -223,7 +223,7 @@ impl fmt::Display for Slowest<'_> {
                 seconds(time.key).trim_start()
             )
         };
-        writeln!(f, "  slowest assets, key and cook:")?;
+        writeln!(f, "  slowest assets, key and cook, on their threads (waits included):")?;
         for index in assets.into_iter().take(count) {
             line(f, index)?;
         }
@@ -343,7 +343,7 @@ desktop: 3.900 s in all, 4 asset(s)
   slowest stages, their assets' time on threads:
      2.000 s  vrm -> smesh (1 asset(s))
      0.712 s  image -> ktx2 (2 asset(s))
-  slowest assets, key and cook:
+  slowest assets, key and cook, on their threads (waits included):
      2.000 s  hero/hero.vrm -> hero/hero.smesh (cooked; key 0.015 s)
      0.705 s  hero/albedo.png -> hero/albedo.ktx2 (cooked; key 0.005 s)
 ";
@@ -354,8 +354,12 @@ desktop: 3.900 s in all, 4 asset(s)
         let text = all.to_string();
         let stages = text.split("slowest stages").nth(1).unwrap();
         assert!(stages.contains("material -> smat (1 asset(s))"));
-        let assets: Vec<&str> =
-            text.split("slowest assets, key and cook:\n").nth(1).unwrap().lines().collect();
+        let assets: Vec<&str> = text
+            .split("slowest assets, key and cook, on their threads (waits included):\n")
+            .nth(1)
+            .unwrap()
+            .lines()
+            .collect();
         assert_eq!(assets.len(), 4);
         assert!(assets[2].ends_with("hero/normal.png -> hero/normal.ktx2 (from cache; key 0.005 s)"));
         assert!(assets[3].ends_with("(up to date; key 0.001 s)"));

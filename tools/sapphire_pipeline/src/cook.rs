@@ -6147,6 +6147,50 @@ mod tests {
         }
     }
 
+    /// spec §3.4's one-hero row cooked a copy of `content/` (M6 C12), and a merge group's key held its
+    /// members' paths, so the copy recooked every merged character (fixed after its review, M6 backfill):
+    /// Aster, her merged body with her, copied to another root, cooks from the cache her first root warmed,
+    /// on each cook.
+    #[test]
+    fn a_merged_character_copied_to_another_root_cooks_from_the_cache() {
+        let dir = TempDir::new("cook_merged_copy");
+        let hero = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat/hero");
+        let (first, elsewhere) =
+            (dir.path().join("first/content"), dir.path().join("elsewhere/checkout/content"));
+        fs::create_dir_all(first.join("hero")).unwrap();
+        for entry in fs::read_dir(&hero).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+            // Her model and what draws it: her moves and graphs name clips outside the folder.
+            if name.starts_with("hero.vrm") || name.starts_with("hero_") {
+                fs::copy(&path, first.join("hero").join(&name)).unwrap();
+            }
+        }
+        copy_tree(&first, &elsewhere);
+        let cache = dir.path().join("cache");
+        let aster: AssetId = "2533d8d7-9400-4972-88f3-f99ff9473913".parse().unwrap();
+        let body = merge::material_id(aster, "body");
+        for cook in Cook::ALL {
+            let options = CookOptions { cook, cache: Some(&cache), locked: true, editor: false };
+            let loose = |root: &str| dir.path().join(root).join(cook.name());
+            let report = cook_dir(&first, &loose("first/loose"), &options).unwrap();
+            assert!(report.assets.iter().any(|asset| asset.id == body), "{cook}: her merged body cooks");
+
+            let again = cook_dir(&elsewhere, &loose("elsewhere/loose"), &options).unwrap();
+            let cooked: Vec<&Path> = again
+                .assets
+                .iter()
+                .filter(|asset| asset.status != CookStatus::Cached)
+                .map(|asset| asset.output.as_path())
+                .collect();
+            assert!(
+                cooked.is_empty(),
+                "{cook}: another root's cook takes every asset from the cache: {cooked:?}"
+            );
+            assert_eq!(again.assets.len(), report.assets.len(), "{cook}");
+        }
+    }
+
     /// Every cook's asset index (M6 C2) lands beside its audit, byte for byte on a second cook and from a copy
     /// of the tree at another root, and says what uses a texture all the way up to the mesh that draws it.
     #[test]

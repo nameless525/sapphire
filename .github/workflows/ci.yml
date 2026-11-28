@@ -133,8 +133,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Windows from a cold cache (none from `main` to restore) ran out of 60 minutes: 49 to build and test,
     # 6 for audio, then the output-path check cut off 4 minutes in (#293, 2026-11-12). With a cache the
-    # whole job takes about 32 (#292).
-    timeout-minutes: 90
+    # whole job takes about 32 (#292). It ran out of 90 twice on a branch whose lock file gained a dependency
+    # of `sapphire_zone` (#479, 2026-11-27): the cache matched only in part, so the build took 51 minutes and
+    # the tests were cut off 38 minutes in, where `main`'s own run built in 24 and tested in 35.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -435,7 +437,8 @@ jobs:
   # The nature zone's walks (M6 W1) join it: its 7,980-frame walk at the desktop tiers at dusk, in its rain, under
   # its probe grid and reflection probes. They take about 2.5 times the district's here (at 58b959449, 7.6 minutes
   # on Desktop-Low and past the district's 12-minute limit on Desktop-High), so each has a limit of its own, and
-  # a district walk that hangs still fails in 12 minutes.
+  # a district walk that hangs still fails in 12 minutes. Desktop-High's job takes 17.5 to 19 minutes on most
+  # runners but its walk passed 25 on one (#479, 2026-11-27), so it has 30 and its job 40.
   scale-lane:
     name: Scale lane (vulkan-lavapipe, ${{ matrix.walk }})
     needs: golden-build-linux
@@ -446,8 +449,8 @@ jobs:
                nature-desktop-low-dusk]
         include:
           - walk: nature-desktop-high-dusk
-            walk-seconds: 1500
-            job-minutes: 35
+            walk-seconds: 1800
+            job-minutes: 40
           - walk: nature-desktop-low-dusk
             walk-seconds: 1500
             job-minutes: 35

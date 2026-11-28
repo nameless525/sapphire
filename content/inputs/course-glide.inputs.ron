@@ -1,0 +1,43 @@
+// The traversal course's glide drop glided (M6 A17): from the start the player runs to the climbing wall as
+// `course-climb` does, grabs it, climbs straight up and tops out with a mantle onto its top, and stands. She runs
+// north across the top and off its north edge over the pool and, falling, presses jump, which opens a glide. She
+// steers west across the pool, drops the glide with a press, falls a little and opens another, which the stick
+// turns north over the pool's west side, down onto the dry ground beyond it, where she lands and stands. Legs
+// fitted by running them: the replay's checksums say where it went.
+(
+    type: "sapphire::gameplay::InputsDocument",
+    version: 1,
+    data: (
+        about: "the traversal course's glide drop: the climbing wall climbed, a run off its top, a glide opened in the fall, steered west, dropped, opened again and landed on the ground past the pool (M6 A17)",
+        ticks: 1283,
+        tracks: [
+            (
+                stick: Legs([
+                    // East into the gap between the tallest ledge and the low wall.
+                    (stick: (127, 0), ticks: 68),
+                    // North past the ledges, to just short of the walls.
+                    (stick: (0, -127), ticks: 375),
+                    // West in front of the climbing wall's face.
+                    (stick: (-127, 0), ticks: 100),
+                    // North into the face, and a press there: a grab.
+                    (stick: (0, -127), ticks: 40),
+                    (stick: (0, 0), ticks: 20, jump: 5),
+                    // Up the face to its top, and over it by a mantle.
+                    (stick: (0, -127), ticks: 330),
+                    // Standing on the top.
+                    (stick: (0, 0), ticks: 40),
+                    // North across the top and off its edge, falling.
+                    (stick: (0, -127), ticks: 53),
+                    // A press in the fall opens a glide, and the stick turns it west across the pool.
+                    (stick: (-127, 0), ticks: 90, jump: 0),
+                    // A press drops it, and she falls.
+                    (stick: (-127, 0), ticks: 12, jump: 0),
+                    // A press opens another, turned north over the pool's west side and down onto the ground past it.
+                    (stick: (0, -127), ticks: 105, jump: 0),
+                    // Standing.
+                    (stick: (0, 0), ticks: 50),
+                ]),
+            ),
+        ],
+    ),
+)

@@ -238,6 +238,42 @@ pub struct Blink {
     pub open: u32,
 }
 
+/// The widest a graph's eyes may wander from rest, in degrees of gaze either way.
+pub const MAX_GAZE_DEGREES: f32 = 45.0;
+
+/// Eyes that move on their own (M6 A22): the gaze holds a while, then jumps (a saccade) to somewhere else
+/// within reach of the eyes' rest direction, through the rig's look-at, on the owner's clock, so hitstop
+/// holds them as it does the blink. Presentation only: the fixed step never turns them.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Eyes {
+    /// How far the gaze wanders from rest, `[yaw, pitch]`, in degrees of gaze either way, as the rig's
+    /// look-at reads a gaze: its range maps say how far that turns the eyes, or weighs their expressions.
+    /// A gaze rests near the middle more often than out at the edge.
+    pub reach: [f32; 2],
+    /// The least and most ticks from one jump's start to the next's: how long a gaze holds.
+    pub hold: [u32; 2],
+    /// Degrees of gaze a tick a jump covers, on average over it, so a longer jump takes longer; a jump
+    /// takes at least a tick.
+    pub speed: f32,
+    /// The chance, 0 to 1, that a jump as far as the reach's corner from rest comes with a blink, as eyes
+    /// do on a large jump; a shorter jump's chance is smaller by its length. It needs the graph's `blink`,
+    /// whose shape it plays. 0, the default, leaves the blinks the blink's alone.
+    #[serde(default)]
+    pub blink_chance: f32,
+}
+
 /// A graph that can't be read.
 #[derive(Debug, thiserror::Error)]
 pub enum GraphError {

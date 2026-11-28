@@ -28,7 +28,7 @@ use super::*;
 
 use crate as body;
 #[path = "../../tests/support/humanoid.rs"]
-mod humanoid;
+pub(super) mod humanoid;
 use humanoid::{Humanoid, Step, frozen, read, session, shipped};
 use sapphire_assets::clip::{PackedRotation, RotationTrack};
 use sapphire_assets::graph::v2::GraphProgram;

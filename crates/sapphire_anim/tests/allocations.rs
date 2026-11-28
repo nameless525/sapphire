@@ -522,7 +522,7 @@ fn a_face_allocates_nothing_once_it_is_bound() {
             face.advance(1.0 / 60.0);
             weights = [0.3, 0.0, 0.0, 0.5];
             face.apply(&mut weights);
-            sum += weights.iter().sum::<f32>();
+            sum += weights.iter().sum::<f32>() + face.look_kept();
         }
         sum
     });

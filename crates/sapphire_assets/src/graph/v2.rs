@@ -56,6 +56,8 @@
 //!         // Named events the graph sends to presentation, from foot contacts or a clip's own events.
 //!         events: [(name: "footstep", from: Foot((foot: Left, contact: Down)))],
 //!         blink: Some((expression: "blink", every: (150, 360), close: 3, hold: 1, open: 7)),
+//!         // Saccades between gaze holds through the rig's look-at, a large one sometimes with a blink.
+//!         eyes: Some((reach: (12.0, 6.0), hold: (40, 150), speed: 4.0, blink_chance: 0.3)),
 //!     ),
 //! )
 //! ```
@@ -86,7 +88,7 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use super::{BlendSample, GraphError};
-pub use super::{Blink, EntrySample, GraphClip, GraphMask, MaskBone};
+pub use super::{Blink, EntrySample, Eyes, GraphClip, GraphMask, MaskBone};
 use crate::AssetId;
 pub use compile::{CompileError, GraphIssue};
 pub use program::{GraphProgram, Target};
@@ -118,13 +120,17 @@ pub struct AnimGraph {
     pub events: Vec<GraphEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blink: Option<Blink>,
+    /// Eyes that move on their own (M6 A22); none, and the eyes rest where the clips leave them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eyes: Option<Eyes>,
 }
 
 impl Versioned for AnimGraph {
     /// 1: M2 N3 (`graph::v1`'s document, read alone).
     /// 2: the node graph (M6 A5a). Version 1 reads, converted ([`convert`]). An upgrade can't refuse
     /// what it decodes, so [`AnimGraph::from_document`] reads a version 1 document through version 1's
-    /// own check first: one that check refuses never converts.
+    /// own check first: one that check refuses never converts. [`AnimGraph::eyes`] (M6 A22) is optional and
+    /// reads as none where it's left out, so it came in at version 2.
     const VERSION: u32 = 2;
 
     fn upgrade<D: sapphire_reflect::Decoder>(

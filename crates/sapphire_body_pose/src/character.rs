@@ -221,6 +221,26 @@ impl CharacterPose {
         true
     }
 
+    /// Whether a published body ([`Self::adopt_body_sample`]) keeps `joint` the simulation's.
+    pub(crate) fn protects(&self, joint: usize) -> bool {
+        self.cosmetic_protection.as_deref().is_some_and(|protected| protected.get(joint) != Some(&false))
+    }
+
+    /// Refreshes the model transforms of `joint` and every joint under it from their locals, after a
+    /// presentation turn of its local, leaving the rest as they are. Allocates nothing.
+    pub(crate) fn refresh_model_below(&mut self, joint: usize) {
+        let parents = &self.layout.parents;
+        for index in joint..parents.len() {
+            let mut above = index;
+            while above > joint && parents[above] != NO_PARENT {
+                above = usize::from(parents[above]);
+            }
+            if above == joint {
+                self.model[index] = model::model_of(parents[index], &self.locals[index], &self.model);
+            }
+        }
+    }
+
     /// Returns a detached presentation pose to ordinary constraint evaluation.
     pub fn clear_body_presentation(&mut self) {
         self.cosmetic_protection = None;

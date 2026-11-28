@@ -21,8 +21,8 @@ use super::{
 };
 use crate::clip::MAX_EVENT_NAME;
 use crate::graph::{
-    Blink, MAX_BLEND_SAMPLES, MAX_DECAY_TICKS, MAX_GRAPH_CLIPS, MAX_GRAPH_MOVES, MAX_MASK_BONES, MAX_MASKS,
-    MAX_REACTIONS,
+    Blink, Eyes, MAX_BLEND_SAMPLES, MAX_DECAY_TICKS, MAX_GAZE_DEGREES, MAX_GRAPH_CLIPS, MAX_GRAPH_MOVES,
+    MAX_MASK_BONES, MAX_MASKS, MAX_REACTIONS,
 };
 
 /// One thing wrong with a document, by where it is.
@@ -220,6 +220,7 @@ pub fn compile_for(graph: &AnimGraph, target: Target) -> Result<GraphProgram, Co
         reactions: Vec::new(),
         events: Vec::new(),
         blink: graph.blink.clone(),
+        eyes: graph.eyes.clone(),
         cost: GraphCost::default(),
         target,
     };
@@ -288,6 +289,9 @@ pub fn compile_for(graph: &AnimGraph, target: Target) -> Result<GraphProgram, Co
     compile_events(graph, target, &mut program, &mut issues);
     if let Some(blink) = &graph.blink {
         check_blink(blink, &mut issues);
+    }
+    if let Some(eyes) = &graph.eyes {
+        check_eyes(eyes, graph.blink.as_ref(), &mut issues);
     }
 
     let registers = program
@@ -999,5 +1003,50 @@ fn check_blink(blink: &Blink, issues: &mut Issues) {
     }
     if blink.close == 0 && blink.open == 0 {
         issues.push("blink", "it neither closes nor opens over any time");
+    }
+}
+
+fn check_eyes(eyes: &Eyes, blink: Option<&Blink>, issues: &mut Issues) {
+    let [yaw, pitch] = eyes.reach;
+    let within = |degrees: f32| (0.0..=MAX_GAZE_DEGREES).contains(&degrees);
+    if !within(yaw) || !within(pitch) {
+        issues.push("eyes.reach", format!("({yaw}, {pitch}) isn't 0 to {MAX_GAZE_DEGREES} degrees each"));
+    } else if yaw == 0.0 && pitch == 0.0 {
+        issues.push("eyes.reach", "the gaze goes nowhere");
+    }
+    let [least, most] = eyes.hold;
+    if least == 0 || least > most {
+        issues.push("eyes.hold", format!("({least}, {most}) isn't a range, least to most"));
+    }
+    if !(eyes.speed > 0.0 && eyes.speed.is_finite()) {
+        issues.push("eyes.speed", format!("{} isn't a speed", eyes.speed));
+    } else if within(yaw) && within(pitch) {
+        // The longest jump is corner to corner; it must land before the next can start.
+        let longest = (2.0 * (yaw * yaw + pitch * pitch).sqrt() / eyes.speed).max(1.0);
+        if longest > least as f32 {
+            issues.push(
+                "eyes",
+                format!(
+                    "a jump across the reach takes {longest} ticks, longer than the {least} a gaze holds"
+                ),
+            );
+        }
+    }
+    if !(0.0..=1.0).contains(&eyes.blink_chance) {
+        issues.push("eyes.blink_chance", format!("{} isn't 0 to 1", eyes.blink_chance));
+    } else if eyes.blink_chance > 0.0 {
+        match blink {
+            None => issues.push("eyes.blink_chance", "there's no blink to play"),
+            Some(blink) => {
+                // A jump's blink must end before the next jump's can start.
+                let length = u64::from(blink.close) + u64::from(blink.hold) + u64::from(blink.open);
+                if length > u64::from(least) {
+                    issues.push(
+                        "eyes.blink_chance",
+                        format!("a blink lasts {length} ticks, longer than the {least} a gaze holds"),
+                    );
+                }
+            }
+        }
     }
 }

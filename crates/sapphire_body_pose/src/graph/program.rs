@@ -18,7 +18,7 @@ use super::{
 
 impl GraphBinding {
     /// Resolves a compiled `program` for this character:
-    /// its `skeleton`, its `rig` if masks, a blink or footwork need one, and how many morph targets its
+    /// its `skeleton`, its `rig` if masks, a blink, eyes or footwork need one, and how many morph targets its
     /// mesh has. Every clip must be loaded and cooked for this skeleton. A program read from bytes
     /// has passed [`GraphProgram::validate`]; one built any other way is checked here.
     pub fn from_program(
@@ -253,6 +253,9 @@ impl GraphBinding {
             })
             .collect();
         let blink = program.blink.as_ref().map(|blink| bind_blink(blink, rig, morph_targets)).transpose()?;
+        let eyes = (program.eyes.as_ref())
+            .map(|eyes| super::eyes::bind_eyes(eyes, skeleton, rig, morph_targets))
+            .transpose()?;
         let sync = program.sync.iter().map(|group| (bone(group.foot), marker(group.contact))).collect();
         let events = program
             .events
@@ -313,6 +316,7 @@ impl GraphBinding {
             additive,
             reactions,
             blink,
+            eyes,
         };
         binding.start = binding.leaf(binding.machines[usize::from(base)].start);
         Ok(binding)

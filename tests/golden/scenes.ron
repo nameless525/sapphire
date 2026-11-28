@@ -1514,6 +1514,23 @@
                        "--capture-frames", "32", "--face-mouth", "0.8"],
                 ci_seconds: (lavapipe: 40.9, warp: 79.9),
             ),
+            // The eyes alive (M6 A22), on `lookdev-face`'s close-up with the heroine's graph standing her idle, every
+            // frame drawn: at 8 ticks her gaze holds a little to one side, and at 60, a saccade later, it holds
+            // somewhere else, her eye bones turned through her look-at's range maps (10° of eye at 90° of gaze). The
+            // breathing and the idle move her a little between the two as well. Neither tick shows a blink (her own
+            // shuts around 20, a jump's around 35). Metal only.
+            (
+                name: "lookdev-face-eyes-held",
+                ticks: 8,
+                args: ["--look-dev", "face", "--graph", "stand", "--time-of-day", "13", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "8", "--capture-step", "1"],
+            ),
+            (
+                name: "lookdev-face-eyes-jumped",
+                ticks: 60,
+                args: ["--look-dev", "face", "--graph", "stand", "--time-of-day", "13", "--tier", "desktop-high",
+                       "--ao", "off", "--capture-frames", "60", "--capture-step", "1"],
+            ),
             // The first moving character (M2 N2): N1's key-pose clip on the look-dev character at the
             // hero shot's dusk, every landed feature on but spring bones, which came later, at fixed ticks
             // through the swing, each drawn playing up to its tick so temporal AA's history is a player's.

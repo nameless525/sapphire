@@ -205,9 +205,12 @@ impl BodyProfile {
         }
         contacts.sort_unstable();
         contacts.dedup();
-        let fingerprint = fingerprint(&assets, rig_binding, &options, &contacts);
+        let mut program = assets.graph.view().to_program()?;
+        // The eyes are presentation's alone (M6 A22): the fixed step never runs them, so it doesn't bind
+        // them, and a body whose rig has no look-at still binds.
+        program.eyes = None;
+        let fingerprint = fingerprint(&assets, &program, rig_binding, &options, &contacts);
 
-        let program = assets.graph.view().to_program()?;
         let clips = BodyClips(assets.clips);
         let binding = GraphBinding::from_program(&program, skeleton, rig, morph_names.len(), &clips)?;
         let constraints: Vec<_> = rig
@@ -275,6 +278,7 @@ fn blob(hash: &mut StateHasher, bytes: &[u8]) {
 
 fn fingerprint(
     assets: &BodyGraphAssets,
+    program: &GraphProgram,
     rig: RigBinding<'_>,
     options: &BodyProfileOptions<'_>,
     contacts: &[usize],
@@ -284,7 +288,11 @@ fn fingerprint(
         RigBinding::Cooked(_) => b"sapphire.fixed-body-profile.v1".as_slice(),
         RigBinding::Named { .. } => b"sapphire.fixed-named-body-profile.v1".as_slice(),
     });
-    blob(&mut hash, assets.graph.cooked_bytes());
+    // The program without its presentation-only tables, the blink and the eyes (M6 A22): the fixed step
+    // writes the blink only into the published pose's morphs, which no hash reads, and never runs the
+    // eyes, so retuning either leaves every checksum.
+    let simulated = GraphProgram { blink: None, eyes: None, ..program.clone() };
+    blob(&mut hash, &simulated.to_cooked().expect("a program read from cooked bytes archives again"));
     hash.bytes(&assets.skeleton_id.to_bytes());
     blob(&mut hash, assets.skeleton.cooked_bytes());
     match rig {

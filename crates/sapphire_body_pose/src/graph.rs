@@ -26,6 +26,10 @@
 //! 3. **Additive:** always-on layers such as breathing, and reactions the game starts, each the
 //!    difference between a clip and its own first tick.
 //! 4. **Morph weights:** whatever the playing clip keys, and a procedural blink.
+//! 5. **Eyes** (M6 A22, the `eyes` module): saccades between gaze holds through the rig's look-at, eye
+//!    bones or look expressions, on top of whatever the layers left them, a large jump sometimes with a
+//!    blink.
+//!    Presentation only: the fixed step never turns them.
 //!
 //! # Transitions
 //!
@@ -79,6 +83,7 @@
 
 pub(crate) mod canonical;
 mod debug;
+mod eyes;
 mod fixed;
 mod fixed_body;
 pub(crate) mod ground_footwork;
@@ -280,6 +285,8 @@ pub enum GraphBindError {
     NoSuchBone { mask: String, bone: HumanBone },
     #[error("blink's expression `{0}` isn't in this character's rig")]
     NoSuchExpression(String),
+    #[error("the eyes need a look-at in the character's rig with eye bones or look expressions to move")]
+    NoLookAt,
     #[error("{0} refers to a name its document doesn't hold: it didn't pass its check")]
     Unchecked(&'static str),
     #[error("two blends name different footwork: a graph's starts and stops are one set")]
@@ -560,6 +567,7 @@ pub struct GraphBinding {
     additive: Vec<Added>,
     reactions: Vec<Added>,
     blink: Option<BoundBlink>,
+    eyes: Option<eyes::BoundEyes>,
 }
 
 impl GraphBinding {
@@ -896,6 +904,8 @@ struct Key {
     slots: [f32; MAX_GAME_SLOTS],
     /// The live overrides of its parameters.
     overrides: Overrides,
+    /// [`GraphPlayer::set_eyes_share`]'s, as bits.
+    eyes_share: u32,
 }
 
 /// What a player has done, all told (rule R9).
@@ -951,6 +961,8 @@ pub struct GraphPlayer {
     landing_step: Option<LandingStep>,
     teleports: u32,
     seed: u32,
+    /// How far the eyes turn, of what the gaze says, on a look-at of eye bones ([`Self::set_eyes_share`]).
+    eyes_share: f32,
     stats: GraphStats,
     /// What a test's script reached ([`Reached`]).
     #[cfg(test)]
@@ -975,8 +987,8 @@ impl Reached {
 }
 
 impl GraphPlayer {
-    /// A player of `graph` on `pose`, which it owns from now on. `seed` makes this character's blinks
-    /// its own. Allocates; nothing after does.
+    /// A player of `graph` on `pose`, which it owns from now on. `seed` makes this character's blinks and
+    /// eyes its own. Allocates; nothing after does.
     #[must_use]
     pub fn new(graph: Arc<GraphBinding>, pose: CharacterPose, seed: u32) -> Self {
         let frame = Frame::of(pose.rest(), pose.rest_weights());
@@ -1033,6 +1045,7 @@ impl GraphPlayer {
             landing_step: None,
             teleports: 0,
             seed,
+            eyes_share: 1.0,
             stats: GraphStats::default(),
             #[cfg(test)]
             reached: 0,
@@ -1088,11 +1101,21 @@ impl GraphPlayer {
             revision: self.revision,
             slots: self.slots,
             overrides: self.overrides,
+            eyes_share: self.eyes_share.to_bits(),
         };
         // What a frame sent is that frame's: a frame with nothing to do sends nothing.
         self.fired_count = 0;
         if self.key == Some(key) {
             return false;
+        }
+        // Only the face's share of the eyes moved, as a face blends on a frozen clock: the layers have
+        // nothing new, so the same output is handed over again with the eyes turned by it.
+        if self.drawn.is_some()
+            && self.key == Some(Key { eyes_share: self.key.map_or(0, |key| key.eyes_share), ..key })
+        {
+            self.key = Some(key);
+            self.hand_over(input.ticks);
+            return true;
         }
         self.landing_step = self.landing_step.filter(|step| {
             input.locomotion.grounded && input.combat.is_none() && !input.defeated && input.ticks < step.ends
@@ -1850,19 +1873,27 @@ impl GraphPlayer {
         true
     }
 
-    /// Writes the drawn pose into the character, with the blink on top.
+    /// Writes the drawn pose into the character, with the blink and the eyes on top.
     fn hand_over(&mut self, now: f64) {
         self.pose.locals_mut().copy_from_slice(&self.output.joints);
         let weights = self.pose.weights_mut();
         weights.copy_from_slice(&self.output.weights);
+        let eyes = (self.graph.eyes.as_ref())
+            .filter(|_| !self.layers.defeated && self.layers.math != PoseMath::Pinned);
         if let Some(blink) = self.graph.blink.as_ref().filter(|_| !self.layers.defeated) {
-            let amount = blink.amount(now, self.seed);
+            let mut amount = blink.amount(now, self.seed);
+            for start in eyes.map_or([None; 2], |eyes| eyes.blinks(now, self.seed)).into_iter().flatten() {
+                amount = amount.max(blink.shape((now - start) as f32));
+            }
             if amount > 0.0 {
                 for &(target, share) in &blink.targets {
                     let weight = &mut weights[usize::from(target)];
                     *weight = (*weight + amount * share).min(1.0);
                 }
             }
+        }
+        if let Some(eyes) = eyes {
+            eyes.apply(eyes.gaze(now, self.seed), self.eyes_share, &mut self.pose, self.layers.math);
         }
         self.drawn = Some(now);
     }
@@ -1908,6 +1939,36 @@ impl GraphPlayer {
     #[must_use]
     pub fn stats(&self) -> GraphStats {
         self.stats
+    }
+
+    /// How far its eyes turn, 0 to 1 of what their gaze says, on a rig whose look-at turns eye bones: what
+    /// the face layer's look overrides leave (`FaceLayer::look_kept`), set before each evaluation. A
+    /// look-at of expressions is turned down by the face layer itself, over the morphs, so this leaves it
+    /// be, as it leaves a graph with no eyes. A change on a frozen clock shows at the next evaluation.
+    /// Allocates nothing.
+    pub fn set_eyes_share(&mut self, share: f32) {
+        let turns_bones = self.graph.eyes.as_ref().is_some_and(eyes::BoundEyes::turns_bones);
+        self.eyes_share = if !turns_bones || share.is_nan() { 1.0 } else { share.clamp(0.0, 1.0) };
+    }
+
+    /// What the eyes would show at `ticks` on the owner's clock over a pose the fixed step published, as
+    /// bits (gaze and share): when it changes, [`Self::turn_published_eyes`] has something new to draw.
+    /// `None` without eyes. Allocates nothing.
+    #[must_use]
+    pub fn published_eyes(&self, ticks: f64) -> Option<[u32; 3]> {
+        let eyes = self.graph.eyes.as_ref()?;
+        let [yaw, pitch] = eyes.gaze(ticks, self.seed);
+        Some([yaw.to_bits(), pitch.to_bits(), self.eyes_share.to_bits()])
+    }
+
+    /// Turns the eyes at `ticks` on the owner's clock over the pose the fixed step just published into
+    /// [`Self::pose_mut`] ([`BodySample::publish_to`]), where this player plays nothing: the simulation
+    /// poses the body and its blink, and the eyes go over them as the face does, presentation only. Eye
+    /// bones only (the published morphs are the simulation's), and only where the body leaves them to
+    /// presentation, their model transforms refreshed. Whether it turned them. Allocates nothing.
+    pub fn turn_published_eyes(&mut self, ticks: f64) -> bool {
+        let Some(eyes) = self.graph.eyes.as_ref() else { return false };
+        eyes.apply_published(eyes.gaze(ticks, self.seed), self.eyes_share, &mut self.pose)
     }
 
     /// Sets a program's game slot by name, 0 until set. Returns whether the graph has the slot. A
@@ -2983,6 +3044,9 @@ fn add_layer(
     add_with_math(pose, delta, weight, mask, math);
 }
 
+#[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "a test measures the eyes' turn with std's trigonometry")]
+mod eyes_tests;
 #[cfg(test)]
 #[allow(clippy::disallowed_methods, reason = "reference fixtures also exercise the legacy math policy")]
 mod tests;

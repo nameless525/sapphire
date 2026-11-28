@@ -16,7 +16,9 @@
 //!   several add up to all of it. The family's presets the layer shows go down by that much, and so do the
 //!   family's morph targets as the pose made them, which is how the graph's procedural blink and an
 //!   expression-driven look are turned down: the pose's weights on a family's targets are that family's
-//!   doing as long as no clip keys them.
+//!   doing as long as no clip keys them. The graph's eyes (M6 A22) are turned down so when the rig's look-at
+//!   weighs expressions; when it turns eye bones, which aren't morphs, [`FaceLayer::look_kept`] says how far
+//!   for the graph to turn them.
 //! - **The resting expression** is in the pose's own rest weights (a character holds a soft face at rest), so
 //!   the layer takes it out before it adds what it shows: an expression replaces the face rather than
 //!   piling on it. At rest, with no mouth, the layer is idle, and [`FaceLayer::apply`] leaves the pose's
@@ -310,32 +312,8 @@ impl FaceLayer {
         if self.is_idle() {
             return;
         }
-        let mut shown = self.weights();
-        for (weight, bound) in shown.iter_mut().zip(&self.presets) {
-            if bound.binary {
-                *weight = if *weight >= 0.5 { 1.0 } else { 0.0 };
-            }
-        }
-        let speaking = self.mouth.speaking();
-        if speaking > 0.0 {
-            for (preset, &said) in VISEME_PRESETS.iter().zip(&self.mouth.visemes) {
-                let weight = &mut shown[*preset as usize];
-                *weight = (*weight * (1.0 - speaking) + said).min(1.0);
-            }
-        }
-        let mut overridden = [0.0_f32; FAMILIES];
-        for (&weight, bound) in shown.iter().zip(&self.presets) {
-            if weight <= 0.0 {
-                continue;
-            }
-            for (family, rule) in bound.overrides.iter().enumerate() {
-                overridden[family] += match rule {
-                    ExpressionOverride::None => 0.0,
-                    ExpressionOverride::Block => 1.0,
-                    ExpressionOverride::Blend => weight,
-                };
-            }
-        }
+        let mut shown = self.shown();
+        let overridden = self.overridden(&shown);
         // The resting expression out, since what's shown replaces it.
         for (&rest, bound) in self.rest.iter().zip(&self.presets) {
             if rest > 0.0 {
@@ -369,6 +347,54 @@ impl FaceLayer {
             let weight = &mut weights[usize::from(target)];
             *weight = weight.clamp(0.0, 1.0);
         }
+    }
+
+    /// How much of the look what it shows leaves, 0 to 1: 1 with no look override showing, 0 under a `block`,
+    /// less by a `blend`'s weight. [`Self::apply`] turns the look expressions' morphs down by it; a look-at
+    /// that turns eye bones takes it from here (M6 A22, `GraphPlayer::set_eyes_share`). Allocates nothing.
+    #[must_use]
+    pub fn look_kept(&self) -> f32 {
+        if self.is_idle() {
+            return 1.0;
+        }
+        1.0 - self.overridden(&self.shown())[LOOK].min(1.0)
+    }
+
+    /// Each preset's weight as it shows: the blend's, binary ones snapped, and the mouth over the visemes.
+    fn shown(&self) -> [f32; PRESETS] {
+        let mut shown = self.weights();
+        for (weight, bound) in shown.iter_mut().zip(&self.presets) {
+            if bound.binary {
+                *weight = if *weight >= 0.5 { 1.0 } else { 0.0 };
+            }
+        }
+        let speaking = self.mouth.speaking();
+        if speaking > 0.0 {
+            for (preset, &said) in VISEME_PRESETS.iter().zip(&self.mouth.visemes) {
+                let weight = &mut shown[*preset as usize];
+                *weight = (*weight * (1.0 - speaking) + said).min(1.0);
+            }
+        }
+        shown
+    }
+
+    /// How much each family is overridden by what `shown` shows, by [`BLINK`], [`LOOK`] and [`MOUTH`]: 1 or
+    /// more is all of it.
+    fn overridden(&self, shown: &[f32; PRESETS]) -> [f32; FAMILIES] {
+        let mut overridden = [0.0_f32; FAMILIES];
+        for (&weight, bound) in shown.iter().zip(&self.presets) {
+            if weight <= 0.0 {
+                continue;
+            }
+            for (family, rule) in bound.overrides.iter().enumerate() {
+                overridden[family] += match rule {
+                    ExpressionOverride::None => 0.0,
+                    ExpressionOverride::Block => 1.0,
+                    ExpressionOverride::Blend => weight,
+                };
+            }
+        }
+        overridden
     }
 
     fn blend_to(&mut self, to: [f32; PRESETS], blend: f32, since: f64) {
@@ -521,6 +547,41 @@ mod tests {
         layer.show(order(2, "happy", 1.0, 0.0));
         let weights = applied(&layer);
         assert_eq!((weights[usize::from(EYE_CLOSE)], weights[usize::from(MOUTH_A)]), (0.0, 0.0));
+    }
+
+    /// The graph's eyes (M6 A22) as the look family: an expression that blocks the look holds them at rest,
+    /// one that blends it scales them by its weight, on the look expressions' morphs and in what the layer
+    /// says is kept, which a look-at of eye bones turns by.
+    #[test]
+    fn a_look_override_turns_the_eyes_down() {
+        use ExpressionOverride::{Blend, Block, None as Free};
+        const LOOK_LEFT: u16 = 8;
+        let rig = CharacterRig {
+            morph_target_count: TARGETS as u32,
+            expressions: vec![
+                expression(ExpressionPreset::Happy, JOY, [Free, Blend, Free]),
+                expression(ExpressionPreset::Angry, ANGRY, [Free, Block, Free]),
+                expression(ExpressionPreset::LookLeft, LOOK_LEFT, [Free; 3]),
+            ],
+            ..CharacterRig::default()
+        }
+        .to_cooked()
+        .expect("it archives");
+        let mut layer = FaceLayer::new(CharacterRig::read(&rig).expect("it reads"), TARGETS, None)
+            .expect("it has presets");
+        // The eyes looking left, as the graph's gaze weighs the expression.
+        let looking = |layer: &FaceLayer| {
+            let mut weights = [0.0; TARGETS];
+            weights[usize::from(LOOK_LEFT)] = 0.6;
+            layer.apply(&mut weights);
+            weights[usize::from(LOOK_LEFT)]
+        };
+        assert_eq!((looking(&layer), layer.look_kept()), (0.6, 1.0), "idle, the gaze is the graph's");
+        layer.show(order(1, "angry", 0.2, 0.0));
+        assert_eq!((looking(&layer), layer.look_kept()), (0.0, 0.0), "blocked, at rest");
+        layer.show(order(2, "happy", 0.5, 0.0));
+        assert!((looking(&layer) - 0.3).abs() < 1e-6, "blended by its weight: {}", looking(&layer));
+        assert_eq!(layer.look_kept(), 0.5);
     }
 
     #[test]

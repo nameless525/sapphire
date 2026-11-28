@@ -3,14 +3,14 @@
 
 use std::sync::Arc;
 
-use sapphire_assets::rig::{ArchivedCharacterRig, ExpressionPreset, HumanBone, LookAtKind};
+use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
 use sapphire_assets::skeleton::NO_PARENT;
 use sapphire_math::{Affine3A, Vec3};
 
 use crate::character::{CharacterPose, JointLayout};
 use crate::ik::feet::LegBones;
 use crate::ik::hands::ArmBones;
-use crate::ik::look::{EyeDrive, EyeRig, LookBones, RangeMap};
+use crate::ik::look::{EyeRig, LookBones};
 use crate::ik::solve::TwoBone;
 use crate::pose_math::PoseMath;
 
@@ -142,54 +142,10 @@ impl IkRig {
         let look_at = rig.look_at.as_ref();
         let origin =
             look_at.map_or(Vec3::ZERO, |look| Vec3::from_array(look.offset_from_head.map(|v| v.to_native())));
-        let eyes = look_at.and_then(|look| {
-            let range = |range: &sapphire_assets::rig::ArchivedLookAtRange, scale: f32| RangeMap {
-                input_max: range.input_max_degrees.to_native().to_radians(),
-                output: range.output_scale.to_native() * scale,
-            };
-            let drive = match look.kind {
-                LookAtKind::Bone => {
-                    let eye = |wanted: HumanBone| {
-                        let joint = bone(wanted)?;
-                        let parent = pose.parent(joint)?;
-                        Some((joint as u16, pose.rest_rotation(parent)))
-                    };
-                    let (left, right) = (eye(HumanBone::LeftEye), eye(HumanBone::RightEye));
-                    if left.is_none() && right.is_none() {
-                        return None;
-                    }
-                    EyeDrive::Bones { left, right }
-                }
-                LookAtKind::Expression => {
-                    let targets = |preset: ExpressionPreset| -> Vec<(u32, f32)> {
-                        rig.expressions
-                            .iter()
-                            .find(|expression| expression.preset.as_ref() == Some(&preset))
-                            .map_or_else(Vec::new, |expression| {
-                                expression
-                                    .morph_targets
-                                    .iter()
-                                    .map(|morph| (morph.target.to_native(), morph.weight.to_native()))
-                                    .collect()
-                            })
-                    };
-                    EyeDrive::Expressions {
-                        up: targets(ExpressionPreset::LookUp),
-                        down: targets(ExpressionPreset::LookDown),
-                        left: targets(ExpressionPreset::LookLeft),
-                        right: targets(ExpressionPreset::LookRight),
-                    }
-                }
-            };
-            // Degrees for a bone, and a plain weight for an expression.
-            let scale = if look.kind == LookAtKind::Bone { 1f32.to_radians() } else { 1.0 };
-            Some(EyeRig {
-                inner: range(&look.horizontal_inner, scale),
-                outer: range(&look.horizontal_outer, scale),
-                down: range(&look.vertical_down, scale),
-                up: range(&look.vertical_up, scale),
-                drive,
-            })
+        let eyes = EyeRig::from_cooked(rig, |wanted| {
+            let joint = bone(wanted)?;
+            let parent = pose.parent(joint)?;
+            Some((joint as u16, pose.rest_rotation(parent)))
         });
         Self::new(pose, &bones, origin, eyes, floor)
     }

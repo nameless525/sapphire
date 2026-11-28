@@ -611,6 +611,74 @@ fn refusals_name_the_path_of_what_they_refuse() {
     }
 }
 
+/// The eyes (M6 A22) as a document says them, each refusal by its path; a graph with none compiles to none.
+#[test]
+fn eyes_compile_into_the_program_and_what_cant_play_is_refused() {
+    const BLINK: &str =
+        r#"blink: Some((expression: "blink", every: (150, 360), close: 3, hold: 1, open: 7)),"#;
+    let with = |eyes: &str| format!("{BLINK}\n        eyes: Some(({eyes})),");
+    let good = "reach: (40.0, 20.0), hold: (30, 150), speed: 12.0, blink_chance: 0.3";
+    let text = document().replacen(BLINK, &with(good), 1);
+    let mut graph = AnimGraph::from_document(&text).expect("a good document");
+    graph.resolve(|clip| AssetId::from_bytes([clip.name.len() as u8; 16]));
+    let program = graph.compile().unwrap_or_else(|error| panic!("{error}"));
+    let eyes = Eyes { reach: [40.0, 20.0], hold: [30, 150], speed: 12.0, blink_chance: 0.3 };
+    assert_eq!(program.eyes, Some(eyes.clone()));
+    let read = GraphProgram::read(&program.to_cooked().expect("it cooks")).expect("it reads");
+    assert_eq!(read.eyes, Some(eyes.clone()));
+    // A cooked program is held to the compile's rules across fields as well: a jump within the least
+    // hold, and a jump's blink with a blink to play that ends within it.
+    let broken: [&dyn Fn(&mut GraphProgram); 3] = [
+        &|program| program.eyes.as_mut().expect("eyes").speed = 2.0,
+        &|program| program.blink = None,
+        &|program| program.eyes.as_mut().expect("eyes").hold = [10, 150],
+    ];
+    for (case, breaking) in broken.iter().enumerate() {
+        let mut bad = program.clone();
+        breaking(&mut bad);
+        let error = GraphProgram::read(&bad.to_cooked().expect("it cooks")).expect_err("it's refused");
+        assert!(error.to_string().contains("the eyes"), "case {case}: {error}");
+    }
+    assert_eq!(self::graph().compile().expect("it compiles").eyes, None, "none said, none compiled");
+    // Left out, the blink's chance is none.
+    let text = document().replacen(BLINK, &with("reach: (4.0, 2.0), hold: (30, 150), speed: 1.0"), 1);
+    let graph = AnimGraph::from_document(&text).expect("a good document");
+    assert_eq!(graph.eyes.map(|eyes| eyes.blink_chance), Some(0.0));
+    let rows: &[(&str, &str, &str)] = &[
+        ("reach: (50.0, 20.0), hold: (30, 150), speed: 12.0", "eyes.reach", "0 to 45"),
+        ("reach: (0.0, 0.0), hold: (30, 150), speed: 12.0", "eyes.reach", "nowhere"),
+        ("reach: (40.0, 20.0), hold: (150, 30), speed: 12.0", "eyes.hold", "range"),
+        ("reach: (40.0, 20.0), hold: (0, 30), speed: 12.0", "eyes.hold", "range"),
+        ("reach: (40.0, 20.0), hold: (30, 150), speed: 0.0", "eyes.speed", "speed"),
+        ("reach: (40.0, 20.0), hold: (30, 150), speed: 2.0", "eyes", "longer than the 30"),
+        (
+            "reach: (40.0, 20.0), hold: (30, 150), speed: 12.0, blink_chance: 2.0",
+            "eyes.blink_chance",
+            "0 to 1",
+        ),
+        (
+            "reach: (40.0, 20.0), hold: (10, 150), speed: 12.0, blink_chance: 0.5",
+            "eyes.blink_chance",
+            "11 ticks",
+        ),
+    ];
+    for (eyes, path, word) in rows {
+        let issues = issues_with(BLINK, &with(eyes));
+        assert!(
+            issues.iter().any(|issue| issue.path == *path && issue.to_string().contains(word)),
+            "`{eyes}` gave {issues:?}, wanting `{path}` saying `{word}`",
+        );
+    }
+    let issues = issues_with(
+        BLINK,
+        "eyes: Some((reach: (40.0, 20.0), hold: (30, 150), speed: 12.0, blink_chance: 0.5)),",
+    );
+    assert!(
+        issues.iter().any(|issue| issue.path == "eyes.blink_chance" && issue.message.contains("no blink")),
+        "{issues:?}"
+    );
+}
+
 /// Conditions that once panicked the compiler: each is refused at its transition's `when`.
 #[test]
 fn a_condition_that_could_panic_is_refused_by_its_path() {

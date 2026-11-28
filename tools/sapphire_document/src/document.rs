@@ -47,6 +47,15 @@ pub struct StepId(u64);
 /// The next [`StepId`].
 static NEXT_STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The next revision any document takes, by opening or by a change of text: unique in this process, so a
+/// document closed and opened again, or recovered in place, never repeats one an older text had.
+static NEXT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A revision of its own, from [`NEXT_REVISION`].
+fn next_revision() -> u64 {
+    NEXT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A step as history holds it.
 #[derive(Clone, Debug)]
 struct Held {
@@ -173,6 +182,8 @@ pub struct Document<T> {
     history_limit: usize,
     /// How many steps have gone past that, oldest first, since it opened.
     forgotten: usize,
+    /// Which text it holds, unique in this process (from [`next_revision`]).
+    revision: u64,
 }
 
 impl<T> Document<T>
@@ -196,6 +207,7 @@ where
             last_good: None,
             history_limit: HISTORY_LIMIT,
             forgotten: 0,
+            revision: next_revision(),
         }
     }
 
@@ -225,6 +237,14 @@ where
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Which text it holds: a number no other text of any document in this process has had, taken anew by every
+    /// change, so what's made from its value needs making again only when this has moved (M6 T9a's pick index),
+    /// even across a close and an open, or a recovery, under the same ID.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The schema version the text says it's written at, from the parse it holds: `None` if it doesn't read or
@@ -781,6 +801,7 @@ where
     fn land(&mut self, label: &str, parsed: Parsed<T>, next: String, record: ChangeRecord) {
         let before = std::mem::replace(&mut self.text, next);
         self.parsed = Ok(parsed);
+        self.revision = next_revision();
         match &mut self.gesture {
             Some(gesture) => absorb(&mut gesture.records, record),
             None => {
@@ -998,6 +1019,7 @@ where
             self.last_good = Some(parsed.value);
         }
         self.text = text;
+        self.revision = next_revision();
     }
 
     /// The file changed on disk to `disk`, and its text replaces what's here, as one step undo can take

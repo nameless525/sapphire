@@ -58,7 +58,6 @@ use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary, LightRigs};
 use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer};
 use sapphire_world::tod::weather::WeatherDocument;
 use sapphire_world::tod::{KeyedWeather, TimeOfDay, TodTimeline, TodVolume, TodVolumeId};
-#[cfg(any(test, feature = "dev"))]
 use sapphire_world::tod::{TodError, TodGroups};
 use sapphire_world::weather::{WeatherPlan, WeatherSetup, WeatherSystem};
 use sapphire_zone::{
@@ -1075,7 +1074,6 @@ impl Scene {
     /// Takes a save of the stage's own day (Z3 review F5): live at once, unless a zone's own day is, when it waits
     /// in [`ZoneAir::own`] for a zone that names none. Either way a zone naming none gets it from then on, not the
     /// day the stage had before a zone's first replaced it. A day that isn't complete is refused either way.
-    #[cfg(any(test, feature = "dev"))]
     pub(super) fn take_stage_day(&mut self, timeline: TodTimeline) -> Result<(), String> {
         if self.zone_air.zone_day {
             if let Some(group) = TodGroups::REQUIRED.first_missing_from(timeline.groups()) {
@@ -1123,7 +1121,6 @@ impl Scene {
     }
 
     /// Takes a save of the stage's own light rigs, as [`Self::take_stage_day`] takes its day.
-    #[cfg(any(test, feature = "dev"))]
     pub(super) fn take_stage_light_rigs(&mut self, rigs: LightRigLibrary) {
         if !self.zone_air.zone_rigs {
             self.ecs.world_mut().insert_resource(LightRigs(rigs.clone()));

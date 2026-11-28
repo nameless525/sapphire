@@ -383,6 +383,41 @@ pub struct LookDev {
     pub figure: Figure,
 }
 
+/// What the look-dev town runs on ([`Scene::set_town_look`], M6 T15a): a day, its characters' light rigs, and a
+/// partial day over the whole town.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TownLook {
+    pub day: tod::TodTimeline,
+    pub rigs: LightRigLibrary,
+    /// A day keying only what it overrides, an atmosphere volume's look (`content/looks/biomes/`), laid over the
+    /// whole town as a volume is where the camera stands in it: at the volumes' step of `TimeOfDay::resolve`, over
+    /// the weather. A weather state's keys aren't one: they belong under the volumes, through the weather's own path
+    /// ([`Scene::set_weather_state`]).
+    pub over: Option<tod::TodTimeline>,
+}
+
+impl Default for TownLook {
+    /// The town's own: `content/lookdev/`'s day and light rigs, with nothing over them.
+    fn default() -> Self {
+        Self { day: lookdev::day(), rigs: lookdev::light_rigs(), over: None }
+    }
+}
+
+impl TownLook {
+    /// `day` in this look, as a day document is: a complete one is the town's day, a partial one (a biome's)
+    /// lies over it ([`TownLook::over`]). The sandbox's `--day` and the editor's look pane both take a day so.
+    pub fn take_day(&mut self, day: tod::TodTimeline) {
+        if day.is_complete() {
+            self.day = day;
+        } else {
+            self.over = Some(day);
+        }
+    }
+}
+
+/// How far the partial day of [`TownLook::over`] reaches from the town's middle: past its far mountains.
+const TOWN_OVER_REACH: f32 = 1.0e5;
+
 /// The day time of day runs on, by the document it comes from ([`Scene::day`]), for `dev`
 /// builds, which replace it from hot reload and live link. Both days are timelines
 /// (`TodTimeline`), so a timeline replaces the day only from the day's own file: the default
@@ -538,6 +573,8 @@ pub struct Scene {
     /// The look-dev town, with `--look-dev`, its plants and its mountains.
     /// Where the character stands in the town, once it's spawned: the zone's origin lies at minus this.
     town_stand: Option<Vec3>,
+    /// The partial day laid over the whole town ([`Self::set_town_look`], M6 T15a).
+    town_over: Option<tod::TodVolumeId>,
     /// The zone being streamed.
     zone: Option<ZoneStage>,
     /// The zone stage's walk along a rail (`--zone-walk`).
@@ -765,6 +802,7 @@ impl Scene {
             studio: Vec::new(),
             studio_layout: None,
             town_stand: None,
+            town_over: None,
             zone: None,
             zone_walk: None,
             stream_ahead: ([Vec3::ZERO; sapphire_world::streaming::AHEAD], 0),
@@ -2450,11 +2488,41 @@ impl Scene {
         }
     }
 
+    /// Runs the look-dev town on `look` in place of its own day and light rigs (M6 T15a: the editor's look pane, and
+    /// the sandbox's `--day` and `--light-rigs`): its day as the base timeline, which must be complete, its rigs as
+    /// the characters' presets (characters keep theirs by ID), and its partial day, if it has one, laid over the
+    /// whole town at full strength, as an atmosphere volume's look is wherever the camera stands in one. Nothing is
+    /// built or loaded. Fails, keeping what it had, on a day that isn't complete or a town that isn't stood.
+    pub fn set_town_look(&mut self, look: TownLook) -> Result<(), String> {
+        if self.town_stand.is_none() {
+            return Err("the look-dev town isn't on stage".to_owned());
+        }
+        if let Some(group) = tod::TodGroups::REQUIRED.first_missing_from(look.day.groups()) {
+            return Err(tod::TodError::Incomplete(group).to_string());
+        }
+        self.take_stage_day(look.day)?;
+        self.take_stage_light_rigs(look.rigs);
+        let was = self.town_over.take();
+        let over = {
+            let mut time_of_day = self.time_of_day_mut();
+            if let Some(id) = was {
+                time_of_day.remove_volume(id);
+            }
+            let everywhere = tod::VolumeShape::Sphere { center: Vec3::ZERO, radius: TOWN_OVER_REACH };
+            look.over.map(|over| time_of_day.add_volume(tod::TodVolume::new(everywhere, Arc::new(over))))
+        };
+        self.town_over = over;
+        Ok(())
+    }
+
     /// Takes down what [`Self::spawn_town`] placed by hand, which no zone holds: a change of zone (M3 W4). The
     /// lamps go by what they are, so what's left of a zone's goes too: close that first.
     pub(crate) fn leave_town(&mut self) {
         if self.town_stand.take().is_none() {
             return;
+        }
+        if let Some(id) = self.town_over.take() {
+            self.time_of_day_mut().remove_volume(id);
         }
         let world = self.ecs.world_mut();
         for entity in self.town_plants.drain(..).map(|(entity, _)| entity) {

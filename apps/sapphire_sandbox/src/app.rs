@@ -293,6 +293,9 @@ impl App for SandboxApp {
         if let (Some(shot), Some(town)) = (options.look_dev, renderer.town) {
             let (pose, figure) = lookdev::hold(&mut content, &playable, &mut renderer.renderer, &device.gpu)?;
             scene.spawn_look_dev(shot, LookDev { town, fog_cards: renderer.fog_cards, pose, figure });
+            if let Some(look) = options.town_look.read().map_err(AppInitError::msg)? {
+                scene.set_town_look(look).map_err(AppInitError::msg)?;
+            }
             if options.face.is_some() {
                 scene.set_held_face(options.face, &content);
             }

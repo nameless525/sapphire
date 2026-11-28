@@ -114,7 +114,7 @@ use crate::ids;
 use crate::look::{ZoneFog, ZoneWeather, ZoneWind};
 use crate::reflections::{self, ReflectionProbe};
 use crate::rooms::{self, ZoneRoom};
-use crate::water::{CookedWaterSurface, CookedWaterVolume, MAX_BODIES, WaterBody, WaterKind};
+use crate::water::{CookedRiver, CookedWaterSurface, CookedWaterVolume, MAX_BODIES, WaterBody, WaterKind};
 use crate::weather::{self, ZoneWeatherPlan};
 
 /// The most entries any list of a zone may hold.
@@ -574,6 +574,9 @@ pub struct ZoneGeometry {
     /// Each lake's and river's drawn surface (`.swater`, M6 W3a), by the body's name: a body the cook drew
     /// none for has none.
     pub water: BTreeMap<String, AssetId>,
+    /// Each river's stretches, falls and effect sites (M6 H3a, [`crate::water::river`]), by the body's name: a
+    /// river the cook read none for has none.
+    pub rivers: BTreeMap<String, CookedRiver>,
 }
 
 impl ZoneDocument {
@@ -1087,6 +1090,7 @@ impl ZoneDocument {
                 .zip(&simulation.water)
                 .map(|(surface, volume)| CookedWaterSurface {
                     mesh: geometry.water.get(&volume.name).copied(),
+                    river: geometry.rivers.get(&volume.name).cloned(),
                     ..surface
                 })
                 .collect(),
@@ -1187,6 +1191,7 @@ impl ZoneDocument {
                     probe,
                     shore_margin: body.shore_margin,
                     mesh: None,
+                    river: None,
                 }
             })
             .collect()

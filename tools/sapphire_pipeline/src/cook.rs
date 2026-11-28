@@ -1143,6 +1143,9 @@ pub struct CookReport {
     /// How long each phase of the run and each asset took (M6 C12, [`crate::timing`]): for people only, so
     /// nothing a cook writes holds it.
     pub timings: CookTimings,
+    /// Each river's reading, in the plan's order of zones and then each zone's cooked water's, by ID (M6 H3a):
+    /// what `cook --report` gives a line each.
+    pub rivers: Vec<zone::river::RiverLine>,
 }
 
 impl CookReport {
@@ -1509,6 +1512,7 @@ fn cook_dir_through(
     let assets: Vec<CookedAsset> =
         cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     let localization = check_localization(&assets)?;
+    let rivers = river_lines(&plan, &zones, &assets)?;
     check_dialogues(&assets)?;
     check_screens(&screens, &assets)?;
     timings.ended(Phase::Checks, &mut watch);
@@ -1534,7 +1538,28 @@ fn cook_dir_through(
         localization,
         waivers,
         timings,
+        rivers,
     })
+}
+
+/// Each river's line for `cook --report`, from the cooked `.szone` of each zone with a river.
+fn river_lines(
+    plan: &[Planned],
+    zones: &HashMap<PathBuf, ZonePlan>,
+    assets: &[CookedAsset],
+) -> Result<Vec<zone::river::RiverLine>, CookError> {
+    let mut lines = Vec::new();
+    for (planned, asset) in plan.iter().zip(assets) {
+        if !planned.is_own_zone() || !zones[&planned.asset.path].has_rivers() {
+            continue;
+        }
+        let bytes =
+            read_cooked(asset).map_err(|source| CookError::Read { path: asset.output.clone(), source })?;
+        let read = zone::river::RiverLine::of_zone(&asset.source, &bytes)
+            .map_err(|source| zone_error(&planned.asset.path)(source.into()))?;
+        lines.extend(read);
+    }
+    Ok(lines)
 }
 
 /// Each `.ftl` source by the locale its sidecar names, which a locale document must state, and only
@@ -3320,12 +3345,19 @@ fn zone_colliders(
     read_cooked(cooked).map_err(|source| CookError::Read { path: cooked.output.clone(), source })
 }
 
-/// A zone's `.szone`, from its plan and its cooked meshes, once what names a collider is held to it.
+/// A zone's `.szone`, from its plan, its cooked meshes and its rivers' readings on its colliders (M6 H3a), once
+/// what names a collider is held to it.
 fn cook_zone(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
     let plan = &assets.zones[path];
+    let reads_colliders = plan.has_claims() || plan.has_rivers();
+    let colliders = (reads_colliders && plan.document().colliders.is_some())
+        .then(|| zone_colliders(path, assets))
+        .transpose()?;
     if plan.has_claims() {
-        zone::claims::check(plan, &zone_colliders(path, assets)?).map_err(zone_error(path))?;
+        let colliders = colliders.as_deref().expect("a document that names a collider names `colliders`");
+        zone::claims::check(plan, colliders).map_err(zone_error(path))?;
     }
+    let rivers = plan.cook_rivers(colliders.as_deref()).map_err(zone_error(path))?;
     let bounds_of = |id: AssetId| -> Result<sapphire_zone::Bounds, CookError> {
         let cooked = assets.cooked(id).ok_or_else(|| CookError::ZoneReference {
             path: path.to_owned(),
@@ -3362,7 +3394,7 @@ fn cook_zone(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
             Ok(sapphire_zone::pack_name(zone::stem(other)))
         })
         .collect::<Result<Vec<_>, CookError>>()?;
-    zone::cook(plan, path, places, instances, exit_packs).map_err(zone_error(path))
+    zone::cook(plan, path, places, instances, exit_packs, rivers).map_err(zone_error(path))
 }
 
 /// Maps a zone's cook error to one that names the source.
@@ -4368,10 +4400,22 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     if let Some(hash) = plan.foliage_recipe() {
         dependencies.push(Dependency::File { path: "#foliage plan".to_owned(), hash });
     }
-    // What names a collider is held to it as the `.szone` cooks, so a collider moved cooks it again.
-    if plan.has_claims() {
+    // What names a collider is held to it as the `.szone` cooks, and a river's rapids read them (M6 H3a), so a
+    // collider moved cooks it again.
+    if plan.has_claims() || (plan.has_rivers() && document.colliders.is_some()) {
         let id = document.colliders.expect("a document that names a collider names `colliders`");
         dependencies.push(cooked_key(id, "colliders".to_owned(), "a collider document")?);
+    }
+    // A river's reading, on the colliders' triangles, its depths by the water cooker's bed: a change to any of the
+    // three rules recooks the `.szone`.
+    if plan.has_rivers() {
+        let reading = format!(
+            "#river reading {} on triangulation {} by water cooker {}",
+            zone::river::RIVER_READING.version,
+            nav::TRIANGULATION,
+            zone::water::WATER_COOKER.version
+        );
+        dependencies.push(Dependency::File { path: reading, hash: blake3::hash(b"") });
     }
     for (index, instance) in document.instances.iter().enumerate() {
         let field = format!("instances[{index}].mesh");

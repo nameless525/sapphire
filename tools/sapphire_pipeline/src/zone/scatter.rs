@@ -58,10 +58,13 @@ pub struct ColliderGround {
     solids: Vec<Solid>,
 }
 
-/// A closed, convex collider: its footprint's bounds on the ground plane and every face of it.
+/// A closed, convex collider: its footprint's bounds on the ground plane, its lowest and highest corners' heights
+/// and every face of it.
 struct Solid {
     low: [f64; 2],
     high: [f64; 2],
+    bottom: f64,
+    top: f64,
     faces: Vec<[[f64; 3]; 3]>,
 }
 
@@ -99,7 +102,13 @@ impl ColliderGround {
                         )
                     },
                 );
-                Solid { low, high, faces }
+                let (bottom, top) = faces
+                    .iter()
+                    .flatten()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(bottom, top), corner| {
+                        (bottom.min(corner[1]), top.max(corner[1]))
+                    });
+                Solid { low, high, bottom, top, faces }
             })
             .collect();
         Ok(ground)
@@ -169,7 +178,8 @@ impl ColliderGround {
 
     /// Under a water surface at `surface` over `(x, z)` (M6 W3a): the highest face at or below it, if any, and
     /// whether any face stands above it there (land, where none is below). A point of the surface inside a closed
-    /// solid, a rock or an island standing on the bed, has no bed and is covered: land.
+    /// solid, a rock or an island standing on the bed, has no bed and is covered: land. A river's reading reads its
+    /// depth here too (M6 H3a), so a change here bumps `WATER_COOKER`, which the `.szone`'s key holds as well.
     pub fn under(&self, x: f32, z: f32, surface: f32) -> (Option<f64>, bool) {
         let surface = f64::from(surface);
         if self.solids.iter().any(|solid| solid.holds(f64::from(x), surface, f64::from(z))) {
@@ -187,7 +197,87 @@ impl ColliderGround {
     }
 }
 
+/// A river's banks where it looks for an obstacle (M6 H3a): its axis the line through `centre` along the
+/// stretch, `across` the unit vector at right angles to it across the ground, and the banks `half` either side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Banks {
+    pub centre: [f64; 2],
+    pub across: [f64; 2],
+    pub half: f64,
+}
+
+impl ColliderGround {
+    /// How far across the ground `(x, z)` lies from the nearest closed solid standing through a water surface at
+    /// `surface` and reaching inside the river's `banks` there (a rock or a pier in a river: its lowest corner at
+    /// or under the surface, its highest at or over it, and some of its footprint nearer the axis than the banks
+    /// are; never a bank or a wall beside it), if one is within `reach` metres: 0 over one's footprint (M6 H3a).
+    /// Meshes have no underside, so they're no obstacle. Sums, products, quotients and one square root, each
+    /// correctly rounded. A change here bumps `zone::river::RIVER_READING`.
+    pub fn obstacle(&self, x: f32, z: f32, surface: f32, reach: f64, banks: &Banks) -> Option<f64> {
+        let (x, z, surface) = (f64::from(x), f64::from(z), f64::from(surface));
+        let mut nearest: Option<f64> = None;
+        for solid in &self.solids {
+            if !(solid.bottom <= surface && surface <= solid.top) {
+                continue;
+            }
+            // Its footprint lies within its bounds, so one past `reach` of them is past it.
+            let outside = |value: f64, low: f64, high: f64| (low - value).max(value - high).max(0.0);
+            let (dx, dz) = (outside(x, solid.low[0], solid.high[0]), outside(z, solid.low[1], solid.high[1]));
+            if dx * dx + dz * dz > reach * reach || !solid.reaches_between(banks) {
+                continue;
+            }
+            let squared = solid.footprint_distance_squared(x, z);
+            if squared <= reach * reach && nearest.is_none_or(|nearest| squared < nearest) {
+                nearest = Some(squared);
+            }
+        }
+        nearest.map(f64::sqrt)
+    }
+}
+
 impl Solid {
+    /// Whether some of its footprint lies strictly between `banks`: since its footprint is convex, whether its
+    /// corners' distances across the axis, the least and the most, overlap the banks' either side.
+    fn reaches_between(&self, banks: &Banks) -> bool {
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for corner in self.faces.iter().flatten() {
+            let across = (corner[0] - banks.centre[0]) * banks.across[0]
+                + (corner[2] - banks.centre[1]) * banks.across[1];
+            (low, high) = (low.min(across), high.max(across));
+        }
+        low < banks.half && high > -banks.half
+    }
+
+    /// The squared distance across the ground from `(x, z)` to its footprint: 0 over one of its faces, and
+    /// otherwise to the nearest of its faces' edges, since its footprint is convex and every edge lies on or in
+    /// it.
+    fn footprint_distance_squared(&self, x: f64, z: f64) -> f64 {
+        let mut nearest = f64::INFINITY;
+        for &[a, b, c] in &self.faces {
+            let side = |from: [f64; 3], to: [f64; 3]| {
+                (to[2] - from[2]) * (x - from[0]) - (to[0] - from[0]) * (z - from[2])
+            };
+            let sides = [side(a, b), side(b, c), side(c, a)];
+            let area = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+            let over = sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0);
+            if area != 0.0 && over {
+                return 0.0;
+            }
+            for (from, to) in [(a, b), (b, c), (c, a)] {
+                let (ex, ez) = (to[0] - from[0], to[2] - from[2]);
+                let length = ex * ex + ez * ez;
+                let t = if length == 0.0 {
+                    0.0
+                } else {
+                    (((x - from[0]) * ex + (z - from[2]) * ez) / length).clamp(0.0, 1.0)
+                };
+                let (px, pz) = (from[0] + ex * t - x, from[2] + ez * t - z);
+                nearest = nearest.min(px * px + pz * pz);
+            }
+        }
+        nearest
+    }
+
     /// Whether `(x, y, z)` lies in it, its faces included: between the lowest and the highest of its faces over
     /// `(x, z)`, as a vertical line meets a convex solid. Sums, products and quotients, as `faces_at`'s.
     fn holds(&self, x: f64, y: f64, z: f64) -> bool {

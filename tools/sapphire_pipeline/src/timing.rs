@@ -245,6 +245,22 @@ impl fmt::Display for Slowest<'_> {
                 }
             }
         }
+        // And every river's reading (M6 H3a): what its zone's cook found along it.
+        if !report.rivers.is_empty() {
+            writeln!(f, "  rivers, a line a river:")?;
+            for river in &report.rivers {
+                writeln!(
+                    f,
+                    "  {} `{}`: {} stretch(es), {} fall(s), {} rapids site(s), {} fall foot site(s)",
+                    relative(&river.zone, source),
+                    river.name,
+                    river.stretches,
+                    river.falls,
+                    river.rapids,
+                    river.feet
+                )?;
+            }
+        }
         Ok(())
     }
 }
@@ -432,6 +448,34 @@ desktop: 3.900 s in all, 4 asset(s)
             ]
         );
         assert!(!fixed_report_text().contains("water surfaces"), "a cook with none says nothing of them");
+    }
+
+    #[test]
+    fn every_river_has_a_line_of_its_own() {
+        let mut report = fixed_report();
+        report.rivers.push(crate::zone::river::RiverLine {
+            zone: PathBuf::from("/content/wood/grove.zone.ron"),
+            name: "race".to_owned(),
+            stretches: 4,
+            falls: 1,
+            rapids: 3,
+            feet: 1,
+        });
+        let slowest = Slowest {
+            report: &report,
+            cook: Cook::Desktop,
+            source: Path::new("/content"),
+            out: Path::new("/loose"),
+            count: 2,
+        };
+        let text = slowest.to_string();
+        let rivers: Vec<&str> =
+            text.split("rivers, a line a river:\n").nth(1).expect("listed").lines().collect();
+        assert_eq!(
+            rivers,
+            ["  wood/grove.zone.ron `race`: 4 stretch(es), 1 fall(s), 3 rapids site(s), 1 fall foot site(s)"]
+        );
+        assert!(!fixed_report_text().contains("rivers"), "a cook with none says nothing of them");
     }
 
     fn fixed_report_text() -> String {

@@ -72,6 +72,7 @@ pub(super) fn surfaces(old: Vec<SurfaceV13>) -> Vec<CookedWaterSurface> {
         probe,
         shore_margin,
         mesh: None,
+        river: None,
     };
     old.into_iter().map(surface).collect()
 }

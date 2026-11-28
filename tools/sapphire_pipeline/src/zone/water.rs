@@ -646,7 +646,7 @@ struct Section {
 }
 
 /// A river point's `(x, z)`.
-fn xz(points: &[RiverPoint], index: usize) -> [f64; 2] {
+pub(super) fn xz(points: &[RiverPoint], index: usize) -> [f64; 2] {
     [f64::from(points[index].at[0]), f64::from(points[index].at[2])]
 }
 
@@ -657,12 +657,12 @@ fn half(points: &[RiverPoint], index: usize, margin: f32) -> f64 {
 }
 
 /// The way to the right of `way`, looking along it from above.
-fn right([dx, dz]: [f64; 2]) -> [f64; 2] {
+pub(super) fn right([dx, dz]: [f64; 2]) -> [f64; 2] {
     [-dz, dx]
 }
 
 /// Each stretch of a river: the way it runs, a unit vector across the ground, and its length.
-fn stretches(points: &[RiverPoint]) -> Vec<([f64; 2], f64)> {
+pub(super) fn stretches(points: &[RiverPoint]) -> Vec<([f64; 2], f64)> {
     (0..points.len() - 1)
         .map(|index| {
             let (from, to) = (xz(points, index), xz(points, index + 1));

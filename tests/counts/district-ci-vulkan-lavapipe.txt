@@ -12,7 +12,11 @@
 # every row of all four walks: this file holds no difference.
 #
 # A change that moves a row the same on both machines is written in the table alone. Refresh this file from CI's
-# artifacts (each `scale-lane-<walk>` folder holds the run's counts.txt), walking nothing:
+# artifacts (each `scale-lane-<walk>` folder holds the run's counts.txt), walking nothing, with one
+# `--refresh <folder>` for each walk's folder (the flag takes one folder each time it is given):
 #   sapphire_testkit counts --table tests/counts/district-ci.txt \
-#     --differences tests/counts/district-ci-vulkan-lavapipe.txt --refresh <folder>...
+#     --differences tests/counts/district-ci-vulkan-lavapipe.txt \
+#     --refresh scale-lane-desktop-high-dusk --refresh scale-lane-desktop-high-night \
+#     --refresh scale-lane-desktop-low-dusk --refresh scale-lane-desktop-low-night \
+#     --refresh scale-lane-nature-desktop-high-dusk --refresh scale-lane-nature-desktop-low-dusk
 # It keeps each line's reason, and writes a new difference under a placeholder that fails until it has one.

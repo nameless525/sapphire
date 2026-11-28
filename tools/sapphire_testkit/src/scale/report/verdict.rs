@@ -31,7 +31,7 @@
 
 use std::fmt::Write as _;
 
-use super::{CountCell, Rounds, TimedCell, gather, ms, thousands, title};
+use super::{CountCell, QuietCell, Rounds, TimedCell, gather, ms, thousands, title};
 use crate::scale::log::{Entry, WaitFrames, Waits};
 use crate::scale::manifest::{Read, Run, Tier, Unit};
 use crate::scale::status::Status;
@@ -464,8 +464,8 @@ pub(super) fn judge(test: u32, run: &Run, name: &str, tier: &Tier, rounds: &Roun
 pub(super) const LOCK_VOID: f64 = 0.10;
 
 /// The rows judged as one depth-only row where the backend overlaps its passes, and the row they're judged as.
-const DEPTH_ROWS: [&str; 2] = ["gpu prepasses", "gpu shadows"];
-const DEPTH_ONLY: &str = "gpu depth only";
+pub(super) const DEPTH_ROWS: [&str; 2] = ["gpu prepasses", "gpu shadows"];
+pub(super) const DEPTH_ONLY: &str = "gpu depth only";
 
 /// Every timed row `keep` takes, in the `cpu` and `gpu` phases: the least round's p95 against its budget, by the
 /// rules the module's doc gives for a backend that overlaps its passes and a void round.
@@ -502,7 +502,7 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
         }
     };
     let reading = |round: &super::Round| round.log.gpu_reading.clone().unwrap_or_default();
-    let overlaps = rounds.rounds.iter().any(|round| reading(round).overlaps);
+    let overlaps = rounds.overlaps();
     if rows.iter().any(|(phase, _)| phase == "gpu") {
         for round in &rounds.rounds {
             let read = reading(round);
@@ -542,38 +542,37 @@ fn timed_rows(findings: &mut Findings, name: &str, rounds: &Rounds, keep: impl F
             continue;
         }
         let pass_row = overlaps && row != "gpu frame";
-        let logged = |round: &super::Round| match round.log.timed(&phase, &row) {
+        // A row no round read (not exercised) judges nothing, as a row with no budget fails nothing.
+        let Some(first) = rounds.rounds.iter().find_map(|round| match round.log.timed(&phase, &row) {
             Some(Entry::Read(timed)) => Some(timed),
             _ => None,
+        }) else {
+            continue;
         };
-        // A row no round read (not exercised) judges nothing, as a row with no budget fails nothing.
-        let Some(first) = rounds.rounds.iter().find_map(logged) else { continue };
         let (budget, proposed) = (first.budget, first.proposed);
         unadopted(findings, &row, budget, proposed);
-        let (mut read, mut few) = (Vec::new(), 0);
-        for round in rounds.rounds.iter().filter(|round| !round.void()) {
-            let Some(timed) = logged(round) else { continue };
-            if !pass_row {
-                read.push(timed.p95);
+        // The least valid round's p95, as the report's tables read it: a pass row's on its frames with no upload
+        // in flight (`Rounds::quiet`), every other row's on every frame.
+        let least = if pass_row {
+            match rounds.quiet(&phase, &row) {
+                QuietCell::Round(_, quiet, _) => Ok(quiet.p95),
+                QuietCell::Few => Err("fewer than a tenth of the frames with no upload in flight"),
+                QuietCell::Void | QuietCell::Unread => Err("every round void"),
+            }
+        } else {
+            match rounds.judged(&phase, &row) {
+                TimedCell::Round(_, timed) => Ok(timed.p95),
+                _ => Err("every round void"),
+            }
+        };
+        let least = match least {
+            Ok(least) => least,
+            Err(why) => {
+                if budget.is_some() {
+                    findings.unjudged.push(format!("{name} {row}: {why}"));
+                }
                 continue;
             }
-            let frames = reading(round);
-            match round.log.no_upload(&phase, &row) {
-                Some(quiet) if frames.no_upload_frames * 10 >= frames.timed_frames && quiet.samples > 0 => {
-                    read.push(quiet.p95);
-                }
-                _ => few += 1,
-            }
-        }
-        let Some(least) = read.into_iter().reduce(f64::min) else {
-            if budget.is_some() {
-                findings.unjudged.push(if few > 0 {
-                    format!("{name} {row}: fewer than a tenth of the frames with no upload in flight")
-                } else {
-                    format!("{name} {row}: every round void")
-                });
-            }
-            continue;
         };
         let row = if pass_row { format!("{row} (no upload in flight)") } else { row };
         against(findings, name, &row, least, budget, proposed);

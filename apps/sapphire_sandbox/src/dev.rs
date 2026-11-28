@@ -24,7 +24,7 @@ use sapphire_platform::{
 };
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::Quality;
-use sapphire_render::{MemoryLedger, RenderStats, Renderer};
+use sapphire_render::{RenderStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
@@ -413,11 +413,12 @@ impl DevTools {
             assets: Some(frame.assets),
             // The process's footprint is a system call (a file's read on Linux): only while something shows.
             memory: self.overlay.is_visible().then(|| {
-                MemoryLedger::of(
+                sapphire_stage::memory_ledger(
                     &frame.render,
                     &executor.stats().pool,
                     &frame.assets,
                     frame.texture_bytes,
+                    frame.audio.as_ref(),
                     sapphire_platform::process_memory().map_or(0, |memory| memory.now),
                 )
             }),

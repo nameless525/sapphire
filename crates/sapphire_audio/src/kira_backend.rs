@@ -41,8 +41,8 @@ use sapphire_assets::sound::DecodedSound;
 
 use crate::LOG_TARGET;
 use crate::backend::{
-    AudioBackend, BusId, BusParams, DeviceStatus, STOP_FADE, StartError, StemStart, VoiceParams, VoiceSlot,
-    VoiceStart,
+    AudioBackend, BusId, BusParams, DeviceStatus, MixRefused, STOP_FADE, StartError, StemStart, VoiceParams,
+    VoiceSlot, VoiceStart,
 };
 use crate::master::{DynamicRange, MasterBuilder, MasterControl};
 use crate::output::Output;
@@ -396,21 +396,20 @@ fn tween(duration: Duration) -> Tween {
 }
 
 impl<O: Output> AudioBackend for KiraBackend<O> {
-    fn set_mix(&mut self, mix: &Mix) {
-        // What plays on the last mix's buses goes with them.
+    fn set_mix(&mut self, mix: &Mix) -> Result<(), MixRefused> {
+        // Built first, so a mix there's no room for leaves the last one playing as it was. What plays on the last
+        // mix's buses goes with them.
+        let Some(tracks) = build_mix(&mut self.manager, mix, &self.room, self.reverb_slots) else {
+            tracing::error!(target: LOG_TARGET, "the mixer has no room for the mix, and keeps the last");
+            return Err(MixRefused);
+        };
         self.music.end(Duration::ZERO);
         for mut voice in self.voices.iter_mut().filter_map(Option::take) {
             voice.stop(Duration::ZERO);
         }
-        match build_mix(&mut self.manager, mix, &self.room, self.reverb_slots) {
-            Some(tracks) => {
-                self.mix = tracks;
-                self.master.set_target(OutputProfile::Home.loudness_lufs());
-            }
-            None => {
-                tracing::error!(target: LOG_TARGET, "the mixer has no room for the mix, and keeps the last")
-            }
-        }
+        self.mix = tracks;
+        self.master.set_target(OutputProfile::Home.loudness_lufs());
+        Ok(())
     }
 
     fn add_sound(&mut self, id: AssetId, sound: &DecodedSound) {

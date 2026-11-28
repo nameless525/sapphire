@@ -25,6 +25,11 @@ pub fn encode_line(samples: &[f32], sample_rate: u32, serial: i32) -> anyhow::Re
         if frames == padded.len() {
             return Ok(bytes);
         }
+        // Padding only lengthens: a decode shorter than its input would have the resize cut the line's end
+        // (fixed after M6 U11's review).
+        if frames < padded.len() {
+            anyhow::bail!("a line of {} frames decodes to {frames}, shorter than it", padded.len())
+        }
         padded.resize(frames, 0.0);
     }
     anyhow::bail!("a line of {} frames never decodes to its own length", samples.len())

@@ -140,7 +140,8 @@ pub struct Cue {
     #[serde(default)]
     pub limit: Option<Limit>,
     /// The voice group of the mix it counts toward ([`Mix::groups`](crate::mix::Mix::groups)), whose limit its
-    /// voices share with every other cue naming it. A group the mix hasn't limits nothing.
+    /// voices share with every other cue naming it. A group the mix hasn't limits nothing, and is counted as it plays
+    /// (`AudioStats::groups_unknown`); `sapphire_pipeline check` refuses one no mix of the tree has.
     #[serde(default)]
     pub group: Option<String>,
     /// Whether it plays round and round until it's ended: on an emitter, whose going ends it. A virtual loop

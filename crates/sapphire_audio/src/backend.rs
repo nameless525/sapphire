@@ -198,6 +198,13 @@ impl fmt::Display for StartError {
     }
 }
 
+/// Why a backend didn't take a mix (fixed after M6 U2's review): it has no room for the mix's tracks, and keeps
+/// the last mix, and everything playing on it, as they were. kira frees a dropped track's room only once its
+/// renderer has run, so mixes set one after another with nothing rendered between them can reach its limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the mixer has no room for the mix's tracks, and keeps the last mix")]
+pub struct MixRefused;
+
 /// A mixer. See the [crate docs](crate).
 ///
 /// Every call but [`Self::add_sound`] is made during a frame, so none may wait on the device: the
@@ -212,8 +219,8 @@ pub trait AudioBackend {
     /// Makes `mix`'s buses, sends and profiles (M6 U2), in place of the last mix's: before any voice plays or
     /// music loads, since what plays on the last mix's buses ends. Load-time work: the mixer allocates for each
     /// bus. Each bus starts at its own volume, open, unpaused, under the `Home` profile. A new backend has
-    /// [`Mix::plain`]'s.
-    fn set_mix(&mut self, mix: &Mix);
+    /// [`Mix::plain`]'s. Refused, nothing changes: the last mix and what plays on it go on.
+    fn set_mix(&mut self, mix: &Mix) -> Result<(), MixRefused>;
 
     /// Starts `sound` on `bus` in a free slot, as `start` says.
     fn start_voice(
@@ -227,7 +234,8 @@ pub trait AudioBackend {
     /// Moves a live voice to `params`, smoothly enough not to click.
     fn set_voice(&mut self, slot: VoiceSlot, params: VoiceParams);
 
-    /// Stops a live voice where it is, or lets it go on from there.
+    /// Stops a live voice where it is, or lets it go on from there: it plays on through a fade of [`STOP_FADE`] to
+    /// its stop, which its playhead counts (`AudioSystem`).
     fn freeze_voice(&mut self, slot: VoiceSlot, frozen: bool);
 
     /// Ends a live voice for good, frozen or not, fading over `fade`: [`STOP_FADE`] to read as at once,
@@ -245,7 +253,7 @@ pub trait AudioBackend {
     fn set_bus_gain(&mut self, bus: BusId, gain_db: f32, fade: Duration);
 
     /// Pauses a bus and every bus under it, fading out over `fade`, its voices waiting where they are; or lets
-    /// it go on from there, fading in.
+    /// it go on from there, fading in. Its voices play on through the fade out, as far as their playheads count.
     fn pause_bus(&mut self, bus: BusId, paused: bool, fade: Duration);
 
     /// Plays the whole mix through `profile`'s volume and effects, or `Home`'s if the mix has none for it,

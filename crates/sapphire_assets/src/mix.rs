@@ -616,6 +616,10 @@ pub enum MixError {
     Cooked(#[from] CookedError),
 }
 
+/// Why a snapshot's pitch, pause or low-pass, or a ducking rule's `when`, can't name a bus below a category.
+const BELOW_A_CATEGORY: &str = "voices play on the categories, so this changes nothing heard on a bus below one: \
+                                name the category under which it lies";
+
 fn invalid(field: impl Into<String>, problem: impl Into<String>) -> MixError {
     MixError::Field { field: field.into(), problem: problem.into() }
 }
@@ -885,6 +889,19 @@ impl Mix {
                     let problem = "the music isn't paused, since its clock goes on: take it down instead";
                     return Err(invalid(format!("{field}.pause"), problem));
                 }
+                // Voices play on the categories, so a pitch, a pause or a filter on a bus below one changes nothing
+                // heard (fixed after M6 U2's review: they checked and did nothing). A gain moves the bus's track,
+                // which carries no sound either until a cue can play below its category (U4): accepted, unheard.
+                if self.bus(&change.bus).is_some_and(|bus| bus >= Bus::ALL.len()) {
+                    let unheard = [
+                        ("pitch", change.pitch.is_some()),
+                        ("pause", change.pause),
+                        ("low_pass_hz", change.low_pass_hz.is_some()),
+                    ];
+                    if let Some((name, _)) = unheard.into_iter().find(|&(_, set)| set) {
+                        return Err(invalid(format!("{field}.{name}"), BELOW_A_CATEGORY));
+                    }
+                }
             }
         }
         Ok(())
@@ -896,11 +913,18 @@ impl Mix {
         }
         for (index, rule) in self.ducking.iter().enumerate() {
             let field = format!("ducking[{index}]");
-            if self.bus(&rule.when).is_none() {
-                return Err(invalid(
-                    format!("{field}.when"),
-                    format!("{:?} isn't one of the mix's buses", rule.when),
-                ));
+            match self.bus(&rule.when) {
+                None => {
+                    return Err(invalid(
+                        format!("{field}.when"),
+                        format!("{:?} isn't one of the mix's buses", rule.when),
+                    ));
+                }
+                // No voice plays below a category, so a rule waiting for one would never duck.
+                Some(bus) if bus >= Bus::ALL.len() => {
+                    return Err(invalid(format!("{field}.when"), BELOW_A_CATEGORY));
+                }
+                Some(_) => {}
             }
             if let DuckFollow::Envelope { full_at } = rule.follow
                 && !(full_at.is_finite() && full_at > 0.0 && full_at <= 1.0)
@@ -1094,9 +1118,9 @@ mod tests {
         snapshots: [
             (name: "slow_motion", priority: 10, attack: 0.03, release: 0.25, driver: WorldTimeScale(floor: 0.2),
              buses: [(bus: "sfx", low_pass_hz: Some(900.0), pitch: Some(0.75))]),
-            (name: "pause", attack: 0.05, release: 0.2, buses: [(bus: "sfx", pause: true), (bus: "music", gain_db: -6.0)]),
+            (name: "pause", attack: 0.05, release: 0.2, buses: [(bus: "sfx", pause: true), (bus: "music", gain_db: -6.0), (bus: "sfx/hits", gain_db: -3.0)]),
         ],
-        ducking: [(when: "voice", follow: Envelope(full_at: 0.5), attack: 0.02, release: 0.03, duck: [(bus: "music", gain_db: -10.0)])],"#;
+        ducking: [(when: "voice", follow: Envelope(full_at: 0.5), attack: 0.02, release: 0.03, duck: [(bus: "music", gain_db: -10.0), (bus: "sfx/hits/heavy", gain_db: -2.0)])],"#;
         let mix = Mix::from_document(&document(&buses, extra)).unwrap();
         assert_eq!(mix.parent(mix.bus("sfx/hits/heavy").unwrap()), mix.bus("sfx/hits"));
         assert_eq!(mix.parent(mix.bus("sfx/hits").unwrap()), Some(mix.category(Bus::Sfx)));
@@ -1126,6 +1150,12 @@ mod tests {
             (r#"(name: "sfx"), (name: "ui"), (name: "ambience"), (name: "music"), (name: "voice")"#.to_owned(), "", "buses[1].name"),
             (r#"(name: "sfx"), (name: "sfx/hits"), (name: "ambience"), (name: "ui"), (name: "music"), (name: "voice")"#.to_owned(), "", "buses[1].name"),
             (format!("{CATEGORIES}, (name: \"music/stings\")"), r#"snapshots: [(name: "s", attack: 0.1, release: 0.1, buses: [(bus: "music/stings", pause: true)])],"#, "snapshots[0].buses[0].pause"),
+            // Below a category, where no voice plays (the M6 backfill): what bends, waits or filters voices, and
+            // what waits for them.
+            (format!("{CATEGORIES}, (name: \"sfx/hits\")"), r#"snapshots: [(name: "s", attack: 0.1, release: 0.1, buses: [(bus: "sfx/hits", gain_db: -3.0, pitch: Some(0.8))])],"#, "snapshots[0].buses[0].pitch"),
+            (format!("{CATEGORIES}, (name: \"sfx/hits\")"), r#"snapshots: [(name: "s", attack: 0.1, release: 0.1, buses: [(bus: "sfx/hits", pause: true)])],"#, "snapshots[0].buses[0].pause"),
+            (format!("{CATEGORIES}, (name: \"sfx/hits\")"), r#"snapshots: [(name: "s", attack: 0.1, release: 0.1, buses: [(bus: "sfx", pause: true), (bus: "sfx/hits", low_pass_hz: Some(900.0))])],"#, "snapshots[0].buses[1].low_pass_hz"),
+            (format!("{CATEGORIES}, (name: \"voice/lines\")"), r#"ducking: [(when: "voice/lines", follow: Presence, attack: 0.1, release: 0.1, duck: [(bus: "music", gain_db: -3.0)])],"#, "ducking[0].when"),
             (CATEGORIES.to_owned(), r#"reverbs: [(name: "a", feedback: 1.0, damping: 0.0, stereo_width: 1.0)],"#, "reverbs[0].feedback"),
             (CATEGORIES.to_owned(), r#"reverbs: [(name: "a", feedback: 0.5, damping: 2.0, stereo_width: 1.0)],"#, "reverbs[0].damping"),
             (CATEGORIES.to_owned(), r#"reverbs: [(name: "a", feedback: 0.5, damping: 0.5, stereo_width: 1.0), (name: "a", feedback: 0.5, damping: 0.5, stereo_width: 1.0)],"#, "reverbs[1].name"),

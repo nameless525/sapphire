@@ -46,6 +46,7 @@
 //! | `stale-waiver`, `unexplained-waiver` | error | A waiver nothing needs, or one with no reason. |
 //! | `foliage-document` | error | A foliage document (M6 G1a) that doesn't read, a field of it that's wrong, named, or a kind's model that isn't a static mesh source of the tree. |
 //! | `zone-document` | error | A zone document that doesn't read, a field of it that's wrong, named (an atmosphere volume's shape, blend or strength among them), or an atmosphere volume's look (M6 V1) that's missing, doesn't read as a day or keys `grade`. |
+//! | `cue-group` | error | A cue whose `group` names a voice group no mix of the tree has (M6 U3's backfill): it would play limited by no group. A cue that doesn't read is the cook's to refuse. |
 //!
 //! Warnings never fail a check; errors do, unless waived.
 //!
@@ -77,6 +78,7 @@ use sapphire_assets::material::{AnyMaterialDocument, RegionGi};
 use sapphire_assets::mesh::{Mesh, SlotMaterial};
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::audio;
 use crate::character_maps;
 use crate::cook::{self, Cook, CookError};
 use crate::effect_sheet::EffectSheetDocument;
@@ -214,6 +216,7 @@ pub enum Rule {
     UnexplainedWaiver,
     FoliageDocument,
     ZoneDocument,
+    CueGroup,
 }
 
 impl Rule {
@@ -238,6 +241,7 @@ impl Rule {
             Self::UnexplainedWaiver => "unexplained-waiver",
             Self::FoliageDocument => "foliage-document",
             Self::ZoneDocument => "zone-document",
+            Self::CueGroup => "cue-group",
         }
     }
 
@@ -260,7 +264,8 @@ impl Rule {
             | Self::StaleWaiver
             | Self::UnexplainedWaiver
             | Self::FoliageDocument
-            | Self::ZoneDocument => Severity::Error,
+            | Self::ZoneDocument
+            | Self::CueGroup => Severity::Error,
         }
     }
 }
@@ -466,6 +471,7 @@ pub fn check_resolved(root: &Path, resolved: &Resolved) -> Result<Report, CheckE
     check.sheets(&assets)?;
     check.foliage_documents(&assets)?;
     check.zone_documents(&assets)?;
+    check.cue_groups(&assets)?;
     let Checker { mut findings, .. } = check;
     waive(&assets, root, &mut findings);
     findings.sort_by(|a, b| {
@@ -904,6 +910,30 @@ impl Checker<'_> {
             });
             if let Err(message) = looks {
                 self.find(asset, Rule::ZoneDocument, None, message);
+            }
+        }
+        Ok(())
+    }
+
+    /// `cue-group`: each cue's voice group held to the groups the tree's mixes name, since a group no mix has limits
+    /// nothing (the mixer counts such a start, `AudioStats::groups_unknown`). A cue or a mix that doesn't read is
+    /// the cook's to refuse, by its field.
+    fn cue_groups(&mut self, assets: &[&SourceAsset]) -> Result<(), CheckError> {
+        let mut groups: Vec<String> = Vec::new();
+        for asset in assets.iter().filter(|asset| matches!(asset.meta.importer, ImportSettings::Mix(_))) {
+            if let Ok(mix) = audio::read_mix(&read(asset)?) {
+                groups.extend(mix.groups.into_iter().map(|group| group.name));
+            }
+        }
+        for asset in assets.iter().filter(|asset| matches!(asset.meta.importer, ImportSettings::Cue(_))) {
+            let Ok(cue) = audio::read_cue(&read(asset)?) else { continue };
+            if let Some(group) = cue.group.filter(|group| !groups.contains(group)) {
+                let known = if groups.is_empty() { "none".to_owned() } else { groups.join(", ") };
+                let message = format!(
+                    "`group`: {group:?} is no voice group of a mix in this tree (they're {known}), so it would \
+                     limit nothing"
+                );
+                self.find(asset, Rule::CueGroup, None, message);
             }
         }
         Ok(())

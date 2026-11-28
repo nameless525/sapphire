@@ -266,3 +266,123 @@ fn a_pause_holds_the_worlds_tails_and_leaves_the_music() {
     }
     assert!((held[70].1 - music).abs() < 0.5, "the music back: {} against {music}", held[70].1);
 }
+
+/// A rising sweep, 200 Hz to 600 Hz, a quarter of full scale, for this long: no stretch of it is like another, so
+/// where it is shows.
+fn sweep(seconds: f32) -> DecodedSound {
+    let samples = (0..(seconds * RATE as f32) as usize)
+        .map(|frame| {
+            let time = frame as f32 / RATE as f32;
+            let phase = 200.0 * time + 400.0 * time * time / (2.0 * seconds);
+            0.25 * (std::f32::consts::TAU * phase).sin()
+        })
+        .collect();
+    DecodedSound { sample_rate: RATE, channels: 1, samples }
+}
+
+/// Where in `reference` (from `from`, over `span` frames) `window` matches best, and how far off it is there at
+/// most: the frame it's at and the error.
+fn found_in(reference: &[f32], from: usize, span: usize, window: &[f32]) -> (usize, f32) {
+    (from..from + span)
+        .map(|at| {
+            let mut error = 0.0f32;
+            for (a, b) in window.iter().zip(&reference[at..]) {
+                error = error.max((a - b).abs());
+                if error > 0.05 {
+                    break;
+                }
+            }
+            (at, error)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("somewhere to look")
+}
+
+/// A looping voice's playhead keeps up with what's heard through ten pauses (M6 U2, fixed after its review):
+/// kira plays a pausing bus's voices on through the pause's fade, so a count that stopped at the pause fell 50 ms
+/// behind each time. Proved by where a virtual voice comes back: outranked after the pauses and revived, it goes
+/// on where its sweep would be had it played on, within the mixer's buffer, as it does with no pauses (`voices.rs`).
+#[test]
+fn a_voices_playhead_keeps_up_through_ten_pauses() {
+    const HUM: AssetId = AssetId::from_text("4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5e");
+    const ROAR: AssetId = AssetId::from_text("4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5f");
+    const LOOP: f32 = 2.0;
+    const LOOP_FRAMES: usize = (LOOP * RATE as f32) as usize;
+    /// The mixer's own buffer, in frames: how far a start or a command lands from where it was asked.
+    const BUFFER: usize = 128;
+    const WINDOW: usize = 2_400;
+    let boss = sapphire_audio::EmitterId(1);
+    let emitters =
+        [sapphire_audio::Emitter { id: boss, position: sapphire_math::Vec3::ZERO, hitstop: false }];
+    let new_system = || {
+        let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
+        system.set_mix(&shipped()).unwrap();
+        system.set_voice_caps(sapphire_audio::VoiceCaps { real: 1, virtual_voices: 4 });
+        system.add_sound(HUM, &sweep(LOOP));
+        system.add_cue(HUM, Cue { priority: 10, looped: true, ..cue_on(Bus::Sfx, HUM, 0.0) });
+        system.add_sound(ROAR, &tone(220.0, 0.3, |_| 1.0));
+        system.add_cue(ROAR, Cue { priority: 200, ..cue_on(Bus::Sfx, ROAR, -50.0) });
+        system
+    };
+    let hum = [CueRequest::new(HUM, CueTarget::On(boss))];
+    let roar = [CueRequest::new(ROAR, CueTarget::Flat)];
+    let pause = [PAUSE_SNAPSHOT];
+    let play = |system: &mut AudioSystem<_>, snapshots: &[Name], cues: &[CueRequest], rng: &mut CueRng| {
+        step(system, &AudioFrame { emitters: &emitters, ..frame(1.0, snapshots, cues) }, rng)
+    };
+
+    // The sweep left playing, a loop and a window of it.
+    let (mut system, mut rng) = (new_system(), CueRng::new(1));
+    let mut reference = play(&mut system, &[], &hum, &mut rng);
+    while reference.len() < 2 * GAME_FRAME + LOOP_FRAMES + WINDOW {
+        reference.extend(play(&mut system, &[], &[], &mut rng));
+    }
+
+    // Ten pauses, each asked and let go on a frame the same distance into the mixer's buffers (800 frames a game
+    // frame against 128 a buffer: every fourth frame), so the commands land alike and only the fades are left.
+    let (mut system, mut rng) = (new_system(), CueRng::new(1));
+    let mut out = play(&mut system, &[], &hum, &mut rng);
+    for _ in 1..20 {
+        out.extend(play(&mut system, &[], &[], &mut rng));
+    }
+    for _ in 0..10 {
+        for _ in 0..12 {
+            out.extend(play(&mut system, &pause, &[], &mut rng));
+        }
+        for _ in 0..20 {
+            out.extend(play(&mut system, &[], &[], &mut rng));
+        }
+    }
+    // Where the sweep is, as heard, past the last pause's fade back in.
+    for _ in 0..20 {
+        out.extend(play(&mut system, &[], &[], &mut rng));
+    }
+    let heard_at = out.len() - WINDOW;
+    let (heard, heard_error) = found_in(&reference, 2 * GAME_FRAME, LOOP_FRAMES, &out[heard_at..]);
+    // Outranked by the roar, virtual, and back where the system counted it to be.
+    let mut back = None;
+    for frame in 0..60 {
+        let cues: &[CueRequest] = if frame == 0 { &roar } else { &[] };
+        out.extend(play(&mut system, &[], cues, &mut rng));
+        if back.is_none() && system.stats().voices_revived > 0 {
+            back = Some(out.len());
+        }
+    }
+    let back = back.expect("it came back");
+    assert!(system.stats().voices_virtualized > 0, "it went virtual");
+    let revived_at = back + BUFFER + GAME_FRAME;
+    let window = &out[revived_at..revived_at + WINDOW];
+    let (revived, revived_error) = found_in(&reference, 2 * GAME_FRAME, LOOP_FRAMES, window);
+
+    // The two places, a loop apart at most, as far apart in the sweep as in the output.
+    let moved = (revived as isize - heard as isize).rem_euclid(LOOP_FRAMES as isize);
+    let elapsed = (revived_at - heard_at) as isize % LOOP_FRAMES as isize;
+    let off = (moved - elapsed).rem_euclid(LOOP_FRAMES as isize);
+    let off = off.min(LOOP_FRAMES as isize - off);
+    #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
+    {
+        println!("after ten pauses, the revived sweep is {off} frames from where it was heard to be");
+    }
+    assert!(heard_error < 2e-3 && revived_error < 2e-3, "the sweep found: {heard_error}, {revived_error}");
+    assert!(off <= BUFFER as isize, "{off} frames from where it was heard to be, after ten pauses");
+}

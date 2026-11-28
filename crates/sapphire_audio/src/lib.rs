@@ -93,7 +93,7 @@ mod voice;
 mod voice_sound;
 
 pub use backend::{
-    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, STOP_FADE, StartError, StemStart,
+    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, MixRefused, STOP_FADE, StartError, StemStart,
     VIRTUAL_FADE, VoiceParams, VoiceSlot, VoiceStart,
 };
 pub use events::{CueParameters, MAX_CUE_PARAMETERS, ParameterValue, SURFACE};
@@ -106,8 +106,8 @@ pub use rng::{CueRandom, CueRng};
 pub use rooms::{Room, RoomShape, Rooms, Space};
 pub use system::{
     AudioFrame, AudioStats, AudioSystem, CueRequest, CueTarget, Emitter, EmitterId, HeardLine, LineRequest,
-    Listener, MAX_VIRTUAL_VOICES, MAX_VOICES, PAUSE_SNAPSHOT, SHORTEST_VIRTUAL_SECONDS, Speaking,
-    SpeechRequest, VoiceCaps, Volumes,
+    Listener, MAX_VIRTUAL_VOICES, MAX_VOICES, PAUSE_SNAPSHOT, SHORTEST_VIRTUAL_SECONDS, SetMixError,
+    Speaking, SpeechRequest, VoiceCaps, Volumes,
 };
 pub use voice::{LineKey, Spoken, VoiceRoute, VoiceRouteError};
 

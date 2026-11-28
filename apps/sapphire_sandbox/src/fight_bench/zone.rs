@@ -3,7 +3,8 @@
 //!
 //! - **Memory** is read after every frame: the memory ledger ([`MemoryLedger`], `Stage::memory_ledger`: what
 //!   the asset server holds, of it meshes and textures against their budgets, the renderer's mesh pool and
-//!   textures, the transient pool, what's retiring, staged and decoded and waiting, and the process), then the
+//!   textures, the transient pool, what's retiring, staged and decoded and waiting, the decoded sound of a fight
+//!   whose sound the bench plays, and the process), then the
 //!   renderer's meshes and materials, the scene's entities and the heap. Each phase logs it at its first
 //!   frame, at its last, and at its most, with the tick each most fell on.
 //! - **A trip** (`zone-trip`'s, or a game flow's) is timed from the frame its exit was taken through the
@@ -15,6 +16,7 @@
 use std::time::Duration;
 
 use sapphire_assets::AssetKind;
+use sapphire_audio::AudioStats;
 use sapphire_render::{LEDGER_ROWS, MemoryLedger};
 
 use super::{Phase, Traced, spread};
@@ -36,10 +38,11 @@ pub(super) struct Held {
 const FIELDS: usize = LEDGER_ROWS.len() + 4;
 
 impl Held {
-    pub(super) fn of(stage: &Stage, heap: usize) -> Self {
+    /// What `stage` holds, and the bench's mixer if it plays the fight's sound (`audio`, its counters).
+    pub(super) fn of(stage: &Stage, audio: Option<&AudioStats>, heap: usize) -> Self {
         let render = stage.renderer.stats();
         Self {
-            ledger: stage.memory_ledger(),
+            ledger: stage.memory_ledger(audio),
             meshes: render.meshes,
             materials: render.materials,
             entities: stage.scene.world().entities().len(),

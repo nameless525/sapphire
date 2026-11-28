@@ -16,8 +16,8 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::backend::{
-    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, STOP_FADE, StartError, VIRTUAL_FADE,
-    VoiceParams, VoiceSlot, VoiceStart,
+    AudioBackend, BusId, BusParams, DeviceState, DeviceStatus, MixRefused, STOP_FADE, StartError,
+    VIRTUAL_FADE, VoiceParams, VoiceSlot, VoiceStart,
 };
 use crate::events::{CueParameters, CuePlan, ParameterValue};
 use crate::master::DynamicRange;
@@ -236,6 +236,16 @@ pub struct AudioFrame<'a> {
     pub rooms: Rooms<'a>,
 }
 
+/// Why [`AudioSystem::set_mix`] left the last mix playing: the mix doesn't check, or the backend has no room for
+/// it.
+#[derive(Debug, thiserror::Error)]
+pub enum SetMixError {
+    #[error(transparent)]
+    Mix(#[from] MixError),
+    #[error(transparent)]
+    Refused(#[from] MixRefused),
+}
+
 /// The system's counters (rule R9). [`Self::update`] is what spec §3.2's "Audio update" row budgets.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AudioStats {
@@ -283,6 +293,10 @@ pub struct AudioStats {
     pub room_changes: u64,
     /// Rooms entered naming a reverb the mix hasn't, which play none (M6 U5), all told.
     pub reverbs_unknown: u64,
+    /// Starts of a cue naming a voice group the mix hasn't, all told (fixed after M6 U3's review): it plays, and no
+    /// group limits it. A request refused before it plays (an emitter not in the frame, a limit) counts only as
+    /// that. The content check refuses such a cue against the tree's mixes.
+    pub groups_unknown: u64,
     /// The output's own counters.
     pub device: DeviceStatus,
     /// The bytes of decoded sound the mixer holds (M6 U1): [`AudioBackend::decoded_bytes`], kept with each
@@ -376,6 +390,9 @@ struct Voice {
     sent: VoiceParams,
     /// Waiting where it is: what the backend was told, while it's real.
     frozen: bool,
+    /// Of the freeze it was sent last, the seconds of its fade still to play ([`STOP_FADE`]), which its playhead
+    /// counts (M6 U2, fixed after its review).
+    playing_out: f32,
     /// Held by its speech's caller ([`SpeechRequest::held`]), whatever hitstop says.
     held: bool,
 }
@@ -452,6 +469,9 @@ struct SentBus {
     gain_db: f32,
     low_pass_hz: f32,
     paused: bool,
+    /// Of the pause it was sent last, the seconds of its fade still to play: kira plays a pausing track's voices on
+    /// until the fade is done, so their playheads count them (M6 U2, fixed after its review).
+    playing_out: f32,
 }
 
 /// A tracked emitter.
@@ -520,6 +540,8 @@ pub struct AudioSystem<B: AudioBackend> {
     stats: AudioStats,
     /// A dropped cue's reason has been logged once.
     warned_unknown: bool,
+    /// Said once that a cue names a voice group the mix hasn't ([`AudioStats::groups_unknown`]).
+    warned_group: bool,
     warned_no_output: bool,
 }
 
@@ -561,6 +583,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             profile: OutputProfile::Home,
             stats: AudioStats::default(),
             warned_unknown: false,
+            warned_group: false,
             warned_no_output: false,
         }
     }
@@ -575,11 +598,14 @@ impl<B: AudioBackend> AudioSystem<B> {
 
     /// Plays everything through `mix` from now on (M6 U2): its buses, snapshots, ducking rules and profiles,
     /// under the output profile asked for last. Load-time work, before the music and voices it's for: what plays
-    /// ends, and music starts again at its next request. A mix that doesn't check changes nothing.
-    pub fn set_mix(&mut self, mix: &Mix) -> Result<(), MixError> {
+    /// ends, and music starts again at its next request. A mix that doesn't check, or that the backend has no room
+    /// for, changes nothing: the last mix plays on, and so does what plays on it (the backend's refusal fixed
+    /// after M6 U2's review, which found the system playing a mix the backend had kept the last in place of).
+    pub fn set_mix(&mut self, mix: &Mix) -> Result<(), SetMixError> {
         mix.check()?;
+        self.backend.set_mix(mix)?;
+        // The backend ended what played on the last mix's buses with them; their slots come back as they finish.
         self.stop_voices();
-        self.backend.set_mix(mix);
         if self.profile != OutputProfile::Home {
             self.backend.set_output_profile(self.profile);
         }
@@ -949,20 +975,31 @@ impl<B: AudioBackend> AudioSystem<B> {
     }
 
     /// Moves every voice's playhead on by the real seconds since the last update, as fast as it plays, unless it
-    /// waits: frozen or held, on a paused bus, or the output not running. A virtual one-shot whose playhead has
-    /// passed its end has ended unheard; a virtual loop goes round.
+    /// waits: frozen or held, on a paused bus, or the output not running. A voice told to wait plays on through
+    /// the fade to its stop, the freeze's or its bus's pause's, and its playhead counts that much of the wait
+    /// (fixed after M6 U2's review: it fell behind what was heard by the fade, each pause and each freeze). A
+    /// virtual one-shot whose playhead has passed its end has ended unheard; a virtual loop goes round.
     fn advance_voices(&mut self, dt: f32, state: DeviceState) {
         if state != DeviceState::Running || !(dt > 0.0 && dt.is_finite()) {
             return;
         }
         for voice in &mut self.voices {
-            if voice.frozen || self.mix.now(BusId::category(voice.bus).index()).held {
+            let bus = BusId::category(voice.bus).index();
+            let mut played = dt;
+            if voice.frozen {
+                played = played.min(voice.playing_out);
+            }
+            if self.mix.now(bus).held {
+                played = played.min(self.sent[bus].playing_out);
+            }
+            voice.playing_out = (voice.playing_out - dt).max(0.0);
+            if played <= 0.0 {
                 continue;
             }
             match voice.mode {
-                Mode::Real(_) => voice.seconds += f64::from(dt) * f64::from(voice.sent.pitch),
+                Mode::Real(_) => voice.seconds += f64::from(played) * f64::from(voice.sent.pitch),
                 Mode::Virtual => {
-                    voice.seconds += f64::from(dt) * f64::from(voice.params.pitch);
+                    voice.seconds += f64::from(played) * f64::from(voice.params.pitch);
                     if voice.looped && voice.length > 0.0 {
                         voice.seconds %= voice.length;
                     } else if voice.seconds >= voice.length {
@@ -971,6 +1008,9 @@ impl<B: AudioBackend> AudioSystem<B> {
                 }
                 Mode::Asked | Mode::Gone => {}
             }
+        }
+        for sent in &mut self.sent {
+            sent.playing_out = (sent.playing_out - dt).max(0.0);
         }
         self.voices.retain(Voice::live);
     }
@@ -1015,6 +1055,7 @@ impl<B: AudioBackend> AudioSystem<B> {
                     Duration::from_secs_f32(now.pause_fade),
                 );
                 sent.paused = now.paused;
+                sent.playing_out = if now.paused { now.pause_fade } else { 0.0 };
             }
         }
     }
@@ -1162,6 +1203,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         };
         let group =
             cue.group.as_deref().and_then(|name| self.groups.iter().position(|group| group.name == name));
+        let unknown_group = group.is_none() && cue.group.is_some();
         let [quiet, loud] = cue.volume_db;
         let [slow, fast] = cue.pitch;
         let gain_db = quiet + (loud - quiet) * volume;
@@ -1187,6 +1229,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             pitch: slow + (fast - slow) * pitch,
             sent: VoiceParams::NEUTRAL,
             frozen: false,
+            playing_out: 0.0,
             held: speech.unwrap_or(false),
         };
         let limit = cue.limit;
@@ -1221,6 +1264,16 @@ impl<B: AudioBackend> AudioSystem<B> {
         if !let_in {
             self.stats.dropped_voice_limit += picks.as_slice().len() as u64;
             return None;
+        }
+        if unknown_group {
+            // A typo in a group's name is no limit at all: each start let in is counted, and it's said once
+            // (fixed after M6 U3's review, counted once it plays since its fix's review).
+            self.stats.groups_unknown += 1;
+            if !self.warned_group {
+                self.warned_group = true;
+                let name = self.cues.get(&request.cue).and_then(|(cue, _)| cue.group.as_deref());
+                tracing::warn!(target: LOG_TARGET, cue = %request.cue, group = ?name, "a cue names a voice group the mix hasn't: no group limits it");
+            }
         }
         for (index, &(sound, tree_db)) in picks.as_slice().iter().enumerate() {
             let mut voice = voice;
@@ -1355,6 +1408,13 @@ impl<B: AudioBackend> AudioSystem<B> {
     fn place(&mut self, index: usize, real: bool, kept: bool) {
         let voice = self.voices[index];
         let frozen = self.is_frozen(&voice);
+        // A freeze plays out over its fade, and a voice that sounds counts it, real or virtual, so a virtual
+        // voice's playhead is held as a real one's is (fixed after M6 U2's review). A virtual voice coming back
+        // starts frozen, silent, so it has none to play.
+        let reviving = matches!(voice.mode, Mode::Virtual) && real;
+        if frozen != voice.frozen && matches!(voice.mode, Mode::Real(_) | Mode::Virtual) && !reviving {
+            self.voices[index].playing_out = if frozen { STOP_FADE.as_secs_f32() } else { 0.0 };
+        }
         match (voice.mode, real, kept) {
             (Mode::Real(slot), true, _) => {
                 if frozen != voice.frozen {
@@ -1536,6 +1596,7 @@ fn sent_of(mix: &Mix) -> Vec<SentBus> {
             gain_db: bus.volume_db.max(SILENCE_DB),
             low_pass_hz: f32::INFINITY,
             paused: false,
+            playing_out: 0.0,
         })
         .collect()
 }
@@ -1980,10 +2041,38 @@ mod tests {
         let buses = shipped().buses.len();
         assert_eq!(
             system.backend_mut().take_calls(),
-            [MockCall::StopVoice { slot: VoiceSlot(0), fade: STOP_FADE }, MockCall::SetMix { buses }]
+            [MockCall::SetMix { buses }, MockCall::StopVoice { slot: VoiceSlot(0), fade: STOP_FADE }]
         );
         system.set_output_profile(OutputProfile::Portable);
         assert_eq!(system.backend_mut().take_calls(), [MockCall::SetOutputProfile(OutputProfile::Portable)]);
+    }
+
+    /// A mix the backend has no room for is refused whole (M6 U2, fixed after its review): what plays goes on, and
+    /// the system keeps playing the last mix's snapshots on the last mix's buses.
+    #[test]
+    fn a_mix_the_backend_refuses_leaves_the_last_playing() {
+        let mut system = system_with(plain_cue());
+        system.set_mix(&shipped()).unwrap();
+        let mut rng = CueRng::new(1);
+        system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
+        system.backend_mut().take_calls();
+        let mut unpaused = shipped();
+        unpaused.snapshots.retain(|snapshot| snapshot.name != "pause");
+        system.backend_mut().refuse_mixes(true);
+        assert!(matches!(system.set_mix(&unpaused), Err(SetMixError::Refused(MixRefused))));
+        let buses = unpaused.buses.len();
+        assert_eq!(system.backend_mut().take_calls(), [MockCall::SetMix { buses }], "nothing stopped");
+        let paused = [PAUSE_SNAPSHOT];
+        system.update(&AudioFrame { snapshots: &paused, ..frame(&[], &[]) }, &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let sfx = MockCall::PauseBus {
+            bus: BusId::category(Bus::Sfx),
+            paused: true,
+            fade: Duration::from_secs_f32(0.05),
+        };
+        assert!(calls.contains(&sfx), "the last mix's pause, on its buses: {calls:?}");
+        assert!(!calls.iter().any(|call| matches!(call, MockCall::StopVoice { .. })), "{calls:?}");
+        assert_eq!(system.stats().voices, 1, "the voice plays on");
     }
 
     /// M6 U2: the shipped `pause` holds the world's buses and the voices', fading as it says, and lets them go on;
@@ -2017,7 +2106,9 @@ mod tests {
                 &mut rng,
             );
         }
-        assert_eq!(seconds(&system), Some(held), "the line waits with its bus");
+        // It plays on through the pause's fade out, as kira plays a pausing track, and then waits with its bus.
+        let waited = seconds(&system).unwrap() - held;
+        assert!((waited - 0.05).abs() < 1e-5, "the line played {waited} s into its pause");
         assert!(!system.backend().calls().iter().any(|call| matches!(call, MockCall::PauseBus { .. })));
         // The music goes down and darkens rather than stopping.
         let music = system.backend().calls().iter().rev().find_map(|call| match *call {
@@ -2391,21 +2482,22 @@ mod tests {
         let played = seconds(&system).unwrap();
         assert!((played - 30.0 * FRAME * 1.25).abs() < 1e-5, "{played}");
 
-        // A pause: the voice waits, and so does its playhead, over the frames it's held.
+        // A pause: the voice waits, and so does its playhead, over the frames it's held, but for the freeze's fade
+        // to its stop, which it plays.
         say(&mut system, greet(1, true), &mut rng);
         assert!(
             system.backend().calls().contains(&MockCall::FreezeVoice { slot: VoiceSlot(0), frozen: true })
         );
-        let held = seconds(&system).unwrap();
+        let held = seconds(&system).unwrap() + STOP_FADE.as_secs_f32() * 1.25;
         for _ in 0..10 {
             say(&mut system, greet(1, true), &mut rng);
         }
-        assert_eq!(seconds(&system), Some(held));
+        assert!((seconds(&system).unwrap() - held).abs() < 1e-5, "{:?} against {held}", seconds(&system));
         say(&mut system, greet(1, false), &mut rng);
         assert!(
             system.backend().calls().contains(&MockCall::FreezeVoice { slot: VoiceSlot(0), frozen: false })
         );
-        assert_eq!(seconds(&system), Some(held));
+        assert!((seconds(&system).unwrap() - held).abs() < 1e-5);
         system.backend_mut().take_calls();
 
         // The same line again, as a new showing: the old voice stops and a new one starts from nothing.
@@ -2950,12 +3042,16 @@ mod tests {
         ask(&mut system, CUE, CueTarget::Flat, &mut rng);
         let stats = system.stats();
         assert_eq!((stats.voices_stolen, stats.dropped_voice_limit, stats.cues_played), (1, 1, 2));
-        // A group the mix hasn't limits nothing.
+        assert_eq!(stats.groups_unknown, 0);
+        // A group the mix hasn't limits nothing, and each start naming it is counted (fixed after M6 U3's review).
         system.set_mix(&Mix::plain()).unwrap();
         for _ in 0..3 {
             ask(&mut system, CUE, CueTarget::Flat, &mut rng);
         }
-        assert_eq!(system.stats().cues_played, 5);
+        assert_eq!((system.stats().cues_played, system.stats().groups_unknown), (5, 3));
+        // One refused before it plays, at an emitter the frame hasn't, is counted as that and not as a start.
+        ask(&mut system, CUE, CueTarget::On(EmitterId(99)), &mut rng);
+        assert_eq!((system.stats().dropped_unknown, system.stats().groups_unknown), (1, 3));
     }
 
     /// M6 U3: past the real cap the lowest-ranked voice goes virtual, its playhead counted on, and comes back where
@@ -3008,6 +3104,43 @@ mod tests {
         // Nor does a low one asked for with no room play at all.
         ask(&mut system, CUE, CueTarget::Flat, &mut rng);
         assert_eq!(system.stats().dropped_voice_limit, 1);
+    }
+
+    /// A virtual voice frozen by a hitstop counts the freeze's fade as a real one plays it (M6 U2, fixed after its
+    /// review), so it comes back where a real one would be: `STOP_FADE` past the frames it wasn't held.
+    #[test]
+    fn a_virtual_loop_across_a_hitstop_keeps_a_real_ones_playhead() {
+        let freezes =
+            |priority| Cue { priority, hitstop: HitstopResponse::Freeze, looped: true, ..plain_cue() };
+        let mut system = rivals(freezes(10), freezes(200), true);
+        system.set_voice_caps(VoiceCaps { real: 1, virtual_voices: 4 });
+        let mut rng = CueRng::new(1);
+        let calm = [actor_at(Vec3::ZERO)];
+        let stopped = [Emitter { hitstop: true, ..calm[0] }];
+        let both = [CueRequest::new(CUE, CueTarget::On(ACTOR)), CueRequest::new(OTHER, CueTarget::On(ACTOR))];
+        system.update(&frame(&calm, &both), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let [MockCall::StartVoice { slot: high, .. }] = calls[..] else { panic!("{calls:?}") };
+        assert_eq!(system.stats().virtual_voices, 1, "the low one waits");
+
+        const HELD: usize = 6;
+        for at in 0..10 + HELD + 10 {
+            let emitters: &[Emitter] = if (10..10 + HELD).contains(&at) { &stopped } else { &calm };
+            system.update(&frame(emitters, &[]), &mut rng);
+        }
+        let calls = system.backend_mut().take_calls();
+        assert!(calls.contains(&MockCall::FreezeVoice { slot: high, frozen: true }), "{calls:?}");
+        system.backend_mut().finish(high);
+        system.update(&frame(&calm, &[]), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let Some(&MockCall::StartVoice { from_seconds, .. }) =
+            calls.iter().find(|call| matches!(call, MockCall::StartVoice { .. }))
+        else {
+            panic!("{calls:?}")
+        };
+        // 27 frames since the asking, HELD of them frozen, of which the first played the freeze's fade out.
+        let expected = (27 - HELD) as f64 * f64::from(FRAME) + STOP_FADE.as_secs_f64();
+        assert!((from_seconds - expected).abs() < 1e-6, "back at {from_seconds}, a real one at {expected}");
     }
 
     /// M6 U3: a real voice keeps its place against a virtual one of the same priority until the other is clearly

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
+use sapphire_audio::AudioStats;
 use sapphire_core::alloc::{AllocCounts, AllocScope};
 use sapphire_core::thermal::ThermalReading;
 use sapphire_platform::{AppInitError, Host};
@@ -702,13 +703,15 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
     }
 
     /// What the stage holds after its last frame, by the engine's accounting and the OS's (M6 X2): the memory
-    /// ledger a bench logs and the overlay shows.
-    pub fn memory_ledger(&self) -> MemoryLedger {
-        MemoryLedger::of(
+    /// ledger a bench logs and the overlay shows, with the decoded sound of `audio`, the app's mixer's counters,
+    /// if it plays any (M6 U1).
+    pub fn memory_ledger(&self, audio: Option<&AudioStats>) -> MemoryLedger {
+        memory_ledger(
             &self.renderer.stats(),
             &self.graph.stats().pool,
             &self.content.stats(),
             self.content.texture_bytes(),
+            audio,
             sapphire_platform::process_memory().map_or(0, |memory| memory.now),
         )
     }
@@ -933,6 +936,49 @@ impl LadderClock {
         let interval = rate.map_or(FRAME, |rate| Duration::from_secs(1) / rate.get());
         self.now += self.handed.take().unwrap_or(interval);
         self.now
+    }
+}
+
+/// The memory ledger (M6 X2) from the counters that keep it, as [`MemoryLedger::of`] reads them, with the decoded
+/// sound the app's mixer holds from `audio`'s [`AudioStats::decoded_bytes`] (M6 U1), none where nothing plays
+/// sound: what [`Stage::memory_ledger`] and an app's overlay both fill it with, since the renderer knows nothing
+/// of audio.
+pub fn memory_ledger(
+    render: &sapphire_render::RenderStats,
+    transients: &sapphire_rhi::TransientStats,
+    assets: &sapphire_assets::AssetStats,
+    textures: u64,
+    audio: Option<&AudioStats>,
+    process: u64,
+) -> MemoryLedger {
+    let audio_decoded = audio.map_or(0, |stats| stats.decoded_bytes);
+    MemoryLedger::of(render, transients, assets, textures, audio_decoded, process)
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    use sapphire_assets::AssetStats;
+    use sapphire_assets::sound::DecodedSound;
+    use sapphire_audio::{AudioSystem, MockBackend};
+    use sapphire_render::{LEDGER_ROWS, RenderStats};
+    use sapphire_rhi::TransientStats;
+
+    /// The ledger's decoded audio is the mixer's own count of what it holds, and nothing without a mixer (M6 U1,
+    /// fixed after its review).
+    #[test]
+    fn the_ledger_reads_the_mixers_decoded_sound() {
+        let mut audio = AudioSystem::new(MockBackend::new());
+        let sound = DecodedSound { sample_rate: 48_000, channels: 1, samples: vec![0.0; 4_800] };
+        audio.add_sound("5c0e0000-0000-4000-8000-0000000000e1".parse().unwrap(), &sound);
+        let stats = audio.stats();
+        assert_eq!(stats.decoded_bytes, 4 * 4_800, "the mock holds what it was given, as f32");
+        let (render, transients, assets) =
+            (RenderStats::default(), TransientStats::default(), AssetStats::default());
+        let ledger = super::memory_ledger(&render, &transients, &assets, 0, Some(&stats), 0);
+        let row = LEDGER_ROWS.iter().find(|row| row.field == "audio_decoded_mib").expect("a row of its own");
+        assert_eq!((row.read)(&ledger), stats.decoded_bytes);
+        let silent = super::memory_ledger(&render, &transients, &assets, 0, None, 0);
+        assert_eq!((row.read)(&silent), 0);
     }
 }
 

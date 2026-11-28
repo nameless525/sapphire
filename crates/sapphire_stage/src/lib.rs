@@ -123,7 +123,7 @@ pub use content::CookTaken;
 pub use extract::{RenderMesh, RenderPose, RenderTransform};
 pub use frame::{
     CaptureTextures, FRAME, FrameHooks, FrameLaps, LoadingFrame, Stage, StageDesc, StageTimes, ToolFrame,
-    gpu_failure, headless_gpu,
+    gpu_failure, headless_gpu, memory_ledger,
 };
 pub use material_overrides::MaterialOverrides;
 pub use playable::{HeldWeapon, PlayableLook};

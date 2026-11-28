@@ -32,7 +32,7 @@
 //! whose dependencies are its stems.
 
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
-use sapphire_reflect::{TypePath, Versioned};
+use sapphire_reflect::{Decoder, TypePath, VersionError, Versioned};
 use sapphire_serialize::DocumentError;
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
 use serde::de::DeserializeOwned;
@@ -102,6 +102,58 @@ impl Versioned for Score {
     /// Version 2 (M6 U2) moved how far the music goes down under a voice line, `duck_db`, into the mix's ducking
     /// rules ([`Mix`](crate::mix::Mix)).
     const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        match version {
+            1 => data.decode::<older::ScoreV1>().map(Into::into).map_err(VersionError::Decode),
+            found => Err(VersionError::TooOld { found, oldest: 1 }),
+        }
+    }
+}
+
+/// Version 1 (M3 A1), as its documents read: version 2's fields and the duck, which is refused by its field as
+/// it's read (fixed after M6 U2's review: a version 1 score was refused as too old, naming nothing). A score
+/// without one reads as it is: what takes the music down under a line is the mix's now, whatever the score says.
+mod older {
+    use serde::Deserialize;
+    use serde::de::{Error, IgnoredAny};
+
+    use super::{Phase, Stem, one_beat};
+
+    /// Why an older score with a duck doesn't read.
+    const NO_DUCK: &str = "a score's `duck_db` is gone since version 2: the mix's ducking rules take the music \
+                           down under a line";
+
+    /// An older score's duck, which must be none.
+    fn no_duck<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
+        let _: IgnoredAny = IgnoredAny::deserialize(deserializer)?;
+        Err(D::Error::custom(NO_DUCK))
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct ScoreV1 {
+        tempo_bpm: f32,
+        beats_per_bar: u32,
+        bars: u32,
+        stems: Vec<Stem>,
+        phases: Vec<Phase>,
+        #[serde(default = "one_beat")]
+        fade_beats: f32,
+        #[serde(default)]
+        volume_db: f32,
+        #[serde(default, deserialize_with = "no_duck")]
+        #[expect(dead_code, reason = "read only to refuse one")]
+        duck_db: (),
+    }
+
+    impl From<ScoreV1> for super::Score {
+        fn from(
+            ScoreV1 { tempo_bpm, beats_per_bar, bars, stems, phases, fade_beats, volume_db, .. }: ScoreV1,
+        ) -> Self {
+            Self { tempo_bpm, beats_per_bar, bars, stems, phases, fade_beats, volume_db }
+        }
+    }
 }
 
 /// One of a score's stems.
@@ -394,6 +446,21 @@ mod tests {
         assert!(error_of("stems", &stems).contains("`pad` is named twice"));
         let phases = r#"phases: [(name: "waiting", play: []), (name: "waiting", play: [])],"#;
         assert!(error_of("phases", phases).contains("`waiting` is named twice"));
+    }
+
+    /// A version 1 score (M6 U2, fixed after its review) reads as it is if it names no duck, and one that does is
+    /// refused by its field, since the duck is the mix's now. A version before 1 is too old.
+    #[test]
+    fn a_version_1_score_reads_without_a_duck_and_is_refused_with_one() {
+        // In `volume_db`'s place, which is empty by default.
+        let older = |line: &str| {
+            Score::from_document(&document("volume_db", line).replace("version: 2", "version: 1"))
+        };
+        assert_eq!(older("").unwrap(), good());
+        let message = older("duck_db: -10.0,").unwrap_err().to_string();
+        assert!(message.contains("`duck_db` is gone since version 2"), "{message}");
+        assert!(message.contains("duck_db: -10.0"), "the document's own line: {message}");
+        assert!(Score::from_document(&document("", "").replace("version: 2", "version: 0")).is_err());
     }
 
     #[test]

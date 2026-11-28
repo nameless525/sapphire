@@ -17,11 +17,13 @@
 use std::path::{Component, Path, PathBuf};
 
 use egui_tiles::LinearDir;
+use sapphire_render::quality::TierId;
 use serde::{Deserialize, Serialize};
 
 use crate::edits::{EntryRef, Track};
 use crate::game::GameTarget;
 use crate::handles::{Axes, GizmoMode, Handle};
+use crate::look::{LookShot, Side};
 use crate::screen::{Aspect, StandIn};
 use crate::sequence::{KeyRef, Lane};
 use crate::shell::Pane;
@@ -230,6 +232,14 @@ pub enum Command {
     Language(String),
     /// Has a path of the current screen read a value, in the preview only.
     StandIn { path: String, value: StandIn },
+    /// Shows the look-dev stage from one of its shots (M6 T15a).
+    LookShot(LookShot),
+    /// Shows the look-dev stage at a quality tier, once its renderer is built off the frame.
+    LookTier(TierId),
+    /// Shows the look-dev stage at an hour of its day: hours since midnight, below 24.
+    LookHour(f32),
+    /// Shows the look-dev stage on the day or light rigs as saved (A) or as edited (B).
+    Compare(Side),
     /// Plays the documents in the viewport, by a script of the game's if one's named, or by the keys.
     PlayInViewport(Option<String>),
     /// Stops what the viewport plays.
@@ -362,6 +372,10 @@ impl Command {
             Self::Aspect(_) => "Aspect",
             Self::Language(_) => "Language",
             Self::StandIn { .. } => "StandIn",
+            Self::LookShot(_) => "LookShot",
+            Self::LookTier(_) => "LookTier",
+            Self::LookHour(_) => "LookHour",
+            Self::Compare(_) => "Compare",
             Self::PlayInViewport(_) => "PlayInViewport",
             Self::StopViewport => "StopViewport",
             Self::PlayInGame(_) => "PlayInGame",
@@ -497,6 +511,10 @@ const COMMANDS: &[Registered] = registry! {
     "Aspect", "Aspect(Wide)", None, "Previews the screen at an aspect";
     "Language", r#"Language("en")"#, None, "Previews the screen in a language";
     "StandIn", r#"StandIn(path: "", value: Number(0.0))"#, None, "Has a screen's path read a value";
+    "LookShot", "LookShot(Face)", None, "Shows the look-dev stage from a shot: the hero, the face or the wide";
+    "LookTier", "LookTier(MobileLow)", None, "Shows the look-dev stage at a quality tier";
+    "LookHour", "LookHour(18.0)", None, "Shows the look-dev stage at an hour of its day";
+    "Compare", "Compare(Saved)", None, "Shows the day or light rigs as saved (A) or as edited (B)";
     "PlayInViewport", "PlayInViewport(None)", None, "Plays the documents in the viewport";
     "StopViewport", "StopViewport", None, "Stops what the viewport plays";
     "PlayInGame", r#"PlayInGame(Arena(script: "attempts"))"#, None,

@@ -5,10 +5,10 @@
 //! and changes on disk. This crate owns the timeline ([`edits`], [`timeline`]), the preview ([`run`],
 //! [`figure`], [`preview`]), an asset browser, a reflection inspector and a cvar panel (all in [`app`]),
 //! talking to a device ([`link`]), the real renderer in a pane ([`viewport`]), a screen's preview on values typed
-//! in ([`screen`]), a cutscene's keys as the sequencer edits them ([`sequence`]) and a run from a snapshot of the
-//! documents ([`play`]). [`app::Editor`] holds them
-//! together, and [`app::Editor::ui`] is the whole interface. Everything the interface does is a named command
-//! ([`commands`]) run by [`app::Editor::run`]: a button, a shortcut, a drag's end and a script alike.
+//! in ([`screen`]), a cutscene's keys as the sequencer edits them ([`sequence`]), the look-dev stage on a day or
+//! light rigs as edited ([`look`], M6 T15a) and a run from a snapshot of the documents ([`play`]). [`app::Editor`]
+//! holds them together, and [`app::Editor::ui`] is the whole interface. Everything the interface does is a named
+//! command ([`commands`]) run by [`app::Editor::run`]: a button, a shortcut, a drag's end and a script alike.
 //!
 //! It owns no rules. What's wrong with a document is what `sapphire_moves`' `check` and `compile` say; what
 //! a move does at a tick is what `sapphire_gameplay`'s `Simulation` does; what a device takes is what live
@@ -37,6 +37,7 @@ pub mod handles;
 pub mod input;
 pub mod judge;
 pub mod link;
+pub mod look;
 pub mod markers;
 pub mod pick;
 pub mod play;

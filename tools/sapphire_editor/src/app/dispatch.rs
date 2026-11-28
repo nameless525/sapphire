@@ -376,6 +376,13 @@ impl Editor {
                     self.refuse(format!("the screen has no path `{path}`"));
                 }
             }
+            Command::LookShot(shot) => self.look.view.shot = *shot,
+            Command::LookTier(tier) => self.look.view.tier = *tier,
+            Command::LookHour(hours) => match crate::look::hour(*hours) {
+                Ok(hours) => self.look.view.hour = hours,
+                Err(why) => self.refuse(why),
+            },
+            Command::Compare(side) => self.look.view.side = *side,
             Command::PlayInViewport(script) => self.play_in_viewport(script.clone()),
             Command::StopViewport => self.viewport.stop_playing(),
             Command::PlayInGame(target) => self.play_in_game(target),

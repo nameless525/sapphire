@@ -29,6 +29,19 @@
 //! time draws. Forward, it plays on; back, or after an edit, it starts over on a fresh stage. The view can't
 //! turn: the timeline's camera is the view.
 //!
+//! A day or a light rig library (M6 T15a) stands the look-dev stage by its one path
+//! ([`sapphire_stage::lookdev::stand`]), from the description a plain `sapphire_sandbox --look-dev <shot> --capture`
+//! stands by, on the window's device, at the look pane's shot, tier and hour, running on the document as it reads
+//! now ([`crate::look`]): an edit hands the stage its new value ([`sapphire_stage::lookdev::show`]), and nothing's
+//! cooked or loaded. What the new value draws that the old didn't (a day gone wet) is declared and built off the
+//! frame, and no frame draws until it's in. The frames of a change show it at once, on the history they had; once
+//! it's held still for a settle, the renderer's frame history starts again ([`sapphire_render::Renderer::build_tier`]
+//! at the tier it has, built off the frame) and the view settles anew from nothing, as a capture's does, so the frame
+//! it rests on is the capture's frame to the pixel; a new size does the same. A tier change builds the new tier's
+//! renderer off the frame while the old one draws (M4 T3's change in place), and takes it when it's built: nothing
+//! builds on a frame. Picking the tier that draws before it lands lets it go; one that can't be built is refused,
+//! and the picker goes back. Another shot stands the stage again.
+//!
 //! Everything on the GPU is the window's to drop: a lost device takes the [`StageView`] with it, and the next
 //! is made from what the editor holds, which is the documents. `tests/viewport.rs` and
 //! `tests/viewport_stage.rs` hold what makes it right, on a real GPU and with no window.
@@ -53,11 +66,16 @@ use sapphire_math::{Vec2, Vec3};
 use sapphire_moves::MoveSet;
 use sapphire_platform::{AppInitError, Event, Host, Timestamp, WindowEvent};
 use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
-use sapphire_render::{CameraData, Msaa, PipelineInventory, PostVariants, RenderSettings, VfxFrame};
+
+use sapphire_render::{
+    CameraData, Msaa, PipelineInventory, PostVariants, RenderSettings, TierBuild, TierRefused, VfxFrame,
+    WarmUpRequest,
+};
 use sapphire_rhi::GpuContext;
 use sapphire_rhi::wgpu;
 use sapphire_sequencer::Origin;
-use sapphire_stage::scene::{LaidOut, Scene};
+use sapphire_stage::lookdev;
+use sapphire_stage::scene::{LaidOut, Scene, TownLook};
 use sapphire_stage::{CaptureTextures, Content, ContentChanges, FrameLaps, SceneShow, Stage, StageDesc};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, Stopwatch};
 use sapphire_timeline::Timeline;
@@ -65,6 +83,7 @@ use sapphire_ui::Atlas;
 use sapphire_zone::ZoneDocument;
 
 use crate::gizmo::{Gizmo, ViewCamera};
+use crate::look::{LookShot, LookShown, LookView};
 use crate::markers::ZoneObjects;
 use crate::play::{PlayRequest, Snapshot};
 use crate::screen::{ScreenShown, StandIn, model_of};
@@ -102,7 +121,28 @@ enum Stood {
     Screen,
 }
 
-/// The texture a viewport's frame draws into.
+/// The look-dev stage the look pane shows (M6 T15a), and what it was last handed. Nothing plays on it.
+struct LookState {
+    stage: Stage,
+    shot: LookShot,
+    look: Arc<TownLook>,
+    hour: f32,
+    /// The tier asked for and building off the frame, and since when.
+    tier: Option<(TierId, Stopwatch)>,
+    /// A tier whose renderer couldn't be built: not asked for again until another is.
+    refused: Option<TierId>,
+    /// What the look last handed it draws, building off the frame: no frame draws until it's in, so none builds it.
+    warming: Option<WarmUpRequest>,
+    /// The frame history's new start, building off the frame at the tier the stage has.
+    /// The history's restart building, and the device's error count when it began.
+    restart: Option<(TierBuild, u32)>,
+    /// Something's changed since the history last started: once the view's held still for a settle, it starts
+    /// again.
+    changed: bool,
+    /// What the last tier change took, for the bar.
+    said: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct ViewportTarget {
     pub texture: wgpu::Texture,
@@ -547,6 +587,10 @@ pub struct ViewportPane {
     camera: Option<ViewCamera>,
     /// The frame's size, when it's a screen's rather than the pane's.
     fixed: Option<(u32, u32)>,
+    /// What the look-dev stage is doing that a person waits on: a tier building, or what the last one cost.
+    look_status: Option<String>,
+    /// A tier the look-dev stage couldn't build, and the tier that draws on, for the picker to go back to.
+    look_refused: Option<(TierId, TierId)>,
 }
 
 impl ViewportPane {
@@ -567,6 +611,9 @@ impl ViewportPane {
                     ui.add_enabled(self.texture.is_some(), egui::Button::new("Play in viewport")).clicked();
             }
             if let Some(status) = &self.status {
+                ui.label(status);
+            }
+            if let Some(status) = &self.look_status {
                 ui.label(status);
             }
         });
@@ -670,6 +717,17 @@ impl ViewportPane {
         self.settling
     }
 
+    /// What the look-dev stage is doing that a person waits on, or what the last tier change cost.
+    #[must_use]
+    pub fn look_status(&self) -> Option<&str> {
+        self.look_status.as_deref()
+    }
+
+    /// A tier the look-dev stage couldn't build since this was last asked, and the tier that draws on instead.
+    pub fn take_look_refused(&mut self) -> Option<(TierId, TierId)> {
+        self.look_refused.take()
+    }
+
     /// The GPU's gone, and egui's textures with it.
     pub fn forget_gpu(&mut self) {
         self.texture = None;
@@ -701,6 +759,8 @@ pub struct ViewportFrame<'a> {
     pub timeline: Option<TimelineShown>,
     /// The screen being edited, if the current document is one with a model that reads.
     pub screen: Option<ScreenShown<'a>>,
+    /// The look-dev stage's view and look, if the current document is a day or a light rig library that reads.
+    pub look: Option<LookShown>,
     /// The time of the pass, in seconds.
     pub now: f64,
 }
@@ -747,6 +807,8 @@ pub struct StageView {
     cooked: u64,
     /// How many stages it has stood.
     stands: u64,
+    /// The look-dev stage, when the look pane's is what shows.
+    look: Option<LookState>,
 }
 
 /// What a screen on the stage shows.
@@ -762,6 +824,11 @@ impl StageView {
     /// The stage, if one's been stood.
     pub fn stage(&mut self) -> Option<&mut Stage<ViewShow>> {
         self.stage.as_mut()
+    }
+
+    /// The look-dev stage, if the look pane's is what shows.
+    pub fn look_stage(&mut self) -> Option<&mut Stage> {
+        self.look.as_mut().map(|look| &mut look.stage)
     }
 
     /// The texture its frames are in.
@@ -819,7 +886,7 @@ impl StageView {
         painter: &mut egui_wgpu::Renderer,
         frame: ViewportFrame<'_>,
     ) {
-        let ViewportFrame { pane, open, content, cooked, moves, zone, timeline, screen, now } = frame;
+        let ViewportFrame { pane, open, content, cooked, moves, zone, timeline, screen, look, now } = frame;
         if !open {
             self.close(painter, pane);
             return;
@@ -837,6 +904,17 @@ impl StageView {
             pane.settling = false;
             return;
         };
+        pane.look_status = None;
+        if let Some(look) = look.filter(|_| self.run.is_none()) {
+            // The look-dev stage is the only one up while it shows.
+            self.stage = None;
+            self.sequenced = None;
+            self.zone = None;
+            self.screen = None;
+            self.draw_look(gpu, painter, pane, (content, cooked), look, wanted);
+            return;
+        }
+        self.look = None;
         // A run has the pane's size; a screen, its aspect's.
         let screen = screen.filter(|_| self.run.is_none());
         let size = screen.map_or(wanted, |screen| screen.aspect.size());
@@ -1246,24 +1324,7 @@ impl StageView {
         size: (u32, u32),
     ) {
         let Some(stage) = &mut self.stage else { return };
-        if self.target.as_ref().is_none_or(|target| target.size() != size) {
-            let target = self.target.insert(ViewportTarget::new(gpu.device(), size));
-            match self.texture {
-                // The ID stays, so what the pass laid out shows the new texture.
-                Some(id) => painter.update_egui_texture_from_wgpu_texture(
-                    gpu.device(),
-                    &target.sampled_view,
-                    wgpu::FilterMode::Nearest,
-                    id,
-                ),
-                None => {
-                    self.texture = Some(painter.register_native_texture(
-                        gpu.device(),
-                        &target.sampled_view,
-                        wgpu::FilterMode::Nearest,
-                    ));
-                }
-            }
+        if size_target(&mut self.target, &mut self.texture, gpu, painter, size) {
             self.settling = SETTLING_FRAMES;
         }
         let playing = self.run.as_ref().map(|run| run.alpha);
@@ -1285,6 +1346,236 @@ impl StageView {
         pane.settling = self.settling > 0 || playing.is_some();
     }
 
+    /// The look-dev stage's share of a frame (M6 T15a): stood at the shot, handed the look and the hour, at the tier
+    /// asked for once it's built, and drawn while it settles.
+    fn draw_look(
+        &mut self,
+        gpu: &Arc<GpuContext>,
+        painter: &mut egui_wgpu::Renderer,
+        pane: &mut ViewportPane,
+        (content, cooked): (Option<&Path>, u64),
+        shown: LookShown,
+        size: (u32, u32),
+    ) {
+        pane.fixed = None;
+        pane.camera = None;
+        // The view is the shot's: nothing turns it.
+        (pane.dragged, pane.scrolled, pane.back_to_game) = (egui::Vec2::ZERO, 0.0, false);
+        let LookShown { view, look, note } = shown;
+        // A cook landed under the town, or another shot: it stands again.
+        if self.cooked != cooked || self.look.as_ref().is_some_and(|state| state.shot != view.shot) {
+            self.look = None;
+            self.failed &= self.cooked == cooked;
+            self.cooked = cooked;
+        }
+        let stood = self.look.is_none();
+        if stood && !self.stand_look(gpu, content, &view, &look, pane) {
+            return;
+        }
+        let Some(state) = &mut self.look else { return };
+        let new_look = !Arc::ptr_eq(&state.look, &look) && state.look != look;
+        if new_look || state.hour.to_bits() != view.hour.to_bits() {
+            let shown = lookdev::show(&mut state.stage.scene, TownLook::clone(&look), view.hour);
+            pane.note = shown.err().map(|why| format!("The look-dev town can't take it: {why}"));
+            // What the new look draws that the old didn't (a day gone wet) builds off the frame before one draws.
+            let declared = state.stage.scene.declared_pipelines(&*state.stage.show);
+            state.warming = Some(state.stage.renderer.warm(&declared));
+            state.hour = view.hour;
+            state.changed = true;
+            self.settling = SETTLING_FRAMES;
+        }
+        state.look = look;
+        let stage = &mut state.stage;
+        if let Some(request) = state.warming {
+            stage.renderer.take_in_warm_up();
+            if !stage.renderer.owns_warm_up(request) {
+                // Asked of a renderer a tier change has replaced since: ask the one it has.
+                state.warming = Some(stage.renderer.warm(&stage.scene.declared_pipelines(&*stage.show)));
+            } else if stage.renderer.is_warm(request) {
+                state.warming = None;
+            }
+        }
+        let active = stage.quality.active().id;
+        if view.tier == active {
+            // Picked back before the build landed: it goes, and quality stays with the tier that draws.
+            if state.tier.take().is_some() {
+                let settings = stage.quality.settings();
+                stage.quality.set_settings(QualitySettings { tier: Some(active), ..settings });
+                stage.prepare_tier_change();
+            }
+            state.refused = None;
+        } else if state.refused != Some(view.tier)
+            && state.tier.as_ref().is_none_or(|(asked, _)| *asked != view.tier)
+        {
+            let settings = stage.quality.settings();
+            stage.quality.set_settings(QualitySettings { tier: Some(view.tier), ..settings });
+            state.tier = Some((view.tier, Stopwatch::start()));
+            state.refused = None;
+            // A restart building at the old tier gives way to the new tier's renderer, which is one too.
+            state.restart = None;
+        }
+        if let Some((asked, since)) = &state.tier {
+            let asked = *asked;
+            stage.prepare_tier_change();
+            if stage.take_tier_change() == Some(asked) {
+                stage.scene.set_ambient_tier(asked);
+                state.said = Some(format!(
+                    "{} built off the frame in {:.1} s and shows from its first frame",
+                    asked.name(),
+                    since.elapsed().as_secs_f32()
+                ));
+                state.tier = None;
+                state.changed = false;
+                self.settling = SETTLING_FRAMES;
+            } else if !stage.tier_change_coming() {
+                // Its renderer can't be built: quality stays with the tier that draws, and the picker goes back.
+                let settings = stage.quality.settings();
+                stage.quality.set_settings(QualitySettings { tier: Some(active), ..settings });
+                state.tier = None;
+                state.refused = Some(asked);
+                state.said =
+                    Some(format!("{} can't be built here: {} draws on", asked.name(), active.name()));
+                pane.look_refused = Some((asked, active));
+                // Wanting none, the stage forgets the failure: a person picking it again asks for it again.
+                stage.prepare_tier_change();
+            } else {
+                pane.look_status = Some(format!(
+                    "Building {} off the frame ({:.1} s): {} draws until it's in",
+                    asked.name(),
+                    since.elapsed().as_secs_f32(),
+                    active.name()
+                ));
+            }
+        }
+        // Held still for a settle since a change, with all it draws built: the frame history starts again, as a
+        // capture's does.
+        if state.changed && state.tier.is_none() && state.warming.is_none() && self.settling == 0 {
+            let ready = state.restart.as_mut().map(|(build, _)| build.is_ready());
+            match ready {
+                None => match stage.renderer.build_tier(&stage.gpu, *stage.renderer.settings()) {
+                    Ok(build) => state.restart = Some((build, stage.gpu.errors())),
+                    Err(error) => {
+                        tracing::warn!(%error, "the look-dev stage's history can't start again: it stands again");
+                        self.look = None;
+                        pane.settling = true;
+                        return;
+                    }
+                },
+                // A warm-up under way would refuse it, and taking it gives it up: it waits.
+                Some(true) if !stage.renderer.is_warming() => {
+                    let (build, errors_at_build) = state.restart.take().expect("building");
+                    // What it built may be what the device refused, as a tier change's (`Stage::take_tier_change`):
+                    // the live renderer stays, and the bar says so.
+                    let errors = stage.gpu.errors().saturating_sub(errors_at_build);
+                    let taken = if errors > 0 {
+                        Err(format!("the device reported {errors} errors as it built"))
+                    } else {
+                        match stage.renderer.take_tier(build, stage.content.zone_probe_grid()) {
+                            Ok(()) => Ok(true),
+                            // Built before pipelines the stage has built since: it builds again.
+                            Err(TierRefused::Stale | TierRefused::Warming | TierRefused::NotReady) => {
+                                Ok(false)
+                            }
+                            Err(TierRefused::Failed(error)) => Err(error.to_string()),
+                        }
+                    };
+                    match taken {
+                        Ok(true) => {
+                            state.changed = false;
+                            self.settling = SETTLING_FRAMES;
+                        }
+                        Ok(false) => {}
+                        Err(why) => {
+                            tracing::warn!(%why, "the look-dev stage's history can't start again");
+                            state.said = Some(format!(
+                                "The view's history can't start again here ({why}): it rests on the frames it has"
+                            ));
+                            state.changed = false;
+                        }
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        let sized = self.target.is_some();
+        if size_target(&mut self.target, &mut self.texture, gpu, painter, size) {
+            self.settling = SETTLING_FRAMES;
+            // A new size is a change: its frames rest on a capture's at that size once its history starts again.
+            if let Some(state) = &mut self.look
+                && sized
+                && !stood
+            {
+                state.changed = true;
+            }
+        }
+        let Some(state) = &mut self.look else { return };
+        if self.settling > 0
+            && state.warming.is_none()
+            && let Some(target) = &self.target
+        {
+            self.settling -= 1;
+            self.frames += 1;
+            if let Err(error) = state.stage.render(&target.render_view, 1.0, |_, _| {}) {
+                pane.note = Some(error.to_string());
+                self.settling = 0;
+            }
+            state.stage.scene.end_frame();
+        }
+        if state.tier.is_none() {
+            pane.look_status = note.or_else(|| state.said.clone());
+        }
+        pane.texture = self.texture;
+        pane.settling = self.settling > 0 || state.changed || state.tier.is_some() || state.warming.is_some();
+    }
+
+    /// Stands the look-dev stage at `view`'s shot, tier and hour, running on `look`, if that's not failed since a
+    /// person last asked. Says whether there is one.
+    fn stand_look(
+        &mut self,
+        gpu: &Arc<GpuContext>,
+        content: Option<&Path>,
+        view: &LookView,
+        look: &Arc<TownLook>,
+        pane: &mut ViewportPane,
+    ) -> bool {
+        if self.failed && !std::mem::take(&mut pane.try_again) {
+            return false;
+        }
+        let Some(content) = content else {
+            pane.note = Some("No cook to draw: `cargo xtask content` makes one".to_owned());
+            return false;
+        };
+        let host = Host::with_content_at(content);
+        let desc = view.desc(&host, gpu, TownLook::clone(look));
+        match lookdev::stand(&host, Arc::clone(gpu), desc) {
+            Ok(stage) => {
+                self.look = Some(LookState {
+                    stage,
+                    shot: view.shot,
+                    look: Arc::clone(look),
+                    hour: view.hour,
+                    tier: None,
+                    refused: None,
+                    warming: None,
+                    restart: None,
+                    changed: false,
+                    said: None,
+                });
+                self.stands += 1;
+                self.failed = false;
+                self.settling = SETTLING_FRAMES;
+                pane.note = None;
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the viewport has no look-dev stage");
+                pane.note = Some(format!("{error}. Click to try again"));
+                self.failed = true;
+                false
+            }
+        }
+    }
+
     fn close(&mut self, painter: &mut egui_wgpu::Renderer, pane: &mut ViewportPane) {
         if let Some(id) = self.texture.take() {
             painter.free_texture(&id);
@@ -1298,7 +1589,39 @@ impl StageView {
         pane.status = None;
         pane.camera = None;
         pane.fixed = None;
+        pane.look_status = None;
     }
+}
+
+/// Makes `target` `size`, if it isn't, keeping egui's name for it, `texture`, so what the pass laid out shows the new
+/// texture. Says whether it made one.
+fn size_target(
+    target: &mut Option<ViewportTarget>,
+    texture: &mut Option<egui::TextureId>,
+    gpu: &GpuContext,
+    painter: &mut egui_wgpu::Renderer,
+    size: (u32, u32),
+) -> bool {
+    if target.as_ref().is_some_and(|target| target.size() == size) {
+        return false;
+    }
+    let target = target.insert(ViewportTarget::new(gpu.device(), size));
+    match texture {
+        Some(id) => painter.update_egui_texture_from_wgpu_texture(
+            gpu.device(),
+            &target.sampled_view,
+            wgpu::FilterMode::Nearest,
+            *id,
+        ),
+        None => {
+            *texture = Some(painter.register_native_texture(
+                gpu.device(),
+                &target.sampled_view,
+                wgpu::FilterMode::Nearest,
+            ));
+        }
+    }
+    true
 }
 
 #[cfg(test)]

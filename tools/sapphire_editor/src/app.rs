@@ -312,6 +312,8 @@ pub struct Editor {
     troubles: u64,
     /// How deep in commands this is: only those at the top are recorded.
     depth: u32,
+    /// A window's frame is under way ([`Self::ui`]): what its commands leave to write waits for its end.
+    in_frame: bool,
     /// The ID an `AddEntryAs` running asks its entry to have.
     entry_id: Option<String>,
     /// The ID an `AddEntry` running drew for a zone's entry, which the recording keeps it by.
@@ -453,6 +455,7 @@ impl Editor {
             palette: None,
             troubles: 0,
             depth: 0,
+            in_frame: false,
             entry_id: None,
             drawn_id: None,
             drawn_ids: Vec::new(),
@@ -1701,6 +1704,14 @@ impl Editor {
 
     /// The whole interface.
     pub fn ui(&mut self, ui: &mut Ui) {
+        self.in_frame = true;
+        self.frame_ui(ui);
+        self.in_frame = false;
+        self.end_frame();
+    }
+
+    /// The frame, before what its commands left to write is written.
+    fn frame_ui(&mut self, ui: &mut Ui) {
         self.closed_unseen = false;
         let now = ui.input(|input| input.time);
         self.now = now;

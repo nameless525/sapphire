@@ -1914,6 +1914,74 @@ mod recorded {
         assert!(session_frame == replayed, "the same frame, to the byte");
     }
 
+    /// A long drag, recorded, writes the file once a frame at most, not once a command (the drag runs two each
+    /// frame it moves), and what the file keeps replays to the same bytes.
+    #[test]
+    fn a_long_recorded_drag_writes_its_file_once_a_frame_at_most() {
+        let session = TestDir::new("long_drag");
+        let path = session.write("player.moves.ron", PLAYER);
+        let script = session.0.join(format!("session{SCRIPT_SUFFIX}"));
+        let mut recording = editor(&session, Some(&path));
+        recording.record_to(script.clone());
+        assert_eq!(recording.recording_writes(), Some(1), "the documents open when it starts");
+        let mut harness = Harness::builder()
+            .with_size((1400.0, 900.0))
+            .with_accessibility_check(false)
+            .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), recording);
+        harness.run_steps(3);
+        let (writes, kept) = {
+            let state = harness.state();
+            (
+                state.recording_writes().expect("recording"),
+                state.recorded().expect("recording").commands.len(),
+            )
+        };
+
+        // The window's end dragged a tick on and back, two ticks on and back, frame after frame.
+        let start = harness.get_by_label("hit volumes light_1_hit 7..11 start").rect().center();
+        let end = harness.get_by_label("hit volumes light_1_hit 7..11 end").rect().center();
+        let per_tick = (end.x - start.x + 2.0) / 4.0;
+        let mut frames = 0;
+        harness.hover_at(end);
+        harness.run_steps(2);
+        harness.drag_at(end);
+        harness.step();
+        frames += 3;
+        for frame in 0..120 {
+            let ticks = if frame % 2 == 0 { 1.0 } else { 2.0 };
+            harness.hover_at(end + egui::vec2(ticks * per_tick, 0.0));
+            harness.step();
+            frames += 1;
+        }
+        harness.drop_at(end + egui::vec2(2.0 * per_tick, 0.0));
+        harness.run_steps(3);
+        frames += 3;
+
+        let state = harness.state();
+        let wrote = state.recording_writes().expect("recording") - writes;
+        let ran = (state.recorded().expect("recording").commands.len() - kept) as u64;
+        assert!(ran >= 200, "the drag ran a command or two a frame: {ran}");
+        assert!(wrote <= frames, "once a frame at most: {wrote} writes over {frames} frames");
+        assert!(wrote * 3 <= ran * 2, "fewer writes than commands: {wrote} for {ran}");
+        harness.state_mut().run(Command::Save).expect("saved");
+        let recorded = harness.state().recorded().expect("recording").clone();
+        let saved = file(&path);
+        assert_ne!(saved, PLAYER, "the drag moved the window");
+        drop(harness);
+
+        let kept = Script::read(&script).expect("the recording reads");
+        assert_eq!(kept.commands.len(), recorded.commands.len(), "the file has every command");
+        let replay = TestDir::new("long_drag_replay");
+        let replayed = replay.write("player.moves.ron", PLAYER);
+        fs::copy(path.with_extension("ron.meta"), replay.0.join("player.moves.ron.meta"))
+            .expect("its sidecar");
+        fs::copy(&script, replay.0.join(format!("session{SCRIPT_SUFFIX}"))).expect("the recording");
+        let mut editor = editor(&replay, None);
+        let kept = Script::read(&replay.0.join(format!("session{SCRIPT_SUFFIX}"))).expect("reads");
+        editor.run_script(&kept).expect("it replays");
+        assert_same(&file(&replayed), &saved, "the same bytes");
+    }
+
     /// The palette finds by words, fills in what a command takes, and Escape closes it with nothing run.
     #[test]
     fn the_palette_runs_what_it_finds() {

@@ -249,7 +249,9 @@ pub(crate) fn run(
         Capturing { stage, view: &view }.lose_frame()?;
     }
     // Frames before the captured one, `step` ticks apart, ending at `ticks`; with the overlay
-    // shown, at least its warm-up, redrawing the same scene state at the end.
+    // shown, at least its warm-up, redrawing the same scene state at the end. With no ticks, this is
+    // `sapphire_stage::lookdev::capture`'s loop, which the look pane draws by: `tests/look_dev.rs` holds them
+    // to agree, so a change to one is a change to the other.
     let earlier = (frames.count - 1).max(if stage.overlay_visible() { OVERLAY_WARMUP_FRAMES } else { 0 });
     if earlier > 0 {
         let draw_every = draw_every.map(NonZeroU32::get);

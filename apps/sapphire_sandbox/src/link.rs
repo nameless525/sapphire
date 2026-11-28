@@ -14,6 +14,8 @@
 //!   frame after the first one drawn with them, so the tool's time to the reply is the time until
 //!   the edit shows (`shader_edits.rs`);
 //! - a cvar is set through the overlay's registry, as the console does;
+//! - a graph's trace is what the first character playing it is doing, and its overrides pin a parameter on
+//!   each one playing it, presentation only (M6 A9, `tuning.rs`'s `graph_trace` and `override_graph`);
 //! - a capture is answered with the next frame the app draws ([`FrameCapture`]): the windowed
 //!   app draws that frame into a texture it reads back instead of its surface, and the offscreen
 //!   `--offscreen` mode into one beside its own target. The PNG is compressed on a thread of its
@@ -57,7 +59,8 @@ use crate::shader_edits::{Origin, ShaderEdits};
 use game_combat::combat::Combat;
 use game_combat::fight::Fight;
 use game_combat::tuning::{
-    Document, DocumentFrame, DocumentHost, LiveTuning, Reloaded, attempts, error_chain,
+    Document, DocumentFrame, DocumentHost, LiveTuning, Reloaded, attempts, error_chain, graph_trace,
+    override_graph,
 };
 use sapphire_stage::Readback;
 use sapphire_stage::content::Content;
@@ -289,6 +292,22 @@ impl Link {
                         Err(error) => {
                             refuse(&mut self.errors, reply, format!("pack {name:?}: {}", error_chain(&error)))
                         }
+                    }
+                }
+                Push::GraphTrace { graph, reply } => {
+                    match graph_trace(&graph, &fight.show, scene, content.character_kind()) {
+                        Ok(trace) => reply.reply(ReplyBody::GraphTrace(trace)),
+                        Err(error) => refuse(&mut self.errors, reply, format!("{graph}: {error}")),
+                    }
+                }
+                Push::GraphOverride { graph, set, reply } => {
+                    let set = set.as_ref().map(|(parameter, value)| (parameter.as_str(), *value));
+                    match override_graph(&graph, set, &fight.show, scene, content.character_kind()) {
+                        Ok(characters) => {
+                            tracing::info!(target: LOG_TARGET, graph, ?set, characters, "live link overrode a graph");
+                            reply.reply(ReplyBody::GraphOverridden { characters });
+                        }
+                        Err(error) => refuse(&mut self.errors, reply, format!("{graph}: {error}")),
                     }
                 }
                 Push::Capture { reply } if self.captures.len() < WAITING_CAPTURES => {

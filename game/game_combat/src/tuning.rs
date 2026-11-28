@@ -23,6 +23,11 @@
 //! - **The effects** (`default_effects.ron`): what a fight's cues and sword trails play takes them if the cue
 //!   table still finds its names. What's playing ends, and a trail starts again at the next cut.
 //!
+//! - **A graph's parameters by hand** (M6 A9): live link's graph trace ([`graph_trace`]) reads what the first
+//!   character playing a graph of one of those names is doing, and its overrides ([`override_graph`]) pin a
+//!   parameter on every one, until a clear. They're presentation: they set the graph player a character's
+//!   pose is drawn from, never what the simulation steps, so no checksum moves, and a fighter the fixed step
+//!   poses (a `FixedBody`, whose graph reads every parameter in the step) is refused.
 //! - **A retained screen** (`.ui.ron`, M3 U4): a document that parses, checks and resolves against the
 //!   model replaces the screen on show, with `--ui-game`, and one that doesn't keeps it. Only the shown screen's document is taken.
 //!
@@ -46,19 +51,21 @@
 
 use std::path::{Path, PathBuf};
 
-use sapphire_anim::{BodyTuning, CharacterMotion};
+use sapphire_anim::{BodyTuning, CharacterMotion, OverrideError};
 use sapphire_assets::graph::clip_id;
 use sapphire_assets::graph::v2::{AnimGraph, Target};
 use sapphire_assets::ui::UiDocument;
-use sapphire_assets::{AssetChange, AssetKind, Handle};
+use sapphire_assets::{AssetChange, AssetId, AssetKind, Handle};
 use sapphire_camera::CameraTuning;
+use sapphire_core::Name;
 use sapphire_cues::CueTable;
+use sapphire_ecs::prelude::Entity;
 use sapphire_gameplay::replay::{LiveMoves, compile_document, document_file_name};
 use sapphire_gameplay::targeting::TargetingTuning;
 use sapphire_gameplay::{ActorId, MoveSetId, Simulation, Tuned};
 use sapphire_hot_reload::sources;
 use sapphire_input::InputBindings;
-use sapphire_livelink::protocol::{LiveDocument, MoveAttempt, TickWindow};
+use sapphire_livelink::protocol::{GraphTrace, LiveDocument, MoveAttempt, TickWindow};
 use sapphire_moves::{ControllerProfile, MoveSet, MoveSetDocument, Span};
 use sapphire_reflect::stable_name;
 use sapphire_render::Renderer;
@@ -75,7 +82,7 @@ use crate::LOG_TARGET;
 use crate::combat::Combat;
 pub use crate::documents::error_chain;
 use crate::fight::{ENEMY_GRAPH, Fight, FightShow};
-use sapphire_stage::anim_graph::SHOW_MOVES_PATH;
+use sapphire_stage::anim_graph::{GraphDriver, SHOW_MOVES_PATH};
 use sapphire_stage::content::{Content, GraphKey, newest_text};
 use sapphire_stage::scene::Scene;
 
@@ -885,6 +892,101 @@ pub fn attempts(sim: &Simulation, cast: &[ActorId]) -> Vec<MoveAttempt> {
             })
         })
         .collect()
+}
+
+/// What the first character playing the graph of file name `origin` is doing as of the last frame (M6 A9), for
+/// live link's graph trace. A fighter the fixed step poses has none: its graph player plays nothing.
+/// `character_kind` is the playable kind the character draws as (`Content::character_kind`).
+pub fn graph_trace(
+    origin: &str,
+    show: &FightShow,
+    scene: &Scene,
+    character_kind: Option<AssetId>,
+) -> Result<GraphTrace, String> {
+    let (owner, _) = graph_of(origin)?;
+    let characters = show.graph_characters(scene, character_kind, owner)?;
+    trace_among(origin, owner, &characters, scene)
+}
+
+/// The trace of the first of `characters` the fixed step doesn't pose.
+pub(crate) fn trace_among(
+    origin: &str,
+    owner: GraphKey,
+    characters: &[(Entity, bool)],
+    scene: &Scene,
+) -> Result<GraphTrace, String> {
+    let (shown, _) = characters.iter().find(|(_, fixed)| !fixed).ok_or_else(|| fixed_step(owner))?;
+    let driver = scene.world().get::<GraphDriver>(*shown).ok_or("its graph has gone")?;
+    Ok(GraphTrace::of(&driver.player, document_file_name(origin), &owner.to_string(), characters.len()))
+}
+
+/// Pins `parameter` of the graph of file name `origin` to `value` (`Some`) on every character playing it, or
+/// lets every one of its parameters go (`None`), from the next frame (M6 A9), and says how many took it. A
+/// fighter the fixed step poses is left alone, and if that's all of them, refused. It's all or nothing: if any
+/// of them would refuse the parameter (one mid-replacement onto a graph without it), none takes it. A
+/// character that comes later (a new wave, a warrior made again) starts with none.
+pub fn override_graph(
+    origin: &str,
+    set: Option<(&str, f32)>,
+    show: &FightShow,
+    scene: &mut Scene,
+    character_kind: Option<AssetId>,
+) -> Result<u32, String> {
+    let (owner, _) = graph_of(origin)?;
+    let characters = show.graph_characters(scene, character_kind, owner)?;
+    override_among(origin, owner, set, &characters, scene)
+}
+
+/// [`override_graph`] on `characters`.
+pub(crate) fn override_among(
+    origin: &str,
+    owner: GraphKey,
+    set: Option<(&str, f32)>,
+    characters: &[(Entity, bool)],
+    scene: &mut Scene,
+) -> Result<u32, String> {
+    let playing: Vec<Entity> = characters
+        .iter()
+        .filter(|(entity, fixed)| !fixed && scene.world().get::<GraphDriver>(*entity).is_some())
+        .map(|&(entity, _)| entity)
+        .collect();
+    if playing.is_empty() {
+        return Err(fixed_step(owner));
+    }
+    let graph = document_file_name(origin);
+    if let Some((parameter, value)) = set {
+        // Named from the text sent: a release build prints a `Name` as its hash.
+        let name = Name::intern(parameter);
+        for &entity in &playing {
+            let driver = scene.world().get::<GraphDriver>(entity).ok_or("its graph has gone")?;
+            driver.player.check_override(name, value).map_err(|error| match error {
+                OverrideError::NoSuchParameter(_) => {
+                    format!("the graph `{graph}` has no parameter `{parameter}`, and the controller no input of that name")
+                }
+                OverrideError::NotANumber => format!("`{parameter}` takes a number, not {value}"),
+                OverrideError::Full => format!("`{parameter}`: {error}"),
+            })?;
+        }
+    }
+    for &entity in &playing {
+        let mut driver = scene.world_mut().get_mut::<GraphDriver>(entity).ok_or("its graph has gone")?;
+        match set {
+            Some((parameter, value)) => {
+                driver
+                    .player
+                    .set_override(Name::intern(parameter), value)
+                    .map_err(|error| error.to_string())?;
+            }
+            None => driver.player.clear_overrides(),
+        }
+    }
+    Ok(u32::try_from(playing.len()).unwrap_or(u32::MAX))
+}
+
+fn fixed_step(owner: GraphKey) -> String {
+    format!(
+        "the fixed step poses {owner} here, and reads every parameter of its graph: an override is presentation's"
+    )
 }
 
 /// Whose graph a document with this name is, and its path, or why it reaches nothing here: an edit can

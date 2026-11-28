@@ -19,8 +19,8 @@ use sapphire_assets::{
 };
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarRegistry};
 use sapphire_livelink::protocol::{
-    Capture, DeviceStatus, MAX_FRAME, Preamble, Reply, ReplyBody, Request, RequestBody, read_frame,
-    write_frame,
+    Capture, DeviceStatus, GraphTrace, MAX_FRAME, Preamble, Reply, ReplyBody, Request, RequestBody,
+    TracedParameter, read_frame, write_frame,
 };
 use sapphire_livelink::{
     Client, LinkError, LinkMode, LiveLink, LivePacks, PROTOCOL_VERSION, Push, PushLimits, ReloadTracker,
@@ -95,6 +95,8 @@ struct App {
     timeline: TodTimeline,
     /// The source of the one script a fight here runs, `boss.luau`.
     script: String,
+    /// The one graph a character here plays, `character.animgraph.ron`: its parameter `speed` as overridden.
+    speed: Option<f32>,
     cvars: CvarRegistry,
     frame: u64,
     /// The length of the PNG a capture answers with.
@@ -124,6 +126,7 @@ impl App {
             uploads: BTreeMap::new(),
             timeline: default_day(),
             script: String::new(),
+            speed: None,
             cvars,
             frame: 0,
             // As large as a phone's PNG gets.
@@ -178,6 +181,37 @@ impl App {
                     reply.reply(ReplyBody::ScriptApplied { changed });
                 }
                 Push::Script { origin, reply, .. } => reply.refuse(format!("{origin}: no fight runs it")),
+                // What a graph does is the stage's: here, a trace that says what was set.
+                Push::GraphTrace { graph, reply } if graph == "character.animgraph.ron" => {
+                    reply.reply(ReplyBody::GraphTrace(GraphTrace {
+                        graph,
+                        characters: 1,
+                        parameters: vec![TracedParameter {
+                            name: "speed".into(),
+                            value: self.speed.unwrap_or(0.0),
+                            overridden: self.speed.is_some(),
+                        }],
+                        ..GraphTrace::default()
+                    }));
+                }
+                Push::GraphOverride { graph, set, reply } if graph == "character.animgraph.ron" => {
+                    match set {
+                        Some((parameter, value)) if parameter == "speed" => {
+                            self.speed = Some(value);
+                            reply.reply(ReplyBody::GraphOverridden { characters: 1 });
+                        }
+                        Some((parameter, _)) => {
+                            reply.refuse(format!("the graph has no parameter `{parameter}`"))
+                        }
+                        None => {
+                            self.speed = None;
+                            reply.reply(ReplyBody::GraphOverridden { characters: 1 });
+                        }
+                    }
+                }
+                Push::GraphTrace { graph, reply } | Push::GraphOverride { graph, reply, .. } => {
+                    reply.refuse(format!("{graph}: no character plays it"));
+                }
                 Push::Shaders { reply, .. } => reply.refuse("no renderer here"),
                 Push::Pack { pack, reply } => match pack.apply(&self.packs, &mut self.server) {
                     Ok(outcome) => self.tracker.track(reply, outcome),
@@ -481,6 +515,43 @@ fn a_script_reaches_the_fight_running_it_by_its_file_name() {
         "{elsewhere}"
     );
     assert_eq!(app.script, source);
+}
+
+/// A graph's trace and its overrides go by its file name, an override shows in the next trace, and a clear lets
+/// it go (M6 A9).
+#[test]
+fn a_graphs_parameters_are_traced_and_overridden_by_its_file_name() {
+    let mut app = App::new({
+        let base = MemoryPackSource::new();
+        base.insert("shared", shared([1.0; 4]));
+        base
+    });
+    let graph = "character.animgraph.ron";
+    let (before, took, during, refused, cleared, after, elsewhere) =
+        app.serve(on_client(app.address(), move |client| {
+            let before = client.graph_trace(graph).unwrap();
+            let took = client.override_graph(graph, Some(("speed", 3.5))).unwrap();
+            let during = client.graph_trace(graph).unwrap();
+            let refused = client.override_graph(graph, Some(("height", 1.0))).unwrap_err();
+            let cleared = client.override_graph(graph, None).unwrap();
+            let after = client.graph_trace(graph).unwrap();
+            (
+                before,
+                took,
+                during,
+                refused,
+                cleared,
+                after,
+                client.graph_trace("slime.animgraph.ron").unwrap_err(),
+            )
+        }));
+    let speed = |trace: &GraphTrace| (trace.parameters[0].value, trace.parameters[0].overridden);
+    assert_eq!(speed(&before), (0.0, false));
+    assert_eq!((took, cleared), (1, 1));
+    assert_eq!(speed(&during), (3.5, true));
+    assert!(matches!(&refused, LinkError::Refused(message) if message.contains("height")), "{refused}");
+    assert_eq!(speed(&after), (0.0, false));
+    assert!(matches!(&elsewhere, LinkError::Refused(message) if message.starts_with("slime")), "{elsewhere}");
 }
 
 /// A day that keys the world's emission (M1 W1's keyed emission), pushed as an artist edits the

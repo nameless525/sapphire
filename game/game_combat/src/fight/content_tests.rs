@@ -726,6 +726,47 @@ fn an_edited_enemy_graph_stays_until_a_pack_replaces_it() {
     panic!("the cook of the document should win over the edit it came after");
 }
 
+/// Live link's graph trace and overrides (M6 A9) reach the warriors playing the enemy's graph by its file
+/// name: an override is what their graph is fed from the next frame until it's cleared, and a parameter
+/// neither the graph nor the controller has is refused. The controller's `speed` is traced and taken
+/// though the graph, which reads the smoothed velocity, never names it.
+#[test]
+#[ignore = "needs a GPU"]
+fn live_links_graph_trace_and_overrides_reach_the_warriors_playing_it() {
+    const WARRIOR: &str = "warrior.animgraph.ron";
+    let speed = |stage: &Stage| {
+        let trace =
+            crate::tuning::graph_trace(WARRIOR, &stage.show, &stage.scene, stage.content.character_kind())
+                .expect("a trace");
+        assert_eq!(trace.graph, WARRIOR);
+        assert!(trace.characters >= 1, "{trace:?}");
+        let speed =
+            trace.parameters.iter().find(|parameter| parameter.name == "speed").expect("the controller's");
+        (speed.value, speed.overridden)
+    };
+    let mut stage = Stage::new();
+    stage.play_fighters();
+    let mut fight = stage.start_fight();
+    assert!(!speed(&stage).1);
+
+    let Stage { scene, show, content, .. } = &mut stage;
+    let took =
+        crate::tuning::override_graph(WARRIOR, Some(("speed", 2.5)), show, scene, content.character_kind())
+            .expect("it takes");
+    assert!(took >= 1);
+    let refused =
+        crate::tuning::override_graph(WARRIOR, Some(("height", 1.0)), show, scene, content.character_kind())
+            .expect_err("neither has it");
+    assert!(refused.contains("height"), "{refused}");
+    stage.step_fight(&mut fight);
+    assert_eq!(speed(&stage), (2.5, true));
+
+    let Stage { scene, show, content, .. } = &mut stage;
+    crate::tuning::override_graph(WARRIOR, None, show, scene, content.character_kind()).expect("it clears");
+    stage.step_fight(&mut fight);
+    assert!(!speed(&stage).1);
+}
+
 /// A cooked set's new version reaches the simulation that plays its document (M2 T2), which is how
 /// moves that name clips get there, and bytes that didn't change make no new revision.
 #[cfg(feature = "dev")]

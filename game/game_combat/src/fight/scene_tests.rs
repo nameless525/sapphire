@@ -719,6 +719,81 @@ fn both_fighters_play_their_graphs_and_the_blade_stays_in_hand() {
     }
 }
 
+/// Live link's graph trace and overrides (M6 A9) reach the fighters by the graph's file name, with no GPU: the
+/// warriors by the enemy's graph, the player by the heroine's, every name as text. A parameter neither the graph
+/// nor the controller has is refused by the name sent, and none takes it. A fighter the fixed step poses (a
+/// configured fight's overhead pair, whose graph players play nothing) is refused, its trace and its override,
+/// and keeps none.
+#[cfg(feature = "dev")]
+#[test]
+fn live_link_reaches_the_fighters_playing_a_graph_and_refuses_one_the_fixed_step_poses() {
+    use crate::tuning::{graph_trace, override_among, override_graph, trace_among};
+    use sapphire_livelink::protocol::GraphTrace;
+    use sapphire_stage::content::GraphKey;
+
+    const WARRIOR: &str = "warrior.animgraph.ron";
+    const HEROINE: &str = "character.animgraph.ron";
+    let bytes = clip().to_cooked().expect("cooked");
+    let cooked = Clip::read(&bytes).expect("a valid clip");
+    let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
+    let (mut scene, mut sim, cast) = fighting(&table);
+    let mut step = |scene: &mut Staged| {
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        scene.follow_simulation(&sim, &cast);
+        scene.animate_fighters(&table, &table, 1.0);
+    };
+    step(&mut scene);
+    let kind = Some(playable::KIND);
+    let warrior = scene.show.warriors[0].body;
+    let trace = |scene: &Staged, graph: &str| graph_trace(graph, &scene.show, &scene.scene, kind);
+    let speed = |trace: &GraphTrace| {
+        let speed = trace.parameters.iter().find(|parameter| parameter.name == "speed")?;
+        Some((speed.value, speed.overridden))
+    };
+
+    let traced = trace(&scene, WARRIOR).expect("the warrior's");
+    assert_eq!((traced.graph.as_str(), traced.characters), (WARRIOR, 1));
+    assert_eq!(traced.layers.first().map(|layer| layer.state.as_str()), Some("ground"), "{traced:?}");
+    assert_eq!(speed(&traced).map(|(_, overridden)| overridden), Some(false));
+
+    let Staged { scene: stage, show } = &mut scene;
+    assert_eq!(override_graph(WARRIOR, Some(("speed", 2.5)), show, stage, kind), Ok(1));
+    let refused =
+        override_graph(WARRIOR, Some(("height", 1.0)), show, stage, kind).expect_err("neither has it");
+    assert!(refused.contains("has no parameter `height`"), "{refused}");
+    let refused =
+        override_graph(WARRIOR, Some(("speed", f32::NAN)), show, stage, kind).expect_err("a number");
+    assert!(refused.contains("`speed`"), "{refused}");
+    assert_eq!(override_graph(HEROINE, Some(("speed", 1.0)), show, stage, kind), Ok(1), "the player's own");
+    step(&mut scene);
+    assert_eq!(speed(&trace(&scene, WARRIOR).expect("a trace")), Some((2.5, true)));
+    assert_eq!(speed(&trace(&scene, HEROINE).expect("a trace")), Some((1.0, true)));
+    let Staged { scene: stage, show } = &mut scene;
+    assert_eq!(override_graph(WARRIOR, None, show, stage, kind), Ok(1));
+    step(&mut scene);
+    assert_eq!(
+        speed(&trace(&scene, WARRIOR).expect("a trace")).map(|(_, overridden)| overridden),
+        Some(false)
+    );
+
+    // The overhead pair: the arena's two fighters, in its order, the player's first.
+    let posed =
+        scene.show.graph_characters_posed(&scene.scene, kind, ENEMY_GRAPH, [false, true]).expect("there");
+    assert_eq!(posed, [(warrior, true)]);
+    let heroine = GraphKey::playable(playable::KIND);
+    let player =
+        scene.show.graph_characters_posed(&scene.scene, kind, heroine, [true, false]).expect("there");
+    assert_eq!(player, [(scene.character(), true)]);
+    let refused = trace_among(WARRIOR, ENEMY_GRAPH, &posed, &scene.scene).expect_err("it plays nothing");
+    assert!(refused.contains("the fixed step poses"), "{refused}");
+    let Staged { scene: stage, .. } = &mut scene;
+    let refused = override_among(WARRIOR, ENEMY_GRAPH, Some(("speed", 3.0)), &posed, stage)
+        .expect_err("presentation's");
+    assert!(refused.contains("the fixed step poses"), "{refused}");
+    let held = scene.world().get::<GraphDriver>(warrior).expect("playing").player.overrides().count();
+    assert_eq!(held, 0, "it keeps none");
+}
+
 /// The blade is where the hand is, held or playing, and goes with the character when root
 /// motion moves it. It draws as a character with no body, lit like the one holding it, and
 /// keeps its place through a device loss's new mesh.

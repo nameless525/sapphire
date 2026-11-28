@@ -2006,6 +2006,61 @@ impl FightShow {
         self.renew_stock_drivers(content, slot);
         Ok(())
     }
+
+    /// The characters playing `owner`'s graph here, as live link's graph trace and overrides reach them (M6
+    /// A9), the player's or the first warrior's first, each with whether the fixed step poses it.
+    /// `character_kind` is the playable kind the character draws as (`Content::character_kind`). A fighter
+    /// whose body the simulation poses ([`FixedBodyRenderer`]) plays its graph in the fixed step, which reads
+    /// every parameter, and its own graph player plays nothing, so it takes no override and has no trace.
+    #[cfg(feature = "dev")]
+    pub fn graph_characters(
+        &self,
+        scene: &Scene,
+        character_kind: Option<AssetId>,
+        owner: GraphKey,
+    ) -> Result<Vec<(Entity, bool)>, String> {
+        let fixed = self.fixed_fighters.each_ref().map(Option::is_some);
+        self.graph_characters_posed(scene, character_kind, owner, fixed)
+    }
+
+    /// [`Self::graph_characters`], with whether the fixed step poses each of the arena's two fighters (the
+    /// player's first) given: a test's way to a configured fight's routing without a cooked overhead pair.
+    #[cfg(feature = "dev")]
+    pub(crate) fn graph_characters_posed(
+        &self,
+        scene: &Scene,
+        character_kind: Option<AssetId>,
+        owner: GraphKey,
+        fixed_fighters: [bool; 2],
+    ) -> Result<Vec<(Entity, bool)>, String> {
+        let fixed = |entity: Entity| {
+            self.arena.as_ref().is_some_and(|arena| {
+                arena.fighters().zip(fixed_fighters).any(|((at, _), fixed)| fixed && at == entity)
+            })
+        };
+        if let Some(kind) = owner.kind() {
+            if character_kind != Some(kind) {
+                return Err(format!("no character here draws as the playable kind {kind}"));
+            }
+            let character = scene.graph_character().ok_or(
+                "no character here plays a graph: `--look-dev <shot> --graph <script>` and `--arena --fight` have one",
+            )?;
+            return Ok(vec![(character, fixed(character))]);
+        }
+        let slot = self.graph_slots().find(|&slot| ENEMY_GRAPH.numbered(slot as u16) == owner);
+        let playing = self
+            .warriors
+            .iter()
+            .filter(|warrior| slot.is_some_and(|slot| self.graph_slot(warrior.kind) == slot))
+            .map(|warrior| warrior.body)
+            .filter(|&body| self.fighters_posed && scene.world().get::<GraphDriver>(body).is_some())
+            .map(|body| (body, fixed(body)))
+            .collect::<Vec<_>>();
+        if playing.is_empty() {
+            return Err("no enemy here plays a graph: `--arena --fight` has one".to_owned());
+        }
+        Ok(playing)
+    }
 }
 
 /// Loads the kind of enemy `id` until its document is resident, and the meshes its look names are on

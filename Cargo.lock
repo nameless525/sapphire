@@ -4610,6 +4610,7 @@ dependencies = [
  "blake3",
  "postcard",
  "sapphire_assets",
+ "sapphire_body_pose",
  "sapphire_core",
  "sapphire_jobs",
  "sapphire_serialize",

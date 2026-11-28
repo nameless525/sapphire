@@ -8,8 +8,8 @@ use sapphire_assets::pack::{PackError, PackHeader};
 use sapphire_time::Stopwatch;
 
 use crate::protocol::{
-    CHUNK_LEN, Capture, CvarStatus, DeviceStatus, LinkError, PackOutcome, Preamble, Reply, ReplyBody,
-    Request, RequestBody, SourceFile, read_frame, write_frame,
+    CHUNK_LEN, Capture, CvarStatus, DeviceStatus, GraphTrace, LinkError, PackOutcome, Preamble, Reply,
+    ReplyBody, Request, RequestBody, SourceFile, read_frame, write_frame,
 };
 
 /// How long a device has to answer a request, and to connect; and how long it may go without
@@ -136,6 +136,30 @@ impl Client {
         match self.request(RequestBody::Shaders { files }, Self::PACK_TIMEOUT)? {
             ReplyBody::ShadersApplied { programs, pipelines, frames } => Ok((programs, pipelines, frames)),
             other => Err(unexpected("shaders applied", &other)),
+        }
+    }
+
+    /// What the character playing the animation graph of file name `graph` is doing (M6 A9).
+    pub fn graph_trace(&mut self, graph: &str) -> Result<GraphTrace, LinkError> {
+        match self.request(RequestBody::GraphTrace { graph: graph.to_owned() }, TIMEOUT)? {
+            ReplyBody::GraphTrace(trace) => Ok(trace),
+            other => Err(unexpected("graph trace", &other)),
+        }
+    }
+
+    /// Pins `parameter` of the graph of file name `graph` to `value` (`Some`) on every character playing it,
+    /// or lets every one of its parameters go (`None`), and returns how many characters took it.
+    pub fn override_graph(&mut self, graph: &str, set: Option<(&str, f32)>) -> Result<u32, LinkError> {
+        let graph = graph.to_owned();
+        let body = match set {
+            Some((parameter, value)) => {
+                RequestBody::GraphOverride { graph, parameter: parameter.to_owned(), value }
+            }
+            None => RequestBody::GraphClear { graph },
+        };
+        match self.request(body, TIMEOUT)? {
+            ReplyBody::GraphOverridden { characters } => Ok(characters),
+            other => Err(unexpected("graph overridden", &other)),
         }
     }
 

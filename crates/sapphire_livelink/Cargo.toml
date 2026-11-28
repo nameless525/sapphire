@@ -15,6 +15,8 @@ path = "src/main.rs"
 [dependencies]
 # Packs: the source pushed packs are served from, and their tables of contents.
 sapphire_assets.workspace = true
+# A graph's trace is a player's debug snapshot, as text (M6 A9).
+sapphire_body_pose.workspace = true
 # Cvars pushed by name.
 sapphire_core.workspace = true
 # Large reads of pushed bytes are copied on the engine's workers.

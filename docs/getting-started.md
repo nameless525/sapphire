@@ -226,6 +226,23 @@ ln -s "$PWD/.githooks/content-check" "$(git rev-parse --git-path hooks)/pre-comm
 
 It checks the working tree's copies of the commit's documents, which are what's staged unless only part of a file is, and says so when the check itself couldn't run (a build that fails). Its first run cooks the whole tree into its own cache, which takes a while. `git commit --no-verify` skips it.
 
+### Merging documents
+
+`.gitattributes` names a merge driver for every kind of document the editor opens (moves, graphs, cues, effects, timelines, screens, zones, materials, ramps, prefabs, encounters, dialogues, days, light rigs, colliders, foliage and cue tables). It merges the two sides by property path: entries go by their ID or name, so two branches that each add a placement, or edit two fields of one move, merge cleanly; our comments and layout stay as they were, and theirs come with what they changed. Where both sides set one value apart, the value is marked as git marks a conflict (`<<<<<<< ours: moves["light_1"].startup`, the base after `|||||||`, theirs after `=======`), and the file doesn't read until you keep one side's lines and delete the rest. Sides at different versions of a document, or a file it has no model for, merge by lines, and it says so. Nothing turns it on; build it once, then run the one line in your clone:
+
+```bash
+cargo build -p sapphire_document --profile tools --locked
+git config merge.sapphire-document.driver 'b=target/tools/sapphire_document; if [ -x "$b" ]; then "$b" merge %O %A %B -o %A --name %P; else git merge-file --diff3 -L ours -L base -L theirs %A %O %B; fi'
+```
+
+Git runs the line from the root of the checkout it merges in, during a merge, rebase or cherry-pick. The config is the clone's, so every worktree of it has the line, and each looks for its own `target/tools/sapphire_document`: where that isn't built (a fresh worktree, after `cargo clean`, or with `CARGO_TARGET_DIR` set, which moves the build elsewhere), the line falls back to git's own merge by lines, conflicts marked. Without the line, git merges these files by lines, as before. Rebuild after pulling a change to a document format; an older build merges a newer document by lines, since it can't read it.
+
+What to know when resolving:
+
+- **The labels are always `ours` and `theirs`,** as the driver can't tell a merge from a rebase. In a rebase, `ours` is the branch you rebase onto and `theirs` the commit being replayed, the reverse of a merge.
+- **The markers are seven characters,** whatever `conflict-marker-size` says. In a criss-cross merge, git merges the two bases with the same driver first; set `git config merge.sapphire-document.recursive text` to have git merge those by lines itself.
+- **A marker inside a multi-line string or a `/* */` comment** (only a merge by lines puts one there) reads as part of it, so the file may still parse: git still stops the merge, but look for `<<<<<<<` before you `git add`. Elsewhere a marker stops the file reading, and the editor and `content-check` name it as an unresolved merge conflict, at the value its label names.
+
 ## Troubleshooting
 
 - **SDL fails to configure on macOS with "unknown architecture arm64e.x1-macos".** The Command Line Tools SDK is newer than the active Xcode's linker. `cargo xtask` sets `SDKROOT` itself; for a plain `cargo` build, run this first:

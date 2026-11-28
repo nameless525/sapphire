@@ -48,8 +48,8 @@ use super::{
 };
 use crate::AssetId;
 use crate::graph::{
-    Blink, GraphError, GraphMask, MAX_BLEND_SAMPLES, MAX_GRAPH_CLIPS, MAX_GRAPH_MOVES, MAX_MASK_BONES,
-    MAX_MASKS, MAX_REACTIONS,
+    Blink, Eyes, GraphError, GraphMask, MAX_BLEND_SAMPLES, MAX_GAZE_DEGREES, MAX_GRAPH_CLIPS,
+    MAX_GRAPH_MOVES, MAX_MASK_BONES, MAX_MASKS, MAX_REACTIONS,
 };
 
 /// The most pose registers a program may use.
@@ -99,6 +99,7 @@ pub struct GraphProgram {
     pub reactions: Vec<ProgramReaction>,
     pub events: Vec<ProgramEvent>,
     pub blink: Option<Blink>,
+    pub eyes: Option<Eyes>,
     pub cost: GraphCost,
     /// Where it was compiled to run.
     pub target: Target,
@@ -107,7 +108,8 @@ pub struct GraphProgram {
 impl Versioned for GraphProgram {
     /// 1: M6 A5a.
     /// 2: [`GraphProgram::target`] (M6 A5b).
-    const VERSION: u32 = 2;
+    /// 3: [`GraphProgram::eyes`] (M6 A22).
+    const VERSION: u32 = 3;
 }
 
 /// Where a program runs, which says what its compile refuses.
@@ -132,8 +134,9 @@ impl Target {
     /// the heroine's graph and the stock warrior's bind a `FixedBody` today, but the cook can't tell a
     /// bound graph from another, and a `FixedBody`'s history refuses a program compiled for presentation,
     /// while presentation plays one compiled for the fixed step as it is. So what only presentation may
-    /// run is refused in every graph, by its path, until the cook has a list of what a simulation binds
-    /// or a fixed-step program carries presentation-only tables the fixed step skips.
+    /// run is refused in every graph, by its path, until the cook has a list of what a simulation binds,
+    /// unless it's a presentation-only table the fixed step skips: [`GraphProgram::eyes`] (M6 A22) is the
+    /// first, which a fixed body never binds and presentation plays over the published pose.
     pub const COOKED: Self = Self::Simulation;
 }
 
@@ -767,6 +770,32 @@ impl GraphProgram {
                 && self.additive.iter().all(|layer| clip(layer.clip) && mask(layer.mask))
                 && self.reactions.iter().all(|layer| clip(layer.clip) && mask(layer.mask)),
             "a layer's clip",
+        )?;
+        // What the eyes' clock divides by and reads within, and the compile's rules across fields: the
+        // longest jump lands within the least hold, and a jump's blink has a blink to play and ends before
+        // the next jump can start (`check_eyes` says each by its path), since the gaze at a tick reads only
+        // the jump under way and the one before.
+        fits(
+            self.eyes.as_ref().is_none_or(|eyes| {
+                let [least, most] = eyes.hold;
+                let [yaw, pitch] = eyes.reach;
+                let longest = (2.0 * (yaw * yaw + pitch * pitch).sqrt() / eyes.speed).max(1.0);
+                let blink_fits = eyes.blink_chance == 0.0
+                    || self.blink.as_ref().is_some_and(|blink| {
+                        u64::from(blink.close) + u64::from(blink.hold) + u64::from(blink.open)
+                            <= u64::from(least)
+                    });
+                eyes.reach.iter().all(|degrees| (0.0..=MAX_GAZE_DEGREES).contains(degrees))
+                    && eyes.reach.iter().any(|&degrees| degrees > 0.0)
+                    && least > 0
+                    && least <= most
+                    && eyes.speed > 0.0
+                    && eyes.speed.is_finite()
+                    && longest <= least as f32
+                    && (0.0..=1.0).contains(&eyes.blink_chance)
+                    && blink_fits
+            }),
+            "the eyes",
         )
     }
 }
@@ -788,6 +817,18 @@ impl ArchivedGraphProgram {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A change to the cooked layout bumps [`GraphProgram::VERSION`]. These are version 3's sizes, so a field
+    /// or a variant that grows the archive fails here first, where an rkyv enum grown under an unchanged
+    /// version would read old bytes wrongly.
+    #[test]
+    fn the_archived_layout_is_version_3s() {
+        use crate::graph::ArchivedEyes;
+        assert_eq!(GraphProgram::VERSION, 3);
+        assert_eq!(size_of::<ArchivedEyes>(), 24);
+        assert_eq!(size_of::<rkyv::option::ArchivedOption<ArchivedEyes>>(), 28);
+        assert_eq!(size_of::<ArchivedGraphProgram>(), 224);
+    }
 
     #[test]
     fn comparisons_flip_to_the_same_test() {

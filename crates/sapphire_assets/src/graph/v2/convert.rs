@@ -259,6 +259,7 @@ pub(crate) fn convert(old: &v1::AnimGraph) -> AnimGraph {
         layers,
         events: Vec::new(),
         blink: old.blink.clone(),
+        eyes: None,
     }
 }
 

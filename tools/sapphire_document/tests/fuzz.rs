@@ -8,6 +8,7 @@ mod support;
 
 use bevy_reflect::{FromReflect, GetTypeRegistration, PartialReflect, Reflect, ReflectRef, Typed};
 use sapphire_assets::AssetId;
+use sapphire_document::identity;
 use sapphire_document::text::comments;
 use sapphire_document::walk::{self, PropertyKind};
 use sapphire_document::{
@@ -356,9 +357,10 @@ fn every_property_of_the_default_effects_undoes_or_is_refused() {
     run("default_effects.ron", "crates/sapphire_vfx/default_effects.ron", kinds::effects(), true);
 }
 
-/// Every shipped document of `kind`: each in the content, and those compiled in beside a crate (`extra`).
+/// Every shipped document of `kind`: each in the content and the benchmark's, and those compiled in beside a
+/// crate (`extra`).
 fn shipped(kind: Kind, extra: &[&str]) -> Vec<String> {
-    let mut found: Vec<String> = documents_in_the_content()
+    let mut found: Vec<String> = documents_under_committed()
         .into_iter()
         .filter(|(_, of)| *of == kind)
         .map(|(relative, _)| relative)
@@ -453,10 +455,17 @@ fn every_path_prints_and_parses_back() {
     assert!(steps.iter().any(|step| matches!(step, Step::Some)));
 }
 
-/// Every file in the content a kind knows, by its path from the repository's root, in no order.
-fn documents_in_the_content() -> Vec<(String, Kind)> {
+/// Where the documents a person edits are committed: the content, and the benchmark's documents (`bench/`), which
+/// its generator reads and T12 opens in the editor.
+const COMMITTED: [&str; 2] = ["content", "bench"];
+
+/// Every file under [`COMMITTED`] a kind knows, by its path from the repository's root, in no order. It walks
+/// the folders rather than asking git which files are tracked, so the tests read files and not a repository,
+/// and run the same from a source archive: nothing under them is untracked or ignored in a checkout (what's
+/// cooked from them goes elsewhere), and a document added but not yet committed is one more to hold to the walker.
+fn documents_under_committed() -> Vec<(String, Kind)> {
     let mut found = Vec::new();
-    let mut stack = vec![support::repository_root().join("content")];
+    let mut stack: Vec<_> = COMMITTED.iter().map(|folder| support::repository_root().join(folder)).collect();
     while let Some(folder) = stack.pop() {
         for entry in std::fs::read_dir(folder).expect("a folder") {
             let path = entry.expect("an entry").path();
@@ -472,12 +481,13 @@ fn documents_in_the_content() -> Vec<(String, Kind)> {
     found
 }
 
-/// The walker agrees with every document of each kind in the content, not just the one a kind's fuzz runs on: a
-/// file it disagrees with opens read only, which nothing else would notice.
+/// The walker agrees with every committed document of each kind, the benchmark's too, not just the one a kind's
+/// fuzz runs on: a file it disagrees with opens read only, which nothing else would notice.
 #[test]
-fn every_document_in_the_content_opens_for_editing() {
-    let (mut seen, mut count) = (std::collections::BTreeSet::new(), 0);
-    for (relative, kind) in documents_in_the_content() {
+fn every_committed_document_opens_for_editing() {
+    let (mut seen, mut count, mut benchmark) = (std::collections::BTreeSet::new(), 0, 0);
+    for (relative, kind) in documents_under_committed() {
+        benchmark += usize::from(relative.starts_with("bench"));
         let failure = match kind {
             Kind::Moves => open(&relative, kinds::moves()).failure().cloned(),
             Kind::Graph => open(&relative, kinds::graph()).failure().cloned(),
@@ -509,7 +519,32 @@ fn every_document_in_the_content_opens_for_editing() {
         "every kind but effects, foliage and cue tables, which the content has none of (no shipped zone grows plants \
          yet, M6 G1a; the cue table is compiled in, M6 T19)"
     );
-    assert!(count >= 220, "{count}");
+    assert!(count >= 230, "{count}");
+    // The district's ten prefabs, and the district's and the nature zone's days.
+    assert!(benchmark >= 12, "{benchmark}");
+}
+
+/// A day and a library of light rigs have no cook's sidecar, so the editor's first open of one would write a
+/// sidecar saying only which document it is: each committed one has it committed, as the effects library's is.
+/// The benchmark's documents are left out: its generator names its sources by IDs of its own (`bench::asset_id`).
+#[test]
+fn every_committed_day_and_light_rig_library_has_its_sidecar() {
+    let extras = ["crates/sapphire_world/default_day.ron", "crates/sapphire_world/default_light_rigs.ron"];
+    let documents: Vec<String> = documents_under_committed()
+        .into_iter()
+        .filter(|(relative, kind)| {
+            matches!(kind, Kind::Day | Kind::LightRigs) && relative.starts_with("content")
+        })
+        .map(|(relative, _)| relative)
+        .chain(extras.map(str::to_owned))
+        .collect();
+    assert!(documents.len() >= 9, "{documents:?}");
+    for relative in documents {
+        let sidecar = identity::sidecar_path(&support::repository_root().join(&relative));
+        let text = std::fs::read_to_string(&sidecar).unwrap_or_else(|error| panic!("{relative}: {error}"));
+        assert!(text.contains(identity::DOCUMENT_TYPE), "{relative}: a document's sidecar, with no importer");
+        identity::read_id(&sidecar).unwrap_or_else(|error| panic!("{relative}: {error}"));
+    }
 }
 
 /// Every field a cook's refusal can name of a material (its texture slots' fields, M6 T5) is a path the walker
@@ -534,7 +569,7 @@ fn every_field_a_cook_refusal_names_is_a_path_the_walker_finds() {
         }
     }
     let (mut named, mut found) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
-    for (relative, kind) in documents_in_the_content() {
+    for (relative, kind) in documents_under_committed() {
         match kind {
             Kind::Material => look(&open(&relative, kinds::material()), &mut named, &mut found),
             Kind::EnvironmentMaterial => {
@@ -552,7 +587,7 @@ fn every_field_a_cook_refusal_names_is_a_path_the_walker_finds() {
 #[test]
 fn a_materials_kind_is_the_family_its_envelope_names() {
     let mut families = std::collections::BTreeMap::new();
-    for (relative, kind) in documents_in_the_content() {
+    for (relative, kind) in documents_under_committed() {
         if relative.ends_with(".material.ron") {
             *families.entry(kind).or_insert(0) += 1;
         }

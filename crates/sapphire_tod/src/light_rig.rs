@@ -207,7 +207,7 @@ fn color(rgb: Rgb, field: &'static str) -> Check {
 /// (`sapphire_world::light_rig::LightRigs`).
 ///
 /// A library has at least one preset, its names are distinct and not empty, and every preset is
-/// in range: it is valid however it was made, deserialization included. It reflects (M6 T4) so an
+/// in range: it is valid however it was read, its deserialization included. It reflects (M6 T4) so an
 /// editor can open it as a document, whose every edit is to the text and read back through
 /// [`Self::from_ron`]'s checks; reflection's own `FromReflect` would build one unchecked, so nothing
 /// else should build one by it.

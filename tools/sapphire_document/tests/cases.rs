@@ -799,9 +799,10 @@ fn a_new_entry_survives_unless_its_name_is_taken() {
 fn keeping_mine_leaves_the_text_and_the_next_save_is_the_word() {
     let mut document = sample(LAID_OUT);
     assert_eq!(document.set("mine", &path("count"), &4_u32), Ok(Outcome::Changed));
-    let text = document.text().to_owned();
+    let (text, revision) = (document.text().to_owned(), document.revision());
     document.keep_mine(LAID_OUT.replace("count: 3,", "count: 5,"));
     assert_eq!(document.text(), text);
+    assert_ne!(document.revision(), revision, "what the journal keeps it against changed");
     assert!(document.is_dirty());
     document.mark_saved();
     assert!(!document.is_dirty());

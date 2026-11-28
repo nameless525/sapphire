@@ -44,6 +44,8 @@ pub use steps::{HistoryError, SetStep, Took};
 /// A document, whatever its kind.
 pub trait AnyDocument: Any {
     fn text(&self) -> &str;
+    /// [`Document::revision`].
+    fn revision(&self) -> u64;
     fn is_dirty(&self) -> bool;
     /// Why it can't be edited now, if it can't.
     fn failure_message(&self) -> Option<String>;
@@ -114,6 +116,10 @@ where
 {
     fn text(&self) -> &str {
         Self::text(self)
+    }
+
+    fn revision(&self) -> u64 {
+        Self::revision(self)
     }
 
     fn is_dirty(&self) -> bool {

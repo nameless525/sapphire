@@ -4,13 +4,15 @@
 
 mod support;
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 use std::{env, fs, process};
 
 use sapphire_assets::AssetId;
-use sapphire_document::journal::{JOURNAL_VERSION, Unsaved};
+use sapphire_document::journal::{JOURNAL_VERSION, STALE_MAKING, Unsaved};
 use sapphire_document::{
     DocumentSet, Journal, JournalEntry, Kind, Noticed, Outcome, SetError, kinds, registry_of,
 };
@@ -209,6 +211,76 @@ fn history_that_cannot_say_keeps_what_its_edits_were_made_over() {
     assert!(again.is_dirty(id));
 }
 
+/// A document whose text hasn't changed is passed over by its revision however often the journal is asked, and
+/// each change, a gesture's frames among them, is one write; a move to another path is one more.
+#[test]
+fn an_unchanged_document_is_passed_over_and_each_change_is_one_write() {
+    let dir = TestDir::new("revision");
+    let path = dir.write("a.moves.ron", &read(PLAYER));
+    let mut set = dir.set();
+    let id = open_moves(&mut set, &path);
+    bump(&mut set, id, "startup");
+    let mut journal = dir.journal();
+    for _ in 0..1000 {
+        assert!(journal.write(&set).is_empty());
+    }
+    assert_eq!(journal.stats().writes, 1, "written once, passed over after");
+    set.any_mut(id).expect("open").begin_gesture("drag");
+    for _ in 0..10 {
+        bump(&mut set, id, "active");
+        assert!(journal.write(&set).is_empty());
+        assert!(journal.write(&set).is_empty());
+    }
+    assert_eq!(journal.stats().writes, 11, "a write for each of the gesture's changes, and none between");
+    set.any_mut(id).expect("open").end_gesture();
+    assert!(journal.write(&set).is_empty());
+    assert_eq!(journal.stats().writes, 11, "the gesture's end changes no text");
+    set.move_to(id, &dir.0.join("b.moves.ron")).expect("moved");
+    assert!(journal.write(&set).is_empty());
+    assert_eq!(journal.stats().writes, 12, "its new path");
+    let [(_, writes), _] = journal.stats().counters();
+    assert_eq!(writes, 12);
+}
+
+/// A session being made, its lock not yet in place, is neither offered nor taken away by an editor starting
+/// then, whether its lock is held yet or not (made, and not yet locked: the race): its own editor is about to
+/// hold it. One killed while it was made, untouched for a minute before the new session's start, goes; one
+/// whose lock is still held stays however old.
+#[test]
+fn a_session_being_made_is_left_alone_and_one_killed_making_goes() {
+    use std::fs::FileTimes;
+    let dir = TestDir::new("making");
+    let root = dir.0.join("journal");
+    let session = |name: &str| {
+        let folder = root.join(name);
+        fs::create_dir_all(&folder).expect("its folder");
+        let lock =
+            File::create(folder.join(".session.lock.new")).expect("its lock, under the name it's made by");
+        (folder, lock)
+    };
+    let age = |folder: &Path, lock: &File| {
+        // Back from the file system's own time, as the sweep reads it.
+        let now = lock.metadata().and_then(|meta| meta.modified()).expect("a time");
+        let old = FileTimes::new().set_modified(now - STALE_MAKING - Duration::from_secs(5));
+        lock.set_times(old).expect("aged");
+        File::open(folder).and_then(|folder| folder.set_times(old)).expect("aged");
+    };
+    let (fresh, _unheld) = session("making-0");
+    let (held, held_lock) = session("making-1");
+    held_lock.try_lock().expect("held, as by an editor between its lock and its rename");
+    age(&held, &held_lock);
+    let (killed, killed_lock) = session("making-2");
+    age(&killed, &killed_lock);
+    drop(killed_lock);
+    let journal = dir.journal();
+    assert!(journal.offers().is_empty() && journal.unreadable().is_empty());
+    assert!(fresh.exists(), "made just now, not yet held: left for its own editor");
+    assert!(held.exists(), "held: its editor runs");
+    assert!(!killed.exists(), "killed while it was made: it holds nothing, and goes");
+    assert!(journal.session().join("session.lock").exists(), "a session's lock is named once it's held");
+    assert!(!journal.session().join(".session.lock.new").exists());
+}
+
 /// A document saved, or closed, takes its entry with it; a session that closes takes its folder.
 #[test]
 fn a_saved_document_leaves_no_entry_and_a_closed_session_no_folder() {
@@ -252,10 +324,35 @@ fn an_entry_that_does_not_agree_with_itself_is_refused() {
     assert!(matches!(refused, SetError::Journal { .. }), "{refused}");
     assert_eq!(again.stats().open, 0);
 
-    let later = entry.to_text().replacen(&format!("version: {JOURNAL_VERSION}"), "version: 2", 1);
-    assert!(JournalEntry::parse(&later).expect_err("another version").contains("version 2"));
+    let later = entry.to_text().replacen(&format!("version: {JOURNAL_VERSION}"), "version: 3", 1);
+    assert!(JournalEntry::parse(&later).expect_err("another version").contains("version 3"));
     let unknown = entry.to_text().replacen("text:", "by: \"me\",\n    text:", 1);
     assert!(JournalEntry::parse(&unknown).is_err());
+    // A later entry, with a field this editor doesn't know: refused by its version, not by the field.
+    let later = unknown.replacen(&format!("version: {JOURNAL_VERSION}"), "version: 3", 1);
+    let why = JournalEntry::parse(&later).expect_err("another version");
+    assert!(why.contains("an entry of version 3"), "{why}");
+
+    // Version 2 holds its text's hash: a text changed since doesn't read, and isn't taken back.
+    assert_eq!(entry.version, 2);
+    let hash = entry.text_hash.clone().expect("a hash of its text");
+    assert_eq!(hash, sapphire_document::journal::hash_of(entry.text.as_bytes()));
+    let mut changed = entry.clone();
+    changed.text = changed.text.replacen("startup", "start_up", 1);
+    let why = JournalEntry::parse(&changed.to_text()).expect_err("its text changed");
+    assert!(why.contains("doesn't have the hash"), "{why}");
+    assert!(matches!(Kind::Moves.recover(&mut dir.set(), &changed), Err(SetError::Journal { .. })));
+    let mut unhashed = entry.clone();
+    unhashed.text_hash = None;
+    assert!(JournalEntry::parse(&unhashed.to_text()).expect_err("no hash").contains("no hash"));
+    // Version 1 had none, and still reads and comes back.
+    let mut first = entry.clone();
+    (first.version, first.text_hash) = (1, None);
+    assert!(!first.to_text().contains("text_hash"), "{}", first.to_text());
+    assert_eq!(JournalEntry::parse(&first.to_text()), Ok(first.clone()));
+    let mut back = dir.set();
+    Kind::Moves.recover(&mut back, &first).expect("a version 1 entry comes back");
+    assert_eq!(back.stats().open, 1);
 
     // A document open with edits of its own isn't given up for an entry.
     let mut busy = dir.set();

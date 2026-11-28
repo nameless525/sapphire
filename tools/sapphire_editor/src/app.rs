@@ -312,6 +312,8 @@ pub struct Editor {
     troubles: u64,
     /// How deep in commands this is: only those at the top are recorded.
     depth: u32,
+    /// A window's frame is under way ([`Self::ui`]): what its commands leave to write waits for its end.
+    in_frame: bool,
     /// The ID an `AddEntryAs` running asks its entry to have.
     entry_id: Option<String>,
     /// The ID an `AddEntry` running drew for a zone's entry, which the recording keeps it by.
@@ -326,8 +328,8 @@ pub struct Editor {
     drag_asked: Option<Action>,
     /// Commands a pass asked for from inside the shell, run once it's drawn.
     asked: Vec<Command>,
-    /// What's unsaved, kept on disk after each command, and what editors that stopped kept, if a journal is
-    /// kept.
+    /// What's unsaved, kept on disk at the end of each frame that changed it, and what editors that stopped kept,
+    /// if a journal is kept.
     journal: Option<Journal>,
     /// The journal's last write failed, and the notice has said so.
     journal_failing: bool,
@@ -453,6 +455,7 @@ impl Editor {
             palette: None,
             troubles: 0,
             depth: 0,
+            in_frame: false,
             entry_id: None,
             drawn_id: None,
             drawn_ids: Vec::new(),
@@ -566,8 +569,14 @@ impl Editor {
             absolute = std::env::current_dir().map_or_else(|_| path.to_owned(), |dir| dir.join(path));
             &absolute
         };
+        // Refused, never guessed: opened as another kind it wouldn't read, and its first open would write that
+        // kind's sidecar beside it, which a cook then reads.
+        let Some(kind) = Kind::of(path) else {
+            let why = Kind::why_none(path, || fs::read_to_string(path).map_err(|error| error.to_string()));
+            self.say(Notice { text: why, trouble: true });
+            return;
+        };
         self.add_roots_around(path, true);
-        let kind = Kind::of(path).unwrap_or(Kind::Moves);
         match kind.open(&mut self.documents, path) {
             Ok(id) => {
                 self.notice = None;
@@ -630,22 +639,28 @@ impl Editor {
     /// Ends the journal's session, as a quit does with nothing unsaved or with what's unsaved let go: what it
     /// kept goes. An editor that stops any other way leaves it for the next to offer.
     pub fn close_journal(&mut self) {
-        if let Some(journal) = self.journal.take()
-            && let Err(error) = journal.close()
-        {
+        let Some(journal) = self.journal.take() else { return };
+        let [(_, writes), (_, bytes)] = journal.stats().counters();
+        tracing::info!(
+            editor.journal_writes = writes,
+            editor.journal_bytes = bytes,
+            "the journal's session closed"
+        );
+        if let Err(error) = journal.close() {
             tracing::warn!(%error, "the journal's session wasn't taken away");
         }
     }
 
-    /// Writes what's changed of each unsaved document to the journal, and says once when that fails. The
-    /// documents whose entries failed are returned.
+    /// Writes what's changed of each unsaved document to the journal, and warns and says once when that starts
+    /// failing, and once when it's written again. While it fails, a frame's end passes it over and the poll tries
+    /// again, once a second at most. The documents whose entries failed are returned.
     fn journal_step(&mut self) -> Vec<AssetId> {
         let Some(journal) = &mut self.journal else { return Vec::new() };
         let failed = journal.write(&self.documents);
         match failed.first() {
             Some((id, error)) => {
-                tracing::warn!(%id, %error, "the journal wasn't written");
                 if !std::mem::replace(&mut self.journal_failing, true) {
+                    tracing::warn!(%id, %error, "the journal wasn't written, and is tried again once a second");
                     // Not trouble: the command that just ran did what it was asked.
                     self.notice = Some(Notice {
                         text: format!(
@@ -655,9 +670,21 @@ impl Editor {
                     });
                 }
             }
-            None => self.journal_failing = false,
+            None => {
+                if std::mem::take(&mut self.journal_failing) {
+                    tracing::info!("the journal is written again");
+                    self.notice =
+                        Some(Notice { text: "the journal is written again".to_owned(), trouble: false });
+                }
+            }
         }
         failed.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Whether the journal's last write failed: the poll tries it again, not each frame.
+    #[must_use]
+    pub fn journal_failing(&self) -> bool {
+        self.journal_failing
     }
 
     /// Takes back what an editor that stopped hadn't saved of the document that was at `path`. Its entry goes
@@ -672,8 +699,13 @@ impl Editor {
             self.refuse(format!("the journal offers nothing of {}", path.display()));
             return;
         };
+        // By the entry's own text, not the file's: the file may have moved, or gone, since.
+        let Some(kind) = Kind::of_text(&entry.path, || Some(entry.text.clone())) else {
+            let why = Kind::why_none(&entry.path, || Ok(entry.text.clone()));
+            self.refuse(format!("{why}; the journal's entry is left where it is"));
+            return;
+        };
         self.add_roots_around(&entry.path, true);
-        let kind = Kind::of(&entry.path).unwrap_or(Kind::Moves);
         let noticed = match kind.recover(&mut self.documents, &entry) {
             Ok(noticed) => noticed,
             Err(error) => {
@@ -1305,6 +1337,10 @@ impl Editor {
                 self.notice = None;
                 self.link.clear_push();
                 self.refresh();
+                // It's in the text now, so in the journal by the end of its frame, or now if there's none.
+                if self.depth == 0 && !self.in_frame {
+                    self.end_frame();
+                }
                 true
             }
             Err(error) => {
@@ -1677,8 +1713,16 @@ impl Editor {
             self.next_rescan = now + RESCAN_SECONDS.max(look.elapsed().as_secs_f64() * 100.0);
         }
         self.persist_layout();
-        // What landed outside a command: a value typed, a file taken from disk.
-        self.journal_step();
+        // What landed outside a command, a file taken from disk: the frame's end writes it, if this is a frame's.
+        // A journal that's failing is tried here, once a second, and not at each frame's end.
+        if !self.in_frame || self.journal_failing {
+            self.journal_step();
+        }
+        if let Some(recording) = &mut self.recording
+            && recording.failing()
+        {
+            recording.write();
+        }
         if self.cook_changed() {
             self.load_cook();
         }
@@ -1701,6 +1745,14 @@ impl Editor {
 
     /// The whole interface.
     pub fn ui(&mut self, ui: &mut Ui) {
+        self.in_frame = true;
+        self.frame_ui(ui);
+        self.end_frame();
+        self.in_frame = false;
+    }
+
+    /// The frame, before what its commands left to write is written.
+    fn frame_ui(&mut self, ui: &mut Ui) {
         self.closed_unseen = false;
         let now = ui.input(|input| input.time);
         self.now = now;

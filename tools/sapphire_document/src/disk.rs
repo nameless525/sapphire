@@ -30,12 +30,26 @@ impl Temporary {
 
     /// Writes arbitrary bytes beside `target`, under the same ownership and replacement rules.
     pub fn beside_bytes(target: &Path, bytes: &[u8]) -> io::Result<Self> {
+        Self::write_beside(target, bytes, true)
+    }
+
+    /// [`Self::beside`] for what's kept against the editor's own end, not the machine's: a journal's entry, a
+    /// session's recording. It isn't flushed to the disk, which on macOS is a full flush of the drive's cache and
+    /// takes milliseconds, too long to pay on every frame of a drag. Its rename still makes it whole or not there
+    /// however the process ends; a power cut can lose it, or leave it empty.
+    pub fn beside_unflushed(target: &Path, text: &str) -> io::Result<Self> {
+        Self::write_beside(target, text.as_bytes(), false)
+    }
+
+    fn write_beside(target: &Path, bytes: &[u8], flush: bool) -> io::Result<Self> {
         let (mut file, temporary) = Self::create(target)?;
         if let Ok(metadata) = fs::metadata(target) {
             file.set_permissions(metadata.permissions())?;
         }
         file.write_all(bytes)?;
-        file.sync_all()?;
+        if flush {
+            file.sync_all()?;
+        }
         Ok(temporary)
     }
 

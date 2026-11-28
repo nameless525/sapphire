@@ -559,12 +559,23 @@ impl Script {
 
     /// Reads a script's text. One of another version, or with anything it doesn't know, is refused.
     pub fn parse(text: &str) -> Result<Self, String> {
+        /// Only the version, passing over the rest. It's read first, so a script of a later version is refused as
+        /// that, not by the first command or field it has that this editor doesn't know.
+        #[derive(Deserialize)]
+        struct Version {
+            version: u32,
+        }
+        let refuse = |version| {
+            format!("a script of version {version}, where this editor reads version {SCRIPT_VERSION}")
+        };
+        if let Ok(Version { version }) = ron::from_str(text)
+            && version != SCRIPT_VERSION
+        {
+            return Err(refuse(version));
+        }
         let script: Self = ron::from_str(text).map_err(|error| error.to_string())?;
         if script.version != SCRIPT_VERSION {
-            return Err(format!(
-                "a script of version {}, where this editor reads version {SCRIPT_VERSION}",
-                script.version
-            ));
+            return Err(refuse(script.version));
         }
         Ok(script)
     }
@@ -690,6 +701,49 @@ mod tests {
         assert!(Script::parse(unknown_argument).is_err());
         let later = Script::parse("(version: 2, commands: [])").expect_err("another version");
         assert!(later.contains("version 2"), "{later}");
+        // A later script, with what a later editor knows: refused by its version, not its first unknown command.
+        let later =
+            "(version: 2, commands: [Undo, Teleport(to: (1.0, 2.0)), Open(\"a.zone.ron\")], by: \"me\")";
+        let later = Script::parse(later).expect_err("another version");
+        assert!(later.contains("a script of version 2"), "{later}");
+    }
+
+    /// Every variant of `Command`, as serde's derive lists them: a list a new variant can't be left out of, as the
+    /// registry's rows can.
+    fn variants() -> &'static [&'static str] {
+        struct Listing<'a>(&'a mut Option<&'static [&'static str]>);
+        impl<'de> serde::Deserializer<'de> for Listing<'_> {
+            type Error = serde::de::value::Error;
+            fn deserialize_any<V: serde::de::Visitor<'de>>(self, _: V) -> Result<V::Value, Self::Error> {
+                Err(serde::de::Error::custom("not an enum"))
+            }
+            fn deserialize_enum<V: serde::de::Visitor<'de>>(
+                self,
+                _: &'static str,
+                variants: &'static [&'static str],
+                _: V,
+            ) -> Result<V::Value, Self::Error> {
+                *self.0 = Some(variants);
+                Err(serde::de::Error::custom("listed"))
+            }
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit
+                unit_struct newtype_struct seq tuple tuple_struct map struct identifier ignored_any
+            }
+        }
+        let mut listed = None;
+        let _ = Command::deserialize(Listing(&mut listed));
+        listed.expect("`Command` is an enum")
+    }
+
+    /// The palette offers every command: one without a row would be missing from it, with nothing to say so.
+    #[test]
+    fn every_command_has_a_row_in_the_registry() {
+        let rows: std::collections::BTreeSet<_> =
+            CommandRegistry.all().iter().map(|registered| registered.name).collect();
+        let variants: std::collections::BTreeSet<_> = variants().iter().copied().collect();
+        assert!(variants.len() > 60, "{variants:?}");
+        assert_eq!(variants, rows, "a variant of `Command` for each row, and a row for each");
     }
 
     #[test]

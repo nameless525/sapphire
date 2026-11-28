@@ -20,6 +20,7 @@ use sapphire_editor::screen::{Aspect, StandIn};
 use sapphire_editor::shell::Pane;
 use sapphire_editor::{Editor, Options};
 use sapphire_moves::MoveSetDocument;
+use sapphire_stage::scene::TownLook;
 use sapphire_time::Stopwatch;
 
 const PLAYER: &str = include_str!("../../../content/combat/player/player.moves.ron");
@@ -33,6 +34,9 @@ const CHARACTER_SCREEN: &str = include_str!("../../../content/ui/character.ui.ro
 const CHARACTER_SCREEN_META: &str = include_str!("../../../content/ui/character.ui.ron.meta");
 const CHARACTER_MODEL: &str = include_str!("../../../content/ui/character.model.ron");
 const HUD_MODEL: &str = include_str!("../../../content/ui/hud.model.ron");
+const LOOKDEV_DAY: &str = include_str!("../../../content/lookdev/lookdev_day.ron");
+const LOOKDEV_RIGS: &str = include_str!("../../../content/lookdev/lookdev_light_rigs.ron");
+const CAVE_DAY: &str = include_str!("../../../content/looks/biomes/cave_day.ron");
 
 /// The first move's first hit volume and first cue, as a script names them.
 const HIT: &str = "(mv: 0, track: Hitboxes, index: 0)";
@@ -1628,6 +1632,205 @@ mod panes {
         assert!(values.iter().any(|(known, _)| known == "luck"), "{values:?}");
         assert!(values.contains(&("level".to_owned(), StandIn::Number(77.0))), "what was typed: {values:?}");
         assert_same(&text_of(&editor), CHARACTER_SCREEN, "following the model edits nothing");
+    }
+
+    #[test]
+    fn a_days_key_dragged_on_the_look_pane_is_one_step_of_undo() {
+        let dir = TestDir::new("look_drag");
+        let path = dir.write("l/town_day.ron", LOOKDEV_DAY);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            r#"Begin("move a key of the day"), SetProperty(path: "keys[4].time", value: "13.25"),
+            SetProperty(path: "keys[4].time", value: "13.5"), End"#,
+        );
+        let day = editor.viewport_frame().look.expect("the look-dev stage").look.day.clone();
+        assert_eq!(day.keys()[4].time, 13.5, "the stage takes the key where it's dragged");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), LOOKDEV_DAY, "one step of undo");
+    }
+
+    /// The document's side of the kittest of this name: a recorded drag split by a save is two steps. The script
+    /// writes the second `Begin` itself, so it proves the history, not that the pane begins again: the kittest
+    /// (`panes.rs`) proves that.
+    #[test]
+    fn a_save_mid_drag_leaves_the_rest_of_the_drag_one_step() {
+        let dir = TestDir::new("look_drag_save");
+        let path = dir.write("l/town_day.ron", LOOKDEV_DAY);
+        let mut editor = editor(&dir, Some(&path));
+        // What a recording says: the save ends the drag's gesture under it, so the pane begins another for the rest.
+        run(
+            &mut editor,
+            &dir,
+            r#"Begin("move a key of the day"), SetProperty(path: "keys[4].time", value: "14.0"), Save,
+            Begin("move a key of the day"), SetProperty(path: "keys[4].time", value: "14.5"),
+            SetProperty(path: "keys[4].time", value: "15.0"), SetProperty(path: "keys[4].time", value: "15.5"), End"#,
+        );
+        let saved = file(&path);
+        assert_ne!(saved, LOOKDEV_DAY, "saved an hour on");
+        let day = editor.viewport_frame().look.expect("the look-dev stage").look.day.clone();
+        assert_eq!(day.keys()[4].time, 15.5, "the stage takes the key where it's dropped");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), &saved, "the rest of the drag is one step");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), LOOKDEV_DAY, "and the drag before the save another");
+    }
+}
+
+/// The look pane (M6 T15a): a day's and a light rig library's edits, each one step of undo, a partial day's, and
+/// how the stage shows them, in commands, with no window. The viewport's GPU tests hold the stage to a capture.
+mod look {
+    use sapphire_editor::look::{LookShot, Side};
+    use sapphire_render::quality::TierId;
+    use sapphire_tod::light_rig::LightRigId;
+
+    use super::*;
+
+    fn look(editor: &mut Editor) -> TownLook {
+        TownLook::clone(&editor.viewport_frame().look.expect("the look-dev stage").look)
+    }
+
+    /// The look the stage is handed, shared.
+    fn shared(editor: &mut Editor) -> std::sync::Arc<TownLook> {
+        editor.viewport_frame().look.expect("the look-dev stage").look
+    }
+
+    /// The pane reads its document again only when what it's read from changes: the text, for B, or the file's
+    /// bytes, for A. Frames between hand the stage the look it has, not a new one to compare.
+    #[test]
+    fn the_stage_is_handed_the_look_it_has_until_its_document_changes() {
+        let dir = TestDir::new("look_read_once");
+        let path = dir.write("l/town_day.ron", LOOKDEV_DAY);
+        let mut editor = editor(&dir, Some(&path));
+        let first = shared(&mut editor);
+        assert!(std::sync::Arc::ptr_eq(&first, &shared(&mut editor)), "read once");
+        run(&mut editor, &dir, "LookHour(18.5)");
+        assert!(std::sync::Arc::ptr_eq(&first, &shared(&mut editor)), "an hour reads nothing");
+        run(&mut editor, &dir, r#"SetProperty(path: "keys[4].exposure?", value: "0.4")"#);
+        let edited = shared(&mut editor);
+        assert!(!std::sync::Arc::ptr_eq(&first, &edited), "an edit reads again");
+        assert!(std::sync::Arc::ptr_eq(&edited, &shared(&mut editor)), "and once");
+        run(&mut editor, &dir, "Compare(Saved)");
+        let saved = shared(&mut editor);
+        assert_eq!(*saved, *first, "A is as saved");
+        assert!(std::sync::Arc::ptr_eq(&saved, &shared(&mut editor)), "and read once");
+    }
+
+    /// A side that doesn't read leaves the look-dev stage up, on the last look that read or the town's own, and says
+    /// why, so the viewport doesn't stand the fight stage under the pane and stand the look-dev stage from cold after.
+    #[test]
+    fn a_day_that_doesnt_read_leaves_the_stage_up_and_says_why() {
+        let dir = TestDir::new("look_unread");
+        let path = dir.write("l/town_day.ron", "(not a day");
+        let mut editor = editor(&dir, Some(&path));
+        let shown = editor.viewport_frame().look.expect("the look-dev stage stays up");
+        assert_eq!(*shown.look, TownLook::default(), "the town's own, as nothing has read");
+        assert!(
+            shown.note.as_deref().is_some_and(|note| note.starts_with("B doesn't read")),
+            "{:?}",
+            shown.note
+        );
+        run(&mut editor, &dir, "Compare(Saved)");
+        let shown = editor.viewport_frame().look.expect("the look-dev stage stays up");
+        assert!(
+            shown.note.as_deref().is_some_and(|note| note.starts_with("A doesn't read")),
+            "{:?}",
+            shown.note
+        );
+    }
+
+    #[test]
+    fn a_days_key_drag_and_value_edit_are_each_one_step_saved_to_its_file() {
+        let dir = TestDir::new("look_day");
+        let path = dir.write("l/town_day.ron", LOOKDEV_DAY);
+        let mut editor = editor(&dir, Some(&path));
+        assert_eq!(look(&mut editor).day, TownLook::default().day, "the look-dev day, as the file has it");
+        run(
+            &mut editor,
+            &dir,
+            r#"Begin("move a key of the day"), SetProperty(path: "keys[4].time", value: "12.0"),
+            SetProperty(path: "keys[4].time", value: "12.5"), End, Save"#,
+        );
+        assert!(file(&path).contains("time: 12.5,"), "saved where it was dragged");
+        run(
+            &mut editor,
+            &dir,
+            r#"Begin("edit a key's exposure"), SetProperty(path: "keys[4].exposure?", value: "0.4"), End"#,
+        );
+        let day = look(&mut editor).day;
+        assert_eq!((day.keys()[4].time, day.keys()[4].exposure), (12.5, Some(0.4)));
+        assert_eq!(day.evaluate(12.5).exposure, 0.4, "the hour is the day's own evaluation");
+        run(&mut editor, &dir, "Undo");
+        assert_eq!(look(&mut editor).day.keys()[4].exposure, Some(-0.2), "one undo takes the value back");
+        run(&mut editor, &dir, "Undo, Save");
+        assert_same(&file(&path), LOOKDEV_DAY, "and one the drag");
+    }
+
+    #[test]
+    fn a_light_rigs_key_light_turn_and_value_edit_are_each_one_step() {
+        let dir = TestDir::new("look_rigs");
+        let path = dir.write("l/town_rigs.ron", LOOKDEV_RIGS);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            r#"Begin("turn a rig's key light"),
+            SetProperty(path: "rigs[1].rig.key.camera_direction.azimuth", value: "-20.0"),
+            SetProperty(path: "rigs[1].rig.key.camera_direction.elevation", value: "40.0"), End,
+            Begin("edit a rig's rim"), SetProperty(path: "rigs[1].rig.rim", value: "0.6"), End, Save"#,
+        );
+        let rigs = look(&mut editor).rigs;
+        let portrait = rigs.rig(LightRigId(1));
+        let turned = portrait.key.camera_direction;
+        assert_eq!((turned.azimuth, turned.elevation, portrait.rim), (-20.0, 40.0, 0.6));
+        assert_eq!(look(&mut editor).day, TownLook::default().day, "a library runs on the look-dev day");
+        run(&mut editor, &dir, "Undo");
+        assert_eq!(look(&mut editor).rigs.rig(LightRigId(1)).rim, 0.8, "one undo the value");
+        run(&mut editor, &dir, "Undo, Save");
+        assert_same(&file(&path), LOOKDEV_RIGS, "one the turn");
+    }
+
+    #[test]
+    fn a_partial_days_key_lies_over_the_look_dev_day() {
+        let dir = TestDir::new("look_partial");
+        let path = dir.write("l/cave_day.ron", CAVE_DAY);
+        let mut editor = editor(&dir, Some(&path));
+        run(
+            &mut editor,
+            &dir,
+            r#"Begin("edit a key's exposure"), SetProperty(path: "keys[0].exposure?", value: "1.5"), End"#,
+        );
+        let shown = look(&mut editor);
+        let over = shown.over.expect("a partial day lies over the town's");
+        assert_eq!(over.keys()[0].exposure, Some(1.5));
+        assert_eq!(shown.day, TownLook::default().day, "over the look-dev day");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), CAVE_DAY, "one step");
+    }
+
+    #[test]
+    fn the_hour_the_tier_the_shot_and_a_b_are_the_panes_own() {
+        let dir = TestDir::new("look_view");
+        let path = dir.write("l/town_day.ron", LOOKDEV_DAY);
+        let mut editor = editor(&dir, Some(&path));
+        run(&mut editor, &dir, "LookHour(18.5), LookTier(MobileLow), LookShot(Wide)");
+        let view = editor.look_view();
+        assert_eq!((view.hour, view.tier, view.shot), (18.5, TierId::MobileLow, LookShot::Wide));
+        assert!(refused(&mut editor, "LookHour(24.0)").contains("below 24"));
+        assert_eq!(editor.look_view().hour, 18.5, "a refused hour keeps the one it had");
+        run(&mut editor, &dir, r#"SetProperty(path: "keys[4].exposure?", value: "0.4")"#);
+        run(&mut editor, &dir, "Compare(Saved)");
+        let frame = editor.viewport_frame().look.expect("the stage");
+        assert_eq!(
+            (frame.view.side, frame.look.day.keys()[4].exposure),
+            (Side::Saved, Some(-0.2)),
+            "A: as saved"
+        );
+        run(&mut editor, &dir, "Compare(Edited)");
+        assert_eq!(look(&mut editor).day.keys()[4].exposure, Some(0.4), "B: as edited");
+        run(&mut editor, &dir, "Undo");
+        assert_same(&text_of(&editor), LOOKDEV_DAY, "showing edits nothing");
     }
 }
 

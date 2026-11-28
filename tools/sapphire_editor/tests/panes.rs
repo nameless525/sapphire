@@ -1320,3 +1320,77 @@ fn the_screen_pane_reads_its_model_file_again_when_it_changes_on_disk() {
     assert!(values.contains(&("level".to_owned(), StandIn::Number(77.0))), "typed, all along: {values:?}");
     assert_eq!(text_of(&harness), CHARACTER_SCREEN, "following the model edits nothing");
 }
+
+const LOOKDEV_DAY: &str = include_str!("../../../content/lookdev/lookdev_day.ron");
+
+/// A day opens the look pane, whose curves hold its keys: one dragged along the day is one step of undo, and the
+/// stage takes the key where it's dropped (M6 T15a).
+#[test]
+fn a_days_key_dragged_on_the_look_pane_is_one_step_of_undo() {
+    let dir = TestDir::new("look_drag");
+    let path = dir.write("l/town_day.ron", LOOKDEV_DAY);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    // The pane scrolls, and its curves can start below the tile's foot.
+    harness.get_by_label("Day curves").scroll_to_me();
+    harness.run_steps(2);
+    let curves = harness.get_by_label("Day curves").rect();
+    // The midday key, at 13:00, on the strip of keys along the bottom.
+    let key = egui::pos2(curves.left() + curves.width() * 13.0 / 24.0, curves.bottom() - 6.0);
+    // An hour on, which is past a click's slop in a pane this narrow.
+    let later = key + egui::vec2(curves.width() / 24.0, 0.0);
+    harness.hover_at(key);
+    harness.run_steps(1);
+    harness.drag_at(key);
+    harness.run_steps(1);
+    harness.hover_at(later);
+    harness.run_steps(1);
+    harness.drop_at(later);
+    harness.run_steps(2);
+    let shown = harness.state_mut().viewport_frame().look.expect("the look-dev stage").look.day.clone();
+    let moved = shown.keys()[4].time;
+    assert!((13.8..14.2).contains(&moved), "an hour later: {moved}");
+    assert_ne!(text_of(&harness), LOOKDEV_DAY);
+    undo(&mut harness);
+    assert_eq!(text_of(&harness), LOOKDEV_DAY, "one step");
+}
+
+/// A save in the middle of a key's drag ends the drag's gesture under it (M6 Z3b): the rest of the drag is a step of
+/// its own, one step however many frames it moves the key on, and the save keeps where the key was when it ran
+/// (M6 T15a).
+#[test]
+fn a_save_mid_drag_leaves_the_rest_of_the_drag_one_step() {
+    let dir = TestDir::new("look_drag_save");
+    let path = dir.write("l/town_day.ron", LOOKDEV_DAY);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    harness.get_by_label("Day curves").scroll_to_me();
+    harness.run_steps(2);
+    let curves = harness.get_by_label("Day curves").rect();
+    let hour = curves.width() / 24.0;
+    let key = egui::pos2(curves.left() + curves.width() * 13.0 / 24.0, curves.bottom() - 6.0);
+    harness.hover_at(key);
+    harness.run_steps(1);
+    harness.drag_at(key);
+    harness.run_steps(1);
+    harness.hover_at(key + egui::vec2(hour, 0.0));
+    harness.run_steps(1);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2);
+    let saved = fs::read_to_string(&path).expect("saved");
+    assert_ne!(saved, LOOKDEV_DAY, "saved an hour on");
+    // Three frames more of the drag, each moving the key, then the drop.
+    for hours in [1.5, 2.0, 2.5] {
+        harness.hover_at(key + egui::vec2(hour * hours, 0.0));
+        harness.run_steps(1);
+    }
+    harness.drop_at(key + egui::vec2(hour * 2.5, 0.0));
+    harness.run_steps(2);
+    let moved =
+        harness.state_mut().viewport_frame().look.expect("the look-dev stage").look.day.keys()[4].time;
+    assert!((15.3..15.7).contains(&moved), "two and a half hours on: {moved}");
+    undo(&mut harness);
+    assert_eq!(text_of(&harness), saved, "the rest of the drag is one step");
+    undo(&mut harness);
+    assert_eq!(text_of(&harness), LOOKDEV_DAY, "and the drag before the save another");
+}

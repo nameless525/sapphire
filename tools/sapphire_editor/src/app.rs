@@ -22,6 +22,7 @@ mod device;
 mod dispatch;
 mod in_game;
 mod inspector;
+mod look;
 mod palette;
 mod problems;
 mod properties;
@@ -231,6 +232,8 @@ pub struct Editor {
     zone: zone::ZonePanel,
     sequencer: sequencer::SequencerPanel,
     screen: screen::ScreenPanel,
+    /// How the look pane shows the look-dev stage (M6 T15a).
+    look: look::LookPanel,
     now: f64,
     content: Option<PathBuf>,
     cook: CookState,
@@ -402,6 +405,7 @@ impl Editor {
             zone: zone::ZonePanel::default(),
             sequencer: sequencer::SequencerPanel::default(),
             screen: screen::ScreenPanel::default(),
+            look: look::LookPanel::default(),
             now: 0.0,
             content: options.content,
             cook: CookState::default(),
@@ -595,13 +599,16 @@ impl Editor {
         if kind == Kind::Moves {
             self.show_on_timeline(id, path);
         }
-        if matches!(kind, Kind::Zone | Kind::Timeline | Kind::Ui) && self.content.is_none() {
+        if matches!(kind, Kind::Zone | Kind::Timeline | Kind::Ui | Kind::Day | Kind::LightRigs)
+            && self.content.is_none()
+        {
             self.content = find_cook(path);
         }
         match kind {
             Kind::Zone => self.shell.open(Pane::Zone),
             Kind::Timeline => self.shell.open(Pane::Sequencer),
             Kind::Ui => self.shell.open(Pane::Screen),
+            Kind::Day | Kind::LightRigs => self.shell.open(Pane::Look),
             _ => {}
         }
         self.refresh_problems();
@@ -910,6 +917,7 @@ impl Editor {
     /// What a viewport's engine half takes from a pass that's just run, before egui paints it.
     pub fn viewport_frame(&mut self) -> ViewportFrame<'_> {
         self.follow_zone();
+        let look = self.look_shown();
         let moves = self.moves.and_then(|id| self.documents.path(id)).and_then(Path::file_name);
         let current = self.current;
         let camera = self.viewport.camera();
@@ -927,6 +935,7 @@ impl Editor {
             zone,
             timeline,
             screen,
+            look,
             now: self.now,
             pane: &mut self.viewport,
         }
@@ -1868,6 +1877,12 @@ impl PaneUi for Editor {
             Pane::Zone => self.zone_panel(ui),
             Pane::Sequencer => self.sequencer_panel(ui),
             Pane::Screen => self.screen_panel(ui),
+            Pane::Look => {
+                egui::ScrollArea::vertical()
+                    .id_salt("look")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.look_panel(ui));
+            }
             Pane::Inspector => {
                 egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(
                     ui,

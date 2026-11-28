@@ -55,6 +55,9 @@
 //!
 //! The town's lanterns are placed in its assembly; [`LAMPS`] repeats their places, and a test
 //! here checks the two against each other.
+//!
+//! The stage is stood by one path ([`stand`](fn@stand), M6 T15a): a [`LookDevDesc`] stood by
+//! [`stand_with`], which the sandbox's `--look-dev` and the editor's look pane both call.
 
 use std::sync::{Arc, mpsc};
 
@@ -85,6 +88,9 @@ use crate::pose::{self, RigJoints};
 use crate::scene::Figure;
 
 pub mod model;
+mod stand;
+
+pub use stand::{FORMAT, LookDevDesc, LookDevSteps, capture, show, stand, stand_with};
 
 /// The town's zone, by its sidecar's ID (`content/zones/town/town.zone.ron.meta`).
 pub const TOWN_ZONE: AssetId = AssetId::from_text("c6a8f3d2-5b47-4e19-8d0c-27f1b9e46a13");

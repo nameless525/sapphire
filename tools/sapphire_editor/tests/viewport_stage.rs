@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use egui::mutex::RwLock;
 use egui_kittest::kittest::Queryable as _;
@@ -23,10 +24,11 @@ use game_combat::documents::FightDocuments;
 use game_combat::fight::Fight;
 use sapphire_assets::ui::UiDocument;
 use sapphire_document::PropertyPath;
-use sapphire_editor::commands::{SCRIPT_SUFFIX, Script};
+use sapphire_editor::commands::{Command, SCRIPT_SUFFIX, Script};
 use sapphire_editor::cook::{CookPlan, CookRefusal, Cooked, Cooker, Pipeline, Runner, Running};
 use sapphire_editor::edits::{EntryRef, Track, set_window};
 use sapphire_editor::gizmo::{Axis, Gizmo};
+use sapphire_editor::look::Side;
 use sapphire_editor::recovery::Recovery;
 use sapphire_editor::screen::{Aspect, StandIn};
 use sapphire_editor::shell::Pane;
@@ -39,9 +41,14 @@ use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, find_scenario};
 use sapphire_gameplay::targeting::TargetingTuning;
 use sapphire_gameplay::{ActorId, SimConfig, Simulation};
 use sapphire_platform::{Event, Host, KeyEvent, Keycode, Modifiers, Scancode, Timestamp, WindowId};
+use sapphire_render::quality::TierId;
 use sapphire_rhi::{GpuContext, wgpu};
+use sapphire_stage::lookdev::{LookDevDesc, Shot};
+use sapphire_stage::scene::TownLook;
 use sapphire_stage::{Content, Readback, Stage, headless_gpu, lookdev};
 use sapphire_time::Stopwatch;
+use sapphire_tod::TodTimeline;
+use sapphire_tod::light_rig::LightRigLibrary;
 
 /// Moves that name no clip.
 const SLICE: &str = include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron");
@@ -1680,7 +1687,7 @@ fn a_prefab_never_cooked_draws_once_its_placement_is_saved() {
         );
         harness.step();
         view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
     }
     let stats = harness.state().cook_stats().expect("a cook ran");
     println!("save to a landed cook: {:?} ({stats:?})", waited.elapsed());
@@ -1799,8 +1806,7 @@ fn what_the_zone_panel_costs() {
         }
         passes.sort();
         all.sort();
-        let pick =
-            |times: &[std::time::Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
+        let pick = |times: &[Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
         (pick(&passes), pick(&all))
     };
     harness.state_mut().shell_mut().open(Pane::Moves);
@@ -2001,8 +2007,7 @@ fn what_the_sequencer_costs() {
         }
         passes.sort();
         all.sort();
-        let pick =
-            |times: &[std::time::Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
+        let pick = |times: &[Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
         (pick(&passes), pick(&all))
     };
     let (pass, idle) = time(&mut harness, &mut view, &|_, _| {});
@@ -2187,8 +2192,7 @@ fn what_the_screen_panel_costs() {
         }
         passes.sort();
         all.sort();
-        let pick =
-            |times: &[std::time::Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
+        let pick = |times: &[Duration]| (times[frames / 2], times[frames * 99 / 100], times[frames - 1]);
         (pick(&passes), pick(&all))
     };
     harness.state_mut().shell_mut().open(Pane::Screen);
@@ -2199,4 +2203,410 @@ fn what_the_screen_panel_costs() {
     let (pass, editing) = time(&mut harness, &mut view, true);
     println!("an edit every frame, a new tree and a frame each: the pass {pass:?}, the frame {editing:?}");
     assert_eq!(view.stage().expect("stood").renderer.stats().pipelines.first_use_builds, 0);
+}
+
+const LOOKDEV_DAY: &str = include_str!("../../../content/lookdev/lookdev_day.ron");
+/// Between the afternoon's key and the golden hour's (`keys[6]`), so an edit of the golden hour's key shows in the
+/// blend.
+const LOOK_HOUR: f32 = 17.5;
+/// Longer than the look-dev stage's renderer takes to build off the frame from a cold pipeline cache, at any tier:
+/// the look pane's tests settle until what's building lands, never for a count of passes.
+const MOST_SETTLE: Duration = Duration::from_secs(600);
+
+/// An editor on `day`, with the viewport's tab in front: the look pane's.
+fn look_harness(painter: &Painter, day: &Path) -> Harness<'static, Editor> {
+    let options =
+        Options { file: Some(day.to_owned()), content: Some(cook()), link: None, pipeline: None, game: None };
+    let mut editor = Editor::new(options);
+    editor.shell_mut().open(Pane::Viewport);
+    harness_on(painter, editor, (1200.0, 700.0), 1.0)
+}
+
+/// A folder of its own for a look pane test, with `text` in it as `town_day.ron`.
+fn look_day(name: &str, text: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder");
+    let day = dir.join("town_day.ron");
+    std::fs::write(&day, text).expect("a day");
+    day
+}
+
+/// The town's look with `text` as its day, as the pane lays a complete day over the look-dev town.
+fn day_look(text: &str) -> TownLook {
+    TownLook { day: TodTimeline::from_ron(text).expect("a day"), ..TownLook::default() }
+}
+
+/// Passes and engine frames as a window runs them, until the look pane has settled: until whatever builds off the
+/// frame (a tier's renderer, its history's new start, what a new look draws) has landed and the frames after it
+/// have drawn, however many passes that takes, within [`MOST_SETTLE`]. The pass after is what shows.
+fn settle_look(
+    harness: &mut Harness<'_, Editor>,
+    view: &mut StageView,
+    gpu: &Arc<GpuContext>,
+    painter: &Painter,
+) {
+    let waited = Stopwatch::start();
+    loop {
+        harness.step();
+        view.draw(gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+        if !harness.state_mut().viewport().is_settling() {
+            harness.step();
+            view.draw(gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+            return;
+        }
+        assert!(
+            waited.elapsed() < MOST_SETTLE,
+            "the look pane never settled: {:?}",
+            harness.state_mut().viewport().look_status()
+        );
+    }
+}
+
+/// What `stage` built on a frame's thread at first use, built on it at all after its first frame, and waited on:
+/// none of them, for a stage that builds everything off the frame.
+fn builds_on_frames(stage: &Stage) -> (u32, u32, u32) {
+    let pipelines = stage.renderer.stats().pipelines;
+    (pipelines.first_use_builds, pipelines.frame_thread_builds, pipelines.frame_waits)
+}
+
+/// What a plain look-dev capture of `look` draws at `tier` and `hour`, at `size`: the hero shot of the typed stand
+/// ([`lookdev::stand`]), which `sapphire_sandbox --look-dev hero --day <file> --capture` stands too, to the pixel
+/// (the sandbox's `look_dev` test). It builds nothing on a frame.
+fn look_capture(
+    gpu: &Arc<GpuContext>,
+    look: &TownLook,
+    (tier, hour): (TierId, f32),
+    size: (u32, u32),
+) -> Image {
+    let host = host();
+    let desc =
+        LookDevDesc::new(&host, gpu, (Shot::Hero, tier, hour), look.clone(), game_combat::playable::KIND);
+    let mut stage = lookdev::stand(&host, Arc::clone(gpu), desc).expect("the typed stand");
+    assert_eq!(stage.quality.active().id, tier);
+    let pixels = lookdev::capture(&mut stage, size, SETTLING_FRAMES).expect("its capture");
+    assert_eq!(builds_on_frames(&stage), (0, 0, 0), "a capture: {}", stage.renderer.first_use_report());
+    Image { width: size.0, pixels }
+}
+
+/// Two plain look-dev captures of one day agree to within this at any tier: of 24 pairs at each over two runs
+/// ([`how_far_two_look_dev_captures_agree`]), 8 differed at Desktop-High, by up to two codes in up to 6 pixels, 6
+/// at Desktop-Low, by up to two codes in up to 4, and none at either mobile tier; more often than the viewport's
+/// fight stage, which [`assert_runs_agree`] holds. They did before the pane: on the stage with no look handed, as it
+/// stood before, 2 of 12 pairs differed at Desktop-High, by one code in up to 12 pixels, and 2 at Desktop-Low, by up
+/// to two codes in up to 6; with a single frame, none at any tier, so temporal AA's history carries what lands
+/// during a capture's frames. The look pane's comparisons are held to it: twice the most codes and twice the most
+/// pixels seen on either path (a run under load has since shown 3 codes in 9 pixels).
+fn assert_look_runs_agree(most: u8, count: usize, name: &str) {
+    assert!(most <= 4 && count <= 24, "{name}: {count} pixels differ, by up to {most}");
+}
+
+/// The look pane, settled, against a plain look-dev capture of `look` at its tier and hour and its size: the
+/// largest difference of a channel and how many pixels differ, held to what two look-dev captures of one day agree
+/// to ([`assert_look_runs_agree`]: most often none). Its stage built nothing on a frame, at the tier asked for, with
+/// nothing in the pane to say.
+fn look_against(
+    (harness, view, gpu, painter): (&mut Harness<'_, Editor>, &mut StageView, &Arc<GpuContext>, &Painter),
+    look: &TownLook,
+    name: &str,
+) -> (u8, usize) {
+    settle_look(harness, view, gpu, painter);
+    let at = harness.state().look_view();
+    let status = harness.state_mut().viewport().look_status().map(str::to_owned);
+    let stage = view.look_stage().expect("the look-dev stage");
+    assert_eq!(stage.quality.active().id, at.tier, "{name}: {status:?}");
+    assert_eq!(builds_on_frames(stage), (0, 0, 0), "{name}: {}", stage.renderer.first_use_report());
+    assert_eq!(harness.state_mut().viewport().note(), None, "{name}");
+    let shell = painter.paint(gpu, harness);
+    let rect = harness.state_mut().viewport().rect().expect("shown");
+    let (_, size) = on_pixels(rect, 1.0);
+    let frame = look_capture(gpu, look, (at.tier, at.hour), size);
+    is_a_picture(&frame, &format!("look_{name}"));
+    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    println!(
+        "{name} ({status:?}): {count} of {all} pixels differ from a look-dev capture, by at most {most}"
+    );
+    assert_look_runs_agree(most, count, name);
+    (most, count)
+}
+
+/// The look pane stood on a day as saved and settled, then changed with its stage up (M6 T15a): another hour, an
+/// edit saved, and an unsaved edit's two sides, B and then A. Each, settled, draws what a plain look-dev capture of
+/// that day at that hour does, to the pixel, and so does each of the other tiers after them, each a change in place
+/// built off the frame. The pane stands the capture's stage by its one path ([`lookdev::stand`]), hands it each
+/// change as a value, and once it holds still starts its history again as a capture's does. Nothing in it builds a
+/// pipeline on a frame or waits on one, its history's new starts and tier changes included (their builds count in
+/// its renderer's). To the pixel means as two look-dev captures of one day agree: most often exactly, and now and
+/// then by a code or two in a few pixels ([`assert_look_runs_agree`]), which a pane's comparison can't beat; so two
+/// captures of the day are held to that too, and the counts are printed.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn the_look_pane_draws_a_look_dev_capture_after_each_live_change_at_every_tier() {
+    let gpu = device();
+    let day = look_day("look_pane", LOOKDEV_DAY);
+    let painter = Painter::new(&gpu, SRGB);
+    let mut harness = look_harness(&painter, &day);
+    let mut view = StageView::default();
+    let shipped = day_look(LOOKDEV_DAY);
+    let mut apart = Vec::new();
+    let mut against =
+        |harness: &mut Harness<'_, Editor>, view: &mut StageView, look: &TownLook, name: &str| {
+            apart.push((name.to_owned(), look_against((harness, view, &gpu, &painter), look, name)));
+        };
+    // Stood on the day as saved, at the pane's own hour, and settled before anything changes.
+    assert_eq!(harness.state().look_view().hour, 13.0);
+    against(&mut harness, &mut view, &shipped, "stood");
+    assert_eq!(view.stands(), 1);
+    harness.state_mut().run(Command::LookHour(LOOK_HOUR)).expect("an hour");
+    against(&mut harness, &mut view, &shipped, "an_hour");
+    // A key edited and saved with the stage up: the golden hour's exposure, which the blend at 17.5 shows.
+    let edit = r#"(version: 1, commands: [Begin("edit a key"),
+        SetProperty(path: "keys[6].exposure?", value: "0.6"), End, Save])"#;
+    harness.state_mut().run_script(&Script::parse(edit).expect("a script")).expect("runs");
+    let saved_text = std::fs::read_to_string(&day).expect("saved");
+    assert!(saved_text.contains("exposure: 0.6,"), "saved");
+    let saved = day_look(&saved_text);
+    against(&mut harness, &mut view, &saved, "saved");
+    // An edit left unsaved: B is the document as edited, A as saved.
+    let unsaved = r#"(version: 1, commands: [Begin("edit a key"),
+        SetProperty(path: "keys[6].exposure?", value: "1.2"), End])"#;
+    harness.state_mut().run_script(&Script::parse(unsaved).expect("a script")).expect("runs");
+    let edited = day_look(&saved_text.replace("exposure: 0.6,", "exposure: 1.2,"));
+    assert_eq!(harness.state().look_view().side, Side::Edited);
+    against(&mut harness, &mut view, &edited, "edited_b");
+    harness.state_mut().run(Command::Compare(Side::Saved)).expect("A");
+    against(&mut harness, &mut view, &saved, "saved_a");
+    // The saved day at every other tier, each a change in place, built off the frame; then at each, another hour,
+    // a live change whose history starts again at that tier, as at Desktop-High.
+    for (tier, hour) in
+        [(TierId::DesktopLow, 16.0), (TierId::MobileHigh, LOOK_HOUR), (TierId::MobileLow, 16.0)]
+    {
+        harness.state_mut().run(Command::LookTier(tier)).expect("a tier");
+        against(&mut harness, &mut view, &saved, tier.key());
+        harness.state_mut().run(Command::LookHour(hour)).expect("an hour");
+        against(&mut harness, &mut view, &saved, &format!("{}_at_{hour}", tier.key()));
+    }
+    assert_eq!(view.stands(), 1, "every change was handed to the stage it stood");
+    // Two captures of one day agree as two captures of any scene do, or a pane's agreeing with one proves nothing.
+    let (one, two) = (
+        look_capture(&gpu, &saved, (TierId::DesktopHigh, LOOK_HOUR), (480, 270)),
+        look_capture(&gpu, &saved, (TierId::DesktopHigh, LOOK_HOUR), (480, 270)),
+    );
+    let (most, count, _) = differences(&one, &two, egui::Rect::ZERO, 1.0, 0);
+    println!("{apart:?}; two captures differ in {count} pixels, by at most {most}");
+    assert_look_runs_agree(most, count, "two captures of one day");
+}
+
+/// A plain look-dev capture at `tier` and [`LOOK_HOUR`], its town on `look` or, with `None`, on its own as the
+/// stage stood before the look pane (`--look-dev hero` with no `--day`), drawn over `frames` frames.
+fn plain_capture(gpu: &Arc<GpuContext>, look: Option<&TownLook>, tier: TierId, frames: u32) -> Image {
+    let host = host();
+    let mut desc = LookDevDesc::new(
+        &host,
+        gpu,
+        (Shot::Hero, tier, LOOK_HOUR),
+        look.cloned().unwrap_or_default(),
+        game_combat::playable::KIND,
+    );
+    desc.look = look.cloned();
+    let mut stage = lookdev::stand(&host, Arc::clone(gpu), desc).expect("the typed stand");
+    let pixels = lookdev::capture(&mut stage, (725, 335), frames).expect("its capture");
+    assert_eq!(builds_on_frames(&stage), (0, 0, 0), "a capture: {}", stage.renderer.first_use_report());
+    Image { width: 725, pixels }
+}
+
+/// How far two plain look-dev captures of one day agree at each tier, with no pane in it: what the look pane's
+/// comparisons can't beat ([`assert_look_runs_agree`] holds each pair to it, and the counts are printed). Three
+/// ways: on the look-dev day handed as a look, as the pane hands it; on the town's own, with no look handed, the
+/// stage as it stood before this pane; and that with a single frame, no history under it.
+#[test]
+#[ignore = "needs a GPU and a cook, and prints how they agree"]
+fn how_far_two_look_dev_captures_agree() {
+    let gpu = device();
+    let day = day_look(LOOKDEV_DAY);
+    let rounds = 12;
+    let mut seen = Vec::new();
+    for (way, look, frames) in
+        [("a look", Some(&day), SETTLING_FRAMES), ("its own", None, SETTLING_FRAMES), ("one frame", None, 1)]
+    {
+        for tier in [TierId::DesktopHigh, TierId::DesktopLow, TierId::MobileHigh, TierId::MobileLow] {
+            let (mut differing, mut most, mut count) = (0, 0, 0);
+            for _ in 0..rounds {
+                let one = plain_capture(&gpu, look, tier, frames);
+                let two = plain_capture(&gpu, look, tier, frames);
+                let (by, pixels, _) = differences(&one, &two, egui::Rect::ZERO, 1.0, 0);
+                assert_look_runs_agree(by, pixels, tier.key());
+                differing += usize::from(pixels > 0);
+                (most, count) = (most.max(by), count.max(pixels));
+            }
+            seen.push((way, tier.key(), differing, most, count));
+        }
+    }
+    println!("of {rounds} pairs at each, (way, tier, pairs differing, most by, most pixels): {seen:?}");
+}
+
+/// The look pane on a light rig library, its gameplay rig edited and saved with the stage up, and on a partial
+/// day, a biome's, laid over the look-dev day (M6 T15a): each, settled, draws what a plain look-dev capture of that
+/// look does, as two captures of one day agree, and what each changes shows: neither is the town's own.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn the_look_pane_draws_a_capture_after_a_rig_edit_and_over_a_partial_day() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, SRGB);
+    let own = look_capture(&gpu, &TownLook::default(), (TierId::DesktopHigh, 13.0), (480, 270));
+    // A library, its gameplay rig's light from the probes held to less colour, saved with the stage up.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("look_rigs");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder");
+    let rigs_path = dir.join("town_rigs.ron");
+    std::fs::write(&rigs_path, include_str!("../../../content/lookdev/lookdev_light_rigs.ron"))
+        .expect("rigs");
+    let mut harness = look_harness(&painter, &rigs_path);
+    let mut view = StageView::default();
+    look_against((&mut harness, &mut view, &gpu, &painter), &TownLook::default(), "rigs");
+    let edit = r#"(version: 1, commands: [Begin("edit a rig"),
+        SetProperty(path: "rigs[0].rig.gi.max_saturation", value: "0.05"), End, Save])"#;
+    harness.state_mut().run_script(&Script::parse(edit).expect("a script")).expect("runs");
+    let text = std::fs::read_to_string(&rigs_path).expect("saved");
+    let edited = TownLook { rigs: LightRigLibrary::from_ron(&text).expect("rigs"), ..TownLook::default() };
+    look_against((&mut harness, &mut view, &gpu, &painter), &edited, "rigs_edited");
+    let shown = look_capture(&gpu, &edited, (TierId::DesktopHigh, 13.0), (480, 270));
+    let (_, count, _) = differences(&own, &shown, egui::Rect::ZERO, 1.0, 0);
+    assert!(count > 24, "the rig edit shows: {count} pixels");
+    drop(harness);
+    // A cave's partial day, over the look-dev day.
+    let cave_text = include_str!("../../../content/looks/biomes/cave_day.ron");
+    let cave = look_day("look_cave", cave_text);
+    let mut harness = look_harness(&painter, &cave);
+    let mut view = StageView::default();
+    let partial = TodTimeline::from_ron(cave_text).expect("a day");
+    assert!(!partial.is_complete(), "a partial day");
+    let over = TownLook { over: Some(partial), ..TownLook::default() };
+    look_against((&mut harness, &mut view, &gpu, &painter), &over, "partial");
+    let shown = look_capture(&gpu, &over, (TierId::DesktopHigh, 13.0), (480, 270));
+    let (_, count, _) = differences(&own, &shown, egui::Rect::ZERO, 1.0, 0);
+    assert!(count > 24, "the partial day shows: {count} pixels");
+}
+
+/// A live edit that draws what the look before it didn't (M6 T15a): a dry day keyed wet with the stage up. What the
+/// wet day draws is declared from the new look and built off the frame, and no frame draws until it's in, so the
+/// pane builds no pipeline on a frame and waits on none, and once settled draws what a look-dev capture of the wet
+/// day does, as two captures of it agree.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_day_gone_wet_builds_what_it_draws_off_the_frame() {
+    let gpu = device();
+    assert_eq!(LOOKDEV_DAY.matches("                day_night: ").count(), 10, "a line in each key");
+    let dry = LOOKDEV_DAY.replace(
+        "                day_night: ",
+        "                weather: (wetness: 0.0),\n                day_night: ",
+    );
+    assert!(!TodTimeline::from_ron(&dry).expect("a day").may_be_wet(), "keyed dry");
+    let day = look_day("look_pane_wet", &dry);
+    let painter = Painter::new(&gpu, SRGB);
+    let mut harness = look_harness(&painter, &day);
+    let mut view = StageView::default();
+    harness.state_mut().run(Command::LookHour(LOOK_HOUR)).expect("an hour");
+    settle_look(&mut harness, &mut view, &gpu, &painter);
+    let before = view.look_stage().expect("the look-dev stage").renderer.stats().pipelines;
+    let wet = r#"(version: 1, commands: [Begin("a shower"),
+        SetProperty(path: "keys[6].weather?.wetness", value: "0.8"),
+        SetProperty(path: "keys[6].weather?.puddles", value: "0.5"), End])"#;
+    harness.state_mut().run_script(&Script::parse(wet).expect("a script")).expect("runs");
+    let text =
+        harness.state().documents().ids().find_map(|id| {
+            harness.state().documents().get::<TodTimeline>(id).map(|day| day.text().to_owned())
+        });
+    let look = day_look(&text.expect("the day"));
+    assert!(look.day.may_be_wet(), "keyed wet");
+    let (most, count) = look_against((&mut harness, &mut view, &gpu, &painter), &look, "wet");
+    let after = view.look_stage().expect("the look-dev stage").renderer.stats().pipelines;
+    println!("what the wet day drew: {before:?} to {after:?}");
+    assert!(after.warmed_off_frame > before.warmed_off_frame, "the wet day's pipelines built off the frame");
+    println!("wet: {count} pixels differ, by at most {most}");
+}
+
+/// A new size starts the look pane's history again (M6 T15a): settled at one size and then another, it draws what
+/// a look-dev capture at the new size does, as two captures agree, since a capture at that size starts from nothing.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_new_size_settles_the_look_pane_anew() {
+    let gpu = device();
+    let day = look_day("look_pane_size", LOOKDEV_DAY);
+    let painter = Painter::new(&gpu, SRGB);
+    let mut harness = look_harness(&painter, &day);
+    let mut view = StageView::default();
+    settle_look(&mut harness, &mut view, &gpu, &painter);
+    let first = harness.state_mut().viewport().rect().expect("shown");
+    harness.set_size(egui::vec2(1000.0, 640.0));
+    let (most, count) =
+        look_against((&mut harness, &mut view, &gpu, &painter), &day_look(LOOKDEV_DAY), "resized");
+    assert_ne!(harness.state_mut().viewport().rect().expect("shown").size(), first.size(), "a new size");
+    println!("resized: {count} pixels differ, by at most {most}");
+}
+
+/// The look pane's tier picker (M6 T15a): a tier picked back before the one asked for lands lets that build go and
+/// leaves quality on the tier that draws; a tier whose renderer the device reported an error under while it built
+/// is refused, the picker goes back to the tier that draws, and the pane says why.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_tier_picked_back_or_refused_leaves_the_one_that_draws() {
+    let gpu = device();
+    let day = look_day("look_pane_tiers", LOOKDEV_DAY);
+    let painter = Painter::new(&gpu, SRGB);
+    let mut harness = look_harness(&painter, &day);
+    let mut view = StageView::default();
+    settle_look(&mut harness, &mut view, &gpu, &painter);
+    let pass = |harness: &mut Harness<'_, Editor>, view: &mut StageView| {
+        harness.step();
+        view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    };
+    // Its build never counts as built, so it's in flight whenever it's picked back.
+    view.look_stage().expect("the look-dev stage").slow_tier_builds(u32::MAX);
+    harness.state_mut().run(Command::LookTier(TierId::MobileLow)).expect("a tier");
+    for _ in 0..3 {
+        pass(&mut harness, &mut view);
+    }
+    let status = harness.state_mut().viewport().look_status().map(str::to_owned);
+    assert!(status.as_deref().is_some_and(|status| status.starts_with("Building Mobile")), "{status:?}");
+    assert!(view.look_stage().expect("the look-dev stage").tier_change_coming());
+    harness.state_mut().run(Command::LookTier(TierId::DesktopHigh)).expect("back");
+    pass(&mut harness, &mut view);
+    let stage = view.look_stage().expect("the look-dev stage");
+    assert_eq!(
+        stage.quality.settings().tier,
+        Some(TierId::DesktopHigh),
+        "quality stays with the tier that draws"
+    );
+    assert_eq!((stage.quality.active().id, stage.quality.wanted_tier()), (TierId::DesktopHigh, None));
+    assert!(!stage.tier_change_coming(), "the build went");
+    // It settles with the slowed build never landing: nothing waits on it.
+    settle_look(&mut harness, &mut view, &gpu, &painter);
+    let status = harness.state_mut().viewport().look_status().map(str::to_owned);
+    assert!(!status.as_deref().is_some_and(|status| status.starts_with("Building")), "{status:?}");
+
+    // A build the device reports an error under: the stage takes the live renderer as the one it has.
+    harness.state_mut().run(Command::LookTier(TierId::MobileHigh)).expect("a tier");
+    pass(&mut harness, &mut view);
+    assert!(view.look_stage().expect("the look-dev stage").tier_change_coming(), "building");
+    let errors = gpu.errors();
+    // A validation error, as a device that refused what the build made would report: a buffer with no use.
+    drop(gpu.device().create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 4,
+        usage: wgpu::BufferUsages::empty(),
+        mapped_at_creation: false,
+    }));
+    assert!(gpu.errors() > errors, "the device reported it");
+    view.look_stage().expect("the look-dev stage").slow_tier_builds(0);
+    settle_look(&mut harness, &mut view, &gpu, &painter);
+    pass(&mut harness, &mut view);
+    assert_eq!(harness.state().look_view().tier, TierId::DesktopHigh, "the picker went back");
+    let stage = view.look_stage().expect("the look-dev stage");
+    assert_eq!(
+        (stage.quality.active().id, stage.quality.settings().tier),
+        (TierId::DesktopHigh, Some(TierId::DesktopHigh))
+    );
+    let status = harness.state_mut().viewport().look_status().map(str::to_owned);
+    assert_eq!(status.as_deref(), Some("Mobile-High can't be built here: Desktop-High draws on"));
 }

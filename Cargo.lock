@@ -4530,6 +4530,7 @@ dependencies = [
  "sapphire_stage",
  "sapphire_time",
  "sapphire_timeline",
+ "sapphire_tod",
  "sapphire_ui",
  "sapphire_zone",
  "serde",

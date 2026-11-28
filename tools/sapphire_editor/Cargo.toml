@@ -57,6 +57,8 @@ sapphire_serialize.workspace = true
 # `tools`: taking the cook a save makes (M6 T5).
 sapphire_stage = { workspace = true, features = ["tools"] }
 sapphire_time.workspace = true
+# The days and light rigs the look pane edits and draws (M6 T15a).
+sapphire_tod.workspace = true
 # A timeline's document, cooked as the cooker does, and played at its playhead as the game plays it.
 sapphire_sequencer.workspace = true
 sapphire_timeline.workspace = true

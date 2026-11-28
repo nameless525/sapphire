@@ -204,7 +204,10 @@
 //!   `--rim-rig` and `--hard-edges` can't join it. `--time-of-day` and `--day-length` run its
 //!   day; `--view`, `--fov` and `--zoom` adjust the shot. The golden scenes
 //!   `lookdev-town-day`, `-hero`, `-golden`, `-blue` and `-night`, `lookdev-street-night` and
-//!   `lookdev-face` show it.
+//!   `lookdev-face` show it. `--day <file>` and `--light-rigs <file>` run its town on those documents in place of
+//!   its own day and light rigs (M6 T15a): an edited day, as the editor's look pane shows it. The stage stands by
+//!   its one path, `sapphire_stage::lookdev::stand_with`, which the pane stands too, and the other flags apply where
+//!   it leaves them (`offscreen::Flags`).
 //! - `--ui-game <stem>`: one of the game's screens (M3 U7, `content/ui/<stem>.ui.ron`: `title`, `pause`,
 //!   `settings`, `character`, `dialogue` or `hud`, `boot`, the boot screen, M4 H2, and `boot-update`, it
 //!   downloading an update, M4 P4) on its sample model over

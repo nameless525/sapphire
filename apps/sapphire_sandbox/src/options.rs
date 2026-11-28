@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sapphire_assets::rig::ExpressionPreset;
 use sapphire_math::Vec3;
@@ -60,6 +60,8 @@ Common options:
   --inset-supersample 1|2   Insets' and cut-ins' supersample override
   --spring-interval <ticks> Ticks between the clothes' clearance solves, not the tier's
   --look-dev <scene>        Select a look-development scene
+  --day <file>              The look-dev town's day (a partial one over it), from this document
+  --light-rigs <file>       The look-dev town's light rigs, from this document
   --replay <file>           Play a recorded simulation
   --record <file>           Record a simulation
   --scenario <name>         Scenario for a recording or fight
@@ -207,6 +209,38 @@ impl StreamChoice {
     }
 }
 
+/// `--day` and `--light-rigs`: the documents the look-dev town runs on in place of its own (M6 T15a).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TownLookFiles {
+    pub day: Option<PathBuf>,
+    pub light_rigs: Option<PathBuf>,
+}
+
+impl TownLookFiles {
+    /// The town's look with these documents read in place of its own, or `None` if neither is named. A document
+    /// that can't be read, or isn't valid, says which and why.
+    pub fn read(&self) -> Result<Option<scene::TownLook>, String> {
+        if *self == Self::default() {
+            return Ok(None);
+        }
+        let text = |flag: &str, path: &Path| {
+            std::fs::read_to_string(path).map_err(|error| format!("{flag} {}: {error}", path.display()))
+        };
+        let mut look = scene::TownLook::default();
+        if let Some(path) = &self.day {
+            look.take_day(
+                sapphire_world::tod::TodTimeline::from_ron(&text("--day", path)?)
+                    .map_err(|error| format!("--day {}: {error}", path.display()))?,
+            );
+        }
+        if let Some(path) = &self.light_rigs {
+            look.rigs = sapphire_world::light_rig::LightRigLibrary::from_ron(&text("--light-rigs", path)?)
+                .map_err(|error| format!("--light-rigs {}: {error}", path.display()))?;
+        }
+        Ok(Some(look))
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Options {
     /// Exit after this many presented frames.
@@ -321,6 +355,11 @@ pub(crate) struct Options {
     /// `--environment` (and `--probes`, which implies it) and `--foliage`, and the scenes that
     /// frame more of the mannequin (`--outline-row`, `--faces`, `--rim-rig`, `--hard-edges`).
     pub look_dev: Option<Shot>,
+    /// `--day <file>` and `--light-rigs <file>`: the look-dev town's day and light rigs read from these documents
+    /// in place of its own (M6 T15a): what an edited day or library looks like, as the editor's look pane shows it.
+    /// A partial day (a biome's) lies over the town's day instead ([`scene::TownLook::take_day`]). Needs
+    /// `--look-dev`.
+    pub town_look: TownLookFiles,
     /// `--hud fixed|live`, `--hud-insets`, `--hud-scale`, `--hud-paused` and `--hud-energy`: the combat HUD over the scene
     /// (M2 I2).
     pub hud: Option<HudOptions>,
@@ -1145,6 +1184,8 @@ impl Options {
                     }
                     options.day_length = Some(seconds);
                 }
+                "--day" => options.town_look.day = Some(PathBuf::from(value("--day")?)),
+                "--light-rigs" => options.town_look.light_rigs = Some(PathBuf::from(value("--light-rigs")?)),
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--shade-hue" => options.shade_hue = Some(parse_shade_hue(&value("--shade-hue")?)?),
                 "--camera-rim" => {
@@ -2058,6 +2099,9 @@ impl Options {
         if options.clip_in_place && options.clip.is_none() {
             return Err("--clip-in-place needs --clip".to_owned());
         }
+        if options.town_look != TownLookFiles::default() && options.look_dev.is_none() {
+            return Err("--day and --light-rigs are the look-dev town's: they need --look-dev".to_owned());
+        }
         if options.model.is_some() && options.look_dev.is_none() {
             return Err("--model stands on the look-dev stage: it needs --look-dev".to_owned());
         }
@@ -2475,7 +2519,7 @@ impl Options {
     /// A file path with no directory of its own goes under `dir`, a phone's cache, where the app may
     /// read and write and `run-as` and `devicectl` can reach: `--record`'s, `--replay`'s (with the
     /// checksums beside it) and `--capture`'s.
-    pub fn files_under(&mut self, dir: &std::path::Path) {
+    pub fn files_under(&mut self, dir: &Path) {
         let under = |path: &mut PathBuf| {
             if path.is_relative() {
                 *path = dir.join(&*path);
@@ -3020,6 +3064,15 @@ mod tests {
         );
         assert_eq!(parse(&[]).unwrap().0.character_rig, None);
         assert!(parse(&["--character-rig"]).is_err(), "needs a name");
+    }
+
+    /// A town's look from documents needs the town, and names a document it can't read (M6 T15a).
+    #[test]
+    fn day_and_light_rigs_files_are_the_towns() {
+        assert!(parse(&["--day", "a_day.ron"]).is_err(), "no --look-dev");
+        let (options, _) = parse(&["--look-dev", "hero", "--day", "no/such_day.ron"]).expect("flags");
+        let error = options.town_look.read().expect_err("no such file");
+        assert!(error.contains("--day no/such_day.ron"), "{error}");
     }
 
     #[test]
@@ -3695,7 +3748,7 @@ mod tests {
     fn a_phones_files_go_under_its_cache() {
         let under = |args: &[&str]| {
             let (mut options, _) = parse(args).unwrap();
-            options.files_under(std::path::Path::new("/cache"));
+            options.files_under(Path::new("/cache"));
             options
         };
         let recorded = |path: &str| match under(&["--arena", "--record", path, "--scenario", "s"]).combat {
@@ -3707,11 +3760,11 @@ mod tests {
 
         let played = under(&["--capture", "end.png", "--arena", "--replay", "zone-trip.sreplay"]);
         assert!(
-            matches!(&played.combat, Some(CombatOption::Replay { path, .. }) if path.as_path() == std::path::Path::new("/cache/zone-trip.sreplay"))
+            matches!(&played.combat, Some(CombatOption::Replay { path, .. }) if path.as_path() == Path::new("/cache/zone-trip.sreplay"))
         );
         assert!(matches!(
             &played.offscreen,
-            Some(Offscreen { mode: OffscreenMode::Capture { path, .. }, .. }) if path.as_path() == std::path::Path::new("/cache/end.png")
+            Some(Offscreen { mode: OffscreenMode::Capture { path, .. }, .. }) if path.as_path() == Path::new("/cache/end.png")
         ));
         let own = under(&["--capture", "/sdcard/end.png", "--replay", "/data/local/tmp/a.sreplay"]);
         assert!(matches!(&own.combat, Some(CombatOption::Replay { path, .. }) if path.starts_with("/data")));
@@ -3850,7 +3903,7 @@ mod tests {
         refused(&["--progress", "saved.ron", "--capture", "x"], "--progress");
         let (game, _) = parse(&["--game", "continue", "--progress", "saved.ron", "--capture", "x"]).unwrap();
         assert_eq!(game.game.and_then(GameStart::command), Some(FlowCommand::Continue));
-        assert_eq!(game.progress.as_deref(), Some(std::path::Path::new("saved.ron")));
+        assert_eq!(game.progress.as_deref(), Some(Path::new("saved.ron")));
         refused(&["--game-forward", "--capture", "x"], "--game-forward");
         refused(&["--game", "title", "--game-language", "fr", "--capture", "x"], "no \"fr\"");
         let (game, _) = parse(&[

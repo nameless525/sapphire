@@ -208,6 +208,12 @@ pub enum Command {
     Link(String),
     /// Sets a cvar on the device.
     Cvar { name: String, value: String },
+    /// Follows what the device's character playing the graph of this file name is doing, or none (M6 A9).
+    WatchGraph(Option<String>),
+    /// Pins a parameter of the graph of this file name on the device, presentation only (M6 A9).
+    OverrideGraph { graph: String, parameter: String, value: f32 },
+    /// Lets every parameter of the graph of this file name on the device read what it reads again.
+    ClearOverrides(String),
 }
 
 impl Command {
@@ -309,6 +315,9 @@ impl Command {
             Self::Split { .. } => "Split",
             Self::Link(_) => "Link",
             Self::Cvar { .. } => "Cvar",
+            Self::WatchGraph(_) => "WatchGraph",
+            Self::OverrideGraph { .. } => "OverrideGraph",
+            Self::ClearOverrides(_) => "ClearOverrides",
         }
     }
 }
@@ -422,6 +431,12 @@ const COMMANDS: &[Registered] = registry! {
     "Split", "Split(pane: Device, of: Preview, direction: Vertical)", None, "Splits a pane's tile with another pane";
     "Link", r#"Link("127.0.0.1:7811")"#, None, "Points live link at a device";
     "Cvar", r#"Cvar(name: "", value: "")"#, None, "Sets a cvar on the device";
+    "WatchGraph", r#"WatchGraph(Some("character.animgraph.ron"))"#, None,
+        "Follows what a graph plays on the device";
+    "OverrideGraph", r#"OverrideGraph(graph: "character.animgraph.ron", parameter: "speed", value: 0.0)"#, None,
+        "Pins a graph's parameter on the device, presentation only";
+    "ClearOverrides", r#"ClearOverrides("character.animgraph.ron")"#, None,
+        "Lets a graph's parameters on the device go";
 };
 
 /// Every command the editor runs: its name, what it's for, its arguments and its key.

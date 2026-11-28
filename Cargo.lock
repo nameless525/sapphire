@@ -4477,6 +4477,7 @@ dependencies = [
  "sapphire_vfx",
  "sapphire_zone",
  "serde",
+ "similar",
  "thiserror 2.0.21",
 ]
 

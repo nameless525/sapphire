@@ -409,6 +409,9 @@ async-trait = "0.1.92"
 breakpad-symbols = "0.27.0"
 debugid = "0.8.0"
 memchr = "2.8.3"
+# The line diff under `sapphire_document merge`'s line merge (M6 T7), for a document with no model or three sides
+# at different versions. Already in the lock through insta; no default features, since it needs no text helpers.
+similar = { version = "2.7.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

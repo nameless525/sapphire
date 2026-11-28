@@ -37,6 +37,7 @@ use sapphire_zone::prefab::Assembly;
 use sapphire_zone::{FoliageDocument, ZoneDocument};
 
 use crate::journal::JournalEntry;
+use crate::merge::{Merged, by_path};
 use crate::set::{DocumentSet, Noticed, SetError};
 
 /// How a type of document reads, and what's wrong with one that does.
@@ -524,6 +525,32 @@ impl Kind {
             Self::Colliders => value(colliders(), text),
             Self::Foliage => value(foliage(), text),
             Self::CueTable => value(cue_table(), text),
+        }
+    }
+
+    /// Merges `ours` and `theirs`, each a change of `base`, as documents of this kind (M6 T7): by property path, or
+    /// by lines where the model can't say ([`crate::merge`]).
+    #[must_use]
+    pub fn merge(self, base: &str, ours: &str, theirs: &str) -> Merged {
+        match self {
+            Self::Moves => by_path(self, moves(), base, ours, theirs),
+            Self::Graph => by_path(self, graph(), base, ours, theirs),
+            Self::Cue => by_path(self, cue(), base, ours, theirs),
+            Self::Effects => by_path(self, effects(), base, ours, theirs),
+            Self::Timeline => by_path(self, timeline(), base, ours, theirs),
+            Self::Ui => by_path(self, ui(), base, ours, theirs),
+            Self::Zone => by_path(self, zone(), base, ours, theirs),
+            Self::Material => by_path(self, material(), base, ours, theirs),
+            Self::EnvironmentMaterial => by_path(self, environment_material(), base, ours, theirs),
+            Self::Ramp => by_path(self, ramp(), base, ours, theirs),
+            Self::Assembly => by_path(self, assembly(), base, ours, theirs),
+            Self::Encounter => by_path(self, encounter(), base, ours, theirs),
+            Self::Dialogue => by_path(self, dialogue(), base, ours, theirs),
+            Self::Day => by_path(self, day(), base, ours, theirs),
+            Self::LightRigs => by_path(self, light_rigs(), base, ours, theirs),
+            Self::Colliders => by_path(self, colliders(), base, ours, theirs),
+            Self::Foliage => by_path(self, foliage(), base, ours, theirs),
+            Self::CueTable => by_path(self, cue_table(), base, ours, theirs),
         }
     }
 

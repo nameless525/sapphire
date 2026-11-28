@@ -1249,7 +1249,7 @@ fn has_overlap(splices: &[Splice]) -> bool {
 }
 
 /// A document's body: under its envelope's `data`, or all of it if it hasn't one.
-fn body(tree: &Node) -> &Node {
+pub(crate) fn body(tree: &Node) -> &Node {
     tree.field("data").filter(|_| tree.field("type").is_some()).unwrap_or(tree)
 }
 

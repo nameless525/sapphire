@@ -43,6 +43,31 @@
 *.icns binary
 *.ico binary
 
+# The documents the editor knows (sapphire_document's kinds, M6 T7) merge by property path through
+# `sapphire_document merge`, in a clone whose config names the driver (docs/getting-started.md, "Merging
+# documents"). Where it doesn't, git merges them by lines, as it always has. Material families share
+# `.material.ron`; the driver reads the envelope and merges a family with no kind by lines.
+*.moves.ron merge=sapphire-document
+*.animgraph.ron merge=sapphire-document
+*.cue.ron merge=sapphire-document
+*_effects.ron merge=sapphire-document
+*.timeline.ron merge=sapphire-document
+*.ui.ron merge=sapphire-document
+*.zone.ron merge=sapphire-document
+*.material.ron merge=sapphire-document
+*.ramp.ron merge=sapphire-document
+*.assembly.ron merge=sapphire-document
+*.encounter.ron merge=sapphire-document
+*.dialogue.ron merge=sapphire-document
+*_day.ron merge=sapphire-document
+*_rigs.ron merge=sapphire-document
+*.colliders.ron merge=sapphire-document
+*.foliage.ron merge=sapphire-document
+*_cues.ron merge=sapphire-document
+# The world's screen effects are a library of another kind than the effects the editor opens, which share the
+# suffix: git merges them by lines.
+crates/sapphire_world/default_screen_effects.ron merge=text
+
 # Third-party content stays byte for byte as downloaded (content/third_party/README.md); only
 # the project's own provenance notes and sidecars there are normalized.
 content/third_party/** -text

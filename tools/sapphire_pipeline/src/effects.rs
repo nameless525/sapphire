@@ -17,21 +17,21 @@ use std::path::{Path, PathBuf};
 use sapphire_assets::effects::{Effects, EffectsError};
 use sapphire_serialize::AssetId;
 use sapphire_serialize::DocumentError;
-use sapphire_vfx::EffectLibrary;
+use sapphire_vfx::{EffectLibrary, LIBRARY_SUFFIX};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::Stage;
 
-/// Reads and checks the document. Bump the version whenever that changes output for the same document,
-/// as a new schema version of `EffectLibrary` does: the cooked document is written at it.
+/// Reads and checks the document. Bump the version whenever the effects crate's reading or writing of a
+/// document it already read changes what the cook writes for it, whatever its schema's number: a default
+/// changed, a check tightened, a value written otherwise. Fields joining version 5 (M6's effects) leave a
+/// document without them written as it was, so they bump nothing; `an_older_library_cooks_as_its_rewrite_does`
+/// and the fixtures' write-back test hold that.
 pub const IMPORTER: Stage = Stage { name: "effects library document", version: 1 };
 
 /// The `.seffects` writer. Bump the version whenever it changes output for the same document. 2: the sheets its
 /// emitters name, beside the document (M6 N4a).
 pub const COOKER: Stage = Stage { name: "seffects", version: 2 };
-
-/// What an effects library's source's file name ends with.
-pub const SOURCE_SUFFIX: &str = ".effects.ron";
 
 /// Import settings for effects libraries: none yet. A struct, so settings can join without changing existing
 /// sidecars.
@@ -51,17 +51,19 @@ pub enum EffectsCookError {
     Cooked(#[from] EffectsError),
 }
 
-/// Whether `path` names an effects library's source.
+/// Whether `path` names an effects library's source: the effects crate's rule ([`sapphire_vfx::is_library_file`],
+/// a `.effects.ron` or the compiled-in `default_effects.ron`), which the editor reads too, so a library that opens
+/// as one cooks as one.
 pub fn is_source(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.to_ascii_lowercase().ends_with(SOURCE_SUFFIX))
+    path.file_name().and_then(|name| name.to_str()).is_some_and(sapphire_vfx::is_library_file)
 }
 
-/// The cooked file a source at `relative` writes: `combat.effects.ron` → `combat.seffects`.
+/// The cooked file a source at `relative` writes: `combat.effects.ron` → `combat.seffects`, and the compiled-in
+/// library's `default_effects.ron` → `default_effects.seffects`.
 pub fn output_path(relative: &Path, extension: &str) -> PathBuf {
     let name = relative.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-    let stem = &name[..name.len().saturating_sub(SOURCE_SUFFIX.len())];
+    let suffix = if name.to_ascii_lowercase().ends_with(LIBRARY_SUFFIX) { LIBRARY_SUFFIX } else { ".ron" };
+    let stem = &name[..name.len().saturating_sub(suffix.len())];
     relative.with_file_name(format!("{stem}.{extension}"))
 }
 
@@ -146,15 +148,26 @@ mod tests {
         aligned
     }
 
+    /// A source is one by the effects crate's rule, the editor's too: a game's library in any case and the
+    /// compiled-in one by its whole name, never a file that only ends `_effects.ron`.
     #[test]
-    fn a_source_is_known_by_its_whole_suffix() {
+    fn a_source_is_known_by_the_effects_crates_rule() {
         assert!(is_source(Path::new("combat/combat.effects.ron")));
         assert!(is_source(Path::new("COMBAT.EFFECTS.RON")));
-        assert!(!is_source(Path::new("default_effects.ron")));
-        assert!(!is_source(Path::new("default_screen_effects.ron")));
+        assert!(is_source(Path::new("crates/sapphire_vfx/default_effects.ron")));
+        assert!(!is_source(Path::new("crates/sapphire_world/default_screen_effects.ron")));
+        assert!(!is_source(Path::new("my_effects.ron")));
         assert_eq!(
             output_path(Path::new("combat/combat.effects.ron"), EFFECTS_EXTENSION),
             Path::new("combat/combat.seffects")
+        );
+        assert_eq!(
+            output_path(Path::new("COMBAT.EFFECTS.RON"), EFFECTS_EXTENSION),
+            Path::new("COMBAT.seffects")
+        );
+        assert_eq!(
+            output_path(Path::new("x/default_effects.ron"), EFFECTS_EXTENSION),
+            Path::new("x/default_effects.seffects")
         );
     }
 

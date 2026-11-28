@@ -24,7 +24,9 @@ fn a_version_8_cook_reads_as_a_zone_with_no_water() {
     );
 
     // Its digest, of the values the simulation reads and of what it references (each read here as its ID's
-    // bytes), is the one version 8 had: the water section is written only for a zone with water.
+    // bytes), as pinned when water came (M6 W2): this holds the upgrade's digest steady from then on, through
+    // every later version's upgrade. That water moved no zone without it is `shipped_digests.rs`'s to show,
+    // whose lines were pinned before water existed.
     let ids: Vec<AssetId> = zone.references();
     let stand_ins: Vec<[u8; 16]> = ids.iter().map(|id| id.to_bytes()).collect();
     let read = |id: AssetId| ids.iter().position(|&held| held == id).map(|at| &stand_ins[at][..]);

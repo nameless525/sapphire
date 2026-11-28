@@ -164,13 +164,15 @@ const ZONE_IMPORTER: &str = "Zone((
             position_format: Float32,
         ))";
 
-/// An effect library, such as `default_effects.ron`, which is compiled in and no cook reads.
+/// An effects library: a game's `<name>.effects.ron`, which cooks to `.seffects` (M6 N1), or the compiled-in
+/// `default_effects.ron`, whose sidecar names no importer, so no cook reads it. Which files are libraries is
+/// the effects crate's rule ([`sapphire_vfx::is_library_file`]), which the cook reads too.
 #[must_use]
 pub fn effects() -> Schema<EffectLibrary> {
     Schema {
         parse: |text| EffectLibrary::from_ron(text).map_err(|error| error.to_string()),
         check: no_rules,
-        importer: None,
+        importer: Some("Effects(())"),
     }
 }
 
@@ -364,9 +366,10 @@ impl Kind {
 
     /// What a file is, if it's a document this crate knows: by its name, and for a material by the family its
     /// envelope names, which this reads from the file ([`Self::of_material`]); a material that can't be read
-    /// is no kind. A library of effects, a day, a library of light rigs and a cue table have no suffix of their own
-    /// beyond their names, as `default_effects.ron`, `lookdev_day.ron`, `lookdev_light_rigs.ron` and
-    /// `default_cues.ron` show.
+    /// is no kind. An effects library is one by the effects crate's rule ([`sapphire_vfx::is_library_file`]: a
+    /// `.effects.ron`, or the compiled-in `default_effects.ron`), the one the cook reads. A day, a library of light
+    /// rigs and a cue table have no suffix of their own beyond their names, as `lookdev_day.ron`,
+    /// `lookdev_light_rigs.ron` and `default_cues.ron` show.
     #[must_use]
     pub fn of(path: &Path) -> Option<Self> {
         Self::of_text(path, || std::fs::read_to_string(path).ok())
@@ -378,6 +381,9 @@ impl Kind {
         let name = path.file_name()?.to_str()?;
         if name.ends_with(MATERIAL_SUFFIX) {
             return Self::of_material(&text()?);
+        }
+        if sapphire_vfx::is_library_file(name) {
+            return Some(Self::Effects);
         }
         Self::ALL.into_iter().find(|kind| kind.suffix().is_some_and(|suffix| name.ends_with(suffix)))
     }
@@ -418,17 +424,17 @@ impl Kind {
         .find_map(|(kind, name)| (family == name).then_some(kind))
     }
 
-    /// What its files' names end with: `None` for the materials, whose envelope says which they are.
+    /// What its files' names end with: `None` for the materials, whose envelope says which they are, and for
+    /// effects libraries, whose rule is the effects crate's.
     const fn suffix(self) -> Option<&'static str> {
         Some(match self {
             Self::Moves => ".moves.ron",
             Self::Graph => ".animgraph.ron",
             Self::Cue => ".cue.ron",
-            Self::Effects => "_effects.ron",
             Self::Timeline => ".timeline.ron",
             Self::Ui => ".ui.ron",
             Self::Zone => ".zone.ron",
-            Self::Material | Self::EnvironmentMaterial => return None,
+            Self::Material | Self::EnvironmentMaterial | Self::Effects => return None,
             Self::Ramp => ".ramp.ron",
             Self::Assembly => ".assembly.ron",
             Self::Encounter => ".encounter.ron",

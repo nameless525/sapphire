@@ -768,6 +768,17 @@ fn cook_all(
     if audited.written == audit::Written::Written {
         eprintln!("{cook}: wrote the cook audit {}", audited.path.display());
     }
+    let tiling = &audited.audit.tiling;
+    if !tiling.is_empty() {
+        let wraps = audit::MAX_WRAPS;
+        eprintln!(
+            "{cook}: {} slot(s) span more than {wraps} repeats of their control maps, so aren't held to them:",
+            tiling.len()
+        );
+        for slot in tiling {
+            eprintln!("  {slot}");
+        }
+    }
     report.timings.ended(Phase::Audit, &mut watch);
     let indexed = index::write(source, out, cook, cache, &report, &audited.audit)?;
     if indexed.written == audit::Written::Written {

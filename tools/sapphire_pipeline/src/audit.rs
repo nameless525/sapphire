@@ -15,7 +15,17 @@
 //!   disagrees where its vertices' region ID ([`VertexFlags::MATERIAL_ID_MASK`]) differs among them or from
 //!   the control map's ID at any texel whose centre it covers in UV space; and, whatever its vertices hold,
 //!   how many straddle regions, covering texels of more than one ID (the triangles no vertex ID could
-//!   stand in for the map at). A mesh without a `_MATERIAL_ID` attribute holds ID 0 everywhere.
+//!   stand in for the map at). A mesh without a `_MATERIAL_ID` attribute holds ID 0 everywhere. A slot whose
+//!   UVs span more than [`MAX_WRAPS`] of its map's repeats on either axis tiles rather than drawing regions,
+//!   so its triangles aren't held to the map: its record names the map and says `None` for both counts,
+//!   and the report lists it with its span ([`CookAudit::tiling`], written only when a slot tiles), as the
+//!   cook prints it, so that one stray UV taking a slot out of region agreement shows.
+//!
+//! The audit builds the chain the cook builds, on its own copy of the cook's path to LOD0 (import, outline
+//! normals, the foliage bake), and refuses a mesh whose cooked levels aren't that chain's, after the mobile
+//! cook's skip, by each level's triangles, the vertices they use and its error to the bit (both paths run the
+//! same simplifier on the same LOD0 and scale its errors alike). A step added to one path and not the other
+//! fails the audit by name rather than leaving it describing a chain no cook made.
 //!
 //! Maps are read as their sources generate them (a map document's image, a texture's decoded source), at
 //! full size, before a cook's size cap or block compression. Region agreement is read on the imported
@@ -28,6 +38,7 @@
 //! under a key over every asset's, so a cook that changed nothing reads one entry.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -62,7 +73,14 @@ use crate::{bake, bake::foliage};
 pub const FILE_NAME: &str = "cook_audit.ron";
 
 /// The audit, as cache keys know it. Bump the version whenever what it reports changes for the same cook.
-pub const AUDITOR: Stage = Stage { name: "audit", version: 1 };
+/// 2: a slot tiling past [`MAX_WRAPS`] isn't held to its control map, and the report lists it with its span
+/// ([`CookAudit::tiling`]); the whole report is kept as its text (M6 backfill).
+pub const AUDITOR: Stage = Stage { name: "audit", version: 2 };
+
+/// How many of its control map's repeats a slot's UVs may span on either axis for its triangles to be held
+/// to the map's regions. Character UVs lie within one; past this the slot tiles, and testing each texel
+/// centre a triangle's box covers would grow with the square of the span.
+pub const MAX_WRAPS: f32 = 2.0;
 
 /// How far a channel's values may spread and still count as one value: half an 8-bit step, finer than any
 /// cooked map holds.
@@ -87,6 +105,29 @@ pub struct CookAudit {
     pub materials: Vec<MaterialAudit>,
     /// Every cooked mesh, by source then output.
     pub meshes: Vec<MeshAudit>,
+    /// Every slot with a control map whose UVs span more than [`MAX_WRAPS`] of its repeats, and so isn't
+    /// held to it, by source then slot: written only when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiling: Vec<TilingSlot>,
+}
+
+/// A slot that tiles its control map rather than drawing its regions: one stray UV can take a slot out of
+/// region agreement, and this says which and how far.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TilingSlot {
+    /// The mesh, by source.
+    pub source: String,
+    pub slot: String,
+    /// Its UVs' span in repeats of the map, across then down.
+    pub span: [f32; 2],
+}
+
+impl fmt::Display for TilingSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let [across, down] = self.span;
+        write!(f, "{}#{} spans {across:.2} x {down:.2} repeats", self.source, self.slot)
+    }
 }
 
 impl Versioned for CookAudit {
@@ -273,10 +314,11 @@ pub struct SlotAudit {
     pub triangles: u32,
     /// Triangles whose vertices hold different region IDs.
     pub split: u32,
-    /// Triangles that disagree with the control map (split ones included); `None` without one.
+    /// Triangles that disagree with the control map (split ones included); `None` without one, or with
+    /// `control` named where the slot's UVs span more than [`MAX_WRAPS`] repeats and so aren't held to it.
     pub disagreeing: Option<u32>,
     /// Triangles that cover the control map's texels of more than one region, whatever their vertices'
-    /// IDs; `None` without one.
+    /// IDs; `None` as `disagreeing` is.
     pub straddling: Option<u32>,
 }
 
@@ -364,7 +406,23 @@ fn whole(
         .collect();
     assets.sort();
     let key = CacheKey::audit(AUDITOR, "whole", &(cook.name(), assets));
-    cached(cache, key, || audit(source_root, out_root, cook, cache, report))
+    // Kept as its RON text: postcard can't leave out a field the report writes only when set.
+    if let Some(cache) = cache
+        && let Some(bytes) = cache.get(&key)?
+        && let Ok(text) = String::from_utf8(bytes)
+        && let Ok(kept) = CookAudit::from_ron(&text)
+    {
+        return Ok(kept);
+    }
+    let made = audit(source_root, out_root, cook, cache, report)?;
+    if let Some(cache) = cache {
+        let text = made.to_ron().map_err(|error| AuditError::Invalid {
+            path: out_root.join(FILE_NAME),
+            why: format!("the report doesn't write as RON: {error}"),
+        })?;
+        cache.put(&key, text.as_bytes())?;
+    }
+    Ok(made)
 }
 
 /// Relative names, with `/` between their parts on every host.
@@ -465,11 +523,15 @@ pub fn audit(
         });
     }
     let mut meshes = Vec::new();
+    let mut tiling = Vec::new();
     for ((asset, _), record) in mesh_assets.iter().zip(mesh_records) {
         let source = names.source(&asset.source);
         for (slot, alpha_kind) in &record.generated {
             alpha.count(MaterialFamily::AnimeCharacter.name(), *alpha_kind, &format!("{source}#{slot}"));
         }
+        tiling.extend(record.slots.iter().filter_map(|slot| {
+            slot.tiling.map(|span| TilingSlot { source: source.clone(), slot: slot.slot.clone(), span })
+        }));
         let slots = record
             .slots
             .into_iter()
@@ -495,7 +557,10 @@ pub fn audit(
     meshes.sort_by(|a, b| (&a.source, &a.output).cmp(&(&b.source, &b.output)));
     alpha.alpha_tested.sort();
     alpha.blended.sort();
-    Ok(CookAudit { cook: cook.name().to_owned(), textures, alpha, maps, materials, meshes })
+    // A mesh cooked to two outputs from one source names its slots twice.
+    tiling.sort_by(|a, b| (&a.source, &a.slot).cmp(&(&b.source, &b.slot)));
+    tiling.dedup();
+    Ok(CookAudit { cook: cook.name().to_owned(), textures, alpha, maps, materials, meshes, tiling })
 }
 
 /// What the audit reads beside each asset: every source by ID, and the cook.
@@ -848,6 +913,8 @@ struct SlotRecord {
     split: u32,
     disagreeing: Option<u32>,
     straddling: Option<u32>,
+    /// Its UVs' span where it passes [`MAX_WRAPS`] with a control map.
+    tiling: Option<[f32; 2]>,
 }
 
 fn mesh_record(
@@ -885,8 +952,43 @@ fn mesh_record(
             (slot.name.clone(), AlphaKind::of(flags))
         })
         .collect();
+    let lod0: u32 = mesh.lods[0].submeshes.iter().map(|submesh| submesh.index_count / 3).sum();
     let chain = optimize::audit_chain(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), &[]);
+    let built = chain_levels(lod0, &chain, settings.lods.mobile_skip(), tree.cook);
+    if !same_levels(&levels, &built) {
+        let why = format!(
+            "its cooked levels are {levels:?} and the chain the audit builds from its source {built:?}: the \
+             audit's path to LOD0 is no longer the cook's"
+        );
+        return Err(AuditError::Invalid { path: asset.output.clone(), why });
+    }
     Ok(MeshRecord { levels, chain: Some(chain), slots, generated })
+}
+
+/// Each level a `cook` keeps of a mesh of `lod0` triangles whose chain the audit built: LOD0 (the vertices
+/// its triangles use, no error), then the chain's, less the levels the mobile cook skips (never the last).
+fn chain_levels(lod0: u32, chain: &ChainAudit, mobile_skip: u32, cook: Cook) -> Vec<CookedLevel> {
+    let first = CookedLevel { triangles: lod0, vertices: chain.vertices, error: 0.0 };
+    let mut levels: Vec<CookedLevel> = std::iter::once(first)
+        .chain(chain.cooked.iter().map(|level| CookedLevel {
+            triangles: level.triangles,
+            vertices: level.vertices,
+            error: level.error,
+        }))
+        .collect();
+    let skip = match cook {
+        Cook::Desktop => 0,
+        Cook::Mobile => mobile_skip as usize,
+    };
+    levels.drain(..skip.min(levels.len() - 1));
+    levels
+}
+
+/// Whether the levels a mesh cooked are the ones the audit's chain builds: the same triangles and vertices,
+/// and errors to the bit, since both run the same simplifier on the same LOD0 and scale its errors alike.
+fn same_levels(cooked: &[CookedLevel], built: &[CookedLevel]) -> bool {
+    let bits = |level: &CookedLevel| (level.triangles, level.vertices, level.error.to_bits());
+    cooked.iter().map(bits).eq(built.iter().map(bits))
 }
 
 /// Bakes `mesh` as the cook does before its chain: outlines, and foliage where the sidecar asks.
@@ -972,8 +1074,9 @@ fn slot_records(
             control,
             triangles: triangles.len() as u32,
             split: agreement.split,
-            disagreeing: regions.is_some().then_some(agreement.disagreeing),
-            straddling: regions.is_some().then_some(agreement.straddling),
+            disagreeing: agreement.held.then_some(agreement.disagreeing),
+            straddling: agreement.held.then_some(agreement.straddling),
+            tiling: agreement.tiling,
         });
     }
     records.sort_by(|a, b| a.slot.cmp(&b.slot));
@@ -981,7 +1084,7 @@ fn slot_records(
 }
 
 /// How a slot's triangles agree with their region IDs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Agreement {
     /// Triangles whose vertices hold different IDs.
     split: u32,
@@ -989,13 +1092,24 @@ struct Agreement {
     disagreeing: u32,
     /// Triangles covering the control map's texels of more than one ID.
     straddling: u32,
+    /// Whether the triangles were held to a control map: there is one, and their UVs span at most
+    /// [`MAX_WRAPS`] of its repeats on each axis.
+    held: bool,
+    /// Their UVs' span in repeats, across then down, where there is a control map and it passes
+    /// [`MAX_WRAPS`] on an axis, so that they weren't held to it.
+    tiling: Option<[f32; 2]>,
 }
 
-/// How `triangles` of `mesh` agree among their vertices and with `regions`, if there is a control map: a
-/// triangle covers each texel whose centre lies in it in UV space (edges included, UVs wrapping as a
-/// repeating sampler's do), or, covering none, the texel under its centroid.
+/// How `triangles` of `mesh` agree among their vertices and with `regions`, if there is a control map and
+/// they span at most [`MAX_WRAPS`] of its repeats: a triangle covers each texel whose centre lies in it in UV
+/// space (edges included, UVs wrapping as a repeating sampler's do), or, covering none, the texel under its
+/// centroid.
 fn agreement(mesh: &ImportedMesh, triangles: &[[u32; 3]], regions: Option<&Regions>) -> Agreement {
-    let mut agreement = Agreement::default();
+    let span = uv_span(mesh, triangles);
+    let within = span.iter().all(|&repeats| repeats <= MAX_WRAPS);
+    let tiling = (regions.is_some() && !within).then_some(span);
+    let regions = regions.filter(|_| within);
+    let mut agreement = Agreement { held: regions.is_some(), tiling, ..Agreement::default() };
     for triangle in triangles {
         let vertices = triangle.map(|index| &mesh.vertices[index as usize]);
         let ids = vertices.map(|vertex| vertex.flags.bits() & VertexFlags::MATERIAL_ID_MASK);
@@ -1007,6 +1121,17 @@ fn agreement(mesh: &ImportedMesh, triangles: &[[u32; 3]], regions: Option<&Regio
         agreement.straddling += u32::from(covered.count_ones() > 1);
     }
     agreement
+}
+
+/// How many repeats of a map `triangles`' UVs span, across then down: at most [`MAX_WRAPS`] on each axis
+/// keeps testing each texel centre their boxes cover within a few times the map's texels a triangle.
+fn uv_span(mesh: &ImportedMesh, triangles: &[[u32; 3]]) -> [f32; 2] {
+    let mut uvs = triangles.iter().flatten().map(|&index| mesh.vertices[index as usize].uv);
+    let Some(first) = uvs.next() else { return [0.0; 2] };
+    let (low, high) = uvs.fold((first, first), |(low, high), uv| {
+        ([low[0].min(uv[0]), low[1].min(uv[1])], [high[0].max(uv[0]), high[1].max(uv[1])])
+    });
+    [high[0] - low[0], high[1] - low[1]]
 }
 
 /// The IDs of `regions` a triangle at `uvs` covers, a bit each.

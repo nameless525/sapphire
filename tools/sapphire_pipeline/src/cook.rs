@@ -6133,6 +6133,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_audit_refuses_a_mesh_whose_cooked_levels_arent_the_chain_it_builds() {
+        let scratch = Scratch::new("cook_audit_chain");
+        let mannequin = scratch.add_mannequin("mannequin.glb");
+        let sidecar = sidecar_path(&mannequin);
+        let meta = AssetMeta::new(meta::new_id().unwrap(), ImportSettings::Gltf(MeshSettings::default()));
+        fs::write(&sidecar, sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+        for cook in [Cook::Desktop, Cook::Mobile] {
+            let report = scratch.cook_with(cook, false);
+            let out = scratch.out_for(cook);
+            let made = audit::audit(&scratch.source(), &out, cook, None, &report).unwrap();
+            assert!(made.meshes[0].levels.len() > 1, "{cook}: a chain to differ from");
+        }
+        // The levels the cook made, and a path to LOD0 that now builds none: as a bake step added to the
+        // cook's path and not the audit's would leave them.
+        let single = AssetMeta {
+            importer: ImportSettings::Gltf(MeshSettings {
+                lods: LodSettings::none(),
+                ..MeshSettings::default()
+            }),
+            ..meta.clone()
+        };
+        for cook in [Cook::Desktop, Cook::Mobile] {
+            let report = scratch.cook_with(cook, false);
+            fs::write(&sidecar, sapphire_serialize::to_ron(&single).unwrap()).unwrap();
+            let out = scratch.out_for(cook);
+            let error = audit::audit(&scratch.source(), &out, cook, None, &report).unwrap_err();
+            let text = error.to_string();
+            assert!(matches!(error, audit::AuditError::Invalid { .. }), "{cook}: {text}");
+            assert!(
+                text.contains("mannequin.smesh") && text.contains("no longer the cook's"),
+                "{cook}: {text}"
+            );
+            fs::write(&sidecar, sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+        }
+    }
+
     /// Copies the tree at `from` to `to`, file by file.
     fn copy_tree(from: &Path, to: &Path) {
         fs::create_dir_all(to).unwrap();

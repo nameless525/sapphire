@@ -1384,6 +1384,70 @@ fn a_fight_without_the_flag_fires_nothing() {
     assert!(scene.cue_sounds().requests.is_empty());
 }
 
+/// M6 U14: a fight's line goes up for its length as the audio heard it and `CAPTION_TAIL`, carried as an app's
+/// frame carries it: the step says it, the audio's update hears it, `Fight::hear` hands it to the cues, and the
+/// frame's end starts its time. A line nobody heard (`Heard::NOTHING`, as with no device) stays up 2.5 s.
+#[test]
+fn a_fights_heard_line_is_captioned_for_its_length_and_an_unheard_one_for_the_fixed_time() {
+    use sapphire_audio::{HeardLine, LineKey};
+    use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+    use crate::cues::{CAPTION_TAIL, UNHEARD_CAPTION_SECONDS};
+
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
+    let shipped: Vec<String> =
+        sapphire_cues::default_table().rows().iter().map(|row| row.cue.clone()).collect();
+    let said = |sim: &Simulation| {
+        shipped.iter().find(|name| sim.cues().any(|cue| cue.cue == sapphire_core::Name::new(name))).cloned()
+    };
+    let heard = [HeardLine { line: LineKey::of("perfect-dodge"), seconds: 0.8 }];
+    for (heard, lasts) in
+        [(Heard { said: None, lines: &heard }, 0.8 + CAPTION_TAIL), (Heard::NOTHING, UNHEARD_CAPTION_SECONDS)]
+    {
+        let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
+        let cue = (0..1200)
+            .find_map(|_| {
+                sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+                said(&sim)
+            })
+            .expect("the fixture publishes one of the shipped table's cues");
+        let speaking = sapphire_cues::CueTable::from_ron(&format!(
+            r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [(cue: "{cue}", line: Some("perfect-dodge"))]))"#
+        ))
+        .expect("valid on its own");
+        let mut staged = scene();
+        let (show, variants) = staged.scene.with_screen_effects(|_, presets| {
+            let mut show = CueShow::with_table(
+                speaking,
+                sapphire_vfx::EffectLibrary::default_effects(),
+                VfxBudget::DESKTOP_LOW,
+                presets,
+            )
+            .expect("resolves");
+            show.prepare(&sim);
+            let variants = show.post_variants(presets);
+            (show, variants)
+        });
+        staged.scene.will_push_effects(variants);
+        staged.show.cues = Some(show);
+        let mut fight = Fight { show: std::mem::take(&mut staged.show), ..Fight::default() };
+
+        // The frame: its step, the audio's update (what `heard` is), then its end.
+        fight.show.show_cues(&mut staged.scene, &sim);
+        assert_eq!(fight.show.captions().count(), 1, "the step's line");
+        fight.hear(heard);
+        let frame = 1.0 / 60.0;
+        let mut up = 0.0;
+        while fight.show.captions().count() > 0 {
+            assert!(up < 5.0, "a caption comes down");
+            fight.show.end_cue_frame(&mut staged.scene, frame, frame, 1.0, &mut ());
+            fight.hear(Heard::NOTHING);
+            up += frame;
+        }
+        assert!((up - lasts).abs() <= frame + 1e-4, "up {up} s, not {lasts} s");
+    }
+}
+
 /// Reused storage can restart at the same tick as the last presentation, including zero.
 #[test]
 fn a_same_tick_restart_cuts_history_and_fighter_poses_once() {

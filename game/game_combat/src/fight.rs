@@ -68,7 +68,7 @@ use crate::playable::{self, PartyKinds};
 use sapphire_gameplay::replay::document_file_name;
 use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver};
 use sapphire_stage::animate::{ClipPlayer, SpringKey, SpringRole};
-use sapphire_stage::audio::{CueSounds, Said};
+use sapphire_stage::audio::{CueSounds, Heard, Said};
 use sapphire_stage::content::{Content, GraphKey};
 use sapphire_stage::{FrameLaps, HeldWeapon, PlayableLook, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
@@ -1281,10 +1281,15 @@ impl FightShow {
         self.dialogue_faces.follow(view, lines_shown);
     }
 
-    /// What the audio said this frame (M5 C6): the conversation's voice, whose mouth the role its line names
-    /// takes as the fighters are next animated. None, as with no audio device, shuts every mouth.
-    pub fn hear(&mut self, said: Option<Said>) {
-        self.said = said;
+    /// What the audio heard this frame, after its update and before [`Self::end_cue_frame`]: the conversation's
+    /// voice (M5 C6), whose mouth the role its line names takes as the fighters are next animated, and the fight's
+    /// lines it started, which the captions last by (M6 U14). [`Heard::NOTHING`], as with no audio device, shuts
+    /// every mouth and leaves each caption up for a line nobody hears.
+    pub fn hear(&mut self, heard: Heard<'_>) {
+        self.said = heard.said;
+        if let Some(cues) = &mut self.cues {
+            cues.hear_lines(heard.lines);
+        }
     }
 
     /// Lets go of the timeline playing, and says how far it had got, in milliseconds, for a replay to record.
@@ -2607,10 +2612,10 @@ impl Fight {
         CueSounds { speech: self.dialogue.speech(held), paused: held, ..self.show.cue_sounds() }
     }
 
-    /// Tells the fighters' faces what the audio said this frame (M5 C6), after the audio took
-    /// [`Self::cue_sounds`]: the voice's mouth, for the role its line names.
-    pub fn hear(&mut self, said: Option<Said>) {
-        self.show.hear(said);
+    /// Tells the fight what the audio heard this frame, after the audio took [`Self::cue_sounds`]: the voice's
+    /// mouth, for the role its line names (M5 C6), and the lines it started, for their captions (M6 U14).
+    pub fn hear(&mut self, heard: Heard<'_>) {
+        self.show.hear(heard);
     }
 
     /// How many of [`Self::step_alone`]'s steps a timeline or a zone trip has held, running no tick: the frames a capture of

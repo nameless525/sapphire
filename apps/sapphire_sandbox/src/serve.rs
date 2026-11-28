@@ -47,7 +47,7 @@ use crate::app::create_renderer;
 use crate::fight_bench::{frame_length, steps_a_frame};
 use crate::offscreen::{FORMAT, Stage, set_motion_tier};
 use crate::options::Options;
-use sapphire_stage::audio::OfflineAudio;
+use sapphire_stage::audio::{Heard, OfflineAudio};
 
 /// How often the frame stats line is logged, as the windowed app's.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
@@ -270,8 +270,9 @@ impl Serving {
             audio.update(dt, stage.scene.sound(), stage.show.fight.cue_sounds(false));
             audio.mix(dt);
         }
-        // A conversation's voice moves its role's mouth, as in the game (M5 C6).
-        stage.show.fight.hear(self.audio.as_ref().and_then(OfflineAudio::said));
+        // A conversation's voice moves its role's mouth, and a heard line keeps its caption, as in the game (M5 C6,
+        // M6 U14).
+        stage.show.fight.hear(self.audio.as_ref().map_or(Heard::NOTHING, OfflineAudio::heard));
         stage.show.fight.show.end_cue_frame(&mut stage.scene, dt, dt, 1.0, &mut ());
         // Captures asked for while the last frame was drawn: this one answers them, drawn into a
         // target that can be read back.

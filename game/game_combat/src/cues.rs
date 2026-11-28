@@ -25,7 +25,7 @@
 
 use std::time::Duration;
 
-use sapphire_audio::Emitter;
+use sapphire_audio::{Emitter, HeardLine, LineKey};
 use sapphire_camera::{CameraDirector, CameraTuning, ShakeId, ShakeStack};
 use sapphire_core::Name;
 use sapphire_cues::{
@@ -53,11 +53,16 @@ const SEED: u64 = 0x5EED;
 /// What a fight's voice line is captioned by (M4 A2): its key under this, a string the HUD's subtitle shows
 /// as it shows a cutscene's line (`content/loc/*/cutscenes.ftl`).
 pub const CAPTION_PREFIX: &str = "subtitle-";
-/// How long a caption stays up after its line is said, in real seconds: long enough to read the fight's
-/// short lines twice over, since nothing says how long each one sounds.
-pub const CAPTION_SECONDS: f32 = 2.5;
+/// How long a caption stays up past the end of its line, in real seconds (M6 U14): a heard line's caption is up
+/// while it plays, as long as the audio says its sound plays (`sapphire_audio::HeardLine`), in the voice
+/// language, and this long after, to finish reading.
+pub const CAPTION_TAIL: f32 = 0.5;
+/// How long the caption of a line nobody hears stays up, in real seconds: long enough to read the fight's
+/// short lines twice over. A line isn't heard with no audio (a capture, a bench, a device still opening), with
+/// none in the voice language, or with its cue refused; its caption still shows, for this long.
+pub const UNHEARD_CAPTION_SECONDS: f32 = 2.5;
 /// How many of a fight's lines are captioned at once (M4 A8): lines said together, in one step or close by,
-/// stack, the earlier above, each up for its own [`CAPTION_SECONDS`]; one more takes the oldest's place.
+/// stack, the earlier above, each up for its own time; one more takes the oldest's place.
 pub const CAPTION_LINES: usize = 2;
 
 /// How a hurtbox's surface maps onto the character's: the test moves' capsule is 0.7 m across and 1.75 m
@@ -115,12 +120,22 @@ pub(crate) enum CueStage<'a> {
 
 /// A fight's voice line on screen (M4 A2): its caption's key, whether the player's side said it, and how
 /// long it has left.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Caption {
     /// Under [`CAPTION_PREFIX`], written in place, so a line no longer than the last allocates nothing.
     key: String,
+    /// The line's key, hashed as the audio hears it.
+    line: LineKey,
     by_player: bool,
     left: f32,
+    /// Said this frame, so the frame's audio may yet say how long it plays.
+    fresh: bool,
+}
+
+impl Default for Caption {
+    fn default() -> Self {
+        Self { key: String::new(), line: LineKey::of(""), by_player: false, left: 0.0, fresh: false }
+    }
 }
 
 /// The fight's lines on screen (M4 A8), oldest first: up to [`CAPTION_LINES`], their strings written in place,
@@ -156,14 +171,31 @@ impl Captions {
                 self.up - 1
             }
         };
-        (self.lines[at].by_player, self.lines[at].left) = (by_player, CAPTION_SECONDS);
+        let line = &mut self.lines[at];
+        (line.line, line.by_player, line.left, line.fresh) =
+            (LineKey::of(key), by_player, UNHEARD_CAPTION_SECONDS, true);
     }
 
-    /// `dt` of the view's time goes by: what's had its time comes down, and the rest keep their order.
+    /// The frame's audio started `heard` (M6 U14): each line said this frame that it heard is up as long as it
+    /// plays and [`CAPTION_TAIL`] more, in place of [`UNHEARD_CAPTION_SECONDS`]. The newest caption of a line
+    /// takes the newest hearing of it.
+    fn hear(&mut self, heard: &[HeardLine]) {
+        for heard in heard.iter().rev() {
+            let mut lines = self.lines[..self.up].iter_mut().rev();
+            if let Some(line) = lines.find(|line| line.fresh && line.line == heard.line) {
+                line.left = heard.seconds.max(0.0) + CAPTION_TAIL;
+                line.fresh = false;
+            }
+        }
+    }
+
+    /// `dt` of the view's time goes by: what's had its time comes down, and the rest keep their order. What
+    /// the frame's audio didn't hear keeps the time of a line unheard.
     fn advance(&mut self, dt: f32) {
         let mut kept = 0;
         for at in 0..self.up {
             let line = &mut self.lines[at];
+            line.fresh = false;
             line.left = (line.left - dt).max(0.0);
             if line.left > 0.0 {
                 self.lines.swap(kept, at);
@@ -513,10 +545,18 @@ impl CueShow {
         self.shakes.stack.sample(&self.shakes.tuning.shakes)
     }
 
-    /// The fight's voice lines still to be read, oldest first, [`CAPTION_LINES`] at most: each up for
-    /// [`CAPTION_SECONDS`] of the view's time after it's said, so a pause holds them.
+    /// The fight's voice lines still to be read, oldest first, [`CAPTION_LINES`] at most: each up for as long
+    /// as it's heard and [`CAPTION_TAIL`] more, or [`UNHEARD_CAPTION_SECONDS`] if nothing hears it, of the view's
+    /// time after it's said, so a pause holds them.
     pub(crate) fn captions(&self) -> impl Iterator<Item = Captioned<'_>> {
         self.captions.shown()
+    }
+
+    /// The lines this frame's audio started, after its update and before [`Self::end_frame`] (M6 U14): how long
+    /// the captions of the lines this frame's steps said stay up. A frame not told keeps them up for
+    /// [`UNHEARD_CAPTION_SECONDS`].
+    pub(crate) fn hear_lines(&mut self, heard: &[HeardLine]) {
+        self.captions.hear(heard);
     }
 
     /// The player's shake setting, 0 to 1: the shakes this plays on a view of its own, and every rumble.
@@ -1048,7 +1088,7 @@ mod tests {
         let mut keys: Vec<&str> = show.captions().map(|caption| caption.key).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["subtitle-perfect-dodge", "subtitle-swap-in"], "both of the step's lines");
-        show.end_frame(1.0, CAPTION_SECONDS - 0.5, 1.0, &mut ());
+        show.end_frame(1.0, UNHEARD_CAPTION_SECONDS - 0.5, 1.0, &mut ());
         assert_eq!(show.captions().count(), 2, "each for its own time");
         show.end_frame(1.0, 0.5, 1.0, &mut ());
         assert_eq!(show.captions().count(), 0);
@@ -1067,7 +1107,7 @@ mod tests {
             ["subtitle-swap-in", "subtitle-perfect-dodge"],
             "said again, it's newest"
         );
-        captions.advance(CAPTION_SECONDS - 1.0);
+        captions.advance(UNHEARD_CAPTION_SECONDS - 1.0);
         assert_eq!(shown(&captions), ["subtitle-perfect-dodge"], "the older one's time is up first");
         captions.say("swap-in", false);
         captions.say("court-gate-answer", true);
@@ -1078,8 +1118,9 @@ mod tests {
         );
     }
 
-    /// A fight's voice line is captioned (M4 A2) under its key, for [`CAPTION_SECONDS`] of the view's time,
-    /// which a pause holds, and not past a start over. On the one character, every line is the player's.
+    /// A fight's voice line is captioned (M4 A2) under its key, with no audio for [`UNHEARD_CAPTION_SECONDS`] of
+    /// the view's time, which a pause holds, and not past a start over. On the one character, every line is the
+    /// player's.
     #[test]
     fn a_said_line_is_captioned_while_its_time_lasts() {
         use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
@@ -1114,7 +1155,7 @@ mod tests {
         // Paused, it stays; played, it goes once its time's up.
         show.end_frame(10.0, 0.0, 1.0, &mut ());
         assert_eq!(newest(&show), Some(said));
-        show.end_frame(1.0, CAPTION_SECONDS - 0.5, 1.0, &mut ());
+        show.end_frame(1.0, UNHEARD_CAPTION_SECONDS - 0.5, 1.0, &mut ());
         assert_eq!(newest(&show), Some(said));
         show.end_frame(1.0, 0.5, 1.0, &mut ());
         assert_eq!(newest(&show), None);
@@ -1340,5 +1381,130 @@ mod tests {
         for name in past {
             assert!(bosses_phases.iter().any(|named| named == name), "no shipped boss names `{name}`");
         }
+    }
+
+    /// The committed `perfect-dodge` and `swap-in` lines in English and Japanese, each a cue as `vo` writes it,
+    /// on a system that speaks `language`: what each line's sound is long, by key.
+    fn speaking_in(
+        language: &str,
+    ) -> (sapphire_audio::AudioSystem<sapphire_audio::MockBackend>, Vec<(&'static str, f32)>) {
+        use sapphire_assets::cue::{Bus, Cue, CueNode, HitstopResponse};
+        use sapphire_assets::sound::Sound;
+        use sapphire_assets::voice::{VoiceLine, VoiceLines};
+
+        let voices = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/vo");
+        let mut system = sapphire_audio::AudioSystem::new(sapphire_audio::MockBackend::new());
+        let mut lengths = Vec::new();
+        for (n, locale) in ["en", "ja"].into_iter().enumerate() {
+            let mut lines = Vec::new();
+            for (m, key) in ["perfect-dodge", "swap-in"].into_iter().enumerate() {
+                let ogg = std::fs::read(voices.join(locale).join(format!("{key}.ogg"))).unwrap();
+                let decoded = Sound::from_vorbis(ogg).unwrap().decode().unwrap();
+                let [sound, cue] = [0, 1].map(|o| {
+                    sapphire_assets::AssetId::from_text(&format!(
+                        "5c0e0000-0000-4000-8000-000000001{n}{m}{o}"
+                    ))
+                });
+                // As the committed cues: the voice bus, at the master's own pitch.
+                let played = Cue {
+                    play: CueNode::one_of(vec![sound]),
+                    volume_db: [-4.0, -4.0],
+                    pitch: [1.0, 1.0],
+                    attenuation: None,
+                    bus: Bus::Voice,
+                    hitstop: HitstopResponse::Ignore,
+                    ..Cue::default()
+                };
+                system.add_cue(cue, played);
+                system.add_sound(sound, &decoded);
+                lines.push(VoiceLine { key: key.to_owned(), cue });
+                if locale == language {
+                    lengths.push((key, decoded.frames() as f32 / decoded.sample_rate as f32));
+                }
+            }
+            system.add_voice_lines(&VoiceLines { locale: locale.to_owned(), lines }).unwrap();
+        }
+        assert!(system.set_voice_language(language));
+        (system, lengths)
+    }
+
+    /// M6 U14: each fight line's caption is up for as long as its line plays in the voice language, and
+    /// [`CAPTION_TAIL`] more; a line the language hasn't is captioned for [`UNHEARD_CAPTION_SECONDS`]. Frames as
+    /// a game's: the steps say the lines, the audio's update starts them, the captions hear it, the frame ends.
+    fn captions_last_their_lines(language: &str) {
+        use sapphire_audio::{AudioFrame, CueRng, CueTarget, LineRequest, Listener, Rooms};
+
+        const DT: f32 = 1.0 / 60.0;
+        let (mut system, lengths) = speaking_in(language);
+        for (key, seconds) in lengths.iter().copied().chain([("court-gate-answer", f32::NAN)]) {
+            let mut captions = Captions::default();
+            let mut shown = 0;
+            for frame in 0..600 {
+                let asked = [LineRequest { line: LineKey::of(key), target: CueTarget::Flat }];
+                if frame == 0 {
+                    captions.say(key, true);
+                }
+                let update = AudioFrame {
+                    dt: DT,
+                    listener: Listener::default(),
+                    world_time_scale: 1.0,
+                    snapshots: &[],
+                    emitters: &[],
+                    cues: &[],
+                    lines: if frame == 0 { &asked } else { &[] },
+                    speech: None,
+                    music: None,
+                    rooms: Rooms::NONE,
+                };
+                system.update(&update, &mut CueRng::new(1));
+                captions.hear(system.heard_lines());
+                captions.advance(DT);
+                if captions.shown().count() == 0 {
+                    break;
+                }
+                shown += 1;
+            }
+            let expected = if seconds.is_nan() { UNHEARD_CAPTION_SECONDS } else { seconds + CAPTION_TAIL };
+            let up = shown as f32 * DT;
+            assert!(
+                (up - expected).abs() <= DT,
+                "{language} `{key}`: up {up} s, for a line {seconds} s long"
+            );
+        }
+        assert!(
+            lengths
+                .iter()
+                .all(|&(_, seconds)| seconds > 0.5 && seconds + CAPTION_TAIL < UNHEARD_CAPTION_SECONDS)
+        );
+    }
+
+    #[test]
+    fn captions_last_their_lines_in_english() {
+        captions_last_their_lines("en");
+    }
+
+    #[test]
+    fn captions_last_their_lines_in_japanese() {
+        captions_last_their_lines("ja");
+        // The languages' takes aren't the same length, so neither is what their captions last.
+        let lengths = |language| speaking_in(language).1;
+        assert_ne!(lengths("en"), lengths("ja"));
+    }
+
+    /// M6 U14: a caption takes the length of the line heard in the frame it was said, and only then: a line heard
+    /// later, or a caption from an earlier frame, keeps its time.
+    #[test]
+    fn a_caption_hears_only_its_own_frames_line() {
+        let heard = |key: &str, seconds| HeardLine { line: LineKey::of(key), seconds };
+        let mut captions = Captions::default();
+        captions.say("perfect-dodge", true);
+        captions.advance(0.1);
+        captions.say("swap-in", false);
+        captions.hear(&[heard("perfect-dodge", 9.0), heard("swap-in", 0.5)]);
+        let left: Vec<f32> = captions.lines[..captions.up].iter().map(|line| line.left).collect();
+        assert_eq!(left, [UNHEARD_CAPTION_SECONDS - 0.1, 0.5 + CAPTION_TAIL]);
+        captions.advance(0.1);
+        captions.hear(&[heard("swap-in", 9.0)]);
+        assert_eq!(captions.lines[1].left, 0.5 + CAPTION_TAIL - 0.1, "heard once, in its frame");
     }
 }

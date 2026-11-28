@@ -165,6 +165,8 @@ pub enum Fault {
     Number { found: String },
     #[error("CHANNELS says {said} channels, and the line names {found}")]
     ChannelCount { said: usize, found: usize },
+    #[error("OFFSET needs 3 numbers on its line, and has {found} before the line's end or a `}}`")]
+    OffsetCount { found: usize },
     #[error("{found:?} isn't a channel name (Xposition … Zrotation)")]
     Channel { found: String },
     #[error("joint {joint:?} names channel {channel} twice")]
@@ -340,6 +342,15 @@ fn parse(bytes: &[u8]) -> Result<Parsed, BvhError> {
         };
         match token {
             "OFFSET" => {
+                // Its numbers are on its own line, as CHANNELS' names are, so a short one is that line's;
+                // a `}` may close a block after them, as in a one-line `End Site { OFFSET 0 0 0 }`.
+                let numbers = tokens.tokens[tokens.next..]
+                    .iter()
+                    .take_while(|(on, token)| *on == line && *token != "}")
+                    .count();
+                if numbers != 3 {
+                    return Err(at(line, Fault::OffsetCount { found: numbers }));
+                }
                 let offset = tokens.vector()?;
                 match open.last_mut() {
                     Some(Open::Joint(index)) if nodes[*index].offset.is_none() => {

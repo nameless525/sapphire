@@ -488,6 +488,83 @@ fn climbing_and_its_probes_in_the_step_do_not_allocate_from_the_first_tick() {
     }
 }
 
+/// Two heroines gliding (M6 A17), from the first step. Each starts high over a floor with a wall across it and
+/// falls; one presses jump at once, too high to land on anything, glides, drops the glide with a press, opens
+/// another and steers it west into the wall, against which it sinks, then lands; the other presses only low over
+/// the floor, which refuses it, then lands and walks. The opening rays, the gliding ticks, the drop and the
+/// landings allocate nothing.
+#[test]
+fn gliding_and_its_probes_in_the_step_do_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let block = |id: u32, min: Vec3, max: Vec3| StaticCollider {
+        id: ColliderId(id),
+        shape: StaticShape::Convex(Shape::Box { half_extents: (max - min) * 0.5 }),
+        pose: Pose::at((min + max) * 0.5),
+        memberships: Group::World.mask(),
+    };
+    let statics = vec![
+        block(0, Vec3::new(-100.0, -1.0, -100.0), Vec3::new(100.0, 0.0, 100.0)),
+        block(1, Vec3::new(-12.0, 0.0, -20.0), Vec3::new(-10.0, 30.0, 40.0)),
+    ];
+    let mut sim = Simulation::new(SimConfig::default());
+    sim.set_physics_world(PhysicsWorld::new(statics, sim.body_capacity()).expect("builds")).expect("room");
+    let set = sapphire_gameplay::replay::player_moves().expect("the heroine's moves");
+    let profile = set.movement().copied().unwrap_or_default();
+    let controller = Some(sim.add_controller_profile(&profile).expect("a good one"));
+    let moves = Some(sim.add_move_set(set));
+    let heroines = [(0.0, 25.0), (5.0, 3.5)].map(|(x, height)| {
+        let position = Vec3::new(x, height, 0.0);
+        sim.spawn(ActorSpawn { position, moves, controller, ..ActorSpawn::default() }).expect("room")
+    });
+    let stick = sapphire_gameplay::Stick::new;
+    let (still, west, ahead) = (stick(0, 0), stick(-127, 0), stick(0, 127));
+    // Each leg: the tick it lasts until, its stick, and whether it presses jump on its first tick.
+    let glider =
+        [(2, still, false), (60, still, true), (70, still, true), (90, still, true), (900, west, false)];
+    let faller =
+        [(18, still, false), (19, still, true), (80, still, false), (200, ahead, false), (900, still, false)];
+    let at = |legs: &[(u32, sapphire_gameplay::Stick, bool)], tick: u32| {
+        let index = legs.iter().position(|(until, ..)| tick < *until).expect("a leg");
+        let (_, stick, press) = legs[index];
+        let first = index.checked_sub(1).map_or(0, |before| legs[before].0);
+        let buttons = if press && tick == first { Buttons::JUMP } else { Buttons::NONE };
+        ActorActions { buttons, stick }
+    };
+    let ticks: Vec<TickActions> = (0..900)
+        .map(|tick| {
+            let mut actions = TickActions::NEUTRAL;
+            actions.set(heroines[0], at(&glider, tick)).expect("room");
+            actions.set(heroines[1], at(&faller, tick)).expect("room");
+            actions
+        })
+        .collect();
+
+    let mut glided = 0_u32;
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &ticks {
+            sim.step(actions);
+            let _ = sim.checksum();
+            let state = sim.actor(heroines[0]).expect("alive").controller.state;
+            glided += u32::from(state.traversal == TraversalMode::Gliding);
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "900 steps allocated {} times", counts.allocations);
+    assert_eq!(sim.stats().allocations, 0, "and the stat agrees");
+    let stats = sim.stats();
+    assert_eq!((stats.glides_started, stats.glide_casts), (2, 3), "two glides, a refused press: {stats:?}");
+    assert!(glided > 600, "{glided} ticks gliding: {stats:?}");
+    for heroine in heroines {
+        let state = sim.actor(heroine).expect("alive").controller.state;
+        assert_eq!(state.traversal, TraversalMode::None, "both landed: {state:?}");
+        assert!(sim.actor(heroine).expect("alive").position.y.abs() < 1e-3, "on the floor");
+    }
+    let glider = sim.actor(heroines[0]).expect("alive").position;
+    assert!(glider.x > -10.0 - 0.3 - 0.05 && glider.x < -9.5, "came down along the wall: {glider}");
+}
+
 /// `count` different characters on the mesh arena.
 fn characters(count: usize) -> (Simulation, Vec<ActorId>) {
     let mut sim = Simulation::new(SimConfig { max_actors: 16, ..SimConfig::default() });

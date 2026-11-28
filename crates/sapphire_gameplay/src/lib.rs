@@ -171,8 +171,8 @@ pub use checkpoint::{CheckpointId, Place, TeleportError, ZoneStart};
 pub use checksum::StateHasher;
 pub use controller::{
     CharacterController, CharacterWorld, ClimbHold, ControllerDrive, ControllerEvents, ControllerInput,
-    ControllerProfile, ControllerState, GroundMode, Lip, MovementMode, PhysicsWorldError, ProfileError,
-    ProfileId, ResolvedProfile, TraversalMode, actor_body, step_controller,
+    ControllerProfile, ControllerState, GLIDE_TURN_RATE, GroundMode, Lip, MovementMode, PhysicsWorldError,
+    ProfileError, ProfileId, ResolvedProfile, TraversalMode, actor_body, step_controller,
 };
 pub use cues::{
     CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PARTY_DEFEATED, PARTY_SWAP, PERFECT_DODGE,

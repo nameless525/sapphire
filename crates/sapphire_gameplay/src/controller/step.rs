@@ -6,13 +6,14 @@ use sapphire_physics::{
 };
 use sapphire_time::SimDuration;
 
-use super::climb;
 use super::profile::ResolvedProfile;
 use super::{
     ControllerDrive, ControllerEvents, ControllerInput, ControllerState, GroundMode, JUMP_REBOUND_WINDOW,
     MOVING_JUMP_MIN_ALIGNMENT, MOVING_JUMP_MIN_SPEED, MOVING_JUMP_PREPARATION, MovementMode,
     REBOUND_JUMP_PREPARATION, REBOUND_MIN_LANDING_SPEED, STANDING_JUMP_MAX_SPEED, STANDING_JUMP_PREPARATION,
+    TraversalMode,
 };
+use super::{climb, glide};
 use crate::movement::ActorTransform;
 
 /// Moves one tick may make, each after turning along what the last one hit.
@@ -53,6 +54,10 @@ fn ground_filter() -> QueryFilter {
 /// **On a face** ([`ControllerState::climb`], M6 A16a), the stick climbs and nothing else here runs, unless a
 /// move has the stick: then it lets go first, and the tick goes on as for anyone in the air. A press of jump is
 /// a climber's to let go by, which [`crate::traversal`] reads, so here it does nothing.
+///
+/// **In a glide** ([`TraversalMode::Gliding`] in the air, M6 A17), it sinks steadily and the stick steers it, as
+/// the module `glide`'s docs say, until it lands, a move takes the stick or its stamina runs out. A press of jump
+/// drops it into a fall, which [`crate::traversal`] reads too.
 pub fn step_controller(
     world: &mut PhysicsWorld,
     body: BodyId,
@@ -97,6 +102,12 @@ pub(super) fn step_counting(
         // A move has taken the stick, or the climb let go: from here it's in the air.
         climb::let_go(state);
     }
+    let mut gliding = state.traversal == TraversalMode::Gliding && state.mode == GroundMode::Airborne;
+    if gliding && (!input.drive.locomotion || glide::tires(state, profile, delta)) {
+        // A move has taken the stick, or the stamina's spent: it falls from here.
+        glide::drop(state);
+        gliding = false;
+    }
     // Read after the climb, which may have moved it before it let go.
     let pose = world.body_pose(body).ok_or(WorldError::UnknownBody(body))?;
     let waited = std::mem::take(&mut state.jump_waiting) && input.drive.locomotion;
@@ -130,6 +141,7 @@ pub(super) fn step_counting(
     match state.mode {
         GroundMode::Grounded => ground_velocity(state, profile, want, drive.locomotion, dt),
         GroundMode::Sliding => slide_velocity(state, profile, want, drive.gravity, dt),
+        GroundMode::Airborne if gliding => glide::steer(state, &mut transform.yaw, profile, want, dt),
         GroundMode::Airborne => air_velocity(state, profile, want, drive.gravity, dt),
     }
     let travel = (before + state.velocity) * (0.5 * dt);
@@ -151,6 +163,10 @@ pub(super) fn step_counting(
 
     tick.slide(state, motion, drive.mode == MovementMode::Free)?;
     tick.settle(state, &drive, start, fall_speed)?;
+    if gliding && state.mode != GroundMode::Airborne {
+        // Down on the ground, or on a slope too steep to stand on: the glide is over.
+        glide::drop(state);
+    }
     if state.jump_preparation.is_some() {
         state.jump_rebound = if state.events.landed && state.events.landing_speed > REBOUND_MIN_LANDING_SPEED
         {
@@ -162,7 +178,12 @@ pub(super) fn step_counting(
         };
     }
 
-    let facing = drive.face.or_else(|| (want != Vec3::ZERO).then(|| det::yaw_of_direction(want)));
+    // A glide's facing is its heading, which its steering turned at its own rate.
+    let facing = if gliding {
+        None
+    } else {
+        drive.face.or_else(|| (want != Vec3::ZERO).then(|| det::yaw_of_direction(want)))
+    };
     if let Some(target) = facing {
         transform.yaw = det::turn_towards(transform.yaw, target, profile.turn_rate() * dt);
     }

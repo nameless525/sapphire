@@ -236,7 +236,7 @@ impl Simulation {
                     targeting::choose_soft_locks,
                     brain::think,
                     traversal::find_ledges,
-                    traversal::grab_faces,
+                    traversal::climb_and_glide,
                 )
                     .chain()
                     .in_set(CombatSet::Intents),
@@ -1068,6 +1068,8 @@ impl Simulation {
         stats.ledges_refused = traversal.ledges_refused;
         stats.climbs_started = traversal.climbs_started;
         stats.climb_top_outs = traversal.climb_top_outs;
+        stats.glide_casts = traversal.glide_casts;
+        stats.glides_started = traversal.glides_started;
         stats.climb_casts = traversal.climb_casts + world.resource::<CharacterWorld>().climb_casts;
         let cues = world.resource::<CueQueue>();
         stats.cues_published = cues.published();

@@ -55,6 +55,14 @@
 //! an attack, a hit's reaction), when its stamina runs out, and on a press, and falls from there as anyone
 //! does. The module `climb`'s docs have the rules and what each tick casts.
 //!
+//! # Gliding (M6 A17)
+//!
+//! A character in [`TraversalMode::Gliding`] (opened by a press of jump in the air with the ground far enough
+//! under it, [`crate::traversal`]) sinks steadily at [`ResolvedProfile::glide_sink_speed`] and flies along its
+//! facing at the profile's `glide_speed`, which the stick turns at [`GLIDE_TURN_RATE`]. It casts nothing a fall
+//! doesn't, and ends on landing, when a move takes the stick, when its stamina runs out, and on a press, falling
+//! from there. The module `glide`'s docs have the rules.
+//!
 //! # Teleports
 //!
 //! [`crate::Simulation::teleport`] puts a character somewhere as a spawn there would: the body, the
@@ -95,6 +103,7 @@
 //! the stick walks it off the gentle top where there's no slope to slide on, or a press jumps from there.
 
 mod climb;
+mod glide;
 mod profile;
 mod step;
 
@@ -106,6 +115,8 @@ use sapphire_physics::{BodyId, PhysicsWorld};
 use sapphire_time::{SimDuration, Stopwatch};
 
 pub(crate) use climb::{face as climbable_face, grab, hands, into_face, let_go, wants_up};
+pub use glide::TURN_RATE as GLIDE_TURN_RATE;
+pub(crate) use glide::{drop as drop_glide, open as open_glide};
 pub use profile::ResolvedProfile;
 pub use sapphire_moves::{ControllerProfile, ProfileError, TraversalMode};
 pub use step::step_controller;
@@ -357,14 +368,15 @@ impl Lip {
 pub struct ControllerState {
     pub mode: GroundMode,
     /// How it's getting about besides its feet (M6 A14). Held from tick to tick and in the checksum. A16a's
-    /// climbing enters [`TraversalMode::Climbing`] with [`Self::climb`] and leaves it with it; a teleport, like
-    /// a spawn, starts it at [`TraversalMode::None`].
+    /// climbing enters [`TraversalMode::Climbing`] with [`Self::climb`] and leaves it with it; A17's glide is
+    /// [`TraversalMode::Gliding`] alone, whose heading is the facing and whose sink is the velocity, so it holds
+    /// nothing more. A teleport, like a spawn, starts it at [`TraversalMode::None`].
     pub traversal: TraversalMode,
     /// The face it climbs, while it climbs (M6 A16a). The climb's tick runs on this, not on the mode, so a
     /// mode set with no face held walks as before.
     pub climb: Option<ClimbHold>,
-    /// The stamina its climbs have spent since its feet last stood on the ground, on its own clock (M6 A16a).
-    /// It stays zero with the profile's stamina off.
+    /// The stamina its climbs and glides have spent since its feet last stood on the ground, on its own clock
+    /// (M6 A16a, A17). It stays zero with the profile's stamina off.
     pub stamina_spent: SimDuration,
     /// In m/s. Horizontal while grounded, whatever the slope: a tick lays it along the ground.
     pub velocity: Vec3,

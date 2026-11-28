@@ -550,6 +550,9 @@ fn every_profile_field_is_in_its_hash() {
 fn the_traversal_mode_is_held_and_in_the_checksum() {
     let checksum_in = |mode: TraversalMode| {
         let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO, Vec3::new(3.0, 0.0, 0.0)]);
+        // A spawn's first tick finds the floor: standing, a glide set on her isn't one, which A17's glide
+        // leaves alone.
+        sim.step(&TickActions::NEUTRAL);
         let target = entity(&sim, actors[1]);
         sim.ecs_mut().world_mut().get_mut::<CharacterController>(target).unwrap().state.traversal = mode;
         sim.step(&run_right(actors[0]));

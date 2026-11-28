@@ -4468,6 +4468,7 @@ dependencies = [
  "sapphire_assets",
  "sapphire_colliders",
  "sapphire_dialogue",
+ "sapphire_math",
  "sapphire_moves",
  "sapphire_reflect",
  "sapphire_serialize",

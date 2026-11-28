@@ -19,6 +19,8 @@ ron.workspace = true
 sapphire_assets.workspace = true
 sapphire_colliders.workspace = true
 sapphire_dialogue.workspace = true
+# A placement's turn carried to its colliders, on the same deterministic maths the cook turns them by.
+sapphire_math.workspace = true
 sapphire_moves.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true

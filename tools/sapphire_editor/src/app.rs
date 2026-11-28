@@ -569,8 +569,14 @@ impl Editor {
             absolute = std::env::current_dir().map_or_else(|_| path.to_owned(), |dir| dir.join(path));
             &absolute
         };
+        // Refused, never guessed: opened as another kind it wouldn't read, and its first open would write that
+        // kind's sidecar beside it, which a cook then reads.
+        let Some(kind) = Kind::of(path) else {
+            let why = Kind::why_none(path, || fs::read_to_string(path).map_err(|error| error.to_string()));
+            self.say(Notice { text: why, trouble: true });
+            return;
+        };
         self.add_roots_around(path, true);
-        let kind = Kind::of(path).unwrap_or(Kind::Moves);
         match kind.open(&mut self.documents, path) {
             Ok(id) => {
                 self.notice = None;
@@ -695,10 +701,8 @@ impl Editor {
         };
         // By the entry's own text, not the file's: the file may have moved, or gone, since.
         let Some(kind) = Kind::of_text(&entry.path, || Some(entry.text.clone())) else {
-            self.refuse(format!(
-                "{}: the journal's entry is no kind of document this editor edits, left where it is",
-                entry.path.display()
-            ));
+            let why = Kind::why_none(&entry.path, || Ok(entry.text.clone()));
+            self.refuse(format!("{why}; the journal's entry is left where it is"));
             return;
         };
         self.add_roots_around(&entry.path, true);

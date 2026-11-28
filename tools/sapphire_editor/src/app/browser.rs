@@ -12,6 +12,9 @@ use sapphire_document::Kind;
 use super::Editor;
 use crate::commands::Command;
 
+/// The heading of what's open but of no kind the editor edits.
+const NO_KIND: &str = "Open, of no kind";
+
 /// What the browser keeps between passes.
 #[derive(Debug, Default)]
 pub(super) struct Browser {
@@ -30,21 +33,22 @@ impl Editor {
         let shows = |path: &std::path::Path| {
             filter.is_empty() || path.to_string_lossy().to_lowercase().contains(&filter)
         };
-        let mut rows: Vec<(Kind, &std::path::Path)> = self
+        let mut rows: Vec<(Option<Kind>, &std::path::Path)> = self
             .documents
             .sidecars()
             .documents()
             .filter(|(path, _)| shows(path))
-            .map(|(path, kind)| (kind, path))
+            .map(|(path, kind)| (Some(kind), path))
             .collect();
-        // What's open is listed even if it's outside the roots, or the last look is older than it.
+        // What's open is listed even if it's outside the roots, or the last look is older than it: one whose
+        // name and text say no kind (a material's family the editor doesn't edit, say) apart, not as moves.
         for id in self.documents.ids() {
             if let Some(path) = self.documents.path(id)
                 && !rows.iter().any(|(_, listed)| *listed == path)
                 && shows(path)
             {
                 let text = || self.documents.any(id).map(|document| document.text().to_owned());
-                rows.push((Kind::of_text(path, text).unwrap_or(Kind::Moves), path));
+                rows.push((Kind::of_text(path, text), path));
             }
         }
         let sidecars = self.documents.sidecars();
@@ -59,14 +63,14 @@ impl Editor {
             .auto_shrink([false, false])
             .max_height((ui.available_height() - bottom).max(40.0))
             .show(ui, |ui| {
-                for kind in Kind::ALL {
+                for kind in Kind::ALL.map(Some).into_iter().chain([None]) {
                     let mut listed: Vec<&std::path::Path> =
                         rows.iter().filter(|(of, _)| *of == kind).map(|(_, path)| *path).collect();
                     if listed.is_empty() {
                         continue;
                     }
                     listed.sort();
-                    ui.label(RichText::new(kind.title()).small().strong());
+                    ui.label(RichText::new(kind.map_or(NO_KIND, Kind::title)).small().strong());
                     for path in listed {
                         let (text, current) = self.browser_row(path);
                         let response =

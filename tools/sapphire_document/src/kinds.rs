@@ -382,6 +382,29 @@ impl Kind {
         Self::ALL.into_iter().find(|kind| kind.suffix().is_some_and(|suffix| name.ends_with(suffix)))
     }
 
+    /// Why [`Self::of_text`] gives no kind for this file, for a refusal to say: a material of a family with no kind
+    /// here, a material whose envelope doesn't read, or a name no kind ends with.
+    pub fn why_none(path: &Path, text: impl FnOnce() -> Result<String, String>) -> String {
+        let named = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        if !named.ends_with(MATERIAL_SUFFIX) {
+            return format!("{}: no kind of document this editor edits has a name like it", path.display());
+        }
+        match text().and_then(|text| {
+            sapphire_serialize::document::type_name(&text).map_err(|error| error.to_string())
+        }) {
+            Ok(family) => {
+                format!(
+                    "{}: a material of `{family}`, which is no kind of document this editor edits",
+                    path.display()
+                )
+            }
+            Err(why) => format!(
+                "{}: a material whose envelope doesn't read, so no kind of document this editor edits: {why}",
+                path.display()
+            ),
+        }
+    }
+
     /// The kind of a material document's text, by the family its envelope names: `None` for a family with
     /// no kind here.
     #[must_use]

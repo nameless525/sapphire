@@ -183,6 +183,27 @@ fn every_kittest_has_a_command_script_twin() {
     }
 }
 
+/// A file of no kind is refused at `Open`, saying why, and nothing is opened as another kind or written beside it:
+/// a fog card's material (a family with no kind yet), a material whose envelope doesn't read, a name no kind has.
+#[test]
+fn a_file_of_no_kind_is_refused_and_no_sidecar_is_written() {
+    let dir = TestDir::new("no_kind");
+    let mist = include_str!("../../../content/samples/environment/mist.material.ron");
+    for (name, text, why) in [
+        ("mist.material.ron", mist, "a material of `sapphire::render::FogCardMaterial`"),
+        ("broken.material.ron", "(not an envelope", "a material whose envelope doesn't read"),
+        ("notes.ron", "(version: 1)", "no kind of document this editor edits has a name like it"),
+    ] {
+        let path = dir.write(name, text);
+        let mut editor = editor(&dir, None);
+        let refused = refused(&mut editor, &Command::Open(path.clone()).to_text());
+        assert!(refused.contains(name) && refused.contains(why), "{name}: {refused}");
+        assert!(editor.current().is_none(), "{name}: nothing opened");
+        assert!(!path.with_file_name(format!("{name}.meta")).exists(), "{name}: no sidecar written");
+        assert_eq!(file(&path), text, "{name}: untouched");
+    }
+}
+
 mod ui {
     use super::*;
 

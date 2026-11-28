@@ -559,6 +559,8 @@ fn the_biome_presets_are_partial_days_in_colour() {
     let mut names: Vec<String> = fs::read_dir(&biomes)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        // Each preset's sidecar (`.ron.meta`, committed since T4's fix) sits beside it.
+        .filter(|name| !name.ends_with(".meta"))
         .collect();
     names.sort();
     assert_eq!(names, ["cave_day.ron", "forest_haze_day.ron", "interior_warm_day.ron"]);

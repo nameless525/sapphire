@@ -17,7 +17,7 @@ pub const DAY_HOURS: f32 = 24.0;
 ///
 /// The base timeline sets every group in every key but the optional ones
 /// ([`Self::is_complete`]); a zone's timeline may set only the groups it overrides. Either way every key sets the same groups, the keys'
-/// times increase, and every value is in range: a timeline is valid however it was made,
+/// times increase, and every value is in range: a timeline is valid however it was read, its
 /// deserialization included. It reflects (M6 T4) so an editor can open a day as a document, whose every
 /// edit is to the text and read back through [`Self::from_ron`]'s checks; reflection's own
 /// `FromReflect` would build one unchecked, with no groups, so nothing else should build one by it.

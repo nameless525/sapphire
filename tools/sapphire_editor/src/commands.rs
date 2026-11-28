@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::edits::{EntryRef, Track};
 use crate::game::GameTarget;
+use crate::handles::{Axes, GizmoMode, Handle};
 use crate::screen::{Aspect, StandIn};
 use crate::shell::Pane;
 
@@ -178,6 +179,30 @@ pub enum Command {
     /// and `to`, in normalized device coordinates, of the view `view` projects by (a column-major matrix), in
     /// place of what was selected, or beside it if `adding`. What a Shift-drag on the viewport runs.
     SelectInBox { view: [f32; 16], from: [f32; 2], to: [f32; 2], adding: bool },
+    /// Shows the gizmo's handles for moving, turning or scaling (M6 T9b).
+    GizmoMode(GizmoMode),
+    /// Points the gizmo's move arrows along the zone's axes or the object's own.
+    GizmoAxes(Axes),
+    /// Sets the steps a drag snaps to: `grid` in metres, `yaw` in degrees, 0 for none.
+    Snap { grid: f32, yaw: f32 },
+    /// Takes hold of a handle of the gizmo on the current zone's object selected last (M6 T9b), where a ray from
+    /// `from` toward `toward` finds it, starting a gesture: what a press on a handle runs. Refused if the object
+    /// has no such handle in the gizmo's mode, or the ray can't say where on it.
+    Grab { handle: Handle, from: [f32; 3], toward: [f32; 3] },
+    /// Drags the handle taken hold of to where a ray from `from` toward `toward` points, snapped: what each frame
+    /// of a drag runs. [`Command::End`] lets go.
+    DragTo { from: [f32; 3], toward: [f32; 3] },
+    /// Puts each object of the current zone selected on the zone's colliders straight below it, as one step: a
+    /// placement or an instance leaving its own colliders out of the ray (M6 T9b).
+    SnapToGround,
+    /// Copies each entry of the current zone selected, as one step, and selects the copies: each takes a fresh ID
+    /// or name, and a placement's colliders are copied with it (M6 T9b).
+    Duplicate,
+    /// [`Command::Duplicate`] with the IDs given, in order, for the copies of entries with IDs: what a session
+    /// records for a duplicate, with the IDs it drew, so a replay makes the same copies.
+    DuplicateAs(Vec<String>),
+    /// Takes out each entry of the current zone selected, and the colliders only they name, as one step.
+    DeleteObjects,
     /// Goes to a field of a document, as the document's RON spells its path, opening the document if it isn't
     /// open: Properties marks the field's row. What a problem's row runs (M6 T6).
     SelectField(Picked),
@@ -308,6 +333,15 @@ impl Command {
             Self::SelectObjects(_) => "SelectObjects",
             Self::PickInZone { .. } => "PickInZone",
             Self::SelectInBox { .. } => "SelectInBox",
+            Self::GizmoMode(_) => "GizmoMode",
+            Self::GizmoAxes(_) => "GizmoAxes",
+            Self::Snap { .. } => "Snap",
+            Self::Grab { .. } => "Grab",
+            Self::DragTo { .. } => "DragTo",
+            Self::SnapToGround => "SnapToGround",
+            Self::Duplicate => "Duplicate",
+            Self::DuplicateAs(_) => "DuplicateAs",
+            Self::DeleteObjects => "DeleteObjects",
             Self::SelectField(_) => "SelectField",
             Self::SetShared { .. } => "SetShared",
             Self::Scrub(_) => "Scrub",
@@ -426,6 +460,17 @@ const COMMANDS: &[Registered] = registry! {
     "SelectInBox",
         "SelectInBox(view: (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0), from: (-1.0, -1.0), to: (1.0, 1.0), adding: false)",
         None, "Selects the zone's objects a box on the view holds, as a Shift-drag on the viewport does";
+    "GizmoMode", "GizmoMode(Turn)", None, "Shows the gizmo's handles for moving, turning or scaling";
+    "GizmoAxes", "GizmoAxes(Local)", None, "Points the gizmo's arrows along the zone's axes or the object's own";
+    "Snap", "Snap(grid: 0.05, yaw: 1.0)", None, "Sets the grid's and the yaw's steps a drag snaps to, 0 for none";
+    "Grab", "Grab(handle: Move(X), from: (0.0, 10.0, 0.0), toward: (0.0, -1.0, 0.0))", None,
+        "Takes hold of a handle of the gizmo, as a press on it does";
+    "DragTo", "DragTo(from: (0.0, 10.0, 0.0), toward: (0.0, -1.0, 0.0))", None,
+        "Drags the handle taken hold of, as a frame of a drag does";
+    "SnapToGround", "SnapToGround", None, "Puts what's selected on the zone's colliders below it";
+    "Duplicate", "Duplicate", None, "Copies what's selected in the zone, with its colliders";
+    "DuplicateAs", r#"DuplicateAs(["3fa91c07"])"#, None, "Copies what's selected in the zone, with the IDs given";
+    "DeleteObjects", "DeleteObjects", None, "Takes out what's selected in the zone, with the colliders only it names";
     "SelectField", r#"SelectField((document: "content/", path: ""))"#, None,
         "Goes to a field of a document, opening it if it isn't, as a problem's row does";
     "SetShared", r#"SetShared(path: "", value: "")"#, None,

@@ -1100,7 +1100,7 @@ impl StageView {
     fn follow_zone(&mut self, zone: ZoneShown<'_>, pane: &mut ViewportPane) {
         let Some(stage) = &mut self.stage else { return };
         if stage.show.gizmo != zone.gizmo {
-            stage.show.gizmo = zone.gizmo;
+            stage.show.gizmo = zone.gizmo.clone();
             self.settling = SETTLING_FRAMES;
         }
         if stage.show.marks != zone.marks {
@@ -1307,6 +1307,8 @@ mod tests {
     use sapphire_stage::orbit::OrbitCamera;
 
     use super::*;
+    use crate::gizmo::{Axis, Spot};
+    use crate::handles::Handle;
     use crate::markers::{ObjectKind, SELECTED, ZoneObject, keyed};
 
     /// A zone with more marks than debug draw keeps a thread a frame still draws the gizmo, and what's selected,
@@ -1330,7 +1332,9 @@ mod tests {
         let last = objects.len() - 1;
         let marks =
             ZoneMarks { objects: Arc::new(ZoneObjects { objects, cell_size: 32.0 }), selected: vec![last] };
-        let gizmo = Gizmo { origin: Vec3::ZERO, length: 1.0, hot: None };
+        let handles =
+            Axis::ALL.into_iter().map(|axis| (Handle::Move(axis), Spot::Arrow(axis.direction()))).collect();
+        let gizmo = Gizmo { origin: Vec3::ZERO, length: 1.0, hot: None, handles };
         dd::set_enabled(true);
         let (mut collector, mut list) = (Collector::new(), DebugDrawList::default());
         collector.collect(0.0, &mut list);

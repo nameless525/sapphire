@@ -1,17 +1,22 @@
-//! The translate gizmo (M3 E5): three arrows on what's selected, drawn by the stage's own debug draws, so the
-//! viewport shows it through the renderer like anything else, and picked and dragged here, by plain math on the
-//! camera the last frame drew with. None of it needs a GPU, so its tests run anywhere.
+//! The gizmo (M3 E5, its modes M6 T9b): the handles of what's selected, drawn by the stage's own debug draws, so
+//! the viewport shows it through the renderer like anything else, and picked here, by plain math on the camera
+//! the last frame drew with. What each handle changes is [`crate::handles`]'. None of it needs a GPU, so its tests
+//! run anywhere, and it's the engine's own: arrows, bars, a ring and balls, each a line or two of debug draw.
 //!
-//! A drag moves along one axis: the point on the axis nearest the pointer's ray, less where the press found it,
-//! so the arrow stays under the pointer rather than jumping to it. Where the ray runs along the axis there's no
-//! such point, and the value stays where it was.
+//! A drag along a line (an arrow, a bar, a ball on a face) goes by the point on the line nearest the pointer's ray,
+//! less where the press found it, so the handle stays under the pointer rather than jumping to it; one about a
+//! ring or over a level by where the ray meets its plane. Where the ray runs along the line, or in the plane,
+//! there's no such point, and the value stays where it was.
 
-use sapphire_core::debug_draw::{self as dd, Color, Style};
-use sapphire_math::{Mat4, Vec3, Vec4};
+use sapphire_core::debug_draw::{self as dd, Color, Shape, Style};
+use sapphire_math::{Mat4, Quat, Vec3, Vec4};
 use sapphire_render::CameraData;
+use serde::{Deserialize, Serialize};
 
-/// An axis of the world.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use crate::handles::{Axes, GizmoMode, Grip, Handle};
+
+/// An axis of the world, or of an object's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Axis {
     X,
     Y,
@@ -125,50 +130,159 @@ impl ViewCamera {
     }
 }
 
-/// The gizmo on what's selected.
+/// Where a handle is drawn and picked, from the gizmo's origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Spot {
+    /// An arrow to here.
+    Arrow(Vec3),
+    /// A bar to here, with a box at its end turned as `Quat`.
+    Bar(Vec3, Quat),
+    /// A ring about +Y this wide.
+    Ring(f32),
+    /// A ball here.
+    Ball(Vec3),
+}
+
+/// The gizmo on what's selected: its handles, in the mode it's in.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Gizmo {
     pub origin: Vec3,
     /// How long each arrow is, in metres.
     pub length: f32,
-    /// The arrow under the pointer or being dragged, drawn brighter.
-    pub hot: Option<Axis>,
+    /// The handle under the pointer or being dragged, drawn brighter.
+    pub hot: Option<Handle>,
+    pub handles: Vec<(Handle, Spot)>,
 }
 
 impl Gizmo {
     /// How long the arrows are against the eye's distance: about the same share of the frame however near.
     const SHARE_OF_DISTANCE: f32 = 0.15;
 
-    /// How near an arrow the pointer must be to take it, in points.
+    /// How near a handle the pointer must be to take it, in points.
     pub const REACH: f32 = 8.0;
 
-    /// A gizmo at `origin` as `camera` sees it.
+    /// How wide a ring is, against the arrows' length.
+    const RING: f32 = 0.8;
+
+    /// How large a ball or a bar's box is, against the arrows' length.
+    const BALL: f32 = 0.05;
+
+    /// How long the arrows are at `origin` as `camera` sees it.
     #[must_use]
-    pub fn at(origin: Vec3, camera: &ViewCamera) -> Self {
-        Self { origin, length: origin.distance(camera.eye()).max(0.5) * Self::SHARE_OF_DISTANCE, hot: None }
+    pub fn length_at(origin: Vec3, camera: &ViewCamera) -> f32 {
+        origin.distance(camera.eye()).max(0.5) * Self::SHARE_OF_DISTANCE
     }
 
-    /// The arrow nearest `at` and within [`Self::REACH`] of it, in a frame shown in `rect`.
+    /// Three arrows along the zone's axes at `origin` as `camera` sees it: the gizmo of anything with a position,
+    /// in [`GizmoMode::Move`] with [`Axes::World`].
     #[must_use]
-    pub fn pick(&self, camera: &ViewCamera, rect: egui::Rect, at: egui::Pos2) -> Option<Axis> {
-        let from = camera.to_screen(self.origin, rect)?;
-        Axis::ALL
+    pub fn at(origin: Vec3, camera: &ViewCamera) -> Self {
+        let length = Self::length_at(origin, camera);
+        let handles = Axis::ALL
             .into_iter()
-            .filter_map(|axis| {
-                let to = camera.to_screen(self.origin + axis.direction() * self.length, rect)?;
-                Some((distance_to_segment(at, from, to), axis))
+            .map(|axis| (Handle::Move(axis), Spot::Arrow(origin + axis.direction() * length)))
+            .collect();
+        Self { origin, length, hot: None, handles }
+    }
+
+    /// The gizmo on `grip` in `mode`, with its arrows along `axes`, as `camera` sees it.
+    #[must_use]
+    pub fn of(grip: &Grip, mode: GizmoMode, axes: Axes, camera: &ViewCamera) -> Self {
+        let (origin, length) = (grip.origin, Self::length_at(grip.origin, camera));
+        let handles = grip
+            .handles(mode)
+            .into_iter()
+            .filter_map(|handle| {
+                let spot = match handle {
+                    Handle::Move(_) => Spot::Arrow(origin + grip.direction(handle, axes)? * length),
+                    Handle::Scale(_) => {
+                        Spot::Bar(origin + grip.direction(handle, axes)? * length, grip.frame)
+                    }
+                    Handle::Yaw => Spot::Ring(length * Self::RING),
+                    _ => Spot::Ball(grip.ball(handle, length)?),
+                };
+                spot_is_finite(spot).then_some((handle, spot))
+            })
+            .collect();
+        Self { origin, length, hot: None, handles }
+    }
+
+    /// The handle nearest `at` and within [`Self::REACH`] of it, in a frame shown in `rect`.
+    #[must_use]
+    pub fn pick(&self, camera: &ViewCamera, rect: egui::Rect, at: egui::Pos2) -> Option<Handle> {
+        let from = camera.to_screen(self.origin, rect)?;
+        let screen = |point: Vec3| camera.to_screen(point, rect);
+        self.handles
+            .iter()
+            .filter_map(|&(handle, spot)| {
+                let distance = match spot {
+                    Spot::Arrow(to) | Spot::Bar(to, _) => distance_to_segment(at, from, screen(to)?),
+                    Spot::Ball(center) => at.distance(screen(center)?),
+                    Spot::Ring(radius) => {
+                        let around = |step: usize| {
+                            let angle = step as f32 / RING_SEGMENTS as f32 * std::f32::consts::TAU;
+                            screen(self.origin + Vec3::new(angle.cos(), 0.0, -angle.sin()) * radius)
+                        };
+                        (0..RING_SEGMENTS)
+                            .filter_map(|step| {
+                                Some(distance_to_segment(at, around(step)?, around(step + 1)?))
+                            })
+                            .min_by(f32::total_cmp)?
+                    }
+                };
+                Some((distance, handle))
             })
             .filter(|(distance, _)| *distance <= Self::REACH)
             .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, axis)| axis)
+            .map(|(_, handle)| handle)
     }
 
     /// Draws it, for the frame: over everything, since what it moves may hide it.
     pub fn draw(&self) {
-        for axis in Axis::ALL {
-            let color = if self.hot == Some(axis) { Color::YELLOW } else { axis.color() };
-            dd::arrow(self.origin, self.origin + axis.direction() * self.length, Style::new(color).on_top());
+        for &(handle, spot) in &self.handles {
+            let color = if self.hot == Some(handle) { Color::YELLOW } else { color_of(handle) };
+            let style = Style::new(color).on_top();
+            let ball = self.length * Self::BALL;
+            match spot {
+                Spot::Arrow(to) => dd::arrow(self.origin, to, style),
+                Spot::Bar(to, rotation) => {
+                    dd::line(self.origin, to, style);
+                    dd::shape(
+                        Shape::OrientedBox { center: to, half_extents: Vec3::splat(ball), rotation },
+                        style,
+                    );
+                }
+                Spot::Ring(radius) => dd::circle(self.origin, Vec3::Y, radius, style),
+                Spot::Ball(center) => {
+                    if matches!(handle, Handle::Cone | Handle::InnerCone) {
+                        dd::line(self.origin, center, style);
+                    }
+                    dd::sphere(center, ball, style);
+                }
+            }
         }
+    }
+}
+
+/// How many segments a ring is picked by.
+const RING_SEGMENTS: usize = 32;
+
+fn spot_is_finite(spot: Spot) -> bool {
+    match spot {
+        Spot::Arrow(to) | Spot::Bar(to, _) | Spot::Ball(to) => to.is_finite(),
+        Spot::Ring(radius) => radius.is_finite(),
+    }
+}
+
+/// A handle's color, when it isn't under the pointer.
+const fn color_of(handle: Handle) -> Color {
+    match handle {
+        Handle::Move(axis) | Handle::Scale(axis) | Handle::Size(axis) => axis.color(),
+        Handle::Point(_) => Color::WHITE,
+        Handle::Yaw => Color::MAGENTA,
+        Handle::Cone => Color::ORANGE,
+        Handle::InnerCone => Color::rgb(255, 220, 120),
+        Handle::Radius | Handle::Range => Color::CYAN,
     }
 }
 
@@ -176,7 +290,13 @@ impl Gizmo {
 /// together.
 #[must_use]
 pub fn along(origin: Vec3, axis: Axis, ray: Ray) -> Option<f32> {
-    let direction = axis.direction();
+    along_line(origin, axis.direction(), ray)
+}
+
+/// How far along the line through `origin` along `direction`, a unit vector, its point nearest `ray` is, or
+/// `None` where the two run together.
+#[must_use]
+pub fn along_line(origin: Vec3, direction: Vec3, ray: Ray) -> Option<f32> {
     let across = ray.direction.dot(direction);
     let denominator = 1.0 - across * across;
     if denominator < 1e-4 {
@@ -225,7 +345,7 @@ mod tests {
         for axis in Axis::ALL {
             let middle = gizmo.origin + axis.direction() * gizmo.length * 0.6;
             let at = camera.to_screen(middle, rect()).expect("in front");
-            assert_eq!(gizmo.pick(&camera, rect(), at), Some(axis));
+            assert_eq!(gizmo.pick(&camera, rect(), at), Some(Handle::Move(axis)));
         }
         assert_eq!(gizmo.pick(&camera, rect(), rect().left_top()), None);
     }

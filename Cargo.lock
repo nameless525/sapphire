@@ -4510,6 +4510,7 @@ dependencies = [
  "ron",
  "sapphire_anim",
  "sapphire_assets",
+ "sapphire_colliders",
  "sapphire_controls",
  "sapphire_core",
  "sapphire_document",

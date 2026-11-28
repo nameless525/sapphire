@@ -1307,7 +1307,7 @@ fn capture_zone(
         let Stage { scene, content, renderer, gpu, show, .. } = stage;
         let layout = scene.lay_out_zone(content, &pack, laid, renderer, gpu).expect("laid out");
         assert!(layout.missing.is_empty(), "{layout:?}");
-        show.gizmo = *gizmo;
+        show.gizmo = gizmo.clone();
         show.marks.clone_from(marks);
     });
     (stage, frame)

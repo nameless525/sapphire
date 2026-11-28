@@ -41,6 +41,7 @@ impl Editor {
         let troubles = self.troubles;
         if self.depth == 0 {
             self.drawn_id = None;
+            self.drawn_ids.clear();
             // A merge from disk can put another entry where a selected one was: only an edit here re-keys.
             if !matches!(command, Command::MineOnTop | Command::TakeFile) {
                 self.stand_selection();
@@ -69,6 +70,9 @@ impl Editor {
             // An entry added with an ID drawn at random is kept with that ID, so a replay makes the same one.
             let command = match (command, self.drawn_id.take()) {
                 (Command::AddEntry(path), Some(id)) => Command::AddEntryAs { path, id },
+                (Command::Duplicate, _) if !self.drawn_ids.is_empty() => {
+                    Command::DuplicateAs(std::mem::take(&mut self.drawn_ids))
+                }
                 (command, _) => command,
             };
             self.record(command);
@@ -270,6 +274,15 @@ impl Editor {
                 self.pick_in_zone(*from, *toward, *reach, *adding);
             }
             Command::SelectInBox { view, from, to, adding } => self.select_in_box(view, *from, *to, *adding),
+            Command::GizmoMode(mode) => self.set_gizmo_mode(*mode),
+            Command::GizmoAxes(axes) => self.set_gizmo_axes(*axes),
+            Command::Snap { grid, yaw } => self.set_steps(*grid, *yaw),
+            Command::Grab { handle, from, toward } => self.grab(*handle, *from, *toward),
+            Command::DragTo { from, toward } => self.drag_to(*from, *toward),
+            Command::SnapToGround => self.snap_to_ground(),
+            Command::Duplicate => self.duplicate(&[]),
+            Command::DuplicateAs(ids) => self.duplicate(ids),
+            Command::DeleteObjects => self.delete_objects(),
             Command::SelectField(picked) => self.select_field(picked),
             Command::SetShared { path, value } => match path.parse::<PropertyPath>() {
                 Ok(path) => {
@@ -430,6 +443,7 @@ impl Editor {
     fn end_gestures(&mut self) {
         self.drag_label = None;
         self.typing_number = None;
+        self.zone.let_go();
         self.documents.end_gesture();
     }
 
@@ -437,6 +451,7 @@ impl Editor {
     fn cancel_gestures(&mut self) {
         self.drag_label = None;
         self.typing_number = None;
+        self.zone.let_go();
         if self.documents.cancel_gesture() {
             self.after_history();
         }

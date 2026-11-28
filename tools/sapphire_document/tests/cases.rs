@@ -911,10 +911,11 @@ fn a_variant_holding_an_array_can_be_picked() {
             .expect("there")
             .get_represented_type_info()
             .expect("a type");
-    let blend = sapphire_document::blank::blank_variant(info, "Blend", document.registry()).expect("a blank");
+    let blend =
+        sapphire_document::blank::blank_variant(info, "Blend2D", document.registry()).expect("a blank");
     assert_eq!(document.set("pick", &motion.path, blend.as_ref()), Ok(Outcome::Changed));
     let step = document.last_step().expect("a step");
-    assert!(step.change.inserted.contains("Blend"), "{}", step.change.inserted);
+    assert!(step.change.inserted.contains("Blend2D"), "{}", step.change.inserted);
     assert!(document.undo());
     assert_eq!(document.text(), before);
 }

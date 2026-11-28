@@ -1,0 +1,100 @@
+// How a zone's ambient cast plays (M5 C10). The cast stands on the Lancer's joints and plays on its
+// skeleton, so its walk is the Lancer's stride, KayKit's `Walking_B` retargeted onto its lengths by the
+// pack's sidecars; standing and its two gestures are key-pose documents beside this file, posed by
+// `tools/motion/ambient.py`, each gesture from standing's first pose and back to it.
+(
+    type: "sapphire::assets::AnimGraph",
+    version: 2,
+    data: (
+        parameters: [
+            (
+                name: "velocity_x",
+                from: Locomotion(SmoothedX),
+            ),
+            (
+                name: "velocity_z",
+                from: Locomotion(SmoothedZ),
+            ),
+        ],
+        smoothing: 6.0,
+        clips: [
+            // Rig_Medium_MovementBasic.
+            (
+                name: "walk",
+                source: "2bb6b794-55db-42cf-921a-c0638eed48ca",
+                clip: Some("Walking_B"),
+                target: Some("41e229ad-28a3-41f9-aeb8-ba214e06be6a"),
+            ),
+            (
+                name: "stand",
+                source: "1bbd29b9-2ab7-53a3-b591-46c49a371648",
+            ),
+            (
+                name: "shift",
+                source: "a0cf36cb-99b2-5e42-acb2-1953e9cf1449",
+            ),
+            (
+                name: "look_around",
+                source: "404afde2-90a7-5538-b441-2c59565e2b7d",
+            ),
+        ],
+        machines: [
+            (
+                name: "locomotion",
+                start: "ground",
+                states: [
+                    (
+                        name: "ground",
+                        plays: Blend2D((
+                            x: "velocity_x",
+                            y: "velocity_z",
+                            // The walk's speed is the Lancer's: its support foot's travel per second. Standing
+                            // breathes at its own rate. A walker's speed is its walk's pace, so a stride plays at
+                            // its pace over 1.5.
+                            samples: [
+                                (
+                                    clip: "stand",
+                                    at: (0.0, 0.0),
+                                    phase: 0.0,
+                                    sync: false,
+                                ),
+                                (
+                                    clip: "walk",
+                                    at: (0.0, 1.5),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                            ],
+                            rate: (0.5, 1.6),
+                        )),
+                    ),
+                ],
+            ),
+        ],
+        layers: [
+            (
+                name: "locomotion",
+                plays: Machine((
+                    machine: "locomotion",
+                )),
+            ),
+            (
+                name: "combat",
+                plays: Combat((
+                    decay: 8,
+                    exit: 12,
+                    moves: [
+                        (
+                            move: "shift",
+                            clip: "shift",
+                        ),
+                        (
+                            move: "look_around",
+                            clip: "look_around",
+                        ),
+                    ],
+                )),
+            ),
+        ],
+    ),
+)

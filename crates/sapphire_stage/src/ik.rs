@@ -441,7 +441,7 @@ use sapphire_gameplay::body::ground_under;
 #[cfg(test)]
 mod tests {
     use sapphire_anim::{
-        AnimGraph, Clip, GraphBinding, GraphInput, GraphPlayer, Joint, JointTransform, Skeleton,
+        AnimGraph, Clip, GraphBinding, GraphInput, GraphPlayer, Joint, JointTransform, Skeleton, Target,
     };
     use sapphire_assets::AssetId;
     use sapphire_assets::clip::DEFAULT_RATE;
@@ -595,7 +595,8 @@ mod tests {
         )
         .expect("a good document");
         graph.resolve(|_| id);
-        let binding = GraphBinding::new(&graph, skeleton, None, 0, table).expect("it binds");
+        let program = graph.compile_for(Target::COOKED).expect("it compiles");
+        let binding = GraphBinding::from_program(&program, skeleton, None, 0, table).expect("it binds");
         let pose = CharacterPose::new(skeleton, &[], &[], Vec::new());
         let rig = rig_of(&pose);
         let joints = FigureJoints::of_joints(&pose, 1, 0.0, FEET);

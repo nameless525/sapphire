@@ -1,5 +1,6 @@
-//! A humanoid with every bone, synthetic clips for any graph's clip IDs, every shipped graph read from
-//! the content tree (never named: a boss's graph is content, gameplay's `bosses_are_content`) and a
+//! A humanoid with every bone, synthetic clips for any graph's clip IDs, the graphs frozen at the
+//! switch to version 2 as this crate's test data ([`frozen`]), every shipped graph read from the content
+//! tree ([`shipped`], never named: a boss's graph is content, gameplay's `bosses_are_content`) and a
 //! scripted session, shared by the graph v2 runtime's unit tests and its allocation test. Its includer
 //! names the crate `body` (`use sapphire_body_pose as body`, or `use crate as body` inside it).
 
@@ -13,7 +14,7 @@ use sapphire_assets::clip::{
     ArchivedClip, Clip, DEFAULT_RATE, PackedRotation, RotationTrack, WeightRange, WeightTrack,
 };
 use sapphire_assets::graph::v2::program::GraphProgram;
-use sapphire_assets::graph::{AnimGraph, clip_id};
+use sapphire_assets::graph::{clip_id, v2};
 use sapphire_assets::rig::{
     ArchivedCharacterRig, CharacterRig, Expression, ExpressionOverride, ExpressionPreset, HumanBone,
     HumanoidJoint, MorphTargetWeight,
@@ -186,14 +187,6 @@ impl Humanoid {
         ])
     }
 
-    pub fn bind_v1(&self, graph: &AnimGraph) -> Arc<GraphBinding> {
-        let source = self.source();
-        Arc::new(
-            GraphBinding::new(graph, self.skeleton(), Some(self.rig()), MORPHS, source.as_slice())
-                .expect("it binds"),
-        )
-    }
-
     pub fn bind(&self, program: &GraphProgram) -> Arc<GraphBinding> {
         let source = self.source();
         Arc::new(
@@ -201,6 +194,24 @@ impl Humanoid {
                 .unwrap_or_else(|error| panic!("{error}")),
         )
     }
+}
+
+/// The graphs frozen as `tests/fixtures/graphs/<name>.animgraph.ron`: the seven shipped at the switch to
+/// version 2 (M6 A5c), as version 2 documents, copied once and never edited with the content. The runtime's
+/// pins are held on these, so a content edit never moves one.
+pub const FROZEN: [&str; 7] = ["crowd", "warrior", "hero", "boss", "lancer", "wren", "heroine"];
+
+/// Each [`FROZEN`] graph's document, by name, in that order.
+pub fn frozen() -> Vec<(String, String)> {
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/graphs");
+    FROZEN
+        .iter()
+        .map(|name| {
+            let path = folder.join(format!("{name}.animgraph.ron"));
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{name}: {error}"));
+            ((*name).to_owned(), text)
+        })
+        .collect()
 }
 
 /// Every shipped graph's document, by its path in the content folder.
@@ -225,9 +236,9 @@ pub fn shipped() -> Vec<(String, String)> {
     found
 }
 
-/// A shipped graph as v1 reads it, its clips resolved as the cook resolves them.
-pub fn version_1(text: &str) -> AnimGraph {
-    let mut graph = AnimGraph::from_document(text).expect("a shipped graph reads");
+/// A shipped graph as the cook reads it, at version 2, its clips resolved as the cook resolves them.
+pub fn read(text: &str) -> v2::AnimGraph {
+    let mut graph = v2::AnimGraph::from_document(text).expect("a shipped graph reads");
     graph.resolve(clip_id);
     graph
 }
@@ -356,7 +367,7 @@ impl Script {
 /// The session every graph plays: locomotion with starts, stops and turns, a frozen and a fractional
 /// clock, every kind of jump and landing, a combo of the graph's own moves with hitstop and cancels,
 /// reactions, a cut, a defeat and a replacement of the graph under it.
-pub fn session(graph: &AnimGraph) -> Vec<Step> {
+pub fn session(graph: &v2::AnimGraph) -> Vec<Step> {
     let mut script = Script::new();
     script.hold(20, STILL);
     // Away, up to a run, then a forward stop and a start again.
@@ -435,7 +446,16 @@ pub fn session(graph: &AnimGraph) -> Vec<Step> {
     script.ramp(4, 2.0, 0.0, 0.0);
     script.hold(10, STILL);
     // A combo of the graph's own moves, each cancelling the last, with hitstop on the third.
-    let moves: Vec<Name> = graph.combat.moves.iter().map(|row| Name::intern(&row.name)).collect();
+    let moves: Vec<Name> = graph
+        .layers
+        .iter()
+        .filter_map(|layer| match &layer.plays {
+            v2::LayerMotion::Combat(combat) => Some(&combat.moves),
+            _ => None,
+        })
+        .flatten()
+        .map(|row| Name::intern(&row.name))
+        .collect();
     for (index, &name) in moves.iter().enumerate() {
         script.play(name, 9, 0.0);
         if index == 2 {
@@ -452,7 +472,11 @@ pub fn session(graph: &AnimGraph) -> Vec<Step> {
     }
     script.hold(20, STILL);
     // Reactions: one, and another over it.
-    for row in &graph.reactions {
+    let reactions = graph.layers.iter().filter_map(|layer| match &layer.plays {
+        v2::LayerMotion::Reactions(rows) => Some(rows),
+        _ => None,
+    });
+    for row in reactions.flatten() {
         script.react(Name::intern(&row.name));
         script.hold(5, STILL);
         script.react(Name::intern(&row.name));

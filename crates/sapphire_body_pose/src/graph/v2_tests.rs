@@ -1,10 +1,22 @@
-//! Graph v2's runtime against v1's: every shipped graph, converted and compiled, binds and plays v1's
-//! poses bit for bit, frame for frame, on both maths, through a scripted session that reaches each of
-//! its states, transitions and rules and every reset of the smoothed velocity (M6 A5b).
+//! Graph v2's runtime on the shipped graphs and on what only version 2 says (M6 A5b, A5c).
+//!
+//! The graphs shipped at the switch, frozen as this crate's test data (`humanoid::FROZEN`) and compiled
+//! for the fixed step as the cook compiles them, play what version 1's player played before the switch,
+//! through a scripted session that reaches each of their states, transitions and rules and every reset
+//! of the smoothed velocity: [`PLAYED`] holds it, taken from version 1's player while it still ran (A5b
+//! held the two bit for bit on both maths, frame for frame). The pins guard the runtime: the frozen
+//! copies never change with the content, so a new graph or an edited one never touches them. The graphs
+//! shipped now are only compiled for the fixed step and bound
+//! ([`every_shipped_graph_binds_to_the_fixed_step`]), read from the content tree, never named: a boss's
+//! graph is content (gameplay's `bosses_are_content`).
+//!
+//! What the pins hold: the fixed step's checksum bytes each step (its pose, weights, target and history
+//! on the deterministic maths), and presentation's clips sampled, state name, stats, teleports and foot
+//! contact each frame and what it reached. They don't hold presentation's pose, weights or target, on
+//! host maths: only the goldens catch those.
 //!
 //! The clips are synthetic, keyed by each graph's own clip IDs on a humanoid skeleton with every bone,
-//! so no cooked content is needed. The graphs are read from the content tree, never named: a boss's
-//! graph is content (gameplay's `bosses_are_content`).
+//! so no cooked content is needed.
 
 use std::sync::Arc;
 
@@ -12,20 +24,16 @@ use sapphire_assets::AssetId;
 use sapphire_core::Name;
 use sapphire_time::{SUBTICKS_PER_TICK, SimTime};
 
-use super::canonical::Canonical;
 use super::*;
 
 use crate as body;
 #[path = "../../tests/support/humanoid.rs"]
 mod humanoid;
-use humanoid::{Humanoid, Step, session, shipped, version_1};
+use humanoid::{Humanoid, Step, frozen, read, session, shipped};
 use sapphire_assets::clip::{PackedRotation, RotationTrack};
+use sapphire_assets::graph::v2::GraphProgram;
 use sapphire_assets::rig::HumanBone;
 use sapphire_math::Vec3;
-
-fn bits(values: &[f32]) -> Vec<u32> {
-    values.iter().map(|value| value.to_bits()).collect()
-}
 
 fn transform_bits(pose: &[Transform]) -> Vec<u32> {
     pose.iter()
@@ -39,117 +47,6 @@ fn transform_bits(pose: &[Transform]) -> Vec<u32> {
         })
         .map(f32::to_bits)
         .collect()
-}
-
-/// Everything a player's history holds, as the fixed step's checksum lays it out.
-fn canonical(player: &GraphPlayer) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let mut sink = |chunk: &[u8]| bytes.extend_from_slice(chunk);
-    Canonical(&mut sink).player(player);
-    bytes
-}
-
-/// Plays `steps` on two players and holds them bit for bit each frame. Returns each frame's samples on
-/// the second player, and what it reached.
-fn presentation_matches(
-    name: &str,
-    humanoid: &Humanoid,
-    old: &Arc<GraphBinding>,
-    new: &Arc<GraphBinding>,
-    steps: &[Step],
-) -> (Vec<u64>, u64) {
-    let source = humanoid.source();
-    let clips = source.as_slice();
-    let mut players = [old, new].map(|graph| GraphPlayer::new(Arc::clone(graph), humanoid.pose(), 11));
-    let mut samples = Vec::with_capacity(steps.len());
-    for (frame, step) in steps.iter().enumerate() {
-        let mut changed = [false; 2];
-        let mut counts = [0; 2];
-        for (index, player) in players.iter_mut().enumerate() {
-            if step.replace {
-                player.replace(Arc::clone(if index == 0 { old } else { new }));
-            }
-            if let Some(released) = step.gather {
-                player.request_grounded_gather(released);
-            }
-            let before = sample::SAMPLED.with(std::cell::Cell::get);
-            changed[index] = player.evaluate_with_support(&step.input, clips, 0, step.turn, step.ground);
-            counts[index] = sample::SAMPLED.with(std::cell::Cell::get) - before;
-        }
-        let [v1, v2] = &players;
-        let at = || format!("{name}, frame {frame} at tick {}", step.input.ticks);
-        assert_eq!(changed[0], changed[1], "{}: whether it changed", at());
-        assert_eq!(counts[0], counts[1], "{}: clips sampled", at());
-        assert_eq!(v1.state(), v2.state(), "{}: state", at());
-        assert_eq!(v1.stats(), v2.stats(), "{}: stats", at());
-        assert_eq!(v1.teleports(), v2.teleports(), "{}: teleports", at());
-        assert_eq!(transform_bits(v1.pose().locals()), transform_bits(v2.pose().locals()), "{}: pose", at());
-        assert_eq!(bits(v1.pose().weights()), bits(v2.pose().weights()), "{}: weights", at());
-        assert_eq!(transform_bits(v1.target()), transform_bits(v2.target()), "{}: target", at());
-        assert_eq!(
-            format!("{:?}", v1.ground_foot_contact()),
-            format!("{:?}", v2.ground_foot_contact()),
-            "{}: foot contact",
-            at()
-        );
-        assert_eq!(
-            v1.grounded_gather().map(f32::to_bits),
-            v2.grounded_gather().map(f32::to_bits),
-            "{}",
-            at()
-        );
-        assert_eq!(
-            format!("{:?}", v1.landing_root(clips)),
-            format!("{:?}", v2.landing_root(clips)),
-            "{}: landing root",
-            at()
-        );
-        assert_eq!(canonical(v1), canonical(v2), "{}: history", at());
-        samples.push(counts[1]);
-    }
-    let [v1, v2] = &players;
-    assert_eq!(v1.reached, v2.reached, "{name}: what the script reached");
-    (samples, v2.reached)
-}
-
-/// Plays `steps` through two fixed-step histories and holds their checksum bytes bit for bit.
-fn simulation_matches(
-    name: &str,
-    humanoid: &Humanoid,
-    old: &Arc<GraphBinding>,
-    new: &Arc<GraphBinding>,
-    steps: &[Step],
-) {
-    let source = humanoid.source();
-    let mut histories = [old, new].map(|graph| {
-        FixedGraphHistory::try_new(Arc::clone(graph), humanoid.pose(), 11, source.as_slice())
-            .unwrap_or_else(|error| panic!("{name}: {error}"))
-    });
-    let mut generation = 0;
-    for (frame, step) in steps.iter().enumerate() {
-        if step.input.cut {
-            generation += 1;
-        }
-        let stamp = GraphStepStamp {
-            step: frame as u64,
-            owner_now: SimTime::from_subticks((step.input.ticks * f64::from(SUBTICKS_PER_TICK)) as u64),
-            generation,
-        };
-        let mut changed = [false; 2];
-        for (index, history) in histories.iter_mut().enumerate() {
-            let prepared = history.prepare(stamp, step.input, false).expect("a step forward");
-            changed[index] =
-                history.advance_prepared(prepared, step.turn, step.ground, step.gather.unwrap_or(false));
-        }
-        let at = || format!("{name}, fixed step {frame} at tick {}", step.input.ticks);
-        assert_eq!(changed[0], changed[1], "{}: whether it changed", at());
-        let checksum = |history: &FixedGraphHistory<&[(AssetId, &ArchivedClip)]>| {
-            let mut bytes = Vec::new();
-            history.write_canonical(&mut |chunk: &[u8]| bytes.extend_from_slice(chunk));
-            bytes
-        };
-        assert_eq!(checksum(&histories[0]), checksum(&histories[1]), "{}: checksum", at());
-    }
 }
 
 /// The heroine's graph is the one with a machine of states: the script must reach each transition
@@ -175,72 +72,180 @@ fn must_reach(name: &str, binding: &GraphBinding, reached: u64) {
     }
 }
 
-/// A5c's bar: v2 evaluating each shipped graph's conversion gives v1's poses bit for bit, frame for
-/// frame, on presentation's maths and the fixed step's, through a session that reaches every state,
+/// FNV-1a over 64 bits: the same digest on every machine and every toolchain.
+struct Digest(u64);
+
+impl Digest {
+    fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
+/// What a binding played through a session.
+struct Played {
+    /// The fixed step's checksum bytes each step (pose, weights, target and the whole history, on the
+    /// deterministic maths), and presentation's clips sampled, state, stats, teleports and foot contact
+    /// each frame and what it reached: two digests.
+    digests: (u64, u64),
+    /// Presentation's clips sampled each frame.
+    samples: Vec<u64>,
+    /// What presentation's player reached.
+    reached: u64,
+}
+
+/// Plays `steps` on `binding` in the fixed step and in presentation.
+fn played(humanoid: &Humanoid, binding: &Arc<GraphBinding>, steps: &[Step]) -> Played {
+    let source = humanoid.source();
+    let clips = source.as_slice();
+    let mut history = FixedGraphHistory::try_new(Arc::clone(binding), humanoid.pose(), 11, clips)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut player = GraphPlayer::new(Arc::clone(binding), humanoid.pose(), 11);
+    let (mut fixed, mut shown) = (Digest::new(), Digest::new());
+    let mut samples = Vec::with_capacity(steps.len());
+    let mut generation = 0;
+    for (frame, step) in steps.iter().enumerate() {
+        if step.input.cut {
+            generation += 1;
+        }
+        let stamp = GraphStepStamp {
+            step: frame as u64,
+            owner_now: SimTime::from_subticks((step.input.ticks * f64::from(SUBTICKS_PER_TICK)) as u64),
+            generation,
+        };
+        let prepared = history.prepare(stamp, step.input, false).expect("a step forward");
+        let changed =
+            history.advance_prepared(prepared, step.turn, step.ground, step.gather.unwrap_or(false));
+        fixed.write(&[u8::from(changed)]);
+        history.write_canonical(&mut |chunk: &[u8]| fixed.write(chunk));
+
+        if step.replace {
+            player.replace(Arc::clone(binding));
+        }
+        if let Some(released) = step.gather {
+            player.request_grounded_gather(released);
+        }
+        let before = sample::SAMPLED.with(std::cell::Cell::get);
+        let changed = player.evaluate_with_support(&step.input, clips, 0, step.turn, step.ground);
+        let sampled = sample::SAMPLED.with(std::cell::Cell::get) - before;
+        shown.write(&[u8::from(changed)]);
+        shown.write(&sampled.to_le_bytes());
+        shown.write(player.state().to_string().as_bytes());
+        let stats = player.stats();
+        for count in [stats.transitions, stats.unmapped_moves, stats.missing_clips, player.teleports()] {
+            shown.write(&count.to_le_bytes());
+        }
+        shown.write(format!("{:?}", player.ground_foot_contact()).as_bytes());
+        samples.push(sampled);
+    }
+    shown.write(&player.reached.to_le_bytes());
+    Played { digests: (fixed.0, shown.0), samples, reached: player.reached }
+}
+
+/// A frozen graph, read, compiled for the fixed step as the cook compiles it and bound.
+struct Shipped {
+    name: String,
+    humanoid: Humanoid,
+    program: GraphProgram,
+    binding: Arc<GraphBinding>,
+    steps: Vec<Step>,
+}
+
+/// Every frozen graph, as [`Shipped`], in `humanoid::FROZEN`'s order.
+fn frozen_bindings() -> Vec<Shipped> {
+    frozen()
+        .into_iter()
+        .map(|(name, text)| {
+            let graph = read(&text);
+            let humanoid = Humanoid::new(graph.clips.iter().map(|clip| clip.id));
+            let program =
+                graph.compile_for(Target::Simulation).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let binding = humanoid.bind(&program);
+            let steps = session(&graph);
+            Shipped { name, humanoid, program, binding, steps }
+        })
+        .collect()
+}
+
+/// What each frozen graph plays through the session, in `humanoid::FROZEN`'s order: [`played`]'s two
+/// digests, taken from version 1's player before the switch (M6 A5c). They move only with the runtime:
+/// a change that moves one on purpose says why and re-pins its row; a content edit never does.
+const PLAYED: [(u64, u64); 7] = [
+    (0x6672_79b6_4c92_18b5, 0xc621_2f18_d6c2_afc6),
+    (0x5ef1_844f_2257_309e, 0x1287_50ea_9c42_cfeb),
+    (0x677d_a669_6679_be33, 0x60b0_7dde_1999_5b2e),
+    (0x41d3_096e_1ec1_0102, 0x635a_f86c_e5f1_1c7f),
+    (0xe154_eb74_2d99_313d, 0x8a25_ea98_e032_317a),
+    (0x4493_f9c4_5842_eab6, 0x9241_2dae_1049_254a),
+    (0xb401_d98f_b0c1_6085, 0xe2ae_71cc_0f1a_1f9f),
+];
+
+/// A5c's bar, kept once v1 is gone: each frozen graph, read, compiled for the fixed step and bound as
+/// the game binds it, plays what version 1's player played, through a session that reaches every state,
 /// transition, rule and reset of the smoothed velocity.
 #[test]
-fn every_shipped_graph_plays_v1s_poses_bit_for_bit_on_both_maths() {
+fn every_frozen_graph_plays_what_version_1_played() {
+    let shipped = frozen_bindings();
+    let mut found = Vec::new();
+    for Shipped { name, humanoid, binding, steps, .. } in &shipped {
+        let played = played(humanoid, binding, steps);
+        must_reach(name, binding, played.reached);
+        found.push(played.digests);
+    }
+    assert_eq!(found, PLAYED, "{found:#x?}");
+}
+
+/// Every graph in the content tree compiles for the fixed step, as the cook compiles it, and binds there:
+/// what a content edit must keep, with no pinned bytes.
+#[test]
+fn every_shipped_graph_binds_to_the_fixed_step() {
     for (name, text) in shipped() {
-        let graph = version_1(&text);
+        let graph = read(&text);
         let humanoid = Humanoid::new(graph.clips.iter().map(|clip| clip.id));
-        let old = humanoid.bind_v1(&graph);
-        let converted = v2::convert::convert(&graph);
-        let presentation =
-            humanoid.bind(&converted.compile().unwrap_or_else(|error| panic!("{name}: {error}")));
-        let simulation = humanoid.bind(
-            &converted.compile_for(Target::Simulation).unwrap_or_else(|error| panic!("{name}: {error}")),
-        );
-        // The two front ends: v1's conditions by their variants, the program's postfix ops.
-        assert!(old.changes.iter().all(|change| matches!(change.guard, Guard::Condition(_))));
-        assert!(presentation.changes.iter().all(|change| matches!(change.guard, Guard::Program { .. })));
-        assert_eq!(presentation.target(), Some(Target::Presentation));
-        let steps = session(&graph);
-        let (_, reached) = presentation_matches(&name, &humanoid, &old, &presentation, &steps);
-        must_reach(&name, &presentation, reached);
-        simulation_matches(&name, &humanoid, &old, &simulation, &steps);
+        let program = graph.compile_for(Target::COOKED).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let source = humanoid.source();
+        FixedGraphHistory::try_new(humanoid.bind(&program), humanoid.pose(), 0, source.as_slice())
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
     }
 }
 
 /// A program compiled for presentation may hold what only presentation runs, so the fixed step
-/// refuses it; the same graph compiled for `Target::Simulation` runs there.
+/// refuses it; the same graph compiled for the fixed step, as the cook compiles it, runs there.
 #[test]
 fn the_fixed_step_refuses_a_program_compiled_for_presentation() {
-    let (_, text) =
-        shipped().into_iter().find(|(name, _)| name.contains("character")).expect("the heroine ships");
-    let graph = version_1(&text);
+    let (_, text) = frozen().into_iter().find(|(name, _)| name == "heroine").expect("the heroine is frozen");
+    let graph = read(&text);
     let humanoid = Humanoid::new(graph.clips.iter().map(|clip| clip.id));
-    let converted = v2::convert::convert(&graph);
     let source = humanoid.source();
-    let presentation = humanoid.bind(&converted.compile().expect("compiles"));
-    assert_eq!(presentation.target(), Some(Target::Presentation));
+    let presentation = humanoid.bind(&graph.compile().expect("compiles"));
+    assert_eq!(presentation.target(), Target::Presentation);
     let refused = FixedGraphHistory::try_new(presentation, humanoid.pose(), 0, source.as_slice());
     assert!(matches!(refused, Err(GraphBindError::PresentationProgram)));
-    let simulation = humanoid.bind(&converted.compile_for(Target::Simulation).expect("compiles"));
-    assert_eq!(simulation.target(), Some(Target::Simulation));
+    let simulation = humanoid.bind(&graph.compile_for(Target::Simulation).expect("compiles"));
+    assert_eq!(simulation.target(), Target::Simulation);
     assert!(FixedGraphHistory::try_new(simulation, humanoid.pose(), 0, source.as_slice()).is_ok());
-    assert_eq!(humanoid.bind_v1(&graph).target(), None, "a version 1 graph runs anywhere it did");
 }
 
-/// What each shipped graph costs a frame through the session, v2's runtime against v1's: clips
-/// sampled (the mean and the worst frame), and the program's own worst case an evaluation.
+/// Prints what each frozen graph costs a frame through the session, and asserts nothing: clips sampled
+/// (the mean and the worst frame; [`PLAYED`]'s presentation digest holds each frame's count, so they are
+/// what version 1's player sampled), and the program's own worst case an evaluation.
 #[test]
 #[allow(clippy::print_stdout, reason = "the cost table is what it's for")]
-fn each_shipped_graph_costs_what_v1_does() {
+fn print_what_each_frozen_graph_costs() {
     let mut table = Vec::new();
-    for (name, text) in shipped() {
-        let graph = version_1(&text);
-        let humanoid = Humanoid::new(graph.clips.iter().map(|clip| clip.id));
-        let old = humanoid.bind_v1(&graph);
-        let program = v2::convert::convert(&graph).compile().expect("compiles");
-        let new = humanoid.bind(&program);
-        let steps = session(&graph);
-        let (samples, _) = presentation_matches(&name, &humanoid, &old, &new, &steps);
+    for Shipped { name, humanoid, program, binding, steps } in frozen_bindings() {
+        let samples = played(&humanoid, &binding, &steps).samples;
         let worst = samples.iter().copied().max().unwrap_or(0);
         let mean = samples.iter().sum::<u64>() as f64 / samples.len() as f64;
         let cost = program.cost;
         table.push(format!(
-            "{name}: {} frames, clips sampled a frame {mean:.2} mean and {worst} worst (v1 the same, frame for \
-             frame); an evaluation's worst case {} clips, {} registers, {} ops, {} condition ops",
+            "{name}: {} frames, clips sampled a frame {mean:.2} mean and {worst} worst; an evaluation's \
+             worst case {} clips, {} registers, {} ops, {} condition ops",
             samples.len(),
             cost.clips_sampled,
             cost.registers,
@@ -562,7 +567,7 @@ fn feature_text(upper: &str, target: Target) -> String {
     text
 }
 
-fn feature_program(text: &str, target: Target) -> v2::GraphProgram {
+fn feature_program(text: &str, target: Target) -> GraphProgram {
     let mut graph = v2::AnimGraph::from_document(text).expect("a good document");
     graph.resolve(sapphire_assets::graph::clip_id);
     graph.compile_for(target).unwrap_or_else(|error| panic!("{error}"))

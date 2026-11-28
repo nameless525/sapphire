@@ -86,7 +86,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, HeroineClearance, Skeleton};
+use sapphire_anim::{ArchivedClip, ArchivedSkeleton, Clip, GraphProgram, HeroineClearance, Skeleton};
 #[cfg(feature = "dev")]
 use sapphire_anim::{ClipSource, GraphBindError, GraphBinding};
 #[cfg(feature = "dev")]
@@ -937,19 +937,19 @@ impl SourceRevision {
     }
 }
 
-/// A graph and the clips it names, kept resident.
+/// A graph's program and the clips it names, kept resident.
 struct HeldGraph {
-    graph: Handle<AnimGraph>,
+    graph: Handle<GraphProgram>,
     clips: Vec<(AssetId, Handle<Clip>)>,
     source_revision: RefCell<SourceRevision>,
     /// What it binds against, for anyone but a playable kind, which has a rig and a mesh besides
     /// ([`GraphKey::playable`]).
     #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     skeleton: Option<Handle<Skeleton>>,
-    /// The graph live tuning took as a document, over the cooked one until a cook lands
-    /// ([`newest_saved`]).
+    /// The graph live tuning took, compiled as the cook compiles it, over the cooked one until a cook
+    /// lands ([`newest_saved`]).
     #[cfg(feature = "dev")]
-    live: Option<AnimGraph>,
+    live: Option<GraphProgram>,
     /// The cooked graph's generation, as [`Content::take_graph_changed`] last saw it.
     #[cfg(feature = "dev")]
     cooked: u32,
@@ -973,14 +973,14 @@ impl HeldGraph {
         Some(server.get(&self.graph)?.clip_ids().collect())
     }
 
-    /// The graph a character binds: the one live tuning took, or the cooked one.
-    fn document(&self, server: &AssetServer) -> Result<AnimGraph, String> {
+    /// The program a character binds: the one live tuning took, or the cooked one.
+    fn program(&self, server: &AssetServer) -> Result<GraphProgram, String> {
         #[cfg(feature = "dev")]
         if let Some(live) = &self.live {
             return Ok(live.clone());
         }
         let graph = server.get(&self.graph).ok_or("its cooked graph isn't resident")?;
-        graph.to_owned_graph().map_err(|error| error.to_string())
+        graph.to_program().map_err(|error| error.to_string())
     }
 
     /// Its clips, as a frame's evaluation reads them. Allocates nothing. The revision refresh
@@ -1226,7 +1226,8 @@ struct KeptFit {
     versions: (u32, u32, u32),
 }
 
-/// What the newest of `owner`'s `files` says its graph is, if there's one and it reads: what binds, once a
+/// What the newest of `owner`'s `files` says its graph is, if there's one and it reads and compiles as the
+/// cook compiles it ([`Target::COOKED`](sapphire_anim::Target::COOKED)): what binds, once a
 /// cook has landed. A cook reads a document when it starts, so one that started before the newest save
 /// brings what the file said then, and taking it for the newer because it arrived later would undo the save
 /// with nothing to say so, while the file went on saying otherwise. So where there's a file it's the word,
@@ -1234,11 +1235,16 @@ struct KeptFit {
 /// clip no pack holds, which live tuning refuses too and can't bind, the cook is all there is. Moves do the
 /// same (`LiveTuning::newest_of`).
 #[cfg(feature = "dev")]
-fn newest_saved(files: &[(GraphKey, PathBuf)], owner: GraphKey, server: &AssetServer) -> Option<AnimGraph> {
+fn newest_saved(
+    files: &[(GraphKey, PathBuf)],
+    owner: GraphKey,
+    server: &AssetServer,
+) -> Option<GraphProgram> {
     let named = files.iter().filter(|(of, _)| *of == owner).map(|(_, path)| path);
-    let mut graph = AnimGraph::from_document(&newest_text(named)?).ok()?;
+    let mut graph = sapphire_anim::AnimGraph::from_document(&newest_text(named)?).ok()?;
     graph.resolve(sapphire_assets::graph::clip_id);
-    graph.clips.iter().all(|clip| server.contains(clip.id)).then_some(graph)
+    let program = graph.compile_for(sapphire_anim::Target::COOKED).ok()?;
+    program.clips.iter().all(|clip| server.contains(clip.id)).then_some(program)
 }
 
 /// What [`Content::take_cook`] did with a new cook.
@@ -2610,7 +2616,7 @@ impl Content {
         skeleton_id: AssetId,
         remaining: &impl Fn() -> std::time::Duration,
     ) -> Result<sapphire_gameplay::body::BodyGraphAssets, LoadError> {
-        let graph = self.preload_cpu::<AnimGraph>(graph_id, remaining)?;
+        let graph = self.preload_cpu::<GraphProgram>(graph_id, remaining)?;
         let skeleton = self.preload_cpu::<Skeleton>(skeleton_id, remaining)?;
         let mut ids: Vec<_> = graph.view().clip_ids().collect();
         ids.sort_unstable();
@@ -3136,7 +3142,7 @@ impl Content {
     }
 
     /// Loads the graph of the playable kind `kind`, which [`Self::load_playable`] has loaded, until it and
-    /// the clips it names are resident: CPU data, which nothing uploads ([`Self::graph_document_of`] and
+    /// the clips it names are resident: CPU data, which nothing uploads ([`Self::graph_program_of`] and
     /// [`Self::graph_clips_of`] read them, by [`GraphKey::playable`]). They stay loaded from then on.
     pub fn load_graph(
         &mut self,
@@ -3227,16 +3233,16 @@ impl Content {
         held_all
     }
 
-    /// The graph the character binds: the graph of the kind it draws as ([`Self::character_kind`]).
-    pub fn character_graph(&self) -> Result<AnimGraph, String> {
+    /// The program the character binds: the graph of the kind it draws as ([`Self::character_kind`]).
+    pub fn character_graph(&self) -> Result<GraphProgram, String> {
         let kind = self.character_kind.ok_or("the character draws as no playable kind")?;
-        self.graph_document_of(GraphKey::playable(kind))
+        self.graph_program_of(GraphKey::playable(kind))
     }
 
-    /// The graph `key` binds: the one live tuning took, or the one it loaded.
-    pub fn graph_document_of(&self, key: GraphKey) -> Result<AnimGraph, String> {
+    /// The program `key` binds: the one live tuning took, or the one it loaded.
+    pub fn graph_program_of(&self, key: GraphKey) -> Result<GraphProgram, String> {
         let held = self.held_graph(key).ok_or_else(|| format!("the graph of `{key}` isn't loaded"))?;
-        held.document(&self.server)
+        held.program(&self.server)
     }
 
     /// Loads the clips an edited graph of `owner`'s names, until they're resident, keeping those its player
@@ -3246,7 +3252,7 @@ impl Content {
     pub fn hold_clips_of(
         &mut self,
         owner: GraphKey,
-        graph: &AnimGraph,
+        graph: &GraphProgram,
         in_use: &[AssetId],
         renderer: &mut Renderer,
         gpu: &GpuContext,
@@ -3283,7 +3289,7 @@ impl Content {
     /// Binds `owner` to `graph` from now on, until a cook lands, or to the cook's with none, and returns
     /// what it replaces.
     #[cfg(feature = "dev")]
-    pub fn set_live_graph(&mut self, owner: GraphKey, graph: Option<AnimGraph>) -> Option<AnimGraph> {
+    pub fn set_live_graph(&mut self, owner: GraphKey, graph: Option<GraphProgram>) -> Option<GraphProgram> {
         let (_, owned) = self.graphs.iter_mut().find(|(key, _)| *key == owner)?;
         std::mem::replace(&mut owned.live, graph)
     }
@@ -3294,7 +3300,7 @@ impl Content {
     /// A new rig that brings what a graph names can land after the graph, and then it counts as never
     /// fitting: the cook binds until the next save.
     #[cfg(feature = "dev")]
-    fn never_fits(&self, owner: GraphKey, graph: &AnimGraph) -> Option<GraphBindError> {
+    fn never_fits(&self, owner: GraphKey, graph: &GraphProgram) -> Option<GraphBindError> {
         let clips = self.graph_clips_of(owner);
         let (skeleton, rig, morph_targets) = match owner.kind() {
             Some(kind) => {
@@ -3303,7 +3309,8 @@ impl Content {
             }
             None => (self.held_graph(owner)?.skeleton.as_ref()?, None, 0),
         };
-        let error = GraphBinding::new(graph, self.server.get(skeleton)?, rig, morph_targets, &clips).err()?;
+        let error = GraphBinding::from_program(graph, self.server.get(skeleton)?, rig, morph_targets, &clips)
+            .err()?;
         let could_land = match &error {
             GraphBindError::MissingClip { .. } => true,
             GraphBindError::WrongSkeleton { id, .. } => {
@@ -3378,7 +3385,7 @@ impl Content {
     pub fn end_wait_on(
         &mut self,
         owner: GraphKey,
-        graph: AnimGraph,
+        graph: GraphProgram,
         bound: Result<(), String>,
         mut try_again: impl FnMut(&mut Self) -> bool,
     ) -> Result<(), String> {
@@ -3989,19 +3996,25 @@ mod tests {
     }
 
     /// The first pack, with `graph` naming `clip`.
-    fn pack_of_graph(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: u32) -> Vec<u8> {
+    fn pack_of_graph(x: f32, extra: usize, graph: GraphProgram, clip: AssetId, recovery: u32) -> Vec<u8> {
         write_pack(pack_assets(x, extra, graph, clip, recovery)).expect("a pack")
     }
 
     /// What [`pack_of_graph`] packs.
-    fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: u32) -> Vec<PackAsset> {
+    fn pack_assets(
+        x: f32,
+        extra: usize,
+        graph: GraphProgram,
+        clip: AssetId,
+        recovery: u32,
+    ) -> Vec<PackAsset> {
         pack_assets_with_morphs(x, extra, graph, clip, recovery, 0)
     }
 
     fn pack_assets_with_morphs(
         x: f32,
         extra: usize,
-        graph: AnimGraph,
+        graph: GraphProgram,
         clip: AssetId,
         recovery: u32,
         morphs: usize,
@@ -4117,11 +4130,22 @@ mod tests {
         )
     }
 
-    /// [`swing_document`], as a cook makes it.
-    fn swing_graph(decay: u32) -> AnimGraph {
-        let mut graph = AnimGraph::from_document(&swing_document(decay)).expect("a good document");
+    /// A graph document, read (of either version), with its clips' IDs derived and compiled as the cook
+    /// compiles it ([`Target::COOKED`](sapphire_anim::Target::COOKED)): what a cooked `.sgraph` holds.
+    fn cooked(text: &str) -> GraphProgram {
+        let mut graph = sapphire_anim::AnimGraph::from_document(text).expect("a good document");
         graph.resolve(sapphire_assets::graph::clip_id);
-        graph
+        graph.compile_for(sapphire_anim::Target::COOKED).expect("it compiles")
+    }
+
+    /// The combat layer's decay, in ticks, of a program that has one.
+    fn decay_of(graph: GraphProgram) -> u32 {
+        graph.combat.map_or(0, |combat| u32::from(combat.decay))
+    }
+
+    /// [`swing_document`], as a cook makes it.
+    fn swing_graph(decay: u32) -> GraphProgram {
+        cooked(&swing_document(decay))
     }
 
     /// The root from 0.75 m to the character's right to 0.75 m to its left, a clip for `joints` joints.
@@ -4404,8 +4428,8 @@ mod tests {
             .content
             .load_graph(OTHER_KIND, &mut stage.renderer, &stage.gpu)
             .expect("the second kind's graph");
-        assert!(stage.content.graph_document_of(GraphKey::playable(KIND)).is_err(), "it's keyed by its kind");
-        let graph = stage.content.graph_document_of(GraphKey::playable(OTHER_KIND)).expect("by its kind");
+        assert!(stage.content.graph_program_of(GraphKey::playable(KIND)).is_err(), "it's keyed by its kind");
+        let graph = stage.content.graph_program_of(GraphKey::playable(OTHER_KIND)).expect("by its kind");
         assert_eq!(stage.content.character_graph().expect("the character's"), graph);
         assert!(
             stage.content.character_clips().clip(SWING).is_some(),
@@ -4465,7 +4489,7 @@ mod tests {
             assert!(stage.content.playable_versions(kind).is_some(), "{kind}");
             assert!(stage.content.playable_mesh_on_renderer(kind).is_some(), "{kind}");
             stage.content.load_graph(kind, &mut stage.renderer, &stage.gpu).expect("its graph");
-            assert!(stage.content.graph_document_of(GraphKey::playable(kind)).is_ok(), "{kind}");
+            assert!(stage.content.graph_program_of(GraphKey::playable(kind)).is_ok(), "{kind}");
             assert!(lookdev::graph_driver(&stage.content, kind).is_ok(), "{kind}");
         }
         assert_eq!(stage.content.character_kind(), Some(KIND), "holding another doesn't draw as it");
@@ -4481,7 +4505,7 @@ mod tests {
         stage.content.draw_character_as(OTHER_KIND).expect("the other");
         assert_eq!(stage.content.character_kind(), Some(OTHER_KIND));
         assert_eq!(stage.content.character_look(), Some(&look_of(OTHER_KIND)));
-        let graph = stage.content.graph_document_of(GraphKey::playable(OTHER_KIND)).expect("by its kind");
+        let graph = stage.content.graph_program_of(GraphKey::playable(OTHER_KIND)).expect("by its kind");
         assert_eq!(stage.content.character_graph().expect("the character's"), graph);
         // The scene takes the change on its next frame, and poses the character anew by the other's graph.
         let frame = stage.frame();
@@ -4634,8 +4658,7 @@ mod tests {
         };
         let clip = Clip { skeleton: Some(skeleton_id), ..swing(count) };
         let document = swing_document(5).replace(&SWING.to_string(), &clip_id.to_string());
-        let mut graph = AnimGraph::from_document(&document).expect("a good document");
-        graph.resolve(sapphire_assets::graph::clip_id);
+        let graph = cooked(&document);
         vec![
             packed_with(mesh_id, AssetKind::Mesh, &mesh.to_cooked().expect("cooked"), vec![skeleton_id]),
             packed(rig_id, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
@@ -5153,7 +5176,7 @@ mod tests {
         }
 
         let mut other = swing_graph(5);
-        other.resolve(|_| OTHER_SWING);
+        other.clips.iter_mut().for_each(|clip| clip.id = OTHER_SWING);
         stage.source.insert(PACK, pack_of_graph(0.0, 0, other, OTHER_SWING, 0));
         stage.content.remount(PACK).expect("the new pack");
         let mut waiting = false;
@@ -5414,7 +5437,7 @@ mod tests {
     }
 
     /// A graph naming `ids`, looping the first in its one state.
-    fn graph_naming(ids: &[AssetId]) -> AnimGraph {
+    fn graph_naming(ids: &[AssetId]) -> GraphProgram {
         let clips: Vec<String> = ids
             .iter()
             .enumerate()
@@ -5431,13 +5454,11 @@ mod tests {
             ))"#,
             clips = clips.join(", "),
         );
-        let mut graph = AnimGraph::from_document(&text).expect("a good document");
-        graph.resolve(sapphire_assets::graph::clip_id);
-        graph
+        cooked(&text)
     }
 
     /// [`SWING`] in two states that take turns as it ends, so a state starts every [`SWING_TICKS`].
-    fn turns_graph() -> AnimGraph {
+    fn turns_graph() -> GraphProgram {
         let text = format!(
             r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
                 clips: [(name: "swing", source: "{SWING}")],
@@ -5455,9 +5476,7 @@ mod tests {
                 combat: (decay: 5, exit: 5, moves: []),
             ))"#
         );
-        let mut graph = AnimGraph::from_document(&text).expect("a good document");
-        graph.resolve(sapphire_assets::graph::clip_id);
-        graph
+        cooked(&text)
     }
 
     /// A frame of a character still swinging: how far its root stands from the rest pose's x 0, and that
@@ -5483,7 +5502,7 @@ mod tests {
         stage.frame();
 
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
-        scene.replace_graph_document(graph_naming(&others), content, renderer, gpu).expect("it binds");
+        scene.replace_graph_program(graph_naming(&others), content, renderer, gpu).expect("it binds");
         assert!(stage.scene.graph_player().expect("playing").has_replacement());
 
         let mut furthest = 0.0f32;
@@ -5547,13 +5566,13 @@ mod tests {
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
 
         let waiting = graph_naming(&[OTHER_SWING]);
-        scene.replace_graph_document(waiting, content, renderer, gpu).expect("it binds");
+        scene.replace_graph_program(waiting, content, renderer, gpu).expect("it binds");
 
         // The last it names is another skeleton's, which only binding finds.
         let mut named = others.clone();
         *named.last_mut().expect("some") = OTHER_RIGS_SWING;
         let error = scene
-            .replace_graph_document(graph_naming(&named), content, renderer, gpu)
+            .replace_graph_program(graph_naming(&named), content, renderer, gpu)
             .expect_err("another skeleton's clip");
         assert!(error.contains("clip 63"), "{error}");
 
@@ -5569,7 +5588,7 @@ mod tests {
 
         // A good edit takes the waiting graph's place, and nothing reads what the bad one named.
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
-        scene.replace_graph_document(graph_naming(&others[..1]), content, renderer, gpu).expect("it binds");
+        scene.replace_graph_program(graph_naming(&others[..1]), content, renderer, gpu).expect("it binds");
         let table = content.character_clips();
         assert!(table.clip(SWING).is_some(), "the graph playing's");
         assert!(table.clip(others[0]).is_some(), "the new one's");
@@ -5577,7 +5596,7 @@ mod tests {
 
         // Nor, by the next edit, the graph that one took the place of. However many come before a state
         // starts, what's held is what three graphs name.
-        scene.replace_graph_document(graph_naming(&others[1..2]), content, renderer, gpu).expect("it binds");
+        scene.replace_graph_program(graph_naming(&others[1..2]), content, renderer, gpu).expect("it binds");
         let table = content.character_clips();
         assert!(table.clip(SWING).is_some(), "the graph playing's");
         assert!(table.clip(others[1]).is_some(), "the new one's");
@@ -5604,7 +5623,7 @@ mod tests {
         stage.source.insert(PACK, pack_with_decay(0.0, 0, 7));
         stage.content.remount(PACK).expect("the new pack");
         stage.frames_until(|stage| stage.scene.graph_player().expect("playing").has_replacement());
-        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 4);
+        assert_eq!(decay_of(stage.content.character_graph().expect("a graph")), 4);
         let wanted: Vec<AssetId> = stage.scene.graph_player().expect("playing").clips_in_use().collect();
         assert_eq!(wanted, [SWING, OTHER_SWING], "the graph playing's, and the save's");
         std::fs::remove_dir_all(&folder).expect("cleaned up");
@@ -5623,14 +5642,14 @@ mod tests {
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
 
         let mut missing = swing_graph(4);
-        missing.resolve(|_| AssetId::from_bytes([9; 16]));
-        let error = scene.replace_graph_document(missing, content, renderer, gpu).expect_err("no such clip");
+        missing.clips.iter_mut().for_each(|clip| clip.id = AssetId::from_bytes([9; 16]));
+        let error = scene.replace_graph_program(missing, content, renderer, gpu).expect_err("no such clip");
         assert!(error.contains("swing"), "{error}");
         assert!(!scene.graph_player().expect("playing").has_replacement());
 
-        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("it binds");
+        scene.replace_graph_program(swing_graph(4), content, renderer, gpu).expect("it binds");
         assert!(scene.graph_player().expect("playing").has_replacement());
-        assert_eq!(content.character_graph().expect("a graph").combat.decay, 4);
+        assert_eq!(decay_of(content.character_graph().expect("a graph")), 4);
         assert!(scene.graph_player().expect("playing").has_replacement());
         assert!(!content.take_graph_changed(), "its own clips are nothing new");
 
@@ -5638,7 +5657,7 @@ mod tests {
         stage.content.remount(PACK).expect("the new pack");
         for _ in 0..1000 {
             stage.frame();
-            if stage.content.character_graph().expect("a graph").combat.decay == 9 {
+            if decay_of(stage.content.character_graph().expect("a graph")) == 9 {
                 return;
             }
         }
@@ -5661,7 +5680,7 @@ mod tests {
         std::fs::create_dir_all(&folder).expect("a folder");
         let file = folder.join("character.animgraph.ron");
         stage.content.read_graphs_from(vec![(GraphKey::playable(KIND), file.clone())]);
-        let bound = |stage: &Stage| stage.content.character_graph().expect("a graph").combat.decay;
+        let bound = |stage: &Stage| decay_of(stage.content.character_graph().expect("a graph"));
         let land = |stage: &mut Stage, decay: u32| {
             let versions = stage.content.graph_versions();
             stage.source.insert(PACK, pack_with_decay(0.0, 0, decay));
@@ -5672,7 +5691,7 @@ mod tests {
         // Saved as a cook of an earlier save ran: 4, where it read 7.
         std::fs::write(&file, swing_document(4)).expect("the save");
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
-        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("it binds");
+        scene.replace_graph_program(swing_graph(4), content, renderer, gpu).expect("it binds");
         land(&mut stage, 7);
         assert_eq!(bound(&stage), 4, "the save stands");
         assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's what comes next");
@@ -5721,7 +5740,7 @@ mod tests {
         stage.content.remount(PACK).expect("the new pack");
         stage.frames_until(|stage| stage.content.graph_versions() != versions);
         std::fs::remove_dir_all(&folder).expect("cleaned up");
-        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 7, "the cook's");
+        assert_eq!(decay_of(stage.content.character_graph().expect("a graph")), 7, "the cook's");
         assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's what comes next");
     }
 
@@ -5737,10 +5756,8 @@ mod tests {
 
     /// [`blinking_document`], as a cook makes it: a cook reads the same file a save writes.
     #[cfg(feature = "dev")]
-    fn blinking_graph(decay: u32) -> AnimGraph {
-        let mut graph = AnimGraph::from_document(&blinking_document(decay)).expect("a good document");
-        graph.resolve(sapphire_assets::graph::clip_id);
-        graph
+    fn blinking_graph(decay: u32) -> GraphProgram {
+        cooked(&blinking_document(decay))
     }
 
     /// A save can read, name clips the pack holds, and still not fit the character, in a way no landing
@@ -5768,7 +5785,7 @@ mod tests {
             stage.content.remount(PACK).expect("the new pack");
             stage.frames_until(|stage| stage.scene.graph_player().expect("playing").has_replacement());
             std::fs::remove_dir_all(&folder).expect("cleaned up");
-            assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 7, "{why}");
+            assert_eq!(decay_of(stage.content.character_graph().expect("a graph")), 7, "{why}");
         }
     }
 
@@ -5794,10 +5811,10 @@ mod tests {
         stage.frames_until(|stage| stage.joints() != joints);
         std::fs::remove_dir_all(&folder).expect("cleaned up");
         assert_eq!(stage.joints(), joints + 1);
-        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 7, "the cook's");
+        assert_eq!(decay_of(stage.content.character_graph().expect("a graph")), 7, "the cook's");
 
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
-        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("nothing's landing");
+        scene.replace_graph_program(swing_graph(4), content, renderer, gpu).expect("nothing's landing");
         assert!(scene.graph_player().expect("playing").has_replacement());
     }
 
@@ -5823,15 +5840,15 @@ mod tests {
 
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
         let error = scene
-            .replace_graph_document(blinking_graph(4), content, renderer, gpu)
+            .replace_graph_program(blinking_graph(4), content, renderer, gpu)
             .expect_err("that one doesn't fit either");
         assert!(error.contains("wink"), "it says why: {error}");
         assert_eq!(stage.joints(), joints, "it still keeps what it has");
 
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
-        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("that one does");
+        scene.replace_graph_program(swing_graph(4), content, renderer, gpu).expect("that one does");
         assert_eq!(stage.joints(), joints + 1, "it started over on the new joints");
-        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 4);
+        assert_eq!(decay_of(stage.content.character_graph().expect("a graph")), 4);
         stage.frame();
         assert_eq!(stage.joints(), joints + 1);
     }
@@ -5855,18 +5872,18 @@ mod tests {
 
         stage.recook_all_but(&[SWING, OTHER_SWING], 1, 7);
         stage.until((1, 1, 1));
-        stage.frames_until(|stage| stage.content.character_graph().is_ok_and(|g| g.combat.decay == 4));
+        stage.frames_until(|stage| stage.content.character_graph().is_ok_and(|g| decay_of(g) == 4));
         for _ in 0..30 {
             stage.frame();
         }
         assert_eq!(stage.joints(), joints, "its clips aren't here yet");
-        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 4, "still the save");
+        assert_eq!(decay_of(stage.content.character_graph().expect("a graph")), 4, "still the save");
 
         stage.source.insert(PACK, pack_with_decay(0.0, 1, 7));
         stage.content.remount(PACK).expect("the rest of it");
         stage.frames_until(|stage| stage.joints() != joints);
         std::fs::remove_dir_all(&folder).expect("cleaned up");
-        assert_eq!(stage.content.character_graph().expect("a graph").combat.decay, 4, "and it binds");
+        assert_eq!(decay_of(stage.content.character_graph().expect("a graph")), 4, "and it binds");
     }
 
     /// A fight's player plays a graph, so an edit of it takes as the graph show's does.
@@ -5879,11 +5896,9 @@ mod tests {
         let driver = lookdev::graph_driver(&stage.content, KIND).expect("a driver");
         stage.scene.pose_character_by_graph(driver);
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
-        scene
-            .replace_graph_document(swing_graph(4), content, renderer, gpu)
-            .expect("a fighter plays a graph");
+        scene.replace_graph_program(swing_graph(4), content, renderer, gpu).expect("a fighter plays a graph");
         assert!(scene.graph_player().expect("playing").has_replacement());
-        assert_eq!(content.character_graph().expect("a graph").combat.decay, 4);
+        assert_eq!(decay_of(content.character_graph().expect("a graph")), 4);
     }
 
     /// A new version of the character under a graph: the graph plays on, on the new joints, posed on the
@@ -5966,7 +5981,7 @@ mod tests {
 
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
         let error = scene
-            .replace_graph_document(swing_graph(4), content, renderer, gpu)
+            .replace_graph_program(swing_graph(4), content, renderer, gpu)
             .expect_err("an edit waits with it");
         assert!(error.contains("still landing"), "{error}");
         assert!(!scene.graph_player().expect("playing").has_replacement());
@@ -5977,7 +5992,7 @@ mod tests {
 
         // It's over: an edit takes as it did before.
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
-        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("nothing's landing");
+        scene.replace_graph_program(swing_graph(4), content, renderer, gpu).expect("nothing's landing");
         assert!(scene.graph_player().expect("playing").has_replacement());
     }
 

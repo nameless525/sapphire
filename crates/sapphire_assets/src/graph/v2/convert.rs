@@ -28,7 +28,8 @@ use super::{
     Reaction, State, Takeoff, Transition, TransitionRules,
 };
 use crate::AssetId;
-use crate::graph::{self, Condition, StateMotion, clip_id};
+use crate::graph::clip_id;
+use crate::graph::v1::{self, Condition, StateMotion};
 
 /// The machine a version 1 locomotion layer becomes.
 pub const LOCOMOTION: &str = "locomotion";
@@ -73,7 +74,7 @@ const FOOTWORK_GAITS: [(&str, f32, f32); 3] = [("walk", 24.0, 42.0), ("jog", 12.
 /// `old` as version 2. Total, but meant for a document version 1's check passes: that's what
 /// [`AnimGraph::from_document`] converts, and a document v1 refuses never reaches here through it.
 #[must_use]
-pub fn convert(old: &graph::AnimGraph) -> AnimGraph {
+pub(crate) fn convert(old: &v1::AnimGraph) -> AnimGraph {
     let locomotion = &old.locomotion;
     // The converter's own layers keep clear of every additive layer's name.
     let taken: Vec<&str> = old.additive.iter().map(|layer| layer.name.as_str()).collect();
@@ -263,10 +264,9 @@ pub fn convert(old: &graph::AnimGraph) -> AnimGraph {
 
 /// The rules v1's runtime keyed on a condition's variant: `touchdown` when it leaves a landing, and
 /// `landing_aware` in a graph with a landing (a touchdown state or a `LandedMoving` condition), the only
-/// kind whose `Landed` started one. v1's own binding takes its rules from here too, so the two runtimes
-/// key on the same thing.
+/// kind whose `Landed` started one.
 #[must_use]
-pub fn rules(when: Condition, touchdown: bool, landing_aware: bool) -> TransitionRules {
+fn rules(when: Condition, touchdown: bool, landing_aware: bool) -> TransitionRules {
     TransitionRules {
         waits_for_landing: matches!(
             when,
@@ -284,7 +284,7 @@ pub fn rules(when: Condition, touchdown: bool, landing_aware: bool) -> Transitio
 impl TransitionRules {
     /// Without the rules of a finish, for a finish that converts to `false`.
     #[must_use]
-    pub fn filter_finished(self) -> Self {
+    fn filter_finished(self) -> Self {
         Self { at_drawn: false, catch: false, ..self }
     }
 }

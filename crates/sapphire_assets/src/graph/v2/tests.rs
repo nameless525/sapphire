@@ -680,7 +680,8 @@ fn too_many_of_a_thing_is_refused_by_its_list() {
 fn everything_wrong_is_named_at_once() {
     let text = document().replace(r#"start: "ground""#, r#"start: "x""#).replace("exit: 12", "exit: 999");
     let issues = AnimGraph::from_document(&text).expect("parses").check();
-    assert_eq!(issues.len(), 2, "{issues:?}");
+    // The two, and the five nodes only presentation runs, which the cook refuses as the check does.
+    assert_eq!(issues.len(), 7, "{issues:?}");
 }
 
 #[test]
@@ -747,7 +748,7 @@ fn version_1() -> String {
 
 #[test]
 fn a_version_1_document_converts_and_compiles() {
-    let old = crate::graph::AnimGraph::from_document(&version_1()).expect("a good version 1 document");
+    let old = crate::graph::v1::AnimGraph::from_document(&version_1()).expect("a good version 1 document");
     let graph = AnimGraph::from_document(&version_1()).expect("reads as version 2");
     assert_eq!(graph, convert::convert(&old), "reading is converting");
     let whens: Vec<&str> =
@@ -951,6 +952,20 @@ fn an_additive_machine_layer_of_several_clips_compiles_at_twice_their_cost() {
     graph.resolve(|clip| AssetId::from_bytes([clip.name.len() as u8; 16]));
     let added = graph.compile().unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(added.cost.clips_sampled, program().cost.clips_sampled + 2);
+}
+
+/// An editor's check reports what the cook refuses, as the cook reports it: an event, a game slot, a
+/// side variant and traversal's mode are issues by their paths, not a cook's failure later (M6 A5c).
+#[test]
+fn the_check_reports_what_the_cook_refuses() {
+    let graph = graph();
+    let Err(CompileError { issues: cooked }) = graph.compile_for(Target::COOKED) else {
+        panic!("it holds presentation's nodes")
+    };
+    let checked = graph.check();
+    assert_eq!(checked, cooked);
+    assert!(checked.iter().any(|issue| issue.path == r#"events["footstep"]"#), "{checked:?}");
+    assert!(checked.iter().any(|issue| issue.path == r#"parameters["aim"].from"#), "{checked:?}");
 }
 
 /// Compiling for `Target::Simulation` refuses, by path, every node only presentation may run, and nothing else.

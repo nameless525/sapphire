@@ -2,56 +2,189 @@
 // The attack clips follow the existing move ticks and blade paths in warrior.moves.ron.
 (
     type: "sapphire::assets::AnimGraph",
-    version: 1,
+    version: 2,
     data: (
-        clips: [
-            (name: "guard", source: "5b2f5eb4-d350-5bab-8892-5f74d3339138"),
-            (name: "advance", source: "00a3d384-2d31-5db4-9cb7-85a545fd3a83"),
-            (name: "charge", source: "2281c91a-9ebb-541d-9504-e73d0925d266"),
-            (name: "retreat", source: "43563f38-e8f2-5249-a358-c9147f5a766c"),
-            (name: "circle_left", source: "eece1823-2bae-55a5-b1a3-e39330b79d5f"),
-            (name: "circle_right", source: "100d6d63-b409-5780-82b7-dc25b7484c86"),
-            (name: "swipe", source: "d67925a5-6ce0-5bc7-8bb1-796063806aed"),
-            (name: "overhead", source: "05c25c90-2078-5649-ae74-351747547ec4"),
-            (name: "lunge", source: "594c5482-5a4a-5916-90ca-6330937ad025"),
-            (name: "stagger_light", source: "ecbdba39-f841-57d1-8e60-c72c605e2860"),
-            (name: "stagger_heavy", source: "22a06a5f-cb91-59ab-a603-d5d9c1a411d0"),
-            (name: "knockdown", source: "959aad99-a672-59f5-a485-f4d4c1675ba3"),
-            (name: "recover", source: "5f16f328-10b9-542c-ac06-ce470c86d727"),
-            (name: "death", source: "5760cd96-db86-550b-8bdc-8a492de9ea60"),
+        parameters: [
+            (
+                name: "velocity_x",
+                from: Locomotion(SmoothedX),
+            ),
+            (
+                name: "velocity_z",
+                from: Locomotion(SmoothedZ),
+            ),
         ],
-        locomotion: (
-            start: "ground",
-            smoothing: 5.0,
-            states: [
-                (name: "ground", plays: Blend((
-                    // Each speed is the support foot's travel per second. All gait loops
-                    // share the left foot's contact phase. The guard breathes at its own rate.
-                    samples: [
-                        (clip: "guard", at: (0.0, 0.0), sync: false),
-                        (clip: "advance", at: (0.0, 0.93)),
-                        (clip: "charge", at: (0.0, 3.96)),
-                        (clip: "retreat", at: (0.0, -1.20)),
-                        (clip: "circle_left", at: (1.40, 0.0)),
-                        (clip: "circle_right", at: (-1.40, 0.0)),
+        smoothing: 5.0,
+        clips: [
+            (
+                name: "guard",
+                source: "5b2f5eb4-d350-5bab-8892-5f74d3339138",
+            ),
+            (
+                name: "advance",
+                source: "00a3d384-2d31-5db4-9cb7-85a545fd3a83",
+            ),
+            (
+                name: "charge",
+                source: "2281c91a-9ebb-541d-9504-e73d0925d266",
+            ),
+            (
+                name: "retreat",
+                source: "43563f38-e8f2-5249-a358-c9147f5a766c",
+            ),
+            (
+                name: "circle_left",
+                source: "eece1823-2bae-55a5-b1a3-e39330b79d5f",
+            ),
+            (
+                name: "circle_right",
+                source: "100d6d63-b409-5780-82b7-dc25b7484c86",
+            ),
+            (
+                name: "swipe",
+                source: "d67925a5-6ce0-5bc7-8bb1-796063806aed",
+            ),
+            (
+                name: "overhead",
+                source: "05c25c90-2078-5649-ae74-351747547ec4",
+            ),
+            (
+                name: "lunge",
+                source: "594c5482-5a4a-5916-90ca-6330937ad025",
+            ),
+            (
+                name: "stagger_light",
+                source: "ecbdba39-f841-57d1-8e60-c72c605e2860",
+            ),
+            (
+                name: "stagger_heavy",
+                source: "22a06a5f-cb91-59ab-a603-d5d9c1a411d0",
+            ),
+            (
+                name: "knockdown",
+                source: "959aad99-a672-59f5-a485-f4d4c1675ba3",
+            ),
+            (
+                name: "recover",
+                source: "5f16f328-10b9-542c-ac06-ce470c86d727",
+            ),
+            (
+                name: "death",
+                source: "5760cd96-db86-550b-8bdc-8a492de9ea60",
+            ),
+        ],
+        machines: [
+            (
+                name: "locomotion",
+                start: "ground",
+                states: [
+                    (
+                        name: "ground",
+                        plays: Blend2D((
+                            x: "velocity_x",
+                            y: "velocity_z",
+                            // Each speed is the support foot's travel per second. All gait loops
+                            // share the left foot's contact phase. The guard breathes at its own rate.
+                            samples: [
+                                (
+                                    clip: "guard",
+                                    at: (0.0, 0.0),
+                                    phase: 0.0,
+                                    sync: false,
+                                ),
+                                (
+                                    clip: "advance",
+                                    at: (0.0, 0.93),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "charge",
+                                    at: (0.0, 3.96),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "retreat",
+                                    at: (0.0, -1.2),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "circle_left",
+                                    at: (1.4, 0.0),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                                (
+                                    clip: "circle_right",
+                                    at: (-1.4, 0.0),
+                                    phase: 0.0,
+                                    sync: true,
+                                ),
+                            ],
+                            rate: (0.5, 1.6),
+                        )),
+                    ),
+                ],
+            ),
+        ],
+        layers: [
+            (
+                name: "locomotion",
+                plays: Machine((
+                    machine: "locomotion",
+                )),
+            ),
+            (
+                name: "combat",
+                plays: Combat((
+                    decay: 6,
+                    exit: 10,
+                    moves: [
+                        (
+                            move: "swipe",
+                            clip: "swipe",
+                            decay: Some(4),
+                        ),
+                        (
+                            move: "overhead",
+                            clip: "overhead",
+                            decay: Some(5),
+                        ),
+                        (
+                            move: "lunge",
+                            clip: "lunge",
+                            decay: Some(5),
+                        ),
+                        (
+                            move: "stagger_light",
+                            clip: "stagger_light",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "stagger_heavy",
+                            clip: "stagger_heavy",
+                            decay: Some(3),
+                        ),
+                        (
+                            move: "knockdown",
+                            clip: "knockdown",
+                            decay: Some(4),
+                        ),
+                        (
+                            move: "recover",
+                            clip: "recover",
+                            decay: Some(4),
+                        ),
+                        (
+                            move: "death",
+                            clip: "death",
+                            decay: Some(4),
+                        ),
                     ],
-                    rate: (0.5, 1.6),
-                ))),
-            ],
-        ),
-        combat: (
-            decay: 6,
-            exit: 10,
-            moves: [
-                (move: "swipe", clip: "swipe", decay: 4),
-                (move: "overhead", clip: "overhead", decay: 5),
-                (move: "lunge", clip: "lunge", decay: 5),
-                (move: "stagger_light", clip: "stagger_light", decay: 3),
-                (move: "stagger_heavy", clip: "stagger_heavy", decay: 3),
-                (move: "knockdown", clip: "knockdown", decay: 4),
-                (move: "recover", clip: "recover", decay: 4),
-                (move: "death", clip: "death", decay: 4),
-            ],
-        ),
+                )),
+            ),
+        ],
     ),
 )

@@ -4,7 +4,7 @@ use sapphire_assets::AssetId;
 use sapphire_assets::clip::{
     ArchivedClip, Clip, DEFAULT_RATE, PackedRotation, RotationTrack, WeightRange, WeightTrack,
 };
-use sapphire_assets::graph::AnimGraph;
+use sapphire_assets::graph::v2::{AnimGraph, GraphProgram};
 use sapphire_assets::rig::{
     CharacterRig, Expression, ExpressionOverride, ExpressionPreset, HumanBone, HumanoidJoint,
     MorphTargetWeight,
@@ -162,17 +162,19 @@ impl Fixture {
         self.clips.iter().map(|(name, id, _)| (*id, self.clip(name))).collect()
     }
 
-    fn graph(&self, text: &str) -> AnimGraph {
+    /// A document, of either version, compiled as the cook compiles it.
+    fn graph(&self, text: &str) -> GraphProgram {
         let mut graph = AnimGraph::from_document(text).expect("a good document");
         graph.resolve(|clip| id(&clip.name));
-        graph
+        graph.compile_for(Target::Simulation).unwrap_or_else(|error| panic!("{error}"))
     }
 
-    fn bind(&self, graph: &AnimGraph) -> Arc<GraphBinding> {
+    fn bind(&self, graph: &GraphProgram) -> Arc<GraphBinding> {
         let rig = CharacterRig::read(&self.rig).expect("a valid rig");
         let source = self.source();
         Arc::new(
-            GraphBinding::new(graph, self.skeleton(), Some(rig), 3, source.as_slice()).expect("it binds"),
+            GraphBinding::from_program(graph, self.skeleton(), Some(rig), 3, source.as_slice())
+                .expect("it binds"),
         )
     }
 
@@ -1651,10 +1653,10 @@ fn binding_names_what_it_cant_find() {
     let skeleton = fixture.skeleton();
     let source = fixture.source();
     let good = fixture.graph(&layered());
-    assert!(GraphBinding::new(&good, skeleton, Some(rig), 3, source.as_slice()).is_ok());
+    assert!(GraphBinding::from_program(&good, skeleton, Some(rig), 3, source.as_slice()).is_ok());
     // A clip that isn't loaded.
     let few = &source[..1];
-    let error = GraphBinding::new(&good, skeleton, Some(rig), 3, few).expect_err("it's missing");
+    let error = GraphBinding::from_program(&good, skeleton, Some(rig), 3, few).expect_err("it's missing");
     assert!(matches!(&error, GraphBindError::MissingClip { name, .. } if name == "walk"), "{error}");
     // A clip for another skeleton.
     let other = turning(10, 0, Vec3::X, 0.0, 1.0);
@@ -1662,20 +1664,20 @@ fn binding_names_what_it_cant_find() {
     let mut wrong = source.clone();
     let other_clip = Clip::read(&other).expect("a valid clip");
     wrong.iter_mut().for_each(|(_, clip)| *clip = other_clip);
-    let error =
-        GraphBinding::new(&good, skeleton, Some(rig), 3, wrong.as_slice()).expect_err("it doesn't fit");
+    let error = GraphBinding::from_program(&good, skeleton, Some(rig), 3, wrong.as_slice())
+        .expect_err("it doesn't fit");
     assert!(matches!(error, GraphBindError::WrongSkeleton { .. }), "{error}");
     // A bone its rig doesn't map, and no rig at all.
     let legs = fixture.graph(&layered().replace("bone: Spine", "bone: Neck"));
-    let error =
-        GraphBinding::new(&legs, skeleton, Some(rig), 3, source.as_slice()).expect_err("no such bone");
+    let error = GraphBinding::from_program(&legs, skeleton, Some(rig), 3, source.as_slice())
+        .expect_err("no such bone");
     assert!(matches!(error, GraphBindError::NoSuchBone { bone: HumanBone::Neck, .. }), "{error}");
-    let error = GraphBinding::new(&good, skeleton, None, 3, source.as_slice()).expect_err("no rig");
+    let error = GraphBinding::from_program(&good, skeleton, None, 3, source.as_slice()).expect_err("no rig");
     assert!(matches!(error, GraphBindError::NoSuchBone { .. }), "{error}");
     // A blink's expression it doesn't have.
     let wink = fixture.graph(&blinking().replace(r#"expression: "blink""#, r#"expression: "wink""#));
-    let error =
-        GraphBinding::new(&wink, skeleton, Some(rig), 3, source.as_slice()).expect_err("no expression");
+    let error = GraphBinding::from_program(&wink, skeleton, Some(rig), 3, source.as_slice())
+        .expect_err("no expression");
     assert!(matches!(error, GraphBindError::NoSuchExpression(name) if name == "wink"));
 }
 

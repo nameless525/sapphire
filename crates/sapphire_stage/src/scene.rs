@@ -1699,7 +1699,8 @@ impl Scene {
         self.graph_show.as_mut()?.tune(document, set)
     }
 
-    /// Takes an edited graph (M2 T2): its clips loaded, bound against the character, and from then on what
+    /// Takes an edited graph (M2 T2), compiled as the cook compiles it
+    /// ([`Target::COOKED`](sapphire_anim::Target::COOKED)): its clips loaded, bound against the character, and from then on what
     /// binds it, until a pack brings another. It takes effect at the next state's start
     /// ([`GraphPlayer::replace`]). What fails leaves what's playing alone, and an edit that comes while
     /// the character waits for the rest of a new version, whose pose has joints a binding may not, either ends
@@ -1707,9 +1708,9 @@ impl Scene {
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     #[cfg(feature = "dev")]
-    pub fn replace_graph_document(
+    pub fn replace_graph_program(
         &mut self,
-        graph: sapphire_anim::AnimGraph,
+        graph: sapphire_anim::GraphProgram,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &sapphire_rhi::GpuContext,
@@ -3696,7 +3697,7 @@ mod tests {
         }
 
         /// A graph with `clip()` for its only clip, playing it standing and for the show's moves.
-        fn graph() -> sapphire_anim::AnimGraph {
+        fn graph() -> sapphire_anim::GraphProgram {
             let mut graph = sapphire_anim::AnimGraph::from_document(
                 r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
                     clips: [(name: "turn", source: "15af86bb-67b3-4208-bc54-1618aabf450b")],
@@ -3712,7 +3713,7 @@ mod tests {
             )
             .expect("a good document");
             graph.resolve(|_| GRAPH_CLIP);
-            graph
+            graph.compile_for(sapphire_anim::Target::COOKED).expect("it compiles")
         }
 
         pub(in crate::scene) const GRAPH_CLIP: AssetId = AssetId::from_bytes([8; 16]);
@@ -3723,8 +3724,8 @@ mod tests {
             let binds: Vec<SkinBind> = (0..5)
                 .map(|joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
                 .collect();
-            let binding =
-                sapphire_anim::GraphBinding::new(&graph(), skeleton, None, 2, table).expect("it binds");
+            let binding = sapphire_anim::GraphBinding::from_program(&graph(), skeleton, None, 2, table)
+                .expect("it binds");
             let pose = CharacterPose::new(skeleton, &binds, &[], vec![0.25, 0.0]);
             let player = sapphire_anim::GraphPlayer::new(Arc::new(binding), pose, 1);
             GraphDriver::new(player, FigureJoints::of_joints(&skeleton_pose_rest(), 2, 0.0, [3, 4]))

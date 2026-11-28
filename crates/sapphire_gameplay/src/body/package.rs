@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use sapphire_assets::clip::{ArchivedClip, Clip};
-use sapphire_assets::graph::AnimGraph;
+use sapphire_assets::graph::v2::GraphProgram;
 use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedConstraint, CharacterRig, HumanBone};
 use sapphire_assets::skeleton::Skeleton;
 use sapphire_assets::{AssetId, CpuResident};
@@ -26,7 +26,7 @@ pub struct BodyAssets {
 /// A cooked graph and its skeleton and clips, also for a character without a VRM rig asset.
 #[derive(Clone)]
 pub struct BodyGraphAssets {
-    pub graph: CpuResident<AnimGraph>,
+    pub graph: CpuResident<GraphProgram>,
     pub skeleton_id: AssetId,
     pub skeleton: CpuResident<Skeleton>,
     pub clips: Vec<(AssetId, CpuResident<Clip>)>,
@@ -207,9 +207,9 @@ impl BodyProfile {
         contacts.dedup();
         let fingerprint = fingerprint(&assets, rig_binding, &options, &contacts);
 
-        let graph = assets.graph.view().to_owned_graph()?;
+        let program = assets.graph.view().to_program()?;
         let clips = BodyClips(assets.clips);
-        let binding = GraphBinding::new(&graph, skeleton, rig, morph_names.len(), &clips)?;
+        let binding = GraphBinding::from_program(&program, skeleton, rig, morph_names.len(), &clips)?;
         let constraints: Vec<_> = rig
             .into_iter()
             .flat_map(|rig| rig.constraints.iter())
@@ -217,7 +217,7 @@ impl BodyProfile {
             .collect();
         let pose = CharacterPose::try_new(skeleton, &[], &constraints, morph_weights)?;
         let pose = if rig.is_some() { pose.with_morph_names(morph_names) } else { pose };
-        let graph = FixedGraphHistory::new(Arc::new(binding), pose, options.seed, clips);
+        let graph = FixedGraphHistory::try_new(Arc::new(binding), pose, options.seed, clips)?;
         let (ik, spine) = match rig_binding {
             RigBinding::Cooked(rig) => {
                 let rig = rig.view();

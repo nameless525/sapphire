@@ -19,7 +19,7 @@ use crate::cue::{ArchivedCue, Cue};
 use crate::effect_sheet::{ArchivedEffectSheet, EffectSheet};
 use crate::effects::{ArchivedEffects, Effects};
 use crate::font::{ArchivedFont, ArchivedFontChains, Font, FontChains};
-use crate::graph::{AnimGraph, ArchivedAnimGraph};
+use crate::graph::v2::program::{ArchivedGraphProgram, GraphProgram};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
 use crate::mix::{ArchivedMix, Mix};
@@ -91,7 +91,7 @@ mod sealed {
     impl Sealed for crate::effects::Effects {}
     impl Sealed for crate::effect_sheet::EffectSheet {}
     impl Sealed for sapphire_moves::MoveSet {}
-    impl Sealed for crate::graph::AnimGraph {}
+    impl Sealed for crate::graph::v2::GraphProgram {}
     impl Sealed for sapphire_strings::StringTable {}
     impl Sealed for crate::font::Font {}
     impl Sealed for crate::font::FontChains {}
@@ -440,13 +440,13 @@ impl Asset for MoveSet {
     }
 }
 
-impl Asset for AnimGraph {
+impl Asset for GraphProgram {
     const KIND: AssetKind = AssetKind::AnimGraph;
-    type View<'a> = &'a ArchivedAnimGraph;
+    type View<'a> = &'a ArchivedGraphProgram;
 
-    unsafe fn view(bytes: &[u8]) -> &ArchivedAnimGraph {
-        // SAFETY: as for meshes: `AnimGraph::read` accepted these bytes, unchanged since.
-        unsafe { access_unchecked::<AnimGraph>(bytes) }
+    unsafe fn view(bytes: &[u8]) -> &ArchivedGraphProgram {
+        // SAFETY: as for meshes: `GraphProgram::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<GraphProgram>(bytes) }
             .expect("the envelope was checked when the graph was decoded")
     }
 }

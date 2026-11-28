@@ -40,10 +40,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_anim::{
-    AnimGraph, AnimStats, CharacterPose, Clip, ClipSource, CombatInput, GraphBinding, GraphInput,
-    GraphPlayer, LocomotionInput, Skeleton, evaluate_all, reuse_list,
+    AnimStats, CharacterPose, Clip, ClipSource, CombatInput, GraphBinding, GraphInput, GraphPlayer,
+    GraphProgram, LocomotionInput, Skeleton, evaluate_all, reuse_list,
 };
-use sapphire_assets::graph::StateMotion;
+use sapphire_assets::graph::v2::program::{BlendAxes, PoseOp};
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::{AssetId, Handle, LoadPriority, LoadState};
 use sapphire_core::Name;
@@ -277,7 +277,7 @@ struct Cast {
     _ambient: Handle<Ambient>,
     _meshes: Vec<Handle<Mesh>>,
     _skeletons: Vec<Handle<Skeleton>>,
-    _graph: Handle<AnimGraph>,
+    _graph: Handle<GraphProgram>,
     clips: Vec<(AssetId, Handle<Clip>)>,
     members: Vec<Member>,
     paths: Vec<Path>,
@@ -292,7 +292,7 @@ struct Loading {
     ambient: Handle<Ambient>,
     meshes: Vec<(AssetId, Handle<Mesh>)>,
     skeletons: Vec<Option<Handle<Skeleton>>>,
-    graph: Option<Handle<AnimGraph>>,
+    graph: Option<Handle<GraphProgram>>,
     clips: Option<Vec<(AssetId, Handle<Clip>)>>,
 }
 
@@ -399,7 +399,7 @@ impl Cast {
         let section = content.read(&loading.ambient).ok_or("the section isn't resident")?;
         let graph_handle = loading.graph.clone().expect("loaded");
         let graph = content.read(&graph_handle).ok_or("the graph isn't resident")?;
-        let graph = graph.to_owned_graph().map_err(|error| error.to_string())?;
+        let graph = graph.to_program().map_err(|error| error.to_string())?;
         let clips = loading.clips.clone().expect("loaded");
         let table = ClipTable::new(1, clips.iter().map(|(id, clip)| (*id, content.read(clip))));
         let mut members = Vec::with_capacity(section.cast.len());
@@ -423,8 +423,8 @@ impl Cast {
             };
             let head = find(cooked.head.as_str())?;
             let feet = [find(cooked.feet[0].as_str())?, find(cooked.feet[1].as_str())?];
-            let binding =
-                GraphBinding::new(&graph, skeleton, None, 0, &table).map_err(|error| failed(&error))?;
+            let binding = GraphBinding::from_program(&graph, skeleton, None, 0, &table)
+                .map_err(|error| failed(&error))?;
             let pose = CharacterPose::new(skeleton, &skin.binds, &[], Vec::new());
             let joints = FigureJoints::of_joints(&pose, head, 0.0, feet);
             let mut palette = vec![Affine3A::IDENTITY; pose.palette_len()];
@@ -454,9 +454,8 @@ impl Cast {
                 Path::new(&points, walk.closed, walk.pace.to_native())
             })
             .collect();
-        let seconds = |clip_name: &str| -> Option<f64> {
-            let id = graph.clips.iter().find(|clip| clip.name == clip_name)?.id;
-            let clip = table.clip(id)?;
+        let seconds = |clip: u16| -> Option<f64> {
+            let clip = table.clip(graph.clips.get(usize::from(clip))?.id)?;
             let rate = f64::from(clip.rate.to_native());
             (rate > 0.0).then(|| f64::from(clip.ticks.to_native()) / rate)
         };
@@ -468,8 +467,7 @@ impl Cast {
                     .gestures
                     .iter()
                     .filter_map(|gesture| {
-                        let entry = graph.combat.moves.iter().find(|entry| entry.name == gesture.as_str());
-                        let length = entry.and_then(|entry| seconds(&entry.clip));
+                        let length = graph.move_row(gesture.as_str()).and_then(|entry| seconds(entry.clip));
                         if length.is_none() {
                             tracing::warn!(target: LOG_TARGET, post = %post.name, %gesture, "the ambient graph plays no such gesture");
                         }
@@ -480,21 +478,28 @@ impl Cast {
                 Gestures { moves, every }
             })
             .collect();
-        // The walk's stride: the synced sample of the graph's first state that goes forward fastest, carried
-        // over its clip at the speed it was authored at.
-        let stride = graph
-            .locomotion
-            .states
-            .iter()
-            .find(|state| state.name == graph.locomotion.start)
-            .and_then(|state| match &state.plays {
-                StateMotion::Blend(space) => space
+        // The walk's stride: the synced sample of the base machine's first state's 2D blend that goes forward
+        // fastest, carried over its clip at the speed it was authored at.
+        let base = graph.layer_ops().iter().find_map(|op| match *op {
+            PoseOp::Machine { machine, .. } => graph.machines.get(usize::from(machine)),
+            _ => None,
+        });
+        let stride = base
+            .and_then(|machine| {
+                graph.state_ops(machine.start).iter().find_map(|op| match *op {
+                    PoseOp::Blend { blend, .. } => graph.blends.get(usize::from(blend)),
+                    _ => None,
+                })
+            })
+            .filter(|blend| matches!(blend.axes, BlendAxes::Two(..)))
+            .and_then(|blend| {
+                graph
                     .samples
+                    .get(blend.samples.range())?
                     .iter()
                     .filter(|sample| sample.sync && sample.at[1] > 0.0)
                     .max_by(|a, b| a.at[1].total_cmp(&b.at[1]))
-                    .and_then(|sample| Some(sample.at[1] * seconds(&sample.clip)? as f32)),
-                _ => None,
+                    .and_then(|sample| Some(sample.at[1] * seconds(sample.clip)? as f32))
             })
             .unwrap_or(0.0);
         Ok(Self {

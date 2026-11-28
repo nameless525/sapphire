@@ -119,9 +119,22 @@ pub enum Target {
     /// The fixed step, for a graph bound to a `FixedBody`, on the deterministic maths. What
     /// only presentation may run is refused, by path: an event (it goes to presentation's notifies,
     /// never the simulation), a parameter bound to a game slot (presentation fills those, and the fixed
-    /// step reads nothing presentation wrote) and a move's side variant (presentation chooses it from a
-    /// hit's direction, and the move's tables are baked from its row's clip).
+    /// step reads nothing presentation wrote), a parameter bound to traversal's mode (nothing binds it for
+    /// the fixed step until A15 and A16 do, and they lift the refusal) and a move's side variant
+    /// (presentation chooses it from a hit's direction, and the move's tables are baked from its row's
+    /// clip).
     Simulation,
+}
+
+impl Target {
+    /// What a graph's cook compiles it for, what live tuning compiles an edit for and what the editor's
+    /// check compiles for, so the three agree (M6 A5c, spec §5.13): the fixed step, for every graph. Only
+    /// the heroine's graph and the stock warrior's bind a `FixedBody` today, but the cook can't tell a
+    /// bound graph from another, and a `FixedBody`'s history refuses a program compiled for presentation,
+    /// while presentation plays one compiled for the fixed step as it is. So what only presentation may
+    /// run is refused in every graph, by its path, until the cook has a list of what a simulation binds
+    /// or a fixed-step program carries presentation-only tables the fixed step skips.
+    pub const COOKED: Self = Self::Simulation;
 }
 
 /// A run of a table: `start..start + len`.
@@ -755,6 +768,20 @@ impl GraphProgram {
                 && self.reactions.iter().all(|layer| clip(layer.clip) && mask(layer.mask)),
             "a layer's clip",
         )
+    }
+}
+
+impl ArchivedGraphProgram {
+    /// The program as plain data: what a character binds, once, when it loads. The asset server
+    /// checked these bytes with [`GraphProgram::read`].
+    pub fn to_program(&self) -> Result<GraphProgram, GraphError> {
+        rkyv::deserialize::<GraphProgram, rkyv::rancor::Error>(self)
+            .map_err(|error| GraphError::Damaged(error.to_string()))
+    }
+
+    /// The clips it names, by ID, read in place.
+    pub fn clip_ids(&self) -> impl Iterator<Item = AssetId> + '_ {
+        self.clips.iter().map(|clip| clip.id)
     }
 }
 

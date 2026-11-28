@@ -777,7 +777,7 @@ impl FightShow {
     /// The graph of the kind at `place` as it stands, bound to that kind: the one live tuning took, or the
     /// cooked one.
     fn binding(&self, place: usize, content: &Content) -> Result<sapphire_anim::GraphBinding, AppInitError> {
-        let graph = content.graph_document_of(self.graph_key(place)).map_err(AppInitError::msg)?;
+        let graph = content.graph_program_of(self.graph_key(place)).map_err(AppInitError::msg)?;
         self.binding_of(place, content, &graph).map_err(AppInitError::msg)
     }
 
@@ -786,13 +786,14 @@ impl FightShow {
         &self,
         place: usize,
         content: &Content,
-        graph: &sapphire_anim::AnimGraph,
+        graph: &sapphire_anim::GraphProgram,
     ) -> Result<sapphire_anim::GraphBinding, String> {
         let kind = self.assets.kinds.get(place);
         let skeleton = kind.and_then(|kind| content.read(kind.skeleton.as_ref()?));
         let skeleton = skeleton.ok_or("the enemy's skeleton isn't loaded")?;
         let clips = content.graph_clips_of(self.graph_key(place));
-        sapphire_anim::GraphBinding::new(graph, skeleton, None, 0, &clips).map_err(|error| error.to_string())
+        sapphire_anim::GraphBinding::from_program(graph, skeleton, None, 0, &clips)
+            .map_err(|error| error.to_string())
     }
 
     /// Loads until the weapon the playable kind `look` holds is on `renderer`, with its material and the maps
@@ -1954,17 +1955,18 @@ impl FightShow {
         }
     }
 
-    /// Takes an edited graph (M2 T2): its clips loaded, bound against `owner`, and from then on what binds
+    /// Takes an edited graph (M2 T2), compiled as the cook compiles it (`Target::COOKED`): its clips
+    /// loaded, bound against `owner`, and from then on what binds
     /// it, until a pack brings another. It takes effect at the next state's start
     /// (`GraphPlayer::replace`). What fails leaves what's playing alone, and an edit that comes while
     /// `owner` waits for the rest of a new version, whose pose has joints a binding may not, either ends
     /// the wait or waits with it (`Content::end_wait_on`).
     #[cfg(feature = "dev")]
-    pub fn replace_graph_document(
+    pub fn replace_graph_program(
         &mut self,
         scene: &mut Scene,
         owner: GraphKey,
-        graph: sapphire_anim::AnimGraph,
+        graph: sapphire_anim::GraphProgram,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &GpuContext,
@@ -1976,7 +1978,7 @@ impl FightShow {
             if content.character_kind() != Some(kind) {
                 return Err(format!("no character here draws as the playable kind {kind}"));
             }
-            return scene.replace_graph_document(graph, content, renderer, gpu);
+            return scene.replace_graph_program(graph, content, renderer, gpu);
         }
         let slot = self.graph_slots().find(|&slot| ENEMY_GRAPH.numbered(slot as u16) == owner);
         let on_slot = |warrior: &&Warrior| slot.is_some_and(|slot| self.graph_slot(warrior.kind) == slot);

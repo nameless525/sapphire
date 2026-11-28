@@ -130,7 +130,8 @@ impl<F: FnMut(&[u8])> Canonical<'_, F> {
 
     pub(crate) fn player(&mut self, player: &GraphPlayer) {
         self.layers(&player.layers);
-        // A version 1 graph, and any program with no machine layer above the base, keeps none.
+        // A program with no machine layer above the base, as every graph converted from version 1,
+        // keeps none, so its history's bytes are the ones version 1's player wrote.
         if player.graph.has_machine_layers() {
             for active in &player.layers.layer_states {
                 self.u16(active.state);

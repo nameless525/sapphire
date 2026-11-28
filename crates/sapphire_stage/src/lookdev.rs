@@ -59,7 +59,7 @@
 use std::sync::{Arc, mpsc};
 
 use sapphire_anim::{
-    AnimGraph, ArchivedSkeleton, CharacterPose, FaceLayer, FaceOrder, GraphBinding, GraphPlayer,
+    ArchivedSkeleton, CharacterPose, FaceLayer, FaceOrder, GraphBinding, GraphPlayer, GraphProgram,
     HeroineClearance, IkRig, Mouth, SpringBones,
 };
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
@@ -758,18 +758,18 @@ pub(crate) fn cutin_player(
 /// The graph of the playable kind `kind` as `content` has it now, bound to the kind as `content` has it now.
 /// Fails where [`held`] does, or if the graph isn't loaded or doesn't fit the kind.
 pub(crate) fn graph_binding(content: &Content, kind: AssetId) -> Result<GraphBinding, String> {
-    graph_binding_of(content, kind, &content.graph_document_of(GraphKey::playable(kind))?)
+    graph_binding_of(content, kind, &content.graph_program_of(GraphKey::playable(kind))?)
 }
 
 /// [`graph_binding`], for `graph` rather than the one `content` holds.
 pub(crate) fn graph_binding_of(
     content: &Content,
     kind: AssetId,
-    graph: &AnimGraph,
+    graph: &GraphProgram,
 ) -> Result<GraphBinding, String> {
     let Parts { mesh, rig, skeleton, .. } = Parts::of(content, kind)?;
     let clips = content.graph_clips_of(GraphKey::playable(kind));
-    GraphBinding::new(graph, skeleton, Some(rig), mesh.morph_targets.len(), &clips)
+    GraphBinding::from_program(graph, skeleton, Some(rig), mesh.morph_targets.len(), &clips)
         .map_err(|error| error.to_string())
 }
 

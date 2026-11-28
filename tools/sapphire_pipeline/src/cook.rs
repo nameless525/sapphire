@@ -158,7 +158,8 @@ use sapphire_assets::cue::{CUE_EXTENSION, Cue};
 use sapphire_assets::effect_sheet::{EffectSheet, SHEET_EXTENSION};
 use sapphire_assets::effects::{EFFECTS_EXTENSION, Effects};
 use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains};
-use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
+use sapphire_assets::graph::GRAPH_EXTENSION;
+use sapphire_assets::graph::v2::GraphProgram;
 use sapphire_assets::material::{AnyMaterialDocument, MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::mix::{MIX_EXTENSION, Mix};
@@ -500,7 +501,7 @@ impl Recipe {
             ImportSettings::AnimGraph(_) => Self {
                 importer: anim_graph::IMPORTER,
                 cooker: anim_graph::COOKER,
-                format: AnimGraph::VERSION,
+                format: GraphProgram::VERSION,
                 extension: GRAPH_EXTENSION,
             },
             ImportSettings::Ui(_) => Self {

@@ -6,9 +6,10 @@
 //! `SetValue` or `SetProperty` it amounts to, before whatever made it land. A command that's refused is kept out
 //! too, since it changed nothing.
 //!
-//! What a command leaves to write (the recording) is written once its frame is over, not once a command: a drag
-//! runs a command or two on each frame it moves, and a long session's file grows with each. A command run
-//! outside a frame (a script's, a test's) is a frame of its own.
+//! What a command leaves to write (the recording, the journal) is written once its frame is over, not once a
+//! command: a drag runs a command or two on each frame it moves, and a long session's file, or a large
+//! document's entry, is written whole each time. A command run outside a frame (a script's, a test's) is a frame
+//! of its own.
 
 use std::path::{Path, PathBuf};
 
@@ -25,27 +26,47 @@ use crate::preview::View;
 pub(super) struct Recording {
     path: PathBuf,
     script: Script,
-    /// Commands were kept since the file was last written.
+    /// Commands were kept since the file was last written whole.
     unwritten: bool,
-    /// How many times the file has been written.
+    /// The last write failed and has been warned of: a frame's end leaves it to the poll, once a second.
+    failing: bool,
+    /// How many times the file has been tried.
     writes: u64,
 }
 
 impl Recording {
     /// Writes the file whole, through a temporary and a rename, if it's behind. It isn't flushed to the disk: the
-    /// rename keeps it whole however the process ends, which is what a recording is kept against.
-    fn write(&mut self) {
-        if !std::mem::take(&mut self.unwritten) {
+    /// rename keeps it whole however the process ends, which is what a recording is kept against. A write that
+    /// fails leaves it behind, warns once until one lands, and is tried again.
+    pub(super) fn write(&mut self) {
+        if !self.unwritten {
             return;
         }
         self.writes += 1;
         let text = self.script.relative_to(&self.path).to_text();
         let path = &self.path;
-        if let Err(error) =
-            Temporary::beside_unflushed(path, &text).and_then(|temporary| temporary.replace(path))
-        {
-            tracing::warn!(%error, path = %path.display(), "the session's commands weren't written");
+        match Temporary::beside_unflushed(path, &text).and_then(|temporary| temporary.replace(path)) {
+            Ok(()) => {
+                self.unwritten = false;
+                if std::mem::take(&mut self.failing) {
+                    tracing::info!(path = %path.display(), "the session's commands are written again");
+                }
+            }
+            Err(error) => {
+                if !std::mem::replace(&mut self.failing, true) {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "the session's commands weren't written, and are tried again once a second"
+                    );
+                }
+            }
         }
+    }
+
+    /// Whether the last write failed.
+    pub(super) fn failing(&self) -> bool {
+        self.failing
     }
 }
 
@@ -89,10 +110,6 @@ impl Editor {
         if self.depth == 0 {
             self.standings.clear();
         }
-        if self.depth == 0 {
-            // After each step, refused or not: a refusal can leave a gesture's middle behind it.
-            self.journal_step();
-        }
         let refused = (self.troubles != troubles)
             .then(|| self.notice.as_ref().map_or_else(|| "refused".to_owned(), |notice| notice.text.clone()));
         if self.depth == 0 && refused.is_none() {
@@ -106,18 +123,25 @@ impl Editor {
             };
             self.record(command);
         }
-        // Refused or not: a refused command can have landed a typed value first.
+        // Refused or not: a refused command can have landed a typed value first, or left a gesture's middle.
         if self.depth == 0 && !self.in_frame {
             self.end_frame();
         }
         refused.map_or(Ok(()), Err)
     }
 
-    /// Writes what the frame's commands left to write. A window's frame calls it once its commands have run; a
-    /// command run outside a frame, when it's done.
+    /// Writes what the frame's commands left to write: the recording, and the journal's entry of each document
+    /// whose text they changed, so a gesture's entry is written once a frame of it at most. A window's frame calls
+    /// it once its commands have run and what was typed has landed; a command run outside a frame, when it's done.
+    /// What's failing is left to the poll inside a window's frame, and tried again by a command run outside one.
     pub(super) fn end_frame(&mut self) {
-        if let Some(recording) = &mut self.recording {
+        if let Some(recording) = &mut self.recording
+            && !(self.in_frame && recording.failing())
+        {
             recording.write();
+        }
+        if !(self.in_frame && self.journal_failing) {
+            self.journal_step();
         }
     }
 
@@ -160,7 +184,8 @@ impl Editor {
         let commands = opened.into_iter().map(Command::Open).collect();
         // From where it's started, so the documents are named from the script's folder however it was named.
         let path = std::path::absolute(&path).unwrap_or(path);
-        let mut recording = Recording { path, script: Script::new(commands), unwritten: true, writes: 0 };
+        let mut recording =
+            Recording { path, script: Script::new(commands), unwritten: true, failing: false, writes: 0 };
         recording.write();
         self.recording = Some(recording);
     }

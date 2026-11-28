@@ -241,7 +241,8 @@ where
 
     /// Which text it holds: a number no other text of any document in this process has had, taken anew by every
     /// change, so what's made from its value needs making again only when this has moved (M6 T9a's pick index),
-    /// even across a close and an open, or a recovery, under the same ID.
+    /// even across a close and an open, or a recovery, under the same ID. A [`keep_mine`](Self::keep_mine) takes
+    /// one too: the text's the same, but what the journal keeps it unsaved against isn't.
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
@@ -1123,6 +1124,8 @@ where
         self.end_gesture();
         self.disk = disk.into();
         self.saved_at = None;
+        // The text's the same, but what it's unsaved against isn't: the journal's entry is written again.
+        self.revision = next_revision();
     }
 
     /// Does `record` again on the text as it is now, by its path and its values.

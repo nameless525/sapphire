@@ -266,8 +266,9 @@ impl Rounds {
         }
     }
 
-    /// Whether the backend overlaps its passes, as a round's GPU reading says (Metal's): then the verdicts judge a
-    /// pass row on its frames with no upload in flight and the prepasses and shadows as one depth-only row.
+    /// Whether the backend overlaps its passes, as a round's GPU reading says (Metal's, unless the passes ran
+    /// serially, M6 B2): then the verdicts judge a pass row on its frames with no upload in flight and the
+    /// prepasses and shadows as one depth-only row.
     fn overlaps(&self) -> bool {
         self.rounds.iter().any(|round| round.log.gpu_reading.as_ref().is_some_and(|reading| reading.overlaps))
     }
@@ -390,7 +391,8 @@ pub fn report(inputs: &Inputs<'_>) -> (String, Vec<String>) {
          landed when, so they can differ between rounds, each round's shown and a round over its budget marked. \
          {done} of {} units complete. **This is a Mac:** none of spec §3.1's devices; every figure \
          is this machine at a tier's settings, size and cook, and each phone figure is still owed to a phone. On \
-         Metal passes overlap: there of the GPU rows only the frame is exact, a pass's figure is what it added, and the verdicts judge the \
+         Metal passes overlap, unless a run submits each alone (`--serial-passes`, its log says which): there of \
+         the GPU rows only the frame is exact, a pass's figure is what it added, and the verdicts judge the \
          prepasses and shadows as one depth-only row and a pass on the frames with no upload in flight (the exit \
          run's rules), a GPU table printing a pass row's figure on those frames, from the round its verdict \
          reads, beside its every frame. Where they don't overlap, every GPU row is judged on every frame, the \
@@ -2318,6 +2320,55 @@ mod tests {
         assert!(
             line(&out, "Gpu main")
                 .starts_with("| Gpu main | 4.000 / **5.100** / **6.000** [4.9] (r1) | none |"),
+            "{out}"
+        );
+    }
+
+    /// A serial run on Metal (`--serial-passes`, M6 B2) logs that its passes don't overlap (fixed after B2's
+    /// review): each pass row is then judged on every frame, its frames with no upload in flight read by nothing,
+    /// and the prepasses and shadows apart, `gpu depth only` not judged; its GPU table has no verdict column, and
+    /// prints the depth-only row unmarked though it is over its budget (the backfill fix's review).
+    #[test]
+    fn a_serial_run_is_judged_on_every_frame_and_its_depth_rows_apart() {
+        let serial = [
+            overlapped_line("gpu frame", [9_000.0, 10_000.0, 12_000.0], None, 14_000),
+            overlapped_line("gpu prepasses", [1_600.0, 1_700.0, 2_000.0], Some([1_300.0, 1_400.0]), 1_500),
+            overlapped_line("gpu shadows", [900.0, 1_000.0, 1_500.0], Some([800.0, 900.0]), 2_000),
+            overlapped_line("gpu depth only", [2_500.0, 3_700.0, 4_200.0], Some([2_100.0, 2_300.0]), 3_500),
+            overlapped_line("gpu main", [4_000.0, 5_100.0, 6_000.0], Some([3_900.0, 4_700.0]), 4_900),
+            "x INFO sapphire::sandbox: fight gpu reading phase=\"gpu\" backend=\"metal\" overlaps=false \
+             timed_frames=1000 no_upload_frames=600 in_flight_pct=40.0 taa_slow_in_flight_pct=0.0 \
+             taa_slow_no_upload_pct=0.0 post_slow_in_flight_pct=0.0 post_slow_no_upload_pct=0.0 slow_frames=90 \
+             lock=0.050 lock_period_us=16667.0\n"
+                .to_owned(),
+        ]
+        .concat();
+        let fight = rounds(&[&serial]);
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let run = manifest.run("district-fight").expect("the fight");
+        let tier = manifest.tier("desktop-low").expect("a tier").clone();
+        let findings = verdict::judge(1, run, "district-fight", &tier, &fight);
+        assert_eq!(
+            findings.failed,
+            [
+                "district-fight gpu prepasses p95 1.700 ms over 1.500 ms",
+                "district-fight gpu main p95 5.100 ms over 4.900 ms"
+            ],
+            "every frame's p95, the prepasses apart from the shadows"
+        );
+        assert_eq!(findings.judged, 4, "the frame, the prepasses, the shadows and main: {findings:?}");
+        let mut out = String::new();
+        timed_table(&mut out, &fight, None, "baseline", "gpu", |_| true);
+        assert!(out.contains("| Row | Read | baseline | Over |") && !out.contains("no upload"), "{out}");
+        assert!(
+            out.contains(
+                "| Gpu depth only | 2.500 / 3.700 / 4.200 [3.5] (r1); not judged: Gpu prepasses and Gpu shadows \
+                 are judged apart | none |  |  |"
+            ),
+            "over its budget, unmarked, as no verdict reads it: {out}"
+        );
+        assert!(
+            out.contains("| Gpu prepasses | **1.600** / **1.700** / **2.000** [1.5] (r1) | none | p50"),
             "{out}"
         );
     }

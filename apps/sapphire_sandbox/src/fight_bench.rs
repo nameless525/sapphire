@@ -579,13 +579,22 @@ fn slow_shares(values: &[(Duration, bool)]) -> (f64, f64) {
     (share(true), share(false))
 }
 
+/// Whether a frame's passes can overlap on the GPU (M5 Z2): Metal runs them side by side, but not under
+/// `--serial-passes` (M6 B2), which submits each alone and waits for it, so none overlaps another (fixed after B2's
+/// review, M6 backfill). The report reads it to judge the pass rows on the frames with no upload in flight and the
+/// prepasses and shadows as one, or every row on every frame.
+fn passes_overlap(backend: wgpu::Backend, serial: bool) -> bool {
+    backend == wgpu::Backend::Metal && !serial
+}
+
 /// The GPU phase's reading (M5 Z2), for the exit run's rules on a backend that overlaps its passes: the
-/// backend; the timed frames and those with no upload in flight, which its pass rows are read on; the uploads'
-/// cost, the share of frames slow in TAA and in post with an upload in flight and without; and the display's
-/// 60 Hz lock over the frames slow in either, which voids a round. The counts are of the frames the rows read; the
-/// shares and the lock are the sitting's, read over every timed frame that isn't a restart, `--bench-ticks` or
-/// not (M6 B5): a display's beat is the machine's, and the 50 frames of a cut-in hold too few slow ones to show it.
-fn gpu_reading(backend: wgpu::Backend, frames: &[&Traced], in_flight: &[bool]) {
+/// backend and whether its passes overlapped (not where `serial` ran them alone); the timed frames and those with
+/// no upload in flight, which its pass rows are read on; the uploads' cost, the share of frames slow in TAA and in
+/// post with an upload in flight and without; and the display's 60 Hz lock over the frames slow in either, which
+/// voids a round. The counts are of the frames the rows read; the shares and the lock are the sitting's, read over
+/// every timed frame that isn't a restart, `--bench-ticks` or not (M6 B5): a display's beat is the machine's, and
+/// the 50 frames of a cut-in hold too few slow ones to show it.
+fn gpu_reading(backend: wgpu::Backend, serial: bool, frames: &[&Traced], in_flight: &[bool]) {
     let (timed, sitting) = reading_frames(frames);
     let quiet = timed.iter().filter(|&&at| !in_flight[at]).count();
     let pass = |read: fn(&GpuTimes) -> Option<Duration>| -> Vec<(usize, Duration)> {
@@ -613,7 +622,7 @@ fn gpu_reading(backend: wgpu::Backend, frames: &[&Traced], in_flight: &[bool]) {
         target: LOG_TARGET,
         phase = Phase::Gpu.name(),
         backend = backend.to_str(),
-        overlaps = backend == wgpu::Backend::Metal,
+        overlaps = passes_overlap(backend, serial),
         timed_frames = timed.len(),
         no_upload_frames = quiet,
         in_flight_pct = format_args!("{:.1}", 100.0 * (timed.len() - quiet) as f64 / timed.len().max(1) as f64),
@@ -1119,7 +1128,8 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             }
         }
         if phase == Phase::Gpu {
-            gpu_reading(run.stage.gpu.caps().backend(), &frames().collect::<Vec<_>>(), &in_flight);
+            let backend = run.stage.gpu.caps().backend();
+            gpu_reading(backend, options.serial_passes, &frames().collect::<Vec<_>>(), &in_flight);
             if run.waits.overlaps() {
                 overlap::log(phase.name(), quality.tier.id.name(), &overlap_samples(frames()));
             }
@@ -1687,6 +1697,15 @@ mod tests {
         assert!(!Excluded::Untimed.applies(Phase::Cpu, true), "a CPU phase times no GPU");
         assert!(!Excluded::Outside.applies(Phase::Gpu, false), "a run with no ticks draws none outside them");
         assert!(Excluded::Restart.applies(Phase::Cpu, false) && Excluded::Untimed.applies(Phase::Gpu, false));
+    }
+
+    /// A frame's passes overlap only on Metal, and not when they run serially (M6 B2's review): a serial run's GPU
+    /// reading says so, and the report then judges each pass row on every frame and the prepasses and shadows apart.
+    #[test]
+    fn passes_run_serially_overlap_nothing() {
+        assert!(passes_overlap(wgpu::Backend::Metal, false));
+        assert!(!passes_overlap(wgpu::Backend::Metal, true), "each pass alone on the GPU");
+        assert!(!passes_overlap(wgpu::Backend::Vulkan, false) && !passes_overlap(wgpu::Backend::Dx12, true));
     }
 
     /// The GPU reading counts the frames the rows read, and reads the display's lock over the sitting's (M6 B5): a

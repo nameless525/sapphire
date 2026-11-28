@@ -14,6 +14,7 @@ use egui_kittest::{Harness, Node};
 use sapphire_assets::MemoryPackSource;
 use sapphire_core::cvar::{Cvar, CvarRegistry};
 use sapphire_editor::capture::{self, Textures};
+use sapphire_editor::commands::{Command, SCRIPT_SUFFIX};
 use sapphire_editor::edits;
 use sapphire_editor::screen::{Aspect, StandIn};
 use sapphire_editor::shell::Pane;
@@ -1029,6 +1030,169 @@ fn the_sequencer_plays_and_scrubs_its_playhead() {
     harness.run_steps(1);
     assert_eq!(harness.state().playhead(), Some(120), "the middle of four seconds");
     assert_eq!(text_of(&harness), SQUARE_LOOK, "scrubbing edits nothing");
+}
+
+/// The square's look in the sequencer, and where on its tracks a time of a lane is: the lanes are the camera's,
+/// its focus, exposure's and the vignette's, then the cues' and the subtitles'.
+fn on_the_square_look(dir: &TestDir) -> (Harness<'static, Editor>, impl Fn(usize, f32) -> egui::Pos2) {
+    let path = dir.write("s/square_look.timeline.ron", SQUARE_LOOK);
+    let mut harness = harness(&path);
+    harness.run_steps(2);
+    let tracks = harness.get_by_label("Tracks").rect();
+    let names = 120.0;
+    let at = move |row: usize, seconds: f32| {
+        egui::pos2(
+            tracks.min.x + names + (tracks.width() - names) * seconds / 4.0,
+            tracks.min.y + 18.0 * (row as f32 + 0.5),
+        )
+    };
+    (harness, at)
+}
+
+/// M6 T16a: a key dragged on the sequencer moves to whole frames, writing its time alone, as one step of undo.
+#[test]
+fn a_key_dragged_in_the_sequencer_writes_its_time_alone() {
+    let dir = TestDir::new("sequencer_drag");
+    let (mut harness, at) = on_the_square_look(&dir);
+    let (from, to) = (at(2, 1.0), at(2, 1.5));
+    harness.hover_at(from);
+    harness.run_steps(2);
+    harness.drag_at(from);
+    harness.step();
+    for part in 1..=4 {
+        harness.hover_at(from.lerp(to, part as f32 / 4.0));
+        harness.step();
+    }
+    harness.drop_at(to);
+    harness.run_steps(3);
+    let moved = SQUARE_LOOK.replacen("(at: 1.0, value: -0.35)", "(at: 1.5, value: -0.35)", 1);
+    assert_eq!(text_of(&harness), moved, "the exposure's second key, at frame 90");
+    assert_eq!(harness.state().playhead(), Some(0), "a drag of a key doesn't scrub");
+    undo(&mut harness);
+    assert_eq!(text_of(&harness), SQUARE_LOOK, "one undo for the drag");
+}
+
+/// M6 T16a: a press on a lane's name picks it, Add key adds the value it holds at the playhead, selected, and
+/// Remove key takes it away again.
+#[test]
+fn a_key_is_added_at_the_playhead_and_removed() {
+    let dir = TestDir::new("sequencer_add");
+    let (mut harness, at) = on_the_square_look(&dir);
+    harness.state_mut().scrub_to(150);
+    let name = egui::pos2(at(2, 0.0).x - 60.0, at(2, 0.0).y);
+    harness.drag_at(name);
+    harness.step();
+    harness.drop_at(name);
+    harness.run_steps(2);
+    harness.get_by_label("Add key").click();
+    harness.run_steps(2);
+    let added = SQUARE_LOOK.replacen(
+        "(at: 1.0, value: -0.35), ",
+        "(at: 1.0, value: -0.35), (at: 2.5, value: -0.35, ease: Linear), ",
+        1,
+    );
+    assert_eq!(text_of(&harness), added, "the exposure it holds at 2.5 s");
+    harness.get_by_label("Remove key").click();
+    harness.run_steps(2);
+    assert_eq!(text_of(&harness), SQUARE_LOOK, "and gone again");
+}
+
+/// M6 T16a: an undo or a save with a key still held ends the drag's gesture, and the rest of the drag is one step
+/// more, not a step a frame.
+#[test]
+fn a_drag_held_through_an_undo_or_a_save_keeps_one_step_for_the_rest() {
+    let dir = TestDir::new("sequencer_drag_undo");
+    let (mut harness, at) = on_the_square_look(&dir);
+    let moved = SQUARE_LOOK.replacen("(at: 1.0, value: -0.35)", "(at: 1.5, value: -0.35)", 1);
+    let (from, to) = (at(2, 1.0), at(2, 1.5));
+    let drag = |harness: &mut Harness<'static, Editor>, between: Command| {
+        harness.hover_at(from);
+        harness.run_steps(2);
+        harness.drag_at(from);
+        harness.step();
+        for part in 1..=2 {
+            harness.hover_at(from.lerp(to, part as f32 / 8.0));
+            harness.step();
+        }
+        harness.state_mut().run(between).expect("it runs");
+        for part in 3..=8 {
+            harness.hover_at(from.lerp(to, part as f32 / 8.0));
+            harness.step();
+        }
+        harness.drop_at(to);
+        harness.run_steps(3);
+    };
+    drag(&mut harness, Command::Undo);
+    assert_eq!(text_of(&harness), moved, "the key where it was let go");
+    undo(&mut harness);
+    assert_eq!(text_of(&harness), SQUARE_LOOK, "one undo for the drag after the undo");
+
+    drag(&mut harness, Command::Save);
+    assert_eq!(text_of(&harness), moved);
+    undo(&mut harness);
+    let partway = text_of(&harness);
+    assert!(partway != moved && partway != SQUARE_LOOK, "back to where it was saved: {partway}");
+    undo(&mut harness);
+    assert_eq!(text_of(&harness), SQUARE_LOOK, "one undo for the drag up to the save");
+}
+
+/// M6 T16a: a key added after Play and Pause is recorded at the frame it went in at, so the recording replays it
+/// there, with no passes between to play it.
+#[test]
+fn a_key_added_after_play_and_pause_is_recorded_at_its_frame() {
+    let dir = TestDir::new("sequencer_add_recorded");
+    let (mut harness, at) = on_the_square_look(&dir);
+    harness.state_mut().record_to(dir.0.join(format!("session{SCRIPT_SUFFIX}")));
+    harness.get_by_label("Play").click();
+    harness.run_steps(3);
+    harness.get_by_label("Pause").click();
+    harness.run_steps(2);
+    let frame = harness.state().playhead().expect("a timeline");
+    assert!(frame > 0, "it played");
+    let name = egui::pos2(at(2, 0.0).x - 60.0, at(2, 0.0).y);
+    harness.drag_at(name);
+    harness.step();
+    harness.drop_at(name);
+    harness.run_steps(2);
+    harness.get_by_label("Add key").click();
+    harness.run_steps(2);
+    let added = text_of(&harness);
+    assert_ne!(added, SQUARE_LOOK, "a key went in");
+    let script = harness.state().recorded().expect("recorded").clone();
+    assert!(
+        script.commands.iter().any(|command| matches!(command, Command::AddKey { at, .. } if *at == frame)),
+        "at frame {frame}: {script:?}"
+    );
+    let mut again = Editor::new(Options::default());
+    again.run_script(&script).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(again.current().expect("the timeline").text(), added, "replayed where it landed");
+}
+
+/// M6 T16a: a key held while the current document goes to one that isn't a timeline lets go, closing its drag's
+/// gesture, so what's done on the other isn't part of it.
+#[test]
+fn a_key_held_as_its_timeline_goes_ends_its_drag() {
+    let dir = TestDir::new("sequencer_drag_away");
+    let cue = dir.write("a/hit_heavy.cue.ron", CUE);
+    let (mut harness, at) = on_the_square_look(&dir);
+    let timeline = dir.0.join("s/square_look.timeline.ron");
+    let (from, to) = (at(2, 1.0), at(2, 1.5));
+    harness.hover_at(from);
+    harness.run_steps(2);
+    harness.drag_at(from);
+    harness.step();
+    harness.hover_at(from.lerp(to, 0.5));
+    harness.step();
+    assert!(harness.state().current().expect("the timeline").in_gesture(), "the drag under way");
+    harness.state_mut().open(&cue);
+    harness.run_steps(2);
+    harness.state_mut().open(&timeline);
+    harness.run_steps(1);
+    assert!(!harness.state().current().expect("the timeline").in_gesture(), "its gesture closed as it went");
+    harness.drop_at(to);
+    harness.run_steps(2);
+    undo(&mut harness);
+    assert_eq!(text_of(&harness), SQUARE_LOOK, "one undo for what it moved");
 }
 
 const CHARACTER_SCREEN: &str = include_str!("../../../content/ui/character.ui.ron");

@@ -118,6 +118,53 @@ fn a_broken_material_shows_its_refusal_by_field() {
     assert!(tree.packs().join("shared.spack").is_file(), "the clean cook packed");
 }
 
+/// M6 T16a: the sequencer's keys through the real cook. A face key added by its preset name cooks clean; a subtitle
+/// added with a Fluent key the string tables don't hold is refused by the cook on its field, and one they hold cooks
+/// clean again.
+#[test]
+#[ignore = "needs this tree's pipeline: cargo xtask content"]
+fn the_sequencers_keys_cook_by_preset_and_by_the_tables_keys() {
+    let tree = Tree::new("sequencer_keys");
+    let content = root().join("content");
+    let copy = |from: &str, to: &str| {
+        tree.write(to, &fs::read_to_string(content.join(from)).expect("a shipped source"));
+    };
+    for file in ["court_gate.timeline.ron", "court_gate.timeline.ron.meta"] {
+        copy(&format!("zones/lantern_ward/{file}"), &format!("content/gate/{file}"));
+    }
+    for file in ["en.locale.ron", "en.locale.ron.meta", "en/cutscenes.ftl", "en/cutscenes.ftl.meta"] {
+        copy(&format!("loc/{file}"), &format!("content/loc/{file}"));
+    }
+    let gate = tree.0.join("content/gate/court_gate.timeline.ron");
+    let mut editor = Editor::new(Options {
+        file: Some(gate.clone()),
+        content: Some(tree.packs()),
+        link: Some("127.0.0.1:9".parse().expect("an address")),
+        pipeline: Some(pipeline()),
+        game: None,
+    });
+    tree.run(&mut editor, r#"Scrub(60), AddKey(lane: Faces("hero"), name: Some("surprised"), at: 60), Save"#);
+    assert_eq!(editor.cook_refusal(), None, "{:?}", editor.cook_refusal());
+    assert_eq!(editor.cooks_landed(), 1, "the face cooked clean");
+
+    tree.run(
+        &mut editor,
+        r#"Scrub(500), AddKey(lane: Subtitles, name: Some("subtitle-court-gate-unwritten"), at: 500), Save"#,
+    );
+    let refusal = editor.cook_refusal().expect("the cook refused it").clone();
+    assert_eq!(refusal.field.as_deref(), Some("subtitles[3].key"), "{refusal:?}");
+    let source = refusal.source.as_deref().expect("a source").canonicalize().expect("there");
+    assert_eq!(source, gate.canonicalize().expect("there"));
+    assert!(refusal.message.contains("locale `en`"), "{}", refusal.message);
+
+    tree.run(
+        &mut editor,
+        r#"SetProperty(path: "subtitles[3].key", value: "\"subtitle-court-gate-answer\""), Save"#,
+    );
+    assert_eq!(editor.cook_refusal(), None, "{:?}", editor.cook_refusal());
+    assert_eq!(editor.cooks_landed(), 2);
+}
+
 /// Every file the editor's cook of `content/` writes is the bytes `cargo xtask content --cook editor` wrote: the same
 /// pipeline with the same arguments, into packs of its own.
 #[test]

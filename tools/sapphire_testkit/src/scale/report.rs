@@ -15,7 +15,8 @@
 //! - **Work, waits and frames left out** (M6 B3): beside the CPU rows, each span's wall time (the CPU frame, its
 //!   record, its wait for the GPU) beside the frame thread's CPU time over it, from one round, and that round's
 //!   frames by kind of core; then every round's frames that no row reads (restarts, untimed GPU frames, a plain
-//!   bench's warm-up) as rows of their own. A log from before them prints neither.
+//!   bench's warm-up, and since B3's review GPU frames with a pair dropped, which `gpu frame` can't read) as rows
+//!   of their own. A log from before them prints neither.
 //! - **Counts** of a counting run are exact: every round must read the same. A count that differs is shown with
 //!   each round's, each marked against its budget, and on a run of counts alone that isn't streaming it fails
 //!   the report, as the scale lane would; a timed walk's may differ, and a round over its budget stays marked.
@@ -654,6 +655,11 @@ fn section(
                 timed_table(out, rounds, beside, beside_name, "gpu", |row| row.starts_with("gpu "));
                 copies_note(out, rounds);
                 overlap_table(out, rounds);
+                // A run that reads no CPU rows prints its left-out frames here (fixed after the backfill fix's
+                // review): a `[Gpu]` pair's untimed and incomplete frames are said too.
+                if !run.read.contains(&Read::Cpu) {
+                    excluded_table(out, rounds);
+                }
             }
             Read::Counts => {
                 let budgeted = budgeted_counts(rounds);
@@ -832,10 +838,12 @@ fn spans_table(out: &mut String, rounds: &Rounds) {
         "Work and waits (cpu phase): each span's wall time beside the frame thread's CPU time over it, p50 / p95 / \
          worst, from the round its wall row is judged on. What the wall has over the CPU, the thread spent off its \
          core: waiting on the GPU, the encoders' workers or the driver, or set aside by the machine's other work. \
-         The bench draws offscreen, so its GPU wait stands where a window's acquire would block on a GPU behind \
-         it.\n"
+         The last column is the wall's median less the on-core median, a difference of medians, not the median \
+         frame's time off its core, so it can read 0 where most frames wait. The bench draws offscreen, so its GPU \
+         wait stands where a window's acquire would block on a GPU behind it. A thread's CPU time is read on macOS, \
+         iOS, Linux and Android; Windows reads none, so there every on-core figure is not read.\n"
     );
-    let _ = writeln!(out, "| Span | Wall | On core | Off core at p50 |");
+    let _ = writeln!(out, "| Span | Wall | On core | Wall p50 less on-core p50 |");
     let _ = writeln!(out, "|---|---|---|---|");
     let mut judged_frame = None;
     for (wall, on_core) in SPANS {
@@ -893,9 +901,9 @@ fn spans_table(out: &mut String, rounds: &Rounds) {
 }
 
 /// The frames each round's phases left out of every row (M6 B3), by reason: a fight's restarts, its frames outside
-/// `--bench-ticks` (M6 B5), the GPU phase's frames whose timings never came back and a plain bench's warm-up, each
-/// a row with its count, its CPU frame and what it allocated. Nothing where no round logged them (a log from before
-/// they were).
+/// `--bench-ticks` (M6 B5), the GPU phase's frames whose timings never came back or came back short (of `gpu frame`
+/// alone) and a plain bench's warm-up, each a row with its count, its CPU frame and what it allocated. Nothing where
+/// no round logged them (a log from before they were).
 fn excluded_table(out: &mut String, rounds: &Rounds) {
     if !rounds.rounds.iter().any(|round| !round.log.excluded.is_empty()) {
         return;
@@ -904,7 +912,9 @@ fn excluded_table(out: &mut String, rounds: &Rounds) {
         out,
         "Frames left out of the rows: a frame that starts a fight over (or a walk's tour), one a fight drew outside \
          the ticks its unit reads (`outside`, since M6 B5, a unit with `--bench-ticks` only), in the GPU phase one \
-         whose timings never came back, and a plain bench's warm-up, each phase's by reason, every round. Times in \
+         whose timings never came back (`untimed`) or came back with a pair dropped, which `gpu frame` can't read \
+         though a pass row reads its passes that decoded (`incomplete`, since B3's review), and a plain bench's \
+         warm-up, each phase's by reason, every round. Times in \
          ms, p50 / worst, a fight's worst frame's tick and its time on the thread's core beside it; a restart's own time within its frame, which \
          exit test 4 proposes holding under 1 ms a frame (shown, judged on nothing), and since M6 J2 the most it \
          allocated on the frame's thread; allocations of the whole frames, all of them and the most in one, the \
@@ -2449,6 +2459,11 @@ mod tests {
             "| Gpu wait | 3.000 / 4.000 / 6.000 (r1) | 0.020 / 0.040 / 0.080 | 2.980 |"
         );
         assert!(out.contains("| Performance | 980 | 98.0% | 0.990 / 1.400 | 0.900 / 1.000 |"), "{out}");
+        assert!(
+            out.contains("| Span | Wall | On core | Wall p50 less on-core p50 |")
+                && out.contains("difference of medians"),
+            "the last column says what it is (B3's review): {out}"
+        );
         assert!(out.contains("CPU frames by the kind of core they ended on (r2)"), "{out}");
         let mut table = String::new();
         timed_table(&mut table, &fight, None, "baseline", "cpu", |row| {
@@ -2472,6 +2487,9 @@ mod tests {
                    restart_us_p50=\"7850.0\" restart_us_worst=\"7880.0\" allocations=22200 allocations_worst=11100 \
                    bytes=900000 step_allocations=0\n\
                    x INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"untimed\" frames=0\n\
+                   x INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"incomplete\" frames=1 \
+                   cpu_us_p50=\"2100.0\" cpu_us_worst=\"2100.0\" worst_tick=480 on_core_us_worst=\"1900.0\" \
+                   restart_us_p50=\"0.0\" restart_us_worst=\"0.0\" allocations=40 allocations_worst=40\n\
                    x INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"restart\" frames=3 \
                    cpu_us_p50=\"1500.0\" cpu_us_worst=\"2500.0\" worst_tick=1 restart_us_p50=\"4.6\" \
                    restart_us_worst=\"21.0\" restart_allocations_worst=4 allocations=19692 allocations_worst=8754\n\
@@ -2488,6 +2506,10 @@ mod tests {
         );
         assert!(out.contains("| r1 | gpu | untimed | none |"), "{out}");
         assert!(
+            out.contains("| r1 | gpu | incomplete | 1 | 2.100 / 2.100 @ tick 480 | 1.900 |  | 40 / 40 |"),
+            "a frame with a pair dropped (B3's review): {out}"
+        );
+        assert!(
             out.contains(
                 "| r1 | gpu | restart | 3 | 1.500 / 2.500 @ tick 1 | not read | 0.005 / 0.021, 4 allocated on its \
                  thread | 19,692 / 8,754 |"
@@ -2501,6 +2523,30 @@ mod tests {
         let mut none = String::new();
         excluded_table(&mut none, &rounds(&[&fight_round(1_400.0, [3_000.0, 12_000.0, 13_000.0], None)]));
         assert!(none.is_empty(), "{none}");
+    }
+
+    /// A run that reads the GPU rows alone (a `[Gpu]` or `[Gpu, Cast]` unit or probe) prints its frames left out,
+    /// as a run reading the CPU rows does, and a run reading both prints them once (the backfill fix's review).
+    #[test]
+    fn a_gpu_runs_left_out_frames_print_too() {
+        let log = "x INFO sapphire::sandbox: fight excluded phase=\"gpu\" reason=\"incomplete\" frames=2 \
+                   cpu_us_p50=\"2100.0\" cpu_us_worst=\"2300.0\" worst_tick=480 on_core_us_worst=\"1900.0\" \
+                   restart_us_p50=\"0.0\" restart_us_worst=\"0.0\" allocations=40 allocations_worst=40\n";
+        let manifest = ScaleBench::parse(include_str!("../../../../bench/scale.ron")).unwrap();
+        let tier = manifest.tier("desktop-low").expect("a tier").clone();
+        let left_out = |name: &str| {
+            let run = manifest.run(name).expect("the run");
+            let mut out = String::new();
+            section(&mut out, &mut Vec::new(), &manifest, run, &tier, &rounds(&[log]), None);
+            (run.read.clone(), out.matches("Frames left out of the rows").count(), out)
+        };
+        let (read, tables, out) = left_out("character-lods");
+        assert!(!read.contains(&Read::Cpu) && read.contains(&Read::Gpu), "{read:?}");
+        assert_eq!(tables, 1, "{out}");
+        assert!(out.contains("| r1 | gpu | incomplete | 2 | 2.100 / 2.300 @ tick 480 | 1.900 |"), "{out}");
+        let (read, tables, out) = left_out("district-fight");
+        assert!(read.contains(&Read::Cpu) && read.contains(&Read::Gpu), "{read:?}");
+        assert_eq!(tables, 1, "once, under the CPU rows: {out}");
     }
 
     /// An overlapped phase's verdict and queue print under the run (M6 B7), and nothing where no round overlapped.

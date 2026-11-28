@@ -28,7 +28,8 @@
 //!
 //! **Frames left out are rows of their own** (M6 B3): a frame that starts a fight over, one drawn at a tick outside
 //! `--bench-ticks` (`outside`, M6 B5, logged only by a run with them) and in the GPU phase one whose timings never
-//! came back are in no row's spread; each phase logs them by reason (`fight excluded`) with
+//! came back are in no row's spread, and one whose timings came back short, a pair dropped, in no `gpu frame`'s
+//! (`incomplete`, fixed after B3's review); each phase logs them by reason (`fight excluded`) with
 //! their count, their CPU frame's median and worst, a restart's own time and what it allocated on the frame's
 //! thread (M6 J2, where counts are kept by thread), and what the frames allocated, the warm-up pool's work beside
 //! them included. **The thread's CPU time** (`sapphire_platform::thread_cpu_time`) is read beside the wall time
@@ -483,7 +484,8 @@ impl OnCore {
     }
 }
 
-/// Why a frame is left out of every row's statistics, each reported on its own as a row of its own (M6 B3).
+/// Why a frame is left out of the rows' statistics, each reported on its own as a row of its own (M6 B3): of
+/// every row's, or for [`Self::Incomplete`] of the frame's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Excluded {
     /// It started a fight over (or a walk's tour), which a row would read as the fight's worst frame.
@@ -492,16 +494,21 @@ enum Excluded {
     Outside,
     /// A GPU phase's frame whose timings never came back, which the GPU rows can't read.
     Untimed,
+    /// A GPU phase's frame whose timings came back short (fixed after B3's review, M6 backfill): a timestamp pair
+    /// dropped as invalid (`GpuTimings::every_timed_pass`), so it has no span and `gpu frame` can't read it. A pass
+    /// row still reads it where its own passes decoded, as [`GpuTimes::of`] sums them.
+    Incomplete,
 }
 
 impl Excluded {
-    const ALL: [Self; 3] = [Self::Restart, Self::Outside, Self::Untimed];
+    const ALL: [Self; 4] = [Self::Restart, Self::Outside, Self::Untimed, Self::Incomplete];
 
     const fn name(self) -> &'static str {
         match self {
             Self::Restart => "restart",
             Self::Outside => "outside",
             Self::Untimed => "untimed",
+            Self::Incomplete => "incomplete",
         }
     }
 
@@ -511,7 +518,7 @@ impl Excluded {
         match self {
             Self::Restart => true,
             Self::Outside => ticks,
-            Self::Untimed => phase == Phase::Gpu,
+            Self::Untimed | Self::Incomplete => phase == Phase::Gpu,
         }
     }
 
@@ -522,6 +529,9 @@ impl Excluded {
             Self::Restart => frame.restart.is_some(),
             Self::Outside => frame.restart.is_none() && frame.outside,
             Self::Untimed => phase == Phase::Gpu && frame.read() && !frame.gpu.timed,
+            Self::Incomplete => {
+                phase == Phase::Gpu && frame.read() && frame.gpu.timed && frame.gpu.span.is_none()
+            }
         }
     }
 }
@@ -1660,13 +1670,33 @@ mod tests {
     }
 
     /// Every frame a row leaves out is a frame of a reason reported on its own (M6 B3): a restart in any phase, one
-    /// drawn at a tick outside `--bench-ticks` (M6 B5), and in the GPU phase a frame whose timings never came back; a
-    /// restart frame is reported once, as a restart, and a frame outside the ticks as that, timed or not.
+    /// drawn at a tick outside `--bench-ticks` (M6 B5), and in the GPU phase a frame whose timings never came back or
+    /// came back with a pair dropped (B3's review); a restart frame is reported once, as a restart, and a frame
+    /// outside the ticks as that, timed or not.
     #[test]
     fn every_frame_a_row_leaves_out_is_reported_with_its_reason() {
+        use sapphire_render::graph::PassTime;
         let cpu = &ROWS[0];
         let gpu = ROWS.iter().find(|row| row.name == "gpu frame").expect("the GPU frame's row");
+        let main = ROWS.iter().find(|row| row.name == "gpu main").expect("the main pass's row");
         let timed = GpuTimes { timed: true, span: Some(Duration::from_micros(1)), ..GpuTimes::default() };
+        // The main pass decoded, a pair after it didn't: timings back, short.
+        let pass = PassTime {
+            name: MAIN_PASS,
+            start: Duration::ZERO,
+            duration: Duration::from_micros(10),
+            exclusive: Duration::from_micros(10),
+        };
+        let short = GpuTimings {
+            frame: 3,
+            every_pass: false,
+            every_timed_pass: false,
+            untimed: Vec::new(),
+            passes: vec![pass],
+            start: Some(Duration::from_secs(1)),
+        };
+        let dropped = GpuTimes::of(&short, 0, false);
+        assert!(dropped.timed && dropped.span.is_none(), "{dropped:?}");
         let restart = Some(Duration::from_micros(7));
         let frames = [
             traced(1, 10),
@@ -1676,6 +1706,9 @@ mod tests {
             Traced { outside: true, ..traced(5, 10) },
             Traced { gpu: timed, outside: true, ..traced(6, 10) },
             Traced { restart, outside: true, ..traced(7, 10) },
+            Traced { gpu: dropped, ..traced(8, 10) },
+            Traced { gpu: dropped, restart, ..traced(9, 10) },
+            Traced { gpu: dropped, outside: true, ..traced(10, 10) },
         ];
         for phase in Phase::ALL {
             let row = if phase == Phase::Gpu { gpu } else { cpu };
@@ -1691,10 +1724,19 @@ mod tests {
                     assert_eq!(reasons, [Excluded::Restart]);
                 } else if frame.outside {
                     assert_eq!(reasons, [Excluded::Outside]);
+                } else if phase == Phase::Gpu && frame.gpu == dropped {
+                    assert_eq!(reasons, [Excluded::Incomplete], "a pair dropped, its span with it");
                 }
             }
         }
+        // A pass row reads the passes of it that decoded, as `GpuTimes::of` sums them.
+        let short = Traced { phase: Phase::Gpu, gpu: dropped, ..traced(8, 10) };
+        assert!(counts(main, &short, Phase::Gpu) && !counts(gpu, &short, Phase::Gpu));
         assert!(!Excluded::Untimed.applies(Phase::Cpu, true), "a CPU phase times no GPU");
+        assert!(
+            !Excluded::Incomplete.applies(Phase::Cpu, true)
+                && Excluded::Incomplete.applies(Phase::Gpu, false)
+        );
         assert!(!Excluded::Outside.applies(Phase::Gpu, false), "a run with no ticks draws none outside them");
         assert!(Excluded::Restart.applies(Phase::Cpu, false) && Excluded::Untimed.applies(Phase::Gpu, false));
     }

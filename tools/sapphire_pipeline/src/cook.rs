@@ -3193,7 +3193,11 @@ fn cook_source(
             .map_err(|source| CookError::Timeline { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Dialogue(_) => dialogue::cook(bytes, &assets.flags.flags)
             .map_err(|source| CookError::Dialogue { path: path.to_owned(), source: Box::new(source) }),
-        ImportSettings::Sound(settings) => audio::cook_sound(bytes, *settings).map_err(audio_error(path)),
+        ImportSettings::Sound(settings) => {
+            let phonemes = phonemes_beside(path)?;
+            let phonemes = phonemes.as_ref().map(|(file, text)| (file.as_str(), text.as_slice()));
+            audio::cook_sound(bytes, *settings, phonemes).map_err(audio_error(path))
+        }
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
         ImportSettings::Score(_) => audio::cook_score(bytes).map_err(audio_error(path)),
         ImportSettings::VoiceLines(_) => audio::cook_voice_lines(bytes).map_err(audio_error(path)),
@@ -3640,6 +3644,20 @@ fn audio_error(path: &Path) -> impl Fn(AudioCookError) -> CookError + '_ {
     move |source| CookError::Audio { path: path.to_owned(), source: Box::new(source) }
 }
 
+/// The phoneme sidecar beside the sound at `sound` (M6 U14), by its file's name and its bytes: none, if it has
+/// none.
+fn phonemes_beside(sound: &Path) -> Result<Option<(String, Vec<u8>)>, CookError> {
+    let path = audio::phonemes_path(sound);
+    match fs::read(&path) {
+        Ok(text) => {
+            let file = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            Ok(Some((file, text)))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(CookError::Read { path, source }),
+    }
+}
+
 /// Reads a source another document's checks look into.
 fn read_source(path: &Path) -> Result<Vec<u8>, CookError> {
     fs::read(path).map_err(|error| CookError::Read { path: path.to_owned(), source: error })
@@ -3943,9 +3961,13 @@ fn source_dependencies(
             }
             Ok(dependencies)
         }
-        // A sound is the one file it reads.
+        // A sound reads its phoneme sidecar if it has one (M6 U14), and the table that maps it.
+        ImportSettings::Sound(_) => match phonemes_beside(path)? {
+            Some((file, text)) => audio::phonemes_dependencies(&file, &text).map_err(audio_error(path)),
+            None => Ok(Vec::new()),
+        },
         // A mix names only its own buses and sends (M6 U2).
-        ImportSettings::Sound(_) | ImportSettings::Mix(_) => Ok(Vec::new()),
+        ImportSettings::Mix(_) => Ok(Vec::new()),
         // A cue holds only its sounds' IDs, so their contents aren't inputs.
         ImportSettings::Cue(_) => {
             for id in audio::read_cue(bytes).map_err(audio_error(path))?.sounds() {

@@ -14,18 +14,26 @@
 //! Sounds, cues, scores and voice lines go in a pack of their own ([`crate::pack::AUDIO`]), but for a
 //! language's voice lines and what they alone play, which go in its own (`vo_<locale>`, M6 U11). The voice
 //! over's masters, encode and documents are [`crate::vo`]'s.
+//!
+//! A voice sound with a phoneme sidecar beside it (`<key>.phonemes.ron`, M6 U14, [`phonemes_path`]) has its mouth
+//! curve's visemes said by the sidecar through its language's viseme table ([`viseme_table`], the one place a cook
+//! chooses one), the envelope kept: [`sapphire_assets::phonemes`] has the format and the maths. The sidecar and
+//! the table are both in the sound's cache key ([`phonemes_dependencies`]), so a sound without one keys and cooks
+//! as before.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::cue::{Bus, Cue, CueError};
 use sapphire_assets::mix::{Mix, MixError};
+use sapphire_assets::phonemes::{PHONEMES_SUFFIX, PhonemeError, PhonemeTimings, VisemeTable};
 use sapphire_assets::score::{Score, ScoreError};
 use sapphire_assets::sound::{Sound, SoundError};
 use sapphire_assets::voice::{VoiceLines, VoiceLinesError};
 use sapphire_serialize::cooked::CookedError;
 use serde::{Deserialize, Serialize};
 
-use crate::cache::Stage;
+use crate::cache::{Dependency, Stage};
 
 /// The sound importer as cache keys know it. Its name carries the decoder's version, which a test
 /// keeps in step with `Cargo.lock`: a new decoder could find a different length.
@@ -33,8 +41,14 @@ pub const SOUND_IMPORTER: Stage = Stage { name: "ogg (lewton 0.10.2)", version: 
 /// The sound cooker. Bump it whenever it changes output for the same file.
 // Version 2 preserves complete same-format Ogg chains; version 1 could cache truncated PCM
 // frame counts from the decoder's chained-stream granule handling. The archive layout is unchanged.
-// Version 3 writes a voice's mouth curve (M5 C6): a change to its analysis bumps it again.
+// Version 3 writes a voice's mouth curve (M5 C6): a change to its analysis bumps it again. A change to how
+// a phoneme sidecar says the visemes bumps `VISEME_MAPPER` instead.
 pub const SOUND_COOKER: Stage = Stage { name: "ssound", version: 3 };
+/// How a sound's phoneme sidecar becomes its curve's visemes (M6 U14), keyed into every sound with a sidecar
+/// and no other ([`phonemes_dependencies`]). Bump it whenever `sapphire_assets::phonemes`' maths changes
+/// output for the same sidecar and table: `frame_of`'s rounding, `shared`, the stress digit read past,
+/// `SILENCES`, the frame walk in `Sound::with_phonemes`, or smoothing added there.
+pub const VISEME_MAPPER: Stage = Stage { name: "visemes", version: 1 };
 /// The cue importer as cache keys know it.
 pub const CUE_IMPORTER: Stage = Stage { name: "cue document", version: 1 };
 /// The cue cooker. Bump it whenever it changes output for the same document.
@@ -118,6 +132,12 @@ pub enum AudioCookError {
     Cooked(#[from] CookedError),
     #[error("the document isn't UTF-8")]
     Utf8(#[from] std::str::Utf8Error),
+    /// A phoneme sidecar that can't be read, or can't be said by the sound beside it (M6 U14).
+    #[error("its phonemes, `{file}`: {source}")]
+    Phonemes { file: String, source: PhonemeError },
+    /// A sidecar in a language no viseme table maps.
+    #[error("its phonemes, `{file}`, are in {locale}, and no viseme table maps that language")]
+    NoVisemeTable { file: String, locale: String },
 }
 
 /// Whether `path` names a cue document.
@@ -248,11 +268,72 @@ pub fn check_line(key: &str, cue: &[u8]) -> Result<(), AudioCookError> {
     if bus == Bus::Voice { Ok(()) } else { Err(AudioCookError::LineBus { key: key.to_owned(), bus }) }
 }
 
+/// Where the phoneme sidecar of the sound at `sound` is (M6 U14): beside it, by its stem.
+pub fn phonemes_path(sound: &Path) -> PathBuf {
+    let stem = sound.file_stem().map(|stem| stem.to_string_lossy()).unwrap_or_default();
+    sound.with_file_name(format!("{stem}{PHONEMES_SUFFIX}"))
+}
+
+/// The viseme table timings in `locale` are mapped through: the engine's own ([`VisemeTable::builtin`]) until
+/// M6 A24's per-language documents replace it here, the one place a cook chooses a table. Reading a document
+/// takes more than this body: this signature (it sees only a locale, not the planned assets), the Sound arms of
+/// `cook::cook_source` and of `cook::source_dependencies` (the table keyed as a `Dependency::Asset` rather than
+/// [`phonemes_dependencies`]' `#visemes` text), and `Sound::with_phonemes`, for smoothing.
+pub fn viseme_table(locale: &str) -> Option<VisemeTable> {
+    VisemeTable::builtin(locale)
+}
+
+/// A phoneme sidecar, `text`, read with the table its language maps through. `file` names it in errors.
+fn read_phonemes(file: &str, text: &[u8]) -> Result<(PhonemeTimings, VisemeTable), AudioCookError> {
+    let phonemes = |source| AudioCookError::Phonemes { file: file.to_owned(), source };
+    let text = std::str::from_utf8(text)?;
+    let timings = PhonemeTimings::from_document(text).map_err(phonemes)?;
+    let table = viseme_table(&timings.locale).ok_or_else(|| AudioCookError::NoVisemeTable {
+        file: file.to_owned(),
+        locale: timings.locale.clone(),
+    })?;
+    Ok((timings, table))
+}
+
+/// What a sound's phoneme sidecar, `text` in the file `file` beside it, adds to its cache key: the sidecar's
+/// bytes, and the table it maps through, by its contents, under [`VISEME_MAPPER`]'s name and version
+/// (`#visemes v1 en`), so a change to either, or a bump, cooks the sound again.
+pub fn phonemes_dependencies(file: &str, text: &[u8]) -> Result<Vec<Dependency>, AudioCookError> {
+    let (_, table) = read_phonemes(file, text)?;
+    let mut shapes = format!("{};", table.language);
+    for (phoneme, shape) in &table.shapes {
+        let [aa, ih, ou, ee, oh] = shape;
+        // A table's own text, one spelling of it: `AA=255,0,0,0,0;`.
+        let _ = write!(shapes, "{phoneme}={aa},{ih},{ou},{ee},{oh};");
+    }
+    Ok(vec![
+        Dependency::File { path: file.to_owned(), hash: blake3::hash(text) },
+        Dependency::File {
+            path: format!("#{} v{} {}", VISEME_MAPPER.name, VISEME_MAPPER.version, table.language),
+            hash: blake3::hash(shapes.as_bytes()),
+        },
+    ])
+}
+
 /// The bytes of a sound's cooked file, decoded whole on the way and read back through the runtime's
-/// check, with its mouth curve if `settings` ask.
-pub fn cook_sound(bytes: &[u8], settings: SoundSettings) -> Result<Vec<u8>, AudioCookError> {
+/// check, with its mouth curve if `settings` ask, its visemes said by `phonemes` if the sound has a sidecar:
+/// its file's name, and its text.
+pub fn cook_sound(
+    bytes: &[u8],
+    settings: SoundSettings,
+    phonemes: Option<(&str, &[u8])>,
+) -> Result<Vec<u8>, AudioCookError> {
     let sound = Sound::from_vorbis(bytes.to_vec())?;
     let sound = if settings.mouth { sound.with_mouth()? } else { sound };
+    let sound = match phonemes {
+        Some((file, text)) => {
+            let (timings, table) = read_phonemes(file, text)?;
+            sound
+                .with_phonemes(&timings, &table)
+                .map_err(|source| AudioCookError::Phonemes { file: file.to_owned(), source })?
+        }
+        None => sound,
+    };
     let cooked = sound.to_cooked()?;
     Sound::read(&cooked)?;
     Ok(cooked.into_vec())
@@ -511,7 +592,8 @@ mod tests {
 
     /// M5 C6's cook byte test: the committed voices' sounds cook to the same bytes twice, and their mouth
     /// curves to the bytes pinned here, on every machine CI cooks on. A change to the analysis moves them, and
-    /// bumps [`SOUND_COOKER`].
+    /// bumps [`SOUND_COOKER`]. These are the analysis' curves, with no sidecar: M6 U14 moved none of them, and
+    /// the next test holds what the lines with a sidecar cook to.
     #[test]
     fn the_generated_lines_mouths_cook_to_pinned_bytes() {
         let voices = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/vo");
@@ -526,9 +608,9 @@ mod tests {
         let mut found = Vec::new();
         for (line, _, _) in pinned {
             let ogg = fs::read(voices.join(format!("{line}.ogg"))).unwrap();
-            let cooked = cook_sound(&ogg, SoundSettings { mouth: true }).unwrap();
-            assert_eq!(cook_sound(&ogg, SoundSettings { mouth: true }).unwrap(), cooked, "{line}");
-            let plain = cook_sound(&ogg, SoundSettings::default()).unwrap();
+            let cooked = cook_sound(&ogg, SoundSettings { mouth: true }, None).unwrap();
+            assert_eq!(cook_sound(&ogg, SoundSettings { mouth: true }, None).unwrap(), cooked, "{line}");
+            let plain = cook_sound(&ogg, SoundSettings::default(), None).unwrap();
             assert!(Sound::read(&read_aligned_bytes(&plain)).unwrap().mouth.is_none(), "{line}");
             let curve = Sound::read(&read_aligned_bytes(&cooked)).unwrap().to_sound().mouth.unwrap();
             // FNV-1a over each frame's six bytes.
@@ -542,6 +624,127 @@ mod tests {
             found.push((line, curve.frames.len(), hash));
         }
         assert_eq!(found, pinned);
+    }
+
+    /// M6 U14's: each committed line with a phoneme sidecar cooks, on every machine, to the analysis' envelope
+    /// byte for byte and visemes the sidecar says, frame by frame, pinned here as the last test pins the analysis'.
+    /// A change to the analysis moves them and bumps [`SOUND_COOKER`]; a change to how a sidecar says the
+    /// visemes (`sapphire_assets::phonemes`' maths) moves them and bumps [`VISEME_MAPPER`]; a change to a table
+    /// or a sidecar moves them and re-keys the sound by its own text, with no bump.
+    #[test]
+    fn the_lines_with_phonemes_cook_their_envelope_and_their_phonemes() {
+        use sapphire_assets::mouth::MouthCurve;
+        use sapphire_assets::phonemes::frame_of;
+
+        let voices = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/vo");
+        let pinned: [(&str, u64); 2] =
+            [("en/perfect-dodge", 16494492188682201362), ("ja/perfect-dodge", 12618320998961130273)];
+        let mut found = Vec::new();
+        for (line, _) in pinned {
+            let ogg = fs::read(voices.join(format!("{line}.ogg"))).unwrap();
+            let sidecar = phonemes_path(&voices.join(format!("{line}.ogg")));
+            let text = fs::read(&sidecar).unwrap();
+            let file = sidecar.file_name().unwrap().to_str().unwrap();
+            let curve = |phonemes| {
+                let cooked = cook_sound(&ogg, SoundSettings { mouth: true }, phonemes).unwrap();
+                Sound::read(&read_aligned_bytes(&cooked)).unwrap().to_sound().mouth.unwrap()
+            };
+            let (heard, said) = (curve(None), curve(Some((file, &text))));
+            assert_eq!(said, curve(Some((file, &text))), "{line}: two cooks agree");
+            let opens = |curve: &MouthCurve| curve.frames.iter().map(|frame| frame.open).collect::<Vec<_>>();
+            assert_eq!(opens(&said), opens(&heard), "{line}: the envelope is the analysis'");
+            assert_ne!(said, heard, "{line}: the visemes are the sidecar's");
+            let (timings, table) = read_phonemes(file, &text).unwrap();
+            for phoneme in &timings.phonemes {
+                let at = frame_of(phoneme.from_ms);
+                if at < frame_of(phoneme.to_ms) {
+                    let shape = table.shape(&phoneme.phoneme).unwrap();
+                    let frame = said.frames[at];
+                    let share = |share: u8| ((u32::from(frame.open) * u32::from(share) + 127) / 255) as u8;
+                    assert_eq!(frame.visemes, shape.map(share), "{line}: {phoneme:?} at frame {at}");
+                }
+            }
+            let hash = said
+                .frames
+                .iter()
+                .flat_map(|frame| [&[frame.open][..], &frame.visemes].concat())
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                });
+            found.push((line, hash));
+        }
+        assert_eq!(found, pinned);
+    }
+
+    /// A phoneme sidecar's document with one phoneme, from 0 to 50 ms.
+    fn timings(locale: &str, phoneme: &str) -> String {
+        format!(
+            "(type: \"sapphire::assets::PhonemeTimings\", version: 1, data: (locale: \"{locale}\", phonemes: [\
+             (phoneme: \"{phoneme}\", from_ms: 0, to_ms: 50)]))"
+        )
+    }
+
+    /// A sidecar beside a voice's sound cooks into its curve, and one that can't be said fails the cook naming
+    /// the sidecar and what's wrong in it; one beside a sound with no curve, or in a language no table maps, too.
+    #[test]
+    fn a_sounds_phonemes_cook_into_its_curve_or_fail_naming_the_sidecar() {
+        let tree = Tree::new("audio_phonemes");
+        fs::write(tree.content().join("stem.ogg"), stem_ogg()).unwrap();
+        tree.cook().unwrap();
+        set_mouth(&tree, "stem.ogg", true);
+        let cooked = || {
+            let bytes = fs::read(tree.dir.path().join("loose").join("stem.ssound")).unwrap();
+            Sound::read(&read_aligned_bytes(&bytes)).unwrap().to_sound().mouth.unwrap()
+        };
+        tree.cook().unwrap();
+        let heard = cooked();
+        let sidecar = tree.content().join("stem.phonemes.ron");
+        fs::write(&sidecar, timings("ja", "i")).unwrap();
+        tree.cook().unwrap();
+        let said = cooked();
+        assert_eq!(said.frames.len(), heard.frames.len());
+        for (at, (said, heard)) in said.frames.iter().zip(&heard.frames).enumerate() {
+            assert_eq!(said.open, heard.open, "frame {at}");
+            // 50 ms lands on frame 3: `i` is `ih`, the rest shut.
+            let expected = if at < 3 { [0, said.open, 0, 0, 0] } else { [0; 5] };
+            assert_eq!(said.visemes, expected, "frame {at}");
+        }
+
+        for (text, why) in [
+            (timings("ja", "qq"), "`phonemes[0]` is `qq`, which the ja viseme table hasn't"),
+            (timings("fr", "a"), "are in fr, and no viseme table maps that language"),
+            (timings("ja", "a").replace("to_ms: 50", "to_ms: 0"), "it must end after it starts"),
+        ] {
+            fs::write(&sidecar, text).unwrap();
+            let error = crate::refusal::chain(&tree.cook().unwrap_err());
+            let named = error.contains("stem.ogg") && error.contains("stem.phonemes.ron");
+            assert!(named && error.contains(why), "{error}");
+        }
+        fs::write(&sidecar, timings("ja", "a")).unwrap();
+        set_mouth(&tree, "stem.ogg", false);
+        let error = crate::refusal::chain(&tree.cook().unwrap_err());
+        assert!(error.contains("stem.phonemes.ron") && error.contains("has no mouth curve"), "{error}");
+    }
+
+    /// The sidecar and the table are in a sound's key, by their contents, and a sound without one keys as before.
+    #[test]
+    fn a_sidecar_and_its_table_key_the_sound() {
+        let keyed = |phoneme: &str| {
+            phonemes_dependencies("line.phonemes.ron", timings("en-GB", phoneme).as_bytes()).unwrap()
+        };
+        let (first, second) = (keyed("AA"), keyed("IY"));
+        assert_eq!(first.len(), 2);
+        let hash = |dependency: &Dependency| match dependency {
+            Dependency::File { path, hash } => (path.clone(), *hash),
+            Dependency::Asset { .. } => unreachable!("a sidecar's dependencies are files"),
+        };
+        assert_ne!(hash(&first[0]), hash(&second[0]), "the sidecar's bytes");
+        assert_eq!(hash(&first[1]), hash(&second[1]), "the same table");
+        assert_eq!(hash(&first[1]).0, "#visemes v1 en", "the mapper's version keys it too");
+        assert_eq!(
+            phonemes_path(Path::new("vo/en/perfect-dodge.ogg")),
+            Path::new("vo/en/perfect-dodge.phonemes.ron")
+        );
     }
 
     fn read_aligned_bytes(bytes: &[u8]) -> sapphire_serialize::cooked::AlignedVec {

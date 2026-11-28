@@ -1,0 +1,22 @@
+// `perfect-dodge`'s phoneme timings in English (M6 U14), which the cook maps into its sound's mouth curve. A
+// studio's aligner writes these from a real take; this line is generated babble with no words, so they were
+// written by hand from its spec (`tools/sounds/perfect-dodge.en.sound.ron`): a tenth of a second's quiet either
+// side, each burst 35 ms of a consonant, each vowel as long as its syllable, spelled in ARPAbet as a plausible
+// "te-de-go". A new master needs its timings again.
+(
+    type: "sapphire::assets::PhonemeTimings",
+    version: 1,
+    data: (
+        locale: "en",
+        phonemes: [
+            (phoneme: "sil", from_ms: 0, to_ms: 100),
+            (phoneme: "T", from_ms: 100, to_ms: 135),
+            (phoneme: "EH1", from_ms: 135, to_ms: 265),
+            (phoneme: "D", from_ms: 265, to_ms: 300),
+            (phoneme: "EH0", from_ms: 300, to_ms: 400),
+            (phoneme: "G", from_ms: 400, to_ms: 435),
+            (phoneme: "OW1", from_ms: 435, to_ms: 735),
+            (phoneme: "sil", from_ms: 735, to_ms: 835),
+        ],
+    ),
+)

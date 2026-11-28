@@ -54,7 +54,8 @@
 //!   that say how sounds play. Both are plain data, so the cooker reads and writes them without
 //!   linking a mixer (`sapphire_audio`, which plays them). Music and voice (M3 A1) likewise: [`score`],
 //!   stems by a fight's phase (`.sscore`), and [`voice`], one language's lines by key (`.svoice`). A voice
-//!   sound's [`mouth`] curve (M5 C6) is cooked into its `.ssound`, for a face to say it with.
+//!   sound's [`mouth`] curve (M5 C6) is cooked into its `.ssound`, for a face to say it with, its visemes from a
+//!   line's [`phonemes`] sidecar where it has one (M6 U14).
 //! - The cue table ([`cue_table`], M2 E3, moved here in M6 T19): what each of the simulation's cues fires, by
 //!   name, as the document `sapphire_cues` resolves and fires and the editor opens. No cook reads it; it's here
 //!   so the editor reflects it without linking the renderer.
@@ -143,6 +144,7 @@ pub mod mix;
 pub mod motion;
 pub mod mouth;
 pub mod pack;
+pub mod phonemes;
 mod pipeline_key;
 pub mod probes;
 pub mod ramp;

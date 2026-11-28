@@ -10,6 +10,9 @@
 //!   speaker and line, or `vo` fails naming both.
 //! - **`<locale>/<key>.wav`,** a line's master, as a studio delivers it: mono, 16 or 24-bit or 32-bit float
 //!   ([`wav`]). Generated lines' masters are `sapphire_soundgen`'s, from `tools/sounds/`.
+//! - **`<locale>/<key>.phonemes.ron`,** optionally, the take's phoneme timings from the studio's aligner (M6
+//!   U14, [`sapphire_assets::phonemes`]), which the cook maps into the sound's mouth curve. An import holds each
+//!   to a master beside it and to its folder's language; the cook, to the take's length and the language's table.
 //!
 //! `sapphire_pipeline vo --content content` imports every master and writes, beside it, what the cook and
 //! a studio read; none of these is edited by hand, and each is committed:
@@ -47,6 +50,7 @@ use std::path::{Path, PathBuf};
 use bevy_reflect::TypePath;
 use fluent_syntax::ast;
 use fluent_syntax::parser::parse;
+use sapphire_assets::phonemes::{PHONEMES_SUFFIX, PhonemeTimings};
 use sapphire_assets::voice::{VoiceLine, VoiceLines, is_line_key, is_locale_tag};
 use sapphire_dialogue::DialogueDocument;
 use sapphire_math::det;
@@ -258,6 +262,18 @@ pub fn import(content: &Path, mode: Mode) -> Result<Imported, VoError> {
                     &path,
                     "has no master beside it: an Ogg here is only ever a master's encode",
                 ));
+            }
+        }
+        // A studio's phoneme timings (M6 U14): each for a take here, in this folder's language. The cook says
+        // whether its phonemes and times fit the take.
+        for path in files(&dir, PHONEMES_SUFFIX)? {
+            if !found.contains_key(&stem(&path, PHONEMES_SUFFIX)) {
+                return Err(problem(&path, "has no master beside it: timings are a take's"));
+            }
+            let timings = PhonemeTimings::from_document(&read_text(&path)?)
+                .map_err(|error| problem(&path, error.to_string()))?;
+            if timings.locale != *language {
+                return Err(problem(&path, format!("is in {}, in {language}'s folder", timings.locale)));
             }
         }
         takes.push(found);

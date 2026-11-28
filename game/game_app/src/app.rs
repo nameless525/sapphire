@@ -41,7 +41,7 @@ use sapphire_rhi::{
 };
 use sapphire_save::SettingsFile;
 use sapphire_stage::Stage;
-use sapphire_stage::audio::{AudioPrepared, DeviceAudio, DeviceOpening, Volumes};
+use sapphire_stage::audio::{AudioPrepared, DeviceAudio, DeviceOpening, Heard, Volumes};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock};
 
 use crate::options::Options;
@@ -324,8 +324,9 @@ impl App for GameApp {
         if let Some(audio) = &mut self.audio {
             audio.update(dt, platform, stage.scene.sound(), stage.show.cue_sounds());
         }
-        // The voice's mouth, read where the mixer has the voice (M5 C6): with no audio, every mouth's shut.
-        stage.show.hear(self.audio.as_ref().and_then(DeviceAudio::said));
+        // The voice's mouth, read where the mixer has the voice (M5 C6), and the lines it started, which the
+        // captions last by (M6 U14): with no audio, every mouth's shut and every caption up for an unheard line.
+        stage.show.hear(self.audio.as_ref().map_or(Heard::NOTHING, DeviceAudio::heard));
         let pad = stage.show.controls.input().active_gamepad().filter(|_| self.rumble);
         stage.show.shown.fight.show.end_cue_frame(
             &mut stage.scene,

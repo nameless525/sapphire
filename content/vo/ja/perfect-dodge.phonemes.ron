@@ -1,0 +1,27 @@
+// `perfect-dodge`'s phoneme timings in Japanese (M6 U14), which the cook maps into its sound's mouth curve. A
+// studio's aligner writes these from a real take; this line is generated babble with no words, so they were
+// written by hand from its spec (`tools/sounds/perfect-dodge.ja.sound.ron`): a tenth of a second's quiet either
+// side, each burst 35 ms of a consonant, each vowel as long as its mora, romanized as a plausible
+// "ki-ta-su-ko-a-te". A new master needs its timings again.
+(
+    type: "sapphire::assets::PhonemeTimings",
+    version: 1,
+    data: (
+        locale: "ja",
+        phonemes: [
+            (phoneme: "sil", from_ms: 0, to_ms: 100),
+            (phoneme: "k", from_ms: 100, to_ms: 135),
+            (phoneme: "i", from_ms: 135, to_ms: 245),
+            (phoneme: "t", from_ms: 245, to_ms: 280),
+            (phoneme: "a", from_ms: 280, to_ms: 390),
+            (phoneme: "s", from_ms: 390, to_ms: 425),
+            (phoneme: "u", from_ms: 425, to_ms: 535),
+            (phoneme: "k", from_ms: 535, to_ms: 570),
+            (phoneme: "o", from_ms: 570, to_ms: 680),
+            (phoneme: "a", from_ms: 680, to_ms: 790),
+            (phoneme: "t", from_ms: 790, to_ms: 825),
+            (phoneme: "e", from_ms: 825, to_ms: 965),
+            (phoneme: "sil", from_ms: 965, to_ms: 1065),
+        ],
+    ),
+)

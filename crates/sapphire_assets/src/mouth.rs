@@ -13,7 +13,8 @@
 //!   smoothed envelope in a low and a higher band, and each vowel's share falls with the distance from
 //!   its typical adult formants. It has no phoneme data and no language model: consonants, nasals,
 //!   whispers, voices far from those formants (a child's, a shout) and music under the voice all guess
-//!   wrong, and a recording's lip-sync from phonemes would replace it. On the project's generated lines,
+//!   wrong, so a line with a phoneme sidecar has its visemes from that instead, at cook, the envelope kept
+//!   ([`crate::phonemes`], M6 U14). On the project's generated lines,
 //!   whose vowels are formant pairs near those references, it finds the held vowels; that proves the
 //!   timing and the arithmetic, not lip-sync on speech.
 //!

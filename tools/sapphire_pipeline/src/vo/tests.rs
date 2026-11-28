@@ -84,12 +84,14 @@ fn each_recording_script_lists_every_voiced_key() {
 /// M6 U11's cross-machine proof: the shipped voice cooks into `vo_en` and `vo_ja`, the same bytes on every
 /// machine CI cooks on (macOS, Linux and Windows run this), and the same on a second cook. The packs hold
 /// copies of the committed Oggs and mouth curves by the deterministic maths, so a change here is a change to
-/// the voice, its cook or the packer: pin the new hashes in the same change.
+/// the voice, its cook or the packer: pin the new hashes in the same change. M6 U14 moved both for
+/// `perfect-dodge`'s sound alone, whose take gained phoneme timings in each language
+/// (`a_sidecar_moves_only_its_own_takes_sound`).
 #[test]
 fn the_voice_packs_cook_to_pinned_bytes_on_every_machine() {
     let pinned = [
-        ("vo_en", "651ee4bf26d9e4a4a5b0828a9ab66b9ea31ae94c425627bed2a2037e5e54952c"),
-        ("vo_ja", "6e4f71c4b814b765748dcf2811bc02c1eafcf6bc181446a6af379435b7f2cea3"),
+        ("vo_en", "bad5cd854af473cb3adc1bea1fb6be2f8f1a39439facae52b217d14a08e4e3ab"),
+        ("vo_ja", "666b3bdc35224196094b47afc962c1fc9a261ecf8017046b5dd1030bdf808372"),
     ];
     let tree = TempDir::new("vo_packs");
     let cooked = |name: &str| {
@@ -115,6 +117,63 @@ fn the_voice_packs_cook_to_pinned_bytes_on_every_machine() {
     let pinned: Vec<(String, String)> =
         pinned.iter().map(|(name, hash)| ((*name).to_owned(), (*hash).to_owned())).collect();
     assert_eq!(first, pinned);
+}
+
+/// M6 U14: a phoneme sidecar moves its own take's cooked sound and nothing else. The committed voice over cooks
+/// with its sidecars and again without them, and only the sounds of the lines that have one differ, so what
+/// moves the packs' pins above is those sounds alone.
+#[test]
+fn a_sidecar_moves_only_its_own_takes_sound() {
+    fn copy(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            if path.is_dir() {
+                copy(&path, &to.join(name));
+            } else if !name.ends_with(PHONEMES_SUFFIX) {
+                fs::copy(&path, to.join(name)).unwrap();
+            }
+        }
+    }
+    fn outputs(dir: &Path, under: &Path, found: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                outputs(&path, under, found);
+            } else {
+                found.insert(path.strip_prefix(under).unwrap().to_owned(), fs::read(&path).unwrap());
+            }
+        }
+    }
+    let committed = repo().join("content").join(FOLDER);
+    let tree = TempDir::new("vo_sidecars");
+    let bare = tree.path().join("bare");
+    copy(&committed, &bare);
+    let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true, editor: false };
+    let mut cooked = Vec::new();
+    for (name, source) in [("with", committed.as_path()), ("without", bare.as_path())] {
+        let loose = tree.path().join(name);
+        cook_dir(source, &loose, &options).unwrap();
+        let mut found = BTreeMap::new();
+        outputs(&loose, &loose, &mut found);
+        cooked.push(found);
+    }
+    let (with, without) = (&cooked[0], &cooked[1]);
+    assert_eq!(with.keys().collect::<Vec<_>>(), without.keys().collect::<Vec<_>>());
+    let moved: Vec<String> = with
+        .iter()
+        .filter(|(path, bytes)| without[*path] != **bytes)
+        .map(|(path, _)| path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    let mut sidecars: Vec<String> = Vec::new();
+    for language in ["en", "ja"] {
+        for path in files(&committed.join(language), PHONEMES_SUFFIX).unwrap() {
+            sidecars.push(format!("{language}/{}.ssound", stem(&path, PHONEMES_SUFFIX)));
+        }
+    }
+    assert_eq!(moved, sidecars, "only the sounds of the takes with timings");
+    assert!(!sidecars.is_empty());
 }
 
 /// A content tree with a script of two lines in `en` and `ja`, their strings, and the masters `masters`
@@ -300,4 +359,28 @@ fn levels_read_the_same_on_every_machine() {
     assert_eq!(decibels(0.5), "-6.0");
     assert_eq!(decibels(0.0), "-inf");
     assert_eq!(csv_row(&["a", "b,c", "say \"hi\""]), "a,\"b,c\",\"say \"\"hi\"\"\"\n");
+}
+
+/// M6 U14: a take's phoneme timings stand beside its master, in its folder's language, or the import says why.
+#[test]
+fn phoneme_timings_without_their_take_or_in_another_language_fail_naming_them() {
+    let tree = Tree::new("vo_phonemes", &[("en", "hello"), ("en", "bye")]);
+    let timings = |locale: &str| {
+        format!(
+            "(type: \"sapphire::assets::PhonemeTimings\", version: 1, data: (locale: \"{locale}\", phonemes: [\
+             (phoneme: \"HH\", from_ms: 0, to_ms: 50)]))"
+        )
+    };
+    fs::write(tree.vo("en/hello.phonemes.ron"), timings("en")).unwrap();
+    import(&tree.content(), Mode::Write).unwrap();
+    fs::write(tree.vo("ja/hello.phonemes.ron"), timings("ja")).unwrap();
+    let error = import(&tree.content(), Mode::Check).unwrap_err().to_string();
+    assert!(error.contains("hello.phonemes.ron") && error.contains("has no master beside it"), "{error}");
+    fs::remove_file(tree.vo("ja/hello.phonemes.ron")).unwrap();
+    fs::write(tree.vo("en/bye.phonemes.ron"), timings("ja")).unwrap();
+    let error = import(&tree.content(), Mode::Check).unwrap_err().to_string();
+    assert!(error.contains("bye.phonemes.ron") && error.contains("is in ja, in en's folder"), "{error}");
+    fs::write(tree.vo("en/bye.phonemes.ron"), timings("en").replace("to_ms: 50", "to_ms: 0")).unwrap();
+    let error = import(&tree.content(), Mode::Check).unwrap_err().to_string();
+    assert!(error.contains("bye.phonemes.ron") && error.contains("must end after it starts"), "{error}");
 }

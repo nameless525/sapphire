@@ -37,7 +37,7 @@ use game_combat::fight::{Arena, FightShow};
 use game_combat::party_looks::PartyLooks;
 use game_ui::hud::{FightHud, ShownFight};
 use game_ui::menus::MenuDocument;
-use sapphire_stage::audio::DeviceAudio;
+use sapphire_stage::audio::{DeviceAudio, Heard};
 use sapphire_stage::content::Content;
 use sapphire_stage::environment::FOG_CARDS;
 use sapphire_stage::foliage::FoliageMeshes;
@@ -658,8 +658,9 @@ impl App for SandboxApp {
                 self.show.fight.cue_sounds(self.input.is_paused()),
             );
         }
-        // A conversation's voice moves its role's mouth (M5 C6): with no audio, every mouth's shut.
-        self.show.fight.hear(self.audio.as_ref().and_then(DeviceAudio::said));
+        // A conversation's voice moves its role's mouth (M5 C6), and the lines heard keep their captions up as
+        // long as they play (M6 U14): with no audio, every mouth's shut.
+        self.show.fight.hear(self.audio.as_ref().map_or(Heard::NOTHING, DeviceAudio::heard));
         let pad = self.input.active_gamepad();
         self.show.fight.show.end_cue_frame(
             &mut self.scene,

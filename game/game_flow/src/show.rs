@@ -45,7 +45,7 @@ use sapphire_platform::{AppInitError, ContentFs, Event, GamepadEvent, Os, Timest
 use sapphire_render::quality::TierId;
 use sapphire_render::{PipelineInventory, Renderer, UiPageState, VfxFrame};
 use sapphire_rhi::GpuContext;
-use sapphire_stage::audio::{CueSounds, Said};
+use sapphire_stage::audio::{CueSounds, Heard};
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::Scene;
 use sapphire_stage::{ContentChanges, FrameLaps, SceneShow};
@@ -284,10 +284,10 @@ impl GameShow {
         sounds
     }
 
-    /// What the app's audio said this frame, after it took [`Self::cue_sounds`] (M5 C6): the voice's mouth,
-    /// for the fighters' faces.
-    pub fn hear(&mut self, said: Option<Said>) {
-        self.shown.fight.hear(said);
+    /// What the app's audio heard this frame, after it took [`Self::cue_sounds`]: the voice's mouth, for the
+    /// fighters' faces (M5 C6), and the fight's lines it started, for how long their captions stay (M6 U14).
+    pub fn hear(&mut self, heard: Heard<'_>) {
+        self.shown.fight.hear(heard);
     }
 
     /// The run a game stands first, behind its title: what [`Self::stand`] takes. Nothing for a show with no

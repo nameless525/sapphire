@@ -311,6 +311,34 @@ pub(super) fn placement_of(object: &ObjectId, zone: AssetId, value: &ZoneDocumen
     }
 }
 
+impl Editor {
+    /// Sets each property of the zone `id` to its literal, as spelled, as one edit joining the set's gesture if
+    /// one's under way, through [`edit_with_colliders`], so what it moves or turns takes its colliders: from
+    /// `held`, where a drag began, if it's a frame of one.
+    pub(super) fn spell_each(
+        &mut self,
+        id: AssetId,
+        label: &str,
+        held: Option<&sapphire_document::zone::Held>,
+        spelled: &[(PropertyPath, String)],
+    ) -> Result<(), EditError> {
+        sapphire_document::zone::edit_with_colliders_from(&mut self.documents, id, label, held, |zone| {
+            let mut outcome = sapphire_document::Outcome::Unchanged;
+            for (path, literal) in spelled {
+                if zone.set_spelled(label, path, literal)? == sapphire_document::Outcome::Changed {
+                    outcome = sapphire_document::Outcome::Changed;
+                }
+            }
+            Ok(outcome)
+        })
+        .map(|_| ())
+        .map_err(|error| match error {
+            sapphire_document::ZoneEditError::Refused(refused) => EditError::from(refused),
+            other => EditError(other.to_string()),
+        })
+    }
+}
+
 /// Sets each of `paths` in document `id` to `literal`, as one edit, joining the set's gesture if one's under way.
 fn spell_all(
     documents: &mut DocumentSet,

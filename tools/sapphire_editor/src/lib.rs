@@ -31,6 +31,8 @@ pub mod edits;
 pub mod figure;
 pub mod game;
 pub mod gizmo;
+pub mod ground;
+pub mod handles;
 pub mod input;
 pub mod judge;
 pub mod link;

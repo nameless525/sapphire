@@ -28,6 +28,8 @@ ron.workspace = true
 # The preview's pose: what the sandbox samples, read from the same cooked clips.
 sapphire_anim.workspace = true
 sapphire_assets.workspace = true
+# A zone's colliders, as the editor has them, are the ground a snap lands on (M6 T9b).
+sapphire_colliders.workspace = true
 # A run in the viewport plays by the game's own bindings.
 sapphire_controls.workspace = true
 sapphire_core.workspace = true

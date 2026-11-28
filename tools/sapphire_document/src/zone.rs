@@ -6,11 +6,15 @@
 //! placements set at once), each placement or instance it moved takes the colliders it names with it, by as
 //! far, and the zone's step and the colliders' are one [`crate::SetStep`], or one step of the set's gesture.
 //!
-//! It carries a move and nothing else: a turn or a scale leaves the colliders where they are, for the cook to
-//! judge, and so does an edit that adds or takes out placements or instances (their places shift, so a place
-//! before and after needn't be one thing) or reorders them. A collider the colliders' document doesn't have is
-//! the cook's to name, and stays out of it. A step that moved colliders is bound ([`crate::SetStep::bound`]):
-//! undo and redo take it whole or refuse it, never half.
+//! It carries a move and a turn (M6 T9b): a collider turns about where its placement stands by as much as the
+//! placement turned, and its own rotation with it, so a placement turned with a gizmo's ring stays held to what
+//! stands for it. A scale leaves the colliders as they are, for the cook to judge (it refuses a placement shrunk
+//! inside its colliders' sides), and so does an edit that adds or takes out placements or instances (their places
+//! shift, so a place before and after needn't be one thing) or reorders them: [`duplicate`] and [`remove`] are
+//! how those keep the colliders in step, a copy naming copies of its colliders and an entry taken out taking the
+//! colliders only it named. A collider the colliders' document doesn't have is the cook's to name, and stays out
+//! of it. A step that moved, made or took out colliders is bound ([`crate::SetStep::bound`]): undo and redo take
+//! it whole or refuse it, never half.
 //!
 //! **IDs (M6 T8a):** a zone's placements, instances, lights and atmosphere volumes each have an ID, which a
 //! path calls the entry by (`placements["3fa91c07"]`), so an editor's selection names the same entry however
@@ -22,10 +26,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use bevy_reflect::PartialReflect;
+use bevy_reflect::{PartialReflect, Reflect, ReflectFromReflect, ReflectRef, TypeRegistry};
 use sapphire_assets::AssetId;
-use sapphire_colliders::ColliderDocument;
+use sapphire_colliders::{ColliderDocument, ColliderEntry, Rotation};
+use sapphire_math::{Quat, Vec3, det};
 use sapphire_reflect::Versioned;
+use sapphire_zone::document::orientation;
 use sapphire_zone::{AtmosphereVolume, IdList, Instance, Light, Placement, ZoneDocument, ZoneError};
 
 use crate::document::{Document, Outcome, Refused};
@@ -62,24 +68,168 @@ pub enum ZoneEditError {
     /// No random number came for a new ID.
     #[error("no new ID: {0}")]
     Entropy(String),
+    /// What a duplicate or a removal was asked of isn't an entry of one of the zone's lists, by its key.
+    #[error("`{0}` isn't an entry of one of the zone's lists, by its ID or name")]
+    NotAnEntry(String),
 }
 
-/// Where something a zone places stands, and the colliders it names.
+/// Where something a zone places stands, how it's turned, and the colliders it names.
 #[derive(Clone, Debug, PartialEq)]
 struct Placed {
     at: [f32; 3],
+    turn: f32,
+    rotation: Option<[f32; 3]>,
     colliders: Vec<String>,
+}
+
+impl Placed {
+    /// Its yaw in degrees, if it's turned about +Y alone.
+    fn yaw(&self) -> Option<f32> {
+        match self.rotation {
+            None => Some(self.turn),
+            Some([pitch, yaw, roll]) if pitch == 0.0 && roll == 0.0 => Some(yaw),
+            Some(_) => None,
+        }
+    }
 }
 
 /// Each placement and instance, by its list and its place in it.
 fn placed(zone: &ZoneDocument) -> BTreeMap<(&'static str, usize), Placed> {
     let placements = zone.placements.iter().enumerate().map(|(index, placement)| {
-        (("placements", index), Placed { at: placement.at, colliders: placement.colliders.clone() })
+        let placed = Placed {
+            at: placement.at,
+            turn: placement.turn,
+            rotation: placement.rotation,
+            colliders: placement.colliders.clone(),
+        };
+        (("placements", index), placed)
     });
     let instances = zone.instances.iter().enumerate().map(|(index, instance)| {
-        (("instances", index), Placed { at: instance.at, colliders: instance.colliders.clone() })
+        let placed = Placed {
+            at: instance.at,
+            turn: instance.turn,
+            rotation: instance.rotation,
+            colliders: instance.colliders.clone(),
+        };
+        (("instances", index), placed)
     });
     placements.chain(instances).collect()
+}
+
+/// How a collider goes with what names it: from where that stood to where it stands, turned by `turn`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Carry {
+    from: [f32; 3],
+    to: [f32; 3],
+    turn: Option<Turn>,
+}
+
+/// A turn a collider takes with what names it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Turn {
+    by: Quat,
+    /// In degrees, when what names it is turned about +Y alone before and after: how a collider's rotation about
+    /// +Y says it.
+    yaw: Option<f32>,
+}
+
+impl Carry {
+    /// How `was` going to `now` carries what it names, if it moved or turned.
+    fn of(was: &Placed, now: &Placed) -> Option<Self> {
+        let turned = was.turn != now.turn || was.rotation != now.rotation;
+        if now.at == was.at && !turned {
+            return None;
+        }
+        let turn = turned.then(|| match (was.yaw(), now.yaw()) {
+            (Some(from), Some(to)) => {
+                let yaw = to - from;
+                Turn { by: det::quat_from_axis_angle(Vec3::Y, yaw.to_radians()), yaw: Some(yaw) }
+            }
+            _ => {
+                let (from, to) = (orientation(was.turn, was.rotation), orientation(now.turn, now.rotation));
+                Turn { by: det::quat_normalize(det::quat_mul(to, det::quat_conjugate(from))), yaw: None }
+            }
+        });
+        Some(Self { from: was.at, to: now.at, turn })
+    }
+
+    /// Where a collider at `position` goes.
+    fn position(&self, position: [f32; 3]) -> [f32; 3] {
+        match self.turn {
+            // In f64, so a collider standing where its placement does lands where it does, to the bit.
+            None => std::array::from_fn(|axis| {
+                (f64::from(position[axis]) + f64::from(self.to[axis]) - f64::from(self.from[axis])) as f32
+            }),
+            Some(turn) => {
+                let offset = Vec3::from(position) - Vec3::from(self.from);
+                (Vec3::from(self.to) + det::quat_rotate(turn.by, offset)).to_array()
+            }
+        }
+    }
+
+    /// How a collider turned by `rotation` is turned after, if this turns it: about +Y in degrees where both
+    /// turns are, as a person writes one, and otherwise as a quaternion.
+    fn rotation(&self, rotation: Rotation) -> Option<Rotation> {
+        let turn = self.turn?;
+        let about_y = |axis: [f32; 3]| axis[0] == 0.0 && axis[2] == 0.0 && axis[1] != 0.0;
+        Some(match (turn.yaw, rotation) {
+            (Some(yaw), Rotation::None) => {
+                Rotation::AxisAngle { axis: [0.0, 1.0, 0.0], degrees: wrapped(yaw) }
+            }
+            // About -Y, a turn about +Y takes its degrees down.
+            (Some(yaw), Rotation::AxisAngle { axis, degrees }) if about_y(axis) => {
+                Rotation::AxisAngle { axis, degrees: wrapped(degrees + yaw * axis[1].signum()) }
+            }
+            (_, rotation) => {
+                let was = match rotation {
+                    Rotation::None => Quat::IDENTITY,
+                    Rotation::AxisAngle { axis, degrees } => {
+                        det::quat_from_axis_angle(Vec3::from(axis).normalize_or_zero(), degrees.to_radians())
+                    }
+                    Rotation::Quaternion(q) => Quat::from_array(q),
+                };
+                Rotation::Quaternion(det::quat_normalize(det::quat_mul(turn.by, was)).to_array())
+            }
+        })
+    }
+
+    /// Whether `other` takes a collider where this does.
+    fn agrees(&self, other: &Self) -> bool {
+        self.position([0.0; 3]) == other.position([0.0; 3])
+            && self.turn.map(|turn| turn.by) == other.turn.map(|turn| turn.by)
+    }
+}
+
+/// `degrees` into (-180, 180], as a collider's turn is written.
+fn wrapped(degrees: f32) -> f32 {
+    let wrapped = (degrees + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped == -180.0 { 180.0 } else { wrapped }
+}
+
+/// The zone's placements and instances and its colliders as they were when a gesture began (M6 T9b): what a drag
+/// writes each frame's colliders from, so where they land depends on where the drag ends, never on how many
+/// frames it took or the way the pointer went. Made by [`hold`], given to [`edit_with_colliders_from`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Held {
+    placed: BTreeMap<(&'static str, usize), Placed>,
+    entries: BTreeMap<String, ([f32; 3], Rotation)>,
+}
+
+/// The zone `zone` and its colliders as they are now, for a gesture to write from ([`Held`]); its colliders'
+/// document opened if it isn't. None if the zone doesn't read.
+pub fn hold(set: &mut DocumentSet, zone: AssetId) -> Option<Held> {
+    let value = set.get::<ZoneDocument>(zone)?.value()?;
+    let (placed, colliders) = (placed(value), value.colliders);
+    let mut entries = BTreeMap::new();
+    if let Some(colliders) = colliders
+        && let Ok(id) = open_colliders(set, colliders)
+        && let Some(document) = set.get::<ColliderDocument>(id).and_then(Document::value)
+    {
+        for entry in &document.colliders {
+            entries.insert(entry.name.clone(), (entry.position, entry.rotation));
+        }
+    }
+    Some(Held { placed, entries })
 }
 
 /// How many placements and instances a zone has.
@@ -122,6 +272,18 @@ pub fn edit_with_colliders(
     label: &str,
     edit: impl FnOnce(&mut dyn AnyDocument) -> Result<Outcome, Refused>,
 ) -> Result<Outcome, ZoneEditError> {
+    edit_with_colliders_from(set, zone, label, None, edit)
+}
+
+/// [`edit_with_colliders`], each collider of a placement or instance the edit moves written from `held`, where
+/// the gesture began, rather than from where the last frame left it (M6 T9b): a frame of a drag.
+pub fn edit_with_colliders_from(
+    set: &mut DocumentSet,
+    zone: AssetId,
+    label: &str,
+    held: Option<&Held>,
+    edit: impl FnOnce(&mut dyn AnyDocument) -> Result<Outcome, Refused>,
+) -> Result<Outcome, ZoneEditError> {
     let opened = set.get::<ZoneDocument>(zone).ok_or(ZoneEditError::NotAZone(zone))?;
     let by_places = opened.written_version() == Some(1);
     let before = opened.value().map(|zone| (placed(zone), lengths(zone), id_lengths(zone)));
@@ -144,15 +306,24 @@ pub fn edit_with_colliders(
             return Ok(outcome);
         }
         let (after, colliders) = (placed(value), value.colliders);
-        let mut moves: BTreeMap<String, [f64; 3]> = BTreeMap::new();
+        let mut moves: BTreeMap<String, Carry> = BTreeMap::new();
         for (place, was) in &before {
             let Some(now) = after.get(place) else { continue };
-            if now.at == was.at || now.colliders != was.colliders {
+            if now.colliders != was.colliders {
                 continue;
             }
-            let by: [f64; 3] = std::array::from_fn(|axis| f64::from(now.at[axis]) - f64::from(was.at[axis]));
+            // From where the gesture began, if it's held there, so a drag back to the start puts them back.
+            let start =
+                held.and_then(|held| held.placed.get(place)).filter(|start| start.colliders == now.colliders);
+            let carry = match (start, Carry::of(was, now)) {
+                (_, None) => continue,
+                (Some(start), Some(_)) => {
+                    Carry::of(start, now).unwrap_or(Carry { from: now.at, to: now.at, turn: None })
+                }
+                (None, Some(carry)) => carry,
+            };
             for name in &now.colliders {
-                if moves.insert(name.clone(), by).is_some_and(|other| other != by) {
+                if moves.insert(name.clone(), carry).is_some_and(|other| !other.agrees(&carry)) {
                     return Err(ZoneEditError::MovedApart(name.clone()));
                 }
             }
@@ -160,14 +331,22 @@ pub fn edit_with_colliders(
         let Some(colliders) = colliders.filter(|_| !moves.is_empty()) else { return Ok(outcome) };
         let id = open_colliders(set, colliders)?;
         let document = set.edit(id).ok_or(ZoneEditError::NotAZone(id))?;
-        for (name, by) in moves {
-            let Some(position) = position_of(&*document, &name) else { continue };
-            // In f64, so a collider standing where its placement does lands where it does, to the bit.
-            let moved: [f32; 3] = std::array::from_fn(|axis| (f64::from(position[axis]) + by[axis]) as f32);
+        for (name, carry) in moves {
+            let Some((position, rotation)) = entry_of(&*document, &name) else { continue };
+            let started = held.and_then(|held| held.entries.get(&name).copied());
+            let (from, turned) = match started {
+                Some((from, was)) => (from, Some(carry.rotation(was).unwrap_or(was))),
+                None => (position, carry.rotation(rotation)),
+            };
+            let moved = carry.position(from);
             // A number at a time, as a person edits one: the bytes of the others stay as they were.
             for axis in (0..3).filter(|axis| moved[*axis].to_bits() != position[*axis].to_bits()) {
                 let text = write::canonical(&moved[axis], document.registry()).map_err(Refused::from)?;
-                document.set_ron(label, &collider_position(&name, axis), &text)?;
+                document.set_ron(label, &collider_field(&name, "position").join(Step::Index(axis)), &text)?;
+            }
+            if let Some(turned) = turned.filter(|turned| *turned != rotation) {
+                let text = write::canonical(&turned, document.registry()).map_err(Refused::from)?;
+                document.set_ron(label, &collider_field(&name, "rotation"), &text)?;
             }
         }
         // A placement and its colliders are one step that never goes apart.
@@ -185,22 +364,306 @@ fn open_colliders(set: &mut DocumentSet, id: AssetId) -> Result<AssetId, SetErro
     Kind::Colliders.open(set, Path::new(&path))
 }
 
-/// One number of where the collider `name` stands.
-fn collider_position(name: &str, axis: usize) -> PropertyPath {
-    PropertyPath::root()
-        .join(Step::Field("colliders".to_owned()))
-        .join(Step::Key(name.to_owned()))
-        .join(Step::Field("position".to_owned()))
-        .join(Step::Index(axis))
+/// The path of the collider `name`.
+fn collider_path(name: &str) -> PropertyPath {
+    PropertyPath::root().join(Step::Field("colliders".to_owned())).join(Step::Key(name.to_owned()))
 }
 
-/// Where the collider `name` stands, if the document has one of that name.
-fn position_of(document: &dyn AnyDocument, name: &str) -> Option<[f32; 3]> {
+/// A field of the collider `name`.
+fn collider_field(name: &str, field: &str) -> PropertyPath {
+    collider_path(name).join(Step::Field(field.to_owned()))
+}
+
+/// Where the collider `name` stands and how it's turned, if the document has one of that name.
+fn entry_of(document: &dyn AnyDocument, name: &str) -> Option<([f32; 3], Rotation)> {
     let colliders: &ColliderDocument =
         document.as_any().downcast_ref::<Document<ColliderDocument>>()?.value()?;
     let mut named = colliders.colliders.iter().filter(|entry| entry.name == name);
     let entry = named.next()?;
-    named.next().is_none().then_some(entry.position)
+    named.next().is_none().then_some((entry.position, entry.rotation))
+}
+
+/// The zone `zone`'s colliders' document, opened if it isn't, if the zone names one: what a ray for the ground
+/// meets (M6 T9b), as the editor has it now.
+pub fn colliders_of(set: &mut DocumentSet, zone: AssetId) -> Result<Option<AssetId>, ZoneEditError> {
+    let opened = set.get::<ZoneDocument>(zone).ok_or(ZoneEditError::NotAZone(zone))?;
+    let Some(colliders) = opened.value().and_then(|value| value.colliders) else { return Ok(None) };
+    Ok(Some(open_colliders(set, colliders)?))
+}
+
+/// What [`duplicate`] made: each copy's path, in the order asked, and the IDs it gave them, in that order, for a
+/// recording to make the same copies again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Duplicated {
+    pub paths: Vec<PropertyPath>,
+    pub ids: Vec<String>,
+}
+
+/// Copies each entry of the zone `zone` at `entries`, keyed paths of its lists' entries (`placements["3fa91c07"]`,
+/// `spawners["gate"]`, `weather_plan?.regions["rain"]`), to the end of its list, as one edit (M6 T9b): the copy of
+/// an entry of a list with IDs takes a fresh one (the next of `ids`, or one drawn at random once those run out),
+/// and one with a name a fresh name (`gate-2`, the first number free). A copy of a placement or an instance names
+/// copies of its colliders, each with a fresh name and standing where its original does, so moving the copy takes
+/// its own. Refused for a path that isn't an entry, an ID of `ids` the zone has, and, in a version 1 zone, an
+/// entry of a list with IDs.
+pub fn duplicate(
+    set: &mut DocumentSet,
+    zone: AssetId,
+    label: &str,
+    entries: &[PropertyPath],
+    ids: &[String],
+) -> Result<Duplicated, ZoneEditError> {
+    let opened = set.get::<ZoneDocument>(zone).ok_or(ZoneEditError::NotAZone(zone))?;
+    let by_places = opened.written_version() == Some(1);
+    let colliders = opened.value().and_then(|value| value.colliders);
+    set.together(label, |set| {
+        let mut made = Duplicated::default();
+        let mut ids = ids.iter();
+        let mut copies: Vec<ColliderEntry> = Vec::new();
+        for path in entries {
+            let list = list_of(path)?;
+            let with_ids = match list.steps() {
+                [Step::Field(field)] => IdList::of_field(field),
+                _ => None,
+            };
+            if let (true, Some(with_ids)) = (by_places, with_ids) {
+                return Err(ZoneEditError::PlacesShift { list: with_ids.field(), what: "adds to" });
+            }
+            let document = zone_document(set, zone)?;
+            let value =
+                document.value().ok_or_else(|| Refused::ReadOnly("the zone doesn't read".to_owned()))?;
+            let registry = document.registry();
+            let entry = walk::get(value, path).map_err(Refused::from)?;
+            let mut copy = concrete(entry, registry).ok_or_else(|| not_an_entry(path))?;
+            let siblings = walk::get(value, &list).map_err(Refused::from)?;
+            let at = match siblings.reflect_ref() {
+                ReflectRef::List(items) => items.len(),
+                _ => return Err(not_an_entry(path)),
+            };
+            let mut key = None;
+            if with_ids.is_some() {
+                let id = match ids.next() {
+                    Some(id) if value.has_id(id) => return Err(ZoneEditError::Taken(id.clone())),
+                    Some(id) => id.clone(),
+                    None => new_id(value)?,
+                };
+                assign_field(copy.as_mut(), "id", &id, registry)?;
+                made.ids.push(id.clone());
+                key = Some(id);
+            }
+            if let Some(name) = text_field(copy.as_partial_reflect(), "name") {
+                let fresh = fresh_name(&name, &names_in(siblings, "name"));
+                assign_field(copy.as_mut(), "name", &fresh, registry)?;
+                key.get_or_insert(fresh);
+            }
+            let key = key.ok_or_else(|| not_an_entry(path))?;
+            let named: Vec<String> = field_of(copy.as_partial_reflect(), "colliders")
+                .and_then(|field| field.try_downcast_ref::<Vec<String>>().cloned())
+                .unwrap_or_default();
+            if let (Some(colliders), false) = (colliders, named.is_empty()) {
+                let renamed = copy_colliders(set, zone, colliders, &named, &mut copies)?;
+                let document = zone_document(set, zone)?;
+                assign_field(copy.as_mut(), "colliders", &renamed, document.registry())?;
+            }
+            zone_document(set, zone)?.insert(label, &list, at, copy.as_partial_reflect())?;
+            made.paths.push(list.join(Step::Key(key)));
+        }
+        if let (Some(colliders), false) = (colliders, copies.is_empty()) {
+            let id = open_colliders(set, colliders)?;
+            let document = colliders_document(set, id)?;
+            let list = PropertyPath::root().join(Step::Field("colliders".to_owned()));
+            for entry in copies {
+                let at = document.value().map_or(0, |value| value.colliders.len());
+                document.insert(label, &list, at, &entry)?;
+            }
+            set.bind_gesture();
+        }
+        Ok(made)
+    })
+}
+
+/// Copies of the colliders `named` in the zone's colliders' document `colliders`, each with a name none has, put
+/// in `copies`: the names a copy of what names them names, in their order. A name the document doesn't have stays
+/// as it is, the cook's to name.
+fn copy_colliders(
+    set: &mut DocumentSet,
+    zone: AssetId,
+    colliders: AssetId,
+    named: &[String],
+    copies: &mut Vec<ColliderEntry>,
+) -> Result<Vec<String>, ZoneEditError> {
+    // A name some placement or instance claims is taken, even where the document hasn't it.
+    let claimed: Vec<String> = set
+        .get::<ZoneDocument>(zone)
+        .and_then(Document::value)
+        .map(|zone| {
+            let placements = zone.placements.iter().flat_map(|placement| placement.colliders.iter());
+            placements
+                .chain(zone.instances.iter().flat_map(|instance| instance.colliders.iter()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let id = open_colliders(set, colliders)?;
+    let document = set.get::<ColliderDocument>(id).ok_or(ZoneEditError::NotAZone(id))?;
+    let value =
+        document.value().ok_or_else(|| Refused::ReadOnly("the zone's colliders don't read".to_owned()))?;
+    let mut taken: Vec<String> = value.colliders.iter().map(|entry| entry.name.clone()).collect();
+    taken.extend(copies.iter().map(|entry| entry.name.clone()));
+    taken.extend(claimed);
+    let mut renamed = Vec::with_capacity(named.len());
+    for name in named {
+        let Some(entry) = value.colliders.iter().find(|entry| entry.name == *name) else {
+            renamed.push(name.clone());
+            continue;
+        };
+        let fresh = fresh_name(name, &taken);
+        taken.push(fresh.clone());
+        copies.push(ColliderEntry { name: fresh.clone(), ..entry.clone() });
+        renamed.push(fresh);
+    }
+    Ok(renamed)
+}
+
+/// Takes out each entry of the zone `zone` at `entries`, keyed paths as [`duplicate`] takes, as one edit (M6
+/// T9b), and each collider that only they named, so the colliders' document holds nothing for what's gone.
+/// Refused for a path that isn't an entry, and, in a version 1 zone, an entry of a list with IDs.
+pub fn remove(
+    set: &mut DocumentSet,
+    zone: AssetId,
+    label: &str,
+    entries: &[PropertyPath],
+) -> Result<(), ZoneEditError> {
+    let opened = set.get::<ZoneDocument>(zone).ok_or(ZoneEditError::NotAZone(zone))?;
+    let by_places = opened.written_version() == Some(1);
+    let colliders = opened.value().and_then(|value| value.colliders);
+    set.together(label, |set| {
+        let mut named: Vec<String> = Vec::new();
+        for path in entries {
+            let list = list_of(path)?;
+            if let ([Step::Field(field)], true) = (list.steps(), by_places)
+                && let Some(with_ids) = IdList::of_field(field)
+            {
+                return Err(ZoneEditError::PlacesShift { list: with_ids.field(), what: "takes from" });
+            }
+            let document = zone_document(set, zone)?;
+            let value =
+                document.value().ok_or_else(|| Refused::ReadOnly("the zone doesn't read".to_owned()))?;
+            let entry = walk::get(value, path).map_err(Refused::from)?;
+            if let Some(names) =
+                field_of(entry, "colliders").and_then(|field| field.try_downcast_ref::<Vec<String>>())
+            {
+                named.extend(names.iter().cloned());
+            }
+            document.remove(label, path)?;
+        }
+        let Some(colliders) = colliders.filter(|_| !named.is_empty()) else { return Ok(()) };
+        // What something that stays still names, stays.
+        let left = zone_document(set, zone)?.value().cloned();
+        let still_named = |name: &String| {
+            left.as_ref().is_some_and(|zone| {
+                zone.placements.iter().any(|placement| placement.colliders.contains(name))
+                    || zone.instances.iter().any(|instance| instance.colliders.contains(name))
+            })
+        };
+        named.sort_unstable();
+        named.dedup();
+        let id = open_colliders(set, colliders)?;
+        let document = colliders_document(set, id)?;
+        let mut took = false;
+        for name in named.iter().filter(|name| !still_named(name)) {
+            if entry_of(&*document, name).is_some() {
+                document.remove(label, &collider_path(name))?;
+                took = true;
+            }
+        }
+        if took {
+            set.bind_gesture();
+        }
+        Ok(())
+    })
+}
+
+/// The list `path`, an entry of it by its key, is in.
+fn list_of(path: &PropertyPath) -> Result<PropertyPath, ZoneEditError> {
+    match path.split_last() {
+        Some((list, Step::Key(_))) => Ok(list),
+        _ => Err(not_an_entry(path)),
+    }
+}
+
+fn not_an_entry(path: &PropertyPath) -> ZoneEditError {
+    ZoneEditError::NotAnEntry(path.to_string())
+}
+
+/// The zone `zone`, to edit as part of the set's step.
+fn zone_document(set: &mut DocumentSet, zone: AssetId) -> Result<&mut Document<ZoneDocument>, ZoneEditError> {
+    set.edit(zone)
+        .and_then(|open| open.as_any_mut().downcast_mut::<Document<ZoneDocument>>())
+        .ok_or(ZoneEditError::NotAZone(zone))
+}
+
+/// The colliders' document `id`, to edit as part of the set's step.
+fn colliders_document(
+    set: &mut DocumentSet,
+    id: AssetId,
+) -> Result<&mut Document<ColliderDocument>, ZoneEditError> {
+    set.edit(id)
+        .and_then(|open| open.as_any_mut().downcast_mut::<Document<ColliderDocument>>())
+        .ok_or(ZoneEditError::NotAZone(id))
+}
+
+/// `entry` as a value of its own type, every field of it: what a copy is made from, whole, so a type whose
+/// conversion needs every field converts.
+fn concrete(entry: &dyn PartialReflect, registry: &TypeRegistry) -> Option<Box<dyn Reflect>> {
+    let info = entry.get_represented_type_info()?;
+    registry.get_type_data::<ReflectFromReflect>(info.type_id())?.from_reflect(entry)
+}
+
+/// The field `name` of a struct.
+fn field_of<'v>(entry: &'v dyn PartialReflect, name: &str) -> Option<&'v dyn PartialReflect> {
+    match entry.reflect_ref() {
+        ReflectRef::Struct(fields) => fields.field(name),
+        _ => None,
+    }
+}
+
+/// A struct's text field `name`.
+fn text_field(entry: &dyn PartialReflect, name: &str) -> Option<String> {
+    field_of(entry, name)?.try_downcast_ref::<String>().cloned()
+}
+
+/// Puts `value` in the field `name` of `entry`.
+fn assign_field(
+    entry: &mut dyn Reflect,
+    name: &str,
+    value: &dyn PartialReflect,
+    registry: &TypeRegistry,
+) -> Result<(), ZoneEditError> {
+    let path = PropertyPath::root().join(Step::Field(name.to_owned()));
+    let slot = walk::get_mut(entry.as_partial_reflect_mut(), &path).map_err(Refused::from)?;
+    walk::assign(slot, value, registry).map_err(|why| Refused::Document(why).into())
+}
+
+/// The text field `name` of each entry of `list`.
+fn names_in(list: &dyn PartialReflect, name: &str) -> Vec<String> {
+    match list.reflect_ref() {
+        ReflectRef::List(items) => items.iter().filter_map(|item| text_field(item, name)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `name` with the first number from 2 after it that makes it none of `taken`: `gate-2`, `gate-3`. A name that
+/// ends in such a number already counts on from it.
+fn fresh_name(name: &str, taken: &[String]) -> String {
+    let (stem, from) = match name.rsplit_once('-').map(|(stem, number)| (stem, number.parse::<u32>())) {
+        Some((stem, Ok(number))) if !stem.is_empty() => (stem, number.saturating_add(1)),
+        _ => (name, 2),
+    };
+    (from..=u32::MAX)
+        .map(|number| format!("{stem}-{number}"))
+        .find(|fresh| !taken.iter().any(|taken| taken == fresh))
+        .unwrap_or_else(|| format!("{name}-copy"))
 }
 
 /// The schema version a document's text says it's written at, if it says.

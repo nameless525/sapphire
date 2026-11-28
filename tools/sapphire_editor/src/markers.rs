@@ -108,6 +108,36 @@ impl ObjectKind {
         }
     }
 
+    /// What the history calls one of them, for a step that changes it.
+    #[must_use]
+    pub const fn singular(self) -> &'static str {
+        match self {
+            Self::Placement => "a placement",
+            Self::Instance => "an instance",
+            Self::Light => "a light",
+            Self::ReflectionProbe => "a reflection probe",
+            Self::ReflectionBox => "a reflection box",
+            Self::Trigger => "a trigger",
+            Self::Checkpoint => "a checkpoint",
+            Self::Spawner => "a spawner",
+            Self::Spline => "a spline",
+            Self::Exit => "an exit",
+            Self::AtmosphereVolume => "an atmosphere volume",
+            Self::WeatherRegion => "a weather region",
+            Self::WaterBody => "a water body",
+            Self::WaterProbe => "a water probe",
+            Self::Room => "a room",
+            Self::AmbientPost => "an ambient post",
+            Self::AmbientWalk => "an ambient walk",
+        }
+    }
+
+    /// Whether it stands where its `at` says, as a placement and an instance do, rather than its `position`.
+    #[must_use]
+    pub const fn is_placed(self) -> bool {
+        matches!(self, Self::Placement | Self::Instance)
+    }
+
     /// The document's list it's an entry of, or a part of an entry of.
     #[must_use]
     pub const fn list(self) -> &'static str {

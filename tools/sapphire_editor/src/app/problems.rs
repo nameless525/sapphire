@@ -12,7 +12,7 @@ use std::path::Path;
 use egui::{Color32, RichText, Ui};
 use sapphire_assets::AssetId;
 use sapphire_document::problem::{self, At, Problem};
-use sapphire_document::{ObjectId, PropertyPath, walk};
+use sapphire_document::{ObjectId, PropertyPath, Step, walk};
 
 use super::Editor;
 use crate::commands::{Command, Picked};
@@ -64,7 +64,9 @@ impl Editor {
         self.problems = problem::deduplicated(found);
     }
 
-    /// [`Command::SelectField`]: goes to `picked`'s document, opening it if it isn't, and to its field.
+    /// [`Command::SelectField`]: goes to `picked`'s document, opening it if it isn't, and to its field, and selects
+    /// the entry the field is of, where it's of one (M6 T9b), so the viewport's mark, the gizmo and the zone pane's
+    /// row are on it too: the entry, by its key, not a part of it such as a probe's box.
     pub(super) fn select_field(&mut self, picked: &Picked) {
         let written = match picked.path.parse::<PropertyPath>() {
             Ok(path) => path,
@@ -90,6 +92,14 @@ impl Editor {
         };
         match walk::named(value, &written) {
             Ok(path) => {
+                // The top-level entry, by its key: a field of a list nested inside one is still the entry's.
+                if let Some(at) = path.steps().iter().position(|step| matches!(step, Step::Key(_))) {
+                    let entry = path.steps()[..=at]
+                        .iter()
+                        .cloned()
+                        .fold(PropertyPath::root(), |entry, step| entry.join(step));
+                    self.selection = vec![ObjectId { document: id, path: entry }];
+                }
                 self.field = Some(ObjectId { document: id, path });
                 self.properties.reveal = true;
             }

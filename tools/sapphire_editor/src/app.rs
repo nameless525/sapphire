@@ -316,6 +316,8 @@ pub struct Editor {
     entry_id: Option<String>,
     /// The ID an `AddEntry` running drew for a zone's entry, which the recording keeps it by.
     drawn_id: Option<String>,
+    /// The IDs a `Duplicate` running drew for its copies, which the recording keeps them by.
+    drawn_ids: Vec<String>,
     /// Where each selected entry stood when the command running began, so a rename keeps it selected.
     standings: Vec<selection::Standing>,
     /// Where a session's commands go, if it's being recorded.
@@ -453,6 +455,7 @@ impl Editor {
             depth: 0,
             entry_id: None,
             drawn_id: None,
+            drawn_ids: Vec::new(),
             standings: Vec::new(),
             recording: None,
             drag_asked: None,
@@ -877,9 +880,8 @@ impl Editor {
         self.follow_zone();
         let moves = self.moves.and_then(|id| self.documents.path(id)).and_then(Path::file_name);
         let current = self.current;
-        let selected = self.selected_placement();
         let camera = self.viewport.camera();
-        let zone = zone::zone_shown(&self.documents, &self.zone, current, selected, &self.selection, camera);
+        let zone = zone::zone_shown(&self.documents, &self.zone, current, &self.selection, camera);
         let timeline = sequencer::timeline_shown(&self.documents, &mut self.sequencer, current);
         self.screen.follow(&self.documents, current);
         let screen = screen::screen_shown(&self.documents, &self.screen, current);

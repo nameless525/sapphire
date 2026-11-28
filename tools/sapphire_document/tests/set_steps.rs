@@ -9,11 +9,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::{env, fs, process};
 
 use sapphire_assets::AssetId;
-use sapphire_colliders::ColliderDocument;
+use sapphire_colliders::{ColliderDocument, Rotation};
 use sapphire_document::{
     DocumentSet, HistoryError, Journal, Kind, Outcome, PropertyPath, Refused, Took, ZoneEditError,
     edit_with_colliders,
 };
+use sapphire_math::{Vec3, det};
 use sapphire_zone::ZoneDocument;
 use support::read;
 
@@ -348,6 +349,114 @@ fn a_placement_added_or_taken_out_moves_no_collider() {
     assert!(set.ids().all(|id| id == zone), "the colliders weren't opened, so nothing moved");
     assert!(set.save_all().is_empty());
     assert_eq!(fs::read_to_string(&colliders).expect("reads"), before);
+}
+
+/// A placement copied takes the ID it's given and names copies of its colliders, standing where its stand, under
+/// fresh names; taken out, it takes with it the colliders only it named. Each is one step of the two documents,
+/// which undo takes back whole (M6 T9b).
+#[test]
+fn a_placement_copied_or_taken_out_keeps_its_colliders_in_step() {
+    let dir = TestDir::new("copied");
+    let (mut set, zone, colliders) = zone_and_colliders(&dir);
+    let (original_zone, original_colliders) =
+        (text(&set, zone), fs::read_to_string(&colliders).expect("reads"));
+    let post_b = path(r#"placements["8b2e5d40"]"#);
+    let made = sapphire_document::zone::duplicate(
+        &mut set,
+        zone,
+        "duplicate",
+        std::slice::from_ref(&post_b),
+        &["5e6f7a8b".to_owned()],
+    )
+    .expect("copied");
+    assert_eq!(made.ids, ["5e6f7a8b"]);
+    assert_eq!(made.paths, [path(r#"placements["5e6f7a8b"]"#)]);
+    let copy = set.zone_value(zone).placements.last().expect("appended").clone();
+    assert_eq!((copy.at, copy.colliders), ([6.35, 0.0, -6.0], vec!["post_b-2".to_owned()]));
+    assert_eq!(collider_at(&set, &colliders, "post_b-2"), [6.35, 2.0, -6.0]);
+    assert_eq!(collider_at(&set, &colliders, "post_b"), [6.35, 2.0, -6.0], "the first's stays");
+    let colliders_id = set.ids().find(|id| *id != zone).expect("opened by the copy");
+    assert_eq!(set.undo(zone), Ok(Took::Step), "one step");
+    assert_eq!(
+        (text(&set, zone), text(&set, colliders_id)),
+        (original_zone.clone(), original_colliders.clone())
+    );
+    let taken = sapphire_document::zone::duplicate(
+        &mut set,
+        zone,
+        "duplicate",
+        std::slice::from_ref(&post_b),
+        &["3fa91c07".to_owned()],
+    );
+    assert!(matches!(taken, Err(ZoneEditError::Taken(ref id)) if id == "3fa91c07"), "{taken:?}");
+
+    // Two naming one collider: the first taken out leaves it, the second takes it, and the one no one names
+    // now stays as it was.
+    set.edit(zone)
+        .expect("open")
+        .set_ron("both name a", &path("placements[1].colliders[0]"), "\"post_a\"")
+        .expect("lands");
+    let names = |set: &DocumentSet| -> Vec<String> {
+        let document = set.get::<ColliderDocument>(colliders_id).and_then(|document| document.value());
+        document.expect("reads").colliders.iter().map(|entry| entry.name.clone()).collect()
+    };
+    sapphire_document::zone::remove(&mut set, zone, "delete", &[path(r#"placements["3fa91c07"]"#)])
+        .expect("taken out");
+    assert_eq!(names(&set), ["ground", "post_a", "post_b"], "the other still names post_a");
+    sapphire_document::zone::remove(&mut set, zone, "delete", &[post_b]).expect("taken out");
+    assert_eq!(names(&set), ["ground", "post_b"]);
+    assert_eq!(set.zone_value(zone).placements.len(), 1);
+    assert_eq!(set.undo(zone), Ok(Took::Step));
+    assert_eq!(
+        names(&set),
+        ["ground", "post_a", "post_b"],
+        "one undo puts the placement and its collider back"
+    );
+    assert_eq!(set.zone_value(zone).placements.len(), 2);
+}
+
+/// A placement turned takes the colliders it names round with it, about where it stands, turning each as far:
+/// back as well as on, about -Y the other way, and its degrees kept in (-180, 180].
+#[test]
+fn a_placement_turned_turns_its_colliders() {
+    let dir = TestDir::new("turned");
+    let (mut set, zone, _) = zone_and_colliders(&dir);
+    let id = sapphire_document::zone::colliders_of(&mut set, zone).expect("opens").expect("named");
+    let edit = |set: &mut DocumentSet, at: &str, ron: &str| {
+        set.edit(id).expect("open").set_ron("set up", &path(at), ron).expect("lands");
+    };
+    edit(&mut set, r#"colliders["post_b"].position[0]"#, "7.35");
+    edit(&mut set, r#"colliders["post_a"].rotation"#, "AxisAngle(axis: (0.0, -1.0, 0.0), degrees: 10.0)");
+    let turn = |set: &mut DocumentSet, index: usize, degrees: &str| {
+        edit_with_colliders(set, zone, "turn a placement", |zone| {
+            zone.set_spelled("turn a placement", &path(&format!("placements[{index}].turn")), degrees)
+        })
+        .expect("lands");
+    };
+    let entry = |set: &DocumentSet, name: &str| {
+        let document = set.get::<ColliderDocument>(id).and_then(|document| document.value()).expect("reads");
+        let entry = document.colliders.iter().find(|entry| entry.name == name).expect("named");
+        (entry.position, entry.rotation)
+    };
+    let about_y = |degrees: f32| Rotation::AxisAngle { axis: [0.0, 1.0, 0.0], degrees };
+    let by = |degrees: f32| det::quat_from_axis_angle(Vec3::Y, degrees.to_radians());
+    let at = Vec3::new(6.35, 0.0, -6.0);
+
+    // +30, then back 10: the collider a metre aside goes round about `at`, and is turned 20.
+    turn(&mut set, 1, "30.0");
+    turn(&mut set, 1, "20.0");
+    let first = at + det::quat_rotate(by(30.0), Vec3::new(7.35, 2.0, -6.0) - at);
+    let second = at + det::quat_rotate(by(-10.0), first - at);
+    assert_eq!(entry(&set, "post_b"), (second.to_array(), about_y(20.0)));
+    // On past 180: 20 and 170 is -170.
+    turn(&mut set, 1, "190.0");
+    assert_eq!(entry(&set, "post_b").1, about_y(-170.0));
+    // A collider turned about -Y turns the other way: 10 about -Y and 30 about +Y is -20 about -Y.
+    turn(&mut set, 0, "30.0");
+    assert_eq!(
+        entry(&set, "post_a"),
+        ([-6.0, 2.0, -6.0], Rotation::AxisAngle { axis: [0.0, -1.0, 0.0], degrees: -20.0 })
+    );
 }
 
 trait ZoneValue {
